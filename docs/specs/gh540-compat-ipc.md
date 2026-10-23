@@ -1,6 +1,6 @@
 # Spec: bounded compatibility IPC for the first draw.io round-trip
 
-Status: draft
+Status: approved
 
 Linear: GH-540 (#517 tracker); KEL-80 carries the reference link · Owner: Monish Khandelwal · Updated: 2026-10-23
 
@@ -11,7 +11,9 @@ It consumes existing protocol owners. It does not take their implementation clai
 The repository owner delegated the decisions and publication to this agent on
 2026-10-23. That delegation is recorded separately from independent review of the
 exact diff; it is not a claim of personal human review of a commit. Merge remains
-prohibited by the task instruction.
+prohibited by the task instruction. Approval here is the agent's bounded decision
+under that explicit owner delegation; the publication receipt identifies the exact
+reviewed commit. It does not approve another owner's unread artifact or waive CI.
 
 ## 1. Goal & non-goals
 
@@ -309,7 +311,7 @@ The existing `echo-codegen.ts` already has closed per-target Rust enum grammars,
 - `Refused` from the consumer means the endpoint could not decode/admit the supported value envelope. Its bounded error is an endpoint diagnostic. The host may forward it as such but cannot infer host NotDispatched from its code. #544 owns concrete codec error codes and value tags.
 - A consumer cannot supply `Stale`, `RouteRetired`, or `DispatchCertainty`. Those are host-owned proofs based on admitted target lifetime, attempted write/delivery facts, and owner-observed quiescence. Retirement is not application cancellation.
 - `ReleaseConsumed` is a control operation for the renderer→Bun ledger, keyed by authenticated connection context plus webview/navigation/message. It carries no quantity of credit. The host looks up its recorded charges; duplicate/stale/unknown receipts create no capacity and no unbounded completion history. `Released` acknowledges bounded handling of the release request and does not assert that a nonmatching request freed anything. No acknowledgement of this REPLY is sent.
-- Deliver CALLs have exactly one terminal REPLY/ERR, correlated by canonical KIPC state. They remain pending while native work is retained; the reader continues accepting release control. A matching consumer report alone cannot release an active native evaluation.
+- Deliver CALLs use canonical first-terminal-wins correlation. On a live admitted link, normal Deliver REPLY waits for both the required consumer release and native completion; a matching consumer report alone cannot release an active native evaluation. Canonical retirement may answer an ERR-capable call with a best-effort ERR before Native Drained; close, EOF or the existing timeout may reject a pending call without an on-wire terminal reply. These logical outcomes do not release physical ledger/native charges, establish NotDispatched, or permit replay. Keep those charges until owner-observed quiescence, send no second terminal answer, and keep the reader able to process release control. This preserves GH-527 retirement rather than introducing a compat-only close protocol.
 - Deterministic pre-admission failure is the existing `CallError` ERR via `write_call_error`; no special per-channel ERR envelope or `CompatControlResponse::Error` is introduced. A post-admission endpoint `Refused` can be represented by terminal Deliver REPLY because the requested delivery has a terminal disposition, not a privileged application return.
 - Keep original-document routing in the closure's original link context. The host validates membership and lifetime under that context; it never trusts numeric coincidence as identity or resolves a stale target to the current main document. The facade process/frame metadata is projected through the existing registry owner, not independently minted in this payload.
 
@@ -355,6 +357,8 @@ type NativeToRendererV2 =
 The Rust decoded representation is a closed `WvLinkEnvelope` extension with corresponding Bind, Invoke, Send and Consumed variants; send/consume sequence fields become `NonZeroU32`, Invoke's channel stays `NonZeroU16`, payload uses the existing bounded byte visitor, and disposition is a closed enum. Native output uses the corresponding closed structs/enums and owning serializer. It does not expose the nonce to Core. Rust wire DTO and TS projection must be kept under the current bridge script/decoder owner, not a second handwritten general parser.
 
 The v2 Invoke form is a versioned adapter for existing byte-level `window.keld.invoke`, not Electron invoke/handle. It preserves the existing one-pending Invoke floor and shares the native admission budget with other bridge work; it must not mint a separate uncounted native allowance. Its numeric channel and Reply/Error payload semantics remain KEL-142/#1095-owned. The `detail` name deliberately follows the existing native bridge result, while generic app-link `CallError` retains `message`. Do not silently rename v1 results or move #1095 settlement/error provenance into a new owner. Consume the landed #1095 exact result changes before implementing the adapter.
+
+Private `invoke`, `send`, `event`, and successful `invoke-result` payloads are DATA under the shared directional/native budget. `bind`, `bound`, `consumed`, `send-result`, `route-state`, and error `invoke-result` are CONTROL under the 4,096-byte encoded-envelope cap, including the existing bounded `detail` rendering. A successful invoke-result is the completion representation of its already-reserved Invoke operation, not a second outstanding DATA admission or an uncounted exception; reserve any simultaneous request/result copies in that operation's retained/scratch budget. A 4,096-byte numeric reply can expand beyond 4,096 JSON bytes and therefore must not be forced through the CONTROL ceiling. The adapter consumes the existing Invoke settlement and native-completion owner; it adds no second pending floor.
 
 `bound.limits` advertises fixed ceilings, not fresh spendable credit. Rebind does not reset a pending record, sequences, or already-spent capacity. `bound.ready` and route-state are notifications under the native owner's ordered FIFO/quiescence contract. Neither alone settles a request or proves old work never ran. Native retirement removes authority immediately; its later notification is not a prerequisite for that authority change.
 
@@ -447,11 +451,14 @@ ReleaseConsumed CALL's REPLY ends that control operation; no acknowledgement fol
 
 Bun→renderer: reserve Deliver CALL → validate/capture target → native delivery with
 final document check → synchronous dispatch/discard sends consumed → independent native
-evaluation completion → terminal Deliver REPLY after both required releases. If native
-proves the queued operation never ran, a stale/refused terminal disposition may replace
-consumption. The host reader continues processing controls while Deliver is pending.
-It never blocks on the renderer. The facade observes internal Promise rejection but
-returns undefined; user listener Promises are not awaited.
+evaluation completion → normal Deliver REPLY after both required releases while the
+link remains admitted. If native proves the queued operation never ran, a stale/refused
+terminal disposition may replace consumption. On retirement, preserve the canonical
+best-effort ERR/close path even before Native Drained; correlation settlement and retained
+capacity are separate. A late native completion only releases its retained charges,
+never answers again or replays the call. The host reader continues processing controls
+while Deliver is pending and never blocks on the renderer. The facade observes internal
+Promise rejection but returns undefined; user listener Promises are not awaited.
 
 WorkerLink currently calls EVENT listeners before releasing the inbound ring record.
 Sending ReleaseConsumed from the listener's finally is too early. Extend the canonical
@@ -661,7 +668,7 @@ adapter only after all bundled callers migrate. Persisted application state is u
 | Generic control DTO ↔ generated TS/bytes | keld-ipc table/codec/receive + existing generator owner | One compat entry, one closed generator target, independent vectors |
 | Worker post/ring/write → bounded transport retention | Existing @keld/kipc / GH-527 owner | All producers bounded; control share; post-ring-release seam |
 | Send → admitted Bun EVENT | #465 | Identity, guard, subscription and inseparable capacity/release tests |
-| Deliver CALL → native event + terminal reply | #543 | Current/original target distinction; consumed plus native completion |
+| Deliver CALL → native event + terminal reply | #543 | Current/original target distinction; normal live-link completion consumes both releases; canonical retirement settles logically without refunding native retention |
 | Host retirement → facade mirror | #542 fact, #449 registry, #466 getter | Existing ordered state-applier; no new registry or async user callback |
 | JS values ↔ opaque bytes | #544 | Same codec source and golden vectors; no value parsing in Rust |
 | on/once/reply/send → listener/route behavior | #466, existing WebContents owner | EventEmitter registry; void API; original-document reply |
@@ -730,6 +737,7 @@ without presenting missing APIs as compatible. Reuse #566's manifest/runner/pars
 | W10 · #542 | Same-document change and cancelled renderer navigation retain usability; committed cross-document and host-initiated invalidation reject old work. Force u32 exhaustion in a seam. | Increment on every navigation attempt, omit host invalidation, truncate u64 or wrap u32; corresponding independent identity witness fails. |
 | W11 · #1095/#543 | After old result arrives, live pending result remains settleable; after role restart/rebind in the same document, sequence never resets and old-role receipts cannot settle/refund new work. | Clear current pending before document comparison, reset sequence on rebind, or ignore RoleGeneration; new operation is lost or falsely credited. |
 | W12 · #544/host router | Send a manually chosen byte vector between raw endpoint fixtures; host egress digest equals ingress digest, including byte sequences a JS codec rejects. Host rejects invalid routing but is indifferent to value tags. | Insert JSON/codec decoding or byte normalization in Rust; opaque-vector or layer dependency check fails. |
+| W13 · #465/#1095 | A successful 4,096-byte numeric Invoke reply is DATA and remains admitted under the private DATA envelope bound; error-only results and receipts obey CONTROL bounds. Concurrent Invoke/Send and completion-copy barriers never exceed the shared native budget. | Classify all results as CONTROL, mint a second result allowance, or retain an uncharged request/result copy; boundary and independent retention witnesses fail. |
 
 ### 7.2 Capacity, concurrency and liveness
 
@@ -742,11 +750,12 @@ without presenting missing APIs as compatible. Reuse #566's manifest/runner/pars
 | Q5 · @keld/kipc | Hold canonical ring record until after listener returns; prove ReleaseConsumed is issued only after release hook/coalesced drain. | Send release in listener `finally`; barrier observes an acknowledgement while the ring record remains retained. |
 | Q6 · #543/native | Send a valid-looking renderer consumed early while native completion is paused. Native capacity stays charged and additional eval is bounded. | Treat consumed as proof of native release; scheduling exceeds native high-water bound. |
 | Q7 · transport/native owners | Fill data at every hop and then issue release, refusal and teardown. No ACK-for-ACK; no reader wait on data credit; one FIFO writer stays intact. Exhaust all four controls: host retirement still revokes authority without enqueueing a fifth. | Put controls in the exhausted data pool, make retirement depend on another control enqueue, require receipts for receipts, or add priority writer; authority/progress/order witness fails. |
-| Q8 · #543/transport | Deliver CALL remains pending until synchronous consumed/discard and native release; user async Promise does not block completion. Missing listener yields a terminal discard. | Reply on mere admission or await listener Promise; terminal-state barrier observes premature release or hung completion. |
+| Q8 · #543/transport | On an admitted live link, normal Deliver REPLY waits until synchronous consumed/discard and native release; user async Promise does not block completion. Missing listener yields a terminal discard. | Reply on mere admission or await listener Promise; terminal-state barrier observes premature release or hung completion. |
 | Q9 · liveness owner | Expire local CALL deadline while remote delivery is paused, then release remote work. No refund/replay until proven quiescence; no unhandled rejection; route cannot accept an unbounded second batch. | Refund on local timeout or retry automatically; duplicate receiver count or retained-byte limit fails. |
 | Q10 · #1095/canonical writer | Inject no app, zero-byte write failure, partial write and post-write link loss. Distinguish WV-012 only for no attempted write; ambiguous outcomes WV-013; stream cannot continue after partial frame. | Classify any failed write as unavailable or replay on new generation; native write-count/effect witness fails. |
 | Q11 · #466/router | Reentrant sends, listener mutation, thrown listener and close during callback do not hold a host lock, leak reservations or invoke once twice. Verify later allowed work. | Hold registry/router lock across callback or omit release on throw; deterministic reentrancy/count test fails. |
 | Q12 · all route owners | Pause an old native readiness/retirement control and restart the app in the same document: successor readiness must remain withheld until old DATA/controls quiesce; after release it is applied once and cannot be changed by an old callback. Concurrent close/navigation preserves bounded totals including retired work; generation/sequence/WebviewId exhaustion closes safely. | Publish successor readiness early, defer a control's state mutation past its evaluation completion, omit role check, mint fresh budget before quiescence, or reuse identity; wrong readiness, stale delivery or excess retention appears. |
+| Q13 · #543/canonical retirement | Pause native evaluation, retire its app role and observe the existing first-terminal-wins ERR/close path. Logical correlation may settle before Native Drained; retained charges stay until quiescence, and late completion sends no second answer or replay. | Require the retiring call to remain pending until native release, refund on ERR/EOF, or reply again after completion; independent correlation/lease/write counters fail. |
 
 ### 7.3 Endpoint and actual-application behavior
 
@@ -792,8 +801,8 @@ independent refutation of each finding. No native acceptance follows from a docs
 | Original reply | [ipc-dispatch.ts](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/ipc-dispatch.ts) | reply captures originating frame/process route |
 | Current-main send | [web-contents.ts](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/api/web-contents.ts) | send uses mainFrame; sendToFrame resolves original frame membership |
 | Error boundary | [web-frame-main.ts](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/api/web-frame-main.ts), [native](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_api_web_frame_main.cc) | Source catch/clone behavior; cannot alone supply observed native cells |
-| senderFrame lifetime | [api-ipc-spec.ts](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/spec/api-ipc-spec.ts) | Native upstream tests distinguish navigation/disposal; Keld must run its own path |
-| draw.io target | [main](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js), [preload](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/preload.js) | rendererReq/mainResp, reqId, isPluginsEnabled, validateSender and isolation settings |
+| senderFrame lifetime | [api-web-frame-main-spec.ts](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/spec/api-web-frame-main-spec.ts) | Native upstream tests distinguish navigation/disposal; Keld must run its own path |
+| draw.io target | [main](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js), [preload](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron-preload.js) | rendererReq/mainResp, reqId, isPluginsEnabled, validateSender and isolation settings |
 
 Retrieved 2026-10-23. Exact native oracle artifacts, if produced, remain separate
 version/platform-bound evidence. Do not quote repository source as an executed result.
