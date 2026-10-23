@@ -563,13 +563,19 @@ Electron `sandbox` / `appSandbox: "off"` while `requested` is `Strict` is
 returning an error: no replacement child. T1 implements this state machine
 without claiming OS containment.
 
-Capabilities / manifest: a future `keld.permissions.jsonc` / `keld.config.ts`
-key may declare `profile: "strict" | "legacy"`. The key does not exist today.
-Adding it is a permission-model + public-API review gate. Electron
-`sandbox` / `appSandbox` is not this key and MUST NOT be read as `legacy`
-or `strict`. No VS Code or package-name branch.
+Capabilities / manifest: the approved [explicit-profile amendment](kel78-explicit-legacy-profile.md)
+selects root `keld.permissions.jsonc.profile`, with exactly `"strict"` or
+`"legacy"`; omission is no declared request, never implicit legacy. The parser
+and product admission integration remain unimplemented at this amendment's source
+baseline and belong to GH #588. No `keld.config.ts` alias, Electron `sandbox` /
+`appSandbox`, package-name branch, or failed strict proof may select a profile.
+The amendment owns presence-sensitive parsing, the security-forfeit matrix,
+reporting, migration acceptance, and the existing unverified evidence mapping.
 
-Wire/protocol: none. `KELD_APP_LINK` stays `<endpoint>#<64 hex chars>`.
+Wire/protocol: public kipc and `KELD_APP_LINK=<endpoint>#<64 hex chars>` are unchanged.
+The amendment requires private compiled boot schema 2 for explicit-profile inputs,
+with schema 1 retained for no-profile inputs. That producer/consumer change has
+a separate compiled-protocol review gate under KEL-96/KEL-102.
 
 ### Packaging and reporting
 
@@ -579,7 +585,10 @@ Wire/protocol: none. `KELD_APP_LINK` stays `<endpoint>#<64 hex chars>`.
 | `keld doctor` | same | same | same |
 | Scoreboard / release metadata | same | same | same |
 
-Renderer sandbox is a different column.
+Renderer sandbox is a different column. The [explicit-profile amendment](kel78-explicit-legacy-profile.md#47-reporting-contract)
+distinguishes static declarations from actual admission, preserves KEL-74's
+approved unverified behavioral evidence, and keeps reserved build/release
+integration pending until those real commands consume the contract.
 
 ## 5. Boundaries
 

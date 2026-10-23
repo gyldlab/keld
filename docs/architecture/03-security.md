@@ -72,6 +72,13 @@ cannot grant any authority.
 
 One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 
+**Approved explicit-profile target (KEL-78 / GH #586, implementation GH #588):**
+root `profile` in this file is the sole strict/legacy declaration. Omission never
+selects legacy; a declaration is a request, not containment evidence. The
+[profile amendment](../specs/kel78-explicit-legacy-profile.md) owns the exact grammar,
+forfeiture, verified admission, and reporting. The current parser/product launch
+does not yet enforce this property; do not treat adding the key as activation.
+
 **v0 parser boundary:** `parse_manifest`, disk `load_manifest`, and MCP permission
 explain accept at most 64 KiB. JSONC block comments must terminate, and decoded object
 keys must be unique recursively (including escaped-equivalent spellings); ambiguity is
