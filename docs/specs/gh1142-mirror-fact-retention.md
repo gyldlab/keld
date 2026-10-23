@@ -66,7 +66,7 @@ dependencies, native qualification, or a performance/memory-improvement claim.
 
 | Atom / owner and boundary | Failure and first falsifier | Evidence state |
 | --- | --- | --- |
-| Authority / GH-531 and GH-527: approved prose → permitted retention | Treat this draft as approval; check exact-content record | **blocker:** approval absent |
+| Authority / GH-531 and GH-527: approved prose → permitted retention | Treat different technical bytes as approved; check exact-content record | **passed:** scoped approval record above |
 | Frame ownership / WorkerLink: authenticated records → admission/order/release | Independent admission, queue capacity or release; compare A/R/W and transcript | **passed:** unchanged source and real-link probes |
 | Fact lifetime / mirror: successful apply → same value → consumption | Decode twice, retain a failed apply, or remove after user throw; identity/count probes | **passed:** bounded prototype behavior/count only |
 | Heap / each source: bytes → decoded object graph and aliases | Infer heap bytes from record count; require source shape and budget proof | **unknown:** generic byte bound; **blocker** before production attachment |
@@ -170,7 +170,7 @@ feature lands. Caller/source qualification remains with each production consumer
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [x] T1 / GH-1142: independently review and publish this exact draft; obtain the one
-  scoped approval in §10. Existing approved owners stay operative meanwhile.
+  scoped approval recorded above. The owning paragraphs are reconciled in T2.
 - [ ] T2 / held GH-449 T1: after approval, amend both owners with provenance and
   implement/test the helper using the existing Rust-host/Bun-role integration owner.
   Require each source's heap qualification before its production attachment.
