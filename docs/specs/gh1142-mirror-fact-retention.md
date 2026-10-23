@@ -34,19 +34,24 @@ dependencies, native qualification, or a performance/memory-improvement claim.
 
 1. One admitted event causes one decode and one successful apply; dispatch receives
    the exact applied object/value, after the synchronous continuation, in issue order.
-2. A second-record decode or apply failure enqueues no fact for that record, records
-   close cause `KELD-IPC-005`, and makes parked/pending calls report `KELD-IPC-022`
+2. A second-record decode or apply failure enqueues no fact for that record. If it
+   wins the existing first-terminal-recorder transition, the close cause is
+   `KELD-IPC-005`; parked and still-unanswered pending calls report `KELD-IPC-022`
    naming that cause. Earlier retained facts drain; the bad and later facts do not.
 3. The helper removes its pending reference before calling user dispatch. A throwing
    dispatch is isolated by the existing transport; the next fact and healthy call work.
 4. Pending plus in-flight helper-held facts never exceed matching retained event
-   records. Consumed slots retain no references; terminal finalization clears residual
-   references after the existing earlier-record drain. Counts reach zero at completion.
+   records. Consumed slots retain no references; after the existing earlier-record
+   drain, no helper-held values remain at terminal finalization. Any additional
+   residual-clearing path needs a reachable trace that demonstrates its necessity.
 5. Before any production source attaches, that source has a reviewed maximum decoded
    shape, retained-heap budget and alias/lifetime accounting. A record-count assertion
    or the ring byte limit alone does not satisfy this criterion.
 6. Independent review binds the final proposal and later implementation diff to the
    owning amendments below. No window/native/public-readiness pass is inferred.
+7. A previously recorded terminal cause keeps priority over a later source failure.
+   A pending call with an earlier retained answer receives that answer during drain;
+   only still-unanswered calls reject. Neither correction changes these transport rules.
 
 ## 4. Design
 
@@ -84,19 +89,22 @@ OS containment and revocation owners stay unchanged. No OS grant or manifest cha
 > in-flight helper-held facts correspond one-for-one to still-retained same-channel
 > event records; their aggregate count is no greater than the matching retained event
 > count. Storage metadata and consumed slots do not grow independently of this bound.
-> Terminal finalization clears residual helper references after the transport's
-> earlier-record drain. The helper does not retain released payload copies or add an
+> After the transport's earlier-record drain, the helper holds no values at terminal
+> finalization. Ordinary consumption may establish this; any additional residual
+> clearing needs a reachable lifetime proof. The helper does not retain released payload copies or add an
 > independent frame/byte backlog. Each production source needs reviewed maximum shape,
 > heap budget and alias/lifetime accounting before attachment; count is not a byte cap.
 
 Replace §4.d rule 4 with:
 
 > **Terminal on source failure.** Decode and apply run only in the framework state
-> phase. Their failures are normalized to close cause `KELD-IPC-005`; an internal
-> codec `KELD-IPC-003` does not escape as the close cause. The existing transport ends
-> delivery at the failing record, drains earlier records and reports `KELD-IPC-022`
-> with that cause to parked/pending callers. No failed fact is retained or dispatched.
-> Other transport wake codes pass through unchanged. User dispatch exceptions remain
+> phase. When a source failure wins the existing first-terminal-recorder transition,
+> its close cause is normalized to `KELD-IPC-005`; an internal codec `KELD-IPC-003`
+> does not escape as that cause. The existing transport ends delivery at the failing
+> record and drains earlier records, including earlier answers to pending calls.
+> Parked and still-unanswered pending callers report `KELD-IPC-022` naming the
+> recorded cause. A prior terminal cause and other transport wake codes keep their
+> existing priority. No failed fact is retained or dispatched. User dispatch exceptions remain
 > isolated listener failures; they do not become source failures or retain the
 > consumed entry. A mirror that missed a source fact cannot continue serving state.
 
@@ -106,13 +114,15 @@ the listener FIFO”, with:
 > The ring remains the sole inbound-frame admission, issue-order and release owner
 > and the listener schedule. GH-531's mirror may retain exactly one successfully
 > decoded/applied fact per corresponding retained event until dispatch, removing its
-> entry before user callbacks and clearing residual references at terminal finalization
-> after earlier-record delivery. This is an explicit physical heap-retention exception,
+> entry before user callbacks and retaining no helper-held values at terminal
+> finalization after earlier-record delivery. This is an explicit physical heap-retention exception,
 > not a second frame queue or independent backlog. Its count follows retained records;
 > its bytes require source-specific shape, heap-budget and alias/lifetime proof before
 > production attachment. An applier is synchronous and calls no user code. Source
-> decode/apply failure makes the link terminal with cause `KELD-IPC-005`, with parked
-> or pending callers reporting `KELD-IPC-022` naming that cause. GH-531 §4.d owns the
+> decode/apply failure that wins the existing first-terminal-recorder transition has
+> cause `KELD-IPC-005`. Earlier retained answers still settle their pending calls;
+> parked or still-unanswered pending callers report the existing recorded terminal
+> code/cause. A prior terminal cause keeps priority. GH-531 §4.d owns the
 > derived facts; this section keeps the two-cursor order, listener isolation and release.
 
 **GH-527 §9:** replace its “queue and copy” bullet with:
@@ -163,9 +173,13 @@ feature lands. Caller/source qualification remains with each production consumer
 
 AC1–4 use `crates/keld-ipc/tests/worker_link.rs` with the existing Bun role fixture:
 exact applied-object identity, one decode per record, parked/unparked order, duplicate
-registration refusal, second-record decode/apply faults, user throw, terminal clearing,
+registration refusal, second-record decode/apply faults, user throw, terminal zero retention,
 null/undefined facts and reentrant callback lifetime. First negative controls are
-repeat decode, enqueue-before-success, dequeue-after-dispatch and omitted cleanup.
+repeat decode, enqueue-before-success, dequeue-after-dispatch and retaining consumed
+slots. Removing a clear of an already-empty collection is not a negative control.
+An additional residual-cleanup path needs a reachable failure trace before its test
+can prove release. AC7 uses prior-terminal and earlier-retained-answer real-link
+controls; replacing the first cause or rejecting the earlier answer must fail.
 AC5 uses source-specific maximum/maximum-plus-one shapes and alias accounting with an
 independent budget; scaling the implementation bound alone must not preserve the oracle.
 AC6 is exact-diff independent review. Wait on frames/fences, not sleeps; the real
