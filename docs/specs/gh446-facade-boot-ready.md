@@ -1,11 +1,13 @@
 # Spec: facade-boot Ready — host initialized and window module available before any app window (F01-T2)
-Status: draft
+Status: approved
 Linear: GH-446 (#517) · Owner: @0monish · Updated: 2026-10-23
 
 Revision basis: `gyldlab/keld` main `3503a8aa383427dcf50ccbf6653c4298e7fb8aad`.
-The 2026-10-23 owner-delegated decision is recorded in §10; exact-content technical
-review and approval remain required before implementation. This revision is design
-and source evidence, not a receipt that the proposed macOS behavior has run.
+The 2026-10-23 owner-delegated decision and exact-content approval are recorded in
+§10 and the [approval record](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658).
+Approved technical head: `a04e1ed889733a64cc33c1b64535e02b4afb0902`.
+This revision carries approval metadata over independently reviewed design and
+source evidence; it is not a receipt that the proposed macOS behavior has run.
 
 ## 1. Goal & non-goals
 
@@ -85,7 +87,7 @@ This spec PR also amends gh531 in place. Each change is marked "amended by #657"
 - **Criterion 46:** independent host/facade identity controls and legitimate multiple
   creates distinguish adoption from an accidental one-window limit.
 
-Approval of the exact revised candidate covers these amendments together. The
+The exact-content approval in §10 covers these amendments together. The
 historical approvals of KEL-96, KEL-139 and gh531 do not by themselves approve the
 new semantics. This PR changes only this spec and gh531; T1 applies §4.10 to their
 owning documents with the production change.
@@ -1109,8 +1111,8 @@ until an actual receipt is attached.
 - **permission model:** yes by routing only. KEL-96-D11 sends every `keld.boot.json`
   change here; no capability, policy or guard path changes.
 - **dependency:** none.
-- **wire protocol:** Ready's bytes are unchanged. The same candidate's gh531 changes
-  require independent review of `Adopted = 8`, subscription admission/045 precedence
+- **wire protocol:** Ready's bytes are unchanged. The approved gh531 amendment's
+  independent review covers `Adopted = 8`, subscription admission/045 precedence
   and replay-before-Subscribed ordering; #449 carries the implementation/vector gate.
 
 ## 9. Perf impact
@@ -1144,14 +1146,20 @@ existing authority, generation, filesystem-quiescence and native-custody guarant
 This is a new KEL-139 amendment. It supersedes the previous proposal's claim that no
 amendment was needed and resolves its parked owner-choice question.
 
-**Exact-content gate.** The specification remains a candidate until the revised
-technical head and both specification blobs have independent architecture and
-security/wire-order review. The authoritative delegated-approval record belongs on
-[PR #657](https://github.com/gyldlab/keld/pull/657), with those content identifiers,
-named review lenses, findings/refutations and dispositions. An approval-metadata-only
-commit must identify the technical content it carries. The original KEL-96 D1–D11,
-KEL-139 and gh531 approvals remain historical evidence and do not cover these new
-semantics. No PR may be merged under the current user instruction.
+**Exact-content gate satisfied for specification approval.** The authoritative
+[delegated-approval record](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658)
+approves technical head `a04e1ed889733a64cc33c1b64535e02b4afb0902` against base
+`3503a8aa383427dcf50ccbf6653c4298e7fb8aad`. It binds this specification's blob
+`2f53f2a3cf558c099c66ee886c935084f4e31440` and gh531's blob
+`7b0fdeaf98c847387ea47ffdef9158f64868685b`, their SHA-256 file hashes, and content
+digest `3ebcbad966250005c6a8d4059405a8e519b02d93334fe9cbe817704ed434d4e5`.
+Independent reviewers `/root/ready_architecture_review` (lifecycle/API) and
+`/root/ready_security_review` (authority/custody/wire order) cleared that exact head.
+The record includes independent refutations and all three corrected findings.
+This following commit changes approval metadata only; it does not alter that
+technical content. The original KEL-96 D1–D11, KEL-139 and gh531 approvals remain
+historical evidence and do not cover these new semantics. No runtime acceptance is
+implied, and no PR may be merged under the current user instruction.
 
 **Remaining evidence, with owners.** #445/#446 own the compiling RED, lifecycle
 ordering and native zero-window proof; #446 owns schema-1/security/recovery/custody

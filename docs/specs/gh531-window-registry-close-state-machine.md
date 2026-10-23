@@ -2,13 +2,16 @@
 Status: approved
 Linear: GH-531 (#517) · Owner: @0monish · Updated: 2026-10-07
 
-**Scoped amendment candidate — 2026-10-23:** pending independent technical review
-and exact-head approval. The status and date above preserve the approved baseline;
-they do not approve this amendment. The readiness/replay and recovery decisions below
-were selected by the agent under the repository owner's explicit delegation in the
-active user session. Their exact technical content will be bound to a separate
-approval record after independent review; no personal human review of these bytes is
-asserted. Carrier: [GH #446](https://github.com/gyldlab/keld/issues/446) /
+**Scoped amendment approved — 2026-10-23:** the separate
+[owner-delegated approval](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658)
+binds reviewed technical head `a04e1ed889733a64cc33c1b64535e02b4afb0902` and this
+specification's blob `7b0fdeaf98c847387ea47ffdef9158f64868685b`, together with gh446.
+The status and date above preserve the original approved baseline. The agent made
+the new readiness/replay and recovery decisions under the repository owner's
+explicit delegation, after independent lifecycle/API and authority/custody/wire-order
+review. This commit carries approval metadata only. Neither personal human review
+of these bytes nor runtime acceptance is asserted. Carrier:
+[GH #446](https://github.com/gyldlab/keld/issues/446) /
 [PR #657](https://github.com/gyldlab/keld/pull/657); owning
 [claim](https://github.com/gyldlab/keld/issues/446#issuecomment-6370495240).
 The scoped recovery decision is recorded separately in §5.
@@ -118,7 +121,7 @@ fail. "Owner" is the implementing ticket.
    `Created` event for that window, and the `Create` request schema has no identity
    field. *NC:* minting the id in the facade, so the id was never delivered by the host,
    fails the id-equality assertion. **Independent identity control (2026-10-23
-   amendment candidate):** the fixture advances and retires host registry entries
+   approved amendment):** the fixture advances and retires host registry entries
    before starting the fresh facade, so its first host-supplied reference
    (`HostWindowRef` in the facade, `WindowRef` on the wire) has WindowId 41 while the
    facade's first local allocation would be 1. Assert the host pair in the mirror
@@ -1702,5 +1705,5 @@ there (gh527 §10 Q1).
 None. The questions raised in the first draft were decided under the orchestrator's
 delegation, and D6 by the owner; all are recorded, with falsifiers, in §4.i.
 This records the approved baseline. The separately identified 2026-10-23 amendment
-candidate still needs independent technical review and exact-head approval; its owner
-choice has been made under the explicit delegation recorded above.
+has independent technical review and exact-content approval under the explicit
+owner delegation recorded above; its implementation acceptance remains outstanding.
