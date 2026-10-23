@@ -2,6 +2,17 @@
 Status: approved
 Linear: GH-531 (#517) · Owner: @0monish · Updated: 2026-10-07
 
+**Scoped amendment candidate — 2026-10-23:** pending independent technical review
+and exact-head approval. The status and date above preserve the approved baseline;
+they do not approve this amendment. The readiness/replay and recovery decisions below
+were selected by the agent under the repository owner's explicit delegation in the
+active user session. Their exact technical content will be bound to a separate
+approval record after independent review; no personal human review of these bytes is
+asserted. Carrier: [GH #446](https://github.com/gyldlab/keld/issues/446) /
+[PR #657](https://github.com/gyldlab/keld/pull/657); owning
+[claim](https://github.com/gyldlab/keld/issues/446#issuecomment-6370495240).
+The scoped recovery decision is recorded separately in §5.
+
 ## 1. Goal & non-goals
 
 draw.io's window path cannot run on Keld today. The host creates one primary window,
@@ -106,8 +117,15 @@ fail. "Owner" is the implementing ticket.
    `new BrowserWindow(opts)` returns, then `win.id` equals the `WindowId` in the host's
    `Created` event for that window, and the `Create` request schema has no identity
    field. *NC:* minting the id in the facade, so the id was never delivered by the host,
-   fails the id-equality assertion. **Snapshot source:** `Created.state` is always the
-   `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
+   fails the id-equality assertion. **Independent identity control (2026-10-23
+   amendment candidate):** the fixture advances and retires host registry entries
+   before starting the fresh facade, so its first host-supplied reference
+   (`HostWindowRef` in the facade, `WindowRef` on the wire) has WindowId 41 while the
+   facade's first local allocation would be 1. Assert the host pair in the mirror
+   and subsequent addressed calls as well as public `win.id`. Substituting the local
+   counter for either host-supplied identity component must fail; coincident counters
+   are not evidence of host ownership. **Snapshot source:** `Created.state` is always
+   the `WindowSnapshot` carried by keld-wv's `WindowBuilt`, read from the built native
    window (with any buffered facts overlaid, §4.e), including when `Create` has `x` and
    `y` as `None`. Given a fake UI port whose `WindowBuilt` snapshot is
    `(x 37, y 91, 800×600, focused, not maximized, not full-screen)` for a `Create` with
@@ -181,11 +199,14 @@ fail. "Owner" is the implementing ticket.
 
 ### (c) Window #1
 
-13. **No host window before the app asks.** Given a facade boot as F01-T2 declares it,
+13. **No host window before the app asks.** Given a fresh facade boot in its initial
+    RoleInstance generation, with no surviving windows, as F01-T2 declares it,
     when Ready is observed, then the host's native window count is 0. After the first
     `new BrowserWindow()` it is 1, and that window's WindowId is 1. *NC:* keeping
     `CreateInitialWindow` for facade boots makes the count 1 at Ready and 2 after the
-    constructor. Owner: F01-T2 (count at Ready); F02-T2 (after construction).
+    constructor. This zero/count-one assertion does not apply to a recovered
+    RoleInstance generation with surviving windows (criterion 46). Owner: F01-T2
+    (count at Ready); F02-T2 (after construction).
 14. **Registry is live at Ready.** Given a facade boot, when `Create` is sent in the
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
@@ -757,9 +778,12 @@ pattern. The channel constant comes from the X05-T4 generated file. Rejected opt
 
 This spec consumes F01-T2's rule (#446) and adds no adoption shim.
 
-- Facade boot (the declaration F01-T2 chooses): the host writes Ready after
+- Fresh facade boot in the initial RoleInstance generation (the declaration F01-T2
+  chooses): the host writes Ready after
   authenticated `HELLO` and creates no window. The registry is constructed before Ready
   is written (criterion 14). Window #1 is the first `Create`, so its WindowId is 1.
+  Public facade readiness additionally waits for criterion 20's accepted subscription
+  and applied complete replay; host Ready alone is not that barrier.
 - Renderer-declared boot: unchanged. The host-created initial window is not entered in
   the registry, no window-channel frame is written, and its `CloseRequested` keeps
   today's teardown and `LastWindowClosed` behaviour (criterion 15).
@@ -1670,3 +1694,6 @@ there (gh527 §10 Q1).
 
 None. The questions raised in the first draft were decided under the orchestrator's
 delegation, and D6 by the owner; all are recorded, with falsifiers, in §4.i.
+This records the approved baseline. The separately identified 2026-10-23 amendment
+candidate still needs independent technical review and exact-head approval; its owner
+choice has been made under the explicit delegation recorded above.
