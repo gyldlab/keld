@@ -5390,8 +5390,14 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-API-001
 
 - crate: @keld/api
-- message: Application channel call failed or the declared channel configuration is invalid
-- fix: Check the declared application channel, handler registration, request/reply codecs and kipc frame-size bounds; diagnose handler failures in the application code.
+- message: Application channel call failed after it reached the application stage (decode, handler, encode or reply size), so application code may have run; or the declared channel configuration is invalid
+- fix: Do not resend a failed call automatically: its handler may have run. Check the declared application channel, handler registration, request/reply codecs and kipc frame-size bounds; diagnose handler failures in the application code.
+
+## KELD-API-002
+
+- crate: @keld/api
+- message: Application channel has no registered handler; the call reached Bun and no application code ran
+- fix: Register every channels.handle handler synchronously at module top level, before the first app.whenReady() and before any fs or auth call; then the page may resend the call once.
 
 ## KELD-IPC-001
 
@@ -5625,8 +5631,20 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-WV-011
 
 - crate: keld-wv
-- message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
-- fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
+- message: Renderer bridge request refused before the host attempted any write: invalid, busy, stale, undeclared, or the application is quitting
+- fix: Never resend the call automatically, whatever the detail says; a new invoke from a later user action is a new request. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
+
+## KELD-WV-012
+
+- crate: keld-core
+- message: Renderer request definitely not dispatched: no application generation was admitted, so the host wrote nothing and no application code ran
+- fix: Resend at most once, as a new invoke, after a later user action or a reliable app signal; never from a timer or a retry loop. If the resend also fails with KELD-WV-012, surface it to the user. Keld itself never resends.
+
+## KELD-WV-013
+
+- crate: keld-core, keld-wv
+- message: Renderer request outcome unknown: the host attempted the application write, the connection ended after it, or the page navigated while the call was pending, so the handler may have run
+- fix: Never resend automatically. Resend only when the call is safe to repeat: the page sends an app-owned idempotency key that the handler records with its effect in one durable transaction, or the app's own status check confirms the effect did not happen.
 
 ## KELD-CLI-010
 

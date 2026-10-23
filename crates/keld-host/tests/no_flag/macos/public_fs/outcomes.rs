@@ -84,7 +84,7 @@ pub(super) fn assert_page_outcomes(
     );
     assert_eq!(
         result["outcomes"][2],
-        json!({"action":"unknown","code":null,
+        json!({"action":"unknown","code":"KELD-API-001",
         "error":"KELD-API-001: application channel call failed"})
     );
 }

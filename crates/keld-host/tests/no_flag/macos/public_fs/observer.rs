@@ -179,6 +179,11 @@ fn split_report_body_does_not_block_quit_and_remains_byte_exact() {
     );
     drop(observer);
 }
+/// Serves one test-owned HTML page (GH-1095: the target of a page-initiated,
+/// committing navigation).
+fn respond_html(stream: &mut TcpStream, body: &str) {
+    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).expect("serve the test page");
+}
 fn respond(stream: &mut TcpStream, body: &str) {
     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}", body.len()).expect("respond to observation");
 }

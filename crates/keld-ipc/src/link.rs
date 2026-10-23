@@ -1085,6 +1085,126 @@ mod tests {
         .encode()
     }
 
+    /// A `Write` that accepts an exact byte prefix and then returns a
+    /// non-retryable error on the *next* write. `write_all` must observe the
+    /// short successful write before it sees the error.
+    struct FailingWriter {
+        bytes: Vec<u8>,
+        accept: usize,
+        fail_flush: bool,
+        write_errors: usize,
+        flushes: usize,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            if self.bytes.len() == self.accept {
+                self.write_errors += 1;
+                return Err(io::Error::new(
+                    ErrorKind::BrokenPipe,
+                    "injected write failure",
+                ));
+            }
+            let accepted = buf.len().min(self.accept - self.bytes.len());
+            self.bytes.extend_from_slice(&buf[..accepted]);
+            Ok(accepted)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.fail_flush {
+                Err(io::Error::new(
+                    ErrorKind::BrokenPipe,
+                    "injected flush failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn write_frame_fails_at_exact_header_and_payload_byte_boundaries() {
+        let payload = vec![0xA6; 4_096];
+        let header = FrameHeader {
+            kind: FrameKind::Call,
+            flags: 0,
+            channel: ChannelId(1),
+            corr: CorrelationId(23),
+            len: u32::try_from(payload.len()).expect("test frame length fits u32"),
+        };
+        let expected = [header.encode().as_slice(), payload.as_slice()].concat();
+        assert_eq!(expected.len(), 4_112);
+
+        for accepted in [0, 1, HEADER_LEN - 1, HEADER_LEN, expected.len() - 1] {
+            let mut writer = FailingWriter {
+                bytes: Vec::new(),
+                accept: accepted,
+                fail_flush: false,
+                write_errors: 0,
+                flushes: 0,
+            };
+            let error = write_frame(
+                &mut writer,
+                header.kind,
+                header.flags,
+                header.channel,
+                header.corr,
+                &payload,
+            )
+            .expect_err("next write after exact prefix must fail");
+            assert!(
+                matches!(error, IpcError::Io(ref source) if source.kind() == ErrorKind::BrokenPipe),
+                "accepted={accepted}: {error}"
+            );
+            assert_eq!(writer.bytes, expected[..accepted], "accepted={accepted}");
+            assert_eq!(writer.write_errors, 1, "accepted={accepted}");
+            assert_eq!(writer.flushes, 0, "accepted={accepted}");
+        }
+
+        // After all 4,112 bytes have been accepted, flush can still fail.
+        // The caller must treat this as an attempted write with unknown outcome.
+        let mut writer = FailingWriter {
+            bytes: Vec::new(),
+            accept: expected.len(),
+            fail_flush: true,
+            write_errors: 0,
+            flushes: 0,
+        };
+        let error = write_frame(
+            &mut writer,
+            header.kind,
+            header.flags,
+            header.channel,
+            header.corr,
+            &payload,
+        )
+        .expect_err("flush failure after full write");
+        assert!(
+            matches!(error, IpcError::Io(ref source) if source.kind() == ErrorKind::BrokenPipe)
+        );
+        assert_eq!(writer.bytes, expected);
+        assert_eq!((writer.write_errors, writer.flushes), (0, 1));
+
+        // Same full-frame bytes with a working flush must succeed.
+        writer.bytes.clear();
+        writer.fail_flush = false;
+        write_frame(
+            &mut writer,
+            header.kind,
+            header.flags,
+            header.channel,
+            header.corr,
+            &payload,
+        )
+        .expect("whole frame and flush succeed");
+        assert_eq!(writer.bytes, expected);
+        assert_eq!((writer.write_errors, writer.flushes), (0, 2));
+    }
+
     #[test]
     fn ping_empty_payload_roundtrips_bytes() {
         let mut cursor = Cursor::new(Vec::new());
