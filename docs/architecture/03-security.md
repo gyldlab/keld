@@ -70,7 +70,14 @@ cannot grant any authority.
 
 ## 2. The manifest: `keld.permissions.jsonc`
 
-One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
+One file. Reviewed like a lockfile. Path and URL wildcard rules are scoped
+below; they do not authorize wildcard channel grants.
+
+**Pending channel amendment:** [GH #541](../specs/gh541-channel-grants-navigation.md)
+proposes exact incoming `el:` literals with no wildcard authority. The example
+below uses illustrative literals, not a draw.io channel census. The amendment is
+unapproved; the current evaluator still ignores `windows` and denies non-AppProcess
+principals. This example is not a claim that channel grants are live.
 
 **v0 parser boundary:** `parse_manifest`, disk `load_manifest`, and MCP permission
 explain accept at most 64 KiB. JSONC block comments must terminate, and decoded object
@@ -96,7 +103,7 @@ manifest decoder.
                  "token": ["https://login.microsoftonline.com/common"] }
   },
   "windows": {
-    "main":  { "channels": ["notes.*", "el:*"], "web": { "csp": "default" } },
+    "main":  { "channels": ["el:rendererReq", "el:saveFile"], "web": { "csp": "default" } },
     "about": { "channels": [], "web": { "csp": "static-only" } }
   },
   "audit": { "log": "on-deny" }            // or "all" → structured audit trail
@@ -171,8 +178,14 @@ manifest decoder.
   which rejects tilde; `validate_windows_package_paths` additionally requires
   Windows NormalizationC components and ordinal case-insensitive whole-path
   uniqueness. Neither lexical rule resolves filesystem aliases.
-- **Channel grants** connect to the schema layer: a channel's declared capability set
-  (from `.k.ts` contracts) must be ⊆ the caller's grants.
+- **Schema-declared channels:** a channel's declared native capability set
+  (from `.k.ts` contracts) must be ⊆ the caller's grants. This schema-layer rule
+  does not interpret opaque Electron application payloads. The pending GH #541
+  amendment instead proposes exact `windows.<w>.channels` literals for incoming
+  Electron message routes, with denial before Bun. A route grant does not grant a
+  native capability; every native operation requested by Bun still requires its
+  own native guard decision. Channel evaluation remains unimplemented until its
+  separately approved implementation passes the required evidence gates.
 - **Role grants (destination):** a generated role capability record must be a subset of
   the app ceiling by default. Any additional role-specific authority is a separately
   versioned, reviewable manifest change; it cannot arise from an Electron
