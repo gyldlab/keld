@@ -1,0 +1,207 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-app-v1",
+  "scope": "@keld/electron app cells for the first-proof app surface on macOS at Electron 44.4.5 (ready, whenReady/isReady, session facts, single-instance verdict); not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "headless-lifecycle-conformance",
+    "linux": "headless-lifecycle-conformance",
+    "windows": "headless-lifecycle-conformance"
+  },
+  "doc_snapshots": {
+    "docs/api/app.md": "sha256:49238ddf50585d8a581bd7b5141ec825216cd9b82e6bc82bd97cad4200593ebf"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "app.ready.emitted-once",
+      "oracle_id": "electron-v44.4.5.app.event-ready-emitted-once",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#event-ready",
+        "quote": "Emitted once, when Electron has finished initializing.",
+        "quote_sha256": "sha256:7a2bff1feb8305c9ec9e082bf905b09a5b05c69586060bace3ddb17134118123"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.ready.emitted-once: a ready listener does not run before host Ready, then runs exactly once, also when host Ready is delivered again",
+      "negative_control": "Emitting ready before host Ready, or emitting it again when the link delivers host Ready a second time, makes the mapped case fail."
+    },
+    {
+      "operation_id": "app.when-ready.is-ready-agreement",
+      "oracle_id": "electron-v44.4.5.app.when-ready-is-ready-agreement",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appwhenready",
+        "quote": "Returns `Promise<void>` - fulfilled when Electron is initialized.\nMay be used as a convenient alternative to checking `app.isReady()`\nand subscribing to the `ready` event if the app is not ready yet.",
+        "quote_sha256": "sha256:3620c39b2cffc1fb11cb5d46981fc328f6b5ecf53ff05acb627810100588cae8"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.when-ready.is-ready-agreement: whenReady stays pending while isReady is false and is fulfilled once isReady is true; after the event it is still fulfilled while a ready listener added then is not called",
+      "negative_control": "Replacing whenReady with Promise.resolve() makes the mapped case fail before host Ready, because it is fulfilled while isReady() is false; replaying ready to a listener added after the event also fails it."
+    },
+    {
+      "operation_id": "app.get-path.user-data-default",
+      "oracle_id": "electron-v44.4.5.app.get-path-user-data-default",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appgetpathname",
+        "quote": "`userData` The directory for storing your app's configuration files, which\n    by default is the `appData` directory appended with your app's name.",
+        "quote_sha256": "sha256:5f1af05758c29e89c141a53aad8cc99b056ff6a14fab1e001012b87bf36c712f"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.get-path.user-data-default today: the facade has no getPath, so app.getPath('userData') throws a TypeError",
+      "negative_control": "Today: adding app.getPath to the facade without inverting this case fails it. After GH-452 inverts it: a getPath('userData') that reads HOME or differs from the host-minted appData plus app name fails it."
+    },
+    {
+      "operation_id": "app.get-version.loaded-app",
+      "oracle_id": "electron-v44.4.5.app.get-version",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appgetversion",
+        "quote": "Returns `string` - The version of the loaded application.",
+        "quote_sha256": "sha256:79e2bd92e092e7c7b7d7f249651b8bc3d63a003045aa0937ab426d78ff2fea0f"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.get-version.loaded-app today: the facade has no getVersion, so app.getVersion() throws a TypeError",
+      "negative_control": "Today: adding app.getVersion to the facade without inverting this case fails it. After GH-452 inverts it: a getVersion() that awaits the link or differs from the declared app version fails it."
+    },
+    {
+      "operation_id": "app.get-name.package-name",
+      "oracle_id": "electron-v44.4.5.app.get-name",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appgetname",
+        "quote": "Returns `string` - The current application's name, which is the name in the application's\n`package.json` file.",
+        "quote_sha256": "sha256:cbdc004d859b144a2ccb0775f686a7d1efffdc47fa5c7157c8467afd235155eb"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.get-name.package-name today: the facade has no getName, so app.getName() throws a TypeError",
+      "negative_control": "Today: adding app.getName to the facade without inverting this case fails it. After GH-452 inverts it: for an app with no productName declared, a getName() that differs from the declared app name fails it."
+    },
+    {
+      "operation_id": "app.name.property",
+      "oracle_id": "electron-v44.4.5.app.name-property",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appname",
+        "quote": "A `string` property that indicates the current application's name, which is the name in the application's `package.json` file.",
+        "quote_sha256": "sha256:6330e81f5f95e6c4f33fac17159eda80b61bed1f9790b34bb8e96ef42aba5e7d"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.name.property today: the facade has no name property, so app.name is undefined",
+      "negative_control": "Today: adding a name property to the facade without inverting this case fails it. After GH-452 inverts it: for an app with no productName declared, an app.name that differs from the declared app name or from app.getName() fails it."
+    },
+    {
+      "operation_id": "app.get-app-path.app-directory",
+      "oracle_id": "electron-v44.4.5.app.get-app-path",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appgetapppath",
+        "quote": "Returns `string` - The current application directory.",
+        "quote_sha256": "sha256:085f5cc4c0dc601891b97295d5f335904208da86ff2b593087f0ac4e87d2669d"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.get-app-path.app-directory today: the facade has no getAppPath, so app.getAppPath() throws a TypeError",
+      "negative_control": "Today: adding app.getAppPath to the facade without inverting this case fails it. After GH-452 inverts it: a getAppPath() that differs from the host-minted application directory fails it."
+    },
+    {
+      "operation_id": "app.get-locale.after-ready",
+      "oracle_id": "electron-v44.4.5.app.get-locale",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appgetlocale",
+        "quote": "Returns `string` - The current application locale, fetched using Chromium's `l10n_util` library.",
+        "quote_sha256": "sha256:890eca704461159c3dfd95ad0dae449d908a524bd03df077b655fc083ab0e2d0"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.get-locale.after-ready today: the facade has no getLocale, so app.getLocale() throws a TypeError after ready",
+      "negative_control": "Today: adding app.getLocale to the facade without inverting this case fails it. After GH-452 inverts it: a getLocale() that throws or returns an empty string after the ready event fails it."
+    },
+    {
+      "operation_id": "app.is-packaged.dev-false",
+      "oracle_id": "electron-v44.4.5.app.is-packaged",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#appispackaged-readonly",
+        "quote": "A `boolean` property that returns  `true` if the app is packaged, `false` otherwise.",
+        "quote_sha256": "sha256:fb3f851992497a33a57704f69071e7788a6121e88709646450cdbbe725a62740"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-452",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.is-packaged.dev-false today: the facade has no isPackaged, so app.isPackaged is undefined, not false",
+      "negative_control": "Today: adding an isPackaged property to the facade without inverting this case fails it. After GH-452 inverts it: hard-coding isPackaged to true fails it under keld dev."
+    },
+    {
+      "operation_id": "app.request-single-instance-lock.primary-verdict",
+      "oracle_id": "electron-v44.4.5.app.request-single-instance-lock",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#apprequestsingleinstancelockadditionaldata",
+        "quote": "The return value of this method indicates whether or not this instance of your\napplication successfully obtained the lock.",
+        "quote_sha256": "sha256:074ed42c6a2841153d6451b5f13769bf9eac67345175b6fb9803d0a5e4833c74"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-453",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.request-single-instance-lock.primary-verdict today: the facade has no requestSingleInstanceLock, so the call throws a TypeError",
+      "negative_control": "Today: adding app.requestSingleInstanceLock to the facade without inverting this case fails it. After GH-453 inverts it: returning a constant true fails it for the second instance of the same declared app."
+    },
+    {
+      "operation_id": "app.has-single-instance-lock.holder",
+      "oracle_id": "electron-v44.4.5.app.has-single-instance-lock",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md#apphassingleinstancelock",
+        "quote": "This method returns whether or not this instance of your app is currently\nholding the single instance lock.",
+        "quote_sha256": "sha256:8bdfb8be2f4617136a17caa082ee84c6a31b88d17eb81cb00b7130dd4dd2da51"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-453",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/app-surface.test.ts",
+      "test_name": "app.has-single-instance-lock.holder today: the facade has no hasSingleInstanceLock, so the call throws a TypeError",
+      "negative_control": "Today: adding app.hasSingleInstanceLock to the facade without inverting this case fails it. After GH-453 inverts it: an answer that disagrees with this instance's requestSingleInstanceLock() verdict fails it."
+    }
+  ]
+}
