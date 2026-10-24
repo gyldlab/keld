@@ -85,9 +85,15 @@ snapshot, public Ready remains pending until an accepted Subscribe and one
 complete desktop snapshot **and** its window replay are applied. Then
 `app.whenReady()`, `app.isReady()` and the `ready` event agree, and the
 first user `screen`/theme read sees complete values before a first
-BrowserWindow constructor. Holding or removing the desktop event leaves
-public readiness pending or causes a typed terminal refusal—not a zero/false
-fabrication. Renderer-declared boots keep their existing behavior.
+BrowserWindow constructor. **A valid snapshot missing at Subscribe is an
+immediate correlated lifecycle `ERR`, not an indefinitely held Subscribe**:
+no subscription bit is committed, no partial desktop/window replay is written,
+all pending `whenReady()` calls reject with the same typed failure, `isReady()`
+stays false and `ready` is never emitted. A lost frame/link mid-replay ends
+with GH-527's already-typed transport failure, never an accepted `Subscribed`.
+The current role's public readiness remains terminal after either failure;
+retry requires a new authenticated role generation, not a local reset.
+Renderer-declared boots keep their existing behavior.
 
 **D3 — real primary and all-displays shape.** A fresh true native Mac
 snapshot produces one primary Display and a synchronously returned array of
@@ -125,16 +131,22 @@ the Bun mirror applies it in existing GH-527 issue order. When a separate
 blocking dialog CALL is parked and a desktop fact precedes its REPLY, the
 synchronous continuation sees the updated fact **before returning** without
 running user JS during the park. A fact arriving after REPLY is not applied
-prematurely. No lost/duplicated stale desktop epoch on concurrent window
-Facts. `nativeTheme.updated` remains unimplemented.
+prematurely. Host-owned subscription replay and live desktop observer
+publication have **one writer/linearization point** (§4.3): observer update
+`e+1` committed before Subscribe is captured by initial replay; committed
+after Subscribe follows its `Subscribed` barrier. Neither e+1-before-e
+regression nor lost e+1 is allowed, and a legitimate observer race must
+**not** cause a terminal stale-epoch error. `nativeTheme.updated` remains
+unimplemented.
 
 **D8 — lifetime and recovery.** Native monitor observer subscriptions and
 Host-owned cached facts survive a Bun-role restart but retire on Host
 shutdown. A successor of the same declared primary role gets the *current*
 authoritative desktop snapshot and window replay at its first eligible
 Subscribe; a callback from the old role cannot answer or target the new one.
-An invalid/desynchronized epoch fails closed; no silent reset to initial
-window or primary Display identity. No numeric OS display id is a KELD
+A malformed/replayed contradictory epoch fails closed; a legitimate
+subscribe-vs-observer race is serialized and is **not** a desynchronization.
+No silent reset to initial window or primary Display identity. No numeric OS display id is a KELD
 role or capability identity.
 
 **D9 — bounded representation.** The first-proof proposal admits at most
@@ -142,8 +154,12 @@ role or capability identity.
 finite positive scale factor, and limits encoded desktop snapshot payload
 to **32 KiB** before it enters the existing app-link ring. Count 0,
 max+1, duplicate ids, invalid/nonfinite scale, integer overflow,
-truncation, malformed tag and stale epochs are rejected with typed errors.
-The *existing* GH-527 channel/credit/aggregate memory bounds still apply;
+truncation, malformed tag and **contradictory or regressing on-wire epochs
+that cannot arise from the single authoritative writer** are rejected with
+typed errors. Duplicate same-epoch/same-value delivery is idempotent; a
+same-epoch different-value record is an error. Legitimate concurrent Mac
+observer updates are serialized, not mislabeled stale. The *existing*
+GH-527 channel/credit/aggregate memory bounds still apply;
 no new queue or per-getter allocation budget is added. These proposed
 limits are approval-dependent, not currently shipped.
 
@@ -240,26 +256,80 @@ not unbounded buffering or an extra queue.
 ### 4.3 Exact first-read and recovery order
 
 The selected **proposal**, dependent on the accepted GH446/GH531 readiness
-composition, is:
+composition, has **one Core/Host writer actor** that serializes all window
+EVENTs, native observer update reports, subscription admission, outgoing
+reply order and generation retirement. The macOS UI observer only posts a
+bounded source fact to this writer; it cannot write frames or mutate the
+subscriber registry independently. The actor's Subscribe handling is one
+non-awaiting, non-reentrant turn. Its **linearization point** is the
+validated latest `DesktopSnapshot(e)` capture **under that writer**, before
+any subscription state change or outgoing replay frame. The full native
+snapshot must be validated (including bounds/primary/epoch) *before* that
+turn attempts a window-event replay.
 
 ```text
-Mac UI owner observes effective desktop state → Host retains DesktopSnapshot(e)
+Mac UI owner reports effective desktop state → Core writer retains latest e
 Authenticated role HELLO → raw Host Ready (may precede Subscribe)
-Role sends existing lifecycle Subscribe(window)
-Host admits current declared primary role
-Host writes DesktopSnapshot(e) EVENT on existing window channel
-Host writes any surviving-window Created replay EVENTs
-Host writes correlated Subscribed REPLY (after complete replay)
-Existing GH527 applier applies snapshot + replay, no user listeners yet
-Facade's public Ready barrier opens only after raw Ready + accepted Subscribed
-First BrowserWindow constructor + synchronous screen/nativeTheme reads are usable
+Role sends existing lifecycle Subscribe(window) with correlation c
+Core writer checks channel/role + validates the latest native snapshot
+  INVALID/MISSING: enqueue one lifecycle ERR(c, typed DesktopUnavailable)
+    (zero window/desktop EVENTs, zero subscribed bits)
+  VALID: capture e in this writer turn, begin one pending-subscribe transaction
+    enqueue DesktopSnapshot(e) EVENT on existing window channel
+    enqueue all surviving-window Created replay EVENTs
+    enqueue correlated Subscribed(c) REPLY on lifecycle
+    commit subscriber eligibility and last-sent-epoch=e only after queued barrier
+Next queued observer update e+1 → enqueue DesktopSnapshot(e+1) AFTER Subscribed
+Existing GH527 applier applies snapshot + window replay, no user listeners
+Facade public Ready opens only after raw Ready + successful Subscribed barrier
+First BrowserWindow constructor + sync screen/nativeTheme reads are usable
 ```
 
-A restart reobserves the Host's latest epoch and follows the same fence,
-while the old role/old generation receives no new frame. If the native
-OS snapshot has not been proven valid by Subscribe, the Host **does not
-write a successful desktop-ready replay** or unblock public facade Ready;
-it fails with a typed terminal refusal rather than retrying or fabricating.
+**Missing/invalid snapshot is a Subscribe failure, not a new admission
+reason.** GH508's `SubscribeRefusal` is a closed enum for channel/role
+checks and has **no** `DesktopUnavailable` variant. The existing GH527
+`lifecycleReplyWaiter` already permits the authenticated lifecycle channel
+`ERR` carrying an encoded `CallError` for the *same correlation `c`*;
+this draft selects that existing wire frame rather than adding an enum
+variant or new channel. The eventual producer must register an unallocated
+stable `KELD-CORE-*` typed **DesktopSnapshotUnavailable** code/fix through
+the actual error-code owner before any implementation. **No numeric code
+is reserved by this document.** Valid channel/role admission is checked
+first; if desktop validation fails, emit exactly one correlated typed ERR,
+leave the subscription bit and all previously admitted state unchanged,
+write zero partial replay EVENTs and refuse a success `Subscribed`. On a
+partially written frame or dead link that prevents this atomic emission,
+use GH527's existing terminal link error and never follow it with a
+`Subscribed` or replay retry.
+
+The Bun singleton consumes that `ERR` as rejection of the *current
+Subscribe* attempt. It rejects **all** public `whenReady()` waiters with
+the same typed cause, retains a sticky public-ready-failed state for this
+role generation, reports `app.isReady() === false`, emits **no** `ready`,
+and refuses subsequent getters/constructors with the typed cause.
+No same-generation auto retry can silently create a second subscription;
+the next authenticated successor role may attempt a fresh admission.
+This is public-facade terminal readiness, not permission to detach the
+Host native owner or wait unboundedly for a user-visible display.
+
+**Concurrent publication is linearized.** A native OS change is placed
+on the same Core writer queue. If it commits *before* Subscribe's capture,
+`e+1` becomes the initial replay snapshot; no earlier `e` is sent. If it
+commits *after* capture, the writer enqueues replay `e`, full window
+replay and `Subscribed(c)` **as one ordered batch**, then emits live
+epoch `e+1` to the newly eligible subscriber. No separate observer
+thread may bypass this writer or interleave a live event in the batch.
+Subscriber state stores a last-sent epoch; same-epoch/same-payload
+notifications are idempotently coalesced, and a later epoch is appended
+in order. `e+1` may become visible after the Subscribe reply, consistent
+with GH527's reply-time staleness rule, but is never lost or followed by
+an older snapshot. Host role retirement fences any not-yet-written
+batch and carries no callback to a successor.
+
+A restart uses the Core writer's latest validated epoch and follows the
+same fence, while the old role/generation receives no new frame. No
+observer callback and no continuation in another thread may forge a
+`Subscribed` reply or reset the public facade Ready state.
 
 **Dependency edge to GH446:** the existing GH446 accepted Readiness design
 already waits for accepted Window Subscribe+replay. GH481 requires its
@@ -382,13 +452,13 @@ license for a second Ready/subscribe policy.
 | AC | Positive observable and owner | One independently refutable mutation |
 |---|---|---|
 | D1 | Host authenticated primary/Subscribed → desktop EVENT; app-bound/unsubscribed receives none | Broadcast same frame to all authenticated links: nonprimary sees fact, test fails |
-| D2 | Real raw Ready-before-Subscribe and reversed order; every replay+snapshot before public Ready | Move Ready barrier earlier or skip snapshot: first getter has no fact, test fails |
+| D2 | Real raw Ready-before-Subscribe and reversed order; valid replay before public Ready; missing/invalid snapshot yields one correlated lifecycle CallError ERR, zero replay/subscription bit, every whenReady rejects | Replace ERR with dropped Subscribed or half-replay: pending whenReady hangs or ghost subscription appears and fails |
 | D3 | Real Mac Display array/primary id, finite DIP rectangles/scales, one-primary set | Duplicate id/nonfinite scale/zero displays accepted: exact boundary fails |
 | D4 | Paired pinned Electron 44.4.5 physical primary and negative-offset secondary workArea | Leave AppKit bottom-left y-coordinate raw; comparison fails |
 | D5 | Paired light + dark actual Mac; `shouldUseDarkColors` boolean matches both | Hardcode `false`; dark run fails |
 | D6 | Real WorkerLink/Host count before and after 1,000 getters of each API | Replace getter with per-read CALL; actual frame count increases |
-| D7 | Queue DesktopSnapshot before blocking reply; mirror changes before return, JS listeners after | Call listener inside `setStateApplier`; reentrancy trace fails |
-| D8 | Bun crash→same app's successor current snapshot+survivor windows; retired link fenced | Apply old epoch to successor after replacement; epoch/source fence fails |
+| D7 | Force two deterministic writer-queue interleavings (observer e+1 before Subscribe capture and immediately after). Verify initial e+1 OR replay e→Subscribed→live e+1 in order; parked GH527 reply receives applied fact before listener | Let native observer write outside Core writer or enqueue e+1 before replay e: monotonic order/Ready/parked listener tests fail |
+| D8 | Bun crash→same app's successor current snapshot+survivor windows; duplicate same-epoch snapshot idempotent, contradictory same epoch refused; retired link fenced | Apply old epoch to successor or classify legitimate e+1 Subscribe race as a terminal stale error: tests fail |
 | D9 | 1..32 display count, 32KiB bytes, malformed/truncated, epoch exhaustion, invalid scale | Accept 33rd record or no primary: typed boundary test fails |
 | D10 | Absent/forged/app-bound role receives zero frames, no new permission | Add `screen` to public unguarded role receives: refusal test fails |
 | D11 | Pre-Ready typed refusal and unsupported API typed errors, no synthetic values | Return false/empty array as an unqualified default: observer test fails |
@@ -450,17 +520,22 @@ budgets.
    `raw Ready + accepted Subscribe + full replay` facade gate also requires
    desktop snapshot arrival **before** success. Consumer may not insert a
    second global Ready source or assume main evaluation is delayed.
-3. **Snapshot limits and epoch:** approve/revise proposed max **32** displays,
-   max **32 KiB** encoded bytes, monotonic Host epoch and typed exhausted/
-   stale outcomes. No value is authorized by this draft alone.
+3. **Snapshot limits, transaction and epoch:** approve/revise proposed max
+   **32** displays, max **32 KiB** encoded bytes, monotonic Core-writer
+   epoch and last-sent deduplication. Confirm one atomic Subscribe capture/
+   replay/Subscribed batch and the two deterministic interleavings; a
+   legitimate OS update must not become a stale-epoch terminal error.
+   These values/policies are **not authorized** by this draft alone.
 4. **macOS coordinate/effective-appearance selection:** choose the exact
    pinned OS display/appearance API and conversion only after a same-
    machine Electron 44.4.5 paired native experiment; raw NSScreen
    coordinates and a convenience appearance flag do not prove parity.
-5. **Pre-Ready/terminal getter behavior:** bind the typed unavailable
-   outcome through the approved KELD error-code owner and ensure it
-   cannot be confused with an empty headless display or light-mode
-   false. No numeric error code is reserved here.
+5. **Pre-Ready/terminal getter and native-snapshot failure:** obtain the
+   GH531/GH446 and error-registry owners' approval for correlated lifecycle
+   CallError ERR `DesktopSnapshotUnavailable` (no numeric code allocated
+   in this draft), atomic zero-replay rollback, sticky public-ready failure,
+   and typed unavailable getters. It must not be confused with empty
+   headless display or light-mode false, and must never hang whenReady.
 
 This spec is **DRAFT** and approval is a separate tracked decision. It
 neither merges/edits the active GH449/GH446 branches, implements any
