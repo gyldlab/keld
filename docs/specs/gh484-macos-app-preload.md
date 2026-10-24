@@ -1,6 +1,9 @@
 # Spec: macOS app preload runtime (GH-484 / F07-T1)
 
 Status: draft
+**Approval/production qualification: BLOCKED** by authenticated
+first-inline callable publication, verified package-image authority
+and #540/#542 dual-world binding.
 GitHub: GH-484 · Owner: @0monish · Updated: 2026-10-24
 
 **Approval scope:** This proposes an extension to KEL-142. The original KEL-142 approval does not approve an app-owned third world, native handler, preload source authority or renderer facade. No implementation, native acceptance or merge follows from this draft.
@@ -30,6 +33,7 @@ Non-goals: #467 owns `contextBridge` copy/freeze/function proxies, `ipcRenderer`
 | [2026-10-24 physical macOS F0 baseline/negative control](https://github.com/gyldlab/keld/issues/484#issuecomment-6382021064) | macOS 26.5.1 ARM64 real WKWebView: first-inline page observed `typeof window.electron === 'undefined'` after app-world JS assignment, while a **static** page-world injection was visible. Mutating only the static bootstrap's world changed the page's first-inline method `function → undefined` with native handler still firing. **Partial isolation evidence only:** no dynamic `contextBridge` proxies, authentic draw.io preload, source-root admission or grant proof. |
 | [2026-10-24 native F0 16/16 first-inline proof](https://github.com/gyldlab/keld/issues/484#issuecomment-6382401714) | Real macOS WKWebView + **unmodified pinned draw.io preload** with a **test-only** two-way synchronous publication handshake: first-inline page observed all four callable methods, copied process subset, frozen API and adaptive-colors seeding for the tested missing-preference/valid-flag fixtures, **16/16** across both app/page registration orders. An unguarded one-shot publication showed nondeterministic order; changing to `AtDocumentEnd` made first-inline API unavailable, and suppressing exposure gave **3/3 negative**. This proves local timing feasibility, **not** authentic `contextBridge` or Host authorization. |
 | [2026-10-24 nested callback F0 6/6 with RED](https://github.com/gyldlab/keld/issues/467#issuecomment-6382468009) | Same immutable unmodified preload in real WKWebView, but **synthetic test-only IPC**: **6/6** positive runs exercised real preload `request` and `watchFile` with two nested callback deliveries and no serialized function; suppressing only nested callback-token revival caused **6/6** missing change callbacks, while top-level callbacks still worked. Direct forged DOM events against unexposed functions were refused in that fixture, but shared DOM events are **page-forgeable**; no genuine Bun effect, native credential, grant, teardown or release was proved. |
+| [2026-10-24 dual-world native credential F0](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584) | Real WKWebView fixture with **one test-owned checked-u32 epoch** and separate app/trusted native credentials: 33 native receipts per run, 3/3 corrected baselines, independent credential-check and wrong-role-operation RED mutants. Its initial missing/missing optional credential equality was a fixture defect; the repair requires an existing stored binding and supplied credential. This supports only native-realm feasibility, **not** KELD #542 document authority, #552 guard, Bun link, source integrity or first-inline callable dispatch. |
 
 **Current-documentation receipt (2026-10-24):** Applicability: pinned sandboxed Electron and Apple WKContentWorld API. Context7: `/electron/electron` resolved and queried for sandbox preload and contextBridge; results index evolving `main` docs and are discovery only. Official primary: immutable Electron commit above and Apple API documents. Supported claim: pinned nine-module wrapper, error behavior and world-scoped installation are available as design inputs. Supplemental **native test-only** F0 receipts above establish first-inline scheduling and local nested callback feasibility on this Mac, with no security authority. Fallback/blocker: approved production `contextBridge` publication, unforgeable method dispatch, native original-document bind and Host grant proof remain unproved. `origin/main` was `b4e9f4f2e0dc88ccb14407e4e839b50fabb6be50` on 2026-10-24, equal to the handoff pin.
 
@@ -43,19 +47,19 @@ Non-goals: #467 owns `contextBridge` copy/freeze/function proxies, `ipcRenderer`
 | AC04 Electron module | Preload inspects `require('electron')` | Seven named renderer members: `contextBridge`, `crashReporter`, `ipcRenderer`, `nativeImage`, `sharedTexture`, `webFrame`, `webUtils`. Unimplemented operations throw registry-approved typed `KELD-COMPAT` unsupported errors, never silent no-ops. #467 owns functioning contextBridge and ipcRenderer APIs. |
 | AC05 Error | Top-level admitted JS preload throws | `Unable to load preload script: <path>` plus error logged, and page finishes loading; effects before throw persist. A **file admission failure** rejects window creation before any preload executes. |
 | AC06 Process | Preload reads `process` | `type='renderer'`, `sandboxed=true`, `contextIsolated=true`, own-property-free `env={}`; no inherited `KELD_APP_LINK`. `argv` includes exact `additionalArguments` in order; `versions` deep-equals canonical #452/#570 session facts (no locally invented fields). |
-| AC07 Root mapping | App supplies computed absolute preload path | Host maps it to the **admitted package root**, not webapp document root or ambient CWD, and retains an authoritative root handle. Unmapped, absolute-outside, traversal and missing-root paths fail with a typed error **before any forbidden file read**. |
-| AC08 Source read | Mapped file is admitted | Validated regular-file descriptor supplies one **bounded owned snapshot**; **proposed** max 512 KiB/window and 8 MiB aggregate host retention, both enforced before allocation. Proved in-root symlink succeeds; outside/broken/swap symlink, FIFO, device, directory, +1-size and aggregate overflow fail closed. Reopen-by-display-path is forbidden. |
+| AC07 Root mapping | App supplies computed absolute preload path | Host matches exactly **one trusted package-manifest relative entry** under its retained stage-root identity, distinct from page `file://` and CWD. Component-boundary and exact-entry checks reject unmapped/outside/traversal/root-swap paths before an attacker-selected file read. Unmodified draw.io absolute path must map without a source rewrite. |
+| AC08 Source image | Matched manifest entry is admitted | Authenticate its expected SHA-256 **outside the same-UID-writable package tree**; bounded single-descriptor read (512 KiB/window, 8 MiB aggregate), verify every owned byte against that digest **before executing any preload**, then retain immutable Host-owned bytes. An absent independent trust anchor, changed/in-place-raced bytes, any symlink component, special file, +1-size or +1-capacity refuses. No self-derived digest or reopen-by-display-path. |
 | AC09 Window/document lifecycle | Same window navigates; Bun crashes/restarts; window retires | Reuse same window's source snapshot but **rerun in new document with fresh JS callback state**. No forced reload/reset of surviving page on Bun crash, no source re-open on navigation; destroy releases handles/bytes/handler once. |
 | AC10 Trusted isolation | Real draw.io preload + hostile app-world script | Original KEL-142 native AC2 passes unchanged. Hostile preload cannot read/wrap trusted handler/bind hook, capture nonce, endpoint or grants, re-export them or get forged native/Bun effect. |
-| AC11 Identity | Wrong world, controller, view, subframe, app/trusted credential or old/destroyed document sends app message | Host checks per-view native identity **and the one implemented #542 generation/eligibility owner** before app dispatch. #540/#542 must approve native-owned, **world-scoped** bind credentials (or an explicit v2 amendment) that never disclose/reuse the KEL-142 trusted nonce in app/page worlds; no second navigation-generation mint. Cross-document commit rotates the stamp; earlier host-initiated load invalidates, while same-document navigation and canceled renderer-initiated navigation do not rotate. Any unresolved bind contract or invalid role fails closed with zero forbidden effect and bounded/settled request state. |
+| AC11 Identity | Wrong world, controller, view, subframe, app/trusted credential or old/destroyed document sends app message | Host checks native per-view identity and **one implemented #542 generation/eligibility owner** before dispatch. #540/#542 must approve **two distinct native-owned world credentials**; an initial world bind is authenticated by native controller/world/frame/document facts and mints one new credential, while a later effect-bearing send requires an existing stored binding **and** supplied matching credential (missing/missing denies). Never expose/reuse KEL-142's trusted nonce in app/page or mint a second generation. Revoke both at cross-document commit or earlier host load; preserve at same-document/cancelled renderer provisional navigation. Forged/duplicate/stale bindings have zero effects and bounded settlement. |
 | AC12 Permission & parser | App-world v2 message names an `el:<topic>` with no or wrong exact-literal grant | **One canonical decoder**, extended by #465 after #540's approved v2 contract, handles named one-way send with bounded credit; #543 owns host-to-renderer event delivery and #464 its IPC conformance cases. #484's app handler consumes the approved decoder result through the existing app link/guard. Current v1 **cannot** accept a named channel. Default deny before effect, with no wildcard/prefix match; a correct exact grant permits only bounded, credited effects. No page-supplied principal, permission or KIPC endpoint. |
-| AC13 No DOM carrier | App-native handler transmits internal requests/results | Native app transport generates **zero page-visible `window.postMessage` carrier** events; KEL-142's separately owned page-facade relay remains in place. Arbitrary app code could itself use public DOM APIs, which is outside this invariant. |
+| AC13 No DOM authority | GH-467 publishes callable proxies and the app-native handler transmits admitted requests/results | Neither `contextBridge` function/callback identity nor app-world binding, readiness or Host transport relies on page-forgeable shared DOM events/descriptors or `window.postMessage`. The F0 DOM handshake is forbidden in production. Ordinary application DOM remains usable; the separately owned KEL-142 page relay confers no Electron authority. |
 | AC14 Diagnostic | Measure app-native handler cost | One metric ID in existing `gyldlab/keld-benches` registry, required oracle/census/clock/statistic, class `diagnostic`, zero threshold and publication-ineligible. |
 | AC15 Conformance first | Implementation is authorized by a subsequent approved spec | #567 F07-T4 expected-fail cases with runner assertions exist before change; flip **only** #484-owned world/preload/require/process entries after independent native proof. #467 owns contextBridge/IPC/round-trip cells. |
 | AC16 Native receipt | Claim Mac acceptance | Exact host/Electron/draw.io hashes, macOS/WebKit/Bun, view/frame redacted document identity, first-inline synchronous observation, native effect census, separately run single-fault RED controls, then GREEN on restored tree. |
 | AC17 No accidental capability | No preload/grant or unsupported engine | KEL-142 existing `window.keld` behavior unchanged; no ambient Node resolver, secondary wire channel, page-world native endpoint, or Windows/Linux acceptance. |
 
-**Error allocation is proposed, not approved:** `KELD-WV-011` stays KEL-142 native rejection; `KELD-WV-012` is already reserved by approved #540 for **no admitted Bun generation with zero attempted write**, and `KELD-WV-013` for outcome-unknown. Neither means a preload file-admission failure and neither can be reused. Registered `KELD-COMPAT-001..009` remain unchanged. The error-registry owner must allocate a **distinct noncolliding preload source-admission code**, with structured reason (`unmapped`, `outside`, `file-kind`, `oversize`, `root-unavailable`, `I/O`, `capacity`), before F1 implementation; the #467 facade owner independently allocates its unsupported-member code. Negative control: missing/unmapped preload source must be distinguishable from absent Bun generation without recoding either outcome.
+**Error allocation is proposed, not approved:** `KELD-WV-011` stays KEL-142 native rejection; `KELD-WV-012` is already reserved by approved #540 for **no admitted Bun generation with zero attempted write**, and `KELD-WV-013` for outcome-unknown. Neither means a preload file-admission failure and neither can be reused. Registered `KELD-COMPAT-001..009` remain unchanged. The error-registry owner must allocate a **distinct noncolliding preload source-admission code**, with structured reason (`unmapped`, `outside`, `file-kind`, `oversize`, `root-unavailable`, `I/O`, `capacity`, `symlink`, `trust-anchor-missing`, `digest-mismatch`), before F1 implementation; the #467 facade owner independently allocates its graph/unsupported-member codes. Negative control: an untrusted manifest or changed source must remain distinguishable from absent Bun generation and cannot execute even partial preload effects.
 
 ## 4. Design
 
@@ -67,7 +71,7 @@ Non-goals: #467 owns `contextBridge` copy/freeze/function proxies, `ipcRenderer`
 | Ordering (O) | #484 startup substrate + #467 copy/proxy implementation → complete page API before first inline | Delay **actual** exposure by microtask; first-inline test goes RED. Test-only F0 ordering is feasible; production proof is blocked. |
 | Runtime (R) | #484 exact Electron preload wrapper + #452/#570 process facts → app-only globals | Insert `fs` require, clone role env, hardcode versions (separate REDs). |
 | Seed (A) | Unmodified draw.io `additionalArguments` and existing `.configuration` → optional first-inline setting | Invalid/missing flag overwrites storage; existing explicit preference is replaced; malformed JSON aborts preload/page. Separate REDs. |
-| Source (S) | #484 authoritative package-root handle → bounded per-window snapshot | Root swap/symlink escape or special file accepted; independent file descriptor and bytes oracle. |
+| Source (S) | #484 retained stage root + externally authenticated digest → bounded immutable Host-owned preload image | Same-UID in-place writer, spoofed adjacent digest or stage/root substitution yields an unapproved executable byte; independently anchored digest and hostile-write oracle RED. |
 | Document (D) | #542 proposed single native view/generation owner → current-document admission after its own approval/implementation | Old document call reaches new Bun handler, or same-document hash change spuriously rotates. |
 | Bind (B) | #540's approved v2 contract + #542's proposed native owner + world identity → realm-scoped current-document admission, design pending | App handler accepts trusted nonce, page-forged credential or stale bind; test one mutation each before enabling v2. |
 | Grant (G) | #540/#465 canonical v2 decoder + #541/#552 enumerated `el:` permissions + #484 handler → bounded guard-approved app call | V1 numeric invoke is misread as named send, or missing exact grant produces host effect. |
@@ -106,42 +110,138 @@ An admitted JS top-level exception logs Electron's exact prefix and error, then 
 ### 4.3 Ordering and the feasibility hold
 
 1. **Before constructing the WKWebView or navigating:** capture an authorized snapshot and capture window config; install trusted KEL-142 and app-world handlers plus scripts on the one dedicated `WKUserContentController`. Scripts are `WKUserScriptInjectionTime::AtDocumentStart` and `forMainFrameOnly=true`.
-2. **At navigation eligibility boundaries:** consume #541/#542's proposed single native generation owner: a host-initiated load invalidates the previous document **before commit**, a cross-document commit rotates the generation, a same-document change does **not** rotate, and canceled renderer-initiated navigation preserves the eligible document. The original trusted script requests a bind with a native receipt that can be asynchronous; first-inline eligibility is unproved. **Owner gate:** current KEL-142 has one trusted nonce and rejects a repeated bind. #540/#542 must approve realm-scoped app/trusted credentials derived and validated under the **same** native navigation owner, or explicitly amend and reapprove v2. The app/page cannot inherit the trusted nonce or mint any generation; until an approved app-role bind exists, refuse app v2 dispatch.
+2. **At navigation eligibility boundaries:** consume #541/#542's proposed single native generation owner: a host-initiated load invalidates the previous document **before commit**, a cross-document commit rotates the generation, a same-document change does **not** rotate, and canceled renderer-initiated navigation preserves the eligible document. The original trusted script requests a bind with a native receipt that can be asynchronous; first-inline eligibility is unproved. **Owner gate:** KEL-142 currently accepts one trusted nonce and rejects a repeated bind; #540/#542 must approve **two independently minted, non-reused per-world credentials under one document generation**, with explicit native handler/controller/realm registration and revoke/rebind ownership, or reapprove a changed v2 envelope. **Initial** app/trusted bind is authenticated by native world/frame/qualified document and mints only its own credential once; later effect-bearing messages require both a live stored binding **and** supplied matching credential. The app/page never gets the trusted nonce or mints generation; until an approved app-role bind exists, refuse app v2 dispatch.
 3. **Run preload in app world and publish complete page API:** `contextBridge.exposeInMainWorld` must finish dynamically copying/proxying the actual `electron` and `process` exports into page-owned values **before the first inline script**. Preinstalling a sentinel/empty object with later filling does not satisfy this; `evaluateJavaScript` callback completion after navigation alone does not prove it.
-4. **Early calls:** a callable page API may exist while host document bind is pending. #467 must explicitly specify a **bounded** queue/rejection behavior that consumes #542 eligibility. It cannot mint JS grants/nonce, create an unbounded queue, or replay pending calls after document/Bun retirement.
+4. **Early calls:** a callable page API may exist while host document bind is pending. Consume #467's selected **zero-queue early refusal**: public void method returns undefined, native rejects before reservation/dispatch, emits a bounded private typed diagnostic and retains **no** work for a future document or Bun role. If required draw.io startup traffic occurs before eligibility, application acceptance stays BLOCKED until earlier safe bind/order is proved or #540/#542 approve an amended policy. No silent queue or successor replay.
 5. **After bind:** app-world requests pass view/world/frame/generation checks, then parser and per-window grants. Navigation and destroy invalidate old requests before any new document can dispatch. Recovery cannot reset a surviving renderer.
 
-**Proof gate before implementation:** the disposable **real macOS WKWebView** has now executed the pinned unmodified draw.io preload and actual first inline page script with a **test-only** `contextBridge` exposure scaffold. Its 16/16 registration-order handshake and 6/6 nested callback fixture establish feasibility of native **local scheduling and callback shapes**, including independent RED mutations. Neither scaffold authenticates shared DOM events or supplies production #467 IPC, original-document credentials or Host grants. A supported production mechanism needs a security review and must repeat first-inline exposure and actual Host/Bun effect controls with #467's facade and #542's checked admission. If no bounded supported and secure native mechanism can enforce these guarantees, **stop and revise the proposed architecture/acceptance with human review**; no marker-only, forgeable-DOM authorization or eventually-consistent substitute.
+**BLOCKED production publication proof:** the disposable real-Mac test executed the pinned unmodified draw.io preload and first inline script, but its 16/16 registration-order handshake and 6/6 nested callback fixture use **page-forgeable shared DOM** and simulated IPC. These facts qualify test-only ordering and callback shapes. The [separate native-world credential experiment](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584) supports one per-realm native admission shape, but **does not** make the DOM proxy authentic or synchronous across worlds. Before production, GH-484 must identify a supported WebKit at-document-start producer, a page-world **actual-callable** publication mechanism, its authenticated page→app function selection without DOM authority, and native binding/teardown. GH-467 must exercise unmodified exports, mutable copies and nested callbacks through it. On physical macOS, an actual first-inline observer and independent native/Bun/guard counters must see two real granted requests and zero forged-DOM/wrong-realm/denied effects under reordered scripts and stale documents; mutate sender authentication and require RED. **If the supported secure mechanism cannot be demonstrated, stop at F0 and return to GH-441/#484 for an explicit architecture or acceptance revision.** No eventually-filled proxy, synthetic reply or unapproved fallback.
 
 **Native F0 chronology and limits (not AC02):** [direct app-world assignment](https://github.com/gyldlab/keld/issues/484#issuecomment-6382021064) was invisible to first inline; [the follow-up with the unmodified draw.io preload](https://github.com/gyldlab/keld/issues/484#issuecomment-6382401714) saw nondeterministic app/page script order under naive registration, then **16/16** correct first-inline callable API shapes with an order-independent test-only handshake and separate missing-exposure/`AtDocumentEnd` RED controls. [The 6/6 local proxy fixture with nested callback RED](https://github.com/gyldlab/keld/issues/467#issuecomment-6382468009) proved the *actual preload's* top-level and nested callback paths under simulated IPC. The common DOM/event carrier is forgeable by the page. A private app exposure table blocked an **unexposed** method in that fixture but did **not** authenticate exposed calls or prove original-document, Host/Bun, grant, teardown or release semantics. No production `contextBridge`, wire parser or principal is approved by these results.
 
 ### 4.4 Preload source authority and retained snapshot
 
-Draw.io's main role computes an **absolute** `webPreferences.preload` path. Identify the verified **package root** (distinct from `file://` page document root); map the absolute source through the admitted package/stage identity into a package-relative path. The mapping must work for unmodified draw.io and preserve enough provenance to detect an unmapped absolute path. A synthetic ambient CWD mapping, string-prefix check, or canonical path alone is not authority.
+Draw.io's main role computes an **absolute** `webPreferences.preload`
+path. That path is a **selector, never filesystem authority**. The Host
+must retain the previously admitted package/stage root and an immutable
+trusted package-image manifest whose exact *relative* entry for the
+preload carries a SHA-256 expected-byte digest. This expected digest
+must be authenticated **outside any same-UID-writable package tree**
+(for example by a separately verified signed package artifact or a
+digest embedded in an independently trusted Host build). Computing
+both the file hash and expected hash from mutable package files, or
+trusting an adjacent editable JSON manifest, is insufficient. **No
+such Host/package trust-anchor integration has been qualified for this
+preload; source admission remains BLOCKED until its owner proves it.**
+
+At window construction, map the absolute source to **exactly one**
+manifest entry by checking complete path components against the
+captured trusted staged-root identity. Reject any lexical prefix alias,
+unmapped path, `.`/`..`, empty/invalid component, path changing under
+normalization, alternate stage root, page `file://` root or ambient CWD.
+The unmodified draw.io path must map as-is; a rewritten preload path
+does not qualify. Traverse starting at the retained root descriptor
+using directory-relative, no-follow operations. **First-proof policy:
+reject symlinks at every component, including apparently in-root
+ones.** This deliberately narrows the earlier proposal; if pinned
+staged draw.io requires a symlink, leave AC07/AC08 BLOCKED pending
+a separately reviewed, manifest-bound, race-safe alias design.
+Do not reopen the validated entry using a display path.
 
 **Proposed Rust signatures (illustrative only):**
 
 ```rust
-struct RetainedPackageRoot; // retained verified root fd, identity and lifetime
-struct WindowPreloadSnapshot; // bounded owned bytes and display path
+struct RetainedPackageRoot; // admitted root fd, stage identity, trust anchor
+struct TrustedPreloadEntry; // exact relative path + independently trusted digest
+struct WindowPreloadSnapshot; // immutable checked bytes + manifest entry identity
 fn prepare_preload(
     root: &RetainedPackageRoot,
+    expected: &TrustedPreloadEntry,
     app_absolute_preload: &Path,
     host_total_bytes: usize,
 ) -> Result<WindowPreloadSnapshot, PreloadSourceError>;
 ```
 
-Resolve every component through retained directory descriptors; reject `..`, source escaping package root, missing paths, symlink escape, special files and stale-stage mappings. An **in-root symlink** can be allowed only when the exact resolved target is proved under the retained root by descriptor identity and race-safe traversal; if proof is unavailable, fail closed and record missing compatibility. Open **one** regular-file descriptor and read no more than cap+1 bytes **from that same descriptor**, with fixed bounds and retained lifetime. No reopen by ambient display path between validation and read; avoid blocking the UI thread on FIFO or stalled disk.
+Open **one** regular-file descriptor after safe component admission;
+check its kind and bounded size, then reserve Host/window capacity
+before copying. Away from the UI thread, read at most cap+1 bytes from
+that descriptor and require EOF within the cap. Compute SHA-256 over
+the **entire owned byte image**, then compare it with the separately
+authenticated manifest digest **before any JS preload executes**.
+On mismatch, read error, path race, no trusted digest, or exceeded
+capacity, reject the window construction with a distinct registered
+source-admission reason. No partial execution, silent truncation,
+retry via ambient path or fallback to mutable source bytes. The
+successful checked image is retained as immutable Host-owned memory
+for the window, while the source descriptor may close; navigation
+executes that exact snapshot in a fresh app-world JS context.
 
 **Proposed initial limits for approval:** 512 KiB per window, 8 MiB combined per host; reserve budget before source acceptance and release exactly once on view destruction. Oversized files and budget exhaustion are typed construction refusals. Each later qualified navigation uses the **same source snapshot** but gets new JS variables and listeners. Bun recovery never rereads that source and never reloads an otherwise surviving page.
 
-A held fd closes the *path-substitution* race but does **not** make an in-place concurrent write into one atomic byte image. Descriptor metadata rechecks are detection only; do not claim package authenticity, signer verification or coherent read under hostile concurrent writes until a verified immutable-image or independent integrity primitive is approved. Record this open security decision explicitly.
+**Same-UID hostile writer contract:** an independent process may
+rename/recreate path components, replace symlink aliases and write
+**in place** through an already-open source descriptor while Host
+copies. Retained fds, file ownership/permissions and pre/post
+`fstat` do not establish coherent or authentic bytes. Only a
+complete byte-for-byte match to an **independently trusted digest**
+can become the executable snapshot; a mixed image fails that check
+except for a cryptographic hash collision. A writer that restores
+identical trusted bytes before the read does not change the executed
+image. Metadata rechecks are optional diagnostics, never the
+authenticity oracle. The trust anchor, verified manifest and actual
+snapshot implementation remain **UNIMPLEMENTED / BLOCKED**. This
+design claims neither atomic filesystem reads nor existing KELD
+package-signature verification.
 
 ### 4.5 Native admission and lifecycle
 
-The new `WKScriptMessage` handler verifies exact per-view content controller, app-world identity, `frameInfo.isMainFrame`, expected live WKWebView and **#542's implemented** checked document before decoding a message or causing an app effect. It must also check a **world-specific app bind** approved by #540/#542 under **one** native navigation owner; the KEL-142 trusted nonce cannot be copied, reused or supplied by the page. If the existing one-bind model cannot safely admit both handlers, the owners must amend the approved v2 contract before app dispatch. The handler has its own world/name. **Current `keld.wv-link/v1` accepts only `bind` and numeric-u16 `invoke`**, so named Electron send/event **cannot** be admitted by it. #540 owns the **v2 specification**; #465 extends the **same** canonical decoder with named send and bounded credit, #543 owns host-to-renderer event delivery, #464 owns its conformance checks, and #541/#552 own literal `el:<topic>` grant evaluation. #484 consumes those implementations and passes their v2 decoded messages through the one existing app link and guard (absence = deny; no wildcard). No separate parser, channel-ID reinterpretation, new principal minting, cross-world nonce handoff, public page bridge, KIPC registry or silent allow. A late response can retire its old request only once; it cannot settle a successor document's request of the same local number. No renderer-side automatic retry/replay.
+The new `WKScriptMessage` handler verifies the exact per-view
+controller, **actual source `WKContentWorld`**, main-frame status,
+live WebView and **#542's implemented** checked document before
+decoding or causing an effect. Proposed #542 custody is one checked
+navigation generation with **two separately minted random 128-bit
+credentials** held in distinct App and Trusted binding slots. Each
+credential is delivered only to its matching isolated world.
+**Initial bind** is admitted solely from the correct native controller,
+main frame, content world and qualified document; it creates at most
+one credential for that world. A later effect-bearing send/invoke
+requires both an **existing live stored world binding** and a
+present matching credential; missing plus missing is always a deny.
+Neither app nor page sees the KEL-142 trusted nonce, and neither can
+select a role by message field. Host full-document load/replacement,
+destruction and exhaustion revoke both slots through the single
+generation owner; same-document changes and cancelled renderer
+provisional navigation do not rotate either. Native dispatch rejects
+duplicate bind, role-operation mismatch, wrong controller/world/frame,
+stale or swapped credentials, and unqualified resource documents.
+The [33-receipt test-only native experiment](https://github.com/gyldlab/keld/issues/467#issuecomment-6383445584)
+is a feasibility input, **not** this binding implementation or approval.
+GH-540/#542 must freeze the precise v2 credential encoding and
+single-owner lifetime in independently reviewed specs before use.
 
-An app preload has ordinary DOM APIs and can intentionally call public `window.postMessage`; that act is not intrinsically a native isolation breach. The stronger **native app transport** rule is that **none** of its handler traffic is carried via a page-observable DOM `postMessage` relay. Existing KEL-142 page facade already has a separately owned narrow DOM relay; do not silently remove it.
+The app handler has its own world/name on the **same per-view
+controller**. Current `keld.wv-link/v1` accepts only `bind` and
+numeric-u16 `invoke`, so named Electron send/event must remain
+disabled until #540's v2 schema, #465's **same** canonical decoder,
+#543 outbound event delivery, #464 conformance, and #541/#552 exact
+grants are implemented. Final forwarding includes the current native
+document, captured Bun link identity, and the existing
+`dispatch_privileged` allow closure. A page-selected URL, nonce,
+role/window, DOM event or preload-provided manifest entry cannot
+mint authority. Invalid or retired work uses #540's bounded
+settlement; it cannot replay or target a successor. No second
+parser, navigation counter, privileged page relay or transport.
+
+An app preload has ordinary DOM APIs and can intentionally call public
+`window.postMessage`; that act is not intrinsically a native
+isolation breach. **Production `contextBridge` method identities,
+callbacks, bind credentials, readiness receipts and app handler
+traffic cannot use shared DOM events/descriptors as an authority or
+transport.** The separate existing KEL-142 page facade relay keeps
+its original owner but cannot authorize an Electron route. If the
+runtime cannot publish actual callable functions before first inline
+without the test-only F0 DOM handshake, **do not enable preload
+compatibility** until a reviewed architecture change is accepted.
 
 ### 4.6 One diagnostic owner
 
@@ -157,9 +257,9 @@ Do not edit #467's facade, #541/#542/#552 grants/generation/wire contracts, #473
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders)
 
-- [ ] **F0 pre-approval feasibility (test fixture only):** physical Mac probes already demonstrated **16/16** first-inline method/seed publication with a two-way handshake, and **6/6** local `request`/`watchFile` nested callback success with separate RED mutations; see section 2 source receipts. Remaining feasibility gate: security review of shared-DOM forgery and a bounded **authenticated** delivery path before treating the test-only mechanism as an implementation candidate. This is neither product implementation nor #467 behavioral/Host acceptance. Stop if the secure mechanism fails; route the architecture decision to #441/#484.
+- [ ] **F0 pre-approval feasibility (test fixture only):** physical Mac probes demonstrated **16/16** first-inline DOM-handshake shapes, **6/6** nested callback local effects and a separate 33-receipt native two-world credential fixture with independent RED mutants. Remaining **BLOCKED** gate is a supported full-callable page↔app primitive with authenticated function selection that does **not** use shared DOM authority, followed by real #540/#542/#552 Host/Bun proof. Keep all test-only evidence labelled. If no such supported primitive exists, return to #441/#484 for an architecture decision; never enable the insecure F0 mechanism.
 - [ ] **S0 specification approval:** obtain independent architecture/security review, resolve critical feasibility and root-authority decisions Q1–Q3 with evidence, and seek **human sign-off** on this exact contract. Set `Status: approved` only after that sign-off. All later production tasks require S0.
-- [ ] **F1 package source:** implement retained admitted package-root handle, exact stage/absolute-path mapping, proven in-root symlink resolution, bounded one-descriptor snapshot and race/fault tests; resolve in-place coherence/authenticity scope.
+- [ ] **F1 package source:** first approve a packaging-owned independent digest trust anchor and exact manifest path source. Implement retained admitted root, exact staged-absolute-to-relative mapping, **deny-all-symlink** first-proof traversal, bounded one-descriptor read and authenticated immutable snapshot before JS. Verify in-place same-UID racing writer, mutable-manifest substitution, root rename and caps with RED controls. If draw.io's staged source needs a symlink, block pending separately approved verified alias mapping.
 - [ ] **F2 world/wrapper:** add one named app world/handler to the KEL-142 controller, exact nine-module wrapper, renderer process facts and main-frame document-start execution, preserving native eligibility.
 - [ ] **F3 isolation/grant acceptance (after #540-approved contract, #465/#543/#541/#542/#552 implementations and #464 conformance land):** consume the canonical v2 decode/credit, world-scoped bind and literal grant path; real Mac AC2 regression, hostile preload, two independent windows, navigation/teardown/recovery and per-window `el:` default-deny; independent RED fault for each guard.
 - [ ] **F4 facade composition (owned by #467):** provide cross-world `contextBridge`/IPC value/callback semantics; prove unmodified draw.io two-request scenario; #567 flips eligible F07-T4 cells only after its own expected-fail tests.
@@ -182,14 +282,16 @@ These slices may split for review size without transferring authority between ow
 | `f07.require_nine` / 03–04 | Exact nine alias probes and `require('fs')` exact error; unsupported members throw typed code | Add `fs` resolver. |
 | `f07.js_exception` / 05 | Observe exact console marker **and independently completed page load** | Propagate JS throw into navigation failure. |
 | `f07.process_env_argv_versions` / 06 | Canonical session-facts values, fixed additionalArguments, `Object.keys(process.env).length===0`, no `KELD_APP_LINK` | Clone Bun role env; separately hardcode `versions` then vary canonical input. |
-| `f07.root_path_and_symlinks` / 07–08 | Native descriptor/inode identity and no out-of-root open; prove approved in-root symlink, reject outside/dangling/swapped alias | Reopen validated path, or skip one containment guard (separate tests). |
+| `f07.root_path_and_symlinks` / 07–08 | Actual unmodified draw.io absolute path maps to **one** trusted staged relative entry. Directory descriptors and inode identity prove no out-of-root read; any symlink (including in-root), stage substitution, traversal and similar-prefix outside path deny before source read. | Reopen by display path, permit in-root symlink, use lexical-prefix-only matching or skip a directory `O_NOFOLLOW` check (separate REDs). |
+| `f07.manifest_external_trust` / 07–08 | Prove the expected digest comes from an independently authenticated package/Host image outside the same-UID-writable file tree; tamper editable sibling manifest or change pinned expected digest and get typed refusal before JS executes. | Accept hash derived at the same open/read step or an adjacent attacker-writable manifest; independent trust-anchor observer must go RED. **BLOCKED until packager supplies this authority.** |
 | `f07.source_kind_caps` / 08 | FIFO/device/dir fail without blocked UI; 512 KiB permitted, +1 denied; aggregate 8 MiB+1 denied | Skip file-kind check or cap (separate REDs). |
-| `f07.inplace_concurrent_write` / 08 | Independent writer changes file **in place** during read; requires explicit detected refusal or documented immutable-source guarantee | Remove integrity/immutable-source check; if no such check yet, **acceptance blocked**, no fabricated pass. |
+| `f07.inplace_concurrent_write` / 08 | Independent same-UID writer changes file bytes **in place** during descriptor read, including equal metadata before/after; mixed/changed owned bytes mismatch trusted SHA-256 and cause refusal **before script side effects**. The unchanged trusted image loads; no path reread. | Remove independent expected digest check or substitute `fstat` comparison; forbidden JS marker must appear and test go RED. **BLOCKED until trustworthy digest and real reader exist.** |
 | `f07.snapshot_lifecycle` / 09 | Native snapshot hash stable across re-navigation, JS callback state resets; Bun crash leaves unsent typed page text unchanged | Reopen source on navigation or reload WebView on Bun restart. |
 | `f07.frame_document_two_window` / 10–11 | Two real WKWebViews, wrong frame/view, stale navigation, canceled navigation and same-document change, view destruction; app handler effect count remains zero for denied cases and #542 stamp remains stable on same-document navigation | Remove checked #542 generation or rotate on `pushState`/hash change (separate runs). |
-| `f07.world_scoped_bind` / 10–12 | Real two-world main-frame binding on one #542 navigation owner: trusted nonce remains undisclosed to app/page, no duplicate bind leaks, app-role credentials are native-admitted; stale/wrong-world/page-forged credentials produce zero Host/Bun effects | Reuse trusted nonce for app role or skip world identity validation; independent negative must detect forbidden effect. **Blocked until #540/#542 approve binding shape.** |
+| `f07.world_scoped_bind` / 10–12 | One real #542 checked generation owns distinct 128-bit App/Trusted credentials and their native handler registrations. Absent stored+supplied token, swapped world tokens, wrong role operation, duplicate bind, stale navigation and page-forged DOM yield **zero actual Host/Bun writes** while valid app call is guarded; trusted credential remains invisible to app/page. | Remove **present stored bind** requirement, world/role validation or revocation (separate REDs). 33-receipt fixture is feasibility only. **BLOCKED pending #540/#542 binding approval and product proof.** |
+| `f07.early_void_no_queue` / 02,11–13 | Before native app bind or admitted Bun session, an exposed void method returns undefined, causes one private typed refusal, reserves no pending work and cannot replay after later bind/restart. Fresh bound call succeeds. If actual draw.io calls early, C14 remains unqualified. | Buffer early call or rebind it to successor role; independent Bun counter and no-retained-work oracle go RED. |
 | `f07.grants_decoder` / 12 | Approved #540 v2 canonical decoder, #465 send and #543 host-event implementation, #464 IPC conformance and #541/#552 literal guard; no-grant/wrong-topic zero Bun effects; correct grant permits only bounded credited effect | Treat missing grant as allow, or let numeric v1 invoke count as named v2 send (separate runs). |
-| `f07.native_dom_silence` / 13 | Page `message` listener sees no new *app handler transport* carrier, with permitted ordinary app DOM calls distinguished | Route app-native traffic through `window.postMessage`. |
+| `f07.native_dom_silence` / 13 | Hostile first-inline page directly forges the original F0 DOM event, guessed method/proxy descriptor and callback id. Real page↔app callable publication and Host native handlers produce zero unauthorized exposed-method/Host/Bun effects; ordinary app DOM still works. | Route even one method selection, callback, bind or readiness through DOM event/descriptor; forbidden function/effect counter goes RED. **BLOCKED until a supported secure publication primitive exists.** |
 | `f07.metric_registry` / 14 | Unique keld-benches registry ID, diagnostic class and oracle/census/clock/statistic, no threshold | Make ID publishable or add threshold. |
 | `f07.expected_fail_flip` / 15–16 | #567 runner proves expected-fail baseline before implementation and owned cells pass only after Mac native evidence | Pass a cell based only on source presence/sentinel. |
 
@@ -211,19 +313,20 @@ An independent reviewer must assess the **final** spec diff; future code needs f
 
 Unmeasured. Third-world script injection, byte snapshotting and one additional native handler could affect startup CPU/I/O, memory per window and handler cost. Do not infer savings. Candidate metric: `macos.app_preload.handler_callback_ns` in the KEL-90-owned benches registry, monotonic clock, exact accepted/denied census, count/median/p95 and OS/commit provenance; **diagnostic only**, no target, no performance pass/fail and no public comparison. The **proposed 512 KiB/window and 8 MiB/host bounds** are resource safety limits, not measured performance. A true architecture 01 §5 regression claim requires an attributed end-to-end baseline on physical macOS.
 
-## 10. Open questions
+## 10. Remaining decisions and BLOCKED qualification
 
-**Status remains draft until humans resolve the following with evidence.**
+**Status remains DRAFT/BLOCKED.** The source and runtime policies below are
+proposed contracts for independent approval, **not** production capability.
 
-1. **Q1 critical: first-inline publication.** Can a supported, bounded and **authenticated** WebKit mechanism publish and dispatch the **complete production** `contextBridge.exposeInMainWorld` API before first inline script despite async native bind? [Direct app-global assignment fails](https://github.com/gyldlab/keld/issues/484#issuecomment-6382021064); subsequent **test-only** [16/16 timing](https://github.com/gyldlab/keld/issues/484#issuecomment-6382401714) and [6/6 nested callbacks](https://github.com/gyldlab/keld/issues/467#issuecomment-6382468009) demonstrate mechanical feasibility, but page-forgeable shared DOM cannot authorize an exposed call. **Recommendation:** independently security-review the candidate and repeat first-inline, real Host/Bun receipt, hostile page and lifecycle controls with #467/#542-owned implementation. If it fails, revise the proposed contract before production; never accept synthetic callback success as a KELD API pass.
-2. **Q2 critical: runtime absolute path to admitted package root.** How is draw.io's computed absolute preload resolved through a signed/admitted staged package path, distinct from page `file://` root? **Recommendation:** retain package-relative mapping bound to admitted root identity; refuse until verifiable end to end.
-3. **Q3 critical: source coherence, root and symlink authority.** Who owns a retained package-root fd (boot currently drops it), demonstrably safe in-root symlinks, and hostile **in-place modification**? **Recommendation:** reuse descriptor-relative walker with one opened snapshot; explicitly withhold atomic/authenticity claims until separately verified primitive is chosen.
-4. **Q4 proposed resource/snapshot policy.** Approve 512 KiB per preload/window, 8 MiB aggregate, new JS state per navigation with bytes captured once per window. **Recommendation:** approve if pinned draw.io file fits and cap controls go RED; no silent fallback/limit increase.
-5. **Q5 error and diagnostic registry.** Confirm a new source-admission code distinct from **#540-reserved `KELD-WV-012` (no admitted Bun generation) and `KELD-WV-013` (outcome unknown)**, #467-owned unsupported facade code and one KEL-90 diagnostic metric ID with no publication. **Recommendation:** allocate codes only through their registries and record uniqueness before F1.
-6. **Q6 initial native bind and early calls.** Define #467's bounded deferred/rejected call behavior when API exists before #542 bind receipt. **Recommendation:** callable synchronous API with one bounded native-eligible pending operation or typed refusal; no JS nonce/grant or unbounded queue.
-7. **Q7 architecture 05 / KEL-142 amendment owner.** Does architecture 05 §2 require a cross-reference to third app world? **Recommendation:** seek owner review; preserve existing KEL-142 approved two-world contract and land additive scope only with independent approval.
-8. **Q8 final native acceptance.** Can all AC02/AC10/AC11/AC12 negative controls be demonstrated with real WKWebView and exact restored-source evidence? **Recommendation:** no pass or product label until each relevant Mac native cell has real proof.
-9. **Q9 v2 dependency order.** #540 is an approved spec with unlanded runtime contract, and #465 (send/parser), #543 (host-event delivery), #464 (conformance), #541/#542/#552 (grants/navigation) have separate owners. **Recommendation:** F2 may provide an isolated world/wrapper without enabling named sends; F3 and #467's complete draw.io round trip remain blocked until the one implemented v2 decoder, literal grants and current-document admission exist. Never call the current v1 numeric-only envelope a named Electron transport.
-10. **Q10 critical: dual-world bind authority.** Existing KEL-142 admits one trusted nonce/bind, whereas #540 v2 expects a native-minted document credential. What **separate world-scoped app/trusted binding credentials** can #542 validate under its **single** navigation generation without allowing an untrusted preload to learn the trusted nonce or forge a new bind? **Owner gate:** #540/#542 approve and test the binding shape, or explicitly amend/reapprove v2 before #484 enables named app dispatch. Negative controls swap realm credentials, forge from page DOM, repeat bind and retire document while a call is pending; all must produce zero Host/Bun effect.
+1. **Q1 — production full-callable publication, BLOCKED (#484/#467):** identify and prove a supported native/WebKit primitive that exposes the real preload's callable graph synchronously to the first inline page without a forgeable DOM authority path. Observe true Host/Bun effects and wrong-role/forged DOM zero-effects under randomized native script ordering; run a one-fault RED mutation. Test-only 16/16 and 6/6 do not close this. If infeasible, submit a revised GH-441 architecture/first-inline acceptance contract before implementation.
+2. **Q2 — absolute preload root, proposed mapping, BLOCKED (package boot/#484):** first produce an independently admitted stage-root/manifest authority, then prove the unmodified absolute draw.io path selects one exact relative entry with retained descriptor, no page `file://` root or CWD, and no path replacement or alias escape. A source rewrite is a failed proof.
+3. **Q3 — same-UID source integrity, proposed immutable byte image, BLOCKED (package trust owner/#484):** authenticate the expected SHA-256 outside a same-UID-writable source tree, read one descriptor, compare *complete bytes* before JS, retain immutable owned snapshot. Deny **all symlinks** in this first slice. Independently race an in-place writer while holding the descriptor; absent manifest authority or digest mismatch must prevent any preload effect. `fstat` alone cannot close this gate.
+4. **Q4 — snapshot budget, selected for draft:** 512 KiB per preload/window and 8 MiB retained across Host; one snapshot per window, fresh JS on navigation. Pinned upstream draw.io preload blob `44f2f22f159a8a845ff7e573dd10b816383703ec` reports **3,201 bytes** through GitHub's immutable blob API, within the proposed individual cap; the actual staged image, exact/max+1 and aggregate-accounting RED controls still require verification before approval.
+5. **Q5 — errors and metric registry, BLOCKED:** allocate a new source-admission code distinct from reserved `KELD-WV-012/013`, a #467-owned graph/unsupported code and one diagnostic-only KEL-90 metric ID. Verify exact code uniqueness and typed reason with positive/negative cases before F1.
+6. **Q6 — early bind, selected fail-closed:** #467 specifies **zero queued early calls**, public void-return and internal typed refusal until #542 native bind and a live Bun generation; no automatic replay. Record real startup order. If draw.io's first required request arrives early, application acceptance stays BLOCKED; any alternate buffering design needs #540/#542 reapproval.
+7. **Q7 — original KEL-142 architecture amendment, BLOCKED:** #484 and the architecture-05/KEL-142 owners must explicitly approve the third-world/second-handler addition without changing historical KEL-142 approval or native trusted facade.
+8. **Q8 — product/native acceptance, BLOCKED:** independent real WKWebView/Host/Bun tests must meet AC02, AC07–AC13 and each one-fault mutation. No test-only fixture, digest-only handoff or mock qualifies product evidence.
+9. **Q9 — v2 prerequisites, BLOCKED:** #540 specification still requires actual #465/#543 transport, #464 conformance and #541/#542/#552 grants/navigation implementation. Until that, F2 world/wrapper feasibility may be studied but named sends stay disabled.
+10. **Q10 — two-world native custody, proposed, BLOCKED (#540/#542):** two distinct native 128-bit credentials under **one** checked-u32 document generation with actual stored-bind/present-token checks, independent role/handler identity and shared revocation. The 33-receipt fixture supports feasibility only; independent owner approval, real code and hostile swapped/replayed/missing tokens with zero Host/Bun writes are mandatory.
 
 **Approval and non-claims:** Original KEL-142 Done does not grant this new app-world authority. Only the explicitly cited **test-only** native F0 executions exist; this document has no production acceptance, source-integrity oracle, authenticated full-API timing/dispatch proof, approval, renderer implementation, shipped draw.io compatibility or merge authority.
