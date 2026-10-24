@@ -199,10 +199,37 @@ workarounds.
 
 ## 6. Migration corpus (measurement harness)
 
-`corpus/` (separate repo, gitignored fixtures): electron-quick-start, a tray app, a
-multi-window editor, an sqlite app, a protocol-handler app, plus community submissions.
-CI runs `keld migrate && keld dev --headless --smoke` per app per OS; the compat score
-trend is a release gate. A compat regression is a P1.
+The proposed first-proof product family `electron-apps-v0` includes a pinned
+upstream Electron application (draw.io first), then other reviewed apps. App
+source is checked out by immutable commit with a recorded, content-addressed
+patch when necessary; source checkout and a developer-stage run are not
+installed-distribution evidence. Product manifests, denominators and receipt
+records belong in committed, registered
+`crates/keld-compat/fixtures/` corpora, not gitignored standalone fixtures.
+The authoritative record digest is SHA-256 of the exact committed corpus
+manifest bytes, not the app/Host/Bun executable digest (GH-532 rule 5).
+
+One `keld.compat.corpus/v1` manifest and KEL-74 denominator each have one
+`kind` (KEL-74 also supports `full_feature`). **For this proposed first-proof
+family**, the selected kinds are `install`, `activation`, and
+`primary_workflow`. The proposed `electron-apps-v0` family uses separately admitted single-kind product
+partitions; a report grouping is not a mixed-kind scorer or a source of an
+aggregate percentage. Install stays `unknown` until KEL-141 proves a real
+prebuilt distribution. App activation, open, edit, save and dirty-close prompt
+require actual OS/app observations and Host-origin authenticated generation
+evidence (GH-587); emitted app text cannot establish admission or a workflow.
+The GH-532/566 validators reject nonempty product records without the X02-T5
+trusted product receipt reader. X02-T6 registers a product corpus id in both
+the code registry and scoreboard documentation only after its committed
+denominator, receipts and negative controls are independently qualified.
+
+No automated migration/smoke invocation is claimed implemented by this
+target contract: `keld migrate` and distribution/build remain separately gated,
+and the existing `keld dev` CLI has no headless smoke flag. A real
+OS-specific product regression is a P1; missing, unqualified or dev-only
+evidence stays `unknown`, never a fabricated successful cell. The proposed
+collector, operation oracles and owner boundaries are specified in
+[`GH-587`](../specs/gh587-electron-apps-v0-corpus-cells.md).
 
 ## 7. Updater bridge (the trap every migrator hits)
 
