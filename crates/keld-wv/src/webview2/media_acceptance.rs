@@ -1,7 +1,7 @@
 //! Opt-in Windows fixture. This module is absent from default shipping builds.
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -67,6 +67,17 @@ struct Evidence {
 
 thread_local! {
     static EVIDENCE: RefCell<Evidence> = RefCell::new(Evidence::default());
+    static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Flush each phase before the fixture watchdog can terminate the process.
+pub(super) fn observe_com_phase(stage: &'static str) {
+    COM_LIFETIME_PHASES.with(|enabled| {
+        if enabled.get() {
+            println!("KELD_COM_PHASE stage={stage}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    });
 }
 
 pub(super) fn fixture_manifest() -> PermissionsManifest {
@@ -1521,6 +1532,8 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             use windows::Win32::System::Com::{APTTYPE, APTTYPEQUALIFIER, CoGetApartmentType};
             use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
 
+            COM_LIFETIME_PHASES.with(|enabled| enabled.set(true));
+            observe_com_phase("initial-engine-start");
             let apartment = || {
                 let mut kind = APTTYPE::default();
                 let mut qualifier = APTTYPEQUALIFIER::default();
@@ -1540,6 +1553,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
             let plan = super::super::windows_profile_plan(&root, selection)?;
             let engine = profile_fixture_engine(&root, selection)?;
+            observe_com_phase("initial-engine-ready");
             let (kind, qualifier) = apartment().map_err(failure)?;
             assert!(matches!(
                 kind,
@@ -1555,6 +1569,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 plan.user_data_dir
             );
             drop(engine);
+            observe_com_phase("initial-engine-dropped");
             // WebView2 can leave an implicit process MTA: CoGetApartmentType
             // can succeed even without a calling-thread reference. No Tao
             // Window exists yet. A new explicit STA must return S_OK rather
@@ -1577,15 +1592,20 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             );
             println!("KELD_COM engine-environment-dropped balanced");
 
+            observe_com_phase("successor-engine-start");
             let successor = crate::profile::EphemeralProfile::from_host_random([94; 32])?;
             let successor = crate::profile::WebProfileSelection::ephemeral_dev(successor);
             let next_plan = super::super::windows_profile_plan(&root, successor)?;
             let mut engine = profile_fixture_engine(&root, successor)?;
+            observe_com_phase("successor-engine-ready");
+            observe_com_phase("successor-create-start");
             let id = engine.create(&blank_spec())?;
+            observe_com_phase("successor-create-ready");
             let window = &engine.view(id)?.window;
             // SAFETY: this fixture owns the live HWND. Posting the actual Close
             // message exercises Tao's normal close event and browser exit wait.
             // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-postmessagew
+            observe_com_phase("post-wm-close-start");
             unsafe {
                 PostMessageW(
                     Some(windows::Win32::Foundation::HWND(window.hwnd() as _)),
@@ -1595,7 +1615,10 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 )
             }
             .map_err(failure)?;
+            observe_com_phase("post-wm-close-done");
+            observe_com_phase("run-until-closed-start");
             engine.run_until_closed()?;
+            observe_com_phase("run-until-closed-done");
             assert!(
                 !next_plan.control_dir.exists(),
                 "Close must finish profile release"
@@ -1605,7 +1628,10 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 "successor must scavenge the released predecessor"
             );
             println!("KELD_COM hwnd-close-release successor-cleanup-complete");
-            std::fs::remove_dir_all(root).map_err(failure)
+            observe_com_phase("fixture-root-cleanup-start");
+            std::fs::remove_dir_all(root).map_err(failure)?;
+            observe_com_phase("fixture-root-cleanup-done");
+            Ok(())
         })
     }
 

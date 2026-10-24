@@ -93,7 +93,9 @@ const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    "toolchain: 1.99.1",
+    // The Rust compiler pin has one owner: `checkRustToolchainPins` in
+    // tools/ci_workflow_security.ts derives it from rust-toolchain.toml and
+    // checks every installer job (run by this same hygiene step).
     "--test tools/product_status.rs",
     "product-status check .",
     "--test tools/llms_docs.rs",
@@ -852,7 +854,6 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
         ));
     }
     for (step_name, command) in [
-        ("Router contract tests", "tools/ci_changes_test.sh"),
         (
             "Classify changed-path ownership",
             "tools/ci_changes.sh github",
@@ -869,6 +870,38 @@ fn check_change_router_job(text: &str) -> Result<(), String> {
                 "CI-HYGIENE: `{WORKFLOW}` `changes` job must have an unconditional `{step_name}` step whose exact command is `{command}`. Put it in the router job; a shell guard, GitHub `if`, or identical command in another job cannot prove routing."
             ));
         }
+    }
+    Ok(())
+}
+
+fn check_independent_router_contract_job(text: &str) -> Result<(), String> {
+    let Some(block) = workflow_job_block(text, "router-contracts") else {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` must retain the unconditional `router-contracts` job so slow regression tests do not block classification."
+        ));
+    };
+    if workflow_job_level_property(&block, "needs").is_some()
+        || workflow_job_level_if(&block).is_some()
+        || workflow_job_level_property(&block, "continue-on-error").is_some()
+        || workflow_job_level_property(&block, "runs-on").as_deref() != Some("ubuntu-latest")
+        || !workflow_has_checkout_fetch_depth_zero(&block)
+        || !workflow_has_unconditional_named_step(
+            &block,
+            "Router contract tests",
+            "tools/ci_changes_test.sh",
+        )
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `router-contracts` must run the exact unconditional `tools/ci_changes_test.sh` on its own full-history Ubuntu runner, never behind changes."
+        ));
+    }
+    if workflow_job_block(text, "changes").is_some_and(|changes| {
+        uncommented_line_contains(&changes, "run: tools/ci_changes_test.sh")
+            || uncommented_line_contains(&changes, "name: Router contract tests")
+    }) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `changes` must not execute the independent router contract test suite and delay every selected native lane."
+        ));
     }
     Ok(())
 }
@@ -1449,7 +1482,63 @@ fn check_linux_media_guard_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The required gate inherits workflow-level environment, including Bash's
+/// startup-file authority. Admit only the three reviewed non-executable values.
+fn check_required_workflow_env(text: &str) -> Result<(), String> {
+    let expected = [
+        ("CARGO_TERM_COLOR", "always"),
+        ("RUST_BACKTRACE", "1"),
+        ("CARGO_INCREMENTAL", "0"),
+    ];
+    let mut found = false;
+    let mut within_env = false;
+    let mut actual = Vec::new();
+    for line in text.lines() {
+        let Some((indent, content)) = yaml_content(line) else {
+            continue;
+        };
+        if indent == 0 {
+            if yaml_mapping_key(content).is_some_and(|(key, _)| key == "env") {
+                if found || content != "env:" {
+                    return Err(format!(
+                        "CI-HYGIENE: {WORKFLOW} workflow env must have one reviewed block mapping, never a duplicate or override."
+                    ));
+                }
+                found = true;
+                within_env = true;
+            } else {
+                within_env = false;
+            }
+            continue;
+        }
+        if !within_env {
+            continue;
+        }
+        if indent != 2 {
+            return Err(format!(
+                "CI-HYGIENE: {WORKFLOW} workflow env must contain only reviewed scalar bindings."
+            ));
+        }
+        let (key, value) = yaml_mapping_key(content).ok_or_else(|| {
+            format!("CI-HYGIENE: {WORKFLOW} workflow env has a malformed binding.")
+        })?;
+        actual.push((key, value.trim_matches(['\'', '"']).to_owned()));
+    }
+    if !found
+        || actual.len() != expected.len()
+        || expected
+            .iter()
+            .any(|(key, value)| !actual.iter().any(|(name, got)| name == key && got == value))
+    {
+        return Err(format!(
+            "CI-HYGIENE: {WORKFLOW} workflow env must contain only the reviewed CARGO_TERM_COLOR, RUST_BACKTRACE, and CARGO_INCREMENTAL values. Extra BASH_ENV, PATH, or GITHUB_ENV can bypass the required gate."
+        ));
+    }
+    Ok(())
+}
+
 fn check_required_job(text: &str) -> Result<(), String> {
+    check_required_workflow_env(text)?;
     let Some(block) = workflow_job_block(text, "required") else {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has no `required` job. Add one always-created merge-admission result that consumes every conditional lane plus unconditional gitleaks."
@@ -1470,6 +1559,11 @@ fn check_required_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `required` must not set `continue-on-error`; the merge decision must preserve a failing exit status."
         ));
     }
+    if workflow_job_level_property(&block, "env").is_some() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `required` must not set job-level env; inherited BASH_ENV or PATH could bypass the evaluator."
+        ));
+    }
     let evaluator_keys =
         workflow_named_step_direct_keys(&block, "Verify required CI results").unwrap_or_default();
     if evaluator_keys != ["env", "run"] {
@@ -1480,6 +1574,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
     }
     let expected_needs = [
         "changes",
+        "router-contracts",
         "fmt",
         "check",
         "bun-test",
@@ -1495,6 +1590,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "dependency-review",
         "workspace-contracts",
         "doctest",
+        "windows-media",
     ];
     let actual_needs = workflow_job_sequence_values(&block, "needs").ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `required` must declare a structured `needs` sequence.")
@@ -1506,8 +1602,12 @@ fn check_required_job(text: &str) -> Result<(), String> {
             actual_needs.join(", ")
         ));
     }
-    for (key, expression) in [
+    let expected_evaluator_env = [
         ("KELD_RESULT_CHANGES", "${{ needs.changes.result }}"),
+        (
+            "KELD_RESULT_ROUTER_CONTRACTS",
+            "${{ needs['router-contracts'].result }}",
+        ),
         ("KELD_RESULT_FMT", "${{ needs.fmt.result }}"),
         ("KELD_RESULT_CHECK", "${{ needs.check.result }}"),
         ("KELD_RESULT_BUN", "${{ needs['bun-test'].result }}"),
@@ -1572,18 +1672,30 @@ fn check_required_job(text: &str) -> Result<(), String> {
         ),
         ("KELD_RESULT_DOCTEST", "${{ needs.doctest.result }}"),
         ("KELD_ROUTE_DOCTEST", "${{ needs.changes.outputs.doctest }}"),
-    ] {
-        if !workflow_named_step_mapping(&block, "Verify required CI results", "env").is_some_and(
-            |entries| {
-                entries
-                    .iter()
-                    .any(|(name, value)| name == key && value == expression)
-            },
-        ) {
+        ("KELD_RESULT_MEDIA", "${{ needs['windows-media'].result }}"),
+        (
+            "KELD_ROUTE_MEDIA",
+            "${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
+        ),
+    ];
+    let actual_evaluator_env =
+        workflow_named_step_mapping(&block, "Verify required CI results", "env").ok_or_else(
+            || format!("CI-HYGIENE: `{WORKFLOW}` required evaluator env mapping must be a reviewed block mapping."),
+        )?;
+    for &(key, expression) in &expected_evaluator_env {
+        if !actual_evaluator_env
+            .iter()
+            .any(|(name, value)| name == key && value == expression)
+        {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` `required` must bind `{key}: {expression}` in the evaluator step's `env` mapping. Do not let a missing or spoofed handoff erase the merge gate."
             ));
         }
+    }
+    if actual_evaluator_env.len() != expected_evaluator_env.len() {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` required evaluator env mapping must contain only the reviewed result and route bindings. Extra BASH_ENV, PATH, or GITHUB_ENV can bypass its exact run script."
+        ));
     }
     let expected_check_command = concat!(
         "tools/ci_required.sh check ",
@@ -1601,7 +1713,9 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_RESULT_DEPENDENCY_REVIEW\" ",
         "\"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" ",
         "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
-        "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\""
+        "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" ",
+        "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" ",
+        "\"$KELD_RESULT_ROUTER_CONTRACTS\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1611,7 +1725,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 32-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 35-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -1949,32 +2063,44 @@ fn check_product_status_windows_step(text: &str) -> Result<(), String> {
 }
 
 fn check_windows_media_acceptance_step(text: &str) -> Result<(), String> {
-    let Some(check_job) = workflow_job_block(text, "check") else {
+    let Some(check_job) = workflow_job_block(text, "windows-media") else {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no cross-platform `check` job for KEL-132 Windows media acceptance."
+            "CI-HYGIENE: `{WORKFLOW}` has no isolated `windows-media` job for KEL-132 Windows media acceptance."
         ));
     };
+    let routing = "needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')";
+    if workflow_job_level_property(&check_job, "runs-on").as_deref() != Some("windows-latest")
+        || workflow_job_level_property(&check_job, "needs").as_deref() != Some("changes")
+        || workflow_job_level_if(&check_job).as_deref() != Some(routing)
+        || workflow_job_level_property(&check_job, "continue-on-error").is_some()
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `windows-media` must run on Windows, need the router, select only Rust/keld-wv changes, and preserve failures (KEL-132)."
+        ));
+    }
+    if workflow_job_block(text, "check").is_some_and(|job| {
+        workflow_direct_named_step_count(&job, "Windows media guard acceptance (KEL-132)") != 0
+    }) {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` KEL-132 media acceptance must not remain in the serial cross-platform `check` job."
+        ));
+    }
     let step = "Windows media guard acceptance (KEL-132)";
     let count = workflow_direct_named_step_count(&check_job, step);
     if count != 1 {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `check` must contain exactly one `{step}` step; found {count}."
+            "CI-HYGIENE: `{WORKFLOW}` `windows-media` must contain exactly one `{step}` step; found {count}."
         ));
     }
     let block = workflow_direct_named_step_block(&check_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `check.steps`.")
+        format!(
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `windows-media.steps`."
+        )
     })?;
-    let expected_keys = ["if".to_owned(), "shell".to_owned(), "run".to_owned()];
+    let expected_keys = ["shell".to_owned(), "run".to_owned()];
     if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `if`, `shell: pwsh`, and `run` keys."
-        ));
-    }
-    let expected_condition =
-        "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')";
-    if workflow_named_step_direct_value(&block, step, "if").as_deref() != Some(expected_condition) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must use the exact Windows and routed keld-wv condition."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only `shell: pwsh` and `run` keys, without a step-level skip."
         ));
     }
     if workflow_named_step_direct_value(&block, step, "shell").as_deref() != Some("pwsh") {
@@ -2464,7 +2590,6 @@ fn check_workflow(root: &Path) -> Result<(), String> {
             return Err(format!(
                 "CI-HYGIENE: `{WORKFLOW}` is missing `{needle}`. \
                  Restore the gitleaks job (checksummed CLI, not the org-licensed Action), \
-                 `with: toolchain:` on dtolnay/rust-toolchain, \
                 the hygiene job that compiles this file, \
                  generated-doc freshness, and the structural plus digest-pinned Mermaid render gates."
             ));
@@ -2472,6 +2597,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     }
 
     check_change_router_job(&text)?;
+    check_independent_router_contract_job(&text)?;
     check_mermaid_job(&text)?;
     check_package_loop_shell(&text)?;
     check_check_job_if_avoids_matrix(&text)?;

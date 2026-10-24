@@ -14,9 +14,9 @@ trap cleanup EXIT
 
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
-# The apt archive self-test runs everywhere; it skips only its two symlink
-# controls in a Windows shell whose `ln -s` makes no POSIX symlink, and the
-# mandatory Ubuntu change-router job still runs those.
+# The apt archive self-test runs everywhere; it skips only unsupported
+# file/directory symlink controls in a Windows shell whose `ln -s` makes
+# copies. The mandatory Ubuntu change-router still runs all three controls.
 "$repo_root/tools/ci_webkitgtk_apt.sh" test
 "$repo_root/tools/agents_md.sh" test
 
