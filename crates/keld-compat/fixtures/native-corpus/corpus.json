@@ -1,7 +1,7 @@
 {
   "schema": "keld.compat.corpus/v1",
   "corpus_id": "electron-native-v1",
-  "scope": "@keld/electron first-proof native-dialog synchronous clicked-index cell at Electron 44.4.5 on macOS; partial GH-477 conformance slice only, not KELD native dialog acceptance or median-app compatibility",
+  "scope": "@keld/electron macOS first-proof F06 native conformance baselines at Electron 44.4.5: dialog, menu-role, display and native theme; not median-app/product compatibility or native acceptance",
   "panel": "showcase",
   "kind": "primary_workflow",
   "artifact_digest": "manifest_bytes",
@@ -9,7 +9,13 @@
     "macos": "wkwebview"
   },
   "doc_snapshots": {
-    "docs/api/dialog.md": "sha256:bc0b63b7775fcaff5fd74b1649d8b9e6247f8cc2cfd26fc7a7b080ffb0cffeba"
+    "docs/api/dialog.md": "sha256:bc0b63b7775fcaff5fd74b1649d8b9e6247f8cc2cfd26fc7a7b080ffb0cffeba",
+    "docs/api/menu.md": "sha256:be20d946e45a53773caa8edd18e26e8ce013a9bb4a8d8491a27906bdac7d5a47",
+    "docs/api/menu-item.md": "sha256:72112434b21cbbc6ec5acd2fe8eb2b396d1e6286712c8ce669c996918af0a0d4",
+    "docs/api/screen.md": "sha256:6e50825cb7de15e94886afda2aa1e75871cfe3d3ada236b7816827f0f563a496",
+    "docs/api/native-theme.md": "sha256:5da32f0af52f3edaa35f00ea6258e59f38f770451fc17d561b04194e38f2e1cd",
+    "docs/api/structures/display.md": "sha256:3720894f1a27e346b3d26bb81b4e58be463bac3188aa032434554dd444331b88",
+    "docs/tutorial/menus.md": "sha256:2d7a30381b7934f30bcd4cb018b6e95e66917c38d1309359b2d0307fd0d51030"
   },
   "upstream": {
     "electron_version": "44.4.5",
@@ -83,6 +89,159 @@
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
       "test_name": "dialog.show-message-box.response-checkbox today: no asynchronous native message-dialog method is exported",
       "negative_control": "A new async showMessageBox function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a guessed response index or checkboxChecked:true without a checkbox fails the actual clicked-result oracle."
+    },
+    {
+      "operation_id": "menu.build-from-template",
+      "oracle_id": "electron-v44.4.5.menu.build-from-template",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/menu.md#menubuildfromtemplatetemplate",
+        "quote": "#### `Menu.buildFromTemplate(template)`\n\n- `template` ([MenuItemConstructorOptions](menu-item.md#new-menuitemoptions) | [MenuItem](menu-item.md))[]\n\nReturns [`Menu`](menu.md)",
+        "quote_sha256": "sha256:0436b27d1b1a2f46817b785d341f93972998b658d1a10000355c4b30a98fa4e0"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-480",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "menu.build-from-template today: no static template construction is exported",
+      "negative_control": "Current baseline: adding an exported Menu.buildFromTemplate function fails only this absent-method case. After GH-480 inversion: generating no native menu tree for a typed valid template fails."
+    },
+    {
+      "operation_id": "menu.set-application-menu",
+      "oracle_id": "electron-v44.4.5.menu.set-application-menu",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/menu.md#menusetapplicationmenumenu",
+        "quote": "Sets `menu` as the application menu on macOS. On Windows and Linux, the\n`menu` will be set as each window's top menu.",
+        "quote_sha256": "sha256:443fc60e89dd9fe8d844ecdca4329abebd93df32fe28684175e004700a0df3b6"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-480",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "menu.set-application-menu today: no static application-menu setter is exported",
+      "negative_control": "Current baseline: adding Menu.setApplicationMenu function fails this absent-method case. After GH-480 inversion: not installing actual macOS menu with the host owner fails."
+    },
+    {
+      "operation_id": "menu-item.role-overrides-click",
+      "oracle_id": "electron-v44.4.5.menu-item.role-overrides-click",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/menu-item.md#new-menuitemoptions",
+        "quote": "- Define the action of the menu item, when specified the\n    `click` property will be ignored. See [roles](../tutorial/menus.md#roles).",
+        "quote_sha256": "sha256:2d61a207d3b1af4c8e940130bd0908ad3ded5936aaa4e14a1995ee84a5746c05"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-480",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "menu-item.role-overrides-click today: no MenuItem constructor is exported",
+      "negative_control": "Adding a MenuItem constructor makes this red absence case fail. After GH-480 inversion: invoking click for a recognized executable role fails; role-fallback with no focused window has a separate source-only oracle."
+    },
+    {
+      "operation_id": "menu.role-close.vetoable",
+      "oracle_id": "electron-v44.4.5.menu.role-close",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/tutorial/menus.md#window-roles",
+        "quote": "* `close` - Close current window.\n* `quit` - Quit the application.",
+        "quote_sha256": "sha256:7f287c669edfe0d174fbc6ded07a1aa71de2c5ede456d13abb38b5f3cc103460"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-480",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "menu.role-close.vetoable today: role close cannot be constructed without MenuItem",
+      "negative_control": "Current baseline shares the missing MenuItem constructor prerequisite with the role-overrides-click and role-quit tests. After GH-480 inversion: role close must enter GH450 vetoable native CloseRequested path; direct native destroy fails."
+    },
+    {
+      "operation_id": "menu.role-quit.before-quit",
+      "oracle_id": "electron-v44.4.5.menu.role-quit",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/tutorial/menus.md#window-roles",
+        "quote": "* `close` - Close current window.\n* `quit` - Quit the application.",
+        "quote_sha256": "sha256:7f287c669edfe0d174fbc6ded07a1aa71de2c5ede456d13abb38b5f3cc103460"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-563",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "menu.role-quit.before-quit today: role quit cannot be constructed without MenuItem",
+      "negative_control": "Current baseline shares the missing MenuItem constructor prerequisite. After GH-563 inversion: macOS role quit must emit before-quit through the app.quit path and honor dirty-window veto; direct OS termination or skipped before-quit fails."
+    },
+    {
+      "operation_id": "screen.get-primary-display",
+      "oracle_id": "electron-v44.4.5.screen.get-primary-display",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/screen.md#screengetprimarydisplay",
+        "quote": "### `screen.getPrimaryDisplay()`\n\nReturns [`Display`](structures/display.md) - The primary display.",
+        "quote_sha256": "sha256:a1e1a53526de88cfe893a67df823121660fa978e8b4ff33d3eee951361de0fb6"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-481",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "screen.get-primary-display today: no synchronous primary Display getter exists",
+      "negative_control": "Current baseline: adding screen.getPrimaryDisplay fails this missing-method test; after GH-481 inversion: returning Promise/undefined or wrong primary Display identity fails."
+    },
+    {
+      "operation_id": "screen.get-all-displays",
+      "oracle_id": "electron-v44.4.5.screen.get-all-displays",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/screen.md#screengetalldisplays",
+        "quote": "### `screen.getAllDisplays()`\n\nReturns [`Display[]`](structures/display.md) - An array of displays that are currently available.",
+        "quote_sha256": "sha256:4015e225742219a8bf5d26d868751c96eb8916a5939bb327bdd795b2d97452f3"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-481",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "screen.get-all-displays today: no synchronous Display list getter exists",
+      "negative_control": "Current baseline: adding screen.getAllDisplays fails this missing-method test; after GH-481 inversion: returning a Promise/nonarray/stale display list fails."
+    },
+    {
+      "operation_id": "display.work-area.rectangle",
+      "oracle_id": "electron-v44.4.5.display.work-area.rectangle",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/structures/display.md#display-object",
+        "quote": "* `workArea` [Rectangle](rectangle.md) - the work area of the display in DIP points.",
+        "quote_sha256": "sha256:ca13258c4abb85ab167469fffff50c4e3c437f28124e38e6fd12083f019b2346"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-481",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "display.work-area.rectangle today: no Display workArea is available without primary getter",
+      "negative_control": "Current baseline shares missing screen.getPrimaryDisplay prerequisite. After GH-481 inversion: a Display without finite Rectangle x/y/width/height workArea, or physical-pixel instead of DIP, fails."
+    },
+    {
+      "operation_id": "native-theme.should-use-dark-colors",
+      "oracle_id": "electron-v44.4.5.native-theme.should-use-dark-colors",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/native-theme.md#nativethemeshouldusedarkcolors-readonly",
+        "quote": "A `boolean` for if the OS / Chromium currently has a dark mode enabled or is\nbeing instructed to show a dark-style UI.",
+        "quote_sha256": "sha256:42be920c8fed0eca5364e257455520896860b259ddf416747878c0a57fd189d2"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-481",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/native-surface.test.ts",
+      "test_name": "native-theme.should-use-dark-colors today: no boolean native theme fact exists",
+      "negative_control": "Current baseline: supplying exported nativeTheme.shouldUseDarkColors boolean fails this missing-property case. After GH-481 inversion: a nonboolean/Promise or OS-theme drift fails real Mac fixture."
     }
   ]
 }

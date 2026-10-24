@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-native-v1",
-  "corpus_sha256": "sha256:cfed09b159f58354b70436b0849555496fd54b0a53f281b129e901b81c787dd7",
+  "corpus_sha256": "sha256:fd9d9af698161c0a377df92903535bd18639b28ca1c0c3a5abf243f82a3a7d90",
   "kind": "primary_workflow",
   "cells": [
     {
@@ -20,6 +20,42 @@
     {
       "operation_id": "dialog.show-message-box.response-checkbox",
       "oracle_id": "electron-v44.4.5.dialog.show-message-box.response-checkbox"
+    },
+    {
+      "operation_id": "menu.build-from-template",
+      "oracle_id": "electron-v44.4.5.menu.build-from-template"
+    },
+    {
+      "operation_id": "menu.set-application-menu",
+      "oracle_id": "electron-v44.4.5.menu.set-application-menu"
+    },
+    {
+      "operation_id": "menu-item.role-overrides-click",
+      "oracle_id": "electron-v44.4.5.menu-item.role-overrides-click"
+    },
+    {
+      "operation_id": "menu.role-close.vetoable",
+      "oracle_id": "electron-v44.4.5.menu.role-close"
+    },
+    {
+      "operation_id": "menu.role-quit.before-quit",
+      "oracle_id": "electron-v44.4.5.menu.role-quit"
+    },
+    {
+      "operation_id": "screen.get-primary-display",
+      "oracle_id": "electron-v44.4.5.screen.get-primary-display"
+    },
+    {
+      "operation_id": "screen.get-all-displays",
+      "oracle_id": "electron-v44.4.5.screen.get-all-displays"
+    },
+    {
+      "operation_id": "display.work-area.rectangle",
+      "oracle_id": "electron-v44.4.5.display.work-area.rectangle"
+    },
+    {
+      "operation_id": "native-theme.should-use-dark-colors",
+      "oracle_id": "electron-v44.4.5.native-theme.should-use-dark-colors"
     }
   ]
 }

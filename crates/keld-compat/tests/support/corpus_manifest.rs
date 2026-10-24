@@ -290,17 +290,24 @@ pub const WINDOW_V1: Registration = Registration {
     }],
 };
 
-/// First GH-477 native-dialog cell, pinned to Electron 44.4.5. Only macOS is
-/// scored; this is an expected-fail conformance baseline, not native acceptance.
+/// GH-477 macOS first-proof native F06 corpus (dialog, menu, screen, theme),
+/// pinned to Electron 44.4.5. All cells are expected-fail; Windows/Linux
+/// remain unrun/unknown and no native OS acceptance is inferred.
 pub const NATIVE_V1: Registration = Registration {
     corpus_id: "electron-native-v1",
     fixture_dir: "fixtures/native-corpus",
     shape: Shape::V1,
     platforms: &[Platform::Macos],
-    targets: &[TestTarget {
-        path: "packages/@keld/electron/src/dialog.test.ts",
-        runner: Runner::Bun,
-    }],
+    targets: &[
+        TestTarget {
+            path: "packages/@keld/electron/src/dialog.test.ts",
+            runner: Runner::Bun,
+        },
+        TestTarget {
+            path: "packages/@keld/electron/src/native-surface.test.ts",
+            runner: Runner::Bun,
+        },
+    ],
 };
 
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
