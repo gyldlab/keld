@@ -82,6 +82,28 @@ main-role app/link, not a renderer-side contextBridge or ipcRenderer.
 Existing native `keld-wv` bridge is KEL-142 v1; its page facade is not
 an Electron preload runtime.
 
+**Physical Mac F0 evidence update (2026-10-24; not product acceptance):**
+Real WKWebView on macOS 26.5.1 executed the **unmodified pinned draw.io
+preload** in a named app world under a deliberately **test-only**
+contextBridge/ipcRenderer shim. Eager page-world API publication was
+unreliable (each of two injection-order variants passed only 4/8 runs).
+An order-independent, synchronous, two-way document-start publication
+prototype exposed the four app-registered methods and copied, frozen
+process metadata at the first inline script **16/16** times; suppressing
+the `electron` registration removed them **3/3** times. A bounded
+local page-to-preload proxy then invoked the actual unmodified
+`request` method, observed preload-mutated `reqId=1,2,3` in a
+**simulated** send log, and delivered two nested `watchFile` callbacks
+in **6/6** runs. Omitting only nested callback revival removed those
+two change events, leaving ordinary callbacks intact (**6/6** negative
+controls). The independent native findings and source hashes are
+recorded on [#484](https://github.com/gyldlab/keld/issues/484#issuecomment-6382401714)
+and [#467](https://github.com/gyldlab/keld/issues/467#issuecomment-6382468009).
+These fixtures use page-visible, forgeable DOM metadata/events and
+synthetic `mainResp` values; **they do not prove an approved bridge,
+native Host identity/grants, Bun handlers, transport release, actual
+application round-trip or Electron parity**.
+
 ## 3. Acceptance criteria — binary observables
 
 | ID | Given / when | Independently observed pass condition |
@@ -96,7 +118,7 @@ an Electron preload runtime.
 | C08 | `ipcRenderer.send` gets admitted channel and supported values | Local return is `undefined`, argument array snapshots before async admission, actual named topic reaches one real `ipcMain.on` listener through Host; no numeric invoke or second transport. |
 | C09 | `ipcRenderer.on/once/off/addListener/removeListener/removeAllListeners` manage listeners | Registration order, duplicate handling, reentrant once-before-callback removal, original-listener removal, zero-late-delivery and exception cleanup match pinned cases for supported domain. |
 | C10 | An inbound main event is delivered to preload | `IpcRendererEvent.sender` is the preload `ipcRenderer` facade; `ports` is empty for no-transfer first proof; it is not a raw native event, WebContents or transport authority. |
-| C11 | Exact literal window grant absent | Final Host guard refuses `el:<topic>` before any Bun frame/handler effect and returns owning typed failure; healthy explicitly granted neighbor still succeeds. No wildcard, case-fold, URL decoding or alternate grant. |
+| C11 | Exact literal window grant absent | Final Host guard records an **internal** typed `KELD-GUARD003` refusal before any Bun frame/listener effect; the public `ipcRenderer.send` call still returns `undefined` and never gains a retroactive exception, event or Promise. Healthy explicitly granted neighbor still succeeds. No wildcard, case-fold, URL decoding or alternate grant. |
 | C12 | Renderer, frame, document or Bun generation is stale, foreign or destroyed | Original-target callbacks/events and reservations settle once without delivery to successor. Same-document/hash and cancelled renderer provisional navigation preserve still-live document callbacks. |
 | C13 | Preload has begun before first native application-document qualification | Page can observe only the exposed API. Native forwarding remains closed until GH-542 qualifies the document and Host link; no preload-supplied URL, nonce, window index or fresh binding bypasses eligibility. |
 | C14 | Page calls unmodified draw.io `window.electron.request` twice for `isPluginsEnabled` | Two **distinct sequential** `reqId` values, original page, actual live `rendererReq`/`mainResp` handlers, main outcome and page callback match the pinned application path; second starts only after callback **and independent native/transport release** of first. Canned `false`/direct callbacks fail. |
@@ -212,7 +234,7 @@ explicitly rather than silently stringify or read OS state.
   unmodified preload; framework cap/retirement is not a claim to rewrite
   that application code.
 - The exact depth/member/byte/proxy quotas, rejection error and
-  accessor/exotic-object policies are **OPEN for spec approval** (`10).
+  accessor/exotic-object policies are **OPEN for spec approval** (§10).
   They must be finite and tested by 0/max/max+1; neither an undocumented
   hard-coded limit nor a permissive unlimited graph is acceptable.
 
@@ -517,8 +539,14 @@ hide ordering, or infer speed from a small 4 KiB fixture.
 1. **Q1: synchronous cross-world publication:** GH-484 must
    demonstrate how full callable page API is exposed before first
    inline script on real WKWebView, without a late asynchronous
-   evaluator or page-origin-unsafe relaying. If unavailable,
-   design returns to architecture review; no fabricated PASS.
+   evaluator or page-origin-unsafe relaying. The 2026-10-24 real-Mac F0
+   tests demonstrate **mechanical** first-inline publication, actual
+   app-created function invocation and nested callback transfer using
+   an **unapproved shared-DOM shim**; the observed source/event is
+   forgeable and the main IPC response was simulated. Before a
+   contract decision, independently prove a native-security-qualified
+   proxy, or return to architecture review. No F0 mock becomes PASS
+   on the final unmodified app/Host path.
 2. **Q2: Symbol semantics:** pinned v44.4.5 docs say drop, native
    code/upstream specs preserve. Run the pinned executable oracle
    and fix GH-464's cell/this spec or explicitly approve a
@@ -533,11 +561,20 @@ hide ordering, or infer speed from a small 4 KiB fixture.
    app-preload-API-before-qualified-native-commit window with the
    host admission owner; choose bounded pending/failure behavior
    after a real startup trace. A successful early exposure is not
-   native authorization.
+   native authorization. The current KEL-142 `BridgeState` admits
+   one document nonce and refuses a second bind; GH-484's distinct
+   app/trusted worlds and GH-540's v2 document field require
+   a separately approved, world-scoped bind/credential model under
+   **one** checked-u32 #542 navigation generation (or an explicitly
+   reapproved #540 envelope). Never share the trusted nonce or add
+   a second generation counter.
 5. **Q5: exception and listener lifecycle:** approve how local
    cross-world thrown errors are copied and surfaced; define what
    is released for document teardown versus a live multi-fire
-   `watchFile` listener; verify original callback ownership.
+   `watchFile` listener; verify original callback ownership. The
+   disposable native nested-callback probe proves **only local
+   feasibility**, not finite retained-reference teardown,
+   unforgeable callback origin or Host terminal accounting.
 6. **Q6: single source/bundling seam:** GH-484/GH-467 must identify
    the approved bundle/source location and at-document-start
    import/export mechanism without duplicating the TS runtime or
