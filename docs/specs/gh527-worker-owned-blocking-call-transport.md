@@ -811,12 +811,26 @@ After the batch's `KICK = 0` store and re-check (step 3), it rethrows the first 
 error in a new `setImmediate` task, so the error reaches the role's uncaught-error
 handling and no record or `KICK` state is left behind (criterion 19).
 
-The ring is therefore also the listener FIFO. No second queue exists, and memory held
-for undispatched listeners stays inside the ring bound. An applier MUST be synchronous
-and MUST NOT call user code. A throwing applier makes the link terminal with
-`KELD-IPC-005`: a mirror that cannot apply a fact must not serve stale state. #449
-(F02-T2) owns the mirror; its zero-round-trip getters rely on step 1, and its sequence
-test lands with #528.
+**Scoped mirror amendment approved — 2026-10-24:** [GH-1142's exact-content
+owner approval](https://github.com/gyldlab/keld/issues/1142#issuecomment-6374810328)
+binds [technical proposal `ad857aa3`](https://github.com/gyldlab/keld/blob/ad857aa3e26b42ff9ffc7d22c6449d8ebe99c588/docs/specs/gh1142-mirror-fact-retention.md),
+file SHA-256 `5fa690e57feafdf238ca16240b86242c9ab1ecdb76df65aab41b841f4d63fdd1`.
+The following retention/source-failure correction preserves the existing ring,
+terminal-cause and earlier-answer owners; production sources still need heap/alias qualification.
+
+The ring remains the sole inbound-frame admission, issue-order and release owner
+and the listener schedule. GH-531's mirror may retain exactly one successfully
+decoded/applied fact per corresponding retained event until dispatch, removing its
+entry before user callbacks and retaining no helper-held values at terminal
+finalization after earlier-record delivery. This is an explicit physical heap-retention exception,
+not a second frame queue or independent backlog. Its count follows retained records;
+its bytes require source-specific shape, heap-budget and alias/lifetime proof before
+production attachment. An applier is synchronous and calls no user code. Source
+decode/apply failure that wins the existing first-terminal-recorder transition has
+cause `KELD-IPC-005`. Earlier retained answers still settle their pending calls;
+parked or still-unanswered pending callers report the existing recorded terminal
+code/cause. A prior terminal cause keeps priority. GH-531 §4.d owns the
+derived facts; this section keeps the two-cursor order, listener isolation and release.
 
 ### 4.7 Bounded ordered ring and overflow
 
@@ -1357,8 +1371,12 @@ and the kipc small-message round trip (one extra thread hop). Bench to run: the 
 - census: one role, one link, arm-B load;
 - work: one copy from socket chunk to ring (or to the reply slot), and one copy out
   for the reply;
-- queue and copy: the ring is the only inbound queue, bounded in bytes and records;
-  the reply slot holds at most one reply;
+- queue and copy: the ring is the only inbound-frame queue, bounded in bytes and
+  records; the reply slot holds at most one reply. GH-531 permits additional physical
+  heap retention of derived decoded facts until their existing record is dispatched.
+  Their count/lifetime follows retained records; source-specific maximum shape,
+  heap-budget and alias accounting is required before each production attachment.
+  The ring's byte bound does not bound arbitrary decoded heap graphs.
 - clock: none is asserted;
 - statistic: none is claimed;
 - artifact: `s0-link-drain.json` (#418) is prototype evidence only. Any later figure

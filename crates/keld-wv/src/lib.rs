@@ -105,8 +105,9 @@ pub mod wkwebview;
 pub mod wv_link;
 
 pub use engine::{
-    AppWindowCommand, AppWindowEvent, DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine,
-    WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
+    WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,
+    WkWebViewEngineExt,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};

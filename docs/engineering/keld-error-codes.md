@@ -910,6 +910,48 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
 
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
 ## KELD-UPDATE-001
 
 - crate: keld-update

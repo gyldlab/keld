@@ -3,6 +3,10 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod window_registry;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod window_router;
 pub use self::error::HostAppError;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
@@ -2480,6 +2484,11 @@ fn run_app(
         window_events_tx,
         Some(primary_view),
         &mut |main_thread, anchor, stopping| {
+            if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
+                let detail = error.to_string();
+                presentation_unproved.get_or_insert(error);
+                return Err(WvError::EventLoop(detail));
+            }
             let stop_scope = presentation_router.prepare_auth_presentation_drive(stopping);
             match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
                 keld_native::auth::AsMainProgress::Pending { next_deadline } => {
@@ -4428,10 +4437,15 @@ fn coordinate_window_events(
 ) -> Result<(), HostAppError> {
     let mut process_event = |event| {
         let result = match event {
-            AppWindowEvent::NavigationReady => {
+            AppWindowEvent::NavigationReady if router.windows.is_none() => {
                 router.signal_ready().and_then(|()| on_ready(router))
             }
-            AppWindowEvent::LastWindowClosed => router.signal_last_window_closed().map(drop),
+            AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
+                router.signal_last_window_closed().map(drop)
+            }
+            // A managed page is neither facade boot Init nor the count owner.
+            AppWindowEvent::NavigationReady | AppWindowEvent::LastWindowClosed => Ok(()),
+            event => router.window_native_event(event),
         };
         if let Err(error) = result {
             let _ = commands.send(AppWindowCommand::Fatal);
@@ -4442,12 +4456,12 @@ fn coordinate_window_events(
     };
     #[cfg(target_os = "macos")]
     loop {
-        if router.shutdown.reader_stop.load(Ordering::Acquire) {
+        if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
             break;
         }
         let event = match events.recv_timeout(APP_LINK_READER_POLL) {
             Ok(event) => {
-                if router.shutdown.reader_stop.load(Ordering::Acquire) {
+                if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
                     break;
                 }
                 event
@@ -4461,7 +4475,7 @@ fn coordinate_window_events(
     while let Ok(event) = events.recv() {
         process_event(event)?;
     }
-    Ok(())
+    router.finish_window_facts()
 }
 
 #[cfg(target_os = "macos")]
@@ -5586,6 +5600,9 @@ struct PrimaryRouterHandle {
     next_host_corr: Arc<AtomicU32>,
     window_ready: Arc<AtomicBool>,
     last_window_closed: Arc<AtomicBool>,
+    /// None preserves legacy renderer composition. Validated facade boot and
+    /// genuine Init remain GH-446's completion dependency.
+    windows: Option<Arc<Mutex<window_router::WindowSession>>>,
     recovery_armed: Arc<AtomicBool>,
     last_revoked_attempt: Arc<AtomicU32>,
     shutdown: SessionShutdownState,
@@ -5646,6 +5663,17 @@ enum PrimaryLinkIdentity {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl PrimaryLinkIdentity {
+    fn is_primary(self) -> bool {
+        match self {
+            Self::Role(principal) => principal.owner() == RoleOwner::Primary,
+            #[cfg(test)]
+            Self::Fixture => true,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct PrimaryCallerContext {
     attempt: u32,
@@ -5693,6 +5721,9 @@ impl PrimaryRouterHandle {
         let arm_reply = {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
+                return Ok(());
+            }
+            if !self.mark_window_registry_ready_guarded()? {
                 return Ok(());
             }
             if self.recovery_armed.load(Ordering::Acquire) {
@@ -6032,6 +6063,10 @@ impl PrimaryRouterHandle {
             ));
         };
         active.reader_stop.store(true, Ordering::Release);
+        let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
+            active.identity,
+            active.attempt,
+        ));
         // Every caller holds `transition`. A `Quit` of a retired generation can no
         // longer claim the session, so it no longer holds the handover's deadline.
         #[cfg(any(target_os = "linux", windows))]
@@ -6044,6 +6079,7 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
         collapse_app_results([
+            window_retirement,
             auth_retirement,
             self.fail_pending_echo_for_attempt(attempt, pending_detail),
             self.fs
@@ -6180,6 +6216,7 @@ impl PrimaryRouterHandle {
                 Err(_) => return QuitDrainEnd::NotAdmitted,
             };
             let declares_err = header.channel() == LIFECYCLE_CHANNEL
+                || header.channel() == keld_ipc::channel_table::WINDOW.id()
                 || privileged_calls
                     .iter()
                     .any(|entry| entry.id() == header.channel());
@@ -6568,7 +6605,7 @@ impl PrimaryRouterHandle {
             "application call retired by accepted lifecycle Quit",
         )?;
         self.guardian.prepare_accepted_shutdown()?;
-        {
+        let (quit_reply, window_end) = {
             let _transition = self.shutdown.transition_guard();
             if !self
                 .shutdown
@@ -6577,8 +6614,19 @@ impl PrimaryRouterHandle {
             {
                 return Ok(());
             }
+            // Attempt the owed reply before native commands, then always end
+            // managed windows. This hold prevents native receipts interleaving
+            // between accepted Quit and Ending, including on reply failure.
+            let quit_reply = self.write_quit_reply(correlation, reply);
+            let window_end = self.end_window_session_guarded();
+            (quit_reply, window_end)
+        };
+        // TailRun ends outside transition. Preserve the reply as the primary
+        // error if teardown also failed; neither result skips the other attempt.
+        if let Err(primary) = quit_reply {
+            return Err(append_app_cleanup(primary, [window_end]));
         }
-        self.write_quit_reply(correlation, reply)?;
+        window_end?;
         #[cfg(target_os = "macos")]
         let auth_retirement = self.retire_auth_for_quit(attempt);
         #[cfg(not(target_os = "macos"))]
@@ -6622,10 +6670,17 @@ impl PrimaryRouterHandle {
         let peer_close = await_windows_quit_peer_close(reader);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let peer_close = Ok(());
-        let link_close = finish_link_shutdown(
-            active.writer.shutdown_app_link(),
-            "lifecycle Quit link close",
-        );
+        let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
+            active.identity,
+            active.attempt,
+        ));
+        let link_close = collapse_app_results([
+            window_retirement,
+            finish_link_shutdown(
+                active.writer.shutdown_app_link(),
+                "lifecycle Quit link close",
+            ),
+        ]);
         current_guard.take();
         drop(current_guard);
         collapse_app_results([
@@ -6686,6 +6741,17 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
+    /// Caller holds the shutdown transition and has won `begin_tail`: accept
+    /// its reserved forced cause and end the managed window session atomically.
+    fn accept_forced_tail_guarded(&self, reserved: u8) -> Result<(), HostAppError> {
+        if self.shutdown.cause() == SESSION_RUNNING {
+            self.shutdown.accept_reserved_guarded(reserved);
+            #[cfg(all(test, target_os = "macos"))]
+            self.hold_cli_acceptance_for_test()?;
+        }
+        self.end_window_session_guarded()
+    }
+
     /// The forced tail: the host-initiated session end without the application's
     /// `Quit`, under CLI lease loss or, past the quit deadline of a profile handover,
     /// [`SESSION_HANDOVER`] (KEL-53 §4 "Profile handover", step 3c). One body for both
@@ -6709,18 +6775,17 @@ impl PrimaryRouterHandle {
             )
         };
         self.guardian.prepare_accepted_shutdown()?;
-        {
+        let window_ending = {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.begin_tail() {
                 return Ok(());
             }
-            if self.shutdown.cause() == SESSION_RUNNING {
-                self.shutdown.accept_reserved_guarded(reserved);
-                #[cfg(all(test, target_os = "macos"))]
-                self.hold_cli_acceptance_for_test()?;
-            }
-        }
+            // Capture every fallible step after beginning this tail. Its
+            // completion guard must be dropped only after releasing transition.
+            self.accept_forced_tail_guarded(reserved)
+        };
         let _tail = self.shutdown.tail_run();
+        window_ending?;
         self.quiesce_and_drain_fs()?;
         let mut current_guard = self
             .current
@@ -6749,7 +6814,13 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
         let link = current_guard.as_mut().map_or(Ok(()), |active| {
-            finish_link_shutdown(active.writer.shutdown_app_link(), link_phase)
+            collapse_app_results([
+                self.retire_window_owner(window_registry::WindowOwner::new(
+                    active.identity,
+                    active.attempt,
+                )),
+                finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
+            ])
         });
         current_guard.take();
         drop(current_guard);
@@ -6930,12 +7001,7 @@ impl PrimaryRouterHandle {
         mut stream: BootstrapStream,
         identity: PrimaryLinkIdentity,
     ) -> Result<(), PrimaryGenerationFailure> {
-        let is_primary = match identity {
-            PrimaryLinkIdentity::Role(principal) => principal.owner() == RoleOwner::Primary,
-            #[cfg(test)]
-            PrimaryLinkIdentity::Fixture => true,
-        };
-        if !is_primary {
+        if !identity.is_primary() {
             let primary = app_detail("primary role binding", "accepted role owner is not primary");
             let cleanup =
                 finish_link_shutdown(stream.shutdown_app_link(), "wrong primary role link close");
@@ -6992,7 +7058,7 @@ impl PrimaryRouterHandle {
             if self.window_ready.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::Ready)?;
             }
-            if self.last_window_closed.load(Ordering::Acquire) {
+            if self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
             }
         }
@@ -7211,6 +7277,7 @@ impl PrimaryRouter {
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
+            windows: None,
             recovery_armed: Arc::new(AtomicBool::new(true)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
@@ -7229,6 +7296,7 @@ impl PrimaryRouter {
             handle,
             fs.map(GuardSnapshot::take_initial_broker).transpose()?,
             1,
+            None,
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -7304,6 +7372,7 @@ impl PrimaryRouter {
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
+            windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
             shutdown,
@@ -7322,6 +7391,7 @@ impl PrimaryRouter {
             handle,
             fs.map(GuardSnapshot::take_initial_broker).transpose()?,
             attempt,
+            None,
             #[cfg(test)]
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
@@ -7337,6 +7407,7 @@ impl PrimaryRouter {
         mut handle: PrimaryRouterHandle,
         broker: Option<FsBroker>,
         attempt: u32,
+        window_native_support: Option<bool>,
         #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
         #[cfg(target_os = "macos")] auth_startup: Option<(
             VerifiedManifest,
@@ -7344,6 +7415,8 @@ impl PrimaryRouter {
             Option<keld_native::auth::AsWorkerPort>,
         )>,
     ) -> Result<Self, HostAppError> {
+        handle.windows = window_native_support
+            .map(|supported| Arc::new(Mutex::new(window_router::WindowSession::new(supported))));
         #[cfg(target_os = "macos")]
         let auth_worker = auth_startup
             .map(|(verified, configuration, presentation)| {
@@ -7392,14 +7465,25 @@ impl PrimaryRouter {
                 auth.stop_tail();
             }
             self.handle.shutdown.stop_reader();
+            let window_end = self.handle.end_window_session_guarded();
             let mut current = match self.handle.current.lock() {
                 Ok(current) => current,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let pending = self
-                .handle
-                .fail_any_pending_echo("application call retired by router shutdown");
+            let mut pending = collapse_app_results([
+                window_end,
+                self.handle
+                    .fail_any_pending_echo("application call retired by router shutdown"),
+            ]);
             if let Some(active) = current.take() {
+                pending = collapse_app_results([
+                    pending,
+                    self.handle
+                        .retire_window_owner(window_registry::WindowOwner::new(
+                            active.identity,
+                            active.attempt,
+                        )),
+                ]);
                 #[cfg(target_os = "macos")]
                 if let Some(auth) = &self.handle.auth {
                     let _ = auth.retire(active.attempt);
@@ -7816,10 +7900,25 @@ fn read_primary_frames(
             {
                 handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
             }
+            (FrameKind::Call, channel) if channel == keld_ipc::channel_table::WINDOW.id() => {
+                handle.dispatch_window(caller, header.corr(), &payload)?;
+            }
             (FrameKind::Call, LIFECYCLE_CHANNEL) => {
-                let request: LifecycleRequest =
-                    decode(&payload).map_err(|source| app_ipc("lifecycle request", &source))?;
+                let mut request = None;
+                with_primary_caller_writer(&handle.current, &handle.shutdown, caller, |_| {
+                    request = Some(
+                        decode::<LifecycleRequest>(&payload)
+                            .map_err(|source| app_ipc("lifecycle request", &source))?,
+                    );
+                    Ok(())
+                })?;
+                let Some(request) = request else {
+                    continue;
+                };
                 match request {
+                    LifecycleRequest::Subscribe { channel } => {
+                        handle.subscribe_window(caller, header.corr(), channel)?;
+                    }
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
@@ -7903,11 +8002,11 @@ fn write_best_effort_answers(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn with_primary_caller_writer(
+fn with_primary_caller_locked(
     current: &Mutex<Option<ActivePrimaryGeneration>>,
     shutdown: &SessionShutdownState,
     caller: &PrimaryCallerContext,
-    write: impl FnOnce(&mut BootstrapStream) -> Result<(), HostAppError>,
+    dispatch: impl FnOnce(&mut Option<ActivePrimaryGeneration>) -> Result<(), HostAppError>,
 ) -> Result<(), HostAppError> {
     let _transition = shutdown.transition_guard();
     let mut current = current
@@ -7929,7 +8028,22 @@ fn with_primary_caller_writer(
     {
         return Ok(());
     }
-    write(&mut active.writer)
+    dispatch(&mut current)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn with_primary_caller_writer(
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
+    shutdown: &SessionShutdownState,
+    caller: &PrimaryCallerContext,
+    write: impl FnOnce(&mut BootstrapStream) -> Result<(), HostAppError>,
+) -> Result<(), HostAppError> {
+    with_primary_caller_locked(current, shutdown, caller, |current| {
+        let active = current.as_mut().ok_or_else(|| {
+            app_detail("primary caller", "validated current generation disappeared")
+        })?;
+        write(&mut active.writer)
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

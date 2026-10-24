@@ -8,6 +8,12 @@
 //! timeout. The role prints `KELD_WL key=value` observations; both halves are
 //! asserted here.
 //!
+//! The role imports `packages/@keld/api/src/mirror.ts` for GH-531/GH-1142's
+//! internal decode/apply/dispatch primitive. The `mirror_*` scenarios below
+//! assert that actual helper's identity, order, retention and failure behavior
+//! through this same BootstrapListener/host-writer harness.
+//! Its narrow cold heap-edge observer is `packages/@keld/kipc/test/mirror-retention.ts`.
+//!
 //! Anti-flake (spec §7): the only sleep is the arm-B 100 EVENT/s pacing, which is
 //! load generation. Every wait is on an observable (a frame, a role line, a
 //! process exit) with a kill-switch bound, and no assertion is a duration.
@@ -491,6 +497,256 @@ fn criterion4_facts_apply_before_return_and_listeners_run_after_continuation() {
             ("done", "true"),
         ],
     );
+}
+
+/// GH-531/GH-1142 generic mirror proof on the fixture lifecycle channel;
+/// no production window channel or source is enabled.
+fn mirror_values(scenario: &str, reentrant: bool, duplicate: bool) {
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "mirror-values");
+    for seq in 0..3 {
+        // Equal bytes are distinct records: each needs its own decoded value.
+        let payload_seq = if scenario == "mirror-identity" {
+            0
+        } else {
+            seq
+        };
+        host_event(&mut stream, payload_seq, 8);
+    }
+    host_reply(&mut stream, call, b"mirror-values-reply");
+    if reentrant {
+        let nested = read_call_named(&mut stream, "mirror-nested");
+        for seq in 3..6 {
+            host_event(&mut stream, seq, 8);
+        }
+        host_reply(&mut stream, nested, b"nested-reply");
+    }
+    let healthy = read_call_named(&mut stream, "mirror-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    let output = role.finish();
+    let count = if reentrant { "6" } else { "3" };
+    expect_report(
+        &output,
+        &[
+            ("mirror-reply", "mirror-values-reply"),
+            ("mirror-applies-at-return", "3"),
+            ("mirror-dispatches-at-return", "0"),
+            ("mirror-receiver-exact", "true"),
+            ("mirror-object-exact", "true"),
+            ("mirror-primitive-exact", "true"),
+            ("mirror-bound-valid", "true"),
+            ("mirror-callbacks-captured", "true"),
+            ("mirror-payloads-exact", "true"),
+            ("mirror-events", count),
+            ("mirror-in-order", "true"),
+            ("mirror-gaps", "0"),
+            ("mirror-dups", "0"),
+            ("mirror-decodes", count),
+            ("mirror-applies", count),
+            ("mirror-dispatches", count),
+            ("mirror-pending-values", "0"),
+            ("mirror-in-flight", "0"),
+            ("mirror-bound-checked", "true"),
+            ("mirror-second-dispatches", "0"),
+            ("mirror-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+    let observed = match scenario {
+        "mirror-identity" => "object:0,object:0,object:0",
+        "mirror-primitives" => "undefined,null,0",
+        "mirror-reentrant" => "object:0,object:1,object:2,object:3,object:4,object:5",
+        _ => "object:0,object:1,object:2",
+    };
+    expect_report(&output, &[("mirror-observed-values", observed)]);
+    if reentrant {
+        expect_report(
+            &output,
+            &[
+                ("mirror-nested-reply", "nested-reply"),
+                ("mirror-nested-held", "6"),
+                ("mirror-nested-retained", "6"),
+            ],
+        );
+    }
+    if duplicate {
+        expect_report(
+            &output,
+            &[
+                ("mirror-duplicate-code", "KELD-IPC-005"),
+                ("mirror-duplicate-returned", "false"),
+            ],
+        );
+    }
+}
+
+/// One decode per record; exact object identity and captured source receiver.
+#[test]
+fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {
+    mirror_values("mirror-identity", false, false);
+}
+
+/// Undefined, null and zero are real facts, never empty-slot sentinels.
+#[test]
+fn mirror_preserves_undefined_null_and_zero_facts() {
+    mirror_values("mirror-primitives", false, false);
+}
+
+/// A nested park applies more facts while the current callback remains in flight.
+#[test]
+fn mirror_reentrant_dispatch_keeps_facts_subordinate_to_retained_records() {
+    mirror_values("mirror-reentrant", true, false);
+}
+
+/// Duplicate attachment fails before any second event callback is registered.
+#[test]
+fn mirror_duplicate_attachment_preserves_the_first_source() {
+    mirror_values("mirror-duplicate", false, true);
+}
+
+/// All facts stay intentionally alive in plain-object anchors; only the actual
+/// mirror's pending Array edges disappear after consumption. Correct-order
+/// append-only/read-head history must fail this physical-reference oracle.
+#[test]
+fn mirror_releases_consumed_fact_array_references() {
+    let (mut stream, role) = start("mirror-release");
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "mirror-release");
+    for seq in 0..3 {
+        host_event(&mut stream, seq, 8);
+    }
+    host_reply(&mut stream, call, b"release-reply");
+    let healthy = read_call_named(&mut stream, "mirror-release-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("mirror-release-reply", "release-reply"),
+            ("mirror-release-getter", "2"),
+            ("mirror-release-listeners-at-return", "0"),
+            ("mirror-release-before-facts", "3"),
+            ("mirror-release-before-indexed", "3"),
+            ("mirror-release-after-facts", "3"),
+            ("mirror-release-after-indexed", "0"),
+            ("mirror-release-anchors", "0,1,2"),
+            ("mirror-release-decodes", "3"),
+            ("mirror-release-applies", "3"),
+            ("mirror-release-events", "3"),
+            ("mirror-release-in-order", "true"),
+            ("mirror-release-gaps", "0"),
+            ("mirror-release-dups", "0"),
+            ("mirror-release-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+}
+
+fn mirror_source_failure(scenario: &str, earlier_answer: bool, prior_close: bool) {
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let answer = read_call_named(&mut stream, "mirror-answer");
+    read_call_named(&mut stream, "mirror-unanswered");
+    let parked = read_call_named(&mut stream, "mirror-fault");
+    if earlier_answer {
+        host_reply(&mut stream, answer, b"earlier-answer");
+    }
+    for seq in 0..3 {
+        host_event(&mut stream, seq, 8);
+    }
+    host_reply(&mut stream, parked, b"must-not-return");
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("mirror-parked-code", "KELD-IPC-022"),
+            ("mirror-parked-returned", "false"),
+            ("mirror-unanswered-code", "KELD-IPC-022"),
+            ("mirror-unanswered-returned", "false"),
+            ("mirror-decodes", "2"),
+            ("mirror-applies", "1"),
+            ("mirror-events", "1"),
+            ("mirror-in-order", "true"),
+            ("mirror-pending-values", "0"),
+            ("mirror-retained-records", "0"),
+            ("mirror-later-code", "KELD-IPC-022"),
+            ("mirror-later-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+    if prior_close {
+        expect_report(
+            &output,
+            &[
+                ("mirror-end-code", "KELD-IPC-022"),
+                ("mirror-end-cause-005", "false"),
+            ],
+        );
+        let report = output.report();
+        assert!(!report.contains_key("mirror-parked-cause-005"));
+        assert!(!report.contains_key("mirror-unanswered-cause-005"));
+    } else {
+        expect_report(
+            &output,
+            &[
+                ("mirror-parked-cause-005", "true"),
+                ("mirror-unanswered-cause-005", "true"),
+                ("mirror-end-code", "KELD-IPC-005"),
+                ("mirror-end-cause-005", "true"),
+                ("mirror-listeners-at-throw", "0"),
+            ],
+        );
+    }
+    if earlier_answer {
+        expect_report(&output, &[("mirror-answer", "earlier-answer")]);
+    } else {
+        expect_report(&output, &[("mirror-answer-code", "KELD-IPC-022")]);
+    }
+    let attempts = if scenario == "mirror-apply-failure" {
+        "2"
+    } else {
+        "1"
+    };
+    expect_report(&output, &[("mirror-apply-attempts", attempts)]);
+    let (facts, anchors) = if scenario == "mirror-apply-failure" {
+        ("2", "0,1")
+    } else {
+        ("1", "0")
+    };
+    expect_report(
+        &output,
+        &[
+            ("mirror-terminal-facts", facts),
+            ("mirror-terminal-indexed", "0"),
+            ("mirror-terminal-anchors", anchors),
+        ],
+    );
+}
+
+/// Decoder003 becomes source close cause005; only the earlier fact drains.
+#[test]
+fn mirror_decode_failure_ends_delivery_at_the_bad_record() {
+    mirror_source_failure("mirror-decode-failure", false, false);
+}
+
+/// A failed apply is never retained or dispatched; later facts are not served.
+#[test]
+fn mirror_apply_failure_does_not_retain_or_dispatch_the_failed_fact() {
+    mirror_source_failure("mirror-apply-failure", false, false);
+}
+
+/// A retained answer preceding the fault still settles its pending call.
+#[test]
+fn mirror_source_failure_preserves_an_earlier_pending_answer() {
+    mirror_source_failure("mirror-earlier-answer", true, false);
+}
+
+/// The first terminal recorder keeps priority over a later source failure.
+#[test]
+fn mirror_source_failure_cannot_replace_a_prior_terminal_cause() {
+    mirror_source_failure("mirror-prior-close", false, true);
 }
 
 /// Criterion 5: a host close without an `ERR` throws `KELD-IPC-022`, returns no

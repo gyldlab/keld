@@ -47,9 +47,9 @@ use super::{HOST_ANSWER_BUDGET, QuitDrainEnd};
 
 #[cfg(target_os = "macos")]
 use super::{
-    AuthConfiguration, BoundPrimaryGeneration, FsWorkItem, FsWorkerCommand, IpcError,
-    PendingFsWriteFailure, PrimaryCallerContext, RoleOwner, ValidatedBootSelection,
-    collapse_app_results, dispatch_primary_echo, finish_link_shutdown, run_fs_worker, run_guarded,
+    AuthConfiguration, FsWorkItem, FsWorkerCommand, IpcError, PendingFsWriteFailure,
+    PrimaryCallerContext, ValidatedBootSelection, collapse_app_results, dispatch_primary_echo,
+    finish_link_shutdown, run_fs_worker, run_guarded,
 };
 
 #[cfg(target_os = "macos")]
@@ -99,6 +99,11 @@ include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
 include!("tests/filesystem_guard_and_recovery.rs");
 include!("tests/guarded_router_and_quit.rs");
+// The existing macOS declaration stays with its historical selector. Linux
+// reuses the same real Runtime/HELLO identity proof without any GUI claim.
+#[cfg(target_os = "linux")]
+#[path = "tests/accepted_primary_identity.rs"]
+mod accepted_primary_identity_linux;
 include!("tests/role_shutdown_and_worker.rs");
 include!("tests/successor_single_flight.rs");
 include!("tests/generation_correlation_and_auth.rs");

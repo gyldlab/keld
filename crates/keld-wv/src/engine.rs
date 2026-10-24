@@ -97,6 +97,40 @@ pub enum AppWindowCommand {
     Quit,
     /// The primary app session failed; close windows and exit with an error.
     Fatal,
+    /// Build a registry-owned window and webview on the UI thread. `build` is
+    /// opaque host correlation, never a native handle or an identity minted here.
+    CreateWindow {
+        /// Host-owned correlation for the eventual build result.
+        build: u64,
+        /// Requested outer-frame width in logical points.
+        width: u32,
+        /// Requested outer-frame height in logical points.
+        height: u32,
+        /// Requested outer left edge; absence preserves the OS placement.
+        x: Option<i32>,
+        /// Requested outer top edge; absence preserves the OS placement.
+        y: Option<i32>,
+    },
+    /// Request a maximized state. A later native fact confirms its outcome.
+    SetMaximized {
+        /// Backend-owned view to mutate.
+        view: WebviewId,
+        /// Requested state, not an observed native fact.
+        maximized: bool,
+    },
+    /// Request full-screen state. A later native fact confirms its outcome.
+    SetFullScreen {
+        /// Backend-owned view to mutate.
+        view: WebviewId,
+        /// Requested state, not an observed native fact.
+        full_screen: bool,
+    },
+    /// Release the bridge, webview and native window, in that order. Only the
+    /// subsequent `WindowReleased` event proves the native ownership was released.
+    DestroyWindow {
+        /// Backend-owned view to release.
+        view: WebviewId,
+    },
     /// Wake the existing macOS main-owned authentication presentation service.
     #[cfg(target_os = "macos")]
     MacAuthWake,
@@ -109,6 +143,138 @@ pub enum AppWindowEvent {
     NavigationReady,
     /// The primary-window count transitioned from one to zero.
     LastWindowClosed,
+    /// The native build completed; this snapshot is read from the built window.
+    WindowBuilt {
+        /// The host correlation from `CreateWindow`.
+        build: u64,
+        /// Backend-owned view, distinct from the host window identity.
+        view: WebviewId,
+        /// Initial native state, including OS-chosen placement.
+        snapshot: WindowSnapshot,
+    },
+    /// A native build failed. Its full typed error is logged on the UI thread.
+    WindowBuildFailed {
+        /// The host correlation from `CreateWindow`.
+        build: u64,
+        /// The native stage that failed.
+        stage: BuildStage,
+    },
+    /// The native close button requested closing a registry-owned view.
+    WindowCloseRequested {
+        /// Backend-owned view whose native close was requested.
+        view: WebviewId,
+    },
+    /// Observed outer bounds in logical points, including frame and title bar.
+    WindowBounds {
+        /// Backend-owned view that produced the fact.
+        view: WebviewId,
+        /// Observed left edge.
+        x: i32,
+        /// Observed top edge.
+        y: i32,
+        /// Observed outer width.
+        width: u32,
+        /// Observed outer height.
+        height: u32,
+    },
+    /// Observed native focus, not a setter acknowledgement.
+    WindowFocus {
+        /// Backend-owned view that produced the fact.
+        view: WebviewId,
+        /// Observed focus state.
+        focused: bool,
+    },
+    /// Observed native maximized state, not a setter acknowledgement.
+    WindowMaximized {
+        /// Backend-owned view that produced the fact.
+        view: WebviewId,
+        /// Observed maximized state.
+        maximized: bool,
+    },
+    /// Observed native full-screen state, not a setter acknowledgement.
+    WindowFullScreen {
+        /// Backend-owned view that produced the fact.
+        view: WebviewId,
+        /// Observed full-screen state.
+        full_screen: bool,
+    },
+    /// The bridge, webview and window have actually been released.
+    WindowReleased {
+        /// Backend-owned view whose ownership was released.
+        view: WebviewId,
+    },
+}
+
+/// Stage of a failed native registry-window build (GH-531).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStage {
+    /// Native window creation or its initial geometry failed.
+    Window,
+    /// Guarded webview construction or profile verification failed.
+    Webview,
+}
+
+/// Native state read on the UI thread immediately after a successful build.
+/// Bounds describe the outer frame in logical points; requested values are not
+/// substituted for OS-chosen placement or native state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSnapshot {
+    /// Outer left edge, relative to the primary display's top-left origin.
+    pub x: i32,
+    /// Outer top edge, relative to the primary display's top-left origin.
+    pub y: i32,
+    /// Outer width including native frame and title bar.
+    pub width: u32,
+    /// Outer height including native frame and title bar.
+    pub height: u32,
+    /// Whether the native window is focused.
+    pub focused: bool,
+    /// Whether the native window is maximized.
+    pub maximized: bool,
+    /// Whether the native window is in full screen.
+    pub full_screen: bool,
+}
+
+/// Only the initial renderer owns the original startup navigation deadline.
+/// Registry-created pages can appear arbitrarily later and never rearm it.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const fn initial_renderer_pending(registry_managed: bool, closing: bool) -> bool {
+    !registry_managed && !closing
+}
+
+#[cfg(test)]
+mod initial_renderer_tests {
+    use std::time::{Duration, Instant};
+
+    use super::initial_renderer_pending;
+
+    #[test]
+    fn late_registry_windows_never_inherit_the_initial_renderers_expired_clock() {
+        let deadline = Instant::now();
+        let much_later = deadline + Duration::from_secs(60);
+        for (registry_managed, closing, expected_live_initial_renderer) in [
+            (false, false, true),
+            (false, true, false),
+            (true, false, false),
+            (true, true, false),
+        ] {
+            assert_eq!(
+                crate::navigation_deadline_expired(
+                    false,
+                    initial_renderer_pending(registry_managed, closing),
+                    false,
+                    much_later,
+                    deadline,
+                ),
+                expected_live_initial_renderer,
+                "only an unclosed legacy renderer can own the expired startup clock",
+            );
+        }
+        assert!(
+            !crate::navigation_deadline_expired(false, false, false, much_later, deadline,),
+            "a windowless facade has no initial renderer deadline"
+        );
+    }
 }
 
 impl Default for WebviewSpec {

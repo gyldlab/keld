@@ -42,12 +42,14 @@ export const FS_CHANNEL = 2;
 export const LIFECYCLE_CHANNEL = 3;
 /** Channel \`auth\` (\`keld_ipc::channel_table::AUTH\`). */
 export const AUTH_CHANNEL = 4;
+/** Channel \`window\` (\`keld_ipc::channel_table::WINDOW\`). */
+export const WINDOW_CHANNEL = 5;
 /** An allocated channel id (\`keld_ipc::channel_table::CHANNEL_TABLE\`). */
-export type AllocatedChannel = typeof ECHO_CHANNEL | typeof FS_CHANNEL | typeof LIFECYCLE_CHANNEL | typeof AUTH_CHANNEL;
+export type AllocatedChannel = typeof ECHO_CHANNEL | typeof FS_CHANNEL | typeof LIFECYCLE_CHANNEL | typeof AUTH_CHANNEL | typeof WINDOW_CHANNEL;
 /** Every allocated channel id, in table order. */
-export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL, AUTH_CHANNEL]);
+export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([ECHO_CHANNEL, FS_CHANNEL, LIFECYCLE_CHANNEL, AUTH_CHANNEL, WINDOW_CHANNEL]);
 /** Channels whose receive class carries host \`EVENT\`s (\`ReceiveClass::carries_host_events\`). */
-export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([LIFECYCLE_CHANNEL]);
+export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([LIFECYCLE_CHANNEL, WINDOW_CHANNEL]);
 // @generated-end channel-table`;
 
 function replaceOnce(text: string, from: string, to: string): string {
@@ -257,6 +259,7 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
         { rustName: "FS", name: "fs", id: 2, receiveClass: "GuardedCall" },
         { rustName: "LIFECYCLE", name: "lifecycle", id: 3, receiveClass: "HostCallWithEvents" },
         { rustName: "AUTH", name: "auth", id: 4, receiveClass: "GuardedCall" },
+        { rustName: "WINDOW", name: "window", id: 5, receiveClass: "HostCallWithEvents" },
       ],
       hostEventClasses: ["HostCallWithEvents"],
     });
@@ -295,7 +298,7 @@ describe("criterion 8: the region is the render of channel_table.rs", () => {
     const rule = "        matches!(self, Self::HostCallWithEvents)\n";
     const widened = replaceOnce(tableSource, rule, "        matches!(self, Self::HostCallWithEvents | Self::GuardedCall)\n");
     expect(renderChannelTableRegion(widened)).toContain(
-      "export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([FS_CHANNEL, LIFECYCLE_CHANNEL, AUTH_CHANNEL]);",
+      "export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([FS_CHANNEL, LIFECYCLE_CHANNEL, AUTH_CHANNEL, WINDOW_CHANNEL]);",
     );
     const narrowed = replaceOnce(tableSource, rule, "        matches!(self, Self::HostEvent)\n");
     expect(renderChannelTableRegion(narrowed)).toContain("Object.freeze([]);");
@@ -338,7 +341,7 @@ describe("criterion 9: the generator fails closed and names the source line", ()
       ["computed name", 'ChannelEntry::new("echo", 1,', "ChannelEntry::new(ECHO_NAME, 1,"],
       ["uppercase name", 'ChannelEntry::new("echo", 1,', 'ChannelEntry::new("Echo", 1,'],
       ["literal capability", "Authority::Guarded(&[FS_READ, FS_WRITE])", 'Authority::Guarded(&["fs.read"])'],
-      ["unknown authority form", "    Authority::HostInternal,\n);", "    Authority::HostInternal.clone(),\n);"],
+      ["unknown authority form", '    "lifecycle",\n    3,\n    ReceiveClass::HostCallWithEvents,\n    Authority::HostInternal,\n);', '    "lifecycle",\n    3,\n    ReceiveClass::HostCallWithEvents,\n    Authority::HostInternal.clone(),\n);'],
       ["non-call initializer", "pub const ECHO: ChannelEntry =\n    ChannelEntry::new(", "pub const ECHO: ChannelEntry = make(\n    ChannelEntry::new("],
       ["private entry", "pub const ECHO: ChannelEntry =", "const ECHO: ChannelEntry ="],
       ["three arguments", 'ChannelEntry::new("echo", 1, ReceiveClass::HostCall, Authority::HostInternal)', 'ChannelEntry::new("echo", 1, ReceiveClass::HostCall)'],
@@ -352,17 +355,17 @@ describe("criterion 9: the generator fails closed and names the source line", ()
   });
 
   test("CHANNEL_TABLE must list every entry constant exactly once", () => {
-    const list = "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH];";
+    const list = "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW];";
     for (const [label, replacement, message] of [
-      ["unlisted entry", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH];", "LIFECYCLE is not listed"],
-      ["unknown name", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, PROBE];", "PROBE, which is not a parsed"],
-      ["listed twice", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH];", "FS more than once"],
+      ["unlisted entry", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, AUTH, WINDOW];", "LIFECYCLE is not listed"],
+      ["unknown name", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, PROBE];", "PROBE, which is not a parsed"],
+      ["listed twice", "pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, FS, LIFECYCLE, AUTH, WINDOW];", "FS more than once"],
       ["computed list", "pub const CHANNEL_TABLE: &[ChannelEntry] = ENTRIES;", "unsupported CHANNEL_TABLE"],
       ["missing list", "", "missing CHANNEL_TABLE"],
     ] as const) {
       expect(() => renderChannelTableRegion(replaceOnce(tableSource, list, replacement)), label).toThrow(message);
     }
-    const wrapped = replaceOnce(tableSource, list, "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n];");
+    const wrapped = replaceOnce(tableSource, list, "pub const CHANNEL_TABLE: &[ChannelEntry] = &[\n    ECHO,\n    FS,\n    LIFECYCLE,\n    AUTH,\n    WINDOW,\n];");
     expect(renderChannelTableRegion(wrapped)).toBe(expectedRegion);
   });
 

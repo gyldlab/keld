@@ -19,7 +19,10 @@ import {
   HEADER_LEN,
   MAX_FRAME_LEN,
   RECEIVE_POLICIES,
+  WINDOW_CHANNEL,
+  type FrameHeader,
   type ReceivePolicy,
+  decodeVarint,
   echoReplyWaiter,
   errorFromErrFrame,
   eventReceiver,
@@ -29,7 +32,9 @@ import {
   replyWaiter,
   type AllocatedChannel,
   validateReceivedHeader,
+  windowReceiver,
 } from "../../kipc/src/transport.ts";
+import { decodeWindowEvent, decodeWindowRequest, decodeWindowResponse } from "../../api/src/window-codec.ts";
 
 const CORPUS_PATH = join(
   import.meta.dir,
@@ -37,7 +42,7 @@ const CORPUS_PATH = join(
 );
 const STALL_LIMIT_MS = 5000;
 /** One owner, one digest: the Rust suite asserts this same constant. */
-const CORPUS_SHA256 = "0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e";
+const CORPUS_SHA256 = "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
 /** Pre-auth policies may reaccept after a rejection; authenticated ones close. */
 const PRE_AUTH_POLICIES = new Set(["server-pre-auth-hello", "client-await-hello"]);
 
@@ -101,6 +106,8 @@ function policyByName(name: string): ReceivePolicy {
       return echoReplyWaiter(Number(arg));
     case "lifecycle-receiver":
       return RECEIVE_POLICIES.lifecycleReceiver;
+    case "window-receiver":
+      return windowReceiver();
     case "lifecycle-event-receiver":
       return RECEIVE_POLICIES.lifecycleEventReceiver;
     case "lifecycle-reply-waiter":
@@ -196,6 +203,31 @@ function decodeUnitEnum(payload: Uint8Array, max: number): void {
   }
 }
 
+/** Corpus-only schema validation for the closed enums in keld-ipc lifecycle.rs. */
+function decodeLifecycleShape(payload: Uint8Array, schema: "request" | "response"): void {
+  const [variant, afterVariant] = decodeVarint(payload, 0);
+  let end = afterVariant;
+  if (schema === "request") {
+    if (variant === 1) { // Subscribe { channel: u16 }
+      const [channel, afterChannel] = decodeVarint(payload, end);
+      // Postcard u16 permits at most three bytes, including overlong encodings.
+      if (afterChannel - end > 3 || channel > 0xffff) {
+        throw new Error("KELD-IPC-003: lifecycle channel exceeds u16 encoding");
+      }
+      end = afterChannel;
+    } else if (variant !== 0) { // Quit
+      throw new Error("KELD-IPC-003: unknown LifecycleRequest discriminant");
+    }
+  } else if (variant === 2) { // SubscribeRefused { reason: SubscribeRefusal }
+    const [reason, afterReason] = decodeVarint(payload, end);
+    if (reason > 3) throw new Error("KELD-IPC-003: unknown SubscribeRefusal discriminant");
+    end = afterReason;
+  } else if (variant > 1) { // Quit | Subscribed
+    throw new Error("KELD-IPC-003: unknown LifecycleResponse discriminant");
+  }
+  if (end !== payload.length) throw new Error("KELD-IPC-003: trailing lifecycle bytes");
+}
+
 function decodeCallErrorShape(payload: Uint8Array): void {
   const code = decodePostcardString(payload, 0);
   const message = decodePostcardString(payload, code.next);
@@ -211,8 +243,9 @@ function decodeCorpusCallError(payload: Uint8Array): void {
   }
 }
 
-function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
+function stageTwo(policyName: string, header: FrameHeader, payload: Uint8Array): void {
   const base = policyName.split(":", 1)[0];
+  const { kind, channel } = header;
   if (kind === FrameKind.Ping) return;
   switch (base) {
     case "server-pre-auth-hello":
@@ -229,22 +262,27 @@ function stageTwo(policyName: string, kind: number, payload: Uint8Array): void {
       decodeEchoShape(payload); // EchoResponse { message, count }
       return;
     case "lifecycle-receiver":
-      decodeUnitEnum(payload, 0); // LifecycleRequest::Quit
+      decodeLifecycleShape(payload, "request");
+      return;
+    case "window-receiver":
+      decodeWindowRequest(payload);
       return;
     case "lifecycle-event-receiver":
       decodeUnitEnum(payload, 1); // Ready | LastWindowClosed
       return;
     case "event-receiver":
-      decodeUnitEnum(payload, 1); // the only EVENT channel today is lifecycle (GH-527 §4.9)
+      if (channel === WINDOW_CHANNEL) decodeWindowEvent(payload);
+      else decodeUnitEnum(payload, 1); // LifecycleEvent
       return;
     case "reply-waiter":
       // A generic waiter's REPLY codec belongs to the channel that issued the
       // CALL (GH-527 §4.7); its ERR is the shared CallError.
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
+      else if (channel === WINDOW_CHANNEL) decodeWindowResponse(payload);
       return;
     case "lifecycle-reply-waiter":
       if (kind === FrameKind.Err) decodeCorpusCallError(payload);
-      else decodeUnitEnum(payload, 0); // LifecycleResponse::Quit
+      else decodeLifecycleShape(payload, "response");
       return;
     case "privileged-fs-receiver":
     case "primary-app-receiver":
@@ -272,7 +310,7 @@ async function runFrameRow(row: Row): Promise<string> {
       headerBytes.length < HEADER_LEN || (declaredLen <= MAX_FRAME_LEN && payload.length < declaredLen);
     const frame = await readWithProductionReader(bytes, truncated);
     validateReceivedHeader(policyByName(row.policy), frame);
-    stageTwo(row.policy, frame.kind, frame.payload);
+    stageTwo(row.policy, frame, frame.payload);
     return "ok";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

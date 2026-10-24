@@ -31,14 +31,13 @@ use objc2_app_kit::NSWindow;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::window::{Window, WindowBuilder};
+use tao::window::Window;
 use wry::WebViewExtMacOS;
 
 use crate::WebviewId;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
-use crate::media::guarded_default_media_builder;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
 };
@@ -46,6 +45,7 @@ use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
 mod macos_bridge;
 mod macos_profile;
+mod managed_windows;
 
 use macos_bridge::{BridgeNavigationHandle, MacRendererBridge};
 pub use macos_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest};
@@ -59,6 +59,9 @@ use macos_profile::MacProfileOwner;
 struct View {
     webview: wry::WebView,
     window: Window,
+    // Build provenance only: legacy initial renderers remain outside the Core
+    // registry, and must retain their existing LastWindowClosed close path.
+    registry_managed: bool,
 }
 
 enum WkUserEvent {
@@ -392,7 +395,10 @@ impl WkWebViewEngine {
         let mut terminal_requested = false;
         let mut closing = Vec::new();
         let mut main_owner_failure = None;
-        let code = event_loop.run_return(|event, _, control_flow| {
+        let profile = &self.profile;
+        let next_id = &mut self.next_id;
+        let media_seed_allow = self.profile_test_media_seed_allow;
+        let code = event_loop.run_return(|event, target, control_flow| {
             // The existing bridge accepts terminal intent before its proxy event.
             // One terminal state closes renderer dispatch and Native main admission.
             if terminal_intent_in_loop.load(Ordering::Acquire) {
@@ -400,7 +406,9 @@ impl WkWebViewEngine {
                 destroy_renderer_bridges(&mut renderer_bridges);
             }
             let terminal = is_terminal_app_event(&event) || terminal_requested;
-            let live_navigation = views.keys().any(|id| !closing.contains(id));
+            let live_navigation = views.iter().any(|(id, view)| {
+                crate::engine::initial_renderer_pending(view.registry_managed, closing.contains(id))
+            });
             if crate::navigation_deadline_expired(
                 navigation_finished(&startup_in_loop),
                 live_navigation,
@@ -430,6 +438,26 @@ impl WkWebViewEngine {
                         terminal_requested = true;
                         destroy_renderer_bridges(&mut renderer_bridges);
                     }
+                    Event::UserEvent(WkUserEvent::App(command)) => {
+                        let native = managed_windows::NativeBuild {
+                            target,
+                            profile,
+                            startup: &startup_in_loop,
+                            media_seed_allow,
+                        };
+                        if let Err(error) = managed_windows::command(
+                            command,
+                            &native,
+                            next_id,
+                            &mut views,
+                            &mut renderer_bridges,
+                            &events,
+                        ) {
+                            main_owner_failure.get_or_insert(error);
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                        }
+                    }
                     Event::UserEvent(WkUserEvent::Renderer(outcome)) => {
                         let id = outcome.webview().0;
                         let delivered =
@@ -455,7 +483,27 @@ impl WkWebViewEngine {
                             .iter()
                             .filter_map(|(id, view)| (view.window.id() == window_id).then_some(*id))
                             .collect();
+                        let mut legacy_closed = false;
                         for id in requested {
+                            if views.get(&id).is_some_and(|view| view.registry_managed) {
+                                // Core owns the sole T1 teardown decision. A
+                                // late build may already have a DestroyWindow
+                                // queued after role retirement; dropping here
+                                // as well would race that legitimate command.
+                                let close = managed_windows::send(
+                                    &events,
+                                    AppWindowEvent::WindowCloseRequested {
+                                        view: WebviewId(id),
+                                    },
+                                );
+                                if let Err(error) = close {
+                                    main_owner_failure.get_or_insert(error);
+                                    fatal_in_loop.store(true, Ordering::Release);
+                                    terminal_requested = true;
+                                }
+                                continue;
+                            }
+                            legacy_closed = true;
                             if let Some(bridge) = renderer_bridges.remove(&id) {
                                 bridge.destroy();
                             }
@@ -467,8 +515,29 @@ impl WkWebViewEngine {
                                 views.remove(&id);
                             }
                         }
-                        if views.is_empty() {
+                        if legacy_closed && views.is_empty() {
                             let _ = events.send(AppWindowEvent::LastWindowClosed);
+                        }
+                    }
+                    Event::WindowEvent {
+                        window_id,
+                        event:
+                            WindowEvent::Moved(_)
+                            | WindowEvent::Resized(_)
+                            | WindowEvent::Focused(_)
+                            | WindowEvent::ScaleFactorChanged { .. },
+                        ..
+                    } => {
+                        for (id, view) in &views {
+                            if view.registry_managed
+                                && view.window.id() == window_id
+                                && let Err(error) =
+                                    managed_windows::emit_state(&events, WebviewId(*id), view)
+                            {
+                                main_owner_failure.get_or_insert(error);
+                                fatal_in_loop.store(true, Ordering::Release);
+                                terminal_requested = true;
+                            }
                         }
                     }
                     _ => {}
@@ -501,13 +570,24 @@ impl WkWebViewEngine {
             }
             if terminal_requested && drained {
                 destroy_renderer_bridges(&mut renderer_bridges);
+                if let Err(error) =
+                    managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
+                {
+                    main_owner_failure.get_or_insert(error);
+                    fatal_in_loop.store(true, Ordering::Release);
+                }
                 views.clear();
                 *control_flow = ControlFlow::Exit;
                 return;
             }
             let navigation_wake = (!terminal
                 && !navigation_finished(&startup_in_loop)
-                && views.keys().any(|id| !closing.contains(id)))
+                && views.iter().any(|(id, view)| {
+                    crate::engine::initial_renderer_pending(
+                        view.registry_managed,
+                        closing.contains(id),
+                    )
+                }))
             .then_some(navigation_deadline);
             let wake = match (navigation_wake, owner_deadline) {
                 (Some(a), Some(b)) => Some(a.min(b)),
@@ -555,6 +635,11 @@ impl WkWebViewEngine {
         }
         if drained {
             destroy_renderer_bridges(&mut renderer_bridges);
+            if let Err(error) =
+                managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
+            {
+                tail_failure.get_or_insert(error);
+            }
             views.clear();
         } else {
             *retains_main_custody = true;
@@ -609,13 +694,15 @@ impl WkWebViewEngine {
         renderer_endpoint: Option<RendererBridgeEndpoint>,
     ) -> Result<WebviewId, WvError> {
         let result = self.create_internal_inner(spec, app_events, renderer_endpoint);
-        if result.is_err()
-            && self.views.is_empty()
-            && let Err(cleanup) = self.profile.clean_shutdown()
-        {
-            return Err(WvError::EventLoop(format!(
-                "initial WebView creation failed; profile rollback failed: {cleanup}"
-            )));
+        if let Err(primary) = result {
+            if self.views.is_empty()
+                && let Err(cleanup) = self.profile.clean_shutdown()
+            {
+                return Err(WvError::EventLoop(format!(
+                    "{primary}; profile rollback failed: {cleanup}"
+                )));
+            }
+            return Err(primary);
         }
         result
     }
@@ -631,44 +718,20 @@ impl WkWebViewEngine {
                 "run loop already started; create webviews before running it",
             )));
         };
-        let window = WindowBuilder::new()
-            .with_title(&spec.title)
-            .with_inner_size(tao::dpi::LogicalSize::new(
-                spec.size.width,
-                spec.size.height,
-            ))
-            .with_resizable(true)
-            .with_minimizable(true)
-            .with_closable(true)
-            .build(event_loop)
-            .map_err(|error| WvError::Window(error.to_string()))?;
-        mark_startup(&self.startup, StartupPhase::WindowCreated);
-        let id = self.next_id;
-        let webview_id = WebviewId(id);
-        let configuration = self.profile.configuration_for_view()?;
-        let installed = renderer_endpoint
-            .map(|endpoint| MacRendererBridge::install(webview_id, &configuration, endpoint))
-            .transpose()?;
-        let navigation = installed
-            .as_ref()
-            .map(|installed| installed.bridge.navigation_handle());
-        let builder = guarded_default_media_builder(
-            webview_id,
-            page_load_trace_handler(Arc::clone(&self.startup), app_events, navigation),
-            self.profile_test_media_seed_allow,
-        )
-        .with_webview_configuration(configuration);
-        let webview = builder.build_initial_window(&spec.initial, &window)?;
-        let native_webview = webview.webview();
-        self.profile.verify_webview(&native_webview)?;
-        if let Some(installed) = installed {
-            installed.bridge.verify_webview(&native_webview)?;
-            self.renderer_outcomes = Some(installed.outcomes);
-            self.renderer_bridges.insert(id, installed.bridge);
+        let webview_id = managed_windows::next_view_id(&mut self.next_id)?;
+        let (view, installed) = managed_windows::NativeBuild {
+            target: event_loop,
+            profile: &self.profile,
+            startup: &self.startup,
+            media_seed_allow: self.profile_test_media_seed_allow,
         }
-        mark_startup(&self.startup, StartupPhase::WebviewAttached);
-        self.next_id += 1;
-        self.views.insert(id, View { webview, window });
+        .build(webview_id, spec, app_events, renderer_endpoint)
+        .map_err(|failure| failure.source)?;
+        if let Some(installed) = installed {
+            self.renderer_outcomes = Some(installed.outcomes);
+            self.renderer_bridges.insert(webview_id.0, installed.bridge);
+        }
+        self.views.insert(webview_id.0, view);
         Ok(webview_id)
     }
 
