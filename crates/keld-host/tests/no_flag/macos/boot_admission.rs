@@ -5,7 +5,7 @@ use crate::support::control::wait_child_output;
 use crate::support::control::wait_child_output_observing;
 use crate::support::invalid_stage::{InvalidBoot, InvalidPolicy};
 use crate::support::native_window::native_windows;
-use crate::support::process::{await_process_state, session_dirs_for};
+use crate::support::process::{SessionDirCensus, await_process_state};
 use crate::support::product::ProductFixture;
 use std::fs;
 use std::io::Write;
@@ -122,6 +122,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         ("stdin-v1", "requires the CLI-owned pipe reader"),
     ] {
         let stage = fixture.stage();
+        let sessions = SessionDirCensus::before_launch();
         let child = Command::new(stage.host())
             .env("KELD_DEV_LEASE", value)
             .stdin(Stdio::null())
@@ -137,7 +138,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         assert!(stderr.contains(expected), "{stderr}");
         assert_eq!(native_windows(pid, TITLE), [] as [u32; 0]);
         assert!(
-            session_dirs_for(pid).is_empty(),
+            sessions.dirs_for(pid).is_empty(),
             "invalid lease created an app-link session"
         );
     }
@@ -248,6 +249,7 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
     } else {
         command.env_remove("KELD_DEV_LEASE");
     }
+    let sessions = SessionDirCensus::before_launch();
     let mut child = command.spawn().expect("start suspended invalid host");
     // Retain the valid lease writer until the real host has exited. Legacy
     // callers still select the lease-less invalid-stage path above.
@@ -301,7 +303,7 @@ pub(crate) fn assert_invalid_stage_is_resource_free(
         "{case}: Bun reached the control observer"
     );
     assert!(
-        session_dirs_for(host_pid).is_empty(),
+        sessions.dirs_for(host_pid).is_empty(),
         "{case}: app-link directory remains"
     );
     let _ = fs::remove_file(control_path);
