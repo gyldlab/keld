@@ -291,6 +291,14 @@ fn is_word(token: &SourceToken, word: &str) -> bool {
 }
 
 pub(super) fn root_auth_slice(source: &str) -> Result<Option<&str>, AuthConfigError> {
+    root_named_property_slice(source, "auth")
+}
+
+/// Use the same exported-root ownership scanner for facade and auth declarations.
+pub(super) fn root_named_property_slice<'a>(
+    source: &'a str,
+    property: &str,
+) -> Result<Option<&'a str>, AuthConfigError> {
     let mut scan = SourceScan::new(source);
     let mut nesting = Vec::new();
     while let Some(token) = scan.next() {
@@ -305,7 +313,7 @@ pub(super) fn root_auth_slice(source: &str) -> Result<Option<&str>, AuthConfigEr
                 return Ok(None);
             };
             if open.kind == ConfigToken::Symbol('{') {
-                return exported_auth_slice(source, &mut scan);
+                return exported_property_slice(source, &mut scan, property);
             }
         }
         match token.kind {
@@ -319,29 +327,31 @@ pub(super) fn root_auth_slice(source: &str) -> Result<Option<&str>, AuthConfigEr
     Ok(None)
 }
 
-fn auth_accessor_prefix(source: &str) -> bool {
+fn property_accessor_prefix(source: &str, property: &str) -> bool {
     let mut preview = SourceScan::new(source);
     let Some(name) = preview.next() else {
         return false;
     };
-    let auth = if name.kind == ConfigToken::Symbol('[') {
+    let named = if name.kind == ConfigToken::Symbol('[') {
         preview
             .next()
-            .is_some_and(|key| matches!(&key.kind, ConfigToken::Text(name) if name == "auth"))
+            .is_some_and(|key| matches!(&key.kind, ConfigToken::Text(name) if name == property))
             && preview
                 .next()
                 .is_some_and(|end| end.kind == ConfigToken::Symbol(']'))
     } else {
-        matches!(&name.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == "auth")
+        matches!(&name.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == property)
     };
-    auth && preview
-        .next()
-        .is_some_and(|open| open.kind == ConfigToken::Symbol('('))
+    named
+        && preview
+            .next()
+            .is_some_and(|open| open.kind == ConfigToken::Symbol('('))
 }
 
-fn exported_auth_slice<'a>(
+fn exported_property_slice<'a>(
     source: &'a str,
     scan: &mut SourceScan<'a>,
+    property: &str,
 ) -> Result<Option<&'a str>, AuthConfigError> {
     let mut nesting = Vec::new();
     let mut at_key = true;
@@ -361,11 +371,11 @@ fn exported_auth_slice<'a>(
             }
             if at_key {
                 at_key = false;
-                let auth = matches!(&token.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == "auth");
+                let named = matches!(&token.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == property);
                 if token.kind == ConfigToken::Symbol('[') {
                     let mut preview = SourceScan::new(source.get(token.end..).unwrap_or_default());
                     if let Some(key) = preview.next()
-                        && matches!(&key.kind, ConfigToken::Text(name) if name == "auth")
+                        && matches!(&key.kind, ConfigToken::Text(name) if name == property)
                         && preview
                             .next()
                             .is_some_and(|end| end.kind == ConfigToken::Symbol(']'))
@@ -374,7 +384,10 @@ fn exported_auth_slice<'a>(
                     }
                 }
                 if matches!(&token.kind, ConfigToken::Word(word) if word == "get" || word == "set")
-                    && auth_accessor_prefix(source.get(token.end..).unwrap_or_default())
+                    && property_accessor_prefix(
+                        source.get(token.end..).unwrap_or_default(),
+                        property,
+                    )
                 {
                     let detail = if found.is_some() || pending_start.is_some() {
                         "duplicate root auth property/accessor"
@@ -383,7 +396,7 @@ fn exported_auth_slice<'a>(
                     };
                     return Err(auth_config_error(detail));
                 }
-                if auth {
+                if named {
                     if found.is_some() || pending_start.is_some() {
                         return Err(auth_config_error("duplicate root auth property"));
                     }

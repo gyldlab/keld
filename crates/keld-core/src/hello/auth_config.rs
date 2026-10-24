@@ -3,7 +3,7 @@
 
 mod source_scan;
 
-use self::source_scan::root_auth_slice;
+use self::source_scan::{root_auth_slice, root_named_property_slice};
 
 /// Static-auth configuration syntax error; no configuration code was executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +22,61 @@ impl std::fmt::Display for AuthConfigError {
 }
 
 impl std::error::Error for AuthConfigError {}
+
+/// A facade boot declaration rejected by the shared literal root-property reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitialWindowConfigError {
+    detail: &'static str,
+}
+
+impl std::fmt::Display for InitialWindowConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid initialWindow declaration: {}. Use only initialWindow: \"none\" on the exported config root; remove renderer and auth from facade boots.",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for InitialWindowConfigError {}
+
+/// Whether the exported root selects an app-owned first window.
+///
+/// Missing config retains the renderer-declared schema-1 boot. A present root
+/// declaration must be the one literal value "none" with no root renderer or
+/// auth member. The shared auth source scanner ignores comments, strings,
+/// nested properties, and unsupported dynamic exports without running TS.
+///
+/// # Errors
+///
+/// Rejects ambiguous, computed, duplicated or conflicting root declarations.
+pub fn initial_window_from_config_ts(source: &str) -> Result<bool, InitialWindowConfigError> {
+    let scan_error = |_| InitialWindowConfigError {
+        detail: "the root property must be unique and literal",
+    };
+    let Some(value) = root_named_property_slice(source, "initialWindow").map_err(scan_error)?
+    else {
+        return Ok(false);
+    };
+    let tokens = config_tokens(value).map_err(scan_error)?;
+    if !matches!(tokens.as_slice(), [ConfigToken::Text(text)] if text == "none") {
+        return Err(InitialWindowConfigError {
+            detail: "the only supported value is the literal string \"none\"",
+        });
+    }
+    for field in ["renderer", "auth"] {
+        if root_named_property_slice(source, field)
+            .map_err(scan_error)?
+            .is_some()
+        {
+            return Err(InitialWindowConfigError {
+                detail: "renderer and auth fields are forbidden with initialWindow",
+            });
+        }
+    }
+    Ok(true)
+}
 
 fn auth_config_error(detail: &'static str) -> AuthConfigError {
     AuthConfigError { detail }

@@ -198,8 +198,8 @@ where
 mod tests {
     use super::{
         DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, entry_from_config_ts,
-        hello_title_from_args, host_hello_unknown_arg, read_config_entry, renderer_from_config_ts,
-        resolve_hello_title, title_from_config_ts,
+        hello_title_from_args, host_hello_unknown_arg, initial_window_from_config_ts,
+        read_config_entry, renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
@@ -305,6 +305,47 @@ mod tests {
     }
 
     #[test]
+    fn facade_declaration_is_a_closed_root_literal() {
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { name: \"Demo\", renderer: \"index.html\" } as const;"
+            )
+            .expect("absent declaration preserves renderer mode")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: \"none\", entry: \"src/main.ts\" } as const;"
+            )
+            .expect("literal facade declaration")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "// initialWindow: 'renderer'\nexport default { 'initialWindow': 'none' } as const;"
+            )
+            .expect("comments cannot select a different mode")
+        );
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { nested: { initialWindow: 'none' } } as const;"
+            )
+            .expect("nested declaration must not select facade mode")
+        );
+        for source in [
+            "export default { initialWindow: 'renderer' } as const;",
+            "export default { initialWindow: false } as const;",
+            "export default { initialWindow: 'none', initialWindow: 'none' } as const;",
+            "export default { ['initialWindow']: 'none' } as const;",
+            "export default { initialWindow: 'none', renderer: 'index.html' } as const;",
+            "export default { initialWindow: 'none', auth: {} } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "unsupported or conflicting facade declaration must refuse: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn default_renderer_is_index_html() {
         assert_eq!(DEFAULT_RENDERER, "index.html");
         assert_eq!(DEFAULT_ENTRY, "src/main.ts");
@@ -339,7 +380,10 @@ mod tests {
 }
 
 mod auth_config;
-pub use self::auth_config::{AuthConfigError, auth_configuration_from_config_ts};
+pub use self::auth_config::{
+    AuthConfigError, InitialWindowConfigError, auth_configuration_from_config_ts,
+    initial_window_from_config_ts,
+};
 
 #[cfg(test)]
 mod auth_config_tests {
