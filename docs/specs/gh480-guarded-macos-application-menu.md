@@ -93,6 +93,18 @@ Non-goals:
   items including that checkbox are removed before construction.
   The exact source spells `role:'hideothers'` in lowercase; role-only
   items supply **no explicit keyboard accelerators**.
+- [GH480 real macOS AppKit probe (source, command and stdout)](https://github.com/gyldlab/keld/issues/480#issuecomment-6388101245)
+  (macOS 26.5.1 arm64, Apple clang 17, SDK 26.2):
+  `NSMenuItem.state` retained `NSControlStateValueOn=1` and
+  `NSControlStateValueOff=0`; a no-op programmatic checkbox action
+  retained its check mark. `NSMenu.autoenablesItems` defaults to
+  **YES**, and `[menu update]` with an enabling validator re-enabled
+  a manually disabled item; **NO** preserved explicit disabled state.
+  Synthetic `NSMenu.performKeyEquivalent(Cmd+W)` returned **YES**
+  on a disabled Close item with **zero target calls**, then invoked
+  the target when enabled. This is native object/in-process
+  dispatch evidence only, **not** real global keyboard routing,
+  KELD Host guard, first responder or dirty close-veto proof.
 - [GH-477 existing DRAFT corpus #1156](https://github.com/gyldlab/keld/pull/1156)
   contains the first-proof `Menu.buildFromTemplate`, `setApplicationMenu`,
   role ignores-click and role-close **expected-fail** cells (current
@@ -137,6 +149,11 @@ menu bar with all **three top-level menus** and the pinned draw.io tree
 (twelve recognized role items, custom-click items, separators, and when
 updates are enabled the checkbox). Preserve labels, enabled state, order,
 role-default shortcuts and the **real initial NSMenuItem check mark**.
+On **every** Host-built `NSMenu` (root and recursively nested submenus),
+set `autoenablesItems = NO` before publication and keep native
+`NSMenuItem.enabled` under explicit Host projection/generation control.
+A later `[menu update]` must not re-enable a Host-disabled item or
+flip its frozen checkbox check mark.
 An unchecked fixture must render unchecked; an enabled checkbox must
 not disappear because its custom click cannot yet be delivered.
 The Host AppKit main-thread owner assigns bounded, nonreused
@@ -168,7 +185,10 @@ Host-to-Bun kipc action frames per invocation**. It must not invoke
 an attached Bun `click` callback for a recognized role. Native
 first-responder actions and default Cmd+Z/C/V/H and Hide Others variants
 are tested on real Mac text/edit fixtures; recording a key equivalent
-without the OS action is not a pass.
+without the OS action is not a pass. `performKeyEquivalent:`
+returning `YES` is **not** proof of target execution: assert
+real native callback/Host-command counts, responder effects and
+disabled/no-focus controls.
 
 **M6 — one vetoable role close.** Given a focused dirty draw.io native
 window, activating its `role:'close'` menu item by **mouse and
@@ -200,7 +220,9 @@ user callback. An initially checked checkbox stays checked and an
 unchecked one stays unchecked after unsupported activation; the user
 must not be led to believe `dontCheckUpdates` changed. This is
 explicitly scored as partial visual parity and behavioral divergence.
-Role items with click callbacks execute only the role.
+Neither `[menu update]` nor a disabled item's mouse/key activation
+may manufacture a callback or flip that check mark. Role items with
+click callbacks execute only the role.
 
 **M9 — bounded tree and malformed refusal.** A first-proof installation
 admits at most **256 nodes**, **8 nested submenu levels**, a total
@@ -419,7 +441,24 @@ routes to the **same authenticated Host menu-generation command**
 as a mouse activation; it never directly asks AppKit to close/quit.
 
 On the UI thread, build the replacement NSMenu tree while keeping the
-currently installed tree alive. Commit the new menu *atomically* only
+currently installed tree alive. **Set
+`NSMenu.autoenablesItems = NO` on the root and every nested submenu**,
+including replacements during recovery. The SDK defaults to YES;
+the [real Mac probe](https://github.com/gyldlab/keld/issues/480#issuecomment-6388101245)
+showed an enabling `validateMenuItem:` can otherwise override a
+manually disabled item on `[menu update]`. The Host computes each
+item's effective `enabled` from its admitted source value **and**
+current Host generation/action eligibility. Reapply an authoritative
+disable on role loss/revocation; an AppKit update must not revive it.
+An unsupported-but-source-enabled GH556 item remains enabled for
+**diagnostic-only** action, with a frozen checkbox check mark.
+Native targets independently recheck the current Host role/generation
+and command eligibility before **any effect**; a disabled native item
+and AppKit's key-matching Boolean are **not security gates**. The
+verified `app.system.menu` grant is separately required at Host
+admission, never inferred from UI enabled state.
+
+Commit the new menu *atomically* only
 after the entire accepted tree is serviceable. A partial/cancelled
 installation never leaves an incomplete native menu bar or wrong
 command ids. Source-enabled custom-click and checkbox items remain
@@ -449,6 +488,15 @@ Native menu commands carry only Host-internal current menu generation
 and command ids. Both `NSMenuItem` selection and its default
 `keyEquivalent` invoke the **same** generation-checked lookup; neither
 shortcut dispatch nor direct keyboard handling may bypass this router.
+The oracle is actual target/Host-command execution and responder effects,
+**not** `NSMenu.performKeyEquivalent:` returning `YES`: the standalone
+probe got a **YES** match for synthetic Cmd+W on a disabled Close item
+with **zero target calls**; when enabled it invoked the target once.
+This is **not** global OS accelerator, KELD `CloseRequested/Veto`
+or real WKWebView evidence. An item disabled by source, stale generation
+or missing Host authority must execute **zero privileged effects**
+even if AppKit reports a key match. A UI enabled bit or key match
+never substitutes for the independent Host `app.system.menu` guard.
 The command lookup maps recognized roles to a fixed
 allowlist of **generic native actions** (native application hide/show,
 Undo/Redo and edit responders). The mapping is owned in the menu
@@ -503,8 +551,9 @@ those functions work.
 
 - One authenticated Host role's menu install, one immutable typed
   tree, one native generation and one outstanding transport correlation.
-  On role loss, disable old commands, keyboard equivalents and native
-  callbacks before any successor can act. An old command generation,
+  On role loss, explicitly disable old commands/key equivalents and
+  refuse stale native callbacks before any successor can act.
+  `[menu update]` may not revive them. An old command generation,
   stale focused `WindowRef`, old role or revoked grant cannot trigger
   a new role's window action even if the same key is pressed. When no
   current primary is authorized, native menu actions cannot target
@@ -656,7 +705,9 @@ review. No approval or source claim is granted by this Markdown file.
 - [ ] T4. One GH508 guarded menu-install CALL, shared exact `menu`
       evaluator, current RoleInstance/policy-digest admission,
       correlated REPLY/ERR and stderr diagnostic observation; actual
-      Mac NSMenu tree/check mark and post-denial no-effect witnesses.
+      Mac NSMenu tree/check mark, recursive `autoenablesItems=NO`,
+      disabled-state stability across `[menu update]` and post-denial
+      no-effect witnesses.
 - [ ] T5. First-responder native edit/HIDE roles via mouse **and**
       default Cmd+Z/C/V/H/Option+H equivalents, case-folded
       `hideothers`, with zero Bun activation EVENT frames. Native
@@ -668,7 +719,9 @@ review. No approval or source claim is granted by this Markdown file.
       GH564 implementation responsibilities. Native Quit mouse/Cmd+Q
       remains bounded and nonterminating with captured GH563 diagnostic.
 - [ ] T7. Mac source/native tests, role-loss and old callback cleanup,
-      native keyboard shortcut and error-effect-negative controls,
+      native keyboard shortcut **action/effect counts** (not merely
+      `performKeyEquivalent:YES`), post-update disabled-callback
+      and error-effect-negative controls,
       invert GH480's four red tests only on actual proof, re-record
       GH563 pending cell, run all independent security/wire/public API/
       unsafe gates and final full hosted CI before merge consideration.
@@ -682,14 +735,14 @@ wait for authenticated native owners. GH563 is **not** implemented in T6.
 |---|---|---|
 | M1 | Run unmodified draw.io template fixture in both `disableUpdate` branches; updates enabled has `autoCheckForUpdates` checkbox, store false/true yields checked true/false, role lowercases including `hideothers`; Bun tree is synchronous, preserves identities/order, uses pinned default accelerators and emits zero frames | Remove Checkbox or default checked field; alter `hideothers` to an unknown role; replace constructor with Promise: source census/traffic tests fail |
 | M2 | Verified current primary role + exact grant emits one admitted CALL; empty, duplicate, wildcard, malformed or stale grant emits typed Host stderr denial with `/app/system` and zero native allocations or menu change | Bypass shared guard or accept wildcard/duplicate: denied real menu appears or no Host diagnostic |
-| M3 | Actual Mac NSMenu bar matches source's three menu headings, role/default shortcuts, custom-click items and checked/unchecked checkbox, and `disableUpdate` removes the exact three update items | Drop checkbox/check state or silently remove custom-click items: source fixture/native screenshot census fails |
+| M3 | Real Mac NSMenu matches source's three menus, shortcuts, custom-click items and initial On/Off marks; `disableUpdate` removes three update items. Verify `autoenablesItems=NO` on root **and all submenus**; `[menu update]` preserves Host-disabled role and frozen check mark | Leave a nested menu at AppKit's default autovalidation YES with a validator returning YES: `[menu update]` re-enables a Host-disabled item and fails the native-state test |
 | M4 | Valid `setApplicationMenu` returns `undefined` immediately; Host correlated success receipt separate; inject guard rejection, delayed native failure, partial write/unknown effect, role retirement and capture stderr `code/phase/result/fix`, no unhandled rejection or auto-resend | Return Promise, omit a typed Host terminal diagnostic, double-report across stages or automatically replay after a partial write: result/capture/effect tests fail |
-| M5 | Actual focused WKWebView edits via native menu and Cmd+Z/C/V and Cmd+H, Cmd+Option+H `hideothers`; count zero Host→Bun activation EVENTs | Delete default keyEquivalent, map lowercase role wrongly, target stale WebView or invoke Bun callback: actual keyboard/focus/callback/traffic tests fail |
-| M6 | Dirty real draw.io native window mouse `Close` **and Cmd+W** both enter GH450 `CloseRequested(close_seq)` and receive Veto; Cancel preserves same window/document and next close works | Cmd+W native `performClose`/destroy bypasses sequence even while menu click passes: dirty-window/sentinel test fails |
+| M5 | Real focused WKWebView edit/hide **effects** via mouse and default Cmd+Z/C/V/H/Option+H; assert target/Host command counts and zero Host→Bun activation EVENTs. Disabled/no-focus item has zero effect even if a synthetic `performKeyEquivalent:` returned YES | Match shortcut but suppress eligible target, or execute a disabled role after `[menu update]`: effect/count/focus assertions fail regardless of match Boolean |
+| M6 | Dirty real draw.io mouse Close **and Cmd+W** each enter GH450 `CloseRequested(close_seq)`/Veto; Cancel preserves window/document. Disabled Close produces zero GH450 requests even if a synthetic key matches | Direct native destroy bypasses sequence or treating `performKeyEquivalent:YES` as proof of an absent GH450 command: dirty-window/close-seq control fails |
 | M7 | Real native Quit item **and keyboard Cmd+Q** each record GH563 diagnostic in captured stderr, no `before-quit`, no terminate, dirty window and Host remain alive | Restore direct NSApplication terminate or only guard mouse selection: PID and dirty sentinel/keyboard test fails |
-| M8 | Actual native checkbox and ordinary source custom-click items remain displayed and enabled; activating each emits GH556 diagnostic, zero Bun frames/callbacks; checkmark and store remain unchanged (behavior marked divergent) | Silently flip checkmark, dispatch callback, remove unsupported source item or drop diagnostic: visual/state/captured-stderr/traffic tests fail |
+| M8 | Native checkbox/custom-click items remain displayed and source-enabled; activation emits GH556 diagnostic, zero Bun frames/callbacks. Forced `[menu update]` never toggles frozen On/Off nor enables a Host-disabled callback; store unchanged (divergence) | Autovalidation revives a disabled item, silently flips mark, invokes unsupported Bun callback or drops diagnostic: state/effect/traffic tests fail |
 | M9 | 0/max/max+1 nodes/depth/bytes, cycles, malformed enum, nonboolean checked and checked on normal nodes, invalid role/shortcut source, duplicate command id | Remove type/cycle/bounds checks: mutant allocates forbidden native tree |
-| M10 | Bun role death→old menu mouse/key handlers disabled; fresh primary reinstall works; old Cmd+W cannot operate new role/window | Reuse old command-generation id or keep shortcut enabled: stale role action executes |
+| M10 | Bun role death disables old mouse/key handlers; `[menu update]` before/after successor install leaves old callback/Host-command effects at zero even if a synthetic key matches. Fresh primary install works | Default AppKit validator revives retired item, trusting match Boolean or reusing an old command id allows a stale native target/close effect |
 | M11 | Missing menu never authorizes dialog/fs/webview; explicit Legacy disclosed | Treat menu grant as all system calls; unauthorized effect passes and test fails |
 | M12 | GH480 red cells flipped only with real native proof; GH563 red diagnostic retained | Flip role quit to pass / leave absent-constructor test after adding MenuItem; corpus fails |
 
@@ -698,7 +751,12 @@ Native acceptance uses the exact pinned draw.io menu fixture
 `Menu.buildFromTemplate` + `setApplicationMenu` from its unmodified main,
 real Mac mouse **and keyboard** activation, OS-visible item hierarchy,
 initial checkbox NSMenuItem check mark and actual Host/Bun
-frame/captured-stderr logs. The native Edit tests require a real focused
+frame/captured-stderr logs. Check recursive
+`autoenablesItems=NO` and force `[menu update]` on disabled roles
+and frozen checkboxes; record actual native target/Host command counts.
+The standalone probe's synthetic `performKeyEquivalent:YES` for a
+disabled Cmd+W had **zero target calls**, so matching alone cannot
+score native KELD role parity. The native Edit tests require a real focused
 WKWebView text surface and a disabled/no-focus negative control. Capture
 the Host's actual stderr independently of a Bun mock logger; classify
 missing native diagnostic output as a failure, not a test pass. A
@@ -775,8 +833,11 @@ raise Host20/Guardian/KIPC clocks or turn into an unbounded Bun worker.
 4. **Limits, callbacks and atomic update:** approve/revise max 256
    nodes, depth 8, 128 KiB request, 4 KiB label and monotonic menu
    generation. Require native atomic replacement, frozen unsupported
-   checkbox state, one diagnostic per permitted activation, and stale
-   command/key-equivalent retirement during Bun recovery. The
+   checkbox state, recursive `NSMenu.autoenablesItems=NO`,
+   one diagnostic per permitted activation and stale command/key
+   retirement **even after `[menu update]`**. Prove actual
+   target/Host effects rather than `performKeyEquivalent:YES` alone;
+   Host guard authorization remains independent of the UI bit. The
    non-role callback GH556 parity cell stays pending.
 5. **GH450/GH563 lifecycle:** verify the winning GH450
    `RequestClose/CloseRequested/Veto` physical-wake seam for **both**
