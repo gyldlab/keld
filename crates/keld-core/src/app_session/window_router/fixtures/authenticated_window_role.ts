@@ -26,6 +26,7 @@ let facts = 0;
 let firstCreated: Extract<WindowEvent, { variant: "Created" }> | undefined;
 let latest: WindowEvent | undefined;
 let window: WindowRef | undefined;
+let pendingClose = 0n;
 let readyBytes = "absent";
 let readyResolve: () => void = () => undefined;
 const ready = new Promise<void>((resolve) => { readyResolve = resolve; });
@@ -42,6 +43,7 @@ link.setStateApplier(WINDOW_CHANNEL, (payload) => {
   latest = fact;
   if (fact.variant === "Created" && firstCreated === undefined) firstCreated = fact;
   if (fact.variant === "Maximized") maximizedResolve();
+  if (fact.variant === "CloseRequested") pendingClose = fact.close_seq;
 });
 
 function ref(value: WindowRef | undefined): string {
@@ -107,6 +109,21 @@ for await (const command of commands) {
   } else if (command === "HEALTHY") {
     const response = await call({ variant: "SetFullScreen", window: requireWindow(), full_screen: true });
     report(`HEALTHY ${response.variant} ${facts} ${confirmedMaximized()}`);
+  } else if (command === "REQUEST-CLOSE" || command === "MERGE-CLOSE") {
+    const response = await call({ variant: "RequestClose", window: requireWindow() });
+    report(`${command} ${response.variant} ${pendingClose} ${facts} ${latest?.variant}`);
+  } else if (command === "VETO-CLOSE" || command === "STALE-CLOSE") {
+    const response = await call({ variant: "CloseReply", window: requireWindow(),
+      close_seq: command === "STALE-CLOSE" ? pendingClose - 1n : pendingClose,
+      verdict: command === "STALE-CLOSE" ? "Allow" : "Veto" });
+    report(`${command} ${response.variant} ${pendingClose} ${facts}`);
+  } else if (command === "DESTROY-PAIR") {
+    const first = call({ variant: "Destroy", window: requireWindow() });
+    const second = call({ variant: "Destroy", window: requireWindow() });
+    const fence = await call({ variant: "RequestClose", window: requireWindow() });
+    report(`DESTROY-WAIT ${fence.variant} ${facts}`);
+    const [one, two] = await Promise.all([first, second]);
+    report(`DESTROY-PAIR ${one.variant} ${two.variant} ${latest?.variant} ${facts}`);
   } else if (command === "WAIT-END") {
     report(`ENDED ${await ended} ${facts}`);
   } else {

@@ -1,7 +1,7 @@
 use super::super::PrimaryLinkIdentity;
 use super::{
     BuildOutcome, CloseOutcome, CreateOutcome, FactOutcome, NativeSetter, OwnedWindowEvent,
-    PendingCreate, SessionEffect, Teardown, WindowCounter, WindowError, WindowOwner,
+    PendingWindowCall, Phase, SessionEffect, Teardown, WindowCounter, WindowError, WindowOwner,
     WindowRegistry,
 };
 use keld_ipc::CorrelationId;
@@ -9,6 +9,19 @@ use keld_ipc::window::{
     Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowResponse, WindowState,
 };
 use keld_wv::WebviewId;
+
+mod close_policy;
+mod close_state_table;
+
+fn phase_name(phase: Phase) -> char {
+    match phase {
+        Phase::Opening(_) => 'O',
+        Phase::Open(_) => 'P',
+        Phase::ClosePending(_, _) => 'Q',
+        Phase::Closing(_) => 'C',
+        Phase::Destroyed(_) => 'D',
+    }
+}
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -57,6 +70,45 @@ fn complete(
         BuildOutcome::Created { .. }
     ));
     Ok(window)
+}
+
+fn allow_native_close(registry: &mut WindowRegistry, view: WebviewId) -> TestResult<CloseOutcome> {
+    let CloseOutcome::Requested {
+        fact: Some(fact),
+        close_seq,
+    } = registry.native_close(view)
+    else {
+        return Err(std::io::Error::other("fixture expected a fresh native close request").into());
+    };
+    let WindowEvent::CloseRequested { window, .. } = fact.event else {
+        return Err(std::io::Error::other("native close must produce its exact fact").into());
+    };
+    Ok(registry.close_reply(
+        fact.owner,
+        window,
+        close_seq,
+        keld_ipc::window::CloseVerdict::Allow,
+    )?)
+}
+
+#[test]
+fn native_close_holds_one_pending_sequence_instead_of_tearing_down() -> TestResult {
+    let mut registry = ready();
+    let window = complete(&mut registry, owner(1), 1, 7)?;
+    let first = registry.native_close(WebviewId(7));
+    assert!(
+        !matches!(first, CloseOutcome::Teardown(_)),
+        "a native close must await the application verdict: {first:?}"
+    );
+    let pending = WindowEvent::Created {
+        window,
+        state: snapshot(),
+        pending_close: Some(1),
+    };
+    assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
+    registry.native_close(WebviewId(7));
+    assert_eq!(registry.replay(owner(1)).collect::<Vec<_>>(), vec![pending]);
+    Ok(())
 }
 
 #[test]
@@ -258,7 +310,7 @@ fn opening_setters_fail_without_canceling_the_pending_create() -> TestResult {
 fn role_loss_keeps_open_native_window_but_fences_retired_caller() -> TestResult {
     let mut registry = ready();
     let window = complete(&mut registry, owner(1), 1, 7)?;
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     assert_eq!(
         registry.set_maximized(owner(1), window, true),
         Err(WindowError::WrongOwner)
@@ -288,7 +340,7 @@ fn adoption_uses_lowest_host_id_and_repeat_subscription_never_rearms_it() -> Tes
     let first = complete(&mut registry, owner(1), 1, 7)?;
     let claimed = complete(&mut registry, owner(1), 2, 8)?;
     let third = complete(&mut registry, owner(1), 3, 9)?;
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     registry.subscribe_successor(owner(2));
     registry
         .set_maximized(owner(2), claimed, true)
@@ -326,7 +378,7 @@ fn two_intentional_creates_after_adoption_build_distinct_windows() -> TestResult
 fn lost_opening_waits_for_late_build_then_tears_down_without_publishing() -> TestResult {
     let mut registry = ready();
     let (build, window) = begin(&mut registry, owner(1), 1)?;
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     registry.subscribe_successor(owner(2));
     assert_eq!(registry.replay(owner(2)).count(), 0);
     assert_eq!(
@@ -345,7 +397,7 @@ fn lost_opening_waits_for_late_build_then_tears_down_without_publishing() -> Tes
 fn lost_opening_build_failure_has_no_reply_or_last_window_event() -> TestResult {
     let mut registry = ready();
     let (build, _) = begin(&mut registry, owner(1), 1)?;
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     let failure = registry.native_failed(build);
     assert!(failure.call.is_none() && failure.last_window.is_none());
     Ok(())
@@ -357,7 +409,7 @@ fn released_last_window_defers_while_an_admitted_create_is_opening() -> TestResu
     let first = complete(&mut registry, owner(1), 1, 7)?;
     let (build, _) = begin(&mut registry, owner(1), 2)?;
     assert_eq!(
-        registry.native_close(WebviewId(7)),
+        allow_native_close(&mut registry, WebviewId(7))?,
         CloseOutcome::Teardown(Teardown {
             window: first,
             view: WebviewId(7)
@@ -383,11 +435,11 @@ fn successful_build_clears_the_deferred_last_window_check() -> TestResult {
     let mut registry = ready();
     complete(&mut registry, owner(1), 1, 7)?;
     let (build, _) = begin(&mut registry, owner(1), 2)?;
-    registry.native_close(WebviewId(7));
+    allow_native_close(&mut registry, WebviewId(7))?;
     registry.native_released(WebviewId(7));
     registry.native_built(build, WebviewId(8), snapshot());
     assert!(!registry.deferred_last_window);
-    registry.native_close(WebviewId(8));
+    allow_native_close(&mut registry, WebviewId(8))?;
     assert_eq!(
         registry.native_released(WebviewId(8)).last_window,
         Some(owner(1))
@@ -401,12 +453,12 @@ fn role_loss_and_session_end_clear_deferred_last_window_checks() -> TestResult {
         let mut registry = ready();
         complete(&mut registry, owner(1), 1, 7)?;
         let (build, _) = begin(&mut registry, owner(1), 2)?;
-        registry.native_close(WebviewId(7));
+        allow_native_close(&mut registry, WebviewId(7))?;
         registry.native_released(WebviewId(7));
         if end_session {
             registry.session_end(|_| {});
         } else {
-            registry.role_lost(owner(1));
+            registry.role_lost(owner(1), |_| {});
         }
         assert!(!registry.deferred_last_window);
         assert!(registry.native_failed(build).last_window.is_none());
@@ -433,7 +485,7 @@ fn session_end_tears_down_every_native_window_once_and_suppresses_last_window() 
                 window: second,
                 view: WebviewId(8)
             }),
-            SessionEffect::CreateInterrupted(PendingCreate {
+            SessionEffect::CreateInterrupted(PendingWindowCall {
                 owner: owner(1),
                 correlation: CorrelationId(3)
             }),
@@ -486,7 +538,7 @@ fn state_facts_deduplicate_but_recovery_snapshot_still_tracks_native_truth() -> 
             }
         })
     );
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     assert_eq!(
         registry.native_bounds(
             WebviewId(7),
@@ -526,7 +578,7 @@ fn unmapped_and_teardown_facts_never_reach_the_live_writer() -> TestResult {
         FactOutcome::Unmapped
     );
     complete(&mut registry, owner(1), 1, 7)?;
-    registry.native_close(WebviewId(7));
+    allow_native_close(&mut registry, WebviewId(7))?;
     assert_eq!(
         registry.native_focus(WebviewId(7), false),
         FactOutcome::Dropped
@@ -543,7 +595,7 @@ fn unmapped_and_teardown_facts_never_reach_the_live_writer() -> TestResult {
 fn retired_pair_is_stale_even_for_a_different_attempt() -> TestResult {
     let mut registry = ready();
     let window = complete(&mut registry, owner(1), 1, 7)?;
-    registry.native_close(WebviewId(7));
+    allow_native_close(&mut registry, WebviewId(7))?;
     registry.native_released(WebviewId(7));
     assert_eq!(
         registry.set_maximized(owner(2), window, true),
@@ -556,7 +608,7 @@ fn retired_pair_is_stale_even_for_a_different_attempt() -> TestResult {
 fn stale_role_loss_does_not_clear_a_successor_deferred_last_window_check() -> TestResult {
     let mut registry = ready();
     complete(&mut registry, owner(1), 1, 7)?;
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     registry.subscribe_successor(owner(2));
     // Claim the survivor so the next Create genuinely starts a native build.
     let WindowEvent::Created { window, .. } =
@@ -568,10 +620,10 @@ fn stale_role_loss_does_not_clear_a_successor_deferred_last_window_check() -> Te
         .set_maximized(owner(2), window, true)
         .expect("claim survivor");
     let (build, _) = begin(&mut registry, owner(2), 2)?;
-    registry.native_close(WebviewId(7));
+    allow_native_close(&mut registry, WebviewId(7))?;
     registry.native_released(WebviewId(7));
     assert!(registry.deferred_last_window);
-    registry.role_lost(owner(1));
+    registry.role_lost(owner(1), |_| {});
     assert_eq!(registry.native_failed(build).last_window, Some(owner(2)));
     Ok(())
 }
@@ -580,7 +632,7 @@ fn stale_role_loss_does_not_clear_a_successor_deferred_last_window_check() -> Te
 fn retired_native_fact_counter_is_saturating_and_reported_once_after_drain() -> TestResult {
     let mut registry = ready();
     complete(&mut registry, owner(1), 1, 7)?;
-    registry.native_close(WebviewId(7));
+    allow_native_close(&mut registry, WebviewId(7))?;
     registry.native_released(WebviewId(7));
     registry.destroyed_fact_drops = u64::MAX;
     assert_eq!(

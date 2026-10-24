@@ -8,12 +8,18 @@ use keld_ipc::channel_table::{Authority, ReceiveClass};
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{CorrelationId, FrameKind};
 use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
-use keld_ipc::window::{Rect, WindowEvent, WindowId, WindowRequest, WindowResponse, WindowState};
+use keld_ipc::window::{
+    CloseVerdict, Rect, WindowEvent, WindowId, WindowRef, WindowRequest, WindowResponse,
+    WindowState,
+};
 use keld_ipc::{CallError, LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleResponse, SubscribeRefusal};
 use keld_wv::{AppWindowCommand, AppWindowEvent, WebviewId, WindowSnapshot};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
+
+mod close_failures;
+mod close_policy;
 
 #[cfg(any(target_os = "linux", windows))]
 use super::super::DirectPrimaryOwnerCommand as OwnerCommand;
@@ -206,6 +212,120 @@ fn snapshot() -> WindowSnapshot {
         full_screen: false,
     }
 }
+
+fn reply(fixture: &mut Fixture, correlation: u32, expected: WindowResponse) -> TestResult {
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.channel, header.corr),
+        (
+            FrameKind::Reply,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(correlation)
+        )
+    );
+    assert_eq!(decode::<WindowResponse>(&bytes)?, expected);
+    Ok(())
+}
+fn fact(fixture: &mut Fixture, expected: WindowEvent) -> TestResult {
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.channel, header.corr),
+        (
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0)
+        )
+    );
+    assert_eq!(decode::<WindowEvent>(&bytes)?, expected);
+    Ok(())
+}
+fn verdict(
+    fixture: &Fixture,
+    window: WindowRef,
+    close_seq: u64,
+    verdict: CloseVerdict,
+    correlation: u32,
+) -> TestResult {
+    fixture.call(
+        &WindowRequest::CloseReply {
+            window,
+            close_seq,
+            verdict,
+        },
+        correlation,
+    )
+}
+fn install_successor(fixture: &mut Fixture) -> TestResult {
+    let successor = Fixture::new(None)?;
+    let server = successor
+        .handle
+        .current
+        .lock()
+        .map_err(|_| std::io::Error::other("successor lock poisoned"))?
+        .take()
+        .ok_or_else(|| std::io::Error::other("successor active absent"))?
+        .writer;
+    fixture.peer = successor.peer;
+    fixture
+        .handle
+        .install_generation(2, server)
+        .map_err(|failure| failure.error)?;
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.channel),
+        (FrameKind::Event, LIFECYCLE_CHANNEL)
+    );
+    assert_eq!(decode::<LifecycleEvent>(&bytes)?, LifecycleEvent::Ready);
+    Ok(())
+}
+
+#[test]
+fn native_close_holds_one_exact_fact_and_merges_repeated_attempts() -> TestResult {
+    let mut fixture = Fixture::new(Some(true))?;
+    fixture.subscribe()?;
+    fixture.ready()?;
+    let window = fixture.build(1, 7)?;
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+    assert!(
+        fixture.commands.try_recv().is_err(),
+        "close cannot enqueue teardown before a verdict"
+    );
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.channel, header.corr),
+        (
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0)
+        )
+    );
+    assert_eq!(
+        decode::<WindowEvent>(&bytes)?,
+        WindowEvent::CloseRequested {
+            window,
+            close_seq: 1
+        }
+    );
+    fixture
+        .handle
+        .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })?;
+    // A correlated reply is an explicit writer fence: an extra close fact would
+    // be read before this reply and fail the exact frame assertion.
+    fixture.call(&WindowRequest::RequestClose { window }, 2)?;
+    let (header, bytes) = read_frame(&mut fixture.peer)?;
+    assert_eq!(
+        (header.kind, header.corr),
+        (FrameKind::Reply, CorrelationId(2))
+    );
+    assert_eq!(
+        decode::<WindowResponse>(&bytes)?,
+        WindowResponse::Merged { close_seq: 1 }
+    );
+    assert!(fixture.commands.try_recv().is_err());
+    Ok(())
+}
 #[test]
 fn window_router_subscription_precedes_ready_and_body_decoding() -> TestResult {
     let mut fixture = Fixture::new(Some(true))?;
@@ -276,11 +396,15 @@ fn window_router_native_snapshot_identity_and_setter_wire_are_actual() -> TestRe
     Ok(())
 }
 #[test]
-fn window_router_refuses_t2_calls_without_implementation_or_effects() -> TestResult {
+fn window_router_forged_close_calls_are_typed_without_native_effects() -> TestResult {
     let mut fixture = Fixture::new(Some(true))?;
     fixture.subscribe()?;
     fixture.ready()?;
-    let window = fixture.build(1, 7)?;
+    let live = fixture.build(1, 7)?;
+    let window = keld_ipc::window::WindowRef {
+        incarnation: keld_ipc::window::WindowGeneration(live.incarnation.0 + 1),
+        ..live
+    };
     for (corr, request) in [
         (2, WindowRequest::RequestClose { window }),
         (
@@ -297,7 +421,7 @@ fn window_router_refuses_t2_calls_without_implementation_or_effects() -> TestRes
         fixture.error(corr, "KELD-CORE-038")?;
         assert!(
             fixture.commands.try_recv().is_err(),
-            "T2 stage refusal has no native effects"
+            "a forged close call has no native effects"
         );
     }
     assert_eq!(
@@ -825,6 +949,15 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
         .handle
         .window_native_event(AppWindowEvent::WindowCloseRequested { view: WebviewId(7) })
         .expect("native close request");
+    fact(
+        &mut fixture,
+        WindowEvent::CloseRequested {
+            window: first,
+            close_seq: 1,
+        },
+    )?;
+    verdict(&fixture, first, 1, CloseVerdict::Allow, 3)?;
+    reply(&mut fixture, 3, WindowResponse::ReplyApplied)?;
     assert_eq!(
         fixture
             .commands
@@ -854,25 +987,7 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
         .handle
         .retire_generation(1)
         .expect("retire old link");
-    let successor = Fixture::new(None)?;
-    let server = successor
-        .handle
-        .current
-        .lock()
-        .expect("successor fixture")
-        .take()
-        .expect("server")
-        .writer;
-    fixture.peer = successor.peer;
-    fixture
-        .handle
-        .install_generation(2, server)
-        .expect("install actual successor component stream");
-    let (_, bytes) = read_frame(&mut fixture.peer).expect("retained Ready");
-    assert_eq!(
-        decode::<LifecycleEvent>(&bytes).expect("Ready"),
-        LifecycleEvent::Ready
-    );
+    install_successor(&mut fixture)?;
     write_frame(
         &mut fixture.peer,
         FrameKind::Call,
