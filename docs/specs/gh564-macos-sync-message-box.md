@@ -61,6 +61,13 @@ Non-goals:
   and the [October 24 real-Mac oracle](https://linear.app/gyldlab-keld/document/electron-4445-macos-drawio-closequit-oracle-24-oct-2026-1718a506d0c7).
   The 75 source-shaped Electron traces are an **upstream** oracle, not a
   KELD native or unmodified installed draw.io acceptance run.
+- Exact draw.io Desktop
+  [`jgraph/drawio-desktop@2edf9fb:src/main/electron.js:849-939`](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js)
+  sets `modifiedModalOpen` **before** `showMessageBoxSync`, calls it
+  with `type:'question'`, `title:'Confirm'` and `noLink:true` at
+  lines 876–887, and destroys the window on an application
+  `saveAndClose-result.success` at lines 896–905. These are distinct
+  source facts from native user choice and durable file persistence.
 
 No architecture amendment to GH527/GH531 is authorized by this draft.
 GH478 and this specification need separate approval before their respective
@@ -76,7 +83,13 @@ returns the **actual clicked** index **0/1/2**, respectively, as a primitive
 `number` **before** the caller executes the next statement. It is finite,
 integer, in the admitted button range, and **not thenable**. Each of three
 choices is a separately witnessed native click; echoing the default does
-not pass. `normalizeAccessKeys:true` follows the pinned macOS button labels.
+not pass. The exact caller also supplies `type:'question'`,
+`title:'Confirm'`, `noLink:true` and `normalizeAccessKeys:true`.
+`noLink` must be accepted as a validated macOS **no-op**, not rejected
+because its visual effect is Windows-only in Electron 44.4.5;
+`title` is accepted with measured native presentation semantics, even if
+macOS does not visually show it. These required keys cannot be discarded by
+an over-restrictive shared GH478 broker allowlist.
 
 **S2 — parented and independent dialogs.** A real visible, caller-owned
 Host WindowRef displays one parent-attached macOS **sheet**. A request
@@ -137,6 +150,10 @@ retried and a late native click is fenced. A finite **human-interaction**
 deadline is separate from the existing bounded 5 s frame I/O and
 Host/Guardian shutdown deadlines; expiry cancels the native panel.
 Host shutdown does **not** wait the full user-interaction duration.
+Existing GH527 `WorkerLink` local `abandon` is **not** an AppKit
+dismissal; the GH478 same-link nonce/Cancel proposal must satisfy its
+separately approved physical cleanup bound after caller timeout, even
+with delayed Host admission and when JS has already resumed by throwing.
 
 **S9 — user Cancel versus terminal failure.** A *real* macOS Cancel
 button/Escape mapped by Electron's `cancelId` is the actual numeric
@@ -154,8 +171,13 @@ loading the pinned unmodified draw.io main and renderer yields:
 3. Cancel retains same dirty native window, same renderer document content
    and clears the app's modal guard via the normal successful return path.
 4. Save returns index 0 but cannot itself destroy the window; only an
-   application-correlated durable Save acknowledgement leads to `destroy`
-   and one `closed`. Failed Save leaves the dirty window alive.
+   **application-correlated Save success acknowledgement** leads draw.io
+   to call `destroy` and produce one `closed`. This app acknowledgement
+   alone proves neither persisted file contents nor `fsync` durability.
+   Independently reopen and compare the actual saved document bytes on
+   disk in native Mac acceptance; failed/canceled Save retains the dirty
+   window and original unsaved content. Never substitute the app's boolean
+   for a persistent-content receipt.
 5. Discard returns index 2; application draft deletion is an independent
    contract. A cross-window global `draftRemoved` acknowledgement is a
    **pinned draw.io application-protocol defect hypothesis**, not
@@ -174,6 +196,20 @@ Guardian, Core shutdown and real FS-service deadlines are byte-identical
 or behaviorally proven unchanged. The dialog-specific human clock must
 fit within `MAX_BLOCKING_CALL_DEADLINE_MS`; no infinite wait, `sleep`
 workaround, ambient permission, new global exception or unbounded buffer.
+
+**S13 — preflight and fail-closed error recovery limitation.** Before the
+first dirty-close test, the harness must prove an authenticated Ready
+singleton, exact current `app.system:["dialog"]` policy and a live
+owned parent, then submit the unchanged draw.io event. This preflight
+prevents a known deterministic test-setup refusal; it does **not** change
+the app's `modifiedModalOpen` assignment. On a genuine denial, expiry,
+or link failure after that assignment, the native dialog never forges
+Cancel and the dirty window/content survive. Pinned draw.io may leave
+`modifiedModalOpen=true` and ignore the **next** close. Repeatable close
+after such a failure is explicitly **unsupported/blocked** until a
+separately approved app-recovery compatibility owner proves a source-exact
+adapter or upstream fix. A test must observe the stranded flag effect
+as a known fail; it must not silently score recovery as passed.
 
 ## 4. Design
 
@@ -256,16 +292,47 @@ actual clicked button index after the native panel has settled, not
 defaultId. Multiple messages must not queue indefinitely, and one
 role's abandoned panel never belongs to its next generation.
 
-For the draw.io arm, the public options are exactly the pinned supported
-macOS `buttons`, `defaultId`, `cancelId`, `normalizeAccessKeys`, `message`
-and panel kind. A request for an option GH478 has not approved cannot be
-silently accepted; return a typed unsupported/native error **before UI**.
-A placeholder that always throws is not an acceptable first-proof outcome
-because draw.io's `modifiedModalOpen=true` may remain set. Nevertheless,
-a genuine permission/lifecycle failure must **never** be swallowed into a
-synthetic Cancel: preserve the dirty document/window and report the
-failing effect. An application-level recovery adapter, if needed, belongs
-on its own approved compat ticket with a pinned oracle.
+The **entire actual unmodified draw.io options object** at pinned lines
+876–887 must reach the **same** GH478 native message broker:
+
+```ts
+{
+  type: "question",
+  buttons: ["Save", "Cancel", "Discard Changes"],
+  defaultId: 0,
+  cancelId: 1,
+  noLink: true,
+  normalizeAccessKeys: true,
+  title: "Confirm",
+  message: "The document has unsaved changes. Do you want to save them?",
+}
+```
+
+GH478's shared typed allowlist must admit **all** these keys and their
+correct values before panel creation; `type` is a real enum,
+`title` a bounded string and `noLink` a boolean that has **no native
+effect on macOS** under the pinned Electron 44.4.5 contract. Electron
+allows title even if the OS does not show it. GH564 must not silently
+drop a key or invent a platform-specific rejection. Unknown additional
+keys, wrong types and out-of-range indexes remain typed failures before
+UI. Each original native button click (0/1/2) must be observed on a
+visible Mac panel, independently of a mocked fixture.
+
+Before exercising that call, the installed-app harness verifies
+`Ready`, the already established role link, current exact
+`app.system:["dialog"]` grant, host-owned window and approved native
+message backend. Failure of this **external preflight** marks the product
+test **blocked** before driving dirty close; it does not change the
+unmodified application's own state transitions. Once draw.io has set
+`modifiedModalOpen=true`, a genuine typed permission/lifecycle/native
+failure must **never** be swallowed into synthetic Cancel. Pinned lines
+849–939 only clear that flag on normal return branches, so a thrown
+failure can strand it and make a later Close a no-op. The dirty window
+and bytes must survive; **post-failure repeatable Close is an explicit
+unsupported dependency** requiring a separately approved upstream
+fix or application compatibility adapter with a source-exact failing
+test. No KELD Host state reset or cross-window workaround may clear
+an application-private variable.
 
 ### 4.4 Error, deadline and backpressure contract
 
@@ -276,11 +343,34 @@ on its own approved compat ticket with a pinned oracle.
   terminal semantics, no replay/auto-retry and no fabricated integer.
 - Reentrant `callBlocking` from a framework state applier: existing
   `KELD-IPC-005` refusal, no user-code reentrancy introduced by the shim.
+- Concurrent dialog from another role-owned async task: GH478
+  Host-owned `DialogBusy` before a second panel, distinct from the
+  transport's `KELD-IPC-005`.
 - Interaction deadline: **proposal** `600_000` ms, borrowed from unapproved
   GH478 spec; must be jointly approved before code. It is finite, below
   existing `MAX_BLOCKING_CALL_DEADLINE_MS=86_400_000`, and is **not** the
   `APP_LINK_IO_DEADLINE_MS` (currently 5,000 ms for frame I/O).
   Do **not** extend Host20/Guardian10/Cleanup5/KIPC policy clocks.
+- Caller deadline and native deadline are measured on distinct clocks.
+  `WorkerLink.callBlocking` currently sends `abandon` only to its
+  transport Worker; a `KELD-IPC-006` throw does not dismiss AppKit.
+  Before the normal blocking CALL, GH564's existing-link adapter must
+  generate one bounded nonce in the shared GH478 request payload.
+  If `callBlocking` expires, that same adapter posts GH478's proposed
+  `Cancel { nonce }` as a **new bounded asynchronous CALL over the same
+  WorkerLink**, without waiting in user JS, masking the original
+  exception or retrying the original side effect. If the existing link
+  has died, GH478's Host role-retirement owner must close its panel.
+  Host-side cancellation checks the authenticated role/generation,
+  retains a bounded tombstone before queued presentation, prevents
+  late UI and releases the real native handle on the UI thread. No
+  second socket, Worker, protocol version or custom transport is allowed.
+  The proposed observable limits are **10 s from local timeout while
+  link remains live** and **5 s from Host-observed role/link loss**;
+  final values and delivery correctness are still GH478/GH527/Core
+  approval gates, including forced-late-admission and modal-run-loop
+  negative controls. A local Cancel request/ACK without native release
+  is a failed test, not a completion receipt.
 - Retained event traffic stays under GH527's existing byte/record budgets;
   >8 KiB is a correctness test for drain/replay, not authorization to
   allocate an additional ring or enable T4 credit without measurements.
@@ -338,9 +428,11 @@ After both required spec approvals, implementation belongs **only** in:
   WorkerLink; no edit to the transport internals.
 - `packages/@keld/electron/src/dialog.ts` and `src/index.ts`: matching
   named/default export and strict Electron result mapping.
-- GH478's already existing `crates/keld-native/src/dialog.rs` and its
-  approved Core/WV native ownership/permission seam as a **consumer**, not
-  a second native implementation.
+- GH478's **future** `crates/keld-native/src/dialog.rs`, to be created
+  by the GH478 owner **after draft PR #1161 approval**; this file does
+  not exist on the reviewed repo head. GH564 later consumes that
+  broker and its approved Core/WV native ownership/permission seam,
+  rather than treating an unimplemented file as a ready dependency.
 - GH477's `electron-native-v1` mapped cell and test when it is approved/
   landed, with the implementing-ticket flip in the same source change.
 
@@ -355,7 +447,9 @@ fresh winning claim, not a direct patch into another issue's worktree.
 ## 6. Tasks (one concern per held PR; ordered dependencies)
 
 - [ ] T1: obtain exact-content approval for this GH564 spec and GH478's
-      upstream message-broker contract, including shared interaction clock.
+      upstream message-broker contract, including source-exact message
+      options, architecture path-only rule, same-link cancellation and
+      shared interaction/cleanup clocks.
 - [ ] T2: consume the already-published GH477 expected-fail sync cell
       (draft #1156); keep it fail before the implementation, no duplicate
       parser/denominator and no 44.3.0 lifecycle re-pin.
@@ -363,13 +457,16 @@ fresh winning claim, not a direct patch into another issue's worktree.
       singleton/WorkerLink, and tests that distinguish absent/connecting/
       live/terminal states without a second HELLO.
 - [ ] T4: consume GH478's guarded real NSAlert operation, actual parent and
-      clicked-index mapping, and bounded native cleanup on role loss.
+      clicked-index mapping, and bounded native cleanup on role loss,
+      local `callBlocking` expiry and late Host admission.
 - [ ] T5: compose the sync UI result and GH527 parked event/mirror semantics
       with >8KiB incoming events; test native default-only completion and
       actual Host Quit/role loss separately.
 - [ ] T6: flip GH477's single implementing-ticket cell to pass **only in
       this implementing diff** and prove real unmodified draw.io
-      Close→Cancel/Save/Discard acceptance on a Mac.
+      Close→Cancel/Save/Discard acceptance on a Mac, with independently
+      reopened saved content and a clearly labelled unsupported error-
+      recovery repeat-close scenario.
 - [ ] T7: run actual final full local/hosted required CI, CodeRabbit or
       independent nonauthor exact-head review, permission/public API/wire
       review and OS acceptance before any merge or compatibility score.
@@ -381,18 +478,19 @@ when only T3 or T4 has a passing mock.
 
 | AC | Positive observable | Independent negative control |
 |---|---|---|
-| S1 | macOS actual 0/1/2 click; sync primitive and no Promise | Replace with async Promise / always return defaultId; 1/2 clicks fail |
+| S1 | Submit the exact draw.io `type:'question'`, `title:'Confirm'`, `noLink:true` object, observe actual macOS 0/1/2 clicks; sync primitive and no Promise | Reject inert `noLink`, drop `title` or substitute Promise/defaultId: real source admission or non-default click fails |
 | S2 | visible parent sheet and hidden/absent fallback | Stale WindowRef attaches to recycled parent and fails |
 | S3 | one cached authenticated realm link; pre-Ready throws synchronously | Open second Worker/HELLO or await Promise; one-link/return-shape test fails |
 | S4 | main JS suppressed during real modal; async positive control interleaves | Execute a timer/IPC listener while parked and parity trace fails |
 | S5 | real >8KiB queued facts, pre-reply state applied before return, listeners later | Dispatch listener during wake or drop last EVENT; exact ordering fails |
 | S6 | exact guard denial, native panel creation census zero | Remove guard before UI and denial/no-panel fails |
-| S7 | kill authenticated role while real alert outstanding, panel reaped and next call works | Drop native cancellation; typed wake still occurs but native census fails |
-| S8 | expiry/link loss throw typed, no clicked index, terminal Host remains bounded | Return Cancel on timeout or wait full human deadline on Quit; fail |
+| S7 | Kill authenticated role while real alert outstanding, panel reaped and next call works; old generation Cancel cannot close successor's panel | Drop native cancellation; typed wake still occurs but native census fails |
+| S8 | Delay Host admission past local caller timeout, observe one same-link nonce/Cancel, real panel absent/dismissed within proposed bound and healthy next call; link-loss path/terminal Host remain bounded | Drop Cancel relay, force UI cancellation onto default-mode-only dispatcher or synthesize Cancel: late native handle remains or wrong result appears |
 | S9 | real clicked Cancel=1 while wrong terminal outcome is error | Treat kernel/role failure as ESC press; distinguishable witness fails |
-| S10 | unmodified draw.io dirty text survives Cancel/failed Save; successful Save ACK before destruction | Omit immediate preventDefault, cross-bind stale save or skip durable receipt; fail |
+| S10 | Unmodified draw.io dirty text survives Cancel/failed Save; correlate app Save-success ACK to destruction, then independently reopen the saved file and compare modified bytes | Treat the app ACK as disk proof, omit immediate preventDefault, cross-bind stale Save or skip the independent file read: fail |
 | S11 | GH566 corpus flips only on real Mac pass, frozen lifecycle unchanged | Remove mapped test/keep implementing ticket after pass; validator fails |
 | S12 | exact existing Host/Guardian/link limits, no global buffer growth | Inflate existing deadlines/add second link; contract and resource diff fail |
+| S13 | Verify current Ready/grant/parent **before** triggering dirty-close, then force an after-flag dialog error: dirty window/bytes survive, repeat Close's known blocked state is recorded as unsupported | Pretend the failed dialog clicked Cancel or score a later close as working without the source-exact recovery adapter: negative fails |
 
 Test fixture pins: Electron v44.4.5 and drawio-desktop
 `2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e`, webapp submodule
@@ -436,10 +534,13 @@ bounded queue and record order, no second buffering layer.
 
 ## 10. Open questions (must be closed before Status: approved)
 
-1. **Shared dialog interaction bound:** accept or revise GH478's proposed
-   **600,000 ms** distinct human UI budget. It must remain finite,
-   below GH527's existing 24 h `MAX_BLOCKING_CALL_DEADLINE_MS`, and never
-   replace/extend existing Host20/Guardian/KIPC I/O bounds.
+1. **Shared dialog interaction and cancellation bounds:** accept or
+   revise GH478's proposed **600,000 ms** distinct human UI budget,
+   **10 s live-link local-timeout native close** and **5 s Host-observed
+   role/link-loss native close**. Validate the proposed same-channel
+   `Cancel { nonce }`, bounded tombstone and late-admission ordering on
+   real macOS with GH478/GH527/Core owners. Local Worker `abandon` is
+   insufficient; never replace or extend Host20/Guardian/KIPC clocks.
 2. **GH478 platform-native completion:** approve the exact alert/parentless
    callback scheduling with measured UI-loop cleanup and any required objc2
    unsafe allowance; do not assume all native CFRunLoop modes execute the
@@ -451,11 +552,22 @@ bounded queue and record order, no second buffering layer.
 4. **Native error-code allocation:** consume GH478's eventual accepted
    typed errors and KELD's canonical error registry, never reserve guessed
    `KELD-NATIVE-*` numeric codes in this draft.
-5. **Effect-unknown application recovery:** document whether an unmodified
-   draw.io role with a thrown native failure can continue closing cleanly
-   (its app-owned `modifiedModalOpen` flag may remain true). The normal
-   success path must work; any failure adaptation is a separate approved
-   compat decision, not a fabricated Cancel or a silent save.
+5. **Effect-unknown application recovery:** the **source-backed first
+   proof limitation is explicit**: pinned draw.io's app-owned
+   `modifiedModalOpen` can remain true after a thrown dialog failure,
+   and repeatable Close is **unsupported** then. Preflight avoids
+   deterministic fixture misconfiguration; it cannot repair a later
+   runtime error. The normal 0/1/2 path is required. The GH564/compat
+   owner must open and approve a separate, source-exact app-recovery
+   ticket before claiming repeatable Close after such errors; it may
+   not synthesize Cancel, clear app-private state from Host or silently
+   count this as a pass.
+6. **Pinned message-argument compatibility:** approve GH478's typed
+   admission of `type:'question'`, `title:'Confirm'` and macOS-inert
+   `noLink:true` alongside the exact draw.io buttons and indexes.
+   Run unchanged caller and invalid-type/unknown-field controls; until
+   both specs agree and a native Mac panel reproduces the result,
+   keep the GH477 synchronous cell expected-fail.
 
 Approving this specification does **not** approve or implement GH478,
 complete GH450 native close, integrate GH445/GH446 Ready, qualify
