@@ -3,6 +3,7 @@
 //! manifest mutation aimed at another rule rehashes the denominator, and every control
 //! asserts the exact `CorpusError` variant (gh566 §7, "Negative-control routing").
 
+mod gh500_partitions;
 mod v1_fixture;
 mod v1_manifest;
 mod v1_runs;
