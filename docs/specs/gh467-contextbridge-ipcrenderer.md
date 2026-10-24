@@ -3,7 +3,7 @@
 Status: draft
 **Approval/production qualification: BLOCKED** by unproved secure
 first-inline callable publication and owner-approved dual-world binding.
-Linear: GH-467 (#517 GitHub tracker of record; KEL-127 reference) · Owner: @0monish · Updated: 2026-10-24
+Linear: GH-467 (#517 GitHub tracker of record; KEL-127 reference) · Owner: @0monish · Updated: 2026-10-25
 
 > **Decision gate:** This is a proposed specification, not approved implementation.
 > No app-facing API, third-world injection, security grant, native qualification,
@@ -28,9 +28,30 @@ not the WebKit application-preload loader. GH-484 owns the loader, world selecti
 handler and source containment; GH-540 owns transport and credits. Landing a
 successful JS unit test or a synthetic response is not sufficient.
 
+**Selected first-proof product scope (Option A, security approval pending):**
+use a **predeclared document-start page facade** with exactly four callable
+methods `request`, `registerMsgListener`, `sendMessage`, `listenOnce`
+bound, after private registration, to the **actual unmodified pinned draw.io
+preload** in the separate app content world. Copy/freeze only the pinned
+`process.type` and real session-derived `process.versions` values. A page
+world message never authenticates a method or its caller and never grants
+native or Bun authority. General arbitrary/dynamic
+`contextBridge.exposeInMainWorld(key, api)` graph publication is **Option B,
+not accepted by this first proof**. Every unimplemented, doc-cited
+GH464 `contextBridge` cell remains **expected-fail** (or an expressly
+owner-approved and recorded divergence), not UNKNOWN or PASS merely
+because the fixed draw.io facade works. UNKNOWN is reserved for
+genuinely unqualified/uncited engine observations.
+This is an explicit, draw.io-specific Electron compatibility divergence,
+not a claim of full contextBridge parity. The scoped product direction is
+recorded on [GH467](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361);
+it does **not** satisfy this specification's independent approval gate.
+
 Non-goals for this first-proof slice:
 
-- General Electron API support, `ipcRenderer.invoke`, `sendSync`, synchronous
+- Arbitrary graph publication under the full dynamic Electron
+  `contextBridge` API, generic third-party preload parity,
+  `ipcRenderer.invoke`, `sendSync`, synchronous
   or function-valued **cross-world returns**, `contextBridge.executeInMainWorld`
   or `exposeInIsolatedWorld`, arbitrary Promise crossing, Node integration or
   renderer native OS grants.
@@ -121,12 +142,12 @@ separate page-to-preload callable publication mechanism.
 
 | ID | Given / when | Independently observed pass condition |
 | --- | --- | --- |
-| C01 | GH-484 installs the real app-world preload for a new main-frame document | Before the **first inline page script**, both `window.electron` and `window.process` expose the **actual registered** accepted members as callable/copy-owned values through a secure native-qualified publication path; the page has no app-world globals or KELD native handler. A marker, eventually-filled object or F0 DOM handshake is insufficient. |
-| C02 | Preload exposes a string-keyed function/data graph | Exposed primitive/array/ordinary-object data are copied; page graph is recursively frozen and non-writable/non-configurable at the top-level key. Mutating page data does not affect preload data and vice versa. |
+| C01 | GH-484 installs the real app-world preload for a new main-frame document | Before the **first inline page script**, `window.electron` has exactly the **four predeclared callable methods** and `window.process` has only copied/frozen pinned facts **from the actual preload/session**. Independently prove the **unmodified real preload executed, registered each expected method and completed its conditional `.configuration` seed before first inline**; otherwise visible static wrappers alone must **not** pass. Each effect-bearing callable later resolves only to the matching **actual registered** current app-world method, never a page-chosen one. No *trusted or app-world* native handler, credentials, Node globals or bind authority are exposed to the page. **GH484 AC17 currently forbids even an unprivileged page-world native endpoint; Option A's cross-world ingress remains unapproved pending Q1 owner choice.** This is **not** a general dynamic `contextBridge` PASS; a late-filled method, synthetic seed or F0 DOM handshake is insufficient. |
+| C02 | The proposed Option A facade exposes copied process data and allowed local argument snapshots | Page `process` data are independently copied, recursively frozen and non-writable/non-configurable at the top-level property; mutating either side does not affect the other. Supported argument snapshots preserve the separate **mutable copy** requirement in C03. Arbitrary exposed application graphs remain outside the Option A parity claim. |
 | C03 | Page invokes a proxied preload function with an ordinary object | The preload receives a **mutable copied object**, can assign `msg.reqId` and delete `msg.listener`; page's original object remains unchanged. Freeze-on-all-crossings fails. |
 | C04 | A callback is nested in an object argument (`watchFile`) | Preload retains the same bounded callback slot across N distinct values in issue order; each event releases its own native/ring reservation without freeing the still-live multi-fire callback. Unsubscribe/role-bound retirement/document replacement frees the slot once. No callback appears in IPC codec bytes. |
-| C05 | Page registers functions via `request`, `registerMsgListener`, `sendMessage`, `listenOnce` | All four exist as callable **void-return** preload proxy methods. Callback/exception observation belongs to the page; no synthetic returned cross-world Promise qualifies. |
-| C06 | Exposed API contains nested functions | Every admitted function is callable through a document-bound proxy in either direction; repeat calls and same-reference argument behavior are tested against upstream fixtures. |
+| C05 | The unmodified pinned preload registers `request`, `registerMsgListener`, `sendMessage`, `listenOnce` | All four predeclared page methods are callable with **void returns**, but effect-bearing calls dispatch only to their current verified private app-world function slots. Missing/mismatched registrations fail closed; no synthetic returned cross-world Promise or manufactured `mainResp` qualifies. |
+| C06 | Full Electron dynamic `contextBridge` exposes an arbitrary admitted nested function graph | **Deferred / not a first-proof PASS.** The fixed four-method draw.io facade and its explicitly supported nested *argument callback* in C04 do not establish arbitrary dynamic graph publication, generic nested function identity or upstream parity. Keep every unimplemented **doc-cited GH464** contextBridge row `expected_verdict:fail` (or an independently approved recorded divergence) until an owner-approved Option B and real engine proof; do not mislabel pinned failures UNKNOWN. |
 | C07 | Page accesses error-copy row | Supported local Error crosses as owned name/message and registered code, with unapproved stack omitted; a native/Host/process path or raw cross-world Error reference is never exposed. Pinned Electron stack differences remain UNKNOWN/divergence until observed. |
 | C08 | `ipcRenderer.send` gets admitted channel and supported values | Local return is `undefined`, argument array snapshots before async admission, actual named topic reaches one real `ipcMain.on` listener through Host; no numeric invoke or second transport. |
 | C09 | `ipcRenderer.on/once/off/addListener/removeListener/removeAllListeners` manage listeners | Registration order, duplicate handling, reentrant once-before-callback removal, original-listener removal, zero-late-delivery and exception cleanup match pinned cases for supported domain. |
@@ -140,7 +161,7 @@ separate page-to-preload callable publication mechanism.
 | C17 | Preload page navigates, reloads, closes or Bun role recovers | Document-owned proxy/listener retention terminates for a retired document, surviving doc API remains only if host lifecycle admits it, old queued calls do not replay or retarget, other WebViews stay isolated. |
 | C18 | Attempts to pass `Function`, `Promise`, `Symbol` or other disallowed values through **IPC** | GH-544's supported IPC domain is enforced synchronously with no Bun write; a *local contextBridge function proxy* must not be misclassified as an IPC payload. |
 | C19 | Unsupported/unknown Electron API or graph exceeding §4.3 depth, entries, strings, proxies, callbacks or retained bytes is requested | An allocated distinct typed KELD-COMPAT local bridge refusal occurs before partial exposure/retention; no silent truncation, unauthorized native effect, leaked handle or fabricated parity PASS. 0/max/max+1 independently exercise each bound. |
-| C20 | Compatibility is scored/published | Every mapped GH-464 row has pinned source, expected verdict, implementing-ticket key and recorded device. Missing/untested API stays expected-fail; observed-only cross-navigation or Symbols remain UNKNOWN until proper oracle. |
+| C20 | Compatibility is scored/published | Every mapped GH-464 row has pinned source, expected verdict, implementing-ticket key and recorded device. The fixed draw.io facade is explicitly labelled a narrower, app-specific divergence; **all unmet doc-cited contextBridge rows** (including general dynamic functions, copy, Error and Symbol cells, not only C06) stay expected-fail unless separately approved as a documented divergence. Truly uncited engine observations stay UNKNOWN until qualified. No row flips to PASS from wrapper visibility alone. |
 | C21 | A hostile same-origin page probes preload or KELD internal handlers | Directly forged shared-DOM events, guessed proxy/callback IDs or descriptor changes cannot invoke an unexposed preload function, bind a native role or produce a forbidden Bun effect. The page cannot read/call the trusted KELD handler, role endpoint, native stamp, Host grant or raw ipcRenderer. Allowed exposed wrappers still operate within exact Host grants. |
 | C22 | Electron v44.4.5 target is used | The doc-versus-native Symbol discrepancy is resolved by **pinned executable** oracle or an explicitly approved documented divergence before claiming the Symbol cell PASS (GH-464 has same gate). |
 
@@ -182,8 +203,14 @@ No generic bridge rewriting these primitives is justified.
 There are exactly three logical JavaScript world roles:
 
 1. **Page world**: untrusted draw.io HTML and potentially hostile same-origin
-   JS; may access only the explicitly published `window.electron` and copied
-   `window.process` objects. No Node, raw message handler, host bind or grant.
+   JS; the **current unamended GH484 contract** admits only the explicitly
+   published `window.electron` and copied `window.process` objects, no
+   native page-world handler, Node, app/trusted native handler, host bind or
+   grant. The F0 page-native carrier would violate that contract and is
+   **not** silently authorized by choosing Option A. A separate page-visible
+   data-only carrier could be proposed only through GH484/KEL-142 owner's
+   explicit reviewed AC17/architecture amendment; even then it is merely
+   untrusted request input, never an app/trusted-world credential or principal.
 2. **App preload world**: app-supplied sandboxed preload via GH-484
    `WKContentWorld`, with a **separate** world-scoped handler. It can call
    only the GH-540 compat route admitted by Host and GH-541/542/552. It cannot
@@ -220,41 +247,75 @@ ordinary arguments to exposed methods, but cannot supply a credential,
 proxy-table authority, native handler destination or admitted role.
 No page-world carrier may confer a callable or privileged native handle.
 
-**BLOCKED — synchronous full-API publication proof:** no supported
-production mechanism has yet been shown to construct *the actual
-unmodified preload's registered functions*, deliver their callable
-proxies into page world before the first inline script, and bind later
-calls to the correct app function **without trusting shared DOM**.
-Simply using a native handler for app-origin messages does not establish
-page→app method identity or first-inline ordering. GH-484 must name
-its supported platform primitive and producer/consumer/teardown
-ownership; GH-467 must demonstrate dynamic graph publication, same
-function identity, mutable argument copies and nested callbacks through
-that primitive on real WKWebView. In a hostile first-inline page, direct
-DOM event forgery, guessed proxy ids and altered descriptors must cause
-zero unexposed-function effects, zero forbidden native/Bun effects and
-no access to the KEL-142 world. Independently record a real Host/Bun
-granted call, a denied `el:` call and original-document delivery.
-Until that evidence and the #540/#542/#552 owner approvals exist,
-**no production callable bridge or fallback is authorized**. If the
-first-inline contract is infeasible, return to GH-441/#484 for a
-reviewed architecture/acceptance change.
+**BLOCKED — production-qualified first-inline publication:** Option A
+predeclares only the pinned four page functions and copied `process`
+facts, as a fixed `WKUserScript` in the untrusted page world at document
+start. The *actual* unmodified preload must separately execute and
+register those exact functions in GH-484's app world. Later wrapper
+calls must reach only the matching current-document private registered
+method, not a page-selected function name or guessed proxy id.
+No supported production seam has yet proved this source, binding,
+timing and Host authorization composition. The independent real-Mac
+[static-wrapper native fixture](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
+observed four predeclared methods at first inline (3/3) and absence
+when omitted (2/2), with synthetic IPC; this is *not* a product proof.
+**Missing approved page→app ingress:** the [test-only F0 native path](https://github.com/gyldlab/keld/issues/467#issuecomment-6388049733)
+used a raw page-world native message handler that GH484 AC17 currently
+forbids. GH484/KEL-142 must expressly select and independently approve
+**either A1**, a different secure supported cross-world transport retaining
+the absolute no-page-handler rule, **or A2**, a narrowly amended
+**data-only untrusted page ingress** with no authority, separate from app
+and trusted world handlers. See the owning [Q1 packet](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710).
+Under a future approved A2, direct page messages would be callable by
+hostile page JS; a permitted method name must take only the same private
+app-method allowlist and final Host grants as the visible wrapper, while
+unexposed or ungranted requests have zero effects. A raw page message
+can never authenticate an app function, mint a world credential or bypass
+the Host's per-call `el:` grant. Neither A1 nor A2 is approved today.
+GH-484 must own the native installation, loader and teardown; GH-467
+must prove original-document bound method/callback routing and mutable
+argument copies. A hostile first-inline page must cause zero effects
+for unexposed operations, forged metadata, missing/stale world binds,
+denied channels and replaced preload source. Independently record a
+real granted Host/Bun call, a denied call and two serial original-page
+main responses with actual native credit release.
+
+Option B's **full dynamic** function-graph publication and general
+cross-world identity remain P0 unproved and **out of scope for an Option A
+first-proof compatibility PASS**. A later complete `contextBridge`
+claim requires its own secure supported WebKit mechanism, independent
+review and GH-464 corpus qualification; no shared-DOM workaround or
+silent score flip is permitted. GH-441's separate-world placement was
+already decided and must not be reopened just to weaken this gate.
+Until Option A's production evidence and #540/#542/#552 owner approvals
+exist, **no production callable bridge or fallback is authorized**.
 
 ### 4.3 Proposed bounded contextBridge graph
 
-This is an explicitly **narrow first-proof** subset, not a promise to
-implement all v44.4.5 types. Supported exposed graph leaves:
+For Option A, expose only the **fixed** four pinned draw.io page methods
+and owned frozen process facts, not an arbitrary runtime-exposed
+function graph. The following bounded data/callback policy still
+applies to its admitted page arguments and nested `watchFile`
+callback, and describes a proposed future Option B general graph
+domain—not a claim that it is already implemented or scored PASS.
+Supported bounded graph leaves:
 `null`, `undefined`, booleans, strings, finite numbers, ordinary arrays
 and plain own-enumerable string-key objects with supported leaves, and
 functions as proxied callable leaves. Errors require the separately
 mapped C07 copy rules; unsupported platform/exotic objects fail
 explicitly rather than silently stringify or read OS state.
 
-- `exposeInMainWorld(apiKey, api)` accepts an approved string key; exact
-  `electron` and `process` from unmodified draw.io are required. Rebinding a
-  non-configurable preexisting page-owned key fails; do not overwrite a
-  hostile page key, use a hidden symbol as authority, or leak the preload's
-  original mutable object.
+- In Option A, the pinned preload may call
+  `exposeInMainWorld('electron', actualRegistry)` and publish its copied
+  `process` values, but the page-visible document-start wrapper has
+  **exactly the four predetermined method slots**. Authentic app-world
+  registration must match those slots before invocation. Unexpected
+  keys/shapes or a second registration fail closed, not silently grant
+  dynamic publication or overwrite the page facade. In Option B,
+  `exposeInMainWorld(apiKey, api)` requires separately approved dynamic
+  page publication. Neither option may overwrite a hostile page-owned
+  property, use a hidden symbol as authority or leak a mutable preload
+  object.
 - For the **exposed graph**, copy primitives/data and recursively freeze
   arrays/objects **in the page**; top-level published `window[apiKey]`
   is read-only/non-configurable. Mutating either original after exposure
@@ -392,8 +453,8 @@ excluded from the GH-544 wire domain. Actual code must use bounded,
 well-typed internal graph tags and refuse unsupported values; it may
 not use an unconstrained public `any` or a generic JSON stringify.
 
-The page-visible draw.io API is exactly the four function names
-listed in `3; a copied `process` object contains **only** copied
+The Option A page-visible draw.io API is exactly the four function names
+listed in §1; a copied `process` object contains **only** copied
 `type` and `versions` published by the original preload. KELD must
 not inject a raw `ipcRenderer`, Bun path, app-link socket or grant
 into the page. The app preload's `require('electron')` resolves to
@@ -538,10 +599,13 @@ the rejection is not counted as application compatibility.
       missing APIs**, with one fault mutation per decision atom.
       No fake missing-API PASS.
 - [ ] **T3 — local facade behavior:** GH-467 implements the approved
-      finite graph copy/proxy, readonly API publication/argument
+      predeclared four-slot page facade, finite copied argument/proxy
+      domain and readonly process facts; dynamic graph acceptance remains
+      deferred. Check actual app-world method registration, argument
       mutability and callback registries with tests that fail on
-      broken freeze, nested proxy or premature callback retirement.
-      Depends on GH-484's accepted no-late-publication primitive.
+      broken freeze, nested argument callbacks, missing actual preload
+      method binding or premature callback retirement.
+      Depends on GH-484's accepted document-start static-publication seam.
 - [ ] **T4 — listener/composition:** implement the approved
       renderer `ipcRenderer` façade against the sole GH-540 transport,
       accepted GH-544 codec and GH-465/#543/466 events.
@@ -571,11 +635,12 @@ readiness, unchecked green CI or mock Host counts as native proof.
 
 | Test / control | AC | Fault inserted; independent expected failure |
 | --- | --- | --- |
-| `BRG001_first_inline` (real WK) | C01,C13 | Delay page API installation until after first page inline script → RED; early API still has zero pre-bind Bun effects. |
+| `BRG001_first_inline` (real WK) | C01,C13 | Delay predeclared four-method page wrapper until after first page inline script → RED; removing only wrapper leaves all four absent. The **unmodified preload's own conditional startup seed** must also be visible before inline (GH484 AC02), not a fabricated wrapper effect. Early API still has zero pre-bind Bun effects. **Do not count the existing F0 raw page handler as an authorized route:** GH484 owner must first select and approve Q1 A1 or A2. Under approved A2, direct page-world calls remain untrusted and use exactly the same private registry/final Host grants as ordinary wrappers, while unexposed/ungranted operations have zero forbidden effects. |
+| `BRG001b_real_registration` (real WK/Host) | C01,C05,C21 | **Leave static page wrapper intact** but suppress only actual app-world `exposeInMainWorld` registration, or bind one name to a different real app function. First-inline wrapper appearance alone cannot PASS C01/C05; missing/mismatched binding must produce zero wrong-function/Host/Bun effects and an independent private failure. Restore correct registered methods and one granted call succeeds; a fake return/canned `mainResp` does not qualify. GH484 separately delays the actual preload's adaptive-colors side effect while keeping page wrapper visible; first-inline conditional seed must go RED. |
 | `BRG002_exposed_freeze` | C02 | Remove recursive freeze / top-level read-only property → page mutation observable. |
 | `BRG003_mutable_arg` | C03 | Freeze receiving argument object → draw.io `reqId` assignment / listener deletion fails. |
-| `BRG004_nested_watch` | C04,C06 | Proxy only top-level functions → nested callback absent; sequence test RED at second differing payload. |
-| `BRG004b_graph_capacity` | C02–C07,C19 | For each 16-depth/256-entry/65,536-byte/64-proxy/64-callback/524,288-retained ceiling, prove 0/max pass and max+1 typed refusal before another allocation; bypass any one reservation → bounded-count observer RED. |
+| `BRG004_nested_watch` | C04 | Proxy only top-level functions in the Option A argument path → nested `watchFile` callback absent; sequence test RED at second differing payload. **Does not qualify deferred generic C06.** |
+| `BRG004b_graph_capacity` | C02–C05,C07,C19 (not deferred C06) | For each 16-depth/256-entry/65,536-byte/64-proxy/64-callback/524,288-retained ceiling actually exercised by Option A data/argument/callback crossings, prove 0/max pass and max+1 typed refusal before another allocation; bypass any one reservation → bounded-count observer RED. This does not qualify arbitrary general dynamic graph capacity. |
 | `BRG004c_multifire_lifetime` | C04,C12,C17 | Two distinct `watchFile` deliveries reuse the same live slot, with per-event native/ring release; unlink or retire document then replay stale callback → zero delivery. Free slot after first event or keep it after retirement → RED. |
 | `BRG005_void_return` | C05 | Add fabricated cross-world Promise or omit exposed method → exact shape/return RED. |
 | `BRG006_error_copy` | C07 | Return raw Error/native path or silently null → name/message/security-cell RED. |
@@ -647,19 +712,33 @@ hide ordering, or infer speed from a small 4 KiB fixture.
 
 ## 10. Proposed decisions and BLOCKED acceptance gates
 
-1. **Q1 — authenticated first-inline function publication, BLOCKED:**
-   GH-484 must show an actual supported WKWebView/native publication
-   mechanism for the *unmodified preload's* function table that is
-   synchronously callable at first inline and never treats page-forgeable
-   DOM descriptors/events as a capability. GH-467 must bind proxy
-   selection/callbacks to that authentic function table and original
-   document. Independent native + Host/Bun counters must distinguish
-   permitted wrapper calls from directly forged DOM events, unexposed
-   functions, stale world and denied `el:` messages, with separate RED
-   mutants. The physical F0 16/16 and 6/6 synthetic-IPC probes prove
-   only timing/callback feasibility. **If no supported secure mechanism
-   exists, return to GH-441/#484 architecture and revise C01/C05
-   before production.**
+1. **Q1 — Option A product first-proof scope selected; security BLOCKED:**
+   For the pinned draw.io only, use the document-start **predeclared
+   four-function** page facade, with source-backed actual app-preload
+   registry and copied frozen `process` facts (GH467 owner packet
+   [selection](https://github.com/gyldlab/keld/issues/467#issuecomment-6390880361)).
+   This deliberately does **not** implement full general dynamic
+   `contextBridge`/C06 and is not a native Electron-parity PASS; GH-464
+   must preserve the unproved generic cells. GH-484 must prove real
+   document-start injection, exact authentic unmodified preload source,
+   app-world handler and lifetime. **Separately, GH484/KEL-142 must
+   resolve [Q1 A1 vs A2](https://github.com/gyldlab/keld/issues/484#issuecomment-6390973710):
+   retain its existing no-page-world-native-endpoint rule and prove
+   another WebKit transport, or explicitly amend that rule for a
+   data-only untrusted page carrier with independent native/security
+   review. Neither is currently approved.** GH-467 must prove that all four
+   exposed methods invoke the current original app-registered methods
+   and never derive authority from forgeable page messages. Independent
+   WKWebView/Host/Bun positive, hostile-page, no-wrapper, no-bind,
+   stale-document, absent-grant and one-fault allowlist controls remain
+   mandatory. Existing fixed-wrapper 3/3 and 2/2 omission, F0 16/16
+   and 6/6 nested-callback probes are **test-only** and do not approve
+   shipping. **Alternative Option B:** full dynamic graph publication
+   stays P0 blocked pending separately approved secure platform primitive
+   and complete C06/score qualification. GH441's separate-world
+   placement is CLOSED and unchanged. Named security/native/compat
+   reviewers must still approve this narrowed first-proof contract
+   before any production bridge code or conformance PASS.
 2. **Q2 — Symbol oracle, UNKNOWN:** pinned Electron v44.4.5 documentation
    and native source disagree on Symbols. The executable pinned oracle
    or an explicitly approved compatibility divergence is required
