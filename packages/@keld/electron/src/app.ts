@@ -32,9 +32,17 @@ function ignoreIfUnawaited(promise: Promise<unknown>): void {
 function observeReady(): Promise<void> {
   if (readyEventEmitted) return Promise.resolve();
   if (readyObservation) return readyObservation;
+  // The API has already consumed the one-shot Host Ready when it is true
+  // here. An observer installed later cannot retroactively emit Electron
+  // `ready`, even though whenReady() must remain fulfilled.
+  const hostWasReady = apiApp.isReady();
   const ready = apiApp.whenReady();
   readyObservation = ready;
   ignoreIfUnawaited(ready);
+  if (hostWasReady) {
+    readyEventEmitted = true;
+    return ready;
+  }
   void ready.then(
     () => {
       if (readyEventEmitted) return;
@@ -94,6 +102,10 @@ export const app = {
   },
 
   on(event: string, listener: AppListener): void {
+    // A late registration must not join a queued facade Ready notification
+    // if the underlying API already observed the Host event. Pre-Ready
+    // listeners remain enrolled in the existing one-shot observer.
+    if (event === "ready" && apiApp.isReady()) return;
     const list = listeners.get(event) ?? [];
     list.push(listener);
     listeners.set(event, list);
