@@ -1,6 +1,7 @@
 # Spec: draw.io macOS first-proof execution and scoring (GH-589)
 
-Status: draft
+Status: approved
+Human approval: [GH #589 exact-source implementation approval](https://github.com/gyldlab/keld/issues/589#issuecomment-6382252527), for design commit `2f07af88887be4a4a1100a2773db4ac3704aa951`, exact approved source SHA-256 `e48393b514fe1fa54bd4cb33fa7f2c96d0cc9c9bbe772dd57b0724e1c07facd1`. This status revision changes no accepted design decision.
 Linear: GH-589 (#517 GitHub tracker of record; KEL-237 reference only) · Owner: @0monish / GYLDLAB · Updated: 2026-10-24
 Disposition: OPEN / DRAFT / DO NOT MERGE. Do not implement this spec, publish a product score, or declare a draw.io MVP pass before exact-content approval and actual OS proof.
 Basis: verified `origin/main` `b4e9f4f2e0dc88ccb14407e4e839b50fabb6be50`; [GH-589 independent validation](https://github.com/gyldlab/keld/issues/589#issuecomment-6381795475). The approved, unmerged GH-587 corpus contract is an external prerequisite, not redefined here.
@@ -132,4 +133,4 @@ None for this documentation-only PR. Do not infer performance benefit from Rust/
 
 **Blocking for implementation, owned externally (not unresolved design choices for this draft):** #446 genuine Ready+first-window integration; #588 typed trusted G2 effective-state/current/reader observation; #541/#552/#542 GUI document-generation evidence; GH-532/GH-566 approved app-specific source-oracle citation semantics when Electron documentation is not normative for Open/Edit/Save; #499 final literal permission/patch/lock artifact; #500 admitted manifests; #564 actual sync-dialog outcome and adequacy of the accepted single-edit async fallback; KEL-141 real distribution if installation is later claimed. A failure of any gate keeps its product cell UNKNOWN/BLOCKED as appropriate, without promoting an unexecuted result.
 
-**Design approval needed now:** approve or request exact-content corrections to the above GH-589 *scoring specification*. No new decision on the already approved #587 profile/corpus design, #420 config-plus-one-edit path, or #586 authority mapping is requested.
+**Design approval resolved:** the exact GH-589 scoring design was approved for implementation on 2026-10-24 at the immutable source revision and approval receipt in this document's header. This is not release, merge, scorer-admission, product or installation approval. No new decision on the already approved #587 profile/corpus design, #420 config-plus-one-edit path, or #586 authority mapping is requested.
