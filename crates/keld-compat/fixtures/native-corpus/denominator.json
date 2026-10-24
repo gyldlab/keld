@@ -1,0 +1,13 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-native-v1",
+  "corpus_sha256": "sha256:b8db8576be740bab0a83845c05de059f261dd846b1c7ab41b1f93100902d4e21",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "dialog.show-message-box-sync.clicked-index",
+      "oracle_id": "electron-v44.4.5.dialog.show-message-box-sync.integer"
+    }
+  ]
+}

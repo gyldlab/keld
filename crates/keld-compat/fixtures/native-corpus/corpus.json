@@ -1,0 +1,37 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-native-v1",
+  "scope": "@keld/electron first-proof native-dialog synchronous clicked-index cell at Electron 44.4.5 on macOS; partial GH-477 conformance slice only, not KELD native dialog acceptance or median-app compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "wkwebview"
+  },
+  "doc_snapshots": {
+    "docs/api/dialog.md": "sha256:bc0b63b7775fcaff5fd74b1649d8b9e6247f8cc2cfd26fc7a7b080ffb0cffeba"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "dialog.show-message-box-sync.clicked-index",
+      "oracle_id": "electron-v44.4.5.dialog.show-message-box-sync.integer",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md#dialogshowmessageboxsyncwindow-options",
+        "quote": "Returns `Integer` - the index of the clicked button.\n\nShows a message box, it will block the process until the message box is closed.\nIt returns the index of the clicked button.",
+        "quote_sha256": "sha256:45013213ac200284e3283762bb1b755f9b28830b02b7ad9874623eaa1aca7a47"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-564",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/dialog.test.ts",
+      "test_name": "dialog.show-message-box-sync.clicked-index today: no synchronous native dialog method is exported",
+      "negative_control": "While pending: injecting an exported dialog.showMessageBoxSync callable (including a Promise substitute) fails this mapped case. GH-564 must invert it to require an actually clicked synchronous numeric index; returning a Promise, guessed default, or wrong button must then fail."
+    }
+  ]
+}
