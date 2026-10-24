@@ -2,6 +2,7 @@
 //! No URLs, profile paths, origins, or renderer content enter diagnostics.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use windows::core::Result as ComResult;
@@ -9,8 +10,11 @@ use windows::core::Result as ComResult;
 pub(super) struct FirstNavigationDiagnostic {
     created: Instant,
     dispatch_attempted: Option<Instant>,
+    navigation_started: Option<Instant>,
     loop_setup_started: Option<Instant>,
     first_loop_turn: Option<Instant>,
+    navigation_start_observer_error: Option<i32>,
+    terminal: bool,
     phase: &'static str,
     phase_at: Instant,
     detail: Option<String>,
@@ -22,8 +26,11 @@ impl FirstNavigationDiagnostic {
         Self {
             created: now,
             dispatch_attempted: None,
+            navigation_started: None,
             loop_setup_started: None,
             first_loop_turn: None,
+            navigation_start_observer_error: None,
+            terminal: false,
             phase: "window-creation",
             phase_at: now,
             detail: None,
@@ -31,13 +38,37 @@ impl FirstNavigationDiagnostic {
     }
 
     pub(super) fn dispatch_attempted(&mut self) {
-        self.dispatch_attempted = Some(Instant::now());
-        self.record("navigation-dispatch-attempted");
+        if !self.terminal {
+            self.dispatch_attempted = Some(Instant::now());
+            self.record("navigation-dispatch-attempted");
+        }
+    }
+
+    // An actual WebView2 NavigationStarting COM callback is distinct from
+    // Keld calling NavigateToString and from Tao entering its first loop turn.
+    // Only the first callback is relevant to startup diagnostics.
+    pub(super) fn navigation_starting(&mut self) {
+        if self.dispatch_attempted.is_some() && self.navigation_started.is_none() && !self.terminal
+        {
+            self.navigation_started = Some(Instant::now());
+            self.record("navigation-starting");
+        }
+    }
+
+    /// Records that the diagnostic-only `NavigationStarting` observer could not be
+    /// registered. Startup continues without it: the observer only timestamps the
+    /// first callback, so its absence is evidence in the snapshot, not a fault of the
+    /// navigation itself. A snapshot then reports the failed registration's HRESULT
+    /// instead of an unexplained `navigation_start_at_ms=None`.
+    pub(super) fn navigation_start_unobserved(&mut self, hresult: i32) {
+        self.navigation_start_observer_error = Some(hresult);
     }
 
     pub(super) fn loop_setup_started(&mut self) {
         self.loop_setup_started = Some(Instant::now());
-        self.record("message-loop-setup-started");
+        if !self.terminal {
+            self.record("message-loop-setup-started");
+        }
     }
 
     // Record exactly the first Tao callback; the loop can be constructed long
@@ -49,7 +80,10 @@ impl FirstNavigationDiagnostic {
     }
 
     pub(super) fn deadline_elapsed(&mut self) {
-        self.record("navigation-deadline-elapsed");
+        if !self.terminal {
+            self.terminal = true;
+            self.record("navigation-deadline-elapsed");
+        }
     }
 
     fn record(&mut self, phase: &'static str) {
@@ -57,8 +91,14 @@ impl FirstNavigationDiagnostic {
         self.phase_at = Instant::now();
     }
 
-    /// Returns true only for the first successful navigation notification.
-    /// Any COM failure is a typed startup failure, never an absent callback.
+    /// Records the first terminal navigation outcome, then latches.
+    ///
+    /// The first completion (success, navigation failure or COM error), or an
+    /// earlier [`Self::deadline_elapsed`], makes the diagnostic terminal. Every
+    /// later completion is ignored and returns false: it cannot rewrite the
+    /// recorded phase or detail, re-signal `ready`, or set `failed` after startup.
+    /// Returns true only for the first successful navigation notification. Any COM
+    /// failure is a typed startup failure, never an absent callback.
     pub(super) fn completed(
         &mut self,
         result: ComResult<bool>,
@@ -66,6 +106,10 @@ impl FirstNavigationDiagnostic {
         ready: &AtomicBool,
         failed: &AtomicBool,
     ) -> bool {
+        if self.terminal {
+            return false;
+        }
+        self.terminal = true;
         match result {
             Ok(true) => {
                 self.record("navigation-completed");
@@ -96,6 +140,9 @@ impl FirstNavigationDiagnostic {
         let dispatch_attempt_ms = self
             .dispatch_attempted
             .map(|at| at.saturating_duration_since(self.created).as_millis());
+        let navigation_start_ms = self
+            .navigation_started
+            .map(|at| at.saturating_duration_since(self.created).as_millis());
         let loop_ms = self
             .loop_setup_started
             .map(|at| at.saturating_duration_since(self.created).as_millis());
@@ -107,12 +154,18 @@ impl FirstNavigationDiagnostic {
             .saturating_duration_since(self.created)
             .as_millis();
         let detail = self.detail.as_deref().unwrap_or("none");
+        let start_observer = self.navigation_start_observer_error.map_or_else(
+            || "registered".to_owned(),
+            |hresult| format!("failed:{hresult:#010x}"),
+        );
         format!(
-            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
+            "first-navigation phase={} phase_at_ms={} total_ms={} dispatch_attempt_at_ms={:?} navigation_start_at_ms={:?} navigation_start_observer={} loop_setup_at_ms={:?} first_loop_turn_at_ms={:?} detail={}",
             self.phase,
             phase_ms,
             since_created,
             dispatch_attempt_ms,
+            navigation_start_ms,
+            start_observer,
             loop_ms,
             first_loop_turn_ms,
             detail
@@ -120,9 +173,28 @@ impl FirstNavigationDiagnostic {
     }
 }
 
+/// Settles the registration of the diagnostic-only `NavigationStarting` observer.
+///
+/// A failed registration is recorded in `diagnostic` (see
+/// [`FirstNavigationDiagnostic::navigation_start_unobserved`]) and is never an error:
+/// this returns `()`, so webview creation cannot fail through it. Only the
+/// `NavigationCompleted` registration, which gates `Ready`, is fatal.
+pub(super) fn record_navigation_start_registration(
+    registration: ComResult<()>,
+    diagnostic: &Mutex<FirstNavigationDiagnostic>,
+) {
+    if let Err(error) = registration {
+        diagnostic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .navigation_start_unobserved(error.code().0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FirstNavigationDiagnostic;
+    use super::{FirstNavigationDiagnostic, record_navigation_start_registration};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
@@ -143,6 +215,173 @@ mod tests {
         assert_eq!(
             diag.first_loop_turn, first,
             "later callbacks cannot rewrite the first-turn clock"
+        );
+    }
+
+    #[test]
+    fn navigation_start_callback_is_distinct_from_dispatch_and_first_loop_turn() {
+        let mut diag = FirstNavigationDiagnostic::new();
+        diag.navigation_starting();
+        let undispatched = diag.snapshot();
+        assert!(
+            undispatched.contains("navigation_start_at_ms=None"),
+            "a pre-dispatch callback must not impersonate the app's initial navigation: {undispatched}"
+        );
+        diag.dispatch_attempted();
+        let before = diag.snapshot();
+        assert!(before.contains("navigation_start_at_ms=None"), "{before}");
+        assert!(before.contains("first_loop_turn_at_ms=None"), "{before}");
+
+        diag.navigation_starting();
+        let first_start = diag.navigation_started;
+        let during = diag.snapshot();
+        assert!(during.contains("phase=navigation-starting"), "{during}");
+        assert!(during.contains("navigation_start_at_ms=Some("), "{during}");
+        assert!(during.contains("first_loop_turn_at_ms=None"), "{during}");
+        diag.navigation_starting();
+        assert_eq!(diag.navigation_started, first_start);
+
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(diag.completed(Ok(true), None, &ready, &failed));
+        let completed = diag.snapshot();
+        assert!(
+            completed.contains("navigation_start_at_ms=Some("),
+            "{completed}"
+        );
+        assert!(
+            completed.contains("phase=navigation-completed"),
+            "{completed}"
+        );
+        assert!(!completed.contains("http://"), "{completed}");
+    }
+
+    #[test]
+    fn late_navigation_start_does_not_replace_a_terminal_startup_phase() {
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let mut completed = FirstNavigationDiagnostic::new();
+        completed.dispatch_attempted();
+        assert!(completed.completed(Ok(true), None, &ready, &failed));
+        completed.navigation_starting();
+        let snapshot = completed.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-completed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+
+        // A synchronous COM completion may precede Tao run-loop setup.
+        // That later setup must never erase the terminal result and permit
+        // an unrelated NavigationStarting callback to impersonate startup.
+        completed.loop_setup_started();
+        completed.navigation_starting();
+        let snapshot = completed.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-completed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("loop_setup_at_ms=Some("), "{snapshot}");
+
+        let mut expired = FirstNavigationDiagnostic::new();
+        expired.dispatch_attempted();
+        expired.deadline_elapsed();
+        expired.navigation_starting();
+        let snapshot = expired.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-deadline-elapsed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+
+        expired.loop_setup_started();
+        expired.navigation_starting();
+        let snapshot = expired.snapshot();
+        assert!(
+            snapshot.contains("phase=navigation-deadline-elapsed"),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("navigation_start_at_ms=None"),
+            "{snapshot}"
+        );
+    }
+
+    #[test]
+    fn failed_navigation_start_observer_is_reported_without_failing_startup() {
+        let mut diag = FirstNavigationDiagnostic::new();
+        diag.dispatch_attempted();
+        assert!(
+            diag.snapshot()
+                .contains("navigation_start_observer=registered"),
+            "{}",
+            diag.snapshot()
+        );
+        diag.navigation_start_unobserved(windows::Win32::Foundation::E_FAIL.0);
+        let unobserved = diag.snapshot();
+        assert!(
+            unobserved.contains("navigation_start_observer=failed:0x80004005"),
+            "{unobserved}"
+        );
+        assert!(
+            unobserved.contains("navigation_start_at_ms=None"),
+            "{unobserved}"
+        );
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        assert!(
+            diag.completed(Ok(true), None, &ready, &failed),
+            "a missing diagnostic observer must not block the navigation outcome"
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        let completed = diag.snapshot();
+        assert!(
+            completed.contains("phase=navigation-completed"),
+            "{completed}"
+        );
+        assert!(
+            completed.contains("navigation_start_observer=failed:0x80004005"),
+            "{completed}"
+        );
+    }
+
+    #[test]
+    fn injected_navigation_start_registration_failure_is_recorded_and_never_an_error() {
+        let diagnostic = Mutex::new(FirstNavigationDiagnostic::new());
+        diagnostic
+            .lock()
+            .expect("diagnostic lock")
+            .dispatch_attempted();
+        record_navigation_start_registration(Ok(()), &diagnostic);
+        let registered = diagnostic.lock().expect("diagnostic lock").snapshot();
+        assert!(
+            registered.contains("navigation_start_observer=registered"),
+            "{registered}"
+        );
+
+        // The injected failure stands in for `add_NavigationStarting` returning an
+        // HRESULT; the install path hands that result to this same function.
+        let injected = windows::core::Error::from(windows::Win32::Foundation::E_ACCESSDENIED);
+        // Non-fatal by type: binding the result to `()` stops compiling if the
+        // function ever returns an error webview creation could propagate.
+        // (`completed()` never reads the observer state, so asserting on it would
+        // pass whatever this injected.)
+        let () = record_navigation_start_registration(Err(injected), &diagnostic);
+        let unobserved = diagnostic.lock().expect("diagnostic lock").snapshot();
+        assert!(
+            unobserved.contains("navigation_start_observer=failed:0x80070005"),
+            "{unobserved}"
         );
     }
 
