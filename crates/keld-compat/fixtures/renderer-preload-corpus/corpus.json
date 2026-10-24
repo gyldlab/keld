@@ -1,0 +1,71 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-renderer-preload-v1",
+  "scope": "GH-567 F07-T4 initial macOS showcase: unimplemented preload/runtime cells blocked by the missing BrowserWindow constructor; native WKWebView fidelity not established",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "wkwebview"
+  },
+  "doc_snapshots": {
+    "docs/api/structures/web-preferences.md": "sha256:79a560fa2d1e304a2ccbf86b0948d977ae19d69b84561b403a2bfe72e1c7c09c"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "renderer.preload.before-first-inline",
+      "oracle_id": "electron-v44.4.5.web-preferences.preload-before-page-scripts",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/structures/web-preferences.md#webpreferences-object",
+        "quote": "* `preload` string (optional) - Specifies a script that will be loaded before other\n  scripts run in the page.",
+        "quote_sha256": "sha256:c4de7d1770cce5bad9ddd8a5c8db5abe90492f9face9013c89f278edd1c311d9"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-484",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
+      "test_name": "renderer.preload.before-first-inline today: no window can launch a preload",
+      "negative_control": "Today: making BrowserWindow available causes this entrypoint-blocker assertion to fail. GH-484 must replace it with a native first-inline-script witness before flipping PASS."
+    },
+    {
+      "operation_id": "renderer.preload.absolute-file-path",
+      "oracle_id": "electron-v44.4.5.web-preferences.preload-absolute-path",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/structures/web-preferences.md#webpreferences-object",
+        "quote": "The value should\n  be the absolute file path to the script.",
+        "quote_sha256": "sha256:b7c920e181430860368ae5447d6b6721d556f0aaa65fc49d187ca3ad5f573faa"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-484",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
+      "test_name": "renderer.preload.absolute-file-path today: no window can receive an absolute preload",
+      "negative_control": "Today: making BrowserWindow available causes this blocker assertion to fail. GH-484 must probe successful in-root absolute path admission and rejected outside-root bytes before flipping PASS."
+    },
+    {
+      "operation_id": "renderer.additional-arguments.argv",
+      "oracle_id": "electron-v44.4.5.web-preferences.additional-arguments",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/structures/web-preferences.md#webpreferences-object",
+        "quote": "* `additionalArguments` string[] (optional) - A list of strings that will be appended\n  to `process.argv` in the renderer process of this app.",
+        "quote_sha256": "sha256:e98dbddcc0312cea84fb889603b280ede3c5cef4b319c7695d1cdede8eae208e"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-484",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/renderer-preload.test.ts",
+      "test_name": "renderer.additional-arguments.argv today: no renderer can receive additionalArguments",
+      "negative_control": "Today: making BrowserWindow available causes this blocker assertion to fail. GH-484 must compare renderer process.argv bytes for ordered literal arguments before flipping PASS."
+    }
+  ]
+}

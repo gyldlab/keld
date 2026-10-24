@@ -290,8 +290,21 @@ pub const WINDOW_V1: Registration = Registration {
     }],
 };
 
+/// GH-567 initial F07 renderer/preload conformance baseline. Pending macOS cells
+/// observe the missing main-role window entrypoint; native renderer proof is later.
+pub const RENDERER_PRELOAD_V1: Registration = Registration {
+    corpus_id: "electron-renderer-preload-v1",
+    fixture_dir: "fixtures/renderer-preload-corpus",
+    shape: Shape::V1,
+    platforms: &[Platform::Macos],
+    targets: &[TestTarget {
+        path: "packages/@keld/electron/src/renderer-preload.test.ts",
+        runner: Runner::Bun,
+    }],
+};
+
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
-pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1];
+pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1, RENDERER_PRELOAD_V1];
 
 /// Parent of the one doc-snapshot store, relative to `crates/keld-compat`. Every v1
 /// corpus reads its cited pages from `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/<commit>/<page>`
