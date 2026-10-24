@@ -1,6 +1,7 @@
 # Spec: draw.io first-proof product corpus physical partitions (GH-500)
 
-Status: draft
+Status: approved
+Human approval: [GH #500 exact-source implementation approval](https://github.com/gyldlab/keld/issues/500#issuecomment-6383291604), for design commit `284498123e80161042fdf362a62b57f7305fec5b`, original SHA-256 `eb9f2e3fdfcf5d197d09111a2468588d802b446545b06969748436c965ff4ff4`. This status-only amendment changes no design decision.
 Linear: GH-500 (#517 GitHub tracker of record; KEL-237 reference only) · Owner: @0monish / GYLDLAB · Updated: 2026-10-24
 Disposition: OPEN / DRAFT / DO NOT MERGE. No product runtime, executable receipt, scored draw.io result, committed product registry entry, or merge is authorized by this proposal.
 Basis: `origin/main b4e9f4f2e0dc88ccb14407e4e839b50fabb6be50`. GH-587's approved contract is the design authority; its PR #1146 and test-only shape PR #1147 remain unmerged. [GH-500 handoff](https://github.com/gyldlab/keld/issues/500#issuecomment-6381951609).
@@ -140,6 +141,6 @@ None from this documentation-only specification. No new runtime per-frame observ
 
 ## 10. Open questions
 
-**Human spec gate:** approve or request corrections to this exact GH-500 *physical corpus implementation* plan before T1 code. The already-approved GH-587 three-kind design and GH-589 scoring specification are consumed unchanged; no new choice of single mixed-kind manifest is reopened.
+**Human spec gate resolved:** the exact GH-500 *physical corpus implementation* plan was approved for implementation on 2026-10-24, at the source bytes and receipt cited in the header. This is not merge, public scoring, product-result, native OS or installer approval. The already-approved GH-587 three-kind design and GH-589 scoring specification are consumed unchanged; no new choice of single mixed-kind manifest is reopened.
 
 **External acceptance blockers, with owners rather than unbounded questions:** GH-532/GH-566 approved means of citing app-only Open/Edit/Save beyond Electron-only `doc_citation`; genuine current G1/G2 Host profile/reader receipt from #588, GUI document generation from #541/#552/#542, real #446→#449 facade boot and #499 reviewed migration/one-edit patch, actual native Mac workflow and all-attempt evidence under #589, and KEL-141 installer for install. If a prerequisite has no implemented source/evidence, leave that cell `unknown` and the task blocked; do not invent a product PASS or silently waive the criterion.
