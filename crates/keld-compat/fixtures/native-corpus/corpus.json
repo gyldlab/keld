@@ -32,6 +32,57 @@
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
       "test_name": "dialog.show-message-box-sync.clicked-index today: no synchronous native dialog method is exported",
       "negative_control": "While pending: injecting an exported dialog.showMessageBoxSync callable (including a Promise substitute) fails this mapped case. GH-564 must invert it to require an actually clicked synchronous numeric index; returning a Promise, guessed default, or wrong button must then fail."
+    },
+    {
+      "operation_id": "dialog.show-open-dialog.canceled-paths",
+      "oracle_id": "electron-v44.4.5.dialog.show-open-dialog.canceled-paths",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md#dialogshowopendialogwindow-options",
+        "quote": "Returns `Promise<Object>` - Resolve with an object containing the following:\n\n* `canceled` boolean - whether or not the dialog was canceled.\n* `filePaths` string[] - An array of file paths chosen by the user. If the dialog is cancelled this will be an empty array.",
+        "quote_sha256": "sha256:77f1bf6043eb0abc478d469d3af4f5fa18897c5b3f427311724591c954730478"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-478",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/dialog.test.ts",
+      "test_name": "dialog.show-open-dialog.canceled-paths today: no asynchronous native file-open method is exported",
+      "negative_control": "A new async showOpenDialog function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a Promise resolving with canceled:true but nonempty filePaths, or an incorrect selected path, fails."
+    },
+    {
+      "operation_id": "dialog.show-save-dialog.canceled-path",
+      "oracle_id": "electron-v44.4.5.dialog.show-save-dialog.canceled-path",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md#dialogshowsavedialogwindow-options",
+        "quote": "Returns `Promise<Object>` - Resolve with an object containing the following:\n\n* `canceled` boolean - whether or not the dialog was canceled.\n* `filePath` string - If the dialog is canceled, this will be an empty string.",
+        "quote_sha256": "sha256:8d8c88610d91b08dffe58100ba0b66da8048e80381bb9dcd950c60423351c760"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-478",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/dialog.test.ts",
+      "test_name": "dialog.show-save-dialog.canceled-path today: no asynchronous native file-save method is exported",
+      "negative_control": "A new async showSaveDialog function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a canceled result with a nonempty filePath, or an incorrectly created/saved file, fails."
+    },
+    {
+      "operation_id": "dialog.show-message-box.response-checkbox",
+      "oracle_id": "electron-v44.4.5.dialog.show-message-box.response-checkbox",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md#dialogshowmessageboxwindow-options",
+        "quote": "Returns `Promise<Object>` - resolves with a promise containing the following properties:\n\n* `response` number - The index of the clicked button.\n* `checkboxChecked` boolean - The checked state of the checkbox if\n  `checkboxLabel` was set. Otherwise `false`.",
+        "quote_sha256": "sha256:3b4fe2ff683d3c0135e72e293a3bd33306c04a93df6d9383342952161a439355"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-478",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "packages/@keld/electron/src/dialog.test.ts",
+      "test_name": "dialog.show-message-box.response-checkbox today: no asynchronous native message-dialog method is exported",
+      "negative_control": "A new async showMessageBox function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a guessed response index or checkboxChecked:true without a checkbox fails the actual clicked-result oracle."
     }
   ]
 }

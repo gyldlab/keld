@@ -2,12 +2,24 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-native-v1",
-  "corpus_sha256": "sha256:b8db8576be740bab0a83845c05de059f261dd846b1c7ab41b1f93100902d4e21",
+  "corpus_sha256": "sha256:cfed09b159f58354b70436b0849555496fd54b0a53f281b129e901b81c787dd7",
   "kind": "primary_workflow",
   "cells": [
     {
       "operation_id": "dialog.show-message-box-sync.clicked-index",
       "oracle_id": "electron-v44.4.5.dialog.show-message-box-sync.integer"
+    },
+    {
+      "operation_id": "dialog.show-open-dialog.canceled-paths",
+      "oracle_id": "electron-v44.4.5.dialog.show-open-dialog.canceled-paths"
+    },
+    {
+      "operation_id": "dialog.show-save-dialog.canceled-path",
+      "oracle_id": "electron-v44.4.5.dialog.show-save-dialog.canceled-path"
+    },
+    {
+      "operation_id": "dialog.show-message-box.response-checkbox",
+      "oracle_id": "electron-v44.4.5.dialog.show-message-box.response-checkbox"
     }
   ]
 }
