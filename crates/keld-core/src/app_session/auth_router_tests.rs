@@ -378,11 +378,43 @@ fn auth_capacity_refuses_one_call_without_fatal_or_stream_desynchronization() ->
     assert!(session.take(&released)?);
     drop(released);
     assert_eq!(session.used.load(Ordering::Acquire), 31);
+    // Arm the test-owned gate for the permitted caller only. The worker
+    // delivers a real Ready denial while retaining its own ticket until the
+    // gate releases. This is the scheduling cut behind hosted GH-821's
+    // historical `left=1, right=0`, not a physical lease leak.
+    let (reached_tx, reached_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    *session
+        .after_ready_publication
+        .lock()
+        .map_err(|_| "test publication gate poisoned")? = Some(super::ReadyPublicationHold {
+        correlation: CorrelationId(102),
+        reached: reached_tx,
+        release: release_rx,
+    });
     assert_eq!(fixture.call(&begin(None), 102)?.code, "KELD-GUARD001");
+    reached_rx.recv_timeout(Duration::from_secs(5))?;
     session.retire(1)?;
     drop(tickets);
-    assert_eq!(session.used.load(Ordering::Acquire), 0);
+    assert_eq!(
+        session
+            .pending
+            .lock()
+            .map_err(|_| "pending poisoned")?
+            .len(),
+        0,
+        "terminal caller and all retained callers were logically retired"
+    );
+    assert_eq!(
+        session.used.load(Ordering::Acquire),
+        1,
+        "the worker still owns one ticket after the client received its reply"
+    );
+    release_tx.send(())?;
+    // stop_and_join synchronizes with the physical worker owner. A leaked
+    // ticket still fails its production finish_worker_tail zero check.
     fixture.finish()?;
+    assert_eq!(session.used.load(Ordering::Acquire), 0);
     Ok(())
 }
 
