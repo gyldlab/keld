@@ -2664,7 +2664,7 @@ through that spec's ordered tasks.
 | `window` | create/close/show/focus/bounds/state, titlebar styles (hiddenInset/overlay), vibrancy/mica/acrylic, always-on-top, parenting/modal, fullscreen | `BrowserWindow` |
 | `menu` | app menu, context menus, accelerators, role items (macOS roles complete) | `Menu`, `MenuItem` |
 | `tray` | icon, tooltip, menu, click events, template images | `Tray` |
-| `dialog` | open/save/message/error, scoped-path grants flow into fs scopes | `dialog` |
+| `dialog` | planned open/save/message/error; GH478 macOS legacy first-proof returns selected paths only, with **no implicit FsBroker scope**. Guarded FS requires an independent pre-existing grant; strict user-intent scope minting is deferred to F06-T15 and its own approved policy/OS proof | `dialog` |
 | `notify` | notifications with actions, macOS UNUserNotification / WinRT toast / libnotify | `Notification` |
 | `clipboard` | text/html/image/files, change polling where OS allows | `clipboard` |
 | `shortcut` | global shortcuts with conflict detection | `globalShortcut` |
@@ -2680,6 +2680,14 @@ through that spec's ordered tasks.
 | `autostart` | login items / registry / .desktop | `app.setLoginItemSettings` |
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
+
+**Dialog file authority (GH478 first-proof proposal, draft).** The selected
+path is result data, not a grant source. Under explicit legacy, direct Bun
+`node:fs` remains ambient and the containment tradeoff must be disclosed;
+the dialog must not silently widen `@keld/api` guarded FS permissions.
+Strict-profile access after a dialog selection needs separately approved
+user-intent/FS scope semantics under F06-T15. No native dialog broker or
+strict selection-derived grant is shipped merely by this architecture row.
 
 **Window ownership.** No keld-native broker owns the `window` row. keld-native depends
 only on ipc and guard, and native windows and webviews are UI-thread handles that
