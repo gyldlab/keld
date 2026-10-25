@@ -1,6 +1,14 @@
 # Spec: bounded compatibility IPC for the first draw.io round-trip
 
-Status: approved
+Status: draft
+
+**Review amendment, 2026-10-25:** The prior exact-content contract was
+approved under the recorded delegation. This revision changes only the
+diagnostic representation budget in §§4.3/4.10 and its acceptance cases;
+that amendment requires fresh independent GH540/GH541/GH552 wire/error-owner
+review before this exact revision returns to `Status: approved`. Earlier
+approval does not silently cover these changed limits. No runtime change
+or merge is authorized by this documentary correction.
 
 Linear: GH-540 (#517 tracker); KEL-80 carries the reference link · Owner: Monish Khandelwal · Updated: 2026-10-23
 
@@ -186,13 +194,13 @@ The following are validation rules for generic envelope fields, not #544 value-c
 | Existing private Invoke `channel` | Nonzero u16, still checked against the table-derived admitted numeric id; never a topic string |
 | `payload` | Private JSON: an array of integral bytes 0..255, length <=4,096. App-link: postcard Vec<u8> / generated Uint8Array, length <=4,096. Contents are opaque to Rust. |
 | `url` / `origin` | Host-stamped Unicode-scalar strings, <=4,096 / <=1,024 UTF-8 bytes. The navigation owner provides their exact committed meaning. Opaque origin is the native owner's serialized value (e.g. `"null"`), never reconstructed from a renderer string. |
-| Diagnostic `code` / `message` | Existing registered KELD code, ASCII <=64 bytes; sanitized message with code and fix <=512 UTF-8 bytes. No truncation. Existing error owner must produce a bounded valid rendering; an endpoint report cannot impersonate a host certainty proof. |
+| Diagnostic `code` / `message` | Existing registered KELD code, ASCII <=64 bytes; sanitized message with code and fix <=768 UTF-8 bytes, and its complete JSON string token (including quotes/escapes) <=3,328 encoded UTF-8 bytes. No truncation. Existing error owner must produce a bounded valid rendering; an endpoint report cannot impersonate a host certainty proof. |
 | Private DATA envelope | <=65,536 encoded UTF-8 bytes, checked before JSON decoding |
 | Private CONTROL envelope | <=4,096 encoded UTF-8 bytes, enforced in addition to field bounds |
 | Generic compat CALL/EVENT payload | <=16,384 encoded bytes, checked by the canonical selected receiver before body allocation |
 | Generic compat REPLY/ERR/control-operation payload | <=4,096 encoded bytes; same canonical bound plus closed operation validation |
 
-The 512-byte diagnostic limit makes the new private controls fit their 4,096-byte limit even under worst-case JSON escaping: 512 ASCII control characters expand to 3,072 bytes, code contributes at most 64 safe ASCII bytes, and the fixed fields are small. Full envelope length remains authoritative. A 4 KiB application payload consisting entirely of 255 encodes to fewer than 16.5 KiB of decimal-array JSON, below the existing 65,536-byte envelope ceiling.
+The raw and JSON-escaped diagnostic bounds are independent; a raw-byte cap alone does not bound JSON escaping tightly enough. The complete CONTROL envelope must still fit 4,096 encoded UTF-8 bytes before allocation/admission; count every fixed field, escaped code, message/detail and identifier. No message truncation, replacement code or healthy-route retirement may disguise an ordinary representable Guard denial. Preserve the frozen GH541 GUARD003 display/fix and the full 256-byte topic domain. Its fixed text is 133 UTF-8 bytes plus two copies of the topic: at most 645 raw bytes. For a topic of 256 U+0000 characters, the message JSON token is 3,207 bytes (including quotes), within 3,328. A max-u32 send-result with a 32-character document and GUARD003 is 3,371 bytes; the plain ASCII-topic counterpart is 811 bytes. These are representation calculations, not executed native/transport acceptance. Arbitrary diagnostic data must meet both field limits and the full-envelope limit; owning error renderers must use bounded registered text rather than reflect arbitrary payloads. A 4 KiB application payload consisting entirely of 255 encodes to fewer than 16.5 KiB of decimal-array JSON, below the existing 65,536-byte envelope ceiling.
 
 The u32 choice consumes the #541/#542 contract and stays exact in JS `number`. If those owners instead retain a u64 navigation identity, amend this contract through its approval gate to Rust u64 / TS bigint and add an encoder through the canonical transport primitive; never use Number or `as u32`. Existing `decodeU64Varint` and generated Auth bigint are direct reuse examples. RoleGeneration does not need either encoding because it never leaves the authenticated connection metadata.
 
@@ -607,8 +615,17 @@ the approved #1095 meanings, not a claim that main already implements them. API-
 the missing @keld/api handler error, never the ordinary no-listener Electron case.
 Only host-owned attempted-delivery facts establish host certainty. Consumer Refused
 may carry only the endpoint owner's registered codec codes, not forged WV/GUARD proof.
-Code is bounded ASCII <=64 bytes; sanitized code-and-fix message <=512 UTF-8 bytes.
+Code is bounded ASCII <=64 bytes; sanitized code-and-fix message <=768 UTF-8 bytes and its complete JSON string token <=3,328 encoded UTF-8 bytes, plus the full CONTROL cap in §4.3.
 Do not truncate identifiers/messages or expose raw value bytes to diagnostics.
+
+Required cross-owner regression: deny ungranted topics of exactly 256 UTF-8
+bytes using ASCII, U+0000, quotes, backslashes and multibyte scalars. Assert
+byte-exact frozen GUARD003 message/fix, zero listener effects, field and full
+CONTROL bounds, one terminal response/release, and a subsequent permitted
+request on the same healthy route. Restoring only the old 512-byte limit
+must fail the maximum ASCII-topic denial; omitting JSON-token or full-envelope
+validation must fail their independently constructed limit-plus-one cases.
+Do not replace this transport/accounting test with the arithmetic above.
 
 Public send/reply/webContents.send stay void. Known local errors may throw; host denial
 after a completed void call becomes a bounded internal diagnostic/result, never a
