@@ -71,7 +71,7 @@ second transport or conformance score changes. Actual
    duplicate/unordered map keys, invalid UTF-8, reserved prototype key
    and malformed nested value refuse without writing to a prototype.
 6. **V6, bounds:** Exact encoded byte boundary 4096 accepts and 4097
-   refuses (otherwise valid value); nesting 32/33 and total value
+   refuses (otherwise valid value); depth 16/17 (root level 1, including the outer args array) and total value
    nodes 256/257 accept/refuse. All checks precede unbounded
    traversal, allocation or dispatch.
 7. **V7, copies and layers:** Mutating the caller's value after encode
@@ -164,7 +164,10 @@ data objects. `seen` identity is session-wide during encode,
 rejecting cycles **and repeated references**, including reused
 Date/Error objects. Check encoded length **<=4096** incrementally
 and *before* any transport admission; decoder checks input bytes
-<=4096 before parse, depth (root=0) <=32, total decoded value
+<=4096 before parse. Both encoder and decoder enforce depth <=16,
+with the root value at level 1; when encoding IPC arguments, the outer
+args array is that root and consumes one level. Every nested value,
+including a scalar leaf, consumes the next level. Total decoded value
 nodes (including root and containers) <=256, declared count
 <=remaining node budget **before allocation**, exact input
 consumption and strict canonical forms. No unbounded recursion,
@@ -246,7 +249,7 @@ key bytes alone. Decoder **must reject** it as typed
 1 tag + 2 count + 5 bytes for `aa`/true + 4 bytes for
 `z`/null = **12 bytes**.
 Independently construct duplicate/out-of-order keys, invalid
-UTF-8, malformed nested tag, depth=33, node=257 and exact
+UTF-8, malformed nested tag, depth=17, node=257 and exact
 4096/4097 bytes; the intentional mutant **untagged JSON**
 must fail undefined, Date and Error values. Mutating the
 tag-07 encoder to default JavaScript `.sort()` **must fail** the
@@ -254,6 +257,19 @@ positive 16-byte golden; sorting complete length-prefixed keys
 instead must fail the positive 12-byte golden. Both mutants
 must fail even if Bun and renderer share the same wrong
 implementation and pass source-identity checks.
+
+**Cross-spec depth boundary (GH540 §4.8):** Let `A0 = null` and
+`An = [A(n-1)]`. `A15` is 15 nested arrays followed by one null leaf:
+its root args array is level 1 and its leaf is level 16. Encode and
+decode accept its complete 46-byte payload (`06 01 00` repeated
+15 times, then `01`). `A16` has a level-17 leaf and a 49-byte payload
+(`06 01 00` repeated 16 times, then `01`); both directions refuse it
+with `CodecLimit(depth)` before descending to that leaf. Both fixtures
+fit the independent byte/node limits, so those limits cannot mask a
+wrong depth rule. Independently run these fixtures in both endpoints;
+mutating root to level 0 or restoring depth 32 must make the negative
+fixture fail. These are required future implementation tests, not a
+claim that a codec has been implemented or executed.
 
 ### 4.4 Delivery, error and recovery boundaries
 
@@ -314,7 +330,7 @@ link, resource handle or application-facing API export.
 | V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
 | V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
 | V5 | Independent 16-byte U+E000/U+10000 and 12-byte `aa`/`z` raw UTF-8 positives in both builds; corresponding wrong UTF-16 and wrong length-prefix order `MalformedValue` negatives; other hostile tags/keys and unchanged prototype | Mutate to JS default `.sort()` or length-prefixed-key sort (respective golden fails), or accept either reversed key order (typed negative fails) |
-| V6 | Exact length 4096/4097, depth 32/33, nodes 256/257 with bounded codec allocation; instrument Proxy `ownKeys`/descriptor traps to prove effects may occur but never imply Host grant | Omit returned-descriptor incremental bound or treat a Proxy trap as trusted Host admission |
+| V6 | Exact length 4096/4097, depth 16/17 (root level 1, outer args array included), nodes 256/257 with bounded codec allocation; instrument Proxy `ownKeys`/descriptor traps to prove effects may occur but never imply Host grant | Omit returned-descriptor incremental bound or treat a Proxy trap as trusted Host admission |
 | V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
 | V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
 
@@ -340,7 +356,7 @@ never inferred from a codec-only test.
 ## 9. Perf impact
 
 No performance gain claimed. An admitted value uses <=4096
-encoded bytes, <=32 depth and <=256 nodes; later code must
+encoded bytes, <=16 depth (root level 1) and <=256 nodes; later code must
 measure transient scratch/renderer bundle size and mutation
 cost. GH540 owns whole-hop quota, envelope and backpressure;
 GH544 cannot raise them or add another Worker/pump/queue.
