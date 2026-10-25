@@ -54,7 +54,8 @@ second transport or conformance score changes. Actual
    codec source/build, reproduce §4.3 golden bytes independently, and
    fail deterministic cold build drift after a renderer-only edit.
 2. **V2, fidelity:** `undefined !== null`, signed Date milliseconds,
-   Error name/message/optional stack (no custom properties), and a
+   negative-zero Number sign (`Object.is(decoded,-0)`), Error
+   name/message/optional stack (no custom properties), and a
    class instance's own fields round-trip with no original prototype.
 3. **V3, forbidden input:** Root and nested Function, Promise, Symbol,
    WeakMap, WeakSet, Map, Set, RegExp, ArrayBuffer, DataView, Buffer
@@ -130,8 +131,15 @@ message envelope carries its version.
 | `09` | name string, message string (each u16+UTF-8), stack-present byte `00`/`01`, optional stack string | Ordinary Error |
 
 For tag 07, keys are strictly ascending by **unsigned UTF-8
-bytes**; no duplicates. Both encoder and decoder reject the own
-keys `__proto__`, `constructor` and `prototype`. The decoder
+bytes**; no duplicates. Compare the **raw UTF-8 key bytes**,
+excluding each `u16` length prefix, by unsigned lexicographic
+order using a browser-safe byte comparator. Never compare complete
+length-prefixed key fields: a shorter byte length need not sort
+first. JavaScript default `.sort()` instead compares UTF-16 code
+units. The two independent §4.3 two-key goldens detect these
+separate incorrect comparators.
+Both encoder and decoder reject the own keys `__proto__`,
+`constructor` and `prototype`. The decoder
 constructs ordinary objects with validated own data descriptors
 (`Object.defineProperty`), **never** `obj[key]`. Class instances
 and plain objects encode only own enumerable string-keyed **data**
@@ -197,24 +205,55 @@ has no other own enumerable properties.
 | `null` | `01` | null |
 | `false` | `02` | false |
 | `1` | `04 00 00 00 00 00 00 f0 3f` | Number 1 |
+| `-0` | `04 00 00 00 00 00 00 00 80` | Number negative zero; `Object.is(decoded,-0) === true` |
 | `"a"` | `05 01 00 61` | `"a"` |
 | `[null,undefined]` | `06 02 00 01 00` | dense length 2 |
 | `{a:1}` | `07 01 00 01 00 61 04 00 00 00 00 00 00 f0 3f` | own `a=1` |
+| `{"z":null,"aa":true}` | `07 02 00 02 00 61 61 03 01 00 7a 01` | **12 bytes**; `aa` before `z` by raw UTF-8, despite input order and different byte lengths |
+| `{["\uE000"]:null,["\u{10000}"]:true}` | `07 02 00 03 00 ee 80 80 01 04 00 f0 90 80 80 03` | **16 bytes**; U+E000 before U+10000 by unsigned UTF-8; two own keys |
 | `new C()` | `07 01 00 01 00 61 04 00 00 00 00 00 00 f0 3f` | plain object, **not** `C` |
 | `new Date(0)` | `08 00 00 00 00 00 00 00 00` | epoch 0 |
+| `new Date(1)` | `08 01 00 00 00 00 00 00 00` | epoch 1; signed i64 **little-endian** sentinel |
 | `new Date(-1)` | `08 ff ff ff ff ff ff ff ff` | epoch -1 |
 | `Error("x")`, no stack | `09 05 00 45 72 72 6f 72 01 00 78 00` | Error, name/message, no stack |
 | Error with stack `"z"` | `09 05 00 45 72 72 6f 72 01 00 78 01 01 00 7a` | stack `"z"` |
+
+The independent `-0` and `Date(1)` literal sentinels kill
+replacement of negative zero by positive zero and accidental
+big-endian signed-i64 encoding; `Date(0)` and `Date(-1)` alone
+cannot distinguish byte order.
 
 Hostile byte goldens: `ff` unknown tag; `04 00` truncated
 number; `00 00` trailing byte; `06 ff ff` impossible count;
 `07 01 00 09 00 5f 5f 70 72 6f 74 6f 5f 5f 01`
 (one `__proto__` key). Each must yield typed rejection,
 no completed value, and untouched `Object.prototype`.
+**Canonical ordering negative (complete 16-byte payload):**
+`07 02 00 04 00 f0 90 80 80 03 03 00 ee 80 80 01`
+encodes the same two-key input after JavaScript default UTF-16
+`.sort()` incorrectly places U+10000 before U+E000. Decoder
+**must reject** it as typed `MalformedValue` (noncanonical tag-07
+key order), never return a reordered object. Independent length:
+1 tag byte + 2 count bytes + 6 first-key/value bytes +
+7 second-key/value bytes = **16 bytes**, including both values.
+**Length-prefix ordering negative (complete 12-byte payload):**
+`07 02 00 01 00 7a 01 02 00 61 61 03` encodes the
+same object as the positive `aa`/`z` golden but incorrectly
+places `z` first when sorting full encoded key fields (the
+two-byte length prefix followed by UTF-8 bytes) rather than raw
+key bytes alone. Decoder **must reject** it as typed
+`MalformedValue` (noncanonical tag-07 key order). Length:
+1 tag + 2 count + 5 bytes for `aa`/true + 4 bytes for
+`z`/null = **12 bytes**.
 Independently construct duplicate/out-of-order keys, invalid
 UTF-8, malformed nested tag, depth=33, node=257 and exact
 4096/4097 bytes; the intentional mutant **untagged JSON**
-must fail undefined, Date and Error values.
+must fail undefined, Date and Error values. Mutating the
+tag-07 encoder to default JavaScript `.sort()` **must fail** the
+positive 16-byte golden; sorting complete length-prefixed keys
+instead must fail the positive 12-byte golden. Both mutants
+must fail even if Bun and renderer share the same wrong
+implementation and pass source-identity checks.
 
 ### 4.4 Delivery, error and recovery boundaries
 
@@ -271,10 +310,10 @@ link, resource handle or application-facing API export.
 | Criteria | Test | Mutation that must fail |
 |---|---|---|
 | V1 | Two fresh endpoint builds match all independent goldens and checked source identity | Hand-edit renderer artifact without source change |
-| V2 | Every §4.3 vector matches full bytes and typed shape in both realms | Replace tagged encoding with `JSON.stringify`, or keep class prototype |
+| V2 | Every positive §4.3 vector matches full bytes and typed shape in both realms, including `Object.is(decoded,-0)` and `Date(1)` little-endian | Replace tagged encoding with `JSON.stringify`, collapse `-0` to `+0`, flip Date i64 endianness or keep class prototype |
 | V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
 | V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
-| V5 | Hostile keys/tags/UTF-8/duplicate/trailing fixtures, Object.prototype unchanged | Assign decoded `__proto__` through setter |
+| V5 | Independent 16-byte U+E000/U+10000 and 12-byte `aa`/`z` raw UTF-8 positives in both builds; corresponding wrong UTF-16 and wrong length-prefix order `MalformedValue` negatives; other hostile tags/keys and unchanged prototype | Mutate to JS default `.sort()` or length-prefixed-key sort (respective golden fails), or accept either reversed key order (typed negative fails) |
 | V6 | Exact length 4096/4097, depth 32/33, nodes 256/257 with bounded codec allocation; instrument Proxy `ownKeys`/descriptor traps to prove effects may occur but never imply Host grant | Omit returned-descriptor incremental bound or treat a Proxy trap as trusted Host admission |
 | V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
 | V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
