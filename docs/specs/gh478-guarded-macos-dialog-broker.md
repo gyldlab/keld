@@ -300,8 +300,10 @@ remains ambient and is disclosed as forfeited containment.
     Absence keeps the OS default. `properties` accepts exactly
     `openFile`, `openDirectory` and `multiSelections`, with at most three
     distinct entries. Absent/empty uses native single-file default;
-    `openFile`+`openDirectory` obeys the pinned macOS directory-selection
-    precedence. `multiSelections` preserves the selected order; 32 paths
+    `openFile`+`openDirectory` enables **both** file and directory
+    selection on macOS (`canChooseFiles = true` and
+    `canChooseDirectories = true`); neither flag overrides the other.
+    Directory-selection precedence on Windows/Linux is not a macOS rule. `multiSelections` preserves the selected order; 32 paths
     maximum. Requested `showHiddenFiles`, `createDirectory`,
     `noResolveAliases`, `treatPackageAsDirectory` and other flags remain
     unsupported until independently observed and approved. This deliberately
@@ -570,7 +572,7 @@ implementation may be labelled a complete GH478 acceptance.
 | Criterion | Test owner and observed positive | Independent falsifier (one fault) |
 |---|---|---|
 | A1 | Guard/Core: verified permission vs zero NSPanel construction on denied call | Remove guard evaluation: denied call shows native UI and test fails |
-| A2 | Real Mac: select one file, then Cancel; observe exact filePaths and zero scopes | Return last selected path on Cancel: exact result test fails |
+| A2 | Real Mac: select one file, then Cancel; observe exact filePaths and zero scopes. With both `openFile` and `openDirectory`, separately select an ordinary file and a directory; with `multiSelections` also select both in one result. Observe both native selection flags and exact selected paths. | Return last selected path on Cancel, or force directories-only when both flags are present: ordinary-file selection/result fails; a files-only mutant fails the directory case. |
 | A3 | Real Mac: select save target, then Cancel; file unchanged until app writes; `securityScopedBookmarks:true` denied before UI | Create/truncate target in supported dialog mode or silently accept bookmarks: sentinel/denial control fails |
 | A4 | Real Mac: distinct button index 0/1/2, checkbox off/on; async Promise value shape | Always return defaultId: a non-default click fails |
 | A5 | Real Mac: shown parent attached sheet, hidden/absent fallback, stale/forged window refusal | Accept recycled WindowId with old generation: UI attaches and fails |
