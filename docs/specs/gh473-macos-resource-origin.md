@@ -101,6 +101,8 @@ reopen that direction only with a concrete supported mechanism and a falsifier.
 | R11 | Bun restart alone preserves the surviving native document/resource identity while old role-bound IPC remains retired | Rotate native document on Bun restart, replay an old request, or retarget its reply; preservation/revocation test fails |
 | R12 | Genuine original `el:rendererReq` passes canonical decoding and final Guard, enters actual Bun once, and replies only to its live original document | Missing grant, foreign source or revocation before final handoff produces zero Bun entries/effects; remove one final check and require RED |
 | R13 | Actual native request entry admits only GET with no body/stream and bounds URL/header conversion and aggregate request retention before Host-owned copying, stream reads or application callback admission | Through that native entry send oversized POST/body-stream and URL/header cases; independent pre-callback copy/read/reservation counters must remain within approved budgets, no forbidden body is read, and a subsequent valid GET succeeds. Moving the gate only into the public Wry callback must make this test fail |
+| R14 | Scheme-handler registration on the configuration precedes WKWebView construction, and construction precedes the first load; a real custom-resource GET succeeds through that handler | Move only registration after construction while keeping it before navigation; the ordering assertion must fail and the existing view must not be credited with the later registration |
+| R15 | The resolved response header emits every explicit allow/deny directive in §4.6, before parsing; object, child-frame and form targets have zero forbidden delivery/effects while an admitted resource succeeds | Change only the corresponding directive to admit the controlled target; its independent native delivery/effect observer must change. For forms, separately omit form-action while keeping default-src none; the test must detect the loss of the form restriction |
 
 R02 is already demonstrated only in the standalone fixture. R04–R08 have partial
 synthetic native evidence, not a product pass. No row closes from a screenshot,
@@ -129,8 +131,12 @@ the interim Wry call site is later replaced by direct native bindings.
 
 ### 4.2 Proposed origin and application migration
 
-Use a Host-registered application resource scheme installed before first
-navigation, with a separately minted unguessable authority for each admitted
+Register the Host-owned application resource scheme on the exact
+`WKWebViewConfiguration` **before constructing its WKWebView**, then navigate
+that view. Registration merely before first navigation is insufficient: the
+initializer copies the configuration, and later mutations do not configure the
+already-created view. Keep the handler retained through native task retirement.
+Use a separately minted unguessable authority for each admitted
 WebView document/load scope. The exact scheme spelling must reconcile with
 GH471's proposed host-owned scheme table before approval; no live table is claimed.
 Do not copy the probe's `keld-mvp` spelling into a second registry. GH471's general
@@ -304,7 +310,34 @@ only admitted local scripts/connects/images/media/fonts, necessary data images/
 fonts and inline styles, plus `wasm-unsafe-eval`; no remote origins, inline
 scripts, object, frame or form destinations. This is a candidate resolved policy,
 not a global redefinition of `default`. The generator/shared owner must approve
-its representation. A bounded direct WKWebView test on 2026-10-25 changed only
+its representation.
+
+**Exact candidate header mapping (proposed, not a new native receipt).** Let
+`RESOURCE_ORIGIN` be the validated serialized scheme/authority of this admitted
+document, rendered from typed Host policy without page input, wildcards, a
+scheme-wide source, or a `'self'` substitution. It is a placeholder below, never
+literal header text. The one policy renderer emits:
+
+~~~text
+default-src 'none'; script-src RESOURCE_ORIGIN 'wasm-unsafe-eval'; connect-src RESOURCE_ORIGIN; img-src RESOURCE_ORIGIN data:; media-src RESOURCE_ORIGIN; font-src RESOURCE_ORIGIN data:; style-src RESOURCE_ORIGIN 'unsafe-inline'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
+~~~
+
+Absent fetch destinations remain denied by `default-src 'none'`; explicitly deny
+objects and frames as above, and emit the independent `form-action`,
+`base-uri` and `frame-ancestors` directives rather than assuming default-src
+covers navigation or embedding. No inline script, JS `unsafe-eval`, remote
+origin, worker or service-worker permission is introduced. The inline-style,
+data-image/font and wasm allowances remain scoped candidates, not new globals.
+
+R15 must check actual serialized directives and physical object/frame/form
+delivery/effects with an early violation observer, paired admitted-resource
+controls, and isolated mutations that do not rely on a second native/CSP gate
+to hide a missing directive. Header structure alone is insufficient. These
+strengthened exact-header and R14/R15 controls have **not** been run; the prior
+candidate-policy hashes below qualify only the policy bytes used in those
+receipts, not this newly specified mapping.
+
+A bounded direct WKWebView test on 2026-10-25 changed only
 the copied harness's response-policy constant: two native runs passed the
 unchanged original-caller/XHR oracle under local-only sources. A control changing
 only `script-src` to `'none'` stopped original app scripts while the original
@@ -441,17 +474,39 @@ first observable product completion remains R02 **and** R12, not this document.
 
 ### Current-documentation receipt
 
-- Applicability: public WKWebView scheme registration/response semantics and
-  interim Wry adapter behavior.
-- Context7: `/tauri-apps/wry`, queried 2026-10-25 for macOS custom response/status,
-  native configuration and task lifetime. Returned development documentation;
-  used for discovery only, not as pinned 0.56.1 authority.
-- Official primary: [Wry tag wry-v0.56.1 response implementation](https://github.com/tauri-apps/wry/blob/wry-v0.56.1/src/wkwebview/class/url_scheme_handler.rs),
-  [Apple scheme registration](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/seturlschemehandler(_:forurlscheme:)),
-  and the exact WebKit/Apple/source receipts linked by the GH415 ADR/addendum.
-- Supported claim: Wry already supplies native HTTP response status/headers;
-  native scheme registration does not provide an accepted file override in the
-  reviewed API/OS proof. Direct native tests isolate this from Wry.
-- Fallback/blocker: installed Apple WebKit source/patch mapping and precise
-  internal file-denial branch remain unknown. No private API, global access
-  grant or universal impossibility claim fills that gap.
+Retrieved/checked on **2026-10-25 UTC**. This is source/provenance documentation,
+not a new native run. The GH415 fixture applicability is **macOS 26.5.1,
+build 25F80, arm64; Apple WebKit 21624.2.5.11.4; Swift 6.2.3**. Its exact Xcode/
+SDK build was not recorded in the cited receipt; no SDK identity or exact match
+between open-source WebKit and the installed Apple binary is inferred. Future
+native R14/R15 receipts must include the actual SDK/Xcode and OS/WebKit versions.
+
+| Source / immutable version where available | Exact supported claim and limit |
+|---|---|
+| [WebKit WKWebView.h](https://github.com/WebKit/WebKit/blob/f98a24d3a0de080403308f736a0ff589645fd097/Source/WebKit/UIProcess/API/Cocoa/WKWebView.h), commit `f98a24d3a0de080403308f736a0ff589645fd097`, initializer documentation | Construction copies configuration; changing the original configuration later does not configure that existing view. Source contract, not a fresh OS ordering test. |
+| [WebKit WKWebViewConfiguration.h](https://github.com/WebKit/WebKit/blob/f98a24d3a0de080403308f736a0ff589645fd097/Source/WebKit/UIProcess/API/Cocoa/WKWebViewConfiguration.h), same commit, setURLSchemeHandler | Public handler registration is available from macOS 10.13/iOS 11.0 and refuses internally handled schemes. This is source API availability, not the missing exact installed SDK build. |
+| [Apple configuration](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration) and [scheme registration](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/seturlschemehandler(_:forurlscheme:)) | Current official discovery URLs. This pass could retrieve only the JavaScript shell, not their documentation bodies; substantive registration/copy claims use the pinned public headers above and the separately scoped native receipt. |
+| [Wry native scheme handler](https://github.com/tauri-apps/wry/blob/14be44842747a62c4110bd982f61f6c1acd705c3/src/wkwebview/class/url_scheme_handler.rs), tag `wry-v0.56.1` → commit `14be44842747a62c4110bd982f61f6c1acd705c3` | Builds native HTTP response status/headers, but copies/drains request input before the public callback; §4.5's earlier gate is necessary. |
+| [WebKit response conversion](https://github.com/WebKit/WebKit/blob/f98a24d3a0de080403308f736a0ff589645fd097/Source/WebCore/platform/network/cocoa/ResourceResponseCocoa.mm), commit `f98a24d3a0de080403308f736a0ff589645fd097` | Source-level native response/status distinction. It does not identify the installed Apple file-denial branch. |
+| [WebKit custom-scheme change](https://github.com/WebKit/WebKit/commit/f2a07be9fb7478e9b44a6ed50a7b9f07b8c793b1), commit `f2a07be9fb7478e9b44a6ed50a7b9f07b8c793b1` (2026-09-04) | Same-custom-scheme no-CORS handling motivates receiving-view/authority checks; inclusion in the installed Apple binary is unknown. No installed vulnerability is claimed. |
+| [CSP3 Working Draft 2026-09-16](https://www.w3.org/TR/2026/WD-CSP3-20260916/), §§6.1, 6.3, 6.4 and 6.8.3 | Fetch fallback and separate form/base/ancestor restrictions justify explicit directive mapping. A standards draft is not evidence of this Mac's implementation or R15 acceptance. |
+
+**Enumerated GH415 receipt references:** [ADR comment 6395832965](https://github.com/gyldlab/keld/issues/415#issuecomment-6395832965)
+records the environment above, native public-registration receipt SHA256
+`6125906d674ef9a4a8e0c79388a2bbce3e4b428cd54ad0d9542ea2ba94b4c095`,
+original positive JSON `e1f2e539a0ab3a2a132f0138de62b2df344b889f5e955d6021adaeedda48e70a`,
+and Swift source `6e3459edad2271db77ba0aa833e34819d1d045a87e873fea3ead48b05838646d`.
+[Independent replay comment 6396039842](https://github.com/gyldlab/keld/issues/415#issuecomment-6396039842)
+binds summary `3183111d1c8fecc1a976cb548b7febeecf86a2ef2e1a2329a6819e4bbb89bd7a`,
+early-observer Swift source `eb469954ed3a2bf1cbb443d89795164c1c6783309edd6d23a27a9c220bb7c18e`,
+and corrected baseline JSON `119ec5c48641bc74d2f4edbb91d0bd717ce7ac0897f4fd6a7b6167970b9c1d4c`.
+Comments are mutable reference locations; the listed content hashes bind the
+reported artifacts, whose local bytes were not independently materialized here.
+They prove only their reported standalone/synthetic scope, not Host/Bun or new
+R14/R15 acceptance.
+
+Context7 `/tauri-apps/wry` was queried on 2026-10-25 for discovery only;
+development documentation is not pinned 0.56.1 authority. Installed WebKit
+source/patch mapping, exact SDK build and precise internal file-denial branch
+remain unknown. No private API, global access grant or universal impossibility
+claim fills those gaps.
