@@ -25,8 +25,9 @@ do not weaken.
 **Native destination:** `keld-wv` owns its platform contract. On macOS the engine is
 Apple WKWebView, currently constructed through Wry and ultimately through direct
 `objc2` bindings. Wry is an interim adapter, not a browser engine or an authority
-owner. This slice may reuse its public custom-protocol response mechanism; it
-must not leak Wry request/responder types into the manifest, app facade, canonical
+owner. This slice may reuse its HTTP response conversion only behind a
+qualified bounded native request-entry gate (§4.5); the public Wry request
+callback alone is not that gate. It must not leak Wry request/responder types into the manifest, app facade, canonical
 IPC, source identity, or navigation-generation contract. General backend removal
 and same-engine performance comparison are explicitly parked in
 [GH1193](https://github.com/gyldlab/keld/issues/1193) and
@@ -76,7 +77,7 @@ support, or complete-app/edit/save/Electron-parity claims from a standalone prob
 | Direct custom handler: ordinary URLResponse gives exact bytes/status 0; HTTPURLResponse(200) gives exact bytes/status 200 | Response metadata is an independently isolated discriminator. Native filesystem read permission does not itself promise HTTP success semantics. |
 | Original renderer and preload naturally reach `rendererReq/isFullscreen` at an honest custom URL | Standalone caller witness only: test facade/carrier, no actual Keld Guard/Bun or main reply. Original main sender check rejects that URL. |
 | Public handler registration for file/http/https throws; custom registration succeeds | No supported file-subresource response interception was established. This is a bounded tested limitation, not a universal impossibility theorem. |
-| Wry 0.56.1 constructs NSHTTPURLResponse from Rust status and headers | Reuse the existing adapter rather than introducing another native loader merely for status 200. |
+| Wry 0.56.1 constructs NSHTTPURLResponse from Rust status and headers, but buffers request bodies before its public callback | Response metadata is reusable; bounded ingress is not established by this callback. Qualify the native entry gate in §4.5 before selecting the adapter. |
 
 The existing failed `loadSimulatedRequest` main-response experiment is a real
 WKWebView API experiment, not a simulator. It does not intercept the unchanged
@@ -99,6 +100,7 @@ reopen that direction only with a concrete supported mechanism and a falsifier.
 | R10 | Cancellation/destruction releases request/body reservations exactly once; no response to stopped/reused native task or replacement document | Retain/double-release a charged response or reuse a stopped task; bounded-state/canary oracle fails |
 | R11 | Bun restart alone preserves the surviving native document/resource identity while old role-bound IPC remains retired | Rotate native document on Bun restart, replay an old request, or retarget its reply; preservation/revocation test fails |
 | R12 | Genuine original `el:rendererReq` passes canonical decoding and final Guard, enters actual Bun once, and replies only to its live original document | Missing grant, foreign source or revocation before final handoff produces zero Bun entries/effects; remove one final check and require RED |
+| R13 | Actual native request entry admits only GET with no body/stream and bounds URL/header conversion and aggregate request retention before Host-owned copying, stream reads or application callback admission | Through that native entry send oversized POST/body-stream and URL/header cases; independent pre-callback copy/read/reservation counters must remain within approved budgets, no forbidden body is read, and a subsequent valid GET succeeds. Moving the gate only into the public Wry callback must make this test fail |
 
 R02 is already demonstrated only in the standalone fixture. R04–R08 have partial
 synthetic native evidence, not a product pass. No row closes from a screenshot,
@@ -226,7 +228,37 @@ must prove final path confinement rather than claim observation of original text
 Keep entry query semantics separate from filesystem lookup; no query selects a
 different root, principal, policy or arbitrary file.
 
-Limits are a reviewed Host input: maximum asset bytes, total retained bytes,
+**Native ingress precedes the application callback.** In pinned Wry 0.56.1,
+`start_task` copies `HTTPBody` into a vector or drains `HTTPBodyStream`
+before invoking its public custom-protocol callback; it also converts the
+URL and headers first. Rejecting POST or checking a body budget inside that
+callback is therefore too late to bound this work. This is a source-level
+adapter limitation, not a demonstrated production exploit.
+
+For this static-resource slice, the single native request-entry owner must
+reject every method except GET, and reject any body or body stream without
+copying or draining it. Before converting native URL/header values into
+Host-owned strings, validate bounded native lengths and header counts, then
+reserve the total permitted conversion/request footprint. Enforce individual
+and aggregate URL/header byte limits, active/queued request limits and checked
+size arithmetic before copying or enqueueing. Reject oversized GET metadata
+by the same early gate. Do not log attacker-controlled request contents.
+The budget covers Keld/adapter-owned work and copies; it does not claim to
+bound WebKit's internal request construction or renderer heap.
+
+The resource implementation must name **one** gated native entry in
+`keld-wv` and demonstrate that no eager Wry body/metadata conversion bypasses
+it. The unmodified public callback is not a qualified implementation.
+If its existing native seam cannot put this gate before conversion, the
+owner must select and separately review the smallest native handler/adapter
+change before enabling the scheme, preserving one scheme owner, one native
+task/cancellation registry and GH542's document authority. A response-only
+wrapper or downstream quota does not close R13. No fork, general Wry
+replacement or second resource loader is authorized by this draft; the
+broader #1193/#1194 programs remain parked.
+
+Limits are a reviewed Host input: native URL/header bytes and counts,
+request conversion/retention, maximum asset bytes, total retained bytes,
 in-flight reads, queued requests, path/components and cancellation retention.
 All reservations count until actually released. The existing probe's 16 MiB
 single-file cap is **test evidence, not a production budget**. Before approval,
@@ -248,9 +280,12 @@ asset. Use `Cache-Control: no-store`; no redirects, dynamic execution or general
 network proxy. Fail closed with bounded diagnostics and zero forbidden content.
 An error response may expose a fixed generic error body, never outside-file bytes.
 
-The main response receives CSP **before parsing**. Reuse Wry 0.56.1's native
-HTTP-response conversion now; direct WKURLSchemeHandler can replace this adapter
-later. Do not insert a late meta policy or modify XHR status in JavaScript.
+The main response receives CSP **before parsing**. Wry 0.56.1's native
+HTTP-response conversion may be reused only after §4.5's pre-conversion
+native ingress gate is qualified. A focused direct WKURLSchemeHandler in the
+same resource owner is an alternative if the existing seam cannot supply that
+gate; its exact native/unsafe/cancellation change needs independent review.
+Do not insert a late meta policy or modify XHR status in JavaScript.
 
 **One policy source:** the verified manifest selects `windows.<key>.web.csp`.
 Preserve the existing selector grammar until its owner approves an amendment.
@@ -322,7 +357,9 @@ by naming these future paths.
   resolve §10 with the existing owners and amend GH473/GH499 acceptance explicitly.
 - [ ] T2: one separately claimed resource slice consumes verified source/policy
   and GH542 load/document contexts, installs the guarded native response path,
-  and passes original-renderer and independent resource controls.
+  and passes original-renderer, pre-callback native-ingress and independent
+  resource controls. The native request-entry gate must precede Wry's eager
+  body/URL/header conversion; a response-only integration cannot satisfy T2.
 - [ ] T3: existing preload/IPC owners compose the real original request through
   final Guard, Bun and same-document reply; run revoked/foreign no-effect controls
   and the separately pinned GH470 Electron oracle.
@@ -343,6 +380,15 @@ actual parser effects and a wasm compile witness. R08–R11: actual native
 load/commit/cancel/destroy/recovery events with held response completion, exact
 reservation accounting and healthy follow-up. R12: actual Keld/Guard/Bun product
 run with an independent final-effect observer, not test-stub traffic.
+R13: exercise the actual native scheme-task entry, not only the application's
+public callback. Independently instrument adapter-owned body reads, URL/header
+copies, reservations and queue retention before that callback. Cover GET
+without body, unsupported methods with a large body and with a body stream,
+oversized URL/header metadata, each approved max/max+1 and aggregate limit,
+cancellation and a healthy follow-up GET. Reject unsupported body-bearing
+requests without reading their bodies. Mutate only the gate placement to
+after Wry's eager conversion; the pre-callback work oracle must fail. These
+native tests remain planned/unrun; documentation edits do not qualify R13.
 
 Reuse retained probe receipts without rewriting them. The earlier boundary
 verifier failure from a late CSP listener stays preserved; corrected observation
@@ -381,7 +427,13 @@ the real draw.io Host/Bun milestone and matched security/functional conformance.
    and do not invent precommit IPC authority.
 5. **Source-admission/filesystem/Host worker owners + GH473:** name the concrete
    verified-byte source, retained walker, bounded I/O executor and corpus-derived
-   resource limits. Test pins and an arbitrary mutable directory are insufficient.
+   resource limits, including pre-copy URL/header and aggregate native-ingress
+   budgets. Test pins and an arbitrary mutable directory are insufficient.
+6. **GH473 native adapter/security owner:** select the exact pre-conversion
+   request-entry gate and review its native/unsafe/task-lifetime seam. The public
+   Wry callback cannot be selected unchanged as bounded intake. Record actual
+   native R13 controls before claiming the adapter qualified; no broader backend
+   replacement is a prerequisite.
 
 These are bounded owner decisions, not reasons to repeat the whole investigation.
 This draft stays unapproved until they have exact recorded dispositions. The
