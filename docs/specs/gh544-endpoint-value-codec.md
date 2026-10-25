@@ -62,8 +62,10 @@ second transport or conformance score changes. Actual
    send**; no application listener fires.
 4. **V4, no lossy coerces:** Cycles, shared object aliases, BigInt,
    NaN/infinity, invalid Date, malformed UTF-16, sparse arrays,
-   accessor properties and symbol-keyed data refuse rather than
-   serialize an invented value or invoke a property getter.
+   own accessor descriptors (including Error name/message/stack)
+   and symbol-keyed data refuse without invoking accessor getters.
+   Proxy enumeration traps may execute arbitrary application JS;
+   their output never proves Host authorization or dispatch certainty.
 5. **V5, hostile decoder:** Unknown tag, truncation, trailing bytes,
    duplicate/unordered map keys, invalid UTF-8, reserved prototype key
    and malformed nested value refuse without writing to a prototype.
@@ -135,9 +137,18 @@ constructs ordinary objects with validated own data descriptors
 and plain objects encode only own enumerable string-keyed **data**
 properties, excluding prototypes; enumerable accessors and symbol
 keys reject before reading getters. Dense arrays have every
-index `0..length−1` and no extra enumerable fields. Date/ordinary
-Error custom properties are dropped; `stack` is optional, distinct
-from the empty string. Error subclass identity is not preserved.
+index `0..length−1` and no extra enumerable fields. For tag `09`,
+extract Error `name`, `message` and `stack` using **only**
+`Object.getOwnPropertyDescriptor(error, key)` for each field and
+inspect the descriptor's own `value`: never read `error[key]`,
+inherited accessors, `toString` or `toJSON`. Each *present* field
+must have a string-valued **own data descriptor**; an accessor or
+wrong-typed value is a typed refusal **without invoking its getter**.
+Missing own `name` defaults to literal `"Error"`, missing own
+`message` defaults to `""`, and missing own `stack` stays absent
+(distinct from a present empty string). Date custom properties
+and other Error custom properties are dropped; Error subclass
+identity is not preserved.
 
 Reject unsupported/exotic values and forbidden input in V3/V4,
 without `toJSON` or application getter execution on ordinary
@@ -151,6 +162,19 @@ nodes (including root and containers) <=256, declared count
 consumption and strict canonical forms. No unbounded recursion,
 arrays or `TextDecoder` replacement. Root tags cannot be
 concatenated.
+
+**Proxy execution limit:** JavaScript Proxy `ownKeys` and
+`getOwnPropertyDescriptor` traps can run arbitrary code merely from
+enumeration, including when probing an Error. The codec cannot
+reliably recognize every Proxy, prevent trap side effects or bound
+a trap's execution time/allocations. After each trap **returns**,
+enforce incremental remaining key/node/depth/output-byte limits
+before accepting its next descriptor or accumulating more codec
+state; reject over-budget or throwing trap results. These limits
+bound only **codec-owned** work and memory, not arbitrary Proxy JS.
+Neither Proxy metadata, a local error nor successful serialization
+is a Host authority or `NotDispatched` receipt: the existing Host
+authentication/guard/navigation owners alone authorize forwarding.
 
 Failures use three typed semantic classes:
 `UnsupportedValue(type)`, `MalformedValue(reason)`,
@@ -249,9 +273,9 @@ link, resource handle or application-facing API export.
 | V1 | Two fresh endpoint builds match all independent goldens and checked source identity | Hand-edit renderer artifact without source change |
 | V2 | Every §4.3 vector matches full bytes and typed shape in both realms | Replace tagged encoding with `JSON.stringify`, or keep class prototype |
 | V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
-| V4 | Cycle, `[x,x]`, invalid Date, sparse, accessor getter count zero | Remove seen set or invoke a getter |
+| V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
 | V5 | Hostile keys/tags/UTF-8/duplicate/trailing fixtures, Object.prototype unchanged | Assign decoded `__proto__` through setter |
-| V6 | Exact length 4096/4097, depth 32/33, nodes 256/257 with bounded allocation | Omit preallocation count check or change `>` to `>=` |
+| V6 | Exact length 4096/4097, depth 32/33, nodes 256/257 with bounded codec allocation; instrument Proxy `ownKeys`/descriptor traps to prove effects may occur but never imply Host grant | Omit returned-descriptor incremental bound or treat a Proxy trap as trusted Host admission |
 | V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
 | V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
 
@@ -286,7 +310,8 @@ GH544 cannot raise them or add another Worker/pump/queue.
 
 1. Does the GH540/IPC and canonical error-registry owner
    approve these **proposed** closed tags `00..09`, signed
-   Date, UTF-8 key sort, reserved keys, Error-stack optional
+   Date, UTF-8 key sort, reserved keys, Error field own-data-only
+   extraction/defaults, Proxy trap limitations, stack optional
    flag, caps and noncolliding typed error codes/fix messages?
    No tags or numeric errors are currently deployed.
 2. GH544 remains blocked by open GH464 and approved-but-
