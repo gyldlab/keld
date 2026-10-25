@@ -17,11 +17,13 @@ Make the pinned **unmodified** draw.io desktop preload expose its narrow page
 API through Electron-like `contextBridge.exposeInMainWorld` and exchange
 `rendererReq` / `mainResp` messages with the actual main-role listener using
 `ipcRenderer.send/on/once`, on physical macOS WKWebView. A successful first
-proof is **two sequential unique `isPluginsEnabled` requests**, each observed
-at the page callback, actual main handler, original document and independently
-released transport reservation. Include the nested long-lived `watchFile`
-callback and frozen exposed data behavior; protect KELD's separate trusted
-renderer bridge with default-deny Host grants.
+proof is **one genuine pinned page-origin `isFullscreen` request** from
+`EditorUi.init`, observed at the original page callback, live main
+`rendererReq` handler, current native document and transport release.
+A separately labelled **test-triggered** second `isFullscreen` request
+checks distinct IDs and credit reuse; it is **not** a second natural page
+call. Include the nested long-lived `watchFile` callback and copied/frozen
+exposed data; protect KELD's trusted renderer bridge with Host grants.
 
 This issue owns the **application-level facade and cross-world value behavior**,
 not the WebKit application-preload loader. GH-484 owns the loader, world selection,
@@ -98,6 +100,23 @@ Preload installs `ipcRenderer.on('mainResp')` and
 `request` *mutates* `msg.reqId`; `watchFile` retains and deletes
 `msg.listener` before `send('rendererReq', msg)`.
 
+**2026-10-25 pinned page-caller correction (evidence, not approval):**
+The [original current webapp `ElectronApp.js`](https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L694-L715)
+calls `requestSync('isFullscreen')` in `EditorUi.init`; the helper
+converts it to `{action:'isFullscreen'}`, the unchanged preload assigns a
+dynamic `reqId` and sends `rendererReq`, and the desktop main
+[`rendererReq` listener](https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js#L4431-L4543)
+replies on `mainResp` with a Boolean. The `isPluginsEnabled` main
+switch case is a legacy fallback: none of the 406 checked-out pinned
+current webapp JavaScript files invokes it. Prior two-request native
+`isPluginsEnabled` fixtures called the preload explicitly and sent
+synthetic responses; do not score them as genuine page-origin traffic.
+A second *natural* page `isFullscreen` request follows the fullscreen
+UI action's `sendMessage('toggleFullscreen')`, which needs a **separate
+approved** `el:toggleFullscreen` grant; never infer or widen it from
+`el:rendererReq`. A conditional `getLocalFonts` request may occur
+earlier; do not assume `reqId=1`. See [source owner receipt](https://github.com/gyldlab/keld/issues/467#issuecomment-6392657686).
+
 Working baseline: KELD origin/main
 `b4e9f4f2e0dc88ccb14407e4e839b50fabb6be50`, 2026-10-24.
 `packages/@keld/electron/src/index.ts` currently exports the
@@ -155,7 +174,7 @@ separate page-to-preload callable publication mechanism.
 | C11 | Exact literal window grant absent | Final Host guard records an **internal** typed `KELD-GUARD003` refusal before any Bun frame/listener effect; the public `ipcRenderer.send` call still returns `undefined` and never gains a retroactive exception, event or Promise. Healthy explicitly granted neighbor still succeeds. No wildcard, case-fold, URL decoding or alternate grant. |
 | C12 | Renderer, frame, document or Bun generation is stale, foreign or destroyed | Original-target callbacks/events and reservations settle once without delivery to successor. Same-document/hash and cancelled renderer provisional navigation preserve still-live document callbacks. |
 | C13 | Preload has begun before first native application-document qualification | Page can observe only the exposed API. Native forwarding remains closed until GH-542 qualifies the document and one matching app-world bind plus live Bun generation. Early void send returns undefined with bounded private typed refusal, **zero retained native work**, no callback and no replay to a successor; a valid post-bind control succeeds. |
-| C14 | Page calls unmodified draw.io `window.electron.request` twice for `isPluginsEnabled` | Two **distinct sequential** `reqId` values, original page, actual live `rendererReq`/`mainResp` handlers, main outcome and page callback match the pinned application path; second starts only after callback **and independent native/transport release** of first. Canned `false`/direct callbacks fail. |
+| C14 | The real unmodified pinned `EditorUi.init` page calls `requestSync('isFullscreen')` after actual Electron-mode bootstrap and current `file://` admission | Independently trace **one genuine page-origin** `rendererReq` action `isFullscreen`, its dynamically assigned `reqId`, the original desktop main handler and addressed Boolean `mainResp`, actual page callback and physical native/transport release. No fixed first ID, test-injected first caller or canned Bool qualifies. A **separate explicitly controlled second** `request({action:'isFullscreen'})` after callback **and native/ring release** proves a different ID and quota reuse, not a second natural page call. A later page UI `toggleFullscreen` requires its own reviewed `el:` grant, never silently inherited. |
 | C15 | Actual file URL page participates in send/reply | Native committed `file://` document URL, approved package-resource origin and `senderFrame.url` match; a custom-scheme rewrite or guessed `file:` string cannot satisfy eligibility. |
 | C16 | Application registers a listener after an earlier unsolicited event | Earlier event is not replayed. A later matching event is delivered once; no limitless hidden event queue. |
 | C17 | Preload page navigates, reloads, closes or Bun role recovers | Document-owned proxy/listener retention terminates for a retired document, surviving doc API remains only if host lifecycle admits it, old queued calls do not replay or retarget, other WebViews stay isolated. |
@@ -488,13 +507,19 @@ Incoming main event:
    callback, deletes the entry and completes the independent release
    barrier. The page callback is not a transport receipt itself.
 
-Run request 2 only after both callback and release receipt from
-request 1. Record the unmodified page caller, preload, main handler,
-native committed file URL, original navigation stamp, Bun generation,
-actual bytes/response and two distinct request IDs. An expected
-`false` result alone says nothing about transport. The controlled
-≤4 KiB case does not prove burst/backpressure or the larger draw.io
-open/save corpus (GH-545).
+Record the genuine pinned-page `EditorUi.init → isFullscreen` call
+and callback **without a harness-initiated first request**. Observe
+the original `rendererReq` main handler, addressed `mainResp`,
+Bun generation, native document stamp and physical release.
+Only **after both the genuine page callback and native/ring release**,
+initiate a separate explicitly test-controlled second call through
+the real preload/main handler to prove a different `reqId` and
+reusable quota. Record each actual initiator, committed `file://`
+URL, request/reply bytes and both settlement receipts. The controlled
+second is not another natural page-origin witness. A canned Boolean
+or synthetic main response cannot qualify the real product result.
+The ≤4 KiB case does not prove burst/backpressure or the larger
+draw.io open/save corpus (GH-545).
 
 Listener ownership is per document. `once` removes before invocation,
 `removeListener` supports original references, registration order is
@@ -613,9 +638,11 @@ the rejection is not counted as application compatibility.
       do not change channel grants.
 - [ ] **T5 — real macOS application proof:** after accepted GH-484,
       GH-473, GH-542/552 and owner codec/transport artifacts,
-      run the unmodified draw.io two-request and watchFile fixtures
-      on WKWebView, anti-stub mutations and KEL-142 hostile-world
-      requalification. Update corpus PASS only on independent evidence.
+      run the genuine pinned-page `EditorUi.init` `isFullscreen`
+      request, a separately labelled test-controlled second request
+      and watchFile fixtures on WKWebView. Run anti-stub and KEL-142
+      hostile-world controls; never count a controlled request as
+      a second application-origin call or mark PASS without proof.
 - [ ] **T6 — bounded handoff:** remaining Electron behavior
       outside first-proof stays UNKNOWN/explicit divergence and
       receives the existing owner, not a speculative extra shim.
@@ -653,8 +680,8 @@ readiness, unchecked green CI or mock Host counts as native proof.
 | `BRG013_precommit_gate` | C13 | Treat early app-world publication or `file:` string as committed eligibility → forbidden handler count RED. |
 | `BRG013b_world_bind` | C13,C21 | Native app/trusted credentials are distinct under one current checked generation. Refuse missing/stale/swapped/duplicate credentials and old-document delayed bind with independent Host/Bun zero-effect counters; remove present-binding check → RED. |
 | `BRG013c_early_void` | C08,C13,C14 | Invoke exposed void method before app bind or accepted Bun link, observe undefined + one internal refusal, zero retained work and no queued successor replay, then allowed call after bind; buffer old work or invent reply → RED. |
-| `BRG014_twice_real_app` | C14 | Stub `false`, bypass main handler or duplicate reqId → actual receipts/handler count RED. |
-| `BRG015_release_barrier` | C14 | Start request 2 at callback while first native reservation held → exact release witness RED. |
+| `BRG014_real_page_is_fullscreen` | C14 | Replace actual pinned `EditorUi.init` `isFullscreen` with a harness-injected first call, bypass original main listener, hardcode Boolean or duplicate assigned `reqId` → original-page/handler/response witness RED. |
+| `BRG015_release_barrier` | C14 | Initiate the **controlled** second preload request at callback while first native reservation is still held → independent release/credit RED; after release a distinct request ID and healthy callback succeed. Controlled traffic is not a second natural page call. |
 | `BRG016_file_url` | C15 | Rewrite committed URL to custom scheme or substitute guessed senderFrame.url → native URL equality RED. |
 | `BRG017_recovery` | C12,C17 | Replay old queued event after Bun restart or retain retired callback → stale-tag sentinel RED. |
 | `BRG018_disallowed_wire` | C18 | Serialize nested page callback or Symbol into IPC data → codec/local error and zero-write checks RED. |
