@@ -62,6 +62,7 @@ for (const mode of [
 test("staged canonical preload precedes an early application dependency", async () => {
   const {
     mkdtempSync,
+    mkdirSync,
     readFileSync,
     writeFileSync,
     copyFileSync,
@@ -70,11 +71,12 @@ test("staged canonical preload precedes an early application dependency", async 
   } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
   const repo = resolve(import.meta.dir, "../../../..");
   const stage = mkdtempSync(join(tmpdir(), "keld-state-phase-"));
-  async function run(args: string[]) {
+  async function run(args: string[], cwd = stage) {
     const child = Bun.spawn([process.execPath, ...args], {
-      cwd: stage,
+      cwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
@@ -85,6 +87,116 @@ test("staged canonical preload precedes an early application dependency", async 
       new Response(child.stderr).text(),
     ]);
     return { exit, stdout, stderr };
+  }
+  // Failure-only observations run in labeled copies. They never replace the
+  // actual positive/omission oracle or make an alternate CLI form acceptable.
+  async function diagnosePreload() {
+    const forms = [
+      "before-run-equals",
+      "after-run-equals",
+      "separate-value",
+      "file-url",
+      "slash-absolute",
+    ];
+    const results = [];
+    for (const form of forms) {
+      const diagnostic = join(stage, `diagnostic-${form}`);
+      mkdirSync(diagnostic);
+      for (const file of readdirSync(stage)) {
+        if (file.endsWith(".ts"))
+          copyFileSync(join(stage, file), join(diagnostic, file));
+      }
+      const events = join(diagnostic, "events.jsonl");
+      writeFileSync(events, "");
+      writeFileSync(
+        join(diagnostic, "diagnostic-observer.ts"),
+        `import {appendFileSync} from "node:fs";
+export function mark(meta:ImportMeta,event:string,extra:Record<string,unknown>={}) {
+ appendFileSync(${JSON.stringify(events)},JSON.stringify({event,url:meta.url,path:meta.path,cwd:process.cwd(),freezeNative:Function.prototype.toString.call(Object.freeze).includes("[native code]"),getNative:Function.prototype.toString.call(Map.prototype.get).includes("[native code]"),...extra})+"\\n");
+}
+`,
+      );
+      const sidecar = join(diagnostic, "kipc-transport.ts");
+      writeFileSync(
+        sidecar,
+        `import {mark as diagnosticMark} from "./diagnostic-observer.ts";
+export const diagnosticToken=crypto.randomUUID();
+diagnosticMark(import.meta,"sidecar-begin",{token:diagnosticToken});
+${readFileSync(sidecar, "utf8")}
+diagnosticMark(import.meta,"sidecar-end",{token:diagnosticToken,freezeCapturedNative:Function.prototype.toString.call(stateFreeze).includes("[native code]"),getCapturedNative:Function.prototype.toString.call(intrinsicMapGet).includes("[native code]")});
+`,
+      );
+      const early = join(diagnostic, "state-phase-probe.ts");
+      writeFileSync(
+        early,
+        `import {mark as diagnosticMark} from "./diagnostic-observer.ts";
+diagnosticMark(import.meta,"early-begin");
+${readFileSync(early, "utf8")}
+diagnosticMark(import.meta,"early-end");
+`,
+      );
+      const entry = join(diagnostic, "direct.ts");
+      // A body marker precedes the unchanged state assertion. Its transport
+      // import is appended after the existing dependency imports.
+      writeFileSync(
+        entry,
+        readFileSync(entry, "utf8").replace(
+          "class Link {",
+          `import {mark as diagnosticMark} from "./diagnostic-observer.ts";
+import {diagnosticToken} from "./kipc-transport.ts";
+diagnosticMark(import.meta,"entry-body",{token:diagnosticToken,transportResolved:import.meta.resolve("./kipc-transport.ts")});
+class Link {`,
+        ),
+      );
+      for (const file of readdirSync(diagnostic)) {
+        if (!file.endsWith(".ts") || file === "direct.ts") continue;
+        const path = join(diagnostic, file);
+        const source = readFileSync(path, "utf8");
+        if (!source.includes('from "./kipc-transport.ts"')) continue;
+        writeFileSync(
+          path,
+          `${source}
+import {mark as diagnosticMark} from "./diagnostic-observer.ts";
+import {diagnosticToken} from "./kipc-transport.ts";
+diagnosticMark(import.meta,"api-body",{token:diagnosticToken,transportResolved:import.meta.resolve("./kipc-transport.ts")});
+`,
+        );
+      }
+      const args =
+        form === "before-run-equals"
+          ? ["--preload=./kipc-transport.ts", "run", entry]
+          : form === "after-run-equals"
+            ? ["run", "--preload=./kipc-transport.ts", entry]
+            : form === "separate-value"
+              ? ["run", "--preload", "./kipc-transport.ts", entry]
+              : form === "file-url"
+                ? [`--preload=${pathToFileURL(sidecar).href}`, "run", entry]
+                : [`--preload=${sidecar.replaceAll("\\", "/")}`, "run", entry];
+      const result = await run(args, diagnostic);
+      results.push({
+        form,
+        args,
+        ...result,
+        events: readFileSync(events, "utf8"),
+      });
+    }
+    const imports = readdirSync(stage)
+      .filter((file) => file.endsWith(".ts"))
+      .flatMap((file) =>
+        readFileSync(join(stage, file), "utf8")
+          .split("\n")
+          .filter((line) => /(?:from|import).*transport\.ts/.test(line))
+          .map((line) => ({ file, line })),
+      );
+    console.error(
+      "DIAGNOSTIC ONLY staged preload matrix " +
+        JSON.stringify({
+          platform: process.platform,
+          bun: Bun.version,
+          imports,
+          results,
+        }),
+    );
   }
   try {
     const probe = readFileSync(
@@ -179,10 +291,19 @@ console.log("PASS staged same canonical capture");
       "run",
       join(stage, "direct.ts"),
     ]);
-    expect(directPreload).toEqual(preload);
     const omitted = await run(["run", join(stage, "direct.ts")]);
     expect(omitted.exit).not.toBe(0);
     expect(omitted.stderr).toContain("application hooks=");
+    try {
+      expect(directPreload).toEqual(preload);
+    } catch (originalFailure) {
+      try {
+        await diagnosePreload();
+      } catch (diagnosticFailure) {
+        console.error("DIAGNOSTIC ONLY collection failed", diagnosticFailure);
+      }
+      throw originalFailure;
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
