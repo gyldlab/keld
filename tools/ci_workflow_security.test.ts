@@ -1,10 +1,251 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { aptStepTimeoutMinutes, cargoDenyArchiveSha256, cargoDenyChecks, cargoDenyInstallStep, cargoDenyVersion, webkitgtkAptJobs, webkitgtkDebCachePath, checkPullRequestTargetWorkflow, checkWindowsMediaOracle, checkWorkflowSecurity, checkRustToolchainPins, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import {
+  aptStepTimeoutMinutes,
+  cargoDenyArchiveSha256,
+  cargoDenyChecks,
+  cargoDenyInstallStep,
+  cargoDenyVersion,
+  webkitgtkAptJobs,
+  webkitgtkDebCachePath,
+  checkPullRequestTargetWorkflow,
+  checkWindowsMediaOracle,
+  checkWorkflowSecurity,
+  checkRustToolchainPins,
+  codeqlLanguages,
+  codeqlRoute,
+} from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
+
+// Thirteen native Bun and six Git children share this fixture's kill switch.
+// The oracle is their effects and exit status, with no latency requirement.
+test("direct native formatter selects JS/TS, honors ignores and checks without writes", () => {
+  const root = mkdtempSync(join(tmpdir(), "keld-native-fmt-"));
+  try {
+    cpSync(join(import.meta.dir, "../bunfig.toml"), join(root, "bunfig.toml"));
+    expect(
+      Bun.spawnSync(["git", "init", "--quiet"], { cwd: root }).exitCode,
+    ).toBe(0);
+    expect(
+      Bun.spawnSync(["git", "config", "maintenance.auto", "false"], {
+        cwd: root,
+      }).exitCode,
+    ).toBe(0);
+    const original = "export const value={answer:42};\n";
+    const sources = ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"].map(
+      (extension) => `source.${extension}`,
+    );
+    sources.push("source with spaces.ts", "--ignore-pattern=source.ts");
+    const untouched = [
+      "source.rs",
+      "document.md",
+      "page.html",
+      "data.json",
+      "data.yaml",
+      "ignored.ts",
+    ];
+    for (const name of [...sources, ...untouched])
+      writeFileSync(join(root, name), original);
+    // Track a source and an ignored source; all the remaining sources stay untracked.
+    expect(
+      Bun.spawnSync(["git", "add", "source.ts", "ignored.ts"], { cwd: root })
+        .exitCode,
+    ).toBe(0);
+    writeFileSync(join(root, ".gitignore"), "ignored.ts\nnode_modules/\n");
+    mkdirSync(join(root, "node_modules"));
+    writeFileSync(join(root, "node_modules/invalid.ts"), "invalid {{{");
+    // A same-named script must never take over this native formatting command.
+    const packageBytes = JSON.stringify({ scripts: { fmt: "exit 99" } });
+    writeFileSync(join(root, "package.json"), packageBytes);
+    const native = (...flags: string[]) =>
+      Bun.spawnSync(
+        [
+          process.execPath,
+          "fmt",
+          "--no-script",
+          ...flags,
+          "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}",
+        ],
+        { cwd: root },
+      );
+    const listing = native("--list-files");
+    expect(listing.exitCode).toBe(0);
+    expect(listing.stdout.toString().trim().split(/\r?\n/).sort()).toEqual(
+      [...sources].sort(),
+    );
+    expect(native("--check").exitCode).toBe(1);
+    for (const name of [...sources, ...untouched])
+      expect(readFileSync(join(root, name), "utf8")).toBe(original);
+    expect(native().exitCode).toBe(0);
+    const formatted = sources.map((name) => readFileSync(join(root, name)));
+    for (const bytes of formatted) expect(bytes.toString()).not.toBe(original);
+    expect(native("--check").exitCode).toBe(0);
+    expect(native().exitCode).toBe(0);
+    sources.forEach((name, index) =>
+      expect(readFileSync(join(root, name))).toEqual(formatted[index]),
+    );
+    for (const name of untouched)
+      expect(readFileSync(join(root, name), "utf8")).toBe(original);
+    expect(readFileSync(join(root, "package.json"), "utf8")).toBe(packageBytes);
+    // An ignore-only edit can expose an existing tracked, unformatted source.
+    writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+    expect(native("--check").exitCode).toBe(1);
+    expect(readFileSync(join(root, "ignored.ts"), "utf8")).toBe(original);
+    expect(native().exitCode).toBe(0);
+    expect(native("--check").exitCode).toBe(0);
+    const nestedIgnore = "crates/keld-cli/templates/hello/.gitignore";
+    const nestedSource = "crates/keld-cli/templates/hello/keld.config.ts";
+    mkdirSync(dirname(join(root, nestedSource)), { recursive: true });
+    const templateIgnore = readFileSync(
+      join(import.meta.dir, "../", nestedIgnore),
+      "utf8",
+    );
+    writeFileSync(join(root, nestedSource), original);
+    writeFileSync(
+      join(root, nestedIgnore),
+      templateIgnore + "\nkeld.config.ts\n",
+    );
+    expect(
+      Bun.spawnSync(["git", "add", "-f", nestedSource], { cwd: root }).exitCode,
+    ).toBe(0);
+    expect(Bun.spawnSync(["git", "add", "."], { cwd: root }).exitCode).toBe(0);
+    expect(native("--check").exitCode).toBe(0);
+    // Only the real nested ignore path changes; the tracked TS bytes do not.
+    writeFileSync(join(root, nestedIgnore), templateIgnore);
+    const changed = Bun.spawnSync(["git", "diff", "--name-only"], {
+      cwd: root,
+    });
+    expect(changed.exitCode).toBe(0);
+    expect(changed.stdout.toString().trim()).toBe(nestedIgnore);
+    expect(native("--check").exitCode).toBe(1);
+    expect(readFileSync(join(root, nestedSource), "utf8")).toBe(original);
+    expect(native().exitCode).toBe(0);
+    expect(native("--check").exitCode).toBe(0);
+    const invalid = "export const broken={{{\n";
+    writeFileSync(join(root, "syntax-error.ts"), invalid);
+    expect(native("--check").exitCode).toBe(2);
+    expect(readFileSync(join(root, "syntax-error.ts"), "utf8")).toBe(invalid);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("native configuration alone can reject unchanged TypeScript", () => {
+  const cases = [
+    {
+      path: "packages/@keld/api/package.json",
+      before: "{}\n",
+      after: '{"prettier":{"semi":false}}\n',
+    },
+    {
+      path: "crates/keld-cli/templates/hello/package.json",
+      before: "{}\n",
+      after: '{"prettier":{"semi":false}}\n',
+    },
+    {
+      path: "crates/keld-cli/templates/hello/.editorconfig",
+      before: "[*]\nindent_size=2\n",
+      after: "[*]\nindent_size=4\n",
+    },
+    {
+      path: "crates/keld-cli/templates/hello/.prettierrc",
+      before: "{}\n",
+      after: '{"semi":false}\n',
+    },
+    {
+      path: "crates/keld-cli/templates/hello/.oxfmtrc.jsonc",
+      before: "{}\n",
+      after: '{"semi":false}\n',
+    },
+    {
+      path: "crates/keld-cli/templates/hello/package.yaml",
+      before: "{}\n",
+      after: "prettier:\n  semi: false\n",
+    },
+    {
+      path: ".prettierignore",
+      before: "packages/probe/src/value.ts\n",
+      after: "\n",
+    },
+  ];
+  // Windows resolves config basenames without regard to ASCII case.
+  if (process.platform === "win32")
+    cases.push(
+      {
+        path: "crates/keld-cli/templates/hello/.PrettierRC",
+        before: "{}\n",
+        after: '{"semi":false}\n',
+      },
+      { path: ".GITIGNORE", before: "src/value.ts\n", after: "\n" },
+      {
+        path: ".PRETTIERIGNORE",
+        before: "packages/probe/src/value.ts\n",
+        after: "\n",
+      },
+    );
+  for (const config of cases) {
+    const root = mkdtempSync(join(tmpdir(), "keld-native-config-"));
+    try {
+      const prettierIgnore = config.path.toLowerCase() === ".prettierignore";
+      const ignored =
+        prettierIgnore || config.path.toLowerCase() === ".gitignore";
+      const source = prettierIgnore
+        ? "packages/probe/src/value.ts"
+        : join(dirname(config.path), "src/value.ts").replaceAll("\\", "/");
+      mkdirSync(dirname(join(root, source)), { recursive: true });
+      const bytes = ignored
+        ? "export const answer={value:42};\n"
+        : "export const answer = {\n  value: 42,\n};\n";
+      writeFileSync(join(root, source), bytes);
+      cpSync(
+        join(import.meta.dir, "../bunfig.toml"),
+        join(root, "bunfig.toml"),
+      );
+      writeFileSync(join(root, config.path), config.before);
+      for (const args of [
+        ["init", "--quiet"],
+        ["config", "maintenance.auto", "false"],
+        ["add", "-f", "."],
+      ])
+        expect(Bun.spawnSync(["git", ...args], { cwd: root }).exitCode).toBe(0);
+      const check = () =>
+        Bun.spawnSync(
+          [
+            process.execPath,
+            "fmt",
+            "--no-script",
+            "--check",
+            "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}",
+          ],
+          { cwd: root },
+        );
+      expect(check().exitCode, config.path).toBe(0);
+      writeFileSync(join(root, config.path), config.after);
+      const changed = Bun.spawnSync(["git", "diff", "--name-only"], {
+        cwd: root,
+      });
+      expect(changed.exitCode).toBe(0);
+      expect(changed.stdout.toString().trim()).toBe(config.path);
+      const rejected = check();
+      expect(rejected.exitCode, config.path).toBe(1);
+      expect(rejected.stdout.toString(), config.path).toContain(source);
+      expect(readFileSync(join(root, source), "utf8")).toBe(bytes);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}, 30_000);
+
 type FixtureJob = {
   steps: Step[];
   env?: Record<string, unknown>;
@@ -14,14 +255,33 @@ type FixtureJob = {
   if?: unknown;
   "timeout-minutes"?: unknown;
 };
-type Fixture = { jobs: Record<string, FixtureJob>; env?: Record<string, unknown> };
-const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
-const windowsMediaOracle = readFileSync(join(import.meta.dir, "../crates/keld-wv/tests/windows_media_guard.ps1"));
-const selectedRustToolchain = readFileSync(join(import.meta.dir, "../rust-toolchain.toml"), "utf8");
+type Fixture = {
+  jobs: Record<string, FixtureJob>;
+  env?: Record<string, unknown>;
+};
+const source = readFileSync(
+  join(import.meta.dir, "../.github/workflows/ci.yml"),
+  "utf8",
+);
+const windowsMediaOracle = readFileSync(
+  join(import.meta.dir, "../crates/keld-wv/tests/windows_media_guard.ps1"),
+);
+const selectedRustToolchain = readFileSync(
+  join(import.meta.dir, "../rust-toolchain.toml"),
+  "utf8",
+);
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const requiredRustInstallerJobs = [
-  "changes", "fmt", "check", "doctest", "linux-gui-smoke",
-  "msrv", "deny", "hygiene", "mermaid", "codeql-rust",
+  "changes",
+  "fmt",
+  "check",
+  "doctest",
+  "linux-gui-smoke",
+  "msrv",
+  "deny",
+  "hygiene",
+  "mermaid",
+  "codeql-rust",
 ];
 
 function fixture(): Fixture {
@@ -30,42 +290,56 @@ function fixture(): Fixture {
 }
 
 function step(f: Fixture, job: string, name: string): Step {
-  const found = f.jobs[job]!.steps.find(candidate => candidate.name === name);
+  const found = f.jobs[job]!.steps.find((candidate) => candidate.name === name);
   if (!found) throw new Error(`missing fixture step: ${name}`);
   return found;
 }
 
-function check(f: Fixture): void { checkWorkflowSecurity(Bun.YAML.stringify(f, null, 2)); }
+function check(f: Fixture): void {
+  checkWorkflowSecurity(Bun.YAML.stringify(f, null, 2));
+}
 
 test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
 test("every Rust installer agrees with the exact pin and immutable action commit", () => {
-  expect(() => checkRustToolchainPins(source, selectedRustToolchain)).not.toThrow();
+  expect(() =>
+    checkRustToolchainPins(source, selectedRustToolchain),
+  ).not.toThrow();
   const workflow = fixture();
-  const installers = Object.values(workflow.jobs).flatMap(job => job.steps)
-    .filter(s => String(s.uses ?? "").startsWith("dtolnay/rust-toolchain@"));
+  const installers = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps)
+    .filter((s) => String(s.uses ?? "").startsWith("dtolnay/rust-toolchain@"));
   expect(installers.length).toBe(requiredRustInstallerJobs.length);
 
   // A single stale installer may not hide behind nine current copies.
   (installers[3]!.with as Record<string, unknown>).toolchain = "1.97.1";
-  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-    .toThrow("must select Rust");
+  expect(() =>
+    checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
+  ).toThrow("must select Rust");
   (installers[3]!.with as Record<string, unknown>).toolchain = "1.99.1";
 
   // A changed action SHA is independent from the compiler version, but all
   // jobs must use the same reviewed immutable action implementation.
   installers[3]!.uses = "dtolnay/rust-toolchain@" + "0".repeat(40);
-  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-    .toThrow("same reviewed immutable");
-  expect(() => checkRustToolchainPins(source, selectedRustToolchain.replace("1.99.1", "1.97.1")))
-    .toThrow("must select Rust");
+  expect(() =>
+    checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
+  ).toThrow("same reviewed immutable");
+  expect(() =>
+    checkRustToolchainPins(
+      source,
+      selectedRustToolchain.replace("1.99.1", "1.97.1"),
+    ),
+  ).toThrow("must select Rust");
 });
 
 test("Rust toolchain admission reads the actual TOML toolchain table, never a decoy", () => {
-  const decoy = '[decoy]\nchannel = "1.99.1"\n[toolchain]\nchannel = "1.97.1"\ncomponents = ["rustfmt", "clippy"]\n';
-  expect(() => checkRustToolchainPins(source, decoy)).toThrow("must select Rust");
+  const decoy =
+    '[decoy]\nchannel = "1.99.1"\n[toolchain]\nchannel = "1.97.1"\ncomponents = ["rustfmt", "clippy"]\n';
+  expect(() => checkRustToolchainPins(source, decoy)).toThrow(
+    "must select Rust",
+  );
   const duplicate = '[toolchain]\nchannel = "1.99.1"\nchannel = "1.97.1"\n';
   expect(() => checkRustToolchainPins(source, duplicate)).toThrow();
 });
@@ -74,10 +348,14 @@ test("dropping any one required Rust installer cannot silently use runner Rust",
   for (const name of requiredRustInstallerJobs) {
     const workflow = fixture();
     workflow.jobs[name]!.steps = workflow.jobs[name]!.steps.filter(
-      step => !String(step.uses ?? "").startsWith("dtolnay/rust-toolchain@"),
+      (step) => !String(step.uses ?? "").startsWith("dtolnay/rust-toolchain@"),
     );
-    expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-      .toThrow("requires a pinned Rust toolchain installer");
+    expect(() =>
+      checkRustToolchainPins(
+        Bun.YAML.stringify(workflow),
+        selectedRustToolchain,
+      ),
+    ).toThrow("requires a pinned Rust toolchain installer");
   }
 });
 
@@ -90,20 +368,29 @@ test("a uniformly replaced unknown action SHA is not an approved installer", () 
       }
     }
   }
-  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-    .toThrow("approved immutable action SHA");
+  expect(() =>
+    checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
+  ).toThrow("approved immutable action SHA");
 });
 
 test("a pinned Rust installer cannot be conditional or failure-tolerant", () => {
   for (const name of requiredRustInstallerJobs) {
     for (const mutation of [
-      (installer: Step) => { installer.if = "${{ false }}"; },
-      (installer: Step) => { installer["continue-on-error"] = true; },
+      (installer: Step) => {
+        installer.if = "${{ false }}";
+      },
+      (installer: Step) => {
+        installer["continue-on-error"] = true;
+      },
     ]) {
       const workflow = fixture();
       mutation(workflow.jobs[name]!.steps[1]!);
-      expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-        .toThrow("must run unconditionally and refuse installer failures");
+      expect(() =>
+        checkRustToolchainPins(
+          Bun.YAML.stringify(workflow),
+          selectedRustToolchain,
+        ),
+      ).toThrow("must run unconditionally and refuse installer failures");
     }
   }
 });
@@ -111,13 +398,21 @@ test("a pinned Rust installer cannot be conditional or failure-tolerant", () => 
 test("Rust setup must run immediately after checkout, before other steps", () => {
   for (const name of requiredRustInstallerJobs) {
     for (const mutation of [
-      (steps: Step[]) => { steps.splice(1, 0, { run: "cargo --version" }); },
-      (steps: Step[]) => { steps.unshift(steps.splice(1, 1)[0]!); },
+      (steps: Step[]) => {
+        steps.splice(1, 0, { run: "cargo --version" });
+      },
+      (steps: Step[]) => {
+        steps.unshift(steps.splice(1, 1)[0]!);
+      },
     ]) {
       const workflow = fixture();
       mutation(workflow.jobs[name]!.steps);
-      expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-        .toThrow("must install Rust immediately after checkout");
+      expect(() =>
+        checkRustToolchainPins(
+          Bun.YAML.stringify(workflow),
+          selectedRustToolchain,
+        ),
+      ).toThrow("must install Rust immediately after checkout");
     }
   }
 });
@@ -130,13 +425,21 @@ test("a Rustup environment override cannot shadow the pinned compiler", () => {
     } else if (scope === "job") {
       workflow.jobs.fmt!.env = { RUSTUP_TOOLCHAIN: "stable" };
     } else {
-      const consumer = workflow.jobs.fmt!.steps.find(candidate =>
-        String(candidate.run ?? "").includes("cargo fmt"));
+      const consumer = workflow.jobs.fmt!.steps.find((candidate) =>
+        String(candidate.run ?? "").includes("cargo fmt"),
+      );
       if (!consumer) throw new Error("missing actual Rust consumer");
-      consumer.env = { ...(consumer.env as Record<string, unknown> ?? {}), RUSTUP_TOOLCHAIN: "stable" };
+      consumer.env = {
+        ...((consumer.env as Record<string, unknown>) ?? {}),
+        RUSTUP_TOOLCHAIN: "stable",
+      };
     }
-    expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
-      .toThrow("must not override RUSTUP_TOOLCHAIN");
+    expect(() =>
+      checkRustToolchainPins(
+        Bun.YAML.stringify(workflow),
+        selectedRustToolchain,
+      ),
+    ).toThrow("must not override RUSTUP_TOOLCHAIN");
   }
 });
 
@@ -151,11 +454,13 @@ test("source-budget reporting stays advisory, visible and unprivileged", () => {
   expect(command).toContain("--policy candidate");
   expect(command).toContain("GITHUB_STEP_SUMMARY");
   expect(command).not.toContain("--enforce");
-  expect(String(env.KELD_BUDGET_BASE_SHA)).toContain("github.event.pull_request.base.sha");
-  expect(String(env.KELD_BUDGET_HEAD_SHA)).toContain("github.event.pull_request.head.sha");
+  expect(String(env.KELD_BUDGET_BASE_SHA)).toContain(
+    "github.event.pull_request.base.sha",
+  );
+  expect(String(env.KELD_BUDGET_HEAD_SHA)).toContain(
+    "github.event.pull_request.head.sha",
+  );
 });
-
-
 
 test("source-budget tool unit tests run in normal unprivileged CI", () => {
   const workflow = fixture();
@@ -166,8 +471,12 @@ test("source-budget tool unit tests run in normal unprivileged CI", () => {
   expect(command).toContain("tools/test_source_census.py");
   expect(command).toContain("tools/test_source_budget_report.py");
   const missing = fixture();
-  missing.jobs.changes!.steps = missing.jobs.changes!.steps.filter(x => x.name !== s.name);
-  expect(() => check(missing)).toThrow("Source budget tool tests must occur exactly once");
+  missing.jobs.changes!.steps = missing.jobs.changes!.steps.filter(
+    (x) => x.name !== s.name,
+  );
+  expect(() => check(missing)).toThrow(
+    "Source budget tool tests must occur exactly once",
+  );
 });
 
 test("new Rust test imports require explicit names in normal unprivileged CI", () => {
@@ -181,24 +490,37 @@ test("new Rust test imports require explicit names in normal unprivileged CI", (
   expect(command).toContain("tools/test_import_guard.py");
   expect(command).toContain("--base");
   expect(command).toContain("--head");
-  expect(String(env.KELD_IMPORT_BASE_SHA)).toContain("github.event.pull_request.base.sha");
-  expect(String(env.KELD_IMPORT_HEAD_SHA)).toContain("github.event.pull_request.head.sha");
+  expect(String(env.KELD_IMPORT_BASE_SHA)).toContain(
+    "github.event.pull_request.base.sha",
+  );
+  expect(String(env.KELD_IMPORT_HEAD_SHA)).toContain(
+    "github.event.pull_request.head.sha",
+  );
   const missing = fixture();
-  missing.jobs.changes!.steps = missing.jobs.changes!.steps.filter(x => x.name !== s.name);
-  expect(() => check(missing)).toThrow("Test module import ownership must occur exactly once");
+  missing.jobs.changes!.steps = missing.jobs.changes!.steps.filter(
+    (x) => x.name !== s.name,
+  );
+  expect(() => check(missing)).toThrow(
+    "Test module import ownership must occur exactly once",
+  );
 });
 
 test("Windows media oracle matches its reviewed full-file digest", () => {
   expect(() => checkWindowsMediaOracle(windowsMediaOracle)).not.toThrow();
-  const mutated = Buffer.concat([windowsMediaOracle, Buffer.from("\n# inert override\n")]);
-  expect(() => checkWindowsMediaOracle(mutated)).toThrow("reviewed SHA-256 owner");
+  const mutated = Buffer.concat([
+    windowsMediaOracle,
+    Buffer.from("\n# inert override\n"),
+  ]);
+  expect(() => checkWindowsMediaOracle(mutated)).toThrow(
+    "reviewed SHA-256 owner",
+  );
 });
 
-const codeqlJobs = codeqlLanguages.map(language => `codeql-${language}`);
+const codeqlJobs = codeqlLanguages.map((language) => `codeql-${language}`);
 
 for (const language of codeqlLanguages) {
   const job = `codeql-${language}`;
-  const other = codeqlLanguages.find(candidate => candidate !== language)!;
+  const other = codeqlLanguages.find((candidate) => candidate !== language)!;
 
   test(`CodeQL cannot omit the ${language} job`, () => {
     const f = fixture();
@@ -208,13 +530,21 @@ for (const language of codeqlLanguages) {
 
   test(`CodeQL ${language} routes only on its own router output`, () => {
     expect(fixture().jobs[job]!.if).toBe(codeqlRoute(language));
-    for (const mutation of ["other-language", "always", "missing", "push-bypass", "no-needs", "extra-needs"] as const) {
+    for (const mutation of [
+      "other-language",
+      "always",
+      "missing",
+      "push-bypass",
+      "no-needs",
+      "extra-needs",
+    ] as const) {
       const f = fixture();
       const target = f.jobs[job]!;
       if (mutation === "other-language") target.if = codeqlRoute(other);
       if (mutation === "always") target.if = true;
       if (mutation === "missing") delete target.if;
-      if (mutation === "push-bypass") target.if = `github.event_name == 'push' || ${codeqlRoute(language)}`;
+      if (mutation === "push-bypass")
+        target.if = `github.event_name == 'push' || ${codeqlRoute(language)}`;
       if (mutation === "no-needs") delete target.needs;
       if (mutation === "extra-needs") target.needs = ["changes", "fmt"];
       expect(() => check(f)).toThrow("must need changes and run only on");
@@ -226,7 +556,9 @@ for (const language of codeqlLanguages) {
     (step(init, job, "Initialize CodeQL").with as Step).languages = other;
     expect(() => check(init)).toThrow("Initialize CodeQL");
     const category = fixture();
-    (step(category, job, "Analyze and upload CodeQL results").with as Step).category = `/language:${other}`;
+    (
+      step(category, job, "Analyze and upload CodeQL results").with as Step
+    ).category = `/language:${other}`;
     expect(() => check(category)).toThrow("Analyze and upload CodeQL results");
     const matrix = fixture();
     matrix.jobs[job]!.strategy = { matrix: { language: [language] } };
@@ -234,11 +566,17 @@ for (const language of codeqlLanguages) {
   });
 
   test(`CodeQL ${language} permissions retain only read content and SARIF-upload authority`, () => {
-    for (const mutation of ["missing", "security-events-read", "contents-write", "extra"] as const) {
+    for (const mutation of [
+      "missing",
+      "security-events-read",
+      "contents-write",
+      "extra",
+    ] as const) {
       const f = fixture();
       const permissions = f.jobs[job]!.permissions!;
       if (mutation === "missing") delete f.jobs[job]!.permissions;
-      if (mutation === "security-events-read") permissions["security-events"] = "read";
+      if (mutation === "security-events-read")
+        permissions["security-events"] = "read";
       if (mutation === "contents-write") permissions.contents = "write";
       if (mutation === "extra") permissions.actions = "read";
       expect(() => check(f)).toThrow("CodeQL job permissions");
@@ -248,31 +586,52 @@ for (const language of codeqlLanguages) {
 
 const aptSteps = [
   ["check", "Install WebKitGTK build deps (KEL-28, see keld-wv/Cargo.toml)"],
-  ["linux-gui-smoke", "Install WebKitGTK build deps + X11 control tools (KEL-28)"],
+  [
+    "linux-gui-smoke",
+    "Install WebKitGTK build deps + X11 control tools (KEL-28)",
+  ],
 ] as const;
 
 for (const [job, name] of aptSteps) {
   test(`${name} keeps the evidence-based step timeout under a longer job timeout`, () => {
-    expect(step(fixture(), job, name)["timeout-minutes"]).toBe(aptStepTimeoutMinutes);
+    expect(step(fixture(), job, name)["timeout-minutes"]).toBe(
+      aptStepTimeoutMinutes,
+    );
     // Negative controls: the 10-minute bound that failed a slow but healthy
     // download, and every other value or shape.
-    for (const value of [undefined, 10, 0, aptStepTimeoutMinutes - 1, aptStepTimeoutMinutes + 1, "${{ inputs.minutes }}", "15m"]) {
+    for (const value of [
+      undefined,
+      10,
+      0,
+      aptStepTimeoutMinutes - 1,
+      aptStepTimeoutMinutes + 1,
+      "${{ inputs.minutes }}",
+      "15m",
+    ]) {
       const f = fixture();
       const selected = step(f, job, name);
       if (value === undefined) delete selected["timeout-minutes"];
       else selected["timeout-minutes"] = value;
-      expect(() => check(f)).toThrow(`runs apt without step timeout-minutes: ${aptStepTimeoutMinutes}`);
+      expect(() => check(f)).toThrow(
+        `runs apt without step timeout-minutes: ${aptStepTimeoutMinutes}`,
+      );
     }
     for (const value of [aptStepTimeoutMinutes, 10, "${{ inputs.minutes }}"]) {
       const f = fixture();
       f.jobs[job]!["timeout-minutes"] = value;
-      expect(() => check(f)).toThrow("does not exceed the 15-minute apt step bound");
+      expect(() => check(f)).toThrow(
+        "does not exceed the 15-minute apt step bound",
+      );
     }
   });
 }
 
 test("apt timeout reads the parsed run script, not names or layout", () => {
-  for (const run of ["sudo apt update\n", "sudo apt install -y jq\n", "set -e; sudo apt-get install -y jq\n"]) {
+  for (const run of [
+    "sudo apt update\n",
+    "sudo apt install -y jq\n",
+    "set -e; sudo apt-get install -y jq\n",
+  ]) {
     const f = fixture();
     f.jobs.check!.steps.push({ name: "Install a tool", run });
     expect(() => check(f)).toThrow("runs apt without step timeout-minutes");
@@ -280,12 +639,24 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   // Negative controls: a name that mentions apt-get, a flow-mapped step with a
   // timeout, a quoted timeout and an unrelated word do not fail.
   const named = fixture();
-  named.jobs.fmt!.steps.push({ name: "Diagnose apt-get mirror", run: "echo ok\n" });
+  named.jobs.fmt!.steps.push({
+    name: "Diagnose apt-get mirror",
+    run: "echo ok\n",
+  });
   expect(() => check(named)).not.toThrow();
-  expect(() => checkWorkflowSecurity(source.replace("      - name: clippy (warnings deny)\n",
-    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n      - name: clippy (warnings deny)\n"))).not.toThrow();
+  expect(() =>
+    checkWorkflowSecurity(
+      source.replace(
+        "      - name: clippy (warnings deny)\n",
+        "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n      - name: clippy (warnings deny)\n",
+      ),
+    ),
+  ).not.toThrow();
   const quoted = fixture();
-  quoted.jobs.check!.steps.push({ run: "sudo apt-get install -y jq\n", "timeout-minutes": "15" });
+  quoted.jobs.check!.steps.push({
+    run: "sudo apt-get install -y jq\n",
+    "timeout-minutes": "15",
+  });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();
   unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
@@ -295,19 +666,118 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
 for (const job of webkitgtkAptJobs) {
   test(`${job} WebKitGTK .deb cache keeps its key, verified install and miss-only save`, () => {
     const mutations: [string, (f: Fixture) => void, string][] = [
-      ["key without the image and package binding", f => { step(f, job, "Resolve WebKitGTK apt cache key").run = 'echo "key=webkitgtk" >> "$GITHUB_OUTPUT"\n'; }, "resolve the cache key"],
-      ["restore under another key", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).key = "webkitgtk-${{ runner.os }}"; }, "Restore WebKitGTK .deb cache"],
-      ["cache the apt index lists", f => { (step(f, job, "Restore WebKitGTK .deb cache").with as Step).path = "/var/lib/apt/lists"; }, "Restore WebKitGTK .deb cache"],
-      ["save on a hit", f => { step(f, job, "Save WebKitGTK .deb cache").if = String(step(f, job, "Restore WebKitGTK .deb cache").if ?? "always()"); }, "only on a miss"],
-      ["save under another key", f => { (step(f, job, "Save WebKitGTK .deb cache").with as Step).key = "other"; }, "Save WebKitGTK .deb cache"],
-      ["install bypassing verification", f => { const s = f.jobs[job]!.steps.find(c => typeof c.run === "string" && c.run.includes("ci_webkitgtk_apt.sh install"))!; s.run = `sudo cp ${webkitgtkDebCachePath}/*.deb /var/cache/apt/archives/ && sudo apt-get update && sudo apt-get install -y $KELD_WEBKITGTK_PACKAGES\n`; }, "install with exactly"],
-      ["missing package list", f => { delete (f.jobs[job]!.env as Step).KELD_WEBKITGTK_PACKAGES; }, "KELD_WEBKITGTK_PACKAGES"],
-      ["save before install", f => { const steps = f.jobs[job]!.steps; const save = steps.findIndex(c => c.name === "Save WebKitGTK .deb cache"); const [s] = steps.splice(save, 1); steps.splice(save - 1, 0, s!); }, "key, restore, install, save"],
-      ["floating cache action", f => { step(f, job, "Restore WebKitGTK .deb cache").uses = "actions/cache/restore@v6"; }, "immutable"],
-      ["unbounded restore", f => { delete step(f, job, "Restore WebKitGTK .deb cache")["timeout-minutes"]; }, "Restore WebKitGTK .deb cache"],
-      ["restore bound above 5 minutes", f => { step(f, job, "Restore WebKitGTK .deb cache")["timeout-minutes"] = 30; }, "timeout-minutes: 5"],
-      ["unbounded save", f => { delete step(f, job, "Save WebKitGTK .deb cache")["timeout-minutes"]; }, "Save WebKitGTK .deb cache"],
-      ["stuck download held to the step bound", f => { (step(f, job, "Restore WebKitGTK .deb cache").env as Step).SEGMENT_DOWNLOAD_TIMEOUT_MINS = "10"; }, "abort as a miss"],
+      [
+        "key without the image and package binding",
+        (f) => {
+          step(f, job, "Resolve WebKitGTK apt cache key").run =
+            'echo "key=webkitgtk" >> "$GITHUB_OUTPUT"\n';
+        },
+        "resolve the cache key",
+      ],
+      [
+        "restore under another key",
+        (f) => {
+          (step(f, job, "Restore WebKitGTK .deb cache").with as Step).key =
+            "webkitgtk-${{ runner.os }}";
+        },
+        "Restore WebKitGTK .deb cache",
+      ],
+      [
+        "cache the apt index lists",
+        (f) => {
+          (step(f, job, "Restore WebKitGTK .deb cache").with as Step).path =
+            "/var/lib/apt/lists";
+        },
+        "Restore WebKitGTK .deb cache",
+      ],
+      [
+        "save on a hit",
+        (f) => {
+          step(f, job, "Save WebKitGTK .deb cache").if = String(
+            step(f, job, "Restore WebKitGTK .deb cache").if ?? "always()",
+          );
+        },
+        "only on a miss",
+      ],
+      [
+        "save under another key",
+        (f) => {
+          (step(f, job, "Save WebKitGTK .deb cache").with as Step).key =
+            "other";
+        },
+        "Save WebKitGTK .deb cache",
+      ],
+      [
+        "install bypassing verification",
+        (f) => {
+          const s = f.jobs[job]!.steps.find(
+            (c) =>
+              typeof c.run === "string" &&
+              c.run.includes("ci_webkitgtk_apt.sh install"),
+          )!;
+          s.run = `sudo cp ${webkitgtkDebCachePath}/*.deb /var/cache/apt/archives/ && sudo apt-get update && sudo apt-get install -y $KELD_WEBKITGTK_PACKAGES\n`;
+        },
+        "install with exactly",
+      ],
+      [
+        "missing package list",
+        (f) => {
+          delete (f.jobs[job]!.env as Step).KELD_WEBKITGTK_PACKAGES;
+        },
+        "KELD_WEBKITGTK_PACKAGES",
+      ],
+      [
+        "save before install",
+        (f) => {
+          const steps = f.jobs[job]!.steps;
+          const save = steps.findIndex(
+            (c) => c.name === "Save WebKitGTK .deb cache",
+          );
+          const [s] = steps.splice(save, 1);
+          steps.splice(save - 1, 0, s!);
+        },
+        "key, restore, install, save",
+      ],
+      [
+        "floating cache action",
+        (f) => {
+          step(f, job, "Restore WebKitGTK .deb cache").uses =
+            "actions/cache/restore@v6";
+        },
+        "immutable",
+      ],
+      [
+        "unbounded restore",
+        (f) => {
+          delete step(f, job, "Restore WebKitGTK .deb cache")[
+            "timeout-minutes"
+          ];
+        },
+        "Restore WebKitGTK .deb cache",
+      ],
+      [
+        "restore bound above 5 minutes",
+        (f) => {
+          step(f, job, "Restore WebKitGTK .deb cache")["timeout-minutes"] = 30;
+        },
+        "timeout-minutes: 5",
+      ],
+      [
+        "unbounded save",
+        (f) => {
+          delete step(f, job, "Save WebKitGTK .deb cache")["timeout-minutes"];
+        },
+        "Save WebKitGTK .deb cache",
+      ],
+      [
+        "stuck download held to the step bound",
+        (f) => {
+          (
+            step(f, job, "Restore WebKitGTK .deb cache").env as Step
+          ).SEGMENT_DOWNLOAD_TIMEOUT_MINS = "10";
+        },
+        "abort as a miss",
+      ],
     ];
     for (const [label, mutate, message] of mutations) {
       const f = fixture();
@@ -317,35 +787,80 @@ for (const job of webkitgtkAptJobs) {
   });
 }
 
-const keldbot = readFileSync(join(import.meta.dir, "../.github/workflows/keldbot.yml"), "utf8");
+const keldbot = readFileSync(
+  join(import.meta.dir, "../.github/workflows/keldbot.yml"),
+  "utf8",
+);
 
 test("pull_request_target workflows never check out or run pull-request code", () => {
-  expect(() => checkPullRequestTargetWorkflow(keldbot, "keldbot.yml")).not.toThrow();
-  const parsed = Bun.YAML.parse(keldbot) as { jobs: Record<string, { steps: Step[] }> };
+  expect(() =>
+    checkPullRequestTargetWorkflow(keldbot, "keldbot.yml"),
+  ).not.toThrow();
+  const parsed = Bun.YAML.parse(keldbot) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
   const firstJob = Object.keys(parsed.jobs)[0]!;
   for (const [label, inserted, message] of [
-    ["run step", { run: "echo ${{ github.event.pull_request.title }}" }, "run: step under pull_request_target"],
-    ["checkout", { uses: checkout, with: { ref: "${{ github.event.pull_request.head.sha }}" } }, "checks out code"],
-    ["checkout with case and subpath", { uses: "Actions/Checkout/.@3d3c42e5aac5ba805825da76410c181273ba90b1" }, "checks out code"],
+    [
+      "run step",
+      { run: "echo ${{ github.event.pull_request.title }}" },
+      "run: step under pull_request_target",
+    ],
+    [
+      "checkout",
+      {
+        uses: checkout,
+        with: { ref: "${{ github.event.pull_request.head.sha }}" },
+      },
+      "checks out code",
+    ],
+    [
+      "checkout with case and subpath",
+      { uses: "Actions/Checkout/.@3d3c42e5aac5ba805825da76410c181273ba90b1" },
+      "checks out code",
+    ],
   ] as const) {
     const f = Bun.YAML.parse(keldbot) as typeof parsed;
     f.jobs[firstJob]!.steps.push({ ...inserted });
-    expect(() => checkPullRequestTargetWorkflow(Bun.YAML.stringify(f), "keldbot.yml"), label).toThrow(message);
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(Bun.YAML.stringify(f), "keldbot.yml"),
+      label,
+    ).toThrow(message);
   }
-  const reusable = Bun.YAML.parse(keldbot) as Record<string, unknown> & typeof parsed;
-  (reusable.jobs as Record<string, unknown>).extra = { uses: "owner/repo/.github/workflows/x.yml@3d3c42e5aac5ba805825da76410c181273ba90b1" };
-  expect(() => checkPullRequestTargetWorkflow(Bun.YAML.stringify(reusable), "keldbot.yml")).toThrow("reusable workflow");
+  const reusable = Bun.YAML.parse(keldbot) as Record<string, unknown> &
+    typeof parsed;
+  (reusable.jobs as Record<string, unknown>).extra = {
+    uses: "owner/repo/.github/workflows/x.yml@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  };
+  expect(() =>
+    checkPullRequestTargetWorkflow(Bun.YAML.stringify(reusable), "keldbot.yml"),
+  ).toThrow("reusable workflow");
   // Every trigger form is recognised, including flow and alias steps.
   for (const on of ["pull_request_target", "[push, pull_request_target]"]) {
-    expect(() => checkPullRequestTargetWorkflow(`on: ${on}\njobs:\n  j:\n    steps:\n      - &s { run: echo }\n      - *s\n`, "x.yml")).toThrow("run: step");
+    expect(() =>
+      checkPullRequestTargetWorkflow(
+        `on: ${on}\njobs:\n  j:\n    steps:\n      - &s { run: echo }\n      - *s\n`,
+        "x.yml",
+      ),
+    ).toThrow("run: step");
   }
   // Negative control: the same run step under pull_request is not this rule's concern.
-  expect(() => checkPullRequestTargetWorkflow("on: pull_request\njobs:\n  j:\n    steps:\n      - run: echo\n", "x.yml")).not.toThrow();
+  expect(() =>
+    checkPullRequestTargetWorkflow(
+      "on: pull_request\njobs:\n  j:\n    steps:\n      - run: echo\n",
+      "x.yml",
+    ),
+  ).not.toThrow();
 });
 
 test("no other step may use actions/cache, so apt index lists are never cached", () => {
   const f = fixture();
-  f.jobs.fmt!.steps.push({ name: "Cache apt lists", uses: "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", with: { path: "/var/lib/apt/lists", key: "lists" } });
+  f.jobs.fmt!.steps.push({
+    name: "Cache apt lists",
+    uses: "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    with: { path: "/var/lib/apt/lists", key: "lists" },
+  });
   expect(() => check(f)).toThrow("outside the WebKitGTK .deb cache steps");
 });
 
@@ -356,7 +871,9 @@ test("no job outside the per-language owners may run CodeQL", () => {
 });
 
 // #676: cargo-deny comes from the checksum-pinned release binary, not a Docker image.
-const [cargoDenyMain, cargoDenyHelper] = cargoDenyChecks.map(([name]) => name) as [string, string];
+const [cargoDenyMain, cargoDenyHelper] = cargoDenyChecks.map(
+  ([name]) => name,
+) as [string, string];
 
 function editRun(f: Fixture, name: string, from: string, to: string): void {
   const selected = step(f, "deny", name);
@@ -371,41 +888,110 @@ test("cargo-deny installs the pinned version and verifies its recorded SHA-256",
   expect(install).toContain(`version=${cargoDenyVersion}\n`);
   expect(install).toContain(shaLine);
   const mutations: [string, (f: Fixture) => void][] = [
-    ["unpinned version", f => editRun(f, cargoDenyInstallStep, `version=${cargoDenyVersion}`, "version=latest")],
-    ["version taken from the environment", f => editRun(f, cargoDenyInstallStep, `version=${cargoDenyVersion}`, 'version="${CARGO_DENY_VERSION:-0.20.2}"')],
-    ["latest-release URL", f => editRun(f, cargoDenyInstallStep, "releases/download/${version}/", "releases/latest/download/")],
-    ["missing checksum", f => editRun(f, cargoDenyInstallStep, shaLine, "")],
-    ["different checksum", f => editRun(f, cargoDenyInstallStep, cargoDenyArchiveSha256, "0".repeat(64))],
-    ["suppressed checksum", f => editRun(f, cargoDenyInstallStep, "sha256sum -c -", "sha256sum -c - || true")],
-    ["verify after extracting", f => {
-      editRun(f, cargoDenyInstallStep, shaLine, "");
-      editRun(f, cargoDenyInstallStep, "cargo-deny/cargo-deny --version\n", `cargo-deny/cargo-deny --version\n${shaLine}`);
-    }],
+    [
+      "unpinned version",
+      (f) =>
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          `version=${cargoDenyVersion}`,
+          "version=latest",
+        ),
+    ],
+    [
+      "version taken from the environment",
+      (f) =>
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          `version=${cargoDenyVersion}`,
+          'version="${CARGO_DENY_VERSION:-0.20.2}"',
+        ),
+    ],
+    [
+      "latest-release URL",
+      (f) =>
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          "releases/download/${version}/",
+          "releases/latest/download/",
+        ),
+    ],
+    ["missing checksum", (f) => editRun(f, cargoDenyInstallStep, shaLine, "")],
+    [
+      "different checksum",
+      (f) =>
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          cargoDenyArchiveSha256,
+          "0".repeat(64),
+        ),
+    ],
+    [
+      "suppressed checksum",
+      (f) =>
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          "sha256sum -c -",
+          "sha256sum -c - || true",
+        ),
+    ],
+    [
+      "verify after extracting",
+      (f) => {
+        editRun(f, cargoDenyInstallStep, shaLine, "");
+        editRun(
+          f,
+          cargoDenyInstallStep,
+          "cargo-deny/cargo-deny --version\n",
+          `cargo-deny/cargo-deny --version\n${shaLine}`,
+        );
+      },
+    ],
   ];
   for (const [label, mutate] of mutations) {
     const f = fixture();
     mutate(f);
-    expect(() => check(f), label).toThrow(`${cargoDenyInstallStep} must download release ${cargoDenyVersion}`);
+    expect(() => check(f), label).toThrow(
+      `${cargoDenyInstallStep} must download release ${cargoDenyVersion}`,
+    );
   }
 });
 
 test("cargo-deny steps cannot continue on error, be conditioned, removed, duplicated or reordered", () => {
   for (const name of [cargoDenyInstallStep, cargoDenyMain, cargoDenyHelper]) {
-    for (const [key, value] of [["continue-on-error", true], ["if", false], ["shell", "bash {0} || true"]] as const) {
+    for (const [key, value] of [
+      ["continue-on-error", true],
+      ["if", false],
+      ["shell", "bash {0} || true"],
+    ] as const) {
       const f = fixture();
       step(f, "deny", name)[key] = value;
-      expect(() => check(f), `${name} ${key}`).toThrow(`${name} must contain only name, run`);
+      expect(() => check(f), `${name} ${key}`).toThrow(
+        `${name} must contain only name, run`,
+      );
     }
     const removed = fixture();
-    removed.jobs.deny!.steps = removed.jobs.deny!.steps.filter(candidate => candidate.name !== name);
-    expect(() => check(removed), `${name} removed`).toThrow("jobs.deny must run exactly");
+    removed.jobs.deny!.steps = removed.jobs.deny!.steps.filter(
+      (candidate) => candidate.name !== name,
+    );
+    expect(() => check(removed), `${name} removed`).toThrow(
+      "jobs.deny must run exactly",
+    );
     const duplicated = fixture();
     duplicated.jobs.deny!.steps.push({ ...step(duplicated, "deny", name) });
-    expect(() => check(duplicated), `${name} duplicated`).toThrow("jobs.deny must run exactly");
+    expect(() => check(duplicated), `${name} duplicated`).toThrow(
+      "jobs.deny must run exactly",
+    );
   }
   const reordered = fixture();
   const steps = reordered.jobs.deny!.steps;
-  const install = steps.findIndex(candidate => candidate.name === cargoDenyInstallStep);
+  const install = steps.findIndex(
+    (candidate) => candidate.name === cargoDenyInstallStep,
+  );
   const [moved] = steps.splice(install, 1);
   steps.push(moved!);
   expect(() => check(reordered)).toThrow("jobs.deny must run exactly");
@@ -413,13 +999,43 @@ test("cargo-deny steps cannot continue on error, be conditioned, removed, duplic
 
 test("cargo-deny runs the verified binary with the reviewed policy arguments", () => {
   const mutations: [string, string, string, string][] = [
-    ["PATH-resolved binary", cargoDenyMain, '"$RUNNER_TEMP/cargo-deny/cargo-deny"', "cargo deny"],
+    [
+      "PATH-resolved binary",
+      cargoDenyMain,
+      '"$RUNNER_TEMP/cargo-deny/cargo-deny"',
+      "cargo deny",
+    ],
     ["default features only", cargoDenyMain, " --all-features check", " check"],
-    ["advisories skipped", cargoDenyMain, "--all-features check", "--all-features check bans licenses sources"],
-    ["swallowed result", cargoDenyMain, "--all-features check", "--all-features check || true"],
-    ["helper licenses instead of bans", cargoDenyHelper, "check bans", "check licenses"],
-    ["helper without its own ban list", cargoDenyHelper, " --config crates/keld-updater-helper/deny.toml", ""],
-    ["helper rooted at the workspace", cargoDenyHelper, "crates/keld-updater-helper/Cargo.toml", "./Cargo.toml"],
+    [
+      "advisories skipped",
+      cargoDenyMain,
+      "--all-features check",
+      "--all-features check bans licenses sources",
+    ],
+    [
+      "swallowed result",
+      cargoDenyMain,
+      "--all-features check",
+      "--all-features check || true",
+    ],
+    [
+      "helper licenses instead of bans",
+      cargoDenyHelper,
+      "check bans",
+      "check licenses",
+    ],
+    [
+      "helper without its own ban list",
+      cargoDenyHelper,
+      " --config crates/keld-updater-helper/deny.toml",
+      "",
+    ],
+    [
+      "helper rooted at the workspace",
+      cargoDenyHelper,
+      "crates/keld-updater-helper/Cargo.toml",
+      "./Cargo.toml",
+    ],
   ];
   for (const [label, name, from, to] of mutations) {
     const f = fixture();
@@ -435,7 +1051,11 @@ test("the deny job admits no Docker action, including the former cargo-deny-acti
   ]) {
     const f = fixture();
     const steps = f.jobs.deny!.steps;
-    steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, { uses, with: { command: "check" } });
+    steps.splice(
+      steps.findIndex((candidate) => candidate.name === cargoDenyMain),
+      0,
+      { uses, with: { command: "check" } },
+    );
     expect(() => check(f), uses).toThrow("jobs.deny must run exactly");
   }
   const missing = fixture();
@@ -446,13 +1066,21 @@ test("the deny job admits no Docker action, including the former cargo-deny-acti
 test("nothing in the deny job can replace or redirect the verified binary", () => {
   // An unnamed or named step between install and check could overwrite the binary.
   for (const inserted of [
-    { run: `printf '#!/bin/sh\\nexit 0\\n' > "$RUNNER_TEMP/cargo-deny/cargo-deny"\n` },
+    {
+      run: `printf '#!/bin/sh\\nexit 0\\n' > "$RUNNER_TEMP/cargo-deny/cargo-deny"\n`,
+    },
     { name: "Refresh cargo-deny", run: "cargo install cargo-deny --locked\n" },
   ]) {
     const f = fixture();
     const steps = f.jobs.deny!.steps;
-    steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, inserted);
-    expect(() => check(f), JSON.stringify(inserted)).toThrow("jobs.deny must run exactly");
+    steps.splice(
+      steps.findIndex((candidate) => candidate.name === cargoDenyMain),
+      0,
+      inserted,
+    );
+    expect(() => check(f), JSON.stringify(inserted)).toThrow(
+      "jobs.deny must run exactly",
+    );
   }
   for (const [key, value] of [
     ["env", { BASH_ENV: "./tools/noop.sh" }],
@@ -475,14 +1103,21 @@ for (const style of ["block", "flow", "alias"] as const) {
     test(`${style} checkout with persistence ${secure ? "disabled" : "enabled"}`, () => {
       checkWorkflowSecurity(source);
       const flag = secure ? "false" : "true";
-      const inserted = style === "block"
-        ? `      - name: Extra checkout\n        uses: ${checkout}\n        with:\n          persist-credentials: ${flag}\n`
-        : style === "flow"
-          ? `      - { uses: '${checkout}', with: { persist-credentials: ${flag} } }\n`
-          : `      - &shared_checkout { uses: '${checkout}', with: { persist-credentials: ${flag} } }\n      - *shared_checkout\n`;
-      const mutated = source.replace("      - name: Initialize CodeQL\n", inserted + "      - name: Initialize CodeQL\n");
+      const inserted =
+        style === "block"
+          ? `      - name: Extra checkout\n        uses: ${checkout}\n        with:\n          persist-credentials: ${flag}\n`
+          : style === "flow"
+            ? `      - { uses: '${checkout}', with: { persist-credentials: ${flag} } }\n`
+            : `      - &shared_checkout { uses: '${checkout}', with: { persist-credentials: ${flag} } }\n      - *shared_checkout\n`;
+      const mutated = source.replace(
+        "      - name: Initialize CodeQL\n",
+        inserted + "      - name: Initialize CodeQL\n",
+      );
       if (secure) expect(() => checkWorkflowSecurity(mutated)).not.toThrow();
-      else expect(() => checkWorkflowSecurity(mutated)).toThrow("persist-credentials: false");
+      else
+        expect(() => checkWorkflowSecurity(mutated)).toThrow(
+          "persist-credentials: false",
+        );
     });
   }
 }
@@ -492,7 +1127,11 @@ test("every checkout must be protected; one secure step cannot mask another", ()
   let checked = 0;
   for (const [jobName, job] of Object.entries(base.jobs)) {
     for (const [index, candidate] of job.steps.entries()) {
-      if (typeof candidate.uses !== "string" || !candidate.uses.startsWith("actions/checkout@")) continue;
+      if (
+        typeof candidate.uses !== "string" ||
+        !candidate.uses.startsWith("actions/checkout@")
+      )
+        continue;
       for (const value of [true, undefined]) {
         const f = fixture();
         const inputs = f.jobs[jobName]!.steps[index]!.with as Step;
@@ -510,7 +1149,10 @@ test("checkout repository case and subpaths cannot bypass its policy", () => {
   for (const name of ["ACTIONS/CHECKOUT", "Actions/Checkout/."]) {
     for (const protectedCheckout of [true, false]) {
       const f = fixture();
-      f.jobs["codeql-rust"]!.steps.push({ uses: `${name}@3d3c42e5aac5ba805825da76410c181273ba90b1`, with: { "persist-credentials": !protectedCheckout } });
+      f.jobs["codeql-rust"]!.steps.push({
+        uses: `${name}@3d3c42e5aac5ba805825da76410c181273ba90b1`,
+        with: { "persist-credentials": !protectedCheckout },
+      });
       if (protectedCheckout) expect(() => check(f)).not.toThrow();
       else expect(() => check(f)).toThrow("persist-credentials: false");
     }
@@ -518,7 +1160,13 @@ test("checkout repository case and subpaths cannot bypass its policy", () => {
 });
 
 for (const [job, name] of [
-  ...codeqlJobs.flatMap(job => [[job, "Initialize CodeQL"], [job, "Analyze and upload CodeQL results"]] as const),
+  ...codeqlJobs.flatMap(
+    (job) =>
+      [
+        [job, "Initialize CodeQL"],
+        [job, "Analyze and upload CodeQL results"],
+      ] as const,
+  ),
   ["dependency-review", "Review dependency vulnerabilities"],
   ["dependency-review", "Reject incomplete dependency metadata"],
 ] as const) {
@@ -527,7 +1175,8 @@ for (const [job, name] of [
       const f = fixture();
       const selected = step(f, job, name);
       if (mutation === "condition") selected.if = false;
-      if (mutation === "remove") f.jobs[job]!.steps = f.jobs[job]!.steps.filter(s => s !== selected);
+      if (mutation === "remove")
+        f.jobs[job]!.steps = f.jobs[job]!.steps.filter((s) => s !== selected);
       if (mutation === "duplicate") f.jobs[job]!.steps.push(selected);
       expect(() => check(f)).toThrow();
     }
@@ -535,16 +1184,44 @@ for (const [job, name] of [
 }
 
 for (const [job, name, key, value] of [
-  ...codeqlJobs.flatMap(job => [
-    [job, "Analyze and upload CodeQL results", "upload", "never"],
-    [job, "Analyze and upload CodeQL results", "skip-queries", true],
-    [job, "Analyze and upload CodeQL results", "wait-for-processing", false],
-  ] as const),
-  ["dependency-review", "Review dependency vulnerabilities", "vulnerability-check", false],
+  ...codeqlJobs.flatMap(
+    (job) =>
+      [
+        [job, "Analyze and upload CodeQL results", "upload", "never"],
+        [job, "Analyze and upload CodeQL results", "skip-queries", true],
+        [
+          job,
+          "Analyze and upload CodeQL results",
+          "wait-for-processing",
+          false,
+        ],
+      ] as const,
+  ),
+  [
+    "dependency-review",
+    "Review dependency vulnerabilities",
+    "vulnerability-check",
+    false,
+  ],
   ["dependency-review", "Review dependency vulnerabilities", "warn-only", true],
-  ["dependency-review", "Review dependency vulnerabilities", "fail-on-severity", "critical"],
-  ["dependency-review", "Review dependency vulnerabilities", "fail-on-scopes", "runtime"],
-  ["dependency-review", "Review dependency vulnerabilities", "allow-ghsas", "GHSA-xxxx-yyyy-zzzz"],
+  [
+    "dependency-review",
+    "Review dependency vulnerabilities",
+    "fail-on-severity",
+    "critical",
+  ],
+  [
+    "dependency-review",
+    "Review dependency vulnerabilities",
+    "fail-on-scopes",
+    "runtime",
+  ],
+  [
+    "dependency-review",
+    "Review dependency vulnerabilities",
+    "allow-ghsas",
+    "GHSA-xxxx-yyyy-zzzz",
+  ],
 ] as const) {
   test(`required scanner input ${job} ${key} cannot bypass its effect`, () => {
     const f = fixture();
@@ -554,22 +1231,37 @@ for (const [job, name, key, value] of [
 }
 
 test("wrong or floating action identity fails, including flow mappings", () => {
-  for (const uses of ["github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938", "github/codeql-action/analyze@main"]) {
+  for (const uses of [
+    "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+    "github/codeql-action/analyze@main",
+  ]) {
     const f = fixture();
     step(f, "codeql-rust", "Analyze and upload CodeQL results").uses = uses;
     expect(() => checkWorkflowSecurity(Bun.YAML.stringify(f))).toThrow();
   }
   const f = fixture();
-  f.jobs["codeql-rust"]!.steps.push({ uses: "actions/checkout@main", with: { "persist-credentials": false } });
+  f.jobs["codeql-rust"]!.steps.push({
+    uses: "actions/checkout@main",
+    with: { "persist-credentials": false },
+  });
   expect(() => check(f)).toThrow("immutable");
 });
 
 test("metadata admission cannot echo/swallow checks or change event refs", () => {
   for (const mutation of ["echo", "swallow", "ref"] as const) {
     const f = fixture();
-    const selected = step(f, "dependency-review", "Reject incomplete dependency metadata");
-    if (mutation === "ref") (selected.env as Step).KELD_DEPENDENCY_BASE = "${{ github.sha }}";
-    else selected.run = mutation === "echo" ? `echo ${selected.run}` : `${String(selected.run).trim()} || true\n`;
+    const selected = step(
+      f,
+      "dependency-review",
+      "Reject incomplete dependency metadata",
+    );
+    if (mutation === "ref")
+      (selected.env as Step).KELD_DEPENDENCY_BASE = "${{ github.sha }}";
+    else
+      selected.run =
+        mutation === "echo"
+          ? `echo ${selected.run}`
+          : `${String(selected.run).trim()} || true\n`;
     expect(() => check(f)).toThrow("metadata");
   }
 });
@@ -583,7 +1275,17 @@ test("scanner prerequisites cannot be reordered", () => {
   expect(() => check(d)).toThrow("metadata admission must precede");
 });
 
-for (const invalid of ["", "jobs: [", "---\na: 1\n---\nb: 2", "jobs: {}", "jobs: []", "jobs: {x: {steps: [false]}}", "jobs: {x: {steps: [[{}]]}}", "jobs: {x: {uses: owner/reusable@main}}", "jobs: &jobs { x: *jobs }"]) {
+for (const invalid of [
+  "",
+  "jobs: [",
+  "---\na: 1\n---\nb: 2",
+  "jobs: {}",
+  "jobs: []",
+  "jobs: {x: {steps: [false]}}",
+  "jobs: {x: {steps: [[{}]]}}",
+  "jobs: {x: {uses: owner/reusable@main}}",
+  "jobs: &jobs { x: *jobs }",
+]) {
   test(`missing/malformed/unknown workflow shape refuses: ${JSON.stringify(invalid)}`, () => {
     expect(() => checkWorkflowSecurity(invalid)).toThrow();
   });
@@ -591,30 +1293,54 @@ for (const invalid of ["", "jobs: [", "---\na: 1\n---\nb: 2", "jobs: {}", "jobs:
 
 test("Bun duplicate-key behavior is documented, not claimed as syntax validation", () => {
   expect(Bun.YAML.parse("x: true\nx: false")).toEqual({ x: false });
-  expect(() => checkWorkflowSecurity(source.replace("warn-only: false", "warn-only: false\n          warn-only: true"))).toThrow("warn-only");
+  expect(() =>
+    checkWorkflowSecurity(
+      source.replace(
+        "warn-only: false",
+        "warn-only: false\n          warn-only: true",
+      ),
+    ),
+  ).toThrow("warn-only");
 });
 
 test("parsing budget admits the boundary and refuses one extra byte", () => {
-  const exact = source + "\n#" + "x".repeat(1024 * 1024 - Buffer.byteLength(source) - 2);
+  const exact =
+    source + "\n#" + "x".repeat(1024 * 1024 - Buffer.byteLength(source) - 2);
   expect(() => checkWorkflowSecurity(exact)).not.toThrow();
   expect(() => checkWorkflowSecurity(exact + "x")).toThrow("1 MiB");
 });
 
 test("equivalent scalar quotes and scope order preserve effects", () => {
-  expect(() => checkWorkflowSecurity(source.replace("warn-only: false", "'warn-only': 'false'")
-    .replace("fail-on-scopes: runtime, development, unknown", "fail-on-scopes: unknown,runtime,development"))).not.toThrow();
+  expect(() =>
+    checkWorkflowSecurity(
+      source
+        .replace("warn-only: false", "'warn-only': 'false'")
+        .replace(
+          "fail-on-scopes: runtime, development, unknown",
+          "fail-on-scopes: unknown,runtime,development",
+        ),
+    ),
+  ).not.toThrow();
 });
 
 test("existing Rust CLI invokes semantic admission and preserves its refusal", () => {
   const repository = join(import.meta.dir, "..");
   const temporary = mkdtempSync(join(tmpdir(), "keld-workflow-security-"));
+  const started = performance.now();
+  let phase = "list tracked snapshot sources";
+  let sourceFiles = 0;
+  let cliInvocations = 0;
   try {
     const checkoutRoot = join(temporary, "checkout");
     mkdirSync(checkoutRoot);
     const listing = Bun.spawnSync(["git", "-C", repository, "ls-files", "-z"]);
     expect(listing.exitCode).toBe(0);
-    const files = new Set(new TextDecoder().decode(listing.stdout).split("\0").filter(Boolean));
+    const files = new Set(
+      new TextDecoder().decode(listing.stdout).split("\0").filter(Boolean),
+    );
     files.add("tools/ci_workflow_security.ts");
+    sourceFiles = files.size;
+    phase = "copy tracked snapshot sources";
     for (const relative of files) {
       const destination = join(checkoutRoot, relative);
       mkdirSync(dirname(destination), { recursive: true });
@@ -622,20 +1348,46 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
     }
     // `ci-hygiene check` compares the GH-508 channel allocation baseline with a
     // merge base, so the copied checkout is a git repository compared to its HEAD.
-    const git = (...args: string[]) =>
-      Bun.spawnSync([
-        "git", "-C", checkoutRoot,
-        "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
-        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main",
+    const git = (...args: string[]) => {
+      phase = `fixture git ${args[0]}`;
+      return Bun.spawnSync([
+        "git",
+        "-C",
+        checkoutRoot,
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "init.defaultBranch=main",
         ...args,
       ]);
+    };
     expect(git("init", "--quiet").exitCode).toBe(0);
     // No detached `git maintenance` repack may outlive the commit and race cleanup (#670).
     expect(git("config", "maintenance.auto", "false").exitCode).toBe(0);
     expect(git("add", "-A").exitCode).toBe(0);
-    expect(git("commit", "--quiet", "--no-verify", "-m", "fixture").exitCode).toBe(0);
-    const binary = join(temporary, process.platform === "win32" ? "ci-hygiene.exe" : "ci-hygiene");
-    const compilation = Bun.spawnSync(["rustc", "--edition=2024", "-D", "warnings", join(repository, "tools/ci_hygiene.rs"), "-o", binary]);
+    expect(
+      git("commit", "--quiet", "--no-verify", "-m", "fixture").exitCode,
+    ).toBe(0);
+    const binary = join(
+      temporary,
+      process.platform === "win32" ? "ci-hygiene.exe" : "ci-hygiene",
+    );
+    phase = "compile Rust CLI";
+    const compilation = Bun.spawnSync([
+      "rustc",
+      "--edition=2024",
+      "-D",
+      "warnings",
+      join(repository, "tools/ci_hygiene.rs"),
+      "-o",
+      binary,
+    ]);
     expect(compilation.exitCode).toBe(0);
     // The CLI must use the same verified Bun executable as this test process.
     const runtimeEnv = {
@@ -644,42 +1396,97 @@ test("existing Rust CLI invokes semantic admission and preserves its refusal", (
       PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
     };
     const run = (yaml: string, env = runtimeEnv) => {
+      phase = `semantic CLI invocation ${++cliInvocations}`;
       writeFileSync(join(checkoutRoot, ".github/workflows/ci.yml"), yaml);
-      return Bun.spawnSync([binary, "check", checkoutRoot], { cwd: repository, env });
+      return Bun.spawnSync([binary, "check", checkoutRoot], {
+        cwd: repository,
+        env,
+      });
     };
     const original = run(source);
     expect(original.exitCode).toBe(0);
     // The CLI also refuses a pull_request_target workflow that runs shell code.
     const keldbotPath = join(checkoutRoot, ".github/workflows/keldbot.yml");
-    writeFileSync(keldbotPath, keldbot.replace("    steps:\n", "    steps:\n      - run: echo injected\n"));
+    writeFileSync(
+      keldbotPath,
+      keldbot.replace(
+        "    steps:\n",
+        "    steps:\n      - run: echo injected\n",
+      ),
+    );
     const prTarget = run(source);
     expect(prTarget.exitCode).not.toBe(0);
-    expect(new TextDecoder().decode(prTarget.stderr)).toContain("pull_request_target");
+    expect(new TextDecoder().decode(prTarget.stderr)).toContain(
+      "pull_request_target",
+    );
     writeFileSync(keldbotPath, keldbot);
-    expect(new TextDecoder().decode(original.stdout)).toContain("CI workflow security semantics ok");
+    expect(new TextDecoder().decode(original.stdout)).toContain(
+      "CI workflow security semantics ok",
+    );
     const actionsRoute = `    if: ${codeqlRoute("actions")}\n`;
     expect(source).toContain(actionsRoute);
-    const misrouted = run(source.replace(actionsRoute, `    if: ${codeqlRoute("rust")}\n`));
+    const misrouted = run(
+      source.replace(actionsRoute, `    if: ${codeqlRoute("rust")}\n`),
+    );
     expect(misrouted.exitCode).not.toBe(0);
-    expect(new TextDecoder().decode(misrouted.stderr)).toContain("CodeQL job codeql-actions");
+    expect(new TextDecoder().decode(misrouted.stderr)).toContain(
+      "CodeQL job codeql-actions",
+    );
     for (const insertion of [
       `      - { uses: '${checkout}', with: { persist-credentials: true } }\n`,
       `      - &insecure { uses: '${checkout}', with: { persist-credentials: true } }\n      - *insecure\n`,
     ]) {
-      const result = run(source.replace("      - name: Initialize CodeQL\n", insertion + "      - name: Initialize CodeQL\n"));
+      const result = run(
+        source.replace(
+          "      - name: Initialize CodeQL\n",
+          insertion + "      - name: Initialize CodeQL\n",
+        ),
+      );
       expect(result.exitCode).not.toBe(0);
-      expect(new TextDecoder().decode(result.stderr)).toContain("persist-credentials: false");
+      expect(new TextDecoder().decode(result.stderr)).toContain(
+        "persist-credentials: false",
+      );
     }
-    const skipped = run(source.replace("      - name: Analyze and upload CodeQL results\n", "      - name: Analyze and upload CodeQL results\n        if: false\n"));
+    const skipped = run(
+      source.replace(
+        "      - name: Analyze and upload CodeQL results\n",
+        "      - name: Analyze and upload CodeQL results\n        if: false\n",
+      ),
+    );
     expect(skipped.exitCode).not.toBe(0);
-    expect(new TextDecoder().decode(skipped.stderr)).toContain("conditions or unknown controls");
-    const weakenedUpload = run(source.replace("      security-events: write", "      security-events: read"));
+    expect(new TextDecoder().decode(skipped.stderr)).toContain(
+      "conditions or unknown controls",
+    );
+    const weakenedUpload = run(
+      source.replace(
+        "      security-events: write",
+        "      security-events: read",
+      ),
+    );
     expect(weakenedUpload.exitCode).not.toBe(0);
-    expect(new TextDecoder().decode(weakenedUpload.stderr)).toContain("CodeQL job permissions");
-    expect(run(source, { ...runtimeEnv, PATH: temporary }).exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(weakenedUpload.stderr)).toContain(
+      "CodeQL job permissions",
+    );
+    expect(run(source, { ...runtimeEnv, PATH: temporary }).exitCode).not.toBe(
+      0,
+    );
     rmSync(join(checkoutRoot, "tools/ci_workflow_security.ts"));
     expect(run(source).exitCode).not.toBe(0);
+  } catch (error) {
+    console.error(
+      "workflow security fixture failed:",
+      JSON.stringify({
+        phase,
+        elapsedMs: Math.round(performance.now() - started),
+        sourceFiles,
+        cliInvocations,
+      }),
+    );
+    throw error;
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
-}, 30000);
+  // Snapshot/Git setup and rustc precede all semantic checks. The original 30s
+  // kill switch expired during Git staging in full CI (GH1091); bound the full
+  // cold-tool fixture while retaining every acceptance and refusal assertion.
+}, 120_000);

@@ -207,7 +207,7 @@ ipc_fixture_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\nd
 # package directory (keld-compat spawns the @keld/electron fixtures). It cannot
 # change rustc, the workspace dependency policy, or the host window, so MSRV,
 # cargo-deny and GUI smoke stay off; GTK follows the selected Rust closure.
-ts_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
+ts_flags=$'rust=true\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
 wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
 # Workflow/router edits run every lane, and the Ubuntu leg installs WebKitGTK to
@@ -248,6 +248,29 @@ case "$(uname -s)" in
 esac
 "$python_command" -B "$repo_root/tools/test_ci_local.py" --tracked-snapshot "$temp_dir/bound"
 cd "$temp_dir/bound"
+
+# Each native JS/TS family member and each generator source must reach hosted formatting.
+for input in bunfig.toml .gitignore crates/keld-cli/templates/hello/.gitignore crates/keld-ipc/fuzz/.gitignore crates/keld-update/fuzz/.gitignore crates/keld-wv/fuzz/.gitignore packages/@keld/api/src/index.ts tools/example.jsx crates/keld-cli/templates/hello/keld.config.ts crates/keld-ipc/src/echo.rs crates/keld-native/src/fs.rs crates/keld-native/src/auth/mod.rs; do
+    formatted_classification="$(result_for_paths "$input")"
+    expect_exact_output "native formatting input $input selects hygiene" hygiene true "$formatted_classification"
+done
+
+# Config-only diffs must reach the hosted formatter, without a JS/TS edit.
+# The literal basenames are the immutable Bun 1.4.4 configuration contract.
+for config in .oxfmtrc.json .oxfmtrc.jsonc oxfmt.config.ts oxfmt.config.mts package.json package.yaml .prettierrc .prettierrc.json .prettierrc.yml .prettierrc.yaml .prettierrc.json5 .prettierrc.js prettier.config.js .prettierrc.ts prettier.config.ts .prettierrc.mjs prettier.config.mjs .prettierrc.mts prettier.config.mts .prettierrc.cjs prettier.config.cjs .prettierrc.cts prettier.config.cts .prettierrc.toml .editorconfig; do
+    for input in "crates/keld-cli/templates/hello/$config"; do
+        config_classification="$(result_for_paths "$input")"
+        expect_exact_output "native config input $input selects hosted formatting" hygiene true "$config_classification"
+        expect_exact_output "native config input $input selects local formatting" local_js-fmt-check true "$config_classification"
+        expect_exact_output "native config input $input selects generator tests" ts true "$config_classification"
+    done
+done
+for input in .prettierignore packages/@keld/api/package.json crates/keld-cli/templates/hello/.PRETTIERRC crates/keld-cli/templates/hello/.GITIGNORE crates/keld-cli/templates/hello/.GitIgnore; do
+    config_classification="$(result_for_paths "$input")"
+    expect_exact_output "native config input $input selects hosted formatting" hygiene true "$config_classification"
+    expect_exact_output "native config input $input selects local formatting" local_js-fmt-check true "$config_classification"
+    expect_exact_output "native config input $input selects generator tests" ts true "$config_classification"
+done
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
@@ -465,7 +488,9 @@ for selection in "$unknown_codeql" "$workflow_codeql"; do
 done
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
-expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
+expect_flags "audit checker selects documentation and policy-reader hygiene without Rust" "$docs_hygiene" "$audit_docs_classification"
+audit_prose_classification="$(result_for_paths docs/audits/README.md docs/audits/evidence/example.json)"
+expect_flags "audit prose and evidence without a checker change select only documentation" "$docs_only" "$audit_prose_classification"
 
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
@@ -627,13 +652,30 @@ git -C "$temp_dir" config maintenance.auto false
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
-printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
 mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
 printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json packages
+# Keep the real shared native policy in this minimal graph fixture. Bind a real,
+# immutable reader so TS selects hygiene without stale-reader or all-gate rescue.
+"$python_command" -B - "$repo_root" "$temp_dir" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+source, fixture = map(Path, sys.argv[1:])
+sys.path.insert(0, str(source / "tools"))
+import ci_inputs
+native = next(consumer for consumer in ci_inputs.load(source)["consumers"]
+              if consumer["owner"] == "Native JavaScript formatting")
+shutil.copyfile(source / "tools/ci_inputs.py", fixture / "tools/ci_inputs.py")
+patterns = ["tools/ci_inputs.py"]
+reader = {"patterns": patterns,
+          "sha256": ci_inputs.fingerprint(fixture, ci_inputs.files(fixture), patterns)}
+contract = {"schema": ci_inputs.SCHEMA, "known_inputs": ["*"],
+            "reader_sets": {native["reader_set"]: reader}, "consumers": [native]}
+(fixture / "tools/ci-inputs.json").write_text(json.dumps(contract) + "\n", encoding="utf-8")
+PY
+git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json tools/ci_inputs.py packages
 git -C "$temp_dir" commit -qm base
 base_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 real_jq="$(command -v jq)"
@@ -935,7 +977,7 @@ git -C "$temp_dir" add packages
 git -C "$temp_dir" commit -qm packages
 ts_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 ts_pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$untested_sha" KELD_CI_HEAD_SHA="$ts_sha" "$router" github)"
-fake_ts_flags=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=false'
+fake_ts_flags=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=false'
 expect_flags "pull-request TypeScript-only diff runs the Bun lane with no Rust consumer" "$fake_ts_flags" "$ts_pr_result"
 expect_output_package_token "pull-request TypeScript-only diff selects the changed Bun suite" ts_packages 'packages/@fake/pkg' "$ts_pr_result"
 expect_empty_packages "pull-request TypeScript-only diff selects no workspace package" "$ts_pr_result"
@@ -1024,4 +1066,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests

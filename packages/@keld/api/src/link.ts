@@ -52,7 +52,10 @@ export type LifecycleEventName = "ready" | "last-window-closed";
 
 function decodeUnitEnum(bytes: Uint8Array): number {
   if (bytes.length !== 1) {
-    throw kipcError("KELD-IPC-003", "lifecycle enum must be a single postcard varint byte");
+    throw kipcError(
+      "KELD-IPC-003",
+      "lifecycle enum must be a single postcard varint byte",
+    );
   }
   return bytes[0];
 }
@@ -61,13 +64,19 @@ function decodeEvent(bytes: Uint8Array): LifecycleEventName {
   const disc = decodeUnitEnum(bytes);
   if (disc === 0) return "ready";
   if (disc === 1) return "last-window-closed";
-  throw kipcError("KELD-IPC-003", `unknown LifecycleEvent discriminant ${disc}`);
+  throw kipcError(
+    "KELD-IPC-003",
+    `unknown LifecycleEvent discriminant ${disc}`,
+  );
 }
 
 export type LifecycleHandler = {
   onReady: () => void;
   onLastWindowClosed: () => void;
-  onApplicationCall?: (channel: number, payload: Uint8Array) => Promise<Uint8Array>;
+  onApplicationCall?: (
+    channel: number,
+    payload: Uint8Array,
+  ) => Promise<Uint8Array>;
   /**
    * The link ended after HELLO without a local `close()` or `quit()`.
    * `app.whenReady()` waiters must reject here.
@@ -97,8 +106,14 @@ export class LifecycleLink {
     this.#link = link;
   }
 
-  static async connect(link: string, handlers: LifecycleHandler): Promise<LifecycleLink> {
-    const workerLink = await WorkerLink.open({ link, receive: LIFECYCLE_RECEIVE });
+  static async connect(
+    link: string,
+    handlers: LifecycleHandler,
+  ): Promise<LifecycleLink> {
+    const workerLink = await WorkerLink.open({
+      link,
+      receive: LIFECYCLE_RECEIVE,
+    });
     const session = new LifecycleLink(workerLink);
     // A lifecycle EVENT this role cannot decode ends the link (a throwing
     // applier, §4.6) before any listener runs; the listener then dispatches it.
@@ -135,7 +150,9 @@ export class LifecycleLink {
   quit(): Promise<void> {
     if (this.#quitPromise) return this.#quitPromise;
     if (this.#closed) {
-      return Promise.reject(this.#dead ?? kipcError("KELD-IPC-001", "session is closed"));
+      return Promise.reject(
+        this.#dead ?? kipcError("KELD-IPC-001", "session is closed"),
+      );
     }
     this.#closed = true;
     this.#quitPromise = quitAndCloseLink(this.#link, APP_LINK_IO_DEADLINE_MS);
@@ -145,7 +162,9 @@ export class LifecycleLink {
   /** Package-private outbound FS call, admitted only while this session is open. */
   callFs(payload: Uint8Array): Promise<Uint8Array> {
     if (this.#closed || this.#quitPromise !== undefined) {
-      return Promise.reject(this.#dead ?? kipcError("KELD-IPC-001", "session is closed"));
+      return Promise.reject(
+        this.#dead ?? kipcError("KELD-IPC-001", "session is closed"),
+      );
     }
     return this.#link.call(FS_CHANNEL, payload, APP_LINK_IO_DEADLINE_MS);
   }
@@ -153,7 +172,9 @@ export class LifecycleLink {
   /** Package-private auth call with an explicit finite caller reply deadline. */
   callAuth(payload: Uint8Array, deadlineMs: number): Promise<Uint8Array> {
     if (this.#closed || this.#quitPromise !== undefined) {
-      return Promise.reject(this.#dead ?? kipcError("KELD-IPC-001", "session is closed"));
+      return Promise.reject(
+        this.#dead ?? kipcError("KELD-IPC-001", "session is closed"),
+      );
     }
     return this.#link.call(AUTH_CHANNEL, payload, deadlineMs);
   }

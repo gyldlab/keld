@@ -531,6 +531,22 @@ fn check_serial_rust_gates(root: &Path) -> Result<(), String> {
             ));
         }
     }
+    for recipe in ["ci", "ci-full"] {
+        if !expanded_gates(&justfile, recipe)
+            .is_some_and(|gates| gates.iter().filter(|gate| **gate == "js-fmt-check").count() == 1)
+            || just_recipe_commands(&justfile, "js-fmt-check").as_deref()
+                != Some(&[
+                    "bun packages/@keld/kipc/scripts/echo-codegen.ts check".to_owned(),
+                    "bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\""
+                        .to_owned(),
+                ])
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{recipe}` must run js-fmt-check exactly once with codegen freshness and the direct native JS/TS formatter check."
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -1090,6 +1106,9 @@ fn check_doctest_job(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The hosted runner set for lanes whose contracts differ per OS.
+const THREE_OS_MATRIX: &str = "os: [ubuntu-latest, macos-latest, windows-latest]";
+
 const WORKSPACE_JOB: &str = "workspace-contracts";
 const WORKSPACE_STEP: &str = "Local workspace path and process contracts";
 
@@ -1114,11 +1133,9 @@ fn check_workspace_contracts_job(text: &str) -> Result<(), String> {
             "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must declare `needs: changes` and job-level `if: needs.changes.outputs.workspace == 'true'`; the router owns which diffs reach it."
         ));
     }
-    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB)
-        != ["os: [ubuntu-latest, macos-latest, windows-latest]"]
-    {
+    if workflow_job_matrix_os_lines(text, WORKSPACE_JOB) != [THREE_OS_MATRIX] {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `os: [ubuntu-latest, macos-latest, windows-latest]`; its path and process contracts differ per OS."
+            "CI-HYGIENE: `{WORKFLOW}` `{WORKSPACE_JOB}` must run on `{THREE_OS_MATRIX}`; its path and process contracts differ per OS."
         ));
     }
     if workflow_named_step_direct_keys(&block, WORKSPACE_STEP).unwrap_or_default()
@@ -1204,7 +1221,7 @@ fn check_msrv_avoids_apt(text: &str) -> Result<(), String> {
 fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
     let invalid = || {
         format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.2`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
+            "CI-HYGIENE: `{WORKFLOW}` `{job}` must have at least one `oven-sh/setup-bun` step, and every such step must pin its own `with.bun-version` to `1.4.4`. Use direct block-style steps and inputs; unrelated job text is not a runtime pin."
         )
     };
     let literal_key = |key: &str| {
@@ -1305,7 +1322,7 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
             .iter()
             .filter(|(key, _)| key == "bun-version")
             .collect();
-        if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.2" {
+        if pins.len() != 1 || pins[0].1.trim_matches(['\'', '"']) != "1.4.4" {
             return Err(invalid());
         }
     }
@@ -1313,6 +1330,50 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
         return Err(invalid());
     }
     Ok(())
+}
+
+/// The Bun lane has exactly one static three-OS matrix, not a larger matrix
+/// with include/exclude rows that can suppress a required hosted runner. Read
+/// only the actual job-level strategy.matrix mapping, never an unrelated
+/// indentation-matched `os:` line or a step/script with similar text.
+fn bun_job_has_static_three_os_matrix(block: &str) -> bool {
+    let mut strategies = 0;
+    let mut matrices = 0;
+    let mut os_entries = 0;
+    let mut in_strategy = false;
+    let mut in_matrix = false;
+
+    for (indent, content) in block.lines().filter_map(yaml_content) {
+        if indent == 4 {
+            in_matrix = false;
+            in_strategy = yaml_mapping_key(content).is_some_and(|(key, _)| key == "strategy");
+            if in_strategy {
+                strategies += 1;
+                if content != "strategy:" {
+                    return false;
+                }
+            }
+        } else if in_strategy && indent == 6 {
+            in_matrix = false;
+            if yaml_mapping_key(content).is_some_and(|(key, _)| key == "matrix") {
+                matrices += 1;
+                in_matrix = true;
+                if content != "matrix:" {
+                    return false;
+                }
+            }
+        } else if in_matrix && indent > 6 {
+            // A static inline OS list needs no other matrix entries. In
+            // particular, `exclude:` can silently drop Windows while leaving
+            // the literal three-OS list intact. Reject `include:` as well.
+            if indent != 8 || content != THREE_OS_MATRIX {
+                return false;
+            }
+            os_entries += 1;
+        }
+    }
+
+    strategies == 1 && matrices == 1 && os_entries == 1
 }
 
 /// Asserts the `bun-test` lane's decidable properties and the exact Bun pin for
@@ -1324,14 +1385,55 @@ fn check_bun_setup_steps(text: &str, job: &str) -> Result<(), String> {
 /// suites the router selected — is tracked in KEL-115, because it is a
 /// behavioural property and no reading of the text settles it.
 fn check_bun_test_job(text: &str) -> Result<(), String> {
+    let format_step = "Native JavaScript formatting";
+    let format_block = workflow_job_block(text, "hygiene").and_then(|job| {
+        (workflow_direct_named_step_count(&job, format_step) == 1)
+            .then(|| workflow_direct_named_step_block(&job, format_step))
+            .flatten()
+    });
+    let format_lines = format_block.as_deref().map(|block| {
+        block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>()
+    });
+    if format_lines
+        != Some(vec![
+            "- name: Native JavaScript formatting",
+            "run: |",
+            "bun packages/@keld/kipc/scripts/echo-codegen.ts check",
+            "bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"",
+        ])
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` hygiene needs one unconditional codegen freshness and direct native JS/TS formatting step."
+        ));
+    }
     let Some(block) = workflow_job_block(text, "bun-test") else {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has no `bun-test` job. The `packages/` TypeScript suites need a lane of their own: the Bun install inside `check` exists so Rust tests can spawn Bun children and never runs `bun test`."
         ));
     };
-    if !uncommented_line_contains(&block, "if: needs.changes.outputs.ts == 'true'") {
+    let job_if_count = block
+        .lines()
+        .filter_map(yaml_content)
+        .filter(|(indent, content)| {
+            *indent == 4 && yaml_mapping_key(content).is_some_and(|(key, _)| key == "if")
+        })
+        .count();
+    if job_if_count != 1
+        || workflow_job_level_if(&block).as_deref() != Some("needs.changes.outputs.ts == 'true'")
+    {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` `bun-test` must be gated on `if: needs.changes.outputs.ts == 'true'`. The router owns which diffs reach this lane; an ungated job wastes runners and a gate on another output silently never runs (contexts: needs, github, vars, inputs only — never `matrix`)."
+        ));
+    }
+    if workflow_job_level_property(&block, "runs-on").as_deref() != Some("${{ matrix.os }}")
+        || !bun_job_has_static_three_os_matrix(&block)
+    {
+        return Err(format!(
+            "CI-HYGIENE: `{WORKFLOW}` `bun-test` must use `runs-on: ${{{{ matrix.os }}}}` over `{THREE_OS_MATRIX}`. Bun roles run on every OS, and the GH-1095 three-OS rows (AT-B1, AT-B2, AT-API2a) are proven only there (#1111)."
         ));
     }
     for job in ["bun-test", "check", "hygiene"] {

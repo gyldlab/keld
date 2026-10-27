@@ -139,7 +139,7 @@ fn valid_workflow() -> String {
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
             "        with:",
-            "          bun-version: '1.4.2'",
+            "          bun-version: '1.4.4'",
             "      - name: Check keld-ipc fuzz workspace",
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
@@ -172,11 +172,16 @@ fn valid_workflow() -> String {
             windows_media_step.as_str(),
             &release_helper_step(),
             "  bun-test:",
+            "    runs-on: ${{ matrix.os }}",
             "    if: needs.changes.outputs.ts == 'true'",
+            "    strategy:",
+            "      fail-fast: false",
+            "      matrix:",
+            "        os: [ubuntu-latest, macos-latest, windows-latest]",
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
-            "          bun-version: \"1.4.2\"",
+            "          bun-version: \"1.4.4\"",
             "      - name: bun test",
             "        shell: bash",
             "        env:",
@@ -214,7 +219,11 @@ fn valid_workflow() -> String {
             "          persist-credentials: false",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
-            "          bun-version: \"1.4.2\"",
+            "          bun-version: \"1.4.4\"",
+            "      - name: Native JavaScript formatting",
+            "        run: |",
+            "          bun packages/@keld/kipc/scripts/echo-codegen.ts check",
+            "          bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"",
             "      - name: Documentation placeholder contracts",
             "        run: |",
             "          mkdir -p target/doc-placeholders",
@@ -460,13 +469,14 @@ fn complete_fixture() -> TempDir {
     temp.write(
             JUSTFILE,
             concat!(
-                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
+                "ci: audit-docs mermaid-ci js-fmt-check fmt-check clippy test doc deny\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
                 "    {{python_command}} -B tools/windows_architecture_closeout.py --check\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
                 "    {{python_command}} -B tools/test_windows_architecture_closeout.py\n",
-                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
+                "ci-full: audit-docs mermaid-full js-fmt-check fmt-check clippy test doc deny\n",
+                "js-fmt-check:\n    bun packages/@keld/kipc/scripts/echo-codegen.ts check\n    bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"\n",
                 "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
                 "mermaid-ci:\n",
                 "    #!/usr/bin/env bash\n",
@@ -509,13 +519,13 @@ fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
     let grouped = read(temp.path(), JUSTFILE)
             .expect("just fixture")
             .replacen(
-                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
-                "ci: policy fmt-check clippy test doc deny\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
+                "ci: audit-docs mermaid-ci js-fmt-check fmt-check clippy test doc deny\n",
+                "ci: policy js-fmt-check fmt-check clippy test doc deny\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
                 1,
             )
             .replacen(
-                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
-                "ci-full: policy-full fmt-check clippy test doc deny\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
+                "ci-full: audit-docs mermaid-full js-fmt-check fmt-check clippy test doc deny\n",
+                "ci-full: policy-full js-fmt-check fmt-check clippy test doc deny\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
                 1,
             );
     temp.write(JUSTFILE, &grouped);
@@ -548,18 +558,18 @@ fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny",
             "ci: policy fmt-check clippy doc deny",
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny\n",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny\n",
             "ci: policy rust deny\n\n[parallel]\nrust: fmt-check clippy test doc\n",
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny\n",
-            "[parallel]\nci: policy fmt-check clippy test doc deny\n",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny\n",
+            "[parallel]\nci: policy js-fmt-check fmt-check clippy test doc deny\n",
             "one at a time",
         ),
         (
@@ -651,14 +661,14 @@ fn typescript_cannot_run_inside_the_parallel_policy_batch() {
 fn rust_suffix_order_and_policy_before_rust_are_enforced() {
     for replacement in [
         "clippy fmt-check test doc deny",
-        "fmt-check clippy test doc deny audit-docs",
+        "js-fmt-check fmt-check clippy test doc deny audit-docs",
     ] {
         let temp = complete_fixture();
         let original = read(temp.path(), JUSTFILE).expect("just fixture");
         check_serial_rust_gates(temp.path()).expect("original suffix is valid");
         temp.write(
             JUSTFILE,
-            &original.replace("fmt-check clippy test doc deny", replacement),
+            &original.replace("js-fmt-check fmt-check clippy test doc deny", replacement),
         );
         let error = check_serial_rust_gates(temp.path())
             .expect_err("the Rust gates must be the ordered serial suffix");
@@ -1907,16 +1917,183 @@ fn deleting_the_bun_lane_fails() {
 }
 
 #[test]
-fn bun_ci_accepts_requested_142_and_rejects_other_versions() {
+fn bun_lane_runs_on_every_os() {
+    let workflow = valid_workflow();
+    check_bun_test_job(&workflow).expect("the three-OS Bun lane passes");
+    let lane = "    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n";
+    for (old, new, label) in [
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest]\n"),
+            "Ubuntu only",
+        ),
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest, macos-latest]\n"),
+            "no Windows",
+        ),
+        (
+            String::from("  bun-test:\n    runs-on: ${{ matrix.os }}\n"),
+            String::from("  bun-test:\n    runs-on: ubuntu-latest\n"),
+            "fixed runner",
+        ),
+    ] {
+        assert!(
+            workflow.contains(&old),
+            "fixture lacks the {label} mutation target"
+        );
+        let changed = workflow.replace(&old, &new);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_rejects_matrix_exclusions_and_includes() {
+    let workflow = valid_workflow();
+    let lane = "  bun-test:\n    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n";
+    assert!(workflow.contains(lane), "fixture lacks the Bun matrix");
+    for (extra, label) in [
+        (
+            "        exclude:\n          - os: windows-latest\n",
+            "exclude Windows",
+        ),
+        (
+            "        exclude:\n          - os: macos-latest\n",
+            "exclude macOS",
+        ),
+        (
+            "        exclude:\n          - os: ubuntu-latest\n",
+            "exclude Ubuntu",
+        ),
+        (
+            "        include:\n          - os: windows-latest\n",
+            "matrix include",
+        ),
+        (
+            "        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+            "duplicate os key",
+        ),
+    ] {
+        let changed = workflow.replacen(lane, &format!("{lane}{extra}"), 1);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_requires_the_actual_job_level_routing_condition() {
+    let workflow = valid_workflow();
+    let route = "    if: needs.changes.outputs.ts == 'true'\n    strategy:";
+    let step = "      - name: bun test\n";
+    assert!(workflow.contains(route), "fixture lacks the Bun route");
+    assert!(workflow.contains(step), "fixture lacks the Bun test step");
+
+    // A step-level condition cannot substitute for the job-level router gate.
+    for (job_if, label) in [
+        (
+            "    if: needs.changes.outputs.rust == 'true'\n",
+            "wrong job route",
+        ),
+        ("", "missing job route"),
+    ] {
+        let changed = workflow
+            .replacen(route, &format!("{job_if}    strategy:"), 1)
+            .replacen(
+                step,
+                "      - name: bun test\n        if: needs.changes.outputs.ts == 'true'\n",
+                1,
+            );
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+
+    // Duplicate mapping keys are ambiguous: never trust a matching first key.
+    let duplicated = workflow.replacen(
+        route,
+        "    if: needs.changes.outputs.ts == 'true'\n    if: needs.changes.outputs.rust == 'true'\n    strategy:",
+        1,
+    );
+    let error = check_bun_test_job(&duplicated).expect_err("duplicate job route");
+    assert!(error.contains("bun-test"), "{error}");
+}
+
+#[test]
+fn bun_ci_accepts_requested_144_and_rejects_other_versions() {
     let requested = valid_workflow();
-    assert!(requested.contains("bun-version: \"1.4.2\""));
+    assert!(requested.contains("bun-version: \"1.4.4\""));
     check_bun_test_job(&requested).expect("the requested stable CI pin must pass");
-    for version in ["1.4.0", "latest", "1.4.2-canary.1", "1.4.20"] {
-        let changed = requested.replace("\"1.4.2\"", &format!("\"{version}\""));
+    for version in ["1.4.0", "1.4.2", "latest", "1.4.4-canary.1", "1.4.40"] {
+        let changed = requested.replace("\"1.4.4\"", &format!("\"{version}\""));
         assert!(
             check_bun_test_job(&changed).is_err(),
             "unexpected runtime {version} must not satisfy the CI pin"
         );
+    }
+}
+
+#[test]
+fn native_js_formatting_cannot_be_removed_or_skipped() {
+    let step = concat!(
+        "      - name: Native JavaScript formatting\n        run: |\n",
+        "          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+        "          bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"\n",
+    );
+    for replacement in [
+        String::new(),
+        step.replace("bun fmt", "echo bun fmt"),
+        step.replace("        run:", "        if: false\n        run:"),
+        step.replace(
+            "        run:",
+            "        continue-on-error: true\n        run:",
+        ),
+        step.replace(
+            "          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+            "",
+        ),
+        step.lines()
+            .filter(|line| !line.contains("bun fmt"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    ] {
+        let temp = complete_fixture();
+        let workflow = valid_workflow();
+        assert!(workflow.contains(step));
+        temp.write(WORKFLOW, &workflow.replace(step, &replacement));
+        assert!(
+            check(temp.path()).is_err(),
+            "missing/skipped formatter passed"
+        );
+    }
+}
+
+#[test]
+fn native_js_formatting_allows_explanatory_comments() {
+    let temp = complete_fixture();
+    temp.write(
+        WORKFLOW,
+        &valid_workflow().replace(
+            "        run: |\n          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+            "        run: |\n          # Freshness before format.\n          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+        ),
+    );
+    check(temp.path()).expect("comments do not disable a native check");
+}
+
+#[test]
+fn local_native_js_formatting_cannot_leave_the_ci_inventory() {
+    for recipe in ["ci", "ci-full"] {
+        let temp = complete_fixture();
+        let justfile = read(temp.path(), JUSTFILE).expect("justfile");
+        let header = justfile
+            .lines()
+            .find(|line| line.starts_with(&format!("{recipe}:")))
+            .expect("CI header");
+        let altered = justfile.replacen(header, &header.replace(" js-fmt-check", ""), 1);
+        assert_ne!(altered, justfile);
+        temp.write(JUSTFILE, &altered);
+        assert!(check(temp.path()).is_err());
     }
 }
 
@@ -1932,21 +2109,21 @@ fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
 
 #[test]
 fn bun_pin_is_bound_to_the_action_input_not_job_text() {
-    let correct = "          bun-version: \"1.4.2\"\n";
+    let correct = "          bun-version: \"1.4.4\"\n";
     for replacement in [
         "          bun-version: latest\n",
         "          # missing bun-version\n",
-        "        env:\n          bun-version: \"1.4.2\"\n",
+        "        env:\n          bun-version: \"1.4.4\"\n",
     ] {
         let workflow = valid_workflow().replace(correct, replacement).replace(
             "      - name: bun test\n",
-            "      - run: |\n          echo 'bun-version: \"1.4.2\"'\n      - name: bun test\n",
+            "      - run: |\n          echo 'bun-version: \"1.4.4\"'\n      - name: bun test\n",
         );
         let temp = complete_fixture();
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("unrelated text cannot pin an action");
         assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("1.4.2"), "{error}");
+        assert!(error.contains("1.4.4"), "{error}");
     }
 }
 
@@ -1960,7 +2137,7 @@ fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
             "      - name: another Bun setup\n        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
             "      - name: folded Bun action\n        'uses': >-\n          oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
             "      - uses: \"oven-sh/setup-b\\u0075n@0c5077e51419868618aeaa5fe8019c62421857d6\"\n        with:\n          bun-version: latest\n",
-            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.2'\n          \"bun-\\u0076ersion\": latest\n",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.4'\n          \"bun-\\u0076ersion\": latest\n",
             "      - ? uses\n        : oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
         ] {
             let temp = complete_fixture();
@@ -1970,7 +2147,7 @@ fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
             );
             let error = check(temp.path()).expect_err("every actual setup must be pinned");
             assert!(error.contains(job), "{error}");
-            assert!(error.contains("1.4.2"), "{error}");
+            assert!(error.contains("1.4.4"), "{error}");
         }
     }
 }
@@ -1993,11 +2170,11 @@ fn floating_bun_version_in_bun_lane_fails() {
     let temp = complete_fixture();
     temp.write(
         WORKFLOW,
-        &valid_workflow().replacen("bun-version: \"1.4.2\"", "bun-version: latest", 1),
+        &valid_workflow().replacen("bun-version: \"1.4.4\"", "bun-version: latest", 1),
     );
     let error = check(temp.path()).expect_err("an unpinned Bun runtime must fail");
     assert!(error.contains("bun-test"), "{error}");
-    assert!(error.contains("1.4.2"), "{error}");
+    assert!(error.contains("1.4.4"), "{error}");
 }
 
 #[test]

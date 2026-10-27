@@ -34,7 +34,10 @@ const { app } = electron;
 
 /** `target[name]`, read the way an app reads it (inherited members included). */
 function member(target: unknown, name: string): unknown {
-  if ((typeof target !== "object" && typeof target !== "function") || target === null) {
+  if (
+    (typeof target !== "object" && typeof target !== "function") ||
+    target === null
+  ) {
     return undefined;
   }
   return Reflect.get(target, name);
@@ -42,7 +45,10 @@ function member(target: unknown, name: string): unknown {
 
 /** The `BrowserWindow` binding an app would import, by name or from the default export. */
 function exportedBrowserWindow(): unknown {
-  return member(electron, "BrowserWindow") ?? member(electron.default, "BrowserWindow");
+  return (
+    member(electron, "BrowserWindow") ??
+    member(electron.default, "BrowserWindow")
+  );
 }
 
 /** The named statics that the exported `BrowserWindow` has as functions. */
@@ -72,13 +78,16 @@ function presentInstanceMethods(names: readonly string[]): string[] {
   const instance = constructedWindow();
   return names.filter(
     (name) =>
-      typeof member(prototype, name) === "function" || typeof member(instance, name) === "function",
+      typeof member(prototype, name) === "function" ||
+      typeof member(instance, name) === "function",
   );
 }
 
 /** Runs `new BrowserWindow(options)` against the exported binding, as an app would. */
 function construct(options: object): unknown {
-  const BrowserWindow = exportedBrowserWindow() as new (options: object) => unknown;
+  const BrowserWindow = exportedBrowserWindow() as new (
+    options: object,
+  ) => unknown;
   return new BrowserWindow(options);
 }
 
@@ -199,7 +208,9 @@ describe("GH-449 window registry cells, red until implemented", () => {
   // Ordered observable: setFullScreen(true), then once 'enter-full-screen' has been
   // emitted, isFullScreen() is true.
   test("window.set-full-screen.state today: BrowserWindow has no setFullScreen or isFullScreen", () => {
-    expect(presentInstanceMethods(["setFullScreen", "isFullScreen"])).toEqual([]);
+    expect(presentInstanceMethods(["setFullScreen", "isFullScreen"])).toEqual(
+      [],
+    );
   });
 });
 

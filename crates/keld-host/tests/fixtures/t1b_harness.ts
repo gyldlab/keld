@@ -1,4 +1,3 @@
-
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
@@ -18,10 +17,14 @@ if (process.env.KELD_T3_CRASH_BEFORE_HELLO === "1") {
   process.exit(17);
 }
 if (process.env.KELD_DEV_LEASE !== undefined) {
-  throw new Error("KEL96 fixture inherited the host-only dev lease classification");
+  throw new Error(
+    "KEL96 fixture inherited the host-only dev lease classification",
+  );
 }
 if (process.env.KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION !== undefined) {
-  throw new Error("KEL96 fixture inherited the guardian registration authority");
+  throw new Error(
+    "KEL96 fixture inherited the guardian registration authority",
+  );
 }
 if (!KEL96_CONTROL || !KEL96_LINK) {
   throw new Error("KEL96 fixture requires KELD_T1B_CONTROL and KELD_APP_LINK");
@@ -73,7 +76,11 @@ const controlSocket = {
 };
 const control =
   process.platform === "win32"
-    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(KEL96_CONTROL), socket: controlSocket })
+    ? await Bun.connect({
+        hostname: "127.0.0.1",
+        port: Number(KEL96_CONTROL),
+        socket: controlSocket,
+      })
     : await Bun.connect({ unix: KEL96_CONTROL, socket: controlSocket });
 
 let controlWriteChain: Promise<void> = Promise.resolve();
@@ -153,7 +160,10 @@ const appSocket =
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
 const helloReply = await withIoDeadline(reader.readFrame());
-if (helloReply.header.kind !== FrameKind.Hello || helloReply.payload.length !== token.length) {
+if (
+  helloReply.header.kind !== FrameKind.Hello ||
+  helloReply.payload.length !== token.length
+) {
   throw new Error("KEL96 host did not complete the one authenticated HELLO");
 }
 for (let index = 0; index < token.length; index += 1) {
@@ -165,7 +175,13 @@ await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
 if (process.platform === "win32") {
   if (process.env.KELD_T4_JOB_DESCENDANT === "1") {
     const descendant = Bun.spawn(
-      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Sleep -Seconds 60",
+      ],
       { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
     );
     await sendControl(`DESCENDANT ${descendant.pid}`);
@@ -183,10 +199,9 @@ if (process.platform === "win32") {
     const strictProgram =
       process.env.KELD_T4_LINUX_STRICT === "1" &&
       (await Bun.file("/runtime/program").exists());
-    const descendantCommand =
-      strictProgram
-        ? ["/runtime/program", "-e", "await new Promise(() => {})"]
-        : ["/usr/bin/tail", "-f", "/dev/null"];
+    const descendantCommand = strictProgram
+      ? ["/runtime/program", "-e", "await new Promise(() => {})"]
+      : ["/usr/bin/tail", "-f", "/dev/null"];
     const descendant = Bun.spawn(descendantCommand, {
       stdin: "ignore",
       stdout: "ignore",
@@ -224,8 +239,12 @@ const lastWindowClosed = new Promise<void>((resolve) => {
 const readLoop = (async (): Promise<void> => {
   for (;;) {
     const frame = await reader.readFrame();
-    if (frame.header.kind === FrameKind.Event && frame.header.channel === LIFECYCLE_CHANNEL) {
-      if (frame.payload.length !== 1) throw new Error("KEL96 lifecycle Event is malformed");
+    if (
+      frame.header.kind === FrameKind.Event &&
+      frame.header.channel === LIFECYCLE_CHANNEL
+    ) {
+      if (frame.payload.length !== 1)
+        throw new Error("KEL96 lifecycle Event is malformed");
       if (frame.payload[0] === 0) {
         resolveReady?.();
         resolveReady = undefined;
@@ -240,7 +259,8 @@ const readLoop = (async (): Promise<void> => {
     }
     if (frame.header.kind === FrameKind.Reply) {
       const waiter = pending.get(frame.header.corr);
-      if (!waiter) throw new Error(`KEL96 unexpected Reply ${frame.header.corr}`);
+      if (!waiter)
+        throw new Error(`KEL96 unexpected Reply ${frame.header.corr}`);
       pending.delete(frame.header.corr);
       waiter.resolve(frame.payload);
       continue;
@@ -267,7 +287,10 @@ const readLoop = (async (): Promise<void> => {
 });
 void readLoop;
 
-async function invoke(channel: number, payload: Uint8Array): Promise<Uint8Array> {
+async function invoke(
+  channel: number,
+  payload: Uint8Array,
+): Promise<Uint8Array> {
   const correlation = nextCorrelation;
   nextCorrelation += 1;
   const reply = new Promise<Uint8Array>((resolve, reject) => {
@@ -294,7 +317,9 @@ function echoPayload(message: string, count: number): Uint8Array {
   const text = textEncoder.encode(message);
   const length = postcardVarint(text.length);
   const encodedCount = postcardVarint(count);
-  const payload = new Uint8Array(length.length + text.length + encodedCount.length);
+  const payload = new Uint8Array(
+    length.length + text.length + encodedCount.length,
+  );
   payload.set(length, 0);
   payload.set(text, length.length);
   payload.set(encodedCount, length.length + text.length);
@@ -315,7 +340,8 @@ await sendControl("READY");
 for (const [index, message] of ["first", "second"].entries()) {
   const request = echoPayload(`KEL96-${message}`, index + 1);
   const response = await invoke(KEL96_ECHO_CHANNEL, request);
-  if (!sameBytes(request, response)) throw new Error(`KEL96 ${message} echo mismatch`);
+  if (!sameBytes(request, response))
+    throw new Error(`KEL96 ${message} echo mismatch`);
   await sendControl(`ECHO${index + 1}`);
 }
 
@@ -334,7 +360,8 @@ let requested = await Promise.race([
 if (requested === "ECHO3") {
   const third = echoPayload("KEL96-third", 3);
   const thirdResponse = await invoke(KEL96_ECHO_CHANNEL, third);
-  if (!sameBytes(third, thirdResponse)) throw new Error("KEL96 third echo mismatch");
+  if (!sameBytes(third, thirdResponse))
+    throw new Error("KEL96 third echo mismatch");
   await sendControl("ECHO3");
   requested = await receiveCommand();
 }

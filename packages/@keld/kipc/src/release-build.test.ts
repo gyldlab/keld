@@ -71,8 +71,14 @@ describe("a release build of the transport strips the WorkerLink test hooks", ()
           "  .then(() => 'opened', (err) => (isCallError(err) ? err.code : 'untyped'));\n" +
           "console.log(JSON.stringify({ seam, code }));\n",
       );
-      const proc = Bun.spawn(["bun", probe], { stdout: "pipe", stderr: "pipe" });
-      const [stdout, exit] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      const proc = Bun.spawn(["bun", probe], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, exit] = await Promise.all([
+        new Response(proc.stdout).text(),
+        proc.exited,
+      ]);
       expect(exit).toBe(0);
       expect(JSON.parse(stdout)).toEqual({ seam: false, code: "KELD-IPC-005" });
     } finally {
