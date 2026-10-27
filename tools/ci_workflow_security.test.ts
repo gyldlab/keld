@@ -367,6 +367,53 @@ test("KEL-167 Linux exact test rejects a zero-test result", () => {
   );
 });
 
+test("KEL-167 Linux proof cannot be skipped or replaced while CI remains green", () => {
+  const stepName = "Real Linux foreign-owner refusal (KEL-167)";
+  const mutations: Array<[string, (selected: Step) => void]> = [
+    [
+      "skip the security proof",
+      (selected) => {
+        selected.if = false;
+      },
+    ],
+    [
+      "replace the exact test selector",
+      (selected) => {
+        selected.run = String(selected.run).replace(
+          "real_linux_second_account_refuses_foreign_owned_project",
+          "not_a_real_linux_security_test",
+        );
+      },
+    ],
+    [
+      "remove the one-pass assertion",
+      (selected) => {
+        selected.run = String(selected.run).replace(
+          "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+          "true",
+        );
+      },
+    ],
+    [
+      "disable the real-OS proof environment",
+      (selected) => {
+        (selected.env as Step).KELD_REAL_LINUX_OWNER_PROOF = "0";
+      },
+    ],
+    [
+      "suppress the script with a custom shell",
+      (selected) => {
+        selected.shell = "bash -c true {0}";
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const f = fixture();
+    mutate(step(f, "check", stepName));
+    expect(() => check(f), label).toThrow("KEL-167");
+  }
+});
+
 test("router contract regression runs independently without releasing its required gate", () => {
   const workflow = fixture();
   const job = workflow.jobs["router-contracts"];
@@ -1645,6 +1692,28 @@ test("required native main gates cannot skip, swallow failures or inherit unsafe
   }
 });
 
+test("native check rejects unreviewed steps or environment writers before Clippy and Nextest", () => {
+  for (const variable of ["GITHUB_PATH", "GITHUB_ENV", "BASH_ENV"]) {
+    const f = fixture();
+    const steps = f.jobs.check!.steps;
+    const clippy = steps.findIndex(
+      (item) => item.name === "clippy (warnings deny)",
+    );
+    expect(clippy).toBeGreaterThan(0);
+    steps.splice(clippy, 0, {
+      name: "Unreviewed environment writer",
+      run: `printf '%s\\n' /tmp/harmless >> "$${variable}"`,
+    });
+    expect(() => check(f), variable).toThrow(
+      "native check reviewed step inventory",
+    );
+  }
+  const changed = fixture();
+  step(changed, "check", "Worktree cache tool native tests").run +=
+    '\nprintf "%s\\n" /tmp/harmless >> "$GITHUB_PATH"\n';
+  expect(() => check(changed)).toThrow("native check reviewed step inventory");
+});
+
 test("native jobs reject missing, duplicate or delayed reviewed Nextest installers", () => {
   for (const jobName of ["check", "windows-media"] as const) {
     for (const kind of ["missing", "duplicate", "delayed"] as const) {
@@ -1701,6 +1770,25 @@ test("CodeQL Rust stays on hosted macOS for platform-specific semantic coverage"
 for (const language of codeqlLanguages) {
   const job = `codeql-${language}`;
   const other = codeqlLanguages.find((candidate) => candidate !== language)!;
+
+  test(`CodeQL ${language} rejects extra executable steps and job environment overrides`, () => {
+    const injected = fixture();
+    injected.jobs[job]!.steps.splice(-1, 0, {
+      name: "Unreviewed command",
+      run: "echo harmless",
+    });
+    expect(() => check(injected)).toThrow("CodeQL reviewed step inventory");
+    const env = fixture();
+    env.jobs[job]!.env = { BASH_ENV: "./unreviewed.sh" };
+    expect(() => check(env)).toThrow("CodeQL job environment");
+    const runner = fixture();
+    runner.jobs[job]!["runs-on"] = "self-hosted";
+    expect(() => check(runner)).toThrow(
+      language === "rust"
+        ? "CodeQL Rust must use macos-latest"
+        : "CodeQL job runner",
+    );
+  });
 
   test(`CodeQL ${language} cannot tolerate job-level analysis failures`, () => {
     for (const value of [true, false, "${{ true }}"]) {
@@ -1855,23 +1943,23 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
     expect(() => check(f)).toThrow("runs apt without step timeout-minutes");
   }
   // Negative controls: a name that mentions apt-get, a flow-mapped step with a
-  // timeout, a quoted timeout and an unrelated word do not fail.
+  // timeout in an unfrozen job, a quoted timeout and an unrelated word do not fail.
   const named = fixture();
   named.jobs.fmt!.steps.push({
     name: "Diagnose apt-get mirror",
     run: "echo ok\n",
   });
   expect(() => check(named)).not.toThrow();
-  expect(() =>
-    checkWorkflowSecurity(
-      source.replace(
-        "      - name: clippy (warnings deny)\n",
-        "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n      - name: clippy (warnings deny)\n",
-      ),
-    ),
-  ).not.toThrow();
+  const flowMarker = "      - name: Build Linux media guard probe\n";
+  const flowed = source.replace(
+    flowMarker,
+    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n" +
+      flowMarker,
+  );
+  expect(flowed).not.toBe(source);
+  expect(() => checkWorkflowSecurity(flowed)).not.toThrow();
   const quoted = fixture();
-  quoted.jobs.check!.steps.push({
+  quoted.jobs["linux-gui-smoke"]!.steps.push({
     run: "sudo apt-get install -y jq\n",
     "timeout-minutes": "15",
   });
@@ -2199,6 +2287,33 @@ test("pull_request_target workflows never check out or run pull-request code", (
   ).not.toThrow();
 });
 
+test("B3 low-trust pull_request_target forbids workflow and job cache-mode overrides", () => {
+  for (const mode of ["write", "write-only", "${{ inputs.cache_mode }}"]) {
+    const workflow = Bun.YAML.parse(keldbot) as Record<string, unknown> & {
+      jobs: Record<string, Record<string, unknown>>;
+    };
+    workflow["cache-mode"] = mode;
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(
+          Bun.YAML.stringify(workflow),
+          "keldbot.yml",
+        ),
+      `workflow ${mode}`,
+    ).toThrow("cache-mode");
+    const perJob = Bun.YAML.parse(keldbot) as typeof workflow;
+    perJob.jobs[Object.keys(perJob.jobs)[0]!]!["cache-mode"] = mode;
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(
+          Bun.YAML.stringify(perJob),
+          "keldbot.yml",
+        ),
+      `job ${mode}`,
+    ).toThrow("cache-mode");
+  }
+});
+
 test("no other step may use actions/cache, so apt index lists are never cached", () => {
   const f = fixture();
   f.jobs.fmt!.steps.push({
@@ -2461,7 +2576,12 @@ for (const style of ["block", "flow", "alias"] as const) {
         "      - name: Initialize CodeQL\n",
         inserted + "      - name: Initialize CodeQL\n",
       );
-      if (secure) expect(() => checkWorkflowSecurity(mutated)).not.toThrow();
+      // Credentials-disabled alone is insufficient for a privileged CodeQL
+      // job: every additional step must also be reviewed and inventoried.
+      if (secure)
+        expect(() => checkWorkflowSecurity(mutated)).toThrow(
+          "CodeQL reviewed step inventory",
+        );
       else
         expect(() => checkWorkflowSecurity(mutated)).toThrow(
           "persist-credentials: false",
@@ -2573,7 +2693,8 @@ test("checkout repository case and subpaths cannot bypass its policy", () => {
         uses: `${name}@3d3c42e5aac5ba805825da76410c181273ba90b1`,
         with: { "persist-credentials": !protectedCheckout },
       });
-      if (protectedCheckout) expect(() => check(f)).not.toThrow();
+      if (protectedCheckout)
+        expect(() => check(f)).toThrow("CodeQL reviewed step inventory");
       else expect(() => check(f)).toThrow("persist-credentials: false");
     }
   }

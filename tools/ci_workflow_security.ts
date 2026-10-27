@@ -516,6 +516,9 @@ function checkCodeqlJobs(
         "CodeQL Rust must use macos-latest for the reviewed macOS-specific semantic coverage.",
       );
     }
+    if (language !== "rust" && scalar(job["runs-on"]) !== "ubuntu-latest") {
+      fail("CodeQL job runner must remain the reviewed hosted Ubuntu runner.");
+    }
     const needs =
       Array.isArray(job.needs) && job.needs.length === 1
         ? job.needs[0]
@@ -555,6 +558,36 @@ function checkCodeqlJobs(
     }
     if (steps.indexOf(init) >= steps.indexOf(analyze))
       fail("CodeQL initialization must precede analysis.");
+    if (
+      ["env", "defaults", "container", "services"].some((key) =>
+        Object.hasOwn(job, key),
+      )
+    ) {
+      fail(
+        "CodeQL job environment must not override shell, PATH, BASH_ENV, container, or services.",
+      );
+    }
+    if (
+      job.name !== `CodeQL (${language})` ||
+      scalar(job["timeout-minutes"]) !== "30"
+    ) {
+      fail(
+        "CodeQL job execution context must preserve the reviewed name and deadline.",
+      );
+    }
+    exactKeys(
+      job,
+      [
+        "name",
+        "runs-on",
+        "timeout-minutes",
+        "needs",
+        "if",
+        "permissions",
+        "steps",
+      ],
+      "CodeQL job executable context",
+    );
   }
 }
 
@@ -710,9 +743,21 @@ export function checkPullRequestTargetWorkflow(
   finiteGraph(parsed);
   const workflow = mapping(parsed, `${label} (one YAML document)`);
   if (!workflowTriggers(workflow).includes("pull_request_target")) return;
+  // This event has access to default-branch token/caches. Even an otherwise
+  // harmless workflow must not acquire an unreviewed write-capable cache mode.
+  if (Object.hasOwn(workflow, "cache-mode")) {
+    fail(
+      `${label} pull_request_target workflow must not override cache-mode; write-capable cache policy is forbidden.`,
+    );
+  }
   const jobs = mapping(workflow.jobs, `${label} jobs`);
   for (const [jobName, value] of Object.entries(jobs)) {
     const job = mapping(value, `${label} jobs.${jobName}`);
+    if (Object.hasOwn(job, "cache-mode")) {
+      fail(
+        `${label} jobs.${jobName} under pull_request_target must not override cache-mode.`,
+      );
+    }
     if (Object.hasOwn(job, "uses") || !Array.isArray(job.steps)) {
       fail(
         `${label} jobs.${jobName} under pull_request_target must be concrete steps; a reusable workflow could run pull-request code.`,
@@ -1392,6 +1437,38 @@ export function checkWorkflowSecurity(source: string): void {
     "jobs.check reviewed native job environment",
   );
   const nativeSteps = stepsByJob.get("check")!;
+  const linuxProof = namedStep(
+    nativeSteps,
+    "Real Linux foreign-owner refusal (KEL-167)",
+  );
+  exactKeys(
+    linuxProof,
+    ["name", "if", "shell", "env", "run"],
+    "KEL-167 Linux security proof step",
+  );
+  const reviewedLinuxProof = [
+    "set -euo pipefail",
+    "# An --exact filter with zero selected tests succeeds unless the pass count is checked.",
+    'out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"',
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+    "",
+  ].join("\n");
+  if (
+    linuxProof.if !==
+      "matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')" ||
+    linuxProof.shell !== "bash" ||
+    linuxProof.run !== reviewedLinuxProof
+  ) {
+    fail(
+      "KEL-167 Linux security proof must retain exact selected-OS condition, test command and one-pass assertion.",
+    );
+  }
+  inputsMatch(
+    mapping(linuxProof.env, "KEL-167 Linux proof environment"),
+    { KELD_REAL_LINUX_OWNER_PROOF: "1" },
+    "KEL-167 Linux proof environment",
+  );
   for (const [name, script] of [
     [
       "clippy (warnings deny)",
@@ -1758,6 +1835,33 @@ export function checkWorkflowSecurity(source: string): void {
       .digest("hex") !== routerStepsSha256
   ) {
     fail(changesContract);
+  }
+  // These jobs execute native tests or hold security-events:write. The
+  // existing targeted checks remain first for precise diagnostics; freezing
+  // the complete parsed steps afterwards also rejects inserted executable
+  // steps, changed ordering, and environment/PATH writers between gates.
+  const reviewedStepInventories: Record<string, string> = {
+    check: "51acadbe65ae3a740fce50e8f0df5b3db9f054fe4bbc36818bfced9770f0b9a3",
+    "codeql-rust":
+      "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
+    "codeql-javascript-typescript":
+      "94618e798d1743171d548d8a5e45b6cc891fa0f0fa2eb44e08bdbed0de2d63f8",
+    "codeql-actions":
+      "d074515becad551aef170eaf595df0daa69eec27474654ec3cd0cb2d12847c17",
+  };
+  for (const [jobName, digest] of Object.entries(reviewedStepInventories)) {
+    const steps = stepsByJob.get(jobName);
+    if (
+      !steps ||
+      createHash("sha256").update(JSON.stringify(steps)).digest("hex") !==
+        digest
+    ) {
+      fail(
+        jobName === "check"
+          ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+          : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
+      );
+    }
   }
 }
 
