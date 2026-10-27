@@ -36,7 +36,7 @@ impl GuardianBootstrap {
     }
 
     /// Spawns the private guardian with stdout reserved for the fixed
-    /// accepted-Quit acknowledgment used by [`run_supervised`].
+    /// accepted-Quit acknowledgment used by [`super::run_supervised`].
     ///
     /// # Errors
     ///
