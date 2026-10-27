@@ -487,6 +487,8 @@
         "crates/keld-host/tests/no_flag/windows/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_window.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
         "crates/keld-update/src/windows_extraction/tests/root_admission.rs",
@@ -519,7 +521,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "9e8f8af4fd9d0478b66d6f7e680fcbfe6b19a6bbb0d2696304093ee0c44a6ed5"
+      "sha256": "889633cf6ab6458bb8b27d314bc15896b1fdc465e41352d47172f19b104ad3f3"
     },
     "audit-readers": {
       "patterns": [
@@ -565,7 +567,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "fe07fcd975800efd2fe73f1262b4f11cf24b9541b336deba5f9a331bb4597fd6",
+    "membership_sha256": "d82949d8f0b4882c4a1471fc5a5e73d12d52f6abb8336834c6f80b334ff57126",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
