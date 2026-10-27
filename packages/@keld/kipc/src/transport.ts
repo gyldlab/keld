@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:0f6e7006aa6abec3f77f31131d4e5d8e2f5ac85daf2d336a6a462d1aca383cf2
+// @keld/kipc-transport sha256:7345a48b56975461ea2af45870f4208d7570d28edc1dd329ea630452a428b943
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -109,20 +109,20 @@ export function stateApply<A extends unknown[], R>(
   return intrinsicApply(method, receiver, args);
 }
 /** @internal Freeze an internal own-data fact/snapshot. */
-export function stateFreeze<T>(value: T): Readonly<T> {
-  return intrinsicFreeze(value);
-}
+export const stateFreeze: <T>(value: T) => Readonly<T> = intrinsicFreeze;
 /** @internal Construct Source-owned state with the captured native constructor. */
 export function stateMap<K, V>(): Map<K, V> {
   return new IntrinsicMap<K, V>();
 }
 /** @internal Native Source/transport lookup without application method lookup. */
-export function stateMapGet<K, V>(
+export const stateMapGet: <K, V>(
   map: ReadonlyMap<K, V>,
   key: K,
-): V | undefined {
-  return intrinsicApply(intrinsicMapGet, map, [key]);
-}
+) => V | undefined = intrinsicApply(
+  Function.prototype.bind,
+  Function.prototype.call,
+  [intrinsicMapGet],
+);
 /** @internal Native Source membership lookup. */
 export function stateMapHas<K, V>(map: Map<K, V>, key: K): boolean {
   return intrinsicApply(intrinsicMapHas, map, [key]);

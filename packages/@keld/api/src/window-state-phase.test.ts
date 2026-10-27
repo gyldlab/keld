@@ -12,6 +12,7 @@ for (const mode of [
   "invocation",
   "inherited-slot",
   "public-copy-slot",
+  "native-primitives",
   "failure-error",
   "failure-define",
   "failure-startsWith",
@@ -28,9 +29,11 @@ for (const mode of [
   "err-decode",
 ]) {
   const name =
-    mode === "public-copy-slot"
-      ? "public Source.all copy ignores inherited numeric setters"
-      : `state phase does not call replaced ${mode}`;
+    mode === "native-primitives"
+      ? "snapshot operations reuse captured native targets"
+      : mode === "public-copy-slot"
+        ? "public Source.all copy ignores inherited numeric setters"
+        : `state phase does not call replaced ${mode}`;
   test(name, async () => {
     const child = Bun.spawn(
       [

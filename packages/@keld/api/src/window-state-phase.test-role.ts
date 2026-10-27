@@ -7,6 +7,10 @@ import {
   linkError,
   encodeCallError,
   decodeCallError,
+  stateFreeze,
+  stateMap,
+  stateMapGet,
+  stateMapSet,
 } from "../../kipc/src/transport.ts";
 const mode = process.argv[2];
 let state: (bytes: Uint8Array) => void = () => {
@@ -143,6 +147,49 @@ if (mode === "public-copy-slot") {
   )
     throw new Error(
       `public snapshot copy changed: count=${snapshots.length}; setterCalls=${hits}`,
+    );
+  console.log(JSON.stringify({ mode, hits, variant: "Created" }));
+  process.exit(0);
+}
+if (mode === "native-primitives") {
+  const nativeTarget = /\{\s*\[native code\]\s*\}/;
+  const mapTarget = Reflect.apply(Function.prototype.toString, stateMapGet, []);
+  if (stateFreeze !== Object.freeze || !nativeTarget.test(mapTarget))
+    throw new Error(
+      "snapshot operations must reuse captured native targets without JS return-forwarders",
+    );
+  const map = stateMap<number, unknown>();
+  const value = { identity: 7 };
+  stateMapSet(map, 7, value);
+  stateMapSet(map, 8, undefined);
+  stateMapSet(map, NaN, "nan");
+  if (
+    stateMapGet(map, 7) !== value ||
+    stateMapGet(map, 8) !== undefined ||
+    stateMapGet(map, 9) !== undefined ||
+    stateMapGet(map, NaN) !== "nan"
+  )
+    throw new Error("native Map lookup changed values or key semantics");
+  let wrongReceiver = false;
+  try {
+    stateMapGet({} as Map<number, unknown>, 7);
+  } catch (error) {
+    wrongReceiver = error instanceof TypeError;
+  }
+  if (!wrongReceiver) throw new Error("native Map brand error changed");
+  const frozen = stateFreeze(value);
+  const descriptor = Object.getOwnPropertyDescriptor(frozen, "identity");
+  if (
+    frozen !== value ||
+    stateFreeze(7) !== 7 ||
+    !Object.isFrozen(frozen) ||
+    descriptor?.value !== 7 ||
+    descriptor.writable !== false ||
+    descriptor.enumerable !== true ||
+    descriptor.configurable !== false
+  )
+    throw new Error(
+      "native freeze changed identity, primitive return or descriptors",
     );
   console.log(JSON.stringify({ mode, hits, variant: "Created" }));
   process.exit(0);
