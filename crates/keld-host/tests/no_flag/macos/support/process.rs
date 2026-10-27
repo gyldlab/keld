@@ -140,9 +140,13 @@ struct PlantedSessionDir(tempfile::TempDir);
 
 impl PlantedSessionDir {
     fn create(pid: u32, label: &str) -> Self {
+        Self::create_in(pid, label, &std::env::temp_dir())
+    }
+
+    fn create_in(pid: u32, label: &str, root: &Path) -> Self {
         let dir = tempfile::Builder::new()
             .prefix(&format!("kb-{pid:x}-{label}-"))
-            .tempdir_in(std::env::temp_dir())
+            .tempdir_in(root)
             .expect("plant session directory");
         Self(dir)
     }
@@ -176,15 +180,29 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
 
 #[test]
 fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
-    // A synthetic PID outside the macOS PID range keeps this fixture from
-    // matching any census taken by a concurrent test in this process.
+    // Each invocation owns its own root, so another test process cannot remove
+    // this synthetic stale directory while the assertion is running.
     const SYNTHETIC_PID: u32 = 0xdead_beef;
-    let leftover = std::env::temp_dir().join(format!("kb-{SYNTHETIC_PID:x}-stale-before-launch"));
+    let fixture_root = tempfile::tempdir().expect("isolated session fixture root");
+    let leftover = fixture_root
+        .path()
+        .join(format!("kb-{SYNTHETIC_PID:x}-stale-before-launch"));
+    assert_eq!(leftover.parent(), Some(fixture_root.path()));
+    assert_eq!(
+        leftover.file_name(),
+        Some(std::ffi::OsStr::new("kb-deadbeef-stale-before-launch"))
+    );
     // An interrupted run left the fixed name that `PlantedSessionDir` used to
     // create with `fs::create_dir`, which then failed before the census ran.
-    fs::create_dir_all(&leftover).expect("leave a stale directory");
-    let planted = PlantedSessionDir::create(SYNTHETIC_PID, "stale-before-launch");
+    fs::create_dir(&leftover).expect("leave a stale directory");
+    let planted =
+        PlantedSessionDir::create_in(SYNTHETIC_PID, "stale-before-launch", fixture_root.path());
     let planted_path = planted.path().to_path_buf();
+    assert_eq!(
+        planted_path.parent(),
+        Some(fixture_root.path()),
+        "plant must share isolated fixture root"
+    );
     assert_ne!(
         planted_path, leftover,
         "plant reused a stale directory name"
@@ -192,7 +210,11 @@ fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
     assert!(planted_path.is_dir(), "plant did not create its directory");
     drop(planted);
     assert!(!planted_path.exists(), "plant leaked its directory on drop");
-    fs::remove_dir(&leftover).expect("remove the stale directory");
+    assert!(
+        leftover.is_dir(),
+        "plant removed the pre-existing directory"
+    );
+    // fixture_root owns the stale directory and removes it on drop.
 }
 
 #[test]
