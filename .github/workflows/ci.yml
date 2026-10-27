@@ -272,7 +272,7 @@ jobs:
       # Exact pin (KEL-194); retain KEL-77 kill-after-exit regression coverage.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - name: clippy (warnings deny)
         shell: bash
         env:
@@ -298,6 +298,14 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: nextest,just@1.58.0
+      - name: Run local router and formatter-order contracts with system Bash
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          export PATH="/bin:$PATH"
+          /bin/bash tools/fmt_included.sh test
+          /bin/bash tools/fmt_included.sh --check
+          just --shell /bin/bash ci-router-test
       # The rest of the `cache-check-test` ci-policy recipe, hosted on all three
       # runners: "Worktree cache tool native tests" above runs the
       # worktree_cache.rs unit tests, and this runs
@@ -561,10 +569,18 @@ jobs:
           done
 
   bun-test:
-    name: bun test (TypeScript)
-    runs-on: ubuntu-latest
+    name: bun test (TypeScript, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     needs: changes
+    # Every OS that runs a Bun role runs its package suites (GH-1095 AT-B1,
+    # AT-B2, AT-API2a; #1111). The matrix is static: the router owns whether
+    # the lane runs, not where. `CI required` reads the aggregate result, so a
+    # failure on any OS fails the lane.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     # This lane owns the package compiler and Bun runtime contracts. Its only
     # inputs are those package trees, so a Rust-only diff skips it and a
     # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level `if`
@@ -578,7 +594,7 @@ jobs:
       # Exact pin (KEL-194); retain KEL-77 kill-after-exit regression coverage.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - name: frozen install, typecheck, and bun test
         shell: bash
         env:
@@ -807,7 +823,11 @@ jobs:
           components: rustfmt, clippy
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
+      - name: Native JavaScript formatting
+        run: |
+          bun packages/@keld/kipc/scripts/echo-codegen.ts check
+          bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
       # doc-placeholders scans docs/, .agents/, llms.txt, llms-full.txt, AGENTS.md
       # and README.md, every one of which selects this job; it runs whenever the
       # job does (#650; #639 merged an unknown `{A}` placeholder that only the

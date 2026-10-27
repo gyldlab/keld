@@ -38,7 +38,12 @@ import {
 const TOKEN_HEX = "72".repeat(32);
 const TOKEN = new Uint8Array(32).fill(0x72);
 
-function encodeFrame(kind: number, channel: number, corr: number, payload: Uint8Array): Uint8Array {
+function encodeFrame(
+  kind: number,
+  channel: number,
+  corr: number,
+  payload: Uint8Array,
+): Uint8Array {
   const header = encodeHeader(kind, 0, channel, corr, payload.length);
   const frame = new Uint8Array(header.length + payload.length);
   frame.set(header, 0);
@@ -83,7 +88,10 @@ function encodePostcardString(text: string): Uint8Array {
   return out;
 }
 
-function writeAll(socket: { write(data: Uint8Array | string): number }, data: Uint8Array): void {
+function writeAll(
+  socket: { write(data: Uint8Array | string): number },
+  data: Uint8Array,
+): void {
   let offset = 0;
   while (offset < data.length) {
     const n = socket.write(data.subarray(offset));
@@ -94,7 +102,11 @@ function writeAll(socket: { write(data: Uint8Array | string): number }, data: Ui
   }
 }
 
-async function rejectWithin<T>(ms: number, promise: Promise<T>, why: string): Promise<T> {
+async function rejectWithin<T>(
+  ms: number,
+  promise: Promise<T>,
+  why: string,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const kill = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(why)), ms);
@@ -181,10 +193,21 @@ describe("WriteQueue", () => {
     };
     const queue = new WriteQueue(socket, drain);
     const ping = encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array());
-    const quit = encodeFrame(FrameKind.Call, LIFECYCLE_CHANNEL, 2, new Uint8Array([0x00]));
+    const quit = encodeFrame(
+      FrameKind.Call,
+      LIFECYCLE_CHANNEL,
+      2,
+      new Uint8Array([0x00]),
+    );
     const done = Promise.all([
       queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
-      queue.writeFrame(FrameKind.Call, 0, LIFECYCLE_CHANNEL, 2, new Uint8Array([0x00])),
+      queue.writeFrame(
+        FrameKind.Call,
+        0,
+        LIFECYCLE_CHANNEL,
+        2,
+        new Uint8Array([0x00]),
+      ),
     ]);
     const kill = Date.now() + 2_000;
     while (out.length < ping.length + quit.length) {
@@ -200,64 +223,56 @@ describe("WriteQueue", () => {
     expect(out).toEqual([...ping, ...quit]);
   });
 
-  test(
-    "never-draining write is KELD-IPC-006 (drain.wait inside writeOneFrame)",
-    async () => {
-      // Independent of LifecycleLink.connect / outer writeFrame wraps.
-      // socket.write returning 0 and no drain.fire() must surface 006;
-      // omitting the writeOneFrame wall-clock hangs this test.
-      const drain = new DrainSignal();
-      const queue = new WriteQueue(
-        {
-          write(): number {
-            return 0;
-          },
-          end(): void {},
+  test("never-draining write is KELD-IPC-006 (drain.wait inside writeOneFrame)", async () => {
+    // Independent of LifecycleLink.connect / outer writeFrame wraps.
+    // socket.write returning 0 and no drain.fire() must surface 006;
+    // omitting the writeOneFrame wall-clock hangs this test.
+    const drain = new DrainSignal();
+    const queue = new WriteQueue(
+      {
+        write(): number {
+          return 0;
         },
-        drain,
-      );
-      const start = Date.now();
-      await expect(
-        queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
-      ).rejects.toThrow("KELD-IPC-006");
-      const elapsed = Date.now() - start;
-      expect(elapsed).toBeGreaterThanOrEqual(4_000);
-      expect(elapsed).toBeLessThan(12_000);
-    },
-    15_000,
-  );
+        end(): void {},
+      },
+      drain,
+    );
+    const start = Date.now();
+    await expect(
+      queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
+    ).rejects.toThrow("KELD-IPC-006");
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(4_000);
+    expect(elapsed).toBeLessThan(12_000);
+  }, 15_000);
 
-  test(
-    "never-finishing partial writes are KELD-IPC-006 within one frame deadline",
-    async () => {
-      // Independent of LifecycleLink.connect / outer writeFrame wraps.
-      // write() returns 0 (no offset progress) but drain keeps firing.
-      // Restarting withIoDeadline per drain.wait() never hits KELD-IPC-006.
-      // One wall-clock for the whole writeOneFrame must.
-      const drain = new DrainSignal();
-      let parked = 0;
-      const queue = new WriteQueue(
-        {
-          write(): number {
-            parked += 1;
-            setTimeout(() => drain.fire(), 10);
-            return 0;
-          },
-          end(): void {},
+  test("never-finishing partial writes are KELD-IPC-006 within one frame deadline", async () => {
+    // Independent of LifecycleLink.connect / outer writeFrame wraps.
+    // write() returns 0 (no offset progress) but drain keeps firing.
+    // Restarting withIoDeadline per drain.wait() never hits KELD-IPC-006.
+    // One wall-clock for the whole writeOneFrame must.
+    const drain = new DrainSignal();
+    let parked = 0;
+    const queue = new WriteQueue(
+      {
+        write(): number {
+          parked += 1;
+          setTimeout(() => drain.fire(), 10);
+          return 0;
         },
-        drain,
-      );
-      const start = Date.now();
-      await expect(
-        queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
-      ).rejects.toThrow("KELD-IPC-006");
-      const elapsed = Date.now() - start;
-      expect(parked).toBeGreaterThan(1);
-      expect(elapsed).toBeGreaterThanOrEqual(4_000);
-      expect(elapsed).toBeLessThan(12_000);
-    },
-    15_000,
-  );
+        end(): void {},
+      },
+      drain,
+    );
+    const start = Date.now();
+    await expect(
+      queue.writeFrame(FrameKind.Ping, 0, 0, 1, new Uint8Array()),
+    ).rejects.toThrow("KELD-IPC-006");
+    const elapsed = Date.now() - start;
+    expect(parked).toBeGreaterThan(1);
+    expect(elapsed).toBeGreaterThanOrEqual(4_000);
+    expect(elapsed).toBeLessThan(12_000);
+  }, 15_000);
 
   test("a failed mid-frame write poisons the queue so a later frame cannot follow a truncated one", async () => {
     // Independent oracle: a second `KI` after 8 truncated header bytes is a
@@ -300,16 +315,21 @@ describe("CallError payload (platform-independent)", () => {
   // two implementations share one wire oracle. Runs on every OS: the socket tests
   // below are Unix-only, which left KEL-102 with no Windows coverage at all.
   const PINNED = new Uint8Array([
-    0x0d, 0x4b, 0x45, 0x4c, 0x44, 0x2d, 0x47, 0x55, 0x41, 0x52, 0x44, 0x30, 0x30, 0x31, 0x01,
-    0x78,
+    0x0d, 0x4b, 0x45, 0x4c, 0x44, 0x2d, 0x47, 0x55, 0x41, 0x52, 0x44, 0x30,
+    0x30, 0x31, 0x01, 0x78,
   ]);
 
   test("decodes the bytes the Rust encoder pins", () => {
-    expect(decodeCallError(PINNED)).toEqual({ code: "KELD-GUARD001", message: "x" });
+    expect(decodeCallError(PINNED)).toEqual({
+      code: "KELD-GUARD001",
+      message: "x",
+    });
   });
 
   test("a pre-KEL-102 bare postcard string is refused", () => {
-    const legacy = encodePostcardString("KELD-GUARD001: capability is not granted.");
+    const legacy = encodePostcardString(
+      "KELD-GUARD001: capability is not granted.",
+    );
     expect(() => decodeCallError(legacy)).toThrow("KELD-IPC-003");
     const err = errorFromErrFrame(legacy);
     expect(err.message).toContain("not a CallError");
@@ -322,7 +342,10 @@ describe("CallError payload (platform-independent)", () => {
   });
 
   test("a code that is not a KELD-* identifier is refused", () => {
-    const bogus = new Uint8Array([...encodePostcardString("oops"), ...encodePostcardString("x")]);
+    const bogus = new Uint8Array([
+      ...encodePostcardString("oops"),
+      ...encodePostcardString("x"),
+    ]);
     expect(() => decodeCallError(bogus)).toThrow("KELD-IPC-003");
     // ...and never reaches a consumer as a half-valid error.
     expect(isCallError(errorFromErrFrame(bogus))).toBe(false);
@@ -338,7 +361,7 @@ describe("CallError payload (platform-independent)", () => {
     const payload = new Uint8Array([
       ...encodePostcardString("KELD-GUARD001"),
       ...encodePostcardString(
-        "KELD-GUARD001: capability `fs.read` is not granted. Append \"/tmp/x\" to " +
+        'KELD-GUARD001: capability `fs.read` is not granted. Append "/tmp/x" to ' +
           "`/app/fs/read` in keld.permissions.jsonc.",
       ),
     ]);
@@ -382,485 +405,670 @@ describe("withIoDeadline", () => {
 
   test("rejects KELD-IPC-006 when the promise never settles", async () => {
     const start = Date.now();
-    await expect(withIoDeadline(new Promise(() => {}), 50)).rejects.toThrow("KELD-IPC-006");
+    await expect(withIoDeadline(new Promise(() => {}), 50)).rejects.toThrow(
+      "KELD-IPC-006",
+    );
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(1_000);
   }, 2_000);
 });
 
-describe.skipIf(process.platform === "win32")("LifecycleLink over a Unix host, one role process per case", () => {
-  // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). A path under
-  // the package tree plus `.test-run/<pid>-<ts>-<rand>/e.sock` overflows.
-  // Short unique 0o700 dir under tmpdir, same contract as keld-cli bind_unix_echo.
-  const root = mkdtempSync(join(tmpdir(), "ke"));
-  chmodSync(root, 0o700);
-  const roleScript = join(import.meta.dir, "..", "fixtures", "lifecycle_link_role.ts");
-  let sockN = 0;
-  let role: ReturnType<typeof Bun.spawn> | undefined;
-  let listener: ReturnType<typeof Bun.listen> | undefined;
-
-  afterEach(() => {
-    if (role && !role.killed) role.kill();
-    role = undefined;
-    listener?.stop(true);
-    listener = undefined;
-  });
-
-  afterAll(() => {
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  interface Host {
-    socket: Bun.Socket<undefined>;
-    reader: FrameReader;
-    closed: Promise<void>;
-    /** Reads the role's HELLO; writes the HELLO reply unless the case writes its own. */
-    hello(reply?: Uint8Array): Promise<void>;
-    write(frame: Uint8Array): void;
-    next(why: string): Promise<{ header: { kind: number; channel: number; corr: number }; payload: Uint8Array }>;
-    /** The role's role-side report once it exits by itself (kill switch only). */
-    finish(): Promise<Map<string, string>>;
-    /** Resolves once the role has printed `key`; the kill switch bounds it. */
-    reported(key: string): Promise<void>;
-  }
-
-  /** Spawns the role and reads its stdout as it arrives. */
-  function spawnRole(scenario: string, link: string): {
-    proc: ReturnType<typeof Bun.spawn>;
-    stdout: Promise<string>;
-    seen: (key: string) => Promise<void>;
-  } {
-    const proc = Bun.spawn(["bun", roleScript, scenario], {
-      env: { ...process.env, KELD_APP_LINK: link },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    role = proc;
-    let text = "";
-    const waiters: Array<{ key: string; resolve: () => void }> = [];
-    const wake = (): void => {
-      for (let i = waiters.length - 1; i >= 0; i -= 1) {
-        if (text.includes(`KELD_LL ${waiters[i]!.key}=`)) waiters.splice(i, 1)[0]!.resolve();
-      }
-    };
-    const stdout = (async () => {
-      const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
-      const decoder = new TextDecoder();
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        text += decoder.decode(chunk.value, { stream: true });
-        wake();
-      }
-      return text;
-    })();
-    return {
-      proc,
-      stdout,
-      seen: (key) =>
-        rejectWithin(
-          5_000,
-          new Promise<void>((resolve) => {
-            waiters.push({ key, resolve });
-            wake();
-          }),
-          `the role never reported ${key}`,
-        ),
-    };
-  }
-
-  async function finishRole(
-    proc: ReturnType<typeof Bun.spawn>,
-    stdoutText: Promise<string>,
-  ): Promise<Map<string, string>> {
-    const [stdout, stderr, code] = await rejectWithin(
-      20_000,
-      Promise.all([
-        stdoutText,
-        new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
-        proc.exited,
-      ]),
-      "the role did not exit",
+describe.skipIf(process.platform === "win32")(
+  "LifecycleLink over a Unix host, one role process per case",
+  () => {
+    // `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). A path under
+    // the package tree plus `.test-run/<pid>-<ts>-<rand>/e.sock` overflows.
+    // Short unique 0o700 dir under tmpdir, same contract as keld-cli bind_unix_echo.
+    const root = mkdtempSync(join(tmpdir(), "ke"));
+    chmodSync(root, 0o700);
+    const roleScript = join(
+      import.meta.dir,
+      "..",
+      "fixtures",
+      "lifecycle_link_role.ts",
     );
-    const out = new Map<string, string>();
-    for (const line of stdout.split("\n")) {
-      const rest = line.startsWith("KELD_LL ") ? line.slice("KELD_LL ".length) : undefined;
-      const at = rest?.indexOf("=") ?? -1;
-      if (rest !== undefined && at > 0) out.set(rest.slice(0, at), rest.slice(at + 1));
+    let sockN = 0;
+    let role: ReturnType<typeof Bun.spawn> | undefined;
+    let listener: ReturnType<typeof Bun.listen> | undefined;
+
+    afterEach(() => {
+      if (role && !role.killed) role.kill();
+      role = undefined;
+      listener?.stop(true);
+      listener = undefined;
+    });
+
+    afterAll(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    interface Host {
+      socket: Bun.Socket<undefined>;
+      reader: FrameReader;
+      closed: Promise<void>;
+      /** Reads the role's HELLO; writes the HELLO reply unless the case writes its own. */
+      hello(reply?: Uint8Array): Promise<void>;
+      write(frame: Uint8Array): void;
+      next(why: string): Promise<{
+        header: { kind: number; channel: number; corr: number };
+        payload: Uint8Array;
+      }>;
+      /** The role's role-side report once it exits by itself (kill switch only). */
+      finish(): Promise<Map<string, string>>;
+      /** Resolves once the role has printed `key`; the kill switch bounds it. */
+      reported(key: string): Promise<void>;
     }
-    expect({ code, done: out.get("done"), stderr: code === 0 ? "" : stderr }).toEqual({
-      code: 0,
-      done: "true",
-      stderr: "",
-    });
-    return out;
-  }
 
-  /** A role whose app-link endpoint has no listener: its connect fails at once. */
-  async function startAbsent(scenario: string): Promise<Map<string, string>> {
-    sockN += 1;
-    const run = spawnRole(scenario, `${join(root, `${sockN}-absent.s`)}#${TOKEN_HEX}`);
-    return finishRole(run.proc, run.stdout);
-  }
+    /** Spawns the role and reads its stdout as it arrives. */
+    function spawnRole(
+      scenario: string,
+      link: string,
+    ): {
+      proc: ReturnType<typeof Bun.spawn>;
+      stdout: Promise<string>;
+      seen: (key: string) => Promise<void>;
+    } {
+      const proc = Bun.spawn(["bun", roleScript, scenario], {
+        env: { ...process.env, KELD_APP_LINK: link },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      role = proc;
+      let text = "";
+      const waiters: Array<{ key: string; resolve: () => void }> = [];
+      const wake = (): void => {
+        for (let i = waiters.length - 1; i >= 0; i -= 1) {
+          if (text.includes(`KELD_LL ${waiters[i]!.key}=`))
+            waiters.splice(i, 1)[0]!.resolve();
+        }
+      };
+      const stdout = (async () => {
+        const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+        const decoder = new TextDecoder();
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          text += decoder.decode(chunk.value, { stream: true });
+          wake();
+        }
+        return text;
+      })();
+      return {
+        proc,
+        stdout,
+        seen: (key) =>
+          rejectWithin(
+            5_000,
+            new Promise<void>((resolve) => {
+              waiters.push({ key, resolve });
+              wake();
+            }),
+            `the role never reported ${key}`,
+          ),
+      };
+    }
 
-  async function start(scenario: string): Promise<Host> {
-    sockN += 1;
-    const path = join(root, `${sockN}.s`);
-    const reader = new FrameReader();
-    let resolveOpen: (socket: Bun.Socket<undefined>) => void = () => undefined;
-    const opened = new Promise<Bun.Socket<undefined>>((resolve) => {
-      resolveOpen = resolve;
-    });
-    let resolveClosed: () => void = () => undefined;
-    const closed = new Promise<void>((resolve) => {
-      resolveClosed = resolve;
-    });
-    listener = Bun.listen<undefined>({
-      unix: path,
-      socket: {
-        binaryType: "uint8array" as const,
-        open(socket) {
-          resolveOpen(socket);
+    async function finishRole(
+      proc: ReturnType<typeof Bun.spawn>,
+      stdoutText: Promise<string>,
+    ): Promise<Map<string, string>> {
+      const [stdout, stderr, code] = await rejectWithin(
+        20_000,
+        Promise.all([
+          stdoutText,
+          new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+          proc.exited,
+        ]),
+        "the role did not exit",
+      );
+      const out = new Map<string, string>();
+      for (const line of stdout.split("\n")) {
+        const rest = line.startsWith("KELD_LL ")
+          ? line.slice("KELD_LL ".length)
+          : undefined;
+        const at = rest?.indexOf("=") ?? -1;
+        if (rest !== undefined && at > 0)
+          out.set(rest.slice(0, at), rest.slice(at + 1));
+      }
+      expect({
+        code,
+        done: out.get("done"),
+        stderr: code === 0 ? "" : stderr,
+      }).toEqual({
+        code: 0,
+        done: "true",
+        stderr: "",
+      });
+      return out;
+    }
+
+    /** A role whose app-link endpoint has no listener: its connect fails at once. */
+    async function startAbsent(scenario: string): Promise<Map<string, string>> {
+      sockN += 1;
+      const run = spawnRole(
+        scenario,
+        `${join(root, `${sockN}-absent.s`)}#${TOKEN_HEX}`,
+      );
+      return finishRole(run.proc, run.stdout);
+    }
+
+    async function start(scenario: string): Promise<Host> {
+      sockN += 1;
+      const path = join(root, `${sockN}.s`);
+      const reader = new FrameReader();
+      let resolveOpen: (socket: Bun.Socket<undefined>) => void = () =>
+        undefined;
+      const opened = new Promise<Bun.Socket<undefined>>((resolve) => {
+        resolveOpen = resolve;
+      });
+      let resolveClosed: () => void = () => undefined;
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve;
+      });
+      listener = Bun.listen<undefined>({
+        unix: path,
+        socket: {
+          binaryType: "uint8array" as const,
+          open(socket) {
+            resolveOpen(socket);
+          },
+          data(_socket, data) {
+            reader.push(data);
+          },
+          error() {},
+          close() {
+            reader.end(new Error("KELD-IPC-001: the role closed the link"));
+            resolveClosed();
+          },
         },
-        data(_socket, data) {
-          reader.push(data);
+      });
+      const run = spawnRole(scenario, `${path}#${TOKEN_HEX}`);
+      const socket = await rejectWithin(
+        10_000,
+        opened,
+        "the role never connected",
+      );
+      return {
+        socket,
+        reader,
+        closed,
+        async hello(reply = encodeFrame(FrameKind.Hello, 0, 0, TOKEN)) {
+          const hello = await rejectWithin(
+            5_000,
+            reader.readFrame(),
+            "the role sent no HELLO",
+          );
+          expect(hello.header.kind).toBe(FrameKind.Hello);
+          writeAll(socket, reply);
         },
-        error() {},
-        close() {
-          reader.end(new Error("KELD-IPC-001: the role closed the link"));
-          resolveClosed();
+        write(frame) {
+          writeAll(socket, frame);
         },
-      },
-    });
-    const run = spawnRole(scenario, `${path}#${TOKEN_HEX}`);
-    const socket = await rejectWithin(10_000, opened, "the role never connected");
-    return {
-      socket,
-      reader,
-      closed,
-      async hello(reply = encodeFrame(FrameKind.Hello, 0, 0, TOKEN)) {
-        const hello = await rejectWithin(5_000, reader.readFrame(), "the role sent no HELLO");
-        expect(hello.header.kind).toBe(FrameKind.Hello);
-        writeAll(socket, reply);
-      },
-      write(frame) {
-        writeAll(socket, frame);
-      },
-      next(why) {
-        return rejectWithin(5_000, reader.readFrame(), why);
-      },
-      finish() {
-        return finishRole(run.proc, run.stdout);
-      },
-      reported(key) {
-        return run.seen(key);
-      },
-    };
-  }
+        next(why) {
+          return rejectWithin(5_000, reader.readFrame(), why);
+        },
+        finish() {
+          return finishRole(run.proc, run.stdout);
+        },
+        reported(key) {
+          return run.seen(key);
+        },
+      };
+    }
 
-  function headerWithFlags(kind: number, flags: number, channel: number, corr: number, payload: Uint8Array): Uint8Array {
-    const header = encodeHeader(kind, flags, channel, corr, payload.length);
-    const frame = new Uint8Array(header.length + payload.length);
-    frame.set(header, 0);
-    frame.set(payload, header.length);
-    return frame;
-  }
+    function headerWithFlags(
+      kind: number,
+      flags: number,
+      channel: number,
+      corr: number,
+      payload: Uint8Array,
+    ): Uint8Array {
+      const header = encodeHeader(kind, flags, channel, corr, payload.length);
+      const frame = new Uint8Array(header.length + payload.length);
+      frame.set(header, 0);
+      frame.set(payload, header.length);
+      return frame;
+    }
 
-  test("host Echo Call returns one correlated Reply on the shared lifecycle session", async () => {
-    const host = await start("echo-call");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11, 0x22])));
-    const reply = await host.next("the shared app-link did not return the Echo Reply");
-    expect(reply.header.kind).toBe(FrameKind.Reply);
-    expect(reply.header.channel).toBe(ECHO_CHANNEL);
-    expect(reply.header.corr).toBe(41);
-    expect(Array.from(reply.payload)).toEqual([0x11, 0x22, 0x7f]);
-    host.socket.end();
-    const report = await host.finish();
-    expect(report.get("echo-calls")).toBe("1");
-    expect(report.get("echo-channel")).toBe(String(ECHO_CHANNEL));
-  }, 30_000);
-
-  test("a slow application handler does not block Ping or the shared reader", async () => {
-    const host = await start("slow-handler");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11])));
-    host.write(encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array()));
-    const pong = await host.next("a slow application handler blocked the Ping");
-    expect(pong.header.kind).toBe(FrameKind.Ping);
-    expect(pong.header.corr).toBe(1);
-    // LastWindowClosed releases the handler; its Reply follows.
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x01])));
-    const reply = await host.next("the Echo Reply did not follow the handler's release");
-    expect(reply.header.kind).toBe(FrameKind.Reply);
-    expect(reply.header.corr).toBe(41);
-    expect(Array.from(reply.payload)).toEqual([0x11]);
-    host.socket.end();
-    const report = await host.finish();
-    expect(report.get("last-window-closed")).toBe("true");
-  }, 30_000);
-
-  test("an application handler can quit: the Quit is the link's last frame", async () => {
-    const host = await start("handler-quits");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Call, ECHO_CHANNEL, 51, new Uint8Array([0x21])));
-    const quit = await host.next("the handler's Quit did not reach the host");
-    expect(quit.header.kind).toBe(FrameKind.Call);
-    expect(quit.header.channel).toBe(LIFECYCLE_CHANNEL);
-    expect(Array.from(quit.payload)).toEqual([0x00]);
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, quit.header.corr, new Uint8Array([0x00])));
-    // The link closes on the Quit REPLY: the handler's own answer is never written.
-    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("handler-quit-resolved")).toBe("true");
-    expect(report.get("handler-finished")).toBe("true");
-  }, 30_000);
-
-  test("lifecycle EVENTs dispatch; an undecodable one ends the link with its cause", async () => {
-    const host = await start("events");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00])));
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x01])));
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x07])));
-    const report = await host.finish();
-    expect(report.get("ready")).toBe("true");
-    expect(report.get("last-window-closed")).toBe("true");
-    // The applier's own typed failure ends the link (#643 review: keep the cause).
-    expect(report.get("dead-code")).toBe("KELD-IPC-003");
-    expect(report.get("dead-message")).toContain("discriminant 7");
-  }, 30_000);
-
-  test("HELLO against a silent host is KELD-IPC-006", async () => {
-    const host = await start("connect");
-    await host.next("the role sent no HELLO");
-    const report = await host.finish();
-    expect(report.get("connect-resolved")).toBe("false");
-    expect(report.get("connect-code")).toBe("KELD-IPC-006");
-  }, 30_000);
-
-  test("a HELLO reply of 31 bytes is a KELD-IPC-005 shape failure, never 007", async () => {
-    const host = await start("connect");
-    await host.hello(encodeFrame(FrameKind.Hello, 0, 0, TOKEN.slice(0, 31)));
-    const report = await host.finish();
-    expect(report.get("connect-code")).toBe("KELD-IPC-005");
-    expect(report.get("connect-message")).not.toContain("KELD-IPC-007");
-  }, 30_000);
-
-  test("a HELLO reply carrying FLAG_RAW is KELD-IPC-005", async () => {
-    const host = await start("connect");
-    await host.hello(headerWithFlags(FrameKind.Hello, FLAG_RAW, 0, 0, TOKEN));
-    const report = await host.finish();
-    expect(report.get("connect-code")).toBe("KELD-IPC-005");
-    expect(report.get("connect-message")).toContain("FLAG_RAW");
-  }, 30_000);
-
-  test("an undeclared kind after HELLO ends the link with KELD-IPC-005", async () => {
-    const host = await start("events");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()));
-    const report = await host.finish();
-    expect(report.get("dead-code")).toBe("KELD-IPC-005");
-  }, 30_000);
-
-  test("an EVENT with a nonzero correlation ends the link and is not dispatched", async () => {
-    const host = await start("events");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 4, new Uint8Array([0x00])));
-    const report = await host.finish();
-    expect(report.get("ready")).toBeUndefined();
-    expect(report.get("dead-code")).toBe("KELD-IPC-005");
-  }, 30_000);
-
-  test("a frame that stalls after its first byte ends the link with KELD-IPC-006", async () => {
-    const host = await start("events");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00])).subarray(0, 1));
-    const report = await host.finish();
-    expect(report.get("dead-code")).toBe("KELD-IPC-006");
-  }, 30_000);
-
-  test("a connect with no listener is KELD-IPC-001", async () => {
-    const report = await startAbsent("connect");
-    expect(report.get("connect-resolved")).toBe("false");
-    expect(report.get("connect-code")).toBe("KELD-IPC-001");
-  }, 30_000);
-
-  test("a HELLO reply with another session token is KELD-IPC-007", async () => {
-    const host = await start("connect");
-    await host.hello(encodeFrame(FrameKind.Hello, 0, 0, new Uint8Array(32).fill(0x73)));
-    const report = await host.finish();
-    expect(report.get("connect-code")).toBe("KELD-IPC-007");
-  }, 30_000);
-
-  test("app.whenReady rejects with the cause that ended the link, and keeps it", async () => {
-    const host = await start("when-ready");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()));
-    const report = await host.finish();
-    expect(report.get("ready-code")).toBe("KELD-IPC-005");
-    expect(report.get("again-same")).toBe("true");
-    expect(report.get("quit-same")).toBe("true");
-  }, 30_000);
-
-  test("app.quit never parks: code after it runs before the Quit REPLY", async () => {
-    const host = await start("quit-yields");
-    await host.hello();
-    host.write(encodeFrame(FrameKind.Event, LIFECYCLE_CHANNEL, 0, new Uint8Array([0x00])));
-    const call = await host.next("the role's Quit");
-    expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
-    // A parked main thread could not run the timer set after app.quit().
-    await host.reported("timer-ran");
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
-    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("steps")).toBe("timer-ran,quit-resolved");
-  }, 30_000);
-
-  test("a whenReady still waiting when quit closes the link rejects with KELD-IPC-022", async () => {
-    const host = await start("quit-before-ready");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
-    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("quit-resolved")).toBe("true");
-    // Settled within four event-loop tasks after the Quit, never left pending.
-    expect(report.get("ready-after-quit")).toBe("KELD-IPC-022");
-  }, 30_000);
-
-  test("a Quit REPLY that is not LifecycleResponse::Quit is KELD-IPC-003", async () => {
-    const host = await start("quit");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x01])));
-    const report = await host.finish();
-    expect(report.get("quit-code")).toBe("KELD-IPC-003");
-    expect(report.get("quit-message")).toContain("LifecycleResponse::Quit");
-  }, 30_000);
-
-  test("host Err on Quit rejects with its CallError and closes the link", async () => {
-    const host = await start("quit");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
-    host.write(
-      encodeFrame(
-        FrameKind.Err,
-        LIFECYCLE_CHANNEL,
-        call.header.corr,
-        encodeCallError(
-          "KELD-GUARD003",
-          "KELD-GUARD003: channel `lifecycle` is not granted to this principal. " +
-            "Add `lifecycle` to this principal's channels list in keld.permissions.jsonc.",
+    test("host Echo Call returns one correlated Reply on the shared lifecycle session", async () => {
+      const host = await start("echo-call");
+      await host.hello();
+      host.write(
+        encodeFrame(
+          FrameKind.Call,
+          ECHO_CHANNEL,
+          41,
+          new Uint8Array([0x11, 0x22]),
         ),
-      ),
-    );
-    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("quit-resolved")).toBe("false");
-    // The code arrives as a field; the role never parses it out of the text.
-    expect(report.get("quit-callerror")).toBe("true");
-    expect(report.get("quit-code")).toBe("KELD-GUARD003");
-    expect(report.get("quit-message")).toContain("keld.permissions.jsonc");
-    expect(report.get("again-resolved")).toBe("false");
-    expect(report.get("dead")).toBeUndefined();
-  }, 30_000);
+      );
+      const reply = await host.next(
+        "the shared app-link did not return the Echo Reply",
+      );
+      expect(reply.header.kind).toBe(FrameKind.Reply);
+      expect(reply.header.channel).toBe(ECHO_CHANNEL);
+      expect(reply.header.corr).toBe(41);
+      expect(Array.from(reply.payload)).toEqual([0x11, 0x22, 0x7f]);
+      host.socket.end();
+      const report = await host.finish();
+      expect(report.get("echo-calls")).toBe("1");
+      expect(report.get("echo-channel")).toBe(String(ECHO_CHANNEL));
+    }, 30_000);
 
-  test("a REPLY with the wrong correlation cannot complete the Quit", async () => {
-    const host = await start("quit");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr + 1, new Uint8Array([0x00])));
-    const report = await host.finish();
-    expect(report.get("quit-resolved")).toBe("false");
-    expect(report.get("quit-code")).toBe("KELD-IPC-022");
-    expect(report.get("quit-message")).toContain("KELD-IPC-005");
-  }, 30_000);
+    test("a slow application handler does not block Ping or the shared reader", async () => {
+      const host = await start("slow-handler");
+      await host.hello();
+      host.write(
+        encodeFrame(FrameKind.Call, ECHO_CHANNEL, 41, new Uint8Array([0x11])),
+      );
+      host.write(encodeFrame(FrameKind.Ping, 0, 1, new Uint8Array()));
+      const pong = await host.next(
+        "a slow application handler blocked the Ping",
+      );
+      expect(pong.header.kind).toBe(FrameKind.Ping);
+      expect(pong.header.corr).toBe(1);
+      // LastWindowClosed releases the handler; its Reply follows.
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x01]),
+        ),
+      );
+      const reply = await host.next(
+        "the Echo Reply did not follow the handler's release",
+      );
+      expect(reply.header.kind).toBe(FrameKind.Reply);
+      expect(reply.header.corr).toBe(41);
+      expect(Array.from(reply.payload)).toEqual([0x11]);
+      host.socket.end();
+      const report = await host.finish();
+      expect(report.get("last-window-closed")).toBe("true");
+    }, 30_000);
 
-  test("a pre-KEL-102 bare-string Err payload is refused, never half-decoded", async () => {
-    const host = await start("quit");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    host.write(
-      encodeFrame(
-        FrameKind.Err,
-        LIFECYCLE_CHANNEL,
-        call.header.corr,
-        // The pre-KEL-102 shape: one bare postcard string. It is not a
-        // CallError, so the link ends on it rather than surface a
-        // plausible-looking error, and a host left on the old encoding cannot
-        // go unnoticed in a mixed rollout.
-        encodePostcardString("KELD-GUARD001: capability `fs.read` is not granted."),
-      ),
-    );
-    const report = await host.finish();
-    expect(report.get("quit-resolved")).toBe("false");
-    expect(report.get("quit-code")).toBe("KELD-IPC-022");
-    expect(report.get("quit-message")).toContain("not a CallError");
-    // The old text never surfaces as if it had been understood.
-    expect(report.get("quit-message")).not.toContain("fs.read");
-  }, 30_000);
+    test("an application handler can quit: the Quit is the link's last frame", async () => {
+      const host = await start("handler-quits");
+      await host.hello();
+      host.write(
+        encodeFrame(FrameKind.Call, ECHO_CHANNEL, 51, new Uint8Array([0x21])),
+      );
+      const quit = await host.next("the handler's Quit did not reach the host");
+      expect(quit.header.kind).toBe(FrameKind.Call);
+      expect(quit.header.channel).toBe(LIFECYCLE_CHANNEL);
+      expect(Array.from(quit.payload)).toEqual([0x00]);
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          quit.header.corr,
+          new Uint8Array([0x00]),
+        ),
+      );
+      // The link closes on the Quit REPLY: the handler's own answer is never written.
+      await expect(host.next("the role's close")).rejects.toThrow(
+        "KELD-IPC-001",
+      );
+      const report = await host.finish();
+      expect(report.get("handler-quit-resolved")).toBe("true");
+      expect(report.get("handler-finished")).toBe("true");
+    }, 30_000);
 
-  test("the Quit REPLY resolves quit and closes the link; onLinkDead does not fire", async () => {
-    const host = await start("quit");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    expect(Array.from(call.payload)).toEqual([0x00]);
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
-    await expect(host.next("the role's close")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("quit-resolved")).toBe("true");
-    expect(report.get("again-resolved")).toBe("true");
-    expect(report.get("dead")).toBeUndefined();
-  }, 30_000);
+    test("lifecycle EVENTs dispatch; an undecodable one ends the link with its cause", async () => {
+      const host = await start("events");
+      await host.hello();
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x00]),
+        ),
+      );
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x01]),
+        ),
+      );
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x07]),
+        ),
+      );
+      const report = await host.finish();
+      expect(report.get("ready")).toBe("true");
+      expect(report.get("last-window-closed")).toBe("true");
+      // The applier's own typed failure ends the link (#643 review: keep the cause).
+      expect(report.get("dead-code")).toBe("KELD-IPC-003");
+      expect(report.get("dead-message")).toContain("discriminant 7");
+    }, 30_000);
 
-  test("concurrent quit() shares one Quit", async () => {
-    const host = await start("quit-twice");
-    await host.hello();
-    const call = await host.next("the role's Quit");
-    host.write(encodeFrame(FrameKind.Reply, LIFECYCLE_CHANNEL, call.header.corr, new Uint8Array([0x00])));
-    await expect(host.next("a second Quit")).rejects.toThrow("KELD-IPC-001");
-    const report = await host.finish();
-    expect(report.get("same-promise")).toBe("true");
-    expect(report.get("first-resolved")).toBe("true");
-    expect(report.get("second-resolved")).toBe("true");
-  }, 30_000);
+    test("HELLO against a silent host is KELD-IPC-006", async () => {
+      const host = await start("connect");
+      await host.next("the role sent no HELLO");
+      const report = await host.finish();
+      expect(report.get("connect-resolved")).toBe("false");
+      expect(report.get("connect-code")).toBe("KELD-IPC-006");
+    }, 30_000);
 
-  test("Quit against a silent host is KELD-IPC-006, and the link closes", async () => {
-    const host = await start("quit");
-    await host.hello();
-    await host.next("the role's Quit");
-    const report = await host.finish();
-    await rejectWithin(5_000, host.closed, "the role's Quit deadline did not close the link");
-    expect(report.get("quit-code")).toBe("KELD-IPC-006");
-  }, 30_000);
+    test("a HELLO reply of 31 bytes is a KELD-IPC-005 shape failure, never 007", async () => {
+      const host = await start("connect");
+      await host.hello(encodeFrame(FrameKind.Hello, 0, 0, TOKEN.slice(0, 31)));
+      const report = await host.finish();
+      expect(report.get("connect-code")).toBe("KELD-IPC-005");
+      expect(report.get("connect-message")).not.toContain("KELD-IPC-007");
+    }, 30_000);
 
-  test("local close() after HELLO does not fire onLinkDead", async () => {
-    const host = await start("local-close");
-    await host.hello();
-    await rejectWithin(5_000, host.closed, "the host never saw the local close()");
-    const report = await host.finish();
-    expect(report.get("closed")).toBe("true");
-    expect(report.get("quit-after-close-resolved")).toBe("false");
-    expect(report.get("quit-after-close-message")).toStartWith("KELD-IPC-001");
-    expect(report.get("dead")).toBeUndefined();
-  }, 30_000);
+    test("a HELLO reply carrying FLAG_RAW is KELD-IPC-005", async () => {
+      const host = await start("connect");
+      await host.hello(headerWithFlags(FrameKind.Hello, FLAG_RAW, 0, 0, TOKEN));
+      const report = await host.finish();
+      expect(report.get("connect-code")).toBe("KELD-IPC-005");
+      expect(report.get("connect-message")).toContain("FLAG_RAW");
+    }, 30_000);
 
-  test("host close after HELLO fails onLinkDead with KELD-IPC-022", async () => {
-    const host = await start("events");
-    await host.hello();
-    host.socket.end();
-    const report = await host.finish();
-    expect(report.get("dead-code")).toBe("KELD-IPC-022");
-    expect(report.get("dead-callerror")).toBe("true");
-  }, 30_000);
+    test("an undeclared kind after HELLO ends the link with KELD-IPC-005", async () => {
+      const host = await start("events");
+      await host.hello();
+      host.write(
+        encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()),
+      );
+      const report = await host.finish();
+      expect(report.get("dead-code")).toBe("KELD-IPC-005");
+    }, 30_000);
 
-  test("a throwing onLinkDead is isolated", async () => {
-    const host = await start("throwing-dead");
-    await host.hello();
-    host.socket.end();
-    const report = await host.finish();
-    expect(report.get("after-throw")).toBe("true");
-    expect(report.get("uncaught-count")).toBe("0");
-  }, 30_000);
-});
+    test("an EVENT with a nonzero correlation ends the link and is not dispatched", async () => {
+      const host = await start("events");
+      await host.hello();
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          4,
+          new Uint8Array([0x00]),
+        ),
+      );
+      const report = await host.finish();
+      expect(report.get("ready")).toBeUndefined();
+      expect(report.get("dead-code")).toBe("KELD-IPC-005");
+    }, 30_000);
+
+    test("a frame that stalls after its first byte ends the link with KELD-IPC-006", async () => {
+      const host = await start("events");
+      await host.hello();
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x00]),
+        ).subarray(0, 1),
+      );
+      const report = await host.finish();
+      expect(report.get("dead-code")).toBe("KELD-IPC-006");
+    }, 30_000);
+
+    test("a connect with no listener is KELD-IPC-001", async () => {
+      const report = await startAbsent("connect");
+      expect(report.get("connect-resolved")).toBe("false");
+      expect(report.get("connect-code")).toBe("KELD-IPC-001");
+    }, 30_000);
+
+    test("a HELLO reply with another session token is KELD-IPC-007", async () => {
+      const host = await start("connect");
+      await host.hello(
+        encodeFrame(FrameKind.Hello, 0, 0, new Uint8Array(32).fill(0x73)),
+      );
+      const report = await host.finish();
+      expect(report.get("connect-code")).toBe("KELD-IPC-007");
+    }, 30_000);
+
+    test("app.whenReady rejects with the cause that ended the link, and keeps it", async () => {
+      const host = await start("when-ready");
+      await host.hello();
+      host.write(
+        encodeFrame(FrameKind.Grant, LIFECYCLE_CHANNEL, 0, new Uint8Array()),
+      );
+      const report = await host.finish();
+      expect(report.get("ready-code")).toBe("KELD-IPC-005");
+      expect(report.get("again-same")).toBe("true");
+      expect(report.get("quit-same")).toBe("true");
+    }, 30_000);
+
+    test("app.quit never parks: code after it runs before the Quit REPLY", async () => {
+      const host = await start("quit-yields");
+      await host.hello();
+      host.write(
+        encodeFrame(
+          FrameKind.Event,
+          LIFECYCLE_CHANNEL,
+          0,
+          new Uint8Array([0x00]),
+        ),
+      );
+      const call = await host.next("the role's Quit");
+      expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+      // A parked main thread could not run the timer set after app.quit().
+      await host.reported("timer-ran");
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          new Uint8Array([0x00]),
+        ),
+      );
+      await expect(host.next("the role's close")).rejects.toThrow(
+        "KELD-IPC-001",
+      );
+      const report = await host.finish();
+      expect(report.get("steps")).toBe("timer-ran,quit-resolved");
+    }, 30_000);
+
+    test("a whenReady still waiting when quit closes the link rejects with KELD-IPC-022", async () => {
+      const host = await start("quit-before-ready");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          new Uint8Array([0x00]),
+        ),
+      );
+      await expect(host.next("the role's close")).rejects.toThrow(
+        "KELD-IPC-001",
+      );
+      const report = await host.finish();
+      expect(report.get("quit-resolved")).toBe("true");
+      // Settled within four event-loop tasks after the Quit, never left pending.
+      expect(report.get("ready-after-quit")).toBe("KELD-IPC-022");
+    }, 30_000);
+
+    test("a Quit REPLY that is not LifecycleResponse::Quit is KELD-IPC-003", async () => {
+      const host = await start("quit");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          new Uint8Array([0x01]),
+        ),
+      );
+      const report = await host.finish();
+      expect(report.get("quit-code")).toBe("KELD-IPC-003");
+      expect(report.get("quit-message")).toContain("LifecycleResponse::Quit");
+    }, 30_000);
+
+    test("host Err on Quit rejects with its CallError and closes the link", async () => {
+      const host = await start("quit");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+      host.write(
+        encodeFrame(
+          FrameKind.Err,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          encodeCallError(
+            "KELD-GUARD003",
+            "KELD-GUARD003: channel `lifecycle` is not granted to this principal. " +
+              "Add `lifecycle` to this principal's channels list in keld.permissions.jsonc.",
+          ),
+        ),
+      );
+      await expect(host.next("the role's close")).rejects.toThrow(
+        "KELD-IPC-001",
+      );
+      const report = await host.finish();
+      expect(report.get("quit-resolved")).toBe("false");
+      // The code arrives as a field; the role never parses it out of the text.
+      expect(report.get("quit-callerror")).toBe("true");
+      expect(report.get("quit-code")).toBe("KELD-GUARD003");
+      expect(report.get("quit-message")).toContain("keld.permissions.jsonc");
+      expect(report.get("again-resolved")).toBe("false");
+      expect(report.get("dead")).toBeUndefined();
+    }, 30_000);
+
+    test("a REPLY with the wrong correlation cannot complete the Quit", async () => {
+      const host = await start("quit");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr + 1,
+          new Uint8Array([0x00]),
+        ),
+      );
+      const report = await host.finish();
+      expect(report.get("quit-resolved")).toBe("false");
+      expect(report.get("quit-code")).toBe("KELD-IPC-022");
+      expect(report.get("quit-message")).toContain("KELD-IPC-005");
+    }, 30_000);
+
+    test("a pre-KEL-102 bare-string Err payload is refused, never half-decoded", async () => {
+      const host = await start("quit");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      host.write(
+        encodeFrame(
+          FrameKind.Err,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          // The pre-KEL-102 shape: one bare postcard string. It is not a
+          // CallError, so the link ends on it rather than surface a
+          // plausible-looking error, and a host left on the old encoding cannot
+          // go unnoticed in a mixed rollout.
+          encodePostcardString(
+            "KELD-GUARD001: capability `fs.read` is not granted.",
+          ),
+        ),
+      );
+      const report = await host.finish();
+      expect(report.get("quit-resolved")).toBe("false");
+      expect(report.get("quit-code")).toBe("KELD-IPC-022");
+      expect(report.get("quit-message")).toContain("not a CallError");
+      // The old text never surfaces as if it had been understood.
+      expect(report.get("quit-message")).not.toContain("fs.read");
+    }, 30_000);
+
+    test("the Quit REPLY resolves quit and closes the link; onLinkDead does not fire", async () => {
+      const host = await start("quit");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      expect(Array.from(call.payload)).toEqual([0x00]);
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          new Uint8Array([0x00]),
+        ),
+      );
+      await expect(host.next("the role's close")).rejects.toThrow(
+        "KELD-IPC-001",
+      );
+      const report = await host.finish();
+      expect(report.get("quit-resolved")).toBe("true");
+      expect(report.get("again-resolved")).toBe("true");
+      expect(report.get("dead")).toBeUndefined();
+    }, 30_000);
+
+    test("concurrent quit() shares one Quit", async () => {
+      const host = await start("quit-twice");
+      await host.hello();
+      const call = await host.next("the role's Quit");
+      host.write(
+        encodeFrame(
+          FrameKind.Reply,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          new Uint8Array([0x00]),
+        ),
+      );
+      await expect(host.next("a second Quit")).rejects.toThrow("KELD-IPC-001");
+      const report = await host.finish();
+      expect(report.get("same-promise")).toBe("true");
+      expect(report.get("first-resolved")).toBe("true");
+      expect(report.get("second-resolved")).toBe("true");
+    }, 30_000);
+
+    test("Quit against a silent host is KELD-IPC-006, and the link closes", async () => {
+      const host = await start("quit");
+      await host.hello();
+      await host.next("the role's Quit");
+      const report = await host.finish();
+      await rejectWithin(
+        5_000,
+        host.closed,
+        "the role's Quit deadline did not close the link",
+      );
+      expect(report.get("quit-code")).toBe("KELD-IPC-006");
+    }, 30_000);
+
+    test("local close() after HELLO does not fire onLinkDead", async () => {
+      const host = await start("local-close");
+      await host.hello();
+      await rejectWithin(
+        5_000,
+        host.closed,
+        "the host never saw the local close()",
+      );
+      const report = await host.finish();
+      expect(report.get("closed")).toBe("true");
+      expect(report.get("quit-after-close-resolved")).toBe("false");
+      expect(report.get("quit-after-close-message")).toStartWith(
+        "KELD-IPC-001",
+      );
+      expect(report.get("dead")).toBeUndefined();
+    }, 30_000);
+
+    test("host close after HELLO fails onLinkDead with KELD-IPC-022", async () => {
+      const host = await start("events");
+      await host.hello();
+      host.socket.end();
+      const report = await host.finish();
+      expect(report.get("dead-code")).toBe("KELD-IPC-022");
+      expect(report.get("dead-callerror")).toBe("true");
+    }, 30_000);
+
+    test("a throwing onLinkDead is isolated", async () => {
+      const host = await start("throwing-dead");
+      await host.hello();
+      host.socket.end();
+      const report = await host.finish();
+      expect(report.get("after-throw")).toBe("true");
+      expect(report.get("uncaught-count")).toBe("0");
+    }, 30_000);
+  },
+);

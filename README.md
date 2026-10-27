@@ -108,7 +108,7 @@ required Rust compiler automatically. **rustc** is the Rust compiler, and
    Restart your terminal after installation if the `cargo` command is not found.
 3. **Bun** — install it from the [Bun installation guide](https://bun.sh/docs/installation).
    The source-built demo needs Bun available on `PATH`. The full repository
-   verification gate, `just ci`, currently requires **Bun 1.4.2**.
+   verification gate, `just ci`, currently requires **Bun 1.4.4**.
 
 Verify the core tools:
 

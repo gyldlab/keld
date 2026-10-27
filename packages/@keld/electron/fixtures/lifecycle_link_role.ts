@@ -10,7 +10,11 @@
  */
 import { writeSync } from "node:fs";
 
-import { isCallError, LifecycleLink, type LifecycleHandler } from "../src/link.ts";
+import {
+  isCallError,
+  LifecycleLink,
+  type LifecycleHandler,
+} from "../src/link.ts";
 
 function report(key: string, value: string | number | boolean): void {
   writeSync(1, `KELD_LL ${key}=${value}\n`);
@@ -18,7 +22,9 @@ function report(key: string, value: string | number | boolean): void {
 
 function codeOf(err: unknown): string {
   if (isCallError(err)) return err.code;
-  return err instanceof Error ? `untyped:${err.message}` : `untyped:${String(err)}`;
+  return err instanceof Error
+    ? `untyped:${err.message}`
+    : `untyped:${String(err)}`;
 }
 
 function reportError(key: string, err: unknown): void {
@@ -30,7 +36,8 @@ function reportError(key: string, err: unknown): void {
 
 function requireLink(): string {
   const link = process.env.KELD_APP_LINK;
-  if (link === undefined || link.length === 0) throw new Error("KELD_APP_LINK is unset");
+  if (link === undefined || link.length === 0)
+    throw new Error("KELD_APP_LINK is unset");
   return link;
 }
 
@@ -62,8 +69,13 @@ function handlers(overrides: Partial<LifecycleHandler> = {}): LifecycleHandler {
   };
 }
 
-async function connect(overrides: Partial<LifecycleHandler> = {}): Promise<LifecycleLink> {
-  const session = await LifecycleLink.connect(requireLink(), handlers(overrides));
+async function connect(
+  overrides: Partial<LifecycleHandler> = {},
+): Promise<LifecycleLink> {
+  const session = await LifecycleLink.connect(
+    requireLink(),
+    handlers(overrides),
+  );
   report("connected", true);
   return session;
 }
@@ -271,6 +283,9 @@ try {
   report("done", true);
   process.exit(0);
 } catch (err) {
-  writeSync(2, `${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  writeSync(
+    2,
+    `${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+  );
   process.exit(1);
 }

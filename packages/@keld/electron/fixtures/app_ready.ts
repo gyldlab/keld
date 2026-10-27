@@ -29,7 +29,8 @@ const token = minted?.split("#")[1] ?? "a".repeat(64);
 const endpoint = minted?.split("#")[0];
 const absent =
   process.platform === "win32"
-    ? String.raw`\\.\pipe\keld-` + Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")
+    ? String.raw`\\.\pipe\keld-` +
+      Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")
     : join(
         endpoint !== undefined ? dirname(endpoint) : tmpdir(),
         `keld-kel72-absent-${process.pid}.sock`,
@@ -59,7 +60,10 @@ const firstErr = await app.whenReady().then(
   () => null,
   (err: unknown) => err,
 );
-if (!(firstErr instanceof Error) || !String(firstErr).includes("KELD-IPC-001")) {
+if (
+  !(firstErr instanceof Error) ||
+  !String(firstErr).includes("KELD-IPC-001")
+) {
   writeSync(2, `KEL72_FIRST_SHOULD_REJECT=${String(firstErr)}\n`);
   process.exit(1);
 }
@@ -73,7 +77,10 @@ const quitErr = await app.quit().then(
   (err: unknown) => err,
 );
 if (again !== firstErr || quitErr !== firstErr) {
-  writeSync(2, `KEL72_FAILURE_NOT_STICKY again=${String(again)} quit=${String(quitErr)}\n`);
+  writeSync(
+    2,
+    `KEL72_FAILURE_NOT_STICKY again=${String(again)} quit=${String(quitErr)}\n`,
+  );
   process.exit(1);
 }
 marker("KEL72_FAILURE_STICKY");

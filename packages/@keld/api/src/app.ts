@@ -99,7 +99,9 @@ function ensureLink(): Promise<LifecycleLink> {
 /** The typed close a `whenReady` still waiting sees once a Quit closed the link. */
 function closedByQuit(): Error {
   return Object.assign(
-    new Error("KELD-IPC-022: the app quit before the host was ready; the role's link is closed"),
+    new Error(
+      "KELD-IPC-022: the app quit before the host was ready; the role's link is closed",
+    ),
     { code: "KELD-IPC-022" },
   );
 }
@@ -109,7 +111,8 @@ function sendQuit(): Promise<void> {
     link.quit().finally(() => {
       // The Quit closed the link, which suppresses onLinkDead: a whenReady
       // still waiting can never see Ready, so it rejects with the close.
-      if (!hostReady && linkDead === undefined) failReadyWaiters(closedByQuit());
+      if (!hostReady && linkDead === undefined)
+        failReadyWaiters(closedByQuit());
     }),
   );
   ignoreIfUnawaited(done);
@@ -166,7 +169,10 @@ export async function invokeFs(payload: Uint8Array): Promise<Uint8Array> {
 }
 
 /** Package-private auth invocation on the existing role singleton link. */
-export async function invokeAuth(payload: Uint8Array, deadlineMs: number): Promise<Uint8Array> {
+export async function invokeAuth(
+  payload: Uint8Array,
+  deadlineMs: number,
+): Promise<Uint8Array> {
   await app.whenReady();
   const link = await ensureLink();
   return link.callAuth(payload, deadlineMs);

@@ -194,6 +194,9 @@ apply_consumer_contract() {
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
     fi
+    if grep -Fxq 'input_hygiene=true' <<<"$consumer_contract"; then
+        hygiene="$TRUE"
+    fi
 }
 
 load_workspace_metadata() {

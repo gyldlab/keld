@@ -37,9 +37,10 @@ export interface BundleLayout {
 // and the counter. Each run is its own process: a realm opens one link.
 export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
   const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
-  const path = process.platform === "win32"
-    ? `\\\\.\\pipe\\keld-${randomBytes(32).toString("hex")}`
-    : join(dir, "s.sock");
+  const path =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\keld-${randomBytes(32).toString("hex")}`
+      : join(dir, "s.sock");
   const evalsPath = join(dir, "evals.txt");
   let connections = 0;
   const listener = Bun.listen({
@@ -56,7 +57,12 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
   try {
     const runner = await layout.write(dir);
     proc = Bun.spawn(["bun", join(dir, runner)], {
-      env: { ...process.env, ...layout.env, KELD_APP_LINK: `${path}#${TOKEN_HEX}`, KELD_TEST_EVALS: evalsPath },
+      env: {
+        ...process.env,
+        ...layout.env,
+        KELD_APP_LINK: `${path}#${TOKEN_HEX}`,
+        KELD_TEST_EVALS: evalsPath,
+      },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -69,8 +75,14 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
       stdout += decoder.decode(chunk.value, { stream: true });
       if (layout.ready(stdout)) break;
     }
-    const counted = existsSync(evalsPath) ? readFileSync(evalsPath, "utf8") : "";
-    return { stdout, connections, evals: counted.split("\n").filter((line) => line.length > 0).length };
+    const counted = existsSync(evalsPath)
+      ? readFileSync(evalsPath, "utf8")
+      : "";
+    return {
+      stdout,
+      connections,
+      evals: counted.split("\n").filter((line) => line.length > 0).length,
+    };
   } finally {
     proc?.kill();
     listener.stop(true);
@@ -80,13 +92,22 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
 
 // Builds `entrySource` (TypeScript) into one bundle named `name`, beside a
 // `main.js` that imports it, and runs `runner`.
-export function bundleLayout(name: string, entrySource: string, runner: string, ready: (stdout: string) => boolean) {
+export function bundleLayout(
+  name: string,
+  entrySource: string,
+  runner: string,
+  ready: (stdout: string) => boolean,
+) {
   return {
     ready,
     async write(dir: string): Promise<string> {
       const entry = join(dir, "entry.ts");
       await Bun.write(entry, entrySource);
-      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
+      const built = await Bun.build({
+        entrypoints: [entry],
+        target: "bun",
+        format: "esm",
+      });
       expect(built.success).toBe(true);
       await Bun.write(join(dir, name), built.outputs[0]!);
       await Bun.write(join(dir, "main.js"), `import "./${name}";\n`);
@@ -95,7 +116,9 @@ export function bundleLayout(name: string, entrySource: string, runner: string, 
   } satisfies BundleLayout;
 }
 
-export const transportPath = JSON.stringify(join(import.meta.dir, "..", "src", "transport.ts"));
+export const transportPath = JSON.stringify(
+  join(import.meta.dir, "..", "src", "transport.ts"),
+);
 export const openAndReport =
   `import { isMainThread } from "node:worker_threads";\n` +
   `import { WorkerLink, isCallError } from ${transportPath};\n` +
