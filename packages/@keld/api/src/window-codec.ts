@@ -5,6 +5,8 @@
  * the host registry must validate every supplied reference and operation.
  */
 import {
+  stateIsUint8Array,
+  stateByteLength,
   decodeU64Varint,
   decodeVarint,
   encodeU64Varint,
@@ -99,10 +101,12 @@ function join(parts: readonly Uint8Array[]): Uint8Array {
   return payload;
 }
 function exact<T>(payload: Uint8Array, decode: Decoder<T>): T {
-  if (!(payload instanceof Uint8Array))
+  if (!stateIsUint8Array(payload))
     throw invalid("window payload must be a Uint8Array");
-  const [value, end] = decode(payload, 0);
-  if (end !== payload.byteLength)
+  const decoded1 = decode(payload, 0);
+  const value = decoded1[0];
+  const end = decoded1[1];
+  if (end !== stateByteLength(payload))
     throw invalid("trailing bytes after window payload");
   return value;
 }
@@ -118,7 +122,9 @@ function encodeI32(value: number): Uint8Array {
   return encodeVarint(value < 0 ? -value * 2 - 1 : value * 2);
 }
 function decodeI32(bytes: Uint8Array, offset: number): [number, number] {
-  const [value, end] = decodeVarint(bytes, offset);
+  const decoded2 = decodeVarint(bytes, offset);
+  const value = decoded2[0];
+  const end = decoded2[1];
   return [value % 2 === 0 ? value / 2 : -(value + 1) / 2, end];
 }
 function encodeBool(value: boolean): Uint8Array {
@@ -157,8 +163,12 @@ export function encodeWindowRef(value: WindowRef): Uint8Array {
   return join([encodeVarint(value.id), encodeU64Varint(value.incarnation)]);
 }
 function windowRefAt(bytes: Uint8Array, offset: number): [WindowRef, number] {
-  const [id, afterId] = decodeVarint(bytes, offset);
-  const [incarnation, end] = decodeU64Varint(bytes, afterId);
+  const decoded3 = decodeVarint(bytes, offset);
+  const id = decoded3[0];
+  const afterId = decoded3[1];
+  const decoded4 = decodeU64Varint(bytes, afterId);
+  const incarnation = decoded4[0];
+  const end = decoded4[1];
   return [{ id, incarnation }, end];
 }
 /** Decode exactly one reference, retaining the complete u64 incarnation. */
@@ -176,10 +186,18 @@ export function encodeRect(value: Rect): Uint8Array {
   ]);
 }
 function rectAt(bytes: Uint8Array, offset: number): [Rect, number] {
-  const [x, afterX] = decodeI32(bytes, offset);
-  const [y, afterY] = decodeI32(bytes, afterX);
-  const [width, afterWidth] = decodeVarint(bytes, afterY);
-  const [height, end] = decodeVarint(bytes, afterWidth);
+  const decoded5 = decodeI32(bytes, offset);
+  const x = decoded5[0];
+  const afterX = decoded5[1];
+  const decoded6 = decodeI32(bytes, afterX);
+  const y = decoded6[0];
+  const afterY = decoded6[1];
+  const decoded7 = decodeVarint(bytes, afterY);
+  const width = decoded7[0];
+  const afterWidth = decoded7[1];
+  const decoded8 = decodeVarint(bytes, afterWidth);
+  const height = decoded8[0];
+  const end = decoded8[1];
   return [{ x, y, width, height }, end];
 }
 /** Decode exactly one bounds payload, including both signed extrema. */
@@ -197,10 +215,18 @@ export function encodeWindowState(value: WindowState): Uint8Array {
   ]);
 }
 function stateAt(bytes: Uint8Array, offset: number): [WindowState, number] {
-  const [bounds, afterBounds] = rectAt(bytes, offset);
-  const [focused, afterFocus] = decodeBool(bytes, afterBounds);
-  const [maximized, afterMaximized] = decodeBool(bytes, afterFocus);
-  const [full_screen, end] = decodeBool(bytes, afterMaximized);
+  const decoded9 = rectAt(bytes, offset);
+  const bounds = decoded9[0];
+  const afterBounds = decoded9[1];
+  const decoded10 = decodeBool(bytes, afterBounds);
+  const focused = decoded10[0];
+  const afterFocus = decoded10[1];
+  const decoded11 = decodeBool(bytes, afterFocus);
+  const maximized = decoded11[0];
+  const afterMaximized = decoded11[1];
+  const decoded12 = decodeBool(bytes, afterMaximized);
+  const full_screen = decoded12[0];
+  const end = decoded12[1];
   return [{ bounds, focused, maximized, full_screen }, end];
 }
 /** Decode exactly one state payload; invalid booleans fail closed. */
@@ -282,37 +308,51 @@ export function encodeWindowEvent(value: WindowEvent): Uint8Array {
   }
 }
 function eventAt(bytes: Uint8Array, offset: number): [WindowEvent, number] {
-  const [variant, afterVariant] = decodeVarint(bytes, offset);
+  const decoded14 = decodeVarint(bytes, offset);
+  const variant = decoded14[0];
+  const afterVariant = decoded14[1];
   if (variant > 6) throw invalid("unknown WindowEvent discriminant");
-  const [window, afterWindow] = windowRefAt(bytes, afterVariant);
+  const decoded15 = windowRefAt(bytes, afterVariant);
+  const window = decoded15[0];
+  const afterWindow = decoded15[1];
   switch (variant) {
     case 0: {
-      const [state, afterState] = stateAt(bytes, afterWindow);
-      const [pending_close, end] = decodeOption(
-        bytes,
-        afterState,
-        decodeU64Varint,
-      );
+      const decoded16 = stateAt(bytes, afterWindow);
+      const state = decoded16[0];
+      const afterState = decoded16[1];
+      const decoded17 = decodeOption(bytes, afterState, decodeU64Varint);
+      const pending_close = decoded17[0];
+      const end = decoded17[1];
       return [{ variant: "Created", window, state, pending_close }, end];
     }
     case 1: {
-      const [bounds, end] = rectAt(bytes, afterWindow);
+      const decoded18 = rectAt(bytes, afterWindow);
+      const bounds = decoded18[0];
+      const end = decoded18[1];
       return [{ variant: "Bounds", window, bounds }, end];
     }
     case 2: {
-      const [focused, end] = decodeBool(bytes, afterWindow);
+      const decoded19 = decodeBool(bytes, afterWindow);
+      const focused = decoded19[0];
+      const end = decoded19[1];
       return [{ variant: "Focus", window, focused }, end];
     }
     case 3: {
-      const [maximized, end] = decodeBool(bytes, afterWindow);
+      const decoded20 = decodeBool(bytes, afterWindow);
+      const maximized = decoded20[0];
+      const end = decoded20[1];
       return [{ variant: "Maximized", window, maximized }, end];
     }
     case 4: {
-      const [full_screen, end] = decodeBool(bytes, afterWindow);
+      const decoded21 = decodeBool(bytes, afterWindow);
+      const full_screen = decoded21[0];
+      const end = decoded21[1];
       return [{ variant: "FullScreen", window, full_screen }, end];
     }
     case 5: {
-      const [close_seq, end] = decodeU64Varint(bytes, afterWindow);
+      const decoded22 = decodeU64Varint(bytes, afterWindow);
+      const close_seq = decoded22[0];
+      const end = decoded22[1];
       return [{ variant: "CloseRequested", window, close_seq }, end];
     }
     case 6:

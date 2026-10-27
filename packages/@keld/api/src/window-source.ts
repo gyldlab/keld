@@ -1,6 +1,14 @@
 /** Internal host-fact mirror (GH-531 §4.d); attached to the native facade link. */
 import {
   WINDOW_CHANNEL,
+  stateFreeze,
+  stateMap,
+  stateMapGet,
+  stateMapHas,
+  stateMapSet,
+  stateMapSize,
+  stateMapValues,
+  stateMapClear,
   linkError,
   type KeldCallError,
 } from "../../kipc/src/transport.ts";
@@ -39,10 +47,10 @@ function snapshot(
 ): WindowSnapshot {
   // Copy every object: neither retained dispatch facts nor caller snapshots own
   // aliases into mutable map state, or into the transport's payload storage.
-  return Object.freeze({
-    window: Object.freeze({ id: window.id, incarnation: window.incarnation }),
-    state: Object.freeze({
-      bounds: Object.freeze({
+  return stateFreeze({
+    window: stateFreeze({ id: window.id, incarnation: window.incarnation }),
+    state: stateFreeze({
+      bounds: stateFreeze({
         x: state.bounds.x,
         y: state.bounds.y,
         width: state.bounds.width,
@@ -73,7 +81,7 @@ export class WindowSource implements MirrorSource<WindowEvent> {
   readonly channel = WINDOW_CHANNEL;
   // Null keeps exact observed-ID membership and the historical census without
   // retaining the terminal snapshot's four-object graph after dispatch.
-  readonly #windows = new Map<number, WindowSnapshot | null>();
+  readonly #windows = stateMap<number, WindowSnapshot | null>();
   #onFact: ((fact: WindowEvent) => void) | undefined;
   #failureCode: string | undefined;
   #failureMessage = "";
@@ -112,14 +120,14 @@ export class WindowSource implements MirrorSource<WindowEvent> {
     this.#requireLive();
     try {
       const fact = decodeWindowEvent(payload);
-      Object.freeze(fact.window);
+      stateFreeze(fact.window);
       if (fact.variant === "Created") {
-        Object.freeze(fact.state.bounds);
-        Object.freeze(fact.state);
+        stateFreeze(fact.state.bounds);
+        stateFreeze(fact.state);
       } else if (fact.variant === "Bounds") {
-        Object.freeze(fact.bounds);
+        stateFreeze(fact.bounds);
       }
-      return Object.freeze(fact);
+      return stateFreeze(fact);
     } catch {
       throw this.#reject();
     }
@@ -131,14 +139,15 @@ export class WindowSource implements MirrorSource<WindowEvent> {
     try {
       if (fact.window.id === 0 || fact.window.incarnation === 0n)
         throw this.#reject();
-      const previous = this.#windows.get(fact.window.id);
+      const previous = stateMapGet(this.#windows, fact.window.id);
       if (fact.variant === "Created") {
         if (
-          this.#windows.has(fact.window.id) ||
-          this.#windows.size >= PROPOSED_MAX_CUMULATIVE_WINDOW_IDS
+          stateMapHas(this.#windows, fact.window.id) ||
+          stateMapSize(this.#windows) >= PROPOSED_MAX_CUMULATIVE_WINDOW_IDS
         )
           throw this.#reject();
-        this.#windows.set(
+        stateMapSet(
+          this.#windows,
           fact.window.id,
           snapshot(fact.window, fact.state, fact.pending_close, false),
         );
@@ -176,7 +185,8 @@ export class WindowSource implements MirrorSource<WindowEvent> {
         default:
           throw this.#reject();
       }
-      this.#windows.set(
+      stateMapSet(
+        this.#windows,
         fact.window.id,
         snapshot(fact.window, state, pending_close, host_destroyed),
       );
@@ -194,12 +204,12 @@ export class WindowSource implements MirrorSource<WindowEvent> {
       this.#onFact?.(fact);
     } finally {
       if (fact.variant === "Destroyed") {
-        const current = this.#windows.get(fact.window.id);
+        const current = stateMapGet(this.#windows, fact.window.id);
         if (
           current?.host_destroyed &&
           current.window.incarnation === fact.window.incarnation
         )
-          this.#windows.set(fact.window.id, null);
+          stateMapSet(this.#windows, fact.window.id, null);
       }
     }
   }
@@ -214,7 +224,7 @@ export class WindowSource implements MirrorSource<WindowEvent> {
     // Bookkeeping follows an already received answer. A later Source failure
     // must not replace it or mutate either Source or the caller's receipt map.
     if (this.#failureCode !== undefined) return false;
-    const previous = this.#windows.get(window.id);
+    const previous = stateMapGet(this.#windows, window.id);
     if (
       !previous ||
       previous.window.incarnation !== window.incarnation ||
@@ -222,7 +232,8 @@ export class WindowSource implements MirrorSource<WindowEvent> {
     )
       return false;
     if (previous.pending_close === closeSeq)
-      this.#windows.set(
+      stateMapSet(
+        this.#windows,
         window.id,
         snapshot(window, previous.state, null, false),
       );
@@ -234,15 +245,15 @@ export class WindowSource implements MirrorSource<WindowEvent> {
   /** A local read only; a wrong pair never observes a different incarnation. */
   get(window: WindowRef): WindowSnapshot | undefined {
     this.#requireLive();
-    const value = this.#windows.get(window.id);
+    const value = stateMapGet(this.#windows, window.id);
     return value?.window.incarnation === window.incarnation ? value : undefined;
   }
 
   /** Immutable snapshots in host-id order; terminal ones remain until dispatch. */
   all(): readonly WindowSnapshot[] {
     this.#requireLive();
-    return Object.freeze(
-      [...this.#windows.values()]
+    return stateFreeze(
+      stateMapValues(this.#windows)
         .filter((value): value is WindowSnapshot => value !== null)
         .sort((a, b) => a.window.id - b.window.id),
     );
@@ -254,7 +265,7 @@ export class WindowSource implements MirrorSource<WindowEvent> {
       this.#failureMessage = error.message;
       this.#failureCode = error.code;
     }
-    this.#windows.clear();
+    stateMapClear(this.#windows);
     // LifecycleLink still holds the terminated Source. It must not, in turn,
     // retain the captured application handler and its complete external graph.
     this.#onFact = undefined;

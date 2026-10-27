@@ -6,6 +6,7 @@ import * as transport from "../../kipc/src/transport.ts";
 const appliers = new Map<number, (payload: Uint8Array) => void>();
 const listeners = new Map<number, (payload: Uint8Array) => void>();
 const worker = {
+  stateFactCapacity: 16,
   setStateApplier(channel: number, handler: (payload: Uint8Array) => void) {
     appliers.set(channel, handler);
   },

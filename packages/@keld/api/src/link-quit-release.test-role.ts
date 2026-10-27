@@ -30,6 +30,7 @@ const payload = encodeWindowEvent({
   pending_close: null,
 });
 const worker = {
+  stateFactCapacity: 16,
   setStateApplier(channel: number, callback: (payload: Uint8Array) => void) {
     appliers.set(channel, callback);
   },

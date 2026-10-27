@@ -464,6 +464,36 @@ fn guardian_bun_command(
     // the only one, so a child refused before its exec permit is its whole
     // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
     let mut command = Command::new("bun");
+    let sidecar = root.join("src").join("kipc-transport.ts");
+    match std::fs::metadata(&sidecar) {
+        Ok(metadata) if metadata.is_file() => {
+            // A local bunfig can replace Bun's CLI preload. The dev-stage
+            // producer copies only named boot artifacts; recheck the qualified
+            // cwd on every generation before the original entry is executed.
+            for config in ["bunfig.toml", ".bunfig.toml"] {
+                match std::fs::symlink_metadata(root.join(config)) {
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => {
+                        return Err(guardian_entry_error(format!(
+                            "KELD-CORE-037: staged runtime config {config} can override the canonical preload. Restage through `keld dev`."
+                        )));
+                    }
+                }
+            }
+            command.arg(format!("--preload={}", sidecar.display()));
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(guardian_entry_error(String::from(
+                "KELD-CORE-037: staged kipc transport is not a regular file. Restage through `keld dev`.",
+            )));
+        }
+        Err(source) => {
+            return Err(guardian_entry_error(format!(
+                "KELD-CORE-037: staged kipc transport cannot be inspected: {source}. Restage through `keld dev`."
+            )));
+        }
+    }
     command
         .arg("run")
         .arg(root.join(entry))
@@ -599,6 +629,45 @@ mod tests {
         )
         .expect("validated stage must still produce the Bun command");
         assert_eq!(command.get_program(), "bun");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["run".as_ref(), entry.as_os_str()]
+        );
+
+        fs::create_dir(temp.path().join("src")).expect("transport directory");
+        let sidecar = temp.path().join("src/kipc-transport.ts");
+        fs::write(&sidecar, "export {};\n").expect("transport sidecar");
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            relative,
+            identity.dev(),
+            identity.ino(),
+            "/tmp/link#token",
+        )
+        .expect("canonical sidecar launch");
+        let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(args[0], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[1], "run");
+        assert_eq!(args[2], entry.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(temp.path()));
+        // Bun config can replace a CLI preload. Qualify every generation,
+        // including recovery after a previously absent config appears.
+        for config in ["bunfig.toml", ".bunfig.toml"] {
+            let config_path = temp.path().join(config);
+            fs::write(&config_path, "preload = [\"./app-hook.ts\"]\n").expect("hostile config");
+            let error = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                relative,
+                identity.dev(),
+                identity.ino(),
+                "/tmp/link#token",
+            )
+            .expect_err("ambient preload override must refuse launch");
+            assert!(error.to_string().contains("runtime config"), "{error}");
+            fs::remove_file(config_path).expect("restore qualified stage");
+        }
     }
 
     #[test]

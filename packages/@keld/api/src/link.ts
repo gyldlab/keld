@@ -56,6 +56,7 @@ import {
   kipcError,
   linkError,
   quitAndCloseLink,
+  stateByteLength,
   type KeldCallError,
   type WorkerReceiveTable,
 } from "../../kipc/src/transport.ts";
@@ -63,7 +64,7 @@ import {
 export type LifecycleEventName = "ready" | "last-window-closed";
 
 function decodeUnitEnum(bytes: Uint8Array): number {
-  if (bytes.length !== 1) {
+  if (stateByteLength(bytes) !== 1) {
     throw kipcError(
       "KELD-IPC-003",
       "lifecycle enum must be a single postcard varint byte",

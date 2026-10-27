@@ -417,7 +417,11 @@ no claim is made (§9).
 - Every main-thread frame passes through the Worker: blocking calls, asynchronous
   calls, outbound EVENTs and every inbound frame. There is no side channel. The two
   directions use different paths. Outbound, main posts each frame to the Worker with
-  `postMessage`, in send order, and the Worker writes it with its one `WriteQueue`.
+  native `MessagePort.postMessage`, in send order, using the existing owned
+  cause/control port in the main-to-Worker direction. The Worker-to-main direction
+  of that port still carries terminal causes; open/kick notifications retain the
+  parent port. No second outbound frame queue or admission owner is introduced.
+  The Worker writes each outbound frame with its one `WriteQueue`.
   The ring does not bound or order outbound frames: they keep KEL-136's per-frame
   `MAX_FRAME_LEN` bound and write order. Inbound, the Worker appends each frame to the
   ring, except the blocking reply, which goes to the reply slot (§4.3).

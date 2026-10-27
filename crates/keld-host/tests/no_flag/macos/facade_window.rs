@@ -141,6 +141,7 @@ const win = new BrowserWindow({
 if (early || !app.isReady() || readyCount !== 1) {
   throw new Error("native Ready/Subscribe completion barrier failed");
 }
+assertStatePhase();
 if (win.id !== 1 || win.isDestroyed() || BrowserWindow.getAllWindows()[0] !== win ||
     win.getSize().join("x") !== "640x480" || seen.join(",") !== "contents,window") {
   throw new Error("public constructor failed host ID, native mirror or event order");
@@ -484,8 +485,32 @@ fn stage_electron(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
     .expect("absolute Electron import");
     let app = serde_json::to_string(&repo.join("packages/@keld/api/src/app.ts").to_string_lossy())
         .expect("absolute API import");
+    let transport = serde_json::to_string(
+        &repo
+            .join("packages/@keld/kipc/src/transport.ts")
+            .to_string_lossy(),
+    )
+    .expect("absolute canonical transport");
+    // This dependency executes before the public API bundle initializes. Its
+    // hooks must not be captured by a second source-path transport instance.
+    fs::write(
+        fixture.project.join("src/state-phase-probe.ts"),
+        include_str!("../../../../../packages/@keld/api/fixtures/window-state-probe.ts"),
+    )
+    .expect("early application dependency state-phase observer");
+    fs::write(
+        fixture.project.join("src/state-phase-observer.ts"),
+        format!(
+            "import {{ WorkerLink, WINDOW_CHANNEL, FrameKind }} from {transport};\n\
+         import {{ observeStateAppliers }} from \"./state-phase-probe.ts\";\n\
+         observeStateAppliers(WorkerLink, WINDOW_CHANNEL, FrameKind);\n"
+        ),
+    )
+    .expect("observer after early dependency and before API");
     let source = format!(
-        "import {{ app, BrowserWindow }} from {electron};\n\
+        "import {{ assertStatePhase }} from \"./state-phase-probe.ts\";\n\
+         import \"./state-phase-observer.ts\";\n\
+         import {{ app, BrowserWindow }} from {electron};\n\
          import {{ getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow }} from {app};\n{ELECTRON_WINDOW_ROLE}"
     );
     crate::renderer_bridge::bundle_public_api_entry(

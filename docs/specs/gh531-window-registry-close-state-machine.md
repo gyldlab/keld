@@ -808,6 +808,19 @@ This permits physical heap storage outside the ring for derived facts. Pending a
 in-flight helper-held facts correspond one-for-one to still-retained same-channel
 event records; their aggregate count is no greater than the matching retained event
 count. Storage metadata and consumed slots do not grow independently of this bound.
+The helper uses private, preinitialized null-prototype own slots with wrapped
+head/count indices. Its capacity is the canonical Worker's normalized
+`min(ringRecords, floor(ringBytes / HEADER_LEN))`, an upper bound already imposed
+by ring admission, rather than an additional quota. Consumed slots are cleared
+before dispatch; neither append/shift history nor inherited numeric setters can
+grow its storage or retain consumed facts. The canonical transport owns the captured
+operations used by the synchronous decode/apply/wake-drain/copy path, including
+failure construction and diagnostics. Private Source maps and iterators stay behind
+that owner during public snapshot copying and terminal clearing. This bounded phase
+is GH527 §4.6; §4.5 liveness still invokes Worker termination synchronously, without
+an arbitrary Worker-prototype immunity guarantee. The macOS guarded primary preloads that same staged
+sidecar before the original entry and rejects a staged runtime config that could
+override preload ordering; an absent sidecar retains legacy direct-entry startup.
 After the transport's earlier-record drain, the helper holds no values at terminal
 finalization. Ordinary consumption may establish this; any additional residual
 clearing needs a reachable lifetime proof. The helper does not retain released payload copies or add an

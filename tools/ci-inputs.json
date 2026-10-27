@@ -507,14 +507,14 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "9eec884c5f28fe96a5e3078c1c8ae3e402e969c1c00ef0259196df2a507c85c8"
+      "sha256": "834f6f7d40e1c4c0c5cabf139e8a7e279acd6254ddaac3e50b6940a288c8b0bb"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "4e282f608799da6b08d148bc9122f2122d0c8b669f37c76444034e1be01c008a"
+      "sha256": "653f6691a9c603bc355d506ca62ea6f36fd6164015694ed45592bf630df34111"
     },
     "policy-readers": {
       "patterns": [

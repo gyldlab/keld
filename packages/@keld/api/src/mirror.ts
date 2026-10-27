@@ -1,5 +1,10 @@
 /** Internal decode/apply/dispatch owner; not an application export (GH-531 §4.d). */
-import { linkError, type WorkerLink } from "../../kipc/src/transport.ts";
+import {
+  linkError,
+  stateApply,
+  stateSlots,
+  type WorkerLink,
+} from "../../kipc/src/transport.ts";
 
 /** Framework-owned facts; each production source requires its own heap/alias review. */
 export interface MirrorSource<Fact> {
@@ -25,18 +30,26 @@ export function attachMirror<Fact>(
   source: MirrorSource<Fact>,
 ): void {
   const channel = source.channel;
-  const decode = source.decode.bind(source);
-  const apply = source.apply.bind(source);
-  const dispatch = source.dispatch.bind(source);
-  // Native shift removes the consumed reference without an ever-growing head index
-  // or history. No released payload copy is retained, and no independent limit or
-  // listener schedule is introduced. Undefined is a valid Fact, not an empty slot.
-  const pending: Fact[] = [];
+  const decode = source.decode;
+  const apply = source.apply;
+  const dispatch = source.dispatch;
+  // Existing ring admission bounds pending + currently dispatched facts. These
+  // private own slots never append/shift or expose storage to application code.
+  const capacity = link.stateFactCapacity;
+  const pending = stateSlots<Fact>(capacity);
+  let head = 0;
+  let count = 0;
   link.setStateApplier(channel, (payload) => {
     try {
-      const fact = decode(payload);
-      apply(fact);
-      pending.push(fact);
+      const fact = stateApply(decode, source, [payload]);
+      stateApply(apply, source, [fact]);
+      if (count >= capacity)
+        throw linkError(
+          "KELD-IPC-005",
+          "mirror pending facts exceed retained ring records",
+        );
+      pending[(head + count) % capacity] = fact;
+      count += 1;
     } catch {
       // WorkerLink owns first-terminal priority and earlier-answer delivery. Only
       // this source boundary is normalized; unrelated transport causes pass through.
@@ -47,14 +60,18 @@ export function attachMirror<Fact>(
     }
   });
   link.onEvent(channel, () => {
-    if (pending.length === 0) {
+    if (count === 0) {
       throw linkError(
         "KELD-IPC-005",
         "mirror dispatch has no applied fact. Attach the mirror before subscribing to host facts.",
       );
     }
-    // Presence is established by length, so an undefined Fact remains exact.
-    const fact = pending.shift() as Fact;
-    dispatch(fact);
+    // Clear before callbacks, including reentrant dispatch. Count owns presence;
+    // undefined remains an exact Fact rather than an empty-slot sentinel.
+    const fact = pending[head] as Fact;
+    pending[head] = undefined;
+    head = (head + 1) % capacity;
+    count -= 1;
+    stateApply(dispatch, source, [fact]);
   });
 }

@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { LifecycleLink, type LifecycleHandler } from "./link.ts";
 import { isCallError, withIoDeadline } from "../../kipc/src/transport.ts";
+import { Worker, MessagePort } from "node:worker_threads";
+import { WorkerLink, FrameKind } from "../../kipc/src/transport.ts";
 import type { WindowEvent } from "./window-codec.ts";
 
 const mode = process.argv[2];
@@ -139,6 +141,81 @@ async function earlierAnswer(): Promise<void> {
     getWindowSnapshots,
     onWindowFactApplied,
   } = await import("./app.ts");
+  // Exercise the actual canonical wake failure path, including the diagnostic
+  // and Worker close message, with application replacements installed.
+  const invoke = Reflect.apply;
+  let inWake = false;
+  let phaseHooks = 0;
+  const restorers: (() => void)[] = [];
+  function replace<T extends object, K extends keyof T>(
+    owner: T,
+    key: K,
+  ): void {
+    const original = owner[key];
+    if (typeof original !== "function")
+      throw new Error("mutation requires a method");
+    owner[key] = function (this: unknown, ...args: unknown[]) {
+      if (inWake) phaseHooks += 1;
+      return invoke(original, this, args);
+    } as T[K];
+    restorers.push(() => {
+      owner[key] = original;
+    });
+  }
+  const originalBlocking = WorkerLink.prototype.callBlocking;
+  WorkerLink.prototype.callBlocking = function (...args) {
+    inWake = true;
+    try {
+      return invoke(originalBlocking, this, args);
+    } finally {
+      inWake = false;
+    }
+  };
+  restorers.push(() => {
+    WorkerLink.prototype.callBlocking = originalBlocking;
+  });
+  const nativeError = Error;
+  globalThis.Error = new Proxy(nativeError, {
+    construct(target, args, newTarget) {
+      if (inWake) phaseHooks += 1;
+      return Reflect.construct(target, args, newTarget);
+    },
+  });
+  restorers.push(() => {
+    globalThis.Error = nativeError;
+  });
+  replace(Object, "defineProperty");
+  replace(String.prototype, "startsWith");
+  replace(String.prototype, "replace");
+  replace(RegExp.prototype, "exec");
+  replace(console, "error");
+  replace(process.stderr, "write");
+  replace(Worker.prototype, "postMessage");
+  replace(MessagePort.prototype, "postMessage");
+  replace(globalThis.Worker.prototype, "terminate");
+  replace(globalThis.Worker.prototype as unknown as { ref(): void }, "ref");
+  replace(globalThis.Worker.prototype, "addEventListener");
+  replace(Atomics, "load");
+  replace(Atomics, "store");
+  replace(Atomics, "add");
+  replace(Atomics, "notify");
+  replace(Atomics, "compareExchange");
+  replace(Atomics, "wait");
+  for (const key of ["Event", "Err"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(FrameKind, key)!;
+    const value = FrameKind[key];
+    Object.defineProperty(FrameKind, key, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        if (inWake) phaseHooks += 1;
+        return value;
+      },
+    });
+    restorers.push(() => {
+      Object.defineProperty(FrameKind, key, descriptor);
+    });
+  }
   const facts: string[] = [];
   onWindowFactApplied((fact) => facts.push(fact.variant));
   await app.whenReady();
@@ -159,6 +236,12 @@ async function earlierAnswer(): Promise<void> {
         maximized: true,
       }),
     /KELD-IPC-005/,
+  );
+  for (const restore of restorers) restore();
+  assert.equal(
+    phaseHooks,
+    0,
+    "actual wake failure must not invoke application replacements",
   );
   assert.deepEqual(await answer, { variant: "ReplyApplied" });
   assert.throws(getWindowSnapshots, /KELD-IPC-005/);
