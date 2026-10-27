@@ -134,8 +134,10 @@ console.log("PASS staged same canonical capture");
       join(repo, "packages/@keld/kipc/src/transport.ts"),
       join(stage, "kipc-transport.ts"),
     );
+    // run() fixes cwd to stage; use the same portable module specifier as the
+    // staged imports instead of a platform-specific absolute filesystem path.
     const preload = await run([
-      `--preload=${join(stage, "kipc-transport.ts")}`,
+      "--preload=./kipc-transport.ts",
       "run",
       join(stage, "main.ts"),
     ]);
@@ -173,7 +175,7 @@ console.log("PASS staged same canonical capture");
     );
     writeFileSync(join(stage, "direct.ts"), direct);
     const directPreload = await run([
-      `--preload=${join(stage, "kipc-transport.ts")}`,
+      "--preload=./kipc-transport.ts",
       "run",
       join(stage, "direct.ts"),
     ]);
