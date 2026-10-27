@@ -332,6 +332,41 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("KEL-167 Linux exact test rejects a zero-test result", () => {
+  const linux = step(
+    fixture(),
+    "check",
+    "Real Linux foreign-owner refusal (KEL-167)",
+  );
+  expect(linux.shell).toBe("bash");
+  if (typeof linux.run !== "string") throw new Error("KEL-167 script missing");
+  expect(linux.run).toContain(
+    "real_linux_second_account_refuses_foreign_owned_project",
+  );
+  const bash =
+    process.platform === "win32"
+      ? "C:\\Program Files\\Git\\bin\\bash.exe"
+      : "bash";
+  const script =
+    'cargo() { printf \'%s\\n\' "$KELD_MOCK_CARGO_STDOUT"; return "$KELD_MOCK_CARGO_EXIT"; }\n' +
+    linux.run;
+  const run = (stdout: string, exitCode = 0) =>
+    Bun.spawnSync([bash, "-c", script], {
+      env: {
+        ...process.env,
+        KELD_MOCK_CARGO_STDOUT: stdout,
+        KELD_MOCK_CARGO_EXIT: String(exitCode),
+      },
+    });
+  expect(
+    run("test result: ok. 0 passed; 0 failed; 1 filtered out").exitCode,
+  ).not.toBe(0);
+  expect(run("test result: ok. 1 passed; 0 failed").exitCode).toBe(0);
+  expect(run("test result: FAILED. 0 passed; 1 failed", 101).exitCode).not.toBe(
+    0,
+  );
+});
+
 test("router contract regression runs independently without releasing its required gate", () => {
   const workflow = fixture();
   const job = workflow.jobs["router-contracts"];

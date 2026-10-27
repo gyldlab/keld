@@ -358,9 +358,15 @@ jobs:
           done
       - name: Real Linux foreign-owner refusal (KEL-167)
         if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
+        shell: bash
         env:
           KELD_REAL_LINUX_OWNER_PROOF: "1"
-        run: cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture
+        run: |
+          set -euo pipefail
+          # An --exact filter with zero selected tests succeeds unless the pass count is checked.
+          out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
       # KEL-19 container spec §5: AC1 on the workspace-built release host. The test
       # fails, never skips, without KELD_PACK_REAL_HOST; Cargo runs it from the package
       # directory, so the path is absolute.
