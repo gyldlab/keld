@@ -1,7 +1,7 @@
 # Spec: macOS synchronous Electron message box over the existing WorkerLink (GH-564)
 
 Status: draft
-Linear: GH-564 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-10-24
+Linear: GH-564 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-10-27
 
 ## 1. Goal & non-goals
 
@@ -154,6 +154,23 @@ Existing GH527 `WorkerLink` local `abandon` is **not** an AppKit
 dismissal; the GH478 same-link nonce/Cancel proposal must satisfy its
 separately approved physical cleanup bound after caller timeout, even
 with delayed Host admission and when JS has already resumed by throwing.
+The expired original `CALL(c_orig)` and the new asynchronous
+`Cancel(c_cancel)` have **distinct correlations and terminal obligations**.
+The Host's ACK/`REPLY(c_cancel)` proves the Cancel disposition only; it
+does **not** retire the WorkerLink's abandoned `c_orig`. For an admitted
+original still pending when native cancellation wins, the same Host
+writer must separately send exactly one canonically registered typed
+`ERR(c_orig)` after its owned cleanup/tombstone, or preserve the genuine
+already-committed `REPLY(c_orig)` if the native click won first. GH527's
+Worker discards that late original terminal from the expired caller but
+releases its abandoned correlation exactly once. On one healthy link,
+**256+1 = 257** sequential caller expiries followed by acknowledged
+cancellation in a deterministic transport/Core test must leave no
+abandoned originals and permit a healthy next call without
+`KELD-IPC-027`. No new user-visible clicked
+index, duplicate original terminal, retry or forged response on a dead
+link is permitted. Physical panel dismissal is an **independent**
+real-Mac acceptance obligation; two well-formed replies cannot prove it.
 
 **S9 — user Cancel versus terminal failure.** A *real* macOS Cancel
 button/Escape mapped by Electron's `cancelId` is the actual numeric
@@ -234,7 +251,9 @@ Renderer isModified(uniqueId) → ipcMain isModified-result
 ```
 
 The invariant is **one Bun role singleton, one Host-minted parent identity,
-one GH478 native panel owner and one correlated CALL result**. Neither
+one GH478 native panel owner and one correlated original CALL terminal**;
+a timed-out original also requires the distinct fresh Cancel CALL response
+specified in S8. Neither
 facade nor renderer mints authority. WebView-to-Bun IPC is separate from
 Bun-to-Host native CALL; renderer `sendSync` is explicitly out of scope.
 
@@ -361,6 +380,21 @@ an application-private variable.
   WorkerLink**, without waiting in user JS, masking the original
   exception or retrying the original side effect. If the existing link
   has died, GH478's Host role-retirement owner must close its panel.
+  The original timed-out `CALL(c_orig)` is distinct from the fresh
+  `Cancel(c_cancel)`: the Host must send the latter's authenticated
+  ACK/`REPLY(c_cancel)` or refusal **and**, for an admitted original
+  still pending, a separate exactly-once registered typed `ERR(c_orig)`
+  when cancellation wins, or retain the actual committed
+  `REPLY(c_orig)` if the native result won first. GH527's Worker
+  discards that late original terminal and releases its abandoned
+  `c_orig` entry; ACK for `c_cancel` alone does not release it.
+  `MAX_ABANDONED_CALLS=256` makes the missing-original-frame mutation
+  observable: on the **257th** sequential timeout/Cancel ACK with no
+  original terminal on one healthy link, it fails with `KELD-IPC-027`.
+  Native cancellation still requires independent physical-dismissal
+  evidence even when both correlation replies were written. On link
+  death, retire Host/native custody without fabricating either reply;
+  unknown nonce or wrong role/generation cannot retire another call.
   Host-side cancellation checks the authenticated role/generation,
   retains a bounded tombstone before queued presentation, prevents
   late UI and releases the real native handle on the UI thread. No
@@ -457,8 +491,9 @@ fresh winning claim, not a direct patch into another issue's worktree.
       singleton/WorkerLink, and tests that distinguish absent/connecting/
       live/terminal states without a second HELLO.
 - [ ] T4: consume GH478's guarded real NSAlert operation, actual parent and
-      clicked-index mapping, and bounded native cleanup on role loss,
-      local `callBlocking` expiry and late Host admission.
+      clicked-index mapping, bounded native cleanup on role loss,
+      local `callBlocking` expiry and late Host admission, plus both the
+      distinct Cancel ACK and original-correlation terminal obligations.
 - [ ] T5: compose the sync UI result and GH527 parked event/mirror semantics
       with >8KiB incoming events; test native default-only completion and
       actual Host Quit/role loss separately.
@@ -485,7 +520,7 @@ when only T3 or T4 has a passing mock.
 | S5 | real >8KiB queued facts, pre-reply state applied before return, listeners later | Dispatch listener during wake or drop last EVENT; exact ordering fails |
 | S6 | exact guard denial, native panel creation census zero | Remove guard before UI and denial/no-panel fails |
 | S7 | Kill authenticated role while real alert outstanding, panel reaped and next call works; old generation Cancel cannot close successor's panel | Drop native cancellation; typed wake still occurs but native census fails |
-| S8 | Delay Host admission past local caller timeout, observe one same-link nonce/Cancel, real panel absent/dismissed within proposed bound and healthy next call; link-loss path/terminal Host remain bounded | Drop Cancel relay, force UI cancellation onto default-mode-only dispatcher or synthesize Cancel: late native handle remains or wrong result appears |
+| S8 | Transport/Core: on one healthy link repeat **256+1 = 257** sequential timed-out `CALL(c_orig)` plus nonce-bound fresh `Cancel(c_cancel)`; observe separate ACK/`REPLY(c_cancel)` and exactly one typed `ERR(c_orig)` (or prior genuine `REPLY(c_orig)`), abandoned count returns to zero and next CALL succeeds. Native Mac: delay Host admission past local timeout, physically dismiss/suppress its panel within the proposed bound, enforce nonce/role fencing, and keep link-loss/terminal Host cleanup bounded | ACK `c_cancel` but omit `ERR(c_orig)`: the 257th abandoned original triggers `KELD-IPC-027`, even if every Cancel ACKs and every panel closes. Double-terminal the original or treat ACK as its disposal: exact correlation/once-only assertion fails. Independently drop native Cancel relay, restrict UI dispatch to default-mode only or synthesize clicked Cancel: visible panel/handle or wrong result fails |
 | S9 | real clicked Cancel=1 while wrong terminal outcome is error | Treat kernel/role failure as ESC press; distinguishable witness fails |
 | S10 | Unmodified draw.io dirty text survives Cancel/failed Save; correlate app Save-success ACK to destruction, then independently reopen the saved file and compare modified bytes | Treat the app ACK as disk proof, omit immediate preventDefault, cross-bind stale Save or skip the independent file read: fail |
 | S11 | GH566 corpus flips only on real Mac pass, frozen lifecycle unchanged | Remove mapped test/keep implementing ticket after pass; validator fails |
@@ -538,8 +573,10 @@ bounded queue and record order, no second buffering layer.
    revise GH478's proposed **600,000 ms** distinct human UI budget,
    **10 s live-link local-timeout native close** and **5 s Host-observed
    role/link-loss native close**. Validate the proposed same-channel
-   `Cancel { nonce }`, bounded tombstone and late-admission ordering on
-   real macOS with GH478/GH527/Core owners. Local Worker `abandon` is
+   `Cancel { nonce }`, distinct Cancel and original CALL terminal frames,
+   257 sequential abandoned-correlation release control, bounded
+   tombstone and late-admission ordering on real macOS with GH478/GH527/Core
+   owners. Local Worker `abandon` is
    insufficient; never replace or extend Host20/Guardian/KIPC clocks.
 2. **GH478 platform-native completion:** approve the exact alert/parentless
    callback scheduling with measured UI-loop cleanup and any required objc2
