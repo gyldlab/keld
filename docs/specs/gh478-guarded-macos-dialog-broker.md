@@ -119,7 +119,8 @@ rejected **before** native presentation (not silently retargeted to a different
 window). The hidden-parent fallback itself is not a grant widening.
 
 **A6 — independent native custody.** Each admitted dialog owns exactly one
-native object, one generation-bound outstanding CALL and one terminal outcome.
+native object, one generation-bound original CALL and its one terminal outcome.
+A later cleanup-only Cancel CALL is separate and never creates a second dialog.
 App/Bun role death, link failure, parent destruction, user cancellation,
 interaction expiry or session terminal Quit causes an observable physical panel
 closure and native callback quiescence, even if the caller is gone. A late
@@ -184,6 +185,16 @@ A purely local Worker `abandon` or typed `KELD-IPC-006` is not sufficient:
 an independently observed same-link Host cancellation and a real AppKit
 close/callback-quiescence witness are mandatory. This is an **unimplemented
 cross-owner gate**, not a current WorkerLink capability.
+The timed-out original `CALL(c_orig)` and subsequent `Cancel(c_cancel)`
+are distinct correlations. An ACK/`REPLY(c_cancel)` proves only the Cancel
+disposition; for a still-pending admitted original, a live Host must
+separately terminate `c_orig` exactly once with a registered `ERR(c_orig)`
+if cancellation won, or preserve an already committed genuine
+`REPLY(c_orig)` if the native result won. The Worker must
+discard that late original terminal frame and release its abandoned entry,
+without treating either terminal frame as proof that a native effect was
+rolled back. The 257th successful timeout/cancellation on one healthy link
+must not hit `KELD-IPC-027` from retained original correlations.
 
 ## 4. Design
 
@@ -384,16 +395,38 @@ remains ambient and is disclosed as forfeited containment.
   without telling AppKit. The proposed fix consumes the **same existing
   WorkerLink and guarded dialog channel**: the facade allocates a nonce
   before sending, and on local timeout/abandon posts an asynchronous,
-  bounded `DialogRequestV1::Cancel { nonce }` over that link before
-  rethrowing the original error. It must not await Cancel from synchronous
-  app code, reuse the timed-out request's correlation or retry its effect.
-  The Host binds Cancel to the authenticated role/generation, marks a
+  bounded `DialogRequestV1::Cancel { nonce }` as a **fresh CALL(c_cancel)**
+  over that link before rethrowing the original error. It must not await
+  Cancel from synchronous app code, reuse `CALL(c_orig)`'s correlation or
+  retry its effect. On original CALL receipt the Host binds the authenticated
+  role/generation, nonce, `c_orig` and parent in bounded custody **before**
+  scheduling UI. The Host binds Cancel to that exact existing owner, marks a
   tombstone and dismisses its owned panel; a cancellation arriving *before*
   queued UI presentation prevents the panel from ever appearing. A later
   success or stale callback cannot overturn the tombstone. A Cancel whose
   nonce was never admitted cannot allocate UI or affect a different role.
   Cleanup is authorized by matching existing ownership even if a previous
   dialog grant was revoked; no new operation gets authorized by Cancel.
+  The single Host writer sends an independent ACK/`REPLY(c_cancel)` or
+  refusal for the Cancel CALL. For a **matched, admitted original still
+  pending**, it additionally sends exactly one original-correlation
+  terminal frame: a registered typed `ERR(c_orig)` once cleanup wins
+  before a native result commits, or the genuine already-committed
+  `REPLY(c_orig)` if the click won first. An unmatched/foreign Cancel
+  cannot affect another original correlation or fabricate its terminal.
+  Never fabricate a clicked Cancel
+  or overwrite a committed result, send duplicate terminals, assume
+  cancelled execution was rolled back, or replay an unknown execution.
+  GH527 WorkerLink currently retains an abandoned `c_orig` until its own
+  `REPLY/ERR(c_orig)` arrives; an ACK for `c_cancel` alone leaves that
+  entry counted toward `MAX_ABANDONED_CALLS=256` and eventually
+  `KELD-IPC-027`. The late original terminal is discarded by the Worker
+  but releases that one reservation exactly once; it does not answer the
+  already-timed-out app caller. On a dead link no terminal can be delivered:
+  role-generation retirement independently clears Host/native custody,
+  with no promise of a wire ACK or original response. Exact typed CallError
+  selection and this guard/wire exception require the GH508/GH527 and
+  GH478 security/Core owners' approval before implementation.
 - **Proposed measured cancellation bound**, requiring joint GH478/GH564
   approval: at most **10 s from a caller's local timeout** to physical
   closure with a healthy existing link, or **5 s from Host-observed role/
@@ -583,7 +616,8 @@ implementation may be labelled a complete GH478 acceptance.
 | A10 | Actual non-macOS typed unsupported, strict vs explicit legacy disclosure | Return fabricated Cancel on unsupported platform: cell fails |
 | A11 | GH566 v44.4.5 expected-fail cells actually run; flip only against native proof | Remove mapped test from execution: manifest admission fails |
 | A12 | Run pinned unmodified draw.io Open/Save/Message argument objects, including present-`undefined` and absent, native UI result/cancel/0-1-2 clicks; show each known option is admitted | Treat all present-`undefined` as unsupported or remove `noLink` allowlist: source-exact valid call fails before panel; accept unknown `bogus:undefined`: pre-UI denial control fails |
-| A13 | Real Mac: delayed Host admission vs Bun `callBlocking` timeout, same-link Cancel/Host tombstone, handle count zero within proposed bound, stale click fenced and healthy next call; second concurrent async call is denied without a second panel | Remove Host cancel relay, skip tombstone or suppress modal-mode cleanup: late panel/leaked handle crosses bound; remove `DialogBusy`: two native panels appear |
+| A13 transport/correlation | Deterministic real WorkerLink/Core fixture: deliver `CALL(c_orig)`, induce `KELD-IPC-006` local timeout/Worker abandon, then `Cancel(c_cancel)` with distinct ACK/`REPLY(c_cancel)` **and** terminal `ERR(c_orig)` (or genuine prior committed `REPLY(c_orig)`); verify original abandoned-id release exactly once, zero retained abandoned entries and next call success after **256+1 = 257** successful timeouts/cancels on one healthy link; dead-link cleanup has no fabricated wire reply | ACK `c_cancel` but omit `ERR(c_orig)`: original abandoned entries accumulate and 257th cleanup closes link with `KELD-IPC-027`; double-terminal `c_orig` or pretend Cancel ACK retires original: independent correlation/once-only assertions fail |
+| A13 native/owner | Real Mac: delay Host-to-UI admission until after Bun `callBlocking` expiry, same-link Cancel and Host tombstone, actual physical panel dismissal or suppressed late presentation, native handle count zero within proposed bound, stale click fenced and healthy next call; separate original/Cancel correlation captures and denied cross-role/generation Cancel; second concurrent async call denied without a second panel | Remove Host Cancel relay or tombstone, suppress modal-mode physical cleanup or permit stale callback: late panel/leaked handle crosses bound despite transport ACK/ERR; remove `DialogBusy`: two native panels appear |
 
 The upstream October 24 Electron oracle ran 75 pinned observations, including
 an *async-positive* reentrancy control. It is **input evidence only**. The
