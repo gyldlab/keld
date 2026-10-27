@@ -77,7 +77,9 @@ second transport or conformance score changes. Actual
    An IPC argument vector additionally has a **16/17 IPC arguments**
    boundary (16 accepted, 17 refused), without restricting ordinary decoded
    result arrays to sixteen elements. All limits apply before unbounded
-   codec-owned traversal, retention, allocation or dispatch.
+   codec-owned traversal, retention, allocation or dispatch **after**
+   JS engine key enumeration. The visit count alone does not qualify
+   bounded pre-return engine scratch; that implementation gate remains open.
 7. **V7, copies and layers:** Mutating the caller's value after encode
    or the input `Uint8Array` after decode leaves the returned owned
    result unchanged. Host forwards the opaque byte sequence without
@@ -212,6 +214,22 @@ Neither Proxy metadata, a local error nor successful serialization
 is a Host authority or `NotDispatched` receipt: the existing Host
 authentication/guard/navigation owners alone authorize forwarding.
 
+**Pre-enumeration intrinsic budget (implementation blocker):** Even for
+ordinary non-Proxy objects, Reflect.ownKeys materializes a complete
+engine-owned key list before the codec can inspect its count. Large
+objects may therefore cause scratch allocation and enumeration beyond
+the 256-visit post-return limit; malicious Proxy traps can do still
+more work. A returned-list length check prevents additional
+codec-controlled retention/sorting/descriptor work but **does not**
+prove a whole-runtime heap, CPU, or allocation bound. Before enabling
+any public implementation, the GH540/GH544 resource owners MUST
+approve and independently verify either a finite engine enumeration
+admission strategy or a supported tighter input policy with source
+and real runtime memory/CPU high-water controls. If that proof cannot
+be obtained, V6 and the codec implementation remain **BLOCKED**;
+do not infer product safety from a 256-visit unit check, an
+unexecuted specification, or a locally caught exception.
+
 Failures use three typed semantic classes:
 `UnsupportedValue(type)`, `MalformedValue(reason)`,
 `CodecLimit(bound)`. Existing canonical error-registry owner
@@ -296,9 +314,14 @@ array tag, selects the tighter argument rule.
 For tag-07 own-data objects, **127 keys** with sorted four-byte ASCII
 names k000 through k126 and null values encode in 892 bytes and consume
 128 value nodes plus 127 property-key visits (255 aggregate visits):
-admit this otherwise-valid control. **128 keys** named k000 through
-k127 encode in 899 bytes with 129 value nodes but 257 aggregate
-visits and MUST refuse.
+admit this otherwise-valid control. For an **exact-256-visit positive**,
+replace only the value of k126 with an array containing one null. That
+adds three bytes, yielding 895 encoded bytes, 129 tagged value nodes
+and 127 property-key visits (exactly 256 aggregate visits); both
+encoder and decoder MUST accept it. A mutant that refuses
+visits equal to 256 instead of only exceeding 256 must fail this test.
+**128 keys** named k000 through k127 encode in 899 bytes with
+129 value nodes but 257 aggregate visits and MUST refuse.
 k000 through k253 still encode in only 1,781 bytes, with 255 value
 nodes but 509 aggregate visits, and MUST refuse despite passing the
 4,096-byte and 256-value-node ceilings. These byte/visit counts are
@@ -379,7 +402,7 @@ link, resource handle or application-facing API export.
 | V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
 | V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
 | V5 | Independent 16-byte U+E000/U+10000 and 12-byte `aa`/`z` raw UTF-8 positives in both builds; corresponding wrong UTF-16 and wrong length-prefix order `MalformedValue` negatives; other hostile tags/keys and unchanged prototype | Mutate to JS default `.sort()` or length-prefixed-key sort (respective golden fails), or accept either reversed key order (typed negative fails) |
-| V6 | Independent 4096/4097 bytes, depth 16/17 (root included), value nodes 256/257, aggregate value/property visits 255/257 (127/128 own keys), extra 254-key/509-visit negative, and 16/17 IPC arguments at the selected arguments-root boundary; allow a generic 17-item result array. Encoder/decoder reject over-budget work before dispatch; Proxy traps can run before returning but do not grant Host authority. | Mutations: omit the IPC arguments cap (17 null args must fail), omit property-key charging (128 and 254 null-key objects must fail), retain a property descriptor before budget admission, or treat a Proxy trap as trusted Host admission. |
+| V6 | Independent 4096/4097 bytes, depth 16/17 (root included), value nodes 256/257, aggregate value/property visits 255/256/257 (127-key nulls, exact-256-visit positive, 128-key nulls), extra 254-key/509-visit negative, and 16/17 IPC arguments at the selected arguments-root boundary; allow a generic 17-item result array. Encoder/decoder reject over-budget work before dispatch; Proxy traps can run before returning but do not grant Host authority. | Mutations: reject exactly 256 visits instead of only over-limit (the exact positive MUST fail), omit the IPC arguments cap (17 null args must fail), omit property-key charging (128 and 254 null-key objects must fail), retain a property descriptor before budget admission, or treat a Proxy trap as trusted Host admission. |
 | V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
 | V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
 
