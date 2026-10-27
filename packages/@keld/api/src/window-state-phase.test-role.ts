@@ -87,6 +87,66 @@ if (mode === "lifecycle-length") {
   console.log(JSON.stringify({ mode, hits, variant: "Created" }));
   process.exit(0);
 }
+if (mode === "public-copy-slot") {
+  attachMirror(link, source);
+  state(bytes);
+  dispatch();
+  state(
+    encodeWindowEvent({
+      variant: "Created",
+      window: { id: 3, incarnation: 900n },
+      state: {
+        bounds: { x: 0, y: 0, width: 800, height: 600 },
+        focused: false,
+        maximized: false,
+        full_screen: false,
+      },
+      pending_close: null,
+    }),
+  );
+  dispatch();
+  const original = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  let snapshots: ReturnType<WindowSource["all"]> | undefined;
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true,
+    set() {
+      hits += 1;
+    },
+  });
+  try {
+    snapshots = source.all();
+  } finally {
+    if (original) Object.defineProperty(Array.prototype, "0", original);
+    else delete Array.prototype[0];
+  }
+  const first = snapshots[0];
+  const second = snapshots[1];
+  const index = Object.getOwnPropertyDescriptor(snapshots, "0");
+  const length = Object.getOwnPropertyDescriptor(snapshots, "length");
+  if (
+    hits !== 0 ||
+    snapshots.length !== 2 ||
+    first?.window.id !== 3 ||
+    second?.window.id !== 7 ||
+    first !== source.get({ id: 3, incarnation: 900n }) ||
+    second !== source.get({ id: 7, incarnation: 300n }) ||
+    Object.getPrototypeOf(snapshots) !== Array.prototype ||
+    !Object.isFrozen(snapshots) ||
+    index?.value !== first ||
+    index.writable !== false ||
+    index.enumerable !== true ||
+    index.configurable !== false ||
+    length?.value !== 2 ||
+    length.writable !== false ||
+    length.enumerable !== false ||
+    length.configurable !== false
+  )
+    throw new Error(
+      `public snapshot copy changed: count=${snapshots.length}; setterCalls=${hits}`,
+    );
+  console.log(JSON.stringify({ mode, hits, variant: "Created" }));
+  process.exit(0);
+}
 if (mode === "view-custody") {
   const nativeUint8 = Uint8Array;
   const nativeInt32 = Int32Array;

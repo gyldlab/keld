@@ -11,6 +11,7 @@ for (const mode of [
   "brand",
   "invocation",
   "inherited-slot",
+  "public-copy-slot",
   "failure-error",
   "failure-define",
   "failure-startsWith",
@@ -26,7 +27,11 @@ for (const mode of [
   "err-textdecoder",
   "err-decode",
 ]) {
-  test(`state phase does not call replaced ${mode}`, async () => {
+  const name =
+    mode === "public-copy-slot"
+      ? "public Source.all copy ignores inherited numeric setters"
+      : `state phase does not call replaced ${mode}`;
+  test(name, async () => {
     const child = Bun.spawn(
       [
         process.execPath,

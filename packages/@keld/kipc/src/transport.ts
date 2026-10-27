@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:3b53d505c0fc608d89c59c263901c4ee3bc96dd006e27efb79a30d59c6573940
+// @keld/kipc-transport sha256:0f6e7006aa6abec3f77f31131d4e5d8e2f5ac85daf2d336a6a462d1aca383cf2
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -146,7 +146,13 @@ export function stateMapValues<K, V>(map: ReadonlyMap<K, V>): V[] {
       [],
     ) as IteratorResult<V>;
     if (step.done) return values;
-    values[values.length] = step.value;
+    intrinsicDefineProperty(values, values.length, {
+      __proto__: null,
+      value: step.value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
   }
 }
 /** @internal Native Source census. */
