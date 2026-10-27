@@ -487,6 +487,8 @@
         "crates/keld-host/tests/no_flag/windows/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
+        "crates/keld-host/tests/no_flag/macos/facade_window.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
         "crates/keld-update/src/windows_extraction/tests/readback_integrity.rs",
         "crates/keld-update/src/windows_extraction/tests/root_admission.rs",
@@ -519,7 +521,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "8ffe7700a02645c97b63e046908342c47de5f0b73e04fb3ffc6575d06d513b85"
+      "sha256": "f509e0a1a7f0ea90f3cc7201b401d4e53101f61450b5a92a746dd2830d63e3c3"
     },
     "audit-readers": {
       "patterns": [
