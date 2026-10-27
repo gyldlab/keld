@@ -48,7 +48,7 @@
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
 
-use navigation_diagnostics::FirstNavigationDiagnostic;
+use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -80,7 +80,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile4;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     COREWEBVIEW2_WEB_ERROR_STATUS, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
+    ICoreWebView2_2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
     ICoreWebView2EnvironmentOptions,
 };
 #[cfg(test)]
@@ -92,7 +92,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{
     BrowserProcessExitedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    DOMContentLoadedEventHandler, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler,
 };
 #[cfg(all(feature = "media-acceptance", test))]
 use webview2_com::{PermissionRequestedEventHandler, wait_with_pump};
@@ -2217,8 +2218,12 @@ fn install_app_navigation_handler(
     diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     wake: EventLoopProxy<WindowsLoopEvent>,
 ) -> Result<(), WvError> {
+    let starting_diagnostic = Arc::clone(&diagnostic);
+    let diagnostic_for_observer = Arc::clone(&diagnostic);
+    let dom_diagnostic = Arc::clone(&diagnostic);
+    let dom_registration_diagnostic = Arc::clone(&diagnostic);
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-        let (completion, web_error) = if let Some(args) = args {
+        let (completion, web_error, navigation_id) = if let Some(args) = args {
             // SAFETY: WebView2 invokes the handler on the creating STA with live
             // COM event args and writes IsSuccess into a local BOOL out-parameter.
             let mut succeeded = BOOL::default();
@@ -2235,10 +2240,22 @@ fn install_app_navigation_handler(
             } else {
                 None
             };
-            (result, status)
+            // SAFETY: WebView2 owns the navigation args during this STA
+            // callback. Only the opaque ID is read, never a URI or content.
+            let mut id = 0_u64;
+            let navigation_id = unsafe { args.NavigationId(&raw mut id) }.map(|()| id);
+            (result, status, navigation_id)
         } else {
-            (Err(windows::core::Error::from(E_POINTER)), None)
+            (
+                Err(windows::core::Error::from(E_POINTER)),
+                None,
+                Err(windows::core::Error::from(E_POINTER)),
+            )
         };
+        diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_completed_id(navigation_id);
         dispatch_app_navigation_completion_with_proxy(
             completion,
             web_error,
@@ -2254,7 +2271,66 @@ fn install_app_navigation_handler(
     // SAFETY: `webview` and the callback are created and registered on the
     // engine STA. WebView2 retains the handler for the webview lifetime.
     unsafe { webview.add_NavigationCompleted(&handler, &raw mut token) }
-        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))
+        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))?;
+
+    // Observe the first real NavigationStarting callback before any content
+    // is dispatched. Do not read or emit its URL, origin, or frame content.
+    let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        // SAFETY: NavigationStarting supplies live event-local COM args on
+        // this same STA. Read the identity only; no URL or frame data.
+        let navigation_id = if let Some(args) = args {
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        starting_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_starting(navigation_id);
+        Ok(())
+    }));
+    let mut starting_token = 0_i64;
+    // SAFETY: callback, COM webview and token remain on their creating STA;
+    // WebView2 retains the registered handler for the webview lifetime.
+    let registered =
+        unsafe { webview.add_NavigationStarting(&starting_handler, &raw mut starting_token) };
+    // The observer is diagnostic only (unlike the NavigationCompleted handler
+    // above, which gates Ready), so a failed registration is recorded in the
+    // first-navigation snapshot instead of failing webview creation.
+    record_navigation_start_registration(registered, &diagnostic_for_observer);
+
+    // This observer is diagnostic only. It distinguishes an HTML document
+    // parsed on the browser process from subsequent image/resource completion.
+    // It must never add a new startup failure, permission, or COM authority.
+    let dom_handler = DOMContentLoadedEventHandler::create(Box::new(move |_, args| {
+        let navigation_id = if let Some(args) = args {
+            // SAFETY: WebView2 supplies event-local COM args on the owning
+            // STA; the opaque ID is copied into a temporary stack value.
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        dom_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_content_loaded(navigation_id);
+        Ok(())
+    }));
+    let mut dom_token = 0_i64;
+    // SAFETY: the COM interface, handler, and registration token are live on
+    // the creating STA. WebView2 retains the handler after this call.
+    let registered_dom = webview
+        .cast::<ICoreWebView2_2>()
+        .and_then(|v2| unsafe { v2.add_DOMContentLoaded(&dom_handler, &raw mut dom_token) });
+    if let Err(error) = registered_dom {
+        dom_registration_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_registration_failed(&error);
+    }
+    Ok(())
 }
 
 /// One live webview and the host window it fills (v0: one per window).
@@ -4458,6 +4534,55 @@ mod tests {
     }
 
     #[test]
+    fn pre_dispatch_completed_callback_never_sends_application_ready() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{self, TryRecvError};
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        diagnostic.lock().unwrap().dispatch_attempted();
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(super::AppWindowEvent::NavigationReady)
+        ));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn com_callback_error_wakes_ui_loop_and_finishes_with_typed_navigation_failure() {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4468,6 +4593,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Err(windows::core::Error::from(
                 windows::Win32::Foundation::E_POINTER,
@@ -4543,6 +4669,9 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        // Simulate shipping's initial navigate_initial() attempt before
+        // injecting the native COM error into the real Tao proxy.
+        diagnostic.lock().unwrap().dispatch_attempted();
 
         super::dispatch_app_navigation_completion_with_proxy(
             Err(windows::core::Error::from(
@@ -4615,6 +4744,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Ok(true),
             None,
