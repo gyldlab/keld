@@ -3,8 +3,10 @@
 
 The #891 triage queue is bound by exact bytes: any change to it, including a
 regeneration by the fixed generator, fails closed until it is reviewed and
-QUEUE_SHA256 is rebound in the same change. Only explicitly reviewed source blobs receive a disposition in the 322-path
-integration snapshot. A PR or a passing suite alone never marks a file reviewed.
+QUEUE_SHA256 is rebound in the same change. Only explicitly reviewed source blobs
+receive a disposition in the integration snapshot; its path count is read from
+the ledger summary, not restated here, so a later ledger refresh cannot leave
+this docstring stale. A PR or a passing suite alone never marks a file reviewed.
 """
 from __future__ import annotations
 
