@@ -71,9 +71,13 @@ second transport or conformance score changes. Actual
    duplicate/unordered map keys, invalid UTF-8, reserved prototype key
    and malformed nested value refuse without writing to a prototype.
 6. **V6, bounds:** Exact encoded byte boundary 4096 accepts and 4097
-   refuses (otherwise valid value); depth 16/17 (root level 1, including the outer args array) and total value
-   nodes 256/257 accept/refuse. All checks precede unbounded
-   traversal, allocation or dispatch.
+   refuses (otherwise valid value); depth 16/17 (root level 1,
+   including the outer args array), value nodes 256/257, and
+   **aggregate value/property visits** 256/257 independently accept/refuse.
+   An IPC argument vector additionally has a **16/17 IPC arguments**
+   boundary (16 accepted, 17 refused), without restricting ordinary decoded
+   result arrays to sixteen elements. All limits apply before unbounded
+   codec-owned traversal, retention, allocation or dispatch.
 7. **V7, copies and layers:** Mutating the caller's value after encode
    or the input `Uint8Array` after decode leaves the returned owned
    result unchanged. Host forwards the opaque byte sequence without
@@ -168,20 +172,41 @@ and *before* any transport admission; decoder checks input bytes
 with the root value at level 1; when encoding IPC arguments, the outer
 args array is that root and consumes one level. Every nested value,
 including a scalar leaf, consumes the next level. Total decoded value
-nodes (including root and containers) <=256, declared count
-<=remaining node budget **before allocation**, exact input
-consumption and strict canonical forms. No unbounded recursion,
+nodes (including root and containers) <=256, independently from
+the GH540 aggregate **value/property visits** budget <=256.
+Each tagged value (including root and nested array elements) consumes
+one value visit; each own object **property key consumes one visit**
+before its descriptor or value is retained. Encoder count preflight
+charges key visits and expected child-node visits before sorting or
+copying keys. Decoder object count preflight charges both node and key
+visits before allocating decoded properties. Array indices already
+count as tagged child value nodes rather than being double-charged as
+synthetic property keys. Both budgets are checked independently.
+Declared counts must fit the remaining budgets **before allocation**.
+Require exact input consumption and strict canonical forms. No unbounded recursion,
 arrays or `TextDecoder` replacement. Root tags cannot be
 concatenated.
+
+**IPC caller boundary:** When the root represents an IPC argument vector,
+the owning send/invoke/reply argument adapter MUST check at most
+**16 arguments** before codec serialization, forwarding or dispatch;
+the receiving call adapter also refuses 17 arguments. This
+IPC argument vector condition is **not arbitrary** array decoding:
+a generic value/result array can contain more than sixteen elements
+when the separate node/visit/depth/byte limits permit it. No second
+codec, queue or credit allowance is introduced.
 
 **Proxy execution limit:** JavaScript Proxy `ownKeys` and
 `getOwnPropertyDescriptor` traps can run arbitrary code merely from
 enumeration, including when probing an Error. The codec cannot
 reliably recognize every Proxy, prevent trap side effects or bound
 a trap's execution time/allocations. After each trap **returns**,
-enforce incremental remaining key/node/depth/output-byte limits
-before accepting its next descriptor or accumulating more codec
-state; reject over-budget or throwing trap results. These limits
+enforce incremental remaining key/node/depth/output-byte limits:
+check returned key-count against the remaining property/value budget
+before sorting, copying or requesting the next descriptor; then
+charge each accepted key and tagged child value before retaining it.
+Error own-field descriptor probes also consume property visits.
+Reject over-budget or throwing trap results. These limits
 bound only **codec-owned** work and memory, not arbitrary Proxy JS.
 Neither Proxy metadata, a local error nor successful serialization
 is a Host authority or `NotDispatched` receipt: the existing Host
@@ -258,6 +283,30 @@ instead must fail the positive 12-byte golden. Both mutants
 must fail even if Bun and renderer share the same wrong
 implementation and pass source-identity checks.
 
+**Independent GH540 argument/visit boundary controls (not executed codec
+proof):** An IPC arguments root with 16 null items is 19 encoded bytes
+(one array tag, two count bytes, sixteen null tags) and 17 value nodes:
+the caller-specific 16-argument limit admits it. Seventeen null items
+remain only 20 encoded bytes, 18 value nodes and depth 2, yet the IPC
+caller MUST refuse the 17th argument before dispatch. The same
+17-element array as a *single generic data/result value* stays
+permitted under the other bounds; an IPC-root context, not an ordinary
+array tag, selects the tighter argument rule.
+
+For tag-07 own-data objects, **127 keys** with sorted four-byte ASCII
+names k000 through k126 and null values encode in 892 bytes and consume
+128 value nodes plus 127 property-key visits (255 aggregate visits):
+admit this otherwise-valid control. **128 keys** named k000 through
+k127 encode in 899 bytes with 129 value nodes but 257 aggregate
+visits and MUST refuse.
+k000 through k253 still encode in only 1,781 bytes, with 255 value
+nodes but 509 aggregate visits, and MUST refuse despite passing the
+4,096-byte and 256-value-node ceilings. These byte/visit counts are
+independent arithmetic fixtures; actual codec encoding/decoding and
+zero-dispatch must be separately proved. Neither a key-free node
+counter nor the 16-element general-array restriction is equivalent
+to the selected contracts.
+
 **Cross-spec depth boundary (GH540 §4.8):** Let `A0 = null` and
 `An = [A(n-1)]`. `A15` is 15 nested arrays followed by one null leaf:
 its root args array is level 1 and its leaf is level 16. Encode and
@@ -330,7 +379,7 @@ link, resource handle or application-facing API export.
 | V3 | Root+nested forbidden type table, zero sends | Accept Function/Symbol/Map/Buffer or defer failure to Host |
 | V4 | Cycle, `[x,x]`, invalid Date, sparse; each Error own `name`/`message`/`stack` accessor must fail typed with getter counter **0** | Replace descriptor reads with `error.stack`/`error.name`, invoking an accessor |
 | V5 | Independent 16-byte U+E000/U+10000 and 12-byte `aa`/`z` raw UTF-8 positives in both builds; corresponding wrong UTF-16 and wrong length-prefix order `MalformedValue` negatives; other hostile tags/keys and unchanged prototype | Mutate to JS default `.sort()` or length-prefixed-key sort (respective golden fails), or accept either reversed key order (typed negative fails) |
-| V6 | Exact length 4096/4097, depth 16/17 (root level 1, outer args array included), nodes 256/257 with bounded codec allocation; instrument Proxy `ownKeys`/descriptor traps to prove effects may occur but never imply Host grant | Omit returned-descriptor incremental bound or treat a Proxy trap as trusted Host admission |
+| V6 | Independent 4096/4097 bytes, depth 16/17 (root included), value nodes 256/257, aggregate value/property visits 255/257 (127/128 own keys), extra 254-key/509-visit negative, and 16/17 IPC arguments at the selected arguments-root boundary; allow a generic 17-item result array. Encoder/decoder reject over-budget work before dispatch; Proxy traps can run before returning but do not grant Host authority. | Mutations: omit the IPC arguments cap (17 null args must fail), omit property-key charging (128 and 254 null-key objects must fail), retain a property descriptor before budget admission, or treat a Proxy trap as trusted Host admission. |
 | V7 | Encode then mutate caller object and decoder byte source; output unchanged; Host opaque W12 | Retain mutable caller/transport memory or parse value tag in Rust |
 | V8 | Small `reqId`+Error data endpoint fixture, conformance score unchanged | Drop `reqId`, silently map Error to `{}` |
 
@@ -356,7 +405,9 @@ never inferred from a codec-only test.
 ## 9. Perf impact
 
 No performance gain claimed. An admitted value uses <=4096
-encoded bytes, <=16 depth (root level 1) and <=256 nodes; later code must
+encoded bytes, <=16 depth (root level 1), <=256 value nodes and <=256
+aggregate value/property visits, with <=16 arguments for IPC callers;
+later code must
 measure transient scratch/renderer bundle size and mutation
 cost. GH540 owns whole-hop quota, envelope and backpressure;
 GH544 cannot raise them or add another Worker/pump/queue.
