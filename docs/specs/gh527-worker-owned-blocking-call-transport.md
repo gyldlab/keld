@@ -1021,7 +1021,7 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     reply; only still-pending calls are answered. Physical Native owners/leases
     remain until Drained. IPC024 is reserved for calls newly read by the post-Quit
     drain, which are never executed.
-  - *Quit* (macOS and Linux). The FS drain stays unbounded, so every admitted
+  - *Quit* (macOS, Linux and Windows). The FS drain stays unbounded, so every admitted
     handler finishes and sends its real reply (KEL-130 durability). After the real
     `Quit` REPLY and that drain, the reader reads on until the role ends the link:
     the role's EOF is the drain's normal end. Each CALL received on
