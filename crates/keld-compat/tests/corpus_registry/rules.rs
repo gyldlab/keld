@@ -571,7 +571,7 @@ fn exact_cross_crate_target_validates_package_path_and_recursion() {
 
 #[test]
 fn exact_case_selection_and_platform_filter_fail_closed() {
-    use crate::corpus_admission::{run_exact_case, rust_case_passed, target_eligible};
+    use crate::corpus_admission::{rust_case_passed, target_eligible};
     use crate::corpus_manifest::MODULE_PROCESS_V1;
     let corpus = Corpus::load(&MODULE_PROCESS_V1).expect("validated module/process corpus");
     let host = corpus
@@ -592,10 +592,40 @@ fn exact_case_selection_and_platform_filter_fail_closed() {
         "test missing ... ok\ntest missing ... ok\n",
         "missing"
     ));
+    for detail in ["cannot spawn cargo", "compilation failed"] {
+        let unrelated = Err(CorpusError::RunnerFailed {
+            target: "no_flag_macos".to_owned(),
+            detail: detail.to_owned(),
+        });
+        assert!(
+            !is_zero_selected(&unrelated),
+            "unrelated runner failure cannot prove zero selection: {detail}"
+        );
+    }
+    let selected_nothing = Err(CorpusError::RunnerFailed {
+        target: "no_flag_macos".to_owned(),
+        detail: "exit exit status: 0. stdout:\nrunning 0 tests\n".to_owned(),
+    });
+    assert!(
+        is_zero_selected(&selected_nothing),
+        "a zero-selection detail must be recognized"
+    );
+}
+
+/// The oracle is the runner's observed libtest output, not merely its error type.
+fn is_zero_selected(result: &Result<String, CorpusError>) -> bool {
+    matches!(result, Err(CorpusError::RunnerFailed { detail, .. })
+        if detail.lines().any(|line| line.trim() == "running 0 tests"))
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_exact_missing_selector_rejects_zero_selected_tests() {
+    use crate::corpus_admission::run_exact_case;
     let wrong = run_exact_case("keld-host", "no_flag_macos", "gh569_nonexistent_exact_case");
     assert!(
-        matches!(wrong, Err(CorpusError::RunnerFailed { .. })),
-        "zero selected tests must fail admission: {wrong:?}"
+        is_zero_selected(&wrong),
+        "missing selector must run and report zero selected tests: {wrong:?}"
     );
 }
 
