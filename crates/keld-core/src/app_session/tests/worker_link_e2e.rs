@@ -418,8 +418,8 @@ fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
             .expect("UI Quit"),
         AppWindowCommand::Quit
     );
-    // The later echo CALL is a byte after the Quit REPLY: on Windows that is
-    // finding W1 (gh527 §10), which the helper asserts.
+    // The later echo CALL arrives after the Quit REPLY; the post-Quit drain
+    // reads it on every OS, so the router shuts down cleanly.
     assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 

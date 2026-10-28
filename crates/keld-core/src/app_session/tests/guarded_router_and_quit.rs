@@ -212,10 +212,8 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
 /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
 /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
 /// wait.
-/// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
-/// does not hold there today (gh527 §10, T5 finding).
 #[test]
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
     let (t, client) = guarded_test_router();
     let mut writer = client.try_clone().expect("flooding writer");
@@ -282,11 +280,9 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 /// Quit tail sends only after it has closed the link. So what it reads
 /// depends only on what the close keeps.
 ///
-/// Windows states today's behaviour (#528 T5, finding W1 in gh527 §10):
-/// Windows has no post-Quit drain. Its tail reads the buffered FS CALL as a
-/// fault and closes, so no `KELD-IPC-024` is written. The close keeps the
-/// unread Quit REPLY (#1073 W2), so the client reads only that REPLY. The
-/// FS CALL still never runs. The W1 fix flips this to the Unix expectation.
+/// Every OS expects the same frames: Windows runs the same post-Quit drain
+/// since the W1 fix (#1073, gh527 §10), and its close keeps the unread
+/// frames (#1073 W2).
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_received_calls_with_024_and_runs_none() {
@@ -350,20 +346,15 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
         CorrelationId(20),
         String::from("Quit"),
     );
-    let expected = if cfg!(windows) {
-        // W1 wrote no 024; the close kept the unread REPLY.
-        vec![quit_reply]
-    } else {
-        vec![
-            quit_reply,
-            (
-                FrameKind::Err,
-                FS_CHANNEL,
-                CorrelationId(21),
-                String::from("KELD-IPC-024"),
-            ),
-        ]
-    };
+    let expected = vec![
+        quit_reply,
+        (
+            FrameKind::Err,
+            FS_CHANNEL,
+            CorrelationId(21),
+            String::from("KELD-IPC-024"),
+        ),
+    ];
     assert_eq!(
         frames, expected,
         "the Quit REPLY, then only the FS CALL is answered"
@@ -378,28 +369,12 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 
-/// Joins a router whose role wrote a CALL after its accepted Quit. Unix
-/// drains that CALL and shuts down cleanly. Windows states today's behaviour
-/// (#528 T5, finding W1 in gh527 §10): its Quit tail
-/// (`await_windows_quit_peer_close_until`) treats any byte after the Quit
-/// REPLY as a fault, so the router's join reports `KELD-CORE-037`. The UI
-/// still quits. The W1 fix, tracked by #1073, flips this to the Unix
-/// expectation.
+/// Joins a router whose role wrote a CALL after its accepted Quit. The
+/// post-Quit drain answers that CALL, so the router shuts down cleanly on
+/// every OS (Windows since the W1 fix, #1073, gh527 §10).
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn assert_router_shutdown_after_quit_with_trailing_call(router: PrimaryRouter) {
-    let shutdown = router.shutdown();
-    if cfg!(windows) {
-        let error = shutdown.expect_err("W1: the Windows Quit tail faults on a trailing CALL");
-        assert_eq!(error.code(), "KELD-CORE-037", "{error:?}");
-        assert!(
-            error
-                .to_string()
-                .contains("app sent bytes after the terminal Quit reply"),
-            "{error}"
-        );
-    } else {
-        shutdown.expect("router shutdown after Quit");
-    }
+    router.shutdown().expect("router shutdown after Quit");
 }
 
 /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
@@ -411,9 +386,8 @@ fn assert_router_shutdown_after_quit_with_trailing_call(router: PrimaryRouter) {
 /// order, and none runs. *Negative control:* checking the idle deadline
 /// before every read (as the earlier timer-window drain did) answers none
 /// of them.
-/// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
-/// finding), and this case also half-closes the client, which a named
-/// pipe cannot do.
+/// Unix only by OS fact (#528 T5): the role half-closes the link, which a
+/// named pipe cannot do, because closing a pipe handle ends both directions.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
