@@ -137,6 +137,7 @@ def _job_measurements(job, attempt, run_id, head_sha):
         "runner_assignment_observed": runner_assignment_observed,
         "labels": job.get("labels"),
         "inherited_previous_attempt": False,
+        "latest_attempt_attribution_unverified": False,
         "steps": steps,
     }
 
@@ -172,28 +173,36 @@ def _complete_jobs(attempt, pages, run_id, head_sha):
     return jobs
 
 
-def _attempt_summary(number, pages, run_id, head_sha, seen_before):
+def _attempt_summary(number, pages, run_id, head_sha, seen_before,
+                     latest_attempt=False, latest_started_at=None):
     jobs = _complete_jobs(number, pages, run_id, head_sha)
     for job in jobs:
-        original = seen_before.get(job["id"])
-        if original is not None and all(
-            job[key] == original[key] for key in
-            ("created_at", "started_at", "completed_at", "name", "conclusion")
-        ):
-            # A rerun API page can carry a previous successful job without
-            # executing it again. Retain its status, but do not bill work twice.
+        if job["id"] in seen_before:
+            # A job ID already seen in an earlier attempt cannot attest fresh
+            # execution, even when the API changes its timestamps or outcome.
+            # Preserve the reported fields but do not bill work twice.
             job["inherited_previous_attempt"] = True
             job["queued_seconds"] = None
             job["execution_seconds"] = None
+        if latest_attempt:
+            created = _timestamp(job["created_at"], "job.created_at")
+            if latest_started_at is None or created is None or created < latest_started_at:
+                # A new ID is still unverified work if its timestamps predate
+                # this rerun (or the rerun start is unknown). Retain its raw
+                # evidence without charging the latest attempt for its work.
+                job["latest_attempt_attribution_unverified"] = True
+                job["queued_seconds"] = None
+                job["execution_seconds"] = None
     ordered = [item for item in jobs if item["time_quality"] == "ordered"]
     valid = [item for item in ordered if item["execution_seconds"] is not None]
     gates = [item for item in jobs if item["name"] == "CI required"]
-    # A job repeated verbatim by the rerun API did not execute in this
-    # attempt. It cannot attest a new required result or completion time.
+    # Repeated or temporally unverified jobs cannot attest a fresh required
+    # result or completion time. Both classes remain visible in raw jobs.
     gate = (
         gates[0] if len(gates) == 1
         and gates[0]["time_quality"] == "ordered"
         and not gates[0]["inherited_previous_attempt"]
+        and not gates[0]["latest_attempt_attribution_unverified"]
         else None
     )
     result = gate["conclusion"] if gate else None
@@ -209,6 +218,9 @@ def _attempt_summary(number, pages, run_id, head_sha, seen_before):
         "attempt": number,
         "job_count": len(jobs),
         "timed_job_count": len(valid),
+        "unverified_latest_attempt_job_count": sum(
+            job["latest_attempt_attribution_unverified"] for job in jobs
+        ),
         "timing_anomalies": len(jobs) - len(ordered),
         "skipped_job_count": sum(item["conclusion"] == "skipped" for item in jobs),
         "unassigned_cancelled_job_count": sum(
@@ -260,9 +272,13 @@ def analyse_run(run, jobs_pages_by_attempt):
         )
     attempts = []
     seen_before = {}
+    latest_started_at = _timestamp(run.get("run_started_at"), "run.run_started_at")
     for number in sorted(expected):
-        attempt = _attempt_summary(number, jobs_pages_by_attempt[number], run_id,
-                                   head_sha, seen_before)
+        attempt = _attempt_summary(
+            number, jobs_pages_by_attempt[number], run_id, head_sha, seen_before,
+            latest_attempt=maximum > 1 and number == maximum,
+            latest_started_at=latest_started_at,
+        )
         for job in attempt["jobs"]:
             seen_before[job["id"]] = job
             if job["name"] == "CI required" and job["time_quality"] == "ordered":
@@ -310,6 +326,9 @@ def analyse_run(run, jobs_pages_by_attempt):
             "sum of observed runner execution seconds is NOT billed runner-minutes",
             "timestamp-inconsistent rerun records are retained but excluded "
             "from that attempt's work/queue totals; attribution unknown",
+            "jobs created before the latest rerun or with unavailable rerun "
+            "start are retained but excluded from that attempt's work, queue "
+            "and required-gate evidence",
             "cancelled jobs without runner assignment retain their result "
             "and raw clocks, but have no observed queue/execution duration",
             "workflow-run created_at is not necessarily developer push time",

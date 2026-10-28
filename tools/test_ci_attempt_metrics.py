@@ -198,6 +198,80 @@ class AttemptMetricTests(unittest.TestCase):
         self.assertIsNone(report["latest_time_to_ci_required_seconds"])
         self.assertEqual(report["attempts"][1]["observed_runner_seconds"], 49)
 
+    def test_reused_gate_job_id_with_changed_fields_cannot_claim_fresh_success(self):
+        # Reusing the same immutable job ID does not attest another execution.
+        # API snapshots may disagree on mutable timestamps/conclusion fields.
+        first = page(job(41, "CI required", 20, 21, 30, conclusion="failure"))
+        second = page(job(41, "CI required", 5000, 5001, 5050,
+                          conclusion="success", attempt=2))
+        report = analyse_run(run(attempts=2), {1: [first], 2: [second]})
+        gate = report["attempts"][1]["jobs"][0]
+        self.assertTrue(gate["inherited_previous_attempt"])
+        self.assertIsNone(gate["execution_seconds"])
+        self.assertFalse(report["first_attempt_ci_required_success_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_result_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_success_observed"])
+        self.assertIsNone(report["latest_time_to_ci_required_seconds"])
+
+    def test_new_gate_id_created_before_latest_attempt_is_not_fresh_proof(self):
+        # A changed job ID alone is not proof if all gate timestamps predate
+        # the latest rerun's recorded start (t=5000).
+        first = page(job(41, "CI required", 20, 21, 30, conclusion="failure"))
+        stale_gate = job(42, "CI required", 31, 32, 45, attempt=2)
+        new_work = job(43, "clippy + test (macos-latest)", 5000, 5001, 5050, attempt=2)
+        report = analyse_run(
+            run(attempts=2), {1: [first], 2: [page(stale_gate, new_work)]}
+        )
+        gate = report["attempts"][1]["jobs"][0]
+        self.assertFalse(gate["inherited_previous_attempt"])
+        self.assertTrue(gate["latest_attempt_attribution_unverified"])
+        self.assertIsNone(gate["execution_seconds"])
+        self.assertIsNone(gate["queued_seconds"])
+        self.assertEqual(report["attempts"][1]["timed_job_count"], 1)
+        self.assertEqual(report["attempts"][1]["unverified_latest_attempt_job_count"], 1)
+        self.assertEqual(report["attempts"][1]["observed_runner_seconds"], 49)
+        self.assertEqual(report["attempts"][1]["observed_parallel_wall_seconds"], 50)
+        self.assertIsNone(report["attempts"][1]["ci_required_result_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_success_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_completed_at"])
+        self.assertIsNone(report["latest_time_to_ci_required_seconds"])
+
+    def test_unattributed_new_id_non_gate_cannot_inflate_rerun_cost(self):
+        first = page(job(1, "CI required", 20, 21, 30, conclusion="failure"))
+        inherited_work = job(42, "gitleaks", 30, 31, 45, attempt=2)
+        fresh_work = job(43, "clippy + test (macos-latest)",
+                         5000, 5001, 5050, attempt=2)
+        fresh_gate = job(44, "CI required", 5050, 5051, 5060, attempt=2)
+        report = analyse_run(
+            run(attempts=2),
+            {1: [first], 2: [page(inherited_work, fresh_work, fresh_gate)]},
+        )
+        second = report["attempts"][1]
+        self.assertTrue(second["jobs"][0]["latest_attempt_attribution_unverified"])
+        self.assertFalse(second["jobs"][0]["inherited_previous_attempt"])
+        self.assertIsNone(second["jobs"][0]["execution_seconds"])
+        self.assertIsNone(second["jobs"][0]["queued_seconds"])
+        self.assertEqual(second["timed_job_count"], 2)
+        self.assertEqual(second["unverified_latest_attempt_job_count"], 1)
+        self.assertEqual(second["observed_runner_seconds"], 58)
+        self.assertEqual(second["observed_parallel_wall_seconds"], 60)
+        self.assertEqual(second["observed_queued_seconds"], 2)
+        self.assertTrue(second["ci_required_success_observed"])
+        self.assertEqual(report["latest_time_to_ci_required_seconds"], 5060)
+
+    def test_missing_latest_rerun_start_cannot_attest_a_fresh_gate(self):
+        snapshot = run(attempts=2)
+        snapshot.pop("run_started_at")
+        first = page(job(41, "CI required", 20, 21, 30, conclusion="failure"))
+        second = page(job(42, "CI required", 5000, 5001, 5050, attempt=2))
+        report = analyse_run(snapshot, {1: [first], 2: [second]})
+        self.assertEqual(report["attempts"][1]["unverified_latest_attempt_job_count"], 1)
+        self.assertEqual(report["attempts"][1]["observed_runner_seconds"], 0)
+        self.assertIsNone(report["attempts"][1]["observed_parallel_wall_seconds"])
+        self.assertIsNone(report["attempts"][1]["ci_required_result_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_success_observed"])
+        self.assertIsNone(report["latest_time_to_ci_required_seconds"])
+
     def test_invalid_step_payload_fails_cleanly_and_boolean_attempt_keys_are_refused(self):
         invalid = job(1, "CI required", 0, 10, 20)
         invalid["steps"] = {"instead": "of an array"}
