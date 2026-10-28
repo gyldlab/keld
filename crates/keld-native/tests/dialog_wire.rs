@@ -111,3 +111,21 @@ fn message_options_enforce_bounds_and_relations_before_ui() {
     valid.detail = Some("embedded\0text".to_owned());
     assert!(decode_dialog_request(&request(valid).expect("encode request")).is_ok());
 }
+
+#[test]
+fn message_parent_ref_has_rust_owned_literal_field_order() {
+    use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
+    let value = DialogRequestV1::Message {
+        nonce: 1,
+        parent: Some(WindowRef {
+            id: WindowId(300),
+            incarnation: WindowGeneration(513),
+        }),
+        options: options(),
+    };
+    let bytes = [
+        0, 1, 1, 0xac, 0x02, 0x81, 0x04, 1, b'x', 3, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+    ];
+    assert_eq!(encode(&value).expect("encode parent"), bytes);
+    assert_eq!(decode_dialog_request(&bytes).expect("decode parent"), value);
+}

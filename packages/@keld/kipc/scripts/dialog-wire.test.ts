@@ -78,6 +78,16 @@ test("dialog encoder applies option bounds before transport", () => {
       options: { ...options, message: options.message + "x" },
     }),
   ).toThrow("KELD-IPC-003");
+  const empty = { ...options, message: "x" };
+  expect(() =>
+    encodeDialogRequest({ ...request, options: { ...empty, default_id: 1 } }),
+  ).toThrow("KELD-IPC-003");
+  expect(() =>
+    encodeDialogRequest({
+      ...request,
+      options: { ...empty, kind: "Invalid" as "Question" },
+    }),
+  ).toThrow("KELD-IPC-003");
   const small = { ...options, message: "x", buttons: Array(16).fill("") };
   expect(() =>
     encodeDialogRequest({ ...request, options: small }),
@@ -106,4 +116,32 @@ test("dialog encoder applies option bounds before transport", () => {
       options: { ...small, checkbox_label: "", checkbox_checked: false },
     }),
   ).toThrow("KELD-IPC-003");
+});
+
+// Literal owned by the Rust dialog_wire parent-present test; its two identity
+// halves differ and each uses a multi-byte postcard varint.
+test("dialog parent ref preserves Rust field order", () => {
+  const options = {
+    message: "x",
+    kind: "Question" as const,
+    buttons: [],
+    default_id: null,
+    cancel_id: null,
+    normalize_access_keys: false,
+    title: null,
+    detail: null,
+    no_link: true,
+    checkbox_label: null,
+    checkbox_checked: null,
+  };
+  expect([
+    ...encodeDialogRequest({
+      variant: "Message",
+      nonce: 1n,
+      parent: { id: 300, incarnation: 513n },
+      options,
+    }),
+  ]).toEqual([
+    0, 1, 1, 0xac, 0x02, 0x81, 0x04, 1, 120, 3, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+  ]);
 });
