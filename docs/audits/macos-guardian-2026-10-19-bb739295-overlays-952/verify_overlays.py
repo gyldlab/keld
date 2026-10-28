@@ -21,6 +21,9 @@ ROOT = HERE.parents[2]
 PARENT = "bb739295d4dda0ef83acc8c38b521594a49a29c5"
 BASELINE = "899e287ea487f38ec1cd347f7c9db8f1927348ef"
 SNAPSHOT = "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba"
+COMPOSED_PARENT = "fc973395359de621829ce329ec0503877e314c67"
+PARENT_FILES = ("README.md", "ledger_77.csv", "review_append.csv", "summary.json",
+                "verify_final19.py", "test_verify_final19.py")
 PARENT_DIR = "docs/audits/macos-guardian-2026-10-19-86933528-final19"
 ROOT_PATH = "crates/keld-runtime/src/macos_guardian/"
 RUNNER = ROOT_PATH + "authenticated_runner.rs"
@@ -241,20 +244,35 @@ def verify(repo: Path = ROOT, folder: Path = HERE) -> None:
     inherited = f"{PARENT_DIR}/ledger_77.csv"
     parent_blob = git_bytes(repo, "show", f"{PARENT}:{inherited}")
     require(
-        (repo / inherited).read_bytes().replace(b"\r\n", b"\n") == parent_blob,
-        "parent #992 historical ledger changed",
-    )
-    require(
         (folder / "ledger_77.csv").read_bytes().replace(b"\r\n", b"\n") == parent_blob,
         "inherited historical 77 ledger bytes changed",
     )
-    for filename in ("README.md", "review_append.csv", "summary.json", "verify_final19.py", "test_verify_final19.py"):
+
+    # A later composed parent is a separate record, never a repin of the
+    # historical ledger or receipts. Bind its complete final19 file inventory
+    # and the actual immutable delta, then check the composed checkout bytes.
+    composition = json.loads((folder / "composed_parent.json").read_text(encoding="utf-8"))
+    expected_files = []
+    for filename in PARENT_FILES:
         path = f"{PARENT_DIR}/{filename}"
-        require(
-            (repo / path).read_bytes().replace(b"\r\n", b"\n")
-            == git_bytes(repo, "show", f"{PARENT}:{path}"),
-            f"parent #992 audit source altered: {filename}",
-        )
+        before = git_text(repo, "rev-parse", f"{PARENT}:{path}")
+        after = git_text(repo, "rev-parse", f"{COMPOSED_PARENT}:{path}")
+        expected_files.append({"path": path, "historical_blob": before, "composed_blob": after})
+        require((repo / path).read_bytes().replace(b"\r\n", b"\n")
+                == git_bytes(repo, "show", f"{COMPOSED_PARENT}:{path}"),
+                f"composed parent checkout changed: {filename}")
+    expected = {
+        "schema_version": 1,
+        "historical_parent": PARENT,
+        "composed_parent": COMPOSED_PARENT,
+        "scope": "final19 provenance only; not current-source or native acceptance",
+        "historical_receipts_rewritten": False,
+        "native_acceptance": False,
+        "files": expected_files,
+        "changed_paths": git_text(repo, "diff", "--name-only", PARENT, COMPOSED_PARENT,
+                                  "--", PARENT_DIR).splitlines(),
+    }
+    require(composition == expected, "composed parent provenance changed")
 
     with (folder / "ledger_77.csv").open(newline="", encoding="utf-8") as stream:
         inventory = csv.DictReader(stream, strict=True)
@@ -273,7 +291,7 @@ def verify(repo: Path = ROOT, folder: Path = HERE) -> None:
         sum(row["batch19_source_status"] == "pending-source-review" for row in old) == 0,
         "original historical source-pending status altered",
     )
-    parent_summary = json.loads((repo / PARENT_DIR / "summary.json").read_text(encoding="utf-8"))
+    parent_summary = json.loads(git_bytes(repo, "show", f"{PARENT}:{PARENT_DIR}/summary.json"))
     require(
         dict(collections.Counter(row["batch19_source_status"] for row in old))
         == parent_summary["historical_path_review_status_counts"],

@@ -158,3 +158,34 @@ does not certify their execution. Named independent adversarial
 review of this child's exact final commit is pending. All dependent
 PRs remain **OPEN / DRAFT / UNMERGED**. Current latest HEAD and the
 larger #824 architecture/security program remain outstanding.
+
+## Errata — 2026-10-28: historical and composed parents are distinct
+
+The preceding report remains the original historical account, including its
+validation counts and then-local-only gate description. The original overlay
+`ledger_77.csv`, `overlay_evidence.json`, and `summary.json` are unchanged.
+Their parent is still `bb739295d4dda0ef83acc8c38b521594a49a29c5`.
+
+The original branch now composes corrected #992 at
+`fc973395359de621829ce329ec0503877e314c67`. The separate
+[`composed_parent.json`](composed_parent.json) records all six final19 file
+blob pairs and its exact changed-path list. README, ledger, summary, and verifier
+changed; review receipt CSV and test source did not. In particular, the inherited
+ledger's `generic_pre_registration_crash.rs` disposition corrected a withdrawn
+clock-gap claim. That correction does not rewrite the historical overlay copy.
+
+The overlay verifier now checks the original ledger and status histogram against
+immutable historical Git, and independently checks the composed parent files
+against the corrected immutable parent. A mismatch in either fails. This record
+covers final19 provenance only, not the whole historical-to-current repository
+delta or current-source acceptance.
+
+The canonical `python3 -B docs/audits/verify.py` now invokes both the existing
+final19 and overlay verifiers and propagates failures. The canonical
+`python3 -B docs/audits/test_verify.py` invokes both dedicated suites and exercises
+missing bundles/scripts and corrupted evidence through the real verifier process.
+Thus the earlier local-only gate description is superseded for this composition;
+CI success is evidence only for the jobs actually executed on its exact head.
+These Python/Git checks prove no native execution, process custody, merge
+permission, or whole-program completion. Independent final-tip review and all
+unrun native/product/full-tooling gates remain separate requirements.

@@ -20,7 +20,7 @@ class Historical952OverlayTests(unittest.TestCase):
         self.owned = tempfile.TemporaryDirectory(prefix="keld-guardian-952-overlay-")
         self.addCleanup(self.owned.cleanup)
         self.folder = Path(self.owned.name)
-        for name in ("ledger_77.csv", "overlay_evidence.json", "summary.json"):
+        for name in ("ledger_77.csv", "overlay_evidence.json", "summary.json", "composed_parent.json"):
             shutil.copyfile(HERE / name, self.folder / name)
 
     def change_evidence(self, mutation) -> None:
@@ -56,6 +56,21 @@ class Historical952OverlayTests(unittest.TestCase):
 
     def restore(self, name: str) -> None:
         shutil.copyfile(HERE / name, self.folder / name)
+
+    def test_composed_parent_record_is_separate_and_exact(self) -> None:
+        source = self.folder / "composed_parent.json"
+        original = source.read_text(encoding="utf-8")
+        for field, value in (("composed_parent", "0" * 40),
+                             ("historical_parent", "0" * 40),
+                             ("files", []), ("changed_paths", []),
+                             ("native_acceptance", True),
+                             ("historical_receipts_rewritten", True)):
+            with self.subTest(field=field):
+                data = json.loads(original)
+                data[field] = value
+                source.write_text(json.dumps(data), encoding="utf-8")
+                self.assert_rejected("composed parent provenance changed")
+        source.write_text(original, encoding="utf-8")
 
     def test_positive_four_exact_952_git_blobs_and_77_immutable_history(self) -> None:
         verify(ROOT, self.folder)
