@@ -159,7 +159,7 @@ fn assert_pending_terminal(initial: &Value, settled: &Value, fact: &RequestFact)
     assert_eq!(
         settled["outcomes"],
         json!([{"action":"native-hold","name":"Error",
-        "error":"KELD-API-001: application channel call failed","code":null}])
+        "error":"KELD-API-001: application channel call failed","code":"KELD-API-001"}])
     );
     assert_eq!(
         settled["terminals"],

@@ -17,7 +17,6 @@ use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKScriptMessage, WKScriptMessageHandler, WKUserContentController,
     WKUserScript, WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::WebviewId;
@@ -36,6 +35,8 @@ const ADMITTED_CHANNEL_PLACEHOLDER: &str = "__KELD_ADMITTED_CHANNEL__";
 const PAGE_FACADE_SCRIPT: &str = r#"
 (() => {
   "use strict";
+  // Captured at document start, before any page script can replace them.
+  const Error = globalThis.Error;
   const post = window.postMessage.bind(window);
   const freeze = Object.freeze.bind(Object);
   const define = Object.defineProperty.bind(Object);
@@ -43,7 +44,14 @@ const PAGE_FACADE_SCRIPT: &str = r#"
   let nextRequest = 1;
   let pending = null;
 
-  const fail = (detail) => Promise.reject(new Error("KELD-WV-011: " + detail));
+  // The one rejection constructor (GH-1095 §4.9): the message is built by its
+  // caller exactly as before, and an own enumerable code equals its prefix.
+  const coded = (code, message) => {
+    const error = new Error(message);
+    define(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
+    return error;
+  };
+  const fail = (detail) => Promise.reject(coded("KELD-WV-011", "KELD-WV-011: " + detail));
 
   const onResult = (event) => {
     if (event.source !== window || pending === null) return;
@@ -56,7 +64,8 @@ const PAGE_FACADE_SCRIPT: &str = r#"
     } else {
       const code = typeof msg.code === "string" ? msg.code : "KELD-WV-011";
       const detail = typeof msg.detail === "string" ? msg.detail : "renderer bridge request failed";
-      waiter.reject(new Error(detail.startsWith(code) ? detail : code + ": " + detail));
+      // The one prefix rule (spec r2 §4.9), idempotent and applied only here.
+      waiter.reject(coded(code, detail.startsWith(code + ": ") ? detail : code + ": " + detail));
     }
   };
   window.addEventListener("message", onResult, false);
@@ -64,7 +73,8 @@ const PAGE_FACADE_SCRIPT: &str = r#"
     if (pending === null) return;
     const waiter = pending;
     pending = null;
-    waiter.reject(new Error("KELD-WV-011: renderer document navigated before reply"));
+    // The call may already have been dispatched: outcome unknown.
+    waiter.reject(coded("KELD-WV-013", "KELD-WV-013: renderer document navigated before reply"));
   }, false);
 
   const invoke = function invoke(channel, payload, opts) {
@@ -109,11 +119,12 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
   const handler = window.webkit.messageHandlers.__keld_wv_link_v1;
   let documentNonce = null;
   let queued = null;
-  let inflight = false;
+  // The request id of the call in flight to native, or null.
+  let inflight = null;
 
   const sendNative = (call) => {
-    if (documentNonce === null || inflight) return;
-    inflight = true;
+    if (documentNonce === null || inflight !== null) return;
+    inflight = call.request;
     handler.postMessage(JSON.stringify({
       v: 1,
       kind: "invoke",
@@ -134,9 +145,11 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
     }
   };
 
+  // Settles only a result for this document's in-flight request; any other
+  // result is dropped and leaves inflight unchanged (GH-1095 §4.7).
   globalThis.__keldBridgeNativeResult = (result) => {
-    if (!result || !Number.isInteger(result.request)) return;
-    inflight = false;
+    if (!result || result.document !== documentNonce || result.request !== inflight) return;
+    inflight = null;
     post({
       __keldRelay: "result-v1",
       request: result.request,
@@ -155,7 +168,7 @@ const ISOLATED_BRIDGE_SCRIPT: &str = r#"
     if (!Number.isInteger(call.channel) || call.channel <= 0 || call.channel > 0xffff) return;
     if (call.channel !== __KELD_ADMITTED_CHANNEL__ || !Array.isArray(call.payload) || call.payload.length > 4096) return;
     if (!call.payload.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) return;
-    if (queued !== null || inflight) {
+    if (queued !== null || inflight !== null) {
       post({
         __keldRelay: "result-v1",
         request: call.request,
@@ -313,6 +326,10 @@ impl RendererBridgeEndpoint {
 struct PendingRequest {
     navigation: u64,
     request: u32,
+    /// Document nonce the request was admitted under. Every native result
+    /// for it carries this nonce, so only that document can settle it
+    /// (GH-1095 §4.7). It never leaves keld-wv.
+    document: String,
 }
 
 #[derive(Debug)]
@@ -354,10 +371,12 @@ impl BridgeState {
         self.expected_webview == Some(address)
     }
 
-    fn navigation_started(&mut self) {
+    /// Starts a new navigation generation and hands back the pending request
+    /// it clears, if any.
+    fn navigation_started(&mut self) -> Option<PendingRequest> {
         self.navigation_generation = self.navigation_generation.wrapping_add(1).max(1);
         self.document_nonce = None;
-        self.pending = None;
+        self.pending.take()
     }
 
     fn destroy(&mut self) {
@@ -412,6 +431,7 @@ impl BridgeState {
         self.pending = Some(PendingRequest {
             navigation: self.navigation_generation,
             request,
+            document: document.to_owned(),
         });
         Ok(RendererBridgeRequest {
             webview: self.webview,
@@ -422,16 +442,18 @@ impl BridgeState {
         })
     }
 
-    fn settle(&mut self, navigation: u64, request: u32) -> bool {
+    /// Removes the pending request matching `(navigation, request)` and
+    /// returns the document nonce it was admitted under; `None` when nothing
+    /// matches, so a late or duplicate outcome settles nothing.
+    fn settle(&mut self, navigation: u64, request: u32) -> Option<String> {
         if self
             .pending
             .as_ref()
             .is_some_and(|pending| pending.navigation == navigation && pending.request == request)
         {
-            self.pending = None;
-            true
+            self.pending.take().map(|pending| pending.document)
         } else {
-            false
+            None
         }
     }
 }
@@ -440,8 +462,12 @@ impl BridgeState {
 pub(super) struct BridgeNavigationHandle(Arc<Mutex<BridgeState>>);
 
 impl BridgeNavigationHandle {
+    /// The committed-navigation reset (wry `PageLoadEvent::Started`). The old
+    /// document is gone and its `pagehide` already settled its call, so the
+    /// request this clears needs no delivery; its later host outcome finds no
+    /// entry and is dropped.
     pub(super) fn navigation_started(&self) {
-        lock_state(&self.0).navigation_started();
+        let _committed = lock_state(&self.0).navigation_started();
     }
 }
 
@@ -630,44 +656,66 @@ impl MacRendererBridge {
         lock_state(&self.state).destroy();
     }
 
-    pub(super) fn deliver(
-        &self,
-        webview: &wry::WryWebView,
-        outcome: RendererBridgeOutcome,
-    ) -> Result<(), WvError> {
+    /// A host `navigate()` resets the bridge before `WebKit` loads anything.
+    /// If that load never commits, the current document stays live, so the
+    /// call this reset clears settles here once, as outcome unknown (GH-1095
+    /// §4.7). If it commits, the old document already settled the call on
+    /// `pagehide`, and the successor drops this result by its document.
+    /// Nothing here can fail after the call was cleared.
+    ///
+    /// Spec r2 §4.7: a host `navigate()` cannot run while the app runs today,
+    /// so this path is not reachable end to end. It is covered only by the
+    /// unit test that calls `navigation_reset_script` directly; its running-
+    /// app owner is #459.
+    pub(super) fn navigation_started(&self, webview: Option<&wry::WryWebView>) {
+        if let Some(script) = navigation_reset_script(&self.state)
+            && let Some(webview) = webview
+        {
+            evaluate_in_world(webview, &self.world, &script);
+        }
+    }
+
+    pub(super) fn deliver(&self, webview: &wry::WryWebView, outcome: RendererBridgeOutcome) {
         let request = outcome.request();
         let navigation = outcome.navigation();
-        if !lock_state(&self.state).settle(navigation, request) {
-            return Ok(());
-        }
-        let payload = PageOutcome::from(outcome);
-        let json = serde_json::to_string(&payload)
-            .map_err(|error| bridge_error(format!("failed to encode renderer reply: {error}")))?;
-        let script = format!("globalThis.__keldBridgeNativeResult({json});");
+        let Some(document) = lock_state(&self.state).settle(navigation, request) else {
+            return;
+        };
+        let script = page_result_script(&PageOutcome::settled(outcome, document));
         evaluate_in_world(webview, &self.world, &script);
-        Ok(())
     }
 }
 
-#[derive(Serialize)]
+/// Resets the bridge for a host `navigate()` and returns the script that
+/// settles the call the reset cleared, or `None` when no call was pending.
+fn navigation_reset_script(state: &Arc<Mutex<BridgeState>>) -> Option<String> {
+    let cleared = lock_state(state).navigation_started()?;
+    Some(page_result_script(&PageOutcome::navigation_reset(cleared)))
+}
+
+/// One native→isolated result (`keld.wv-link/v1`). `document` names the
+/// document nonce of the request it answers; the isolated world never relays
+/// it to the page (GH-1095 §4.7).
+#[derive(Debug)]
 struct PageOutcome {
     request: u32,
+    document: Option<String>,
     ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<Vec<u8>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
 }
 
-impl From<RendererBridgeOutcome> for PageOutcome {
-    fn from(outcome: RendererBridgeOutcome) -> Self {
+impl PageOutcome {
+    /// The host outcome for a request, addressed to the document it was
+    /// admitted under.
+    fn settled(outcome: RendererBridgeOutcome, document: String) -> Self {
         match outcome {
             RendererBridgeOutcome::Reply {
                 request, payload, ..
             } => Self {
                 request,
+                document: Some(document),
                 ok: true,
                 payload: Some(payload),
                 code: None,
@@ -680,6 +728,7 @@ impl From<RendererBridgeOutcome> for PageOutcome {
                 ..
             } => Self {
                 request,
+                document: Some(document),
                 ok: false,
                 payload: None,
                 code: Some(code),
@@ -687,6 +736,66 @@ impl From<RendererBridgeOutcome> for PageOutcome {
             },
         }
     }
+
+    /// The terminal for a call a host `navigate()` reset cleared before its
+    /// outcome arrived. The call may already have been dispatched.
+    fn navigation_reset(cleared: PendingRequest) -> Self {
+        Self {
+            request: cleared.request,
+            document: Some(cleared.document),
+            ok: false,
+            payload: None,
+            code: Some(String::from("KELD-WV-013")),
+            detail: Some(String::from("renderer navigation started before reply")),
+        }
+    }
+
+    /// A native refusal of an envelope, addressed to the document the
+    /// envelope named (S3b): a stale document's refusal names the stale
+    /// nonce, so a successor document drops it.
+    fn refused(request: u32, document: &str, detail: &str) -> Self {
+        Self {
+            request,
+            document: Some(document.to_owned()),
+            ok: false,
+            payload: None,
+            code: Some(String::from("KELD-WV-011")),
+            detail: Some(detail.to_owned()),
+        }
+    }
+}
+
+impl PageOutcome {
+    /// The result as JSON. Every field is a number, a bool, a string or a
+    /// byte list, so building it cannot fail; an absent field is omitted.
+    fn to_json(&self) -> serde_json::Value {
+        let mut fields = serde_json::Map::new();
+        fields.insert(String::from("request"), self.request.into());
+        if let Some(document) = &self.document {
+            fields.insert(String::from("document"), document.as_str().into());
+        }
+        fields.insert(String::from("ok"), self.ok.into());
+        if let Some(payload) = &self.payload {
+            fields.insert(String::from("payload"), payload.clone().into());
+        }
+        if let Some(code) = &self.code {
+            fields.insert(String::from("code"), code.as_str().into());
+        }
+        if let Some(detail) = &self.detail {
+            fields.insert(String::from("detail"), detail.as_str().into());
+        }
+        serde_json::Value::Object(fields)
+    }
+}
+
+/// The isolated-world script that delivers one native result. It has no
+/// failure path, so a result whose pending entry was already removed is
+/// always delivered.
+fn page_result_script(outcome: &PageOutcome) -> String {
+    format!(
+        "globalThis.__keldBridgeNativeResult({});",
+        outcome.to_json()
+    )
 }
 
 fn handle_message(
@@ -777,7 +886,8 @@ fn handle_message(
             let call = match admitted {
                 Ok(call) => call,
                 Err(detail) => {
-                    reply_immediate_error(message, &ivars.world, request_id, detail);
+                    let refused = PageOutcome::refused(request_id, &document, detail);
+                    reply_immediate_error(message, &ivars.world, &refused);
                     return;
                 }
             };
@@ -786,40 +896,24 @@ fn handle_message(
                 Ok(()) => {}
                 Err(TrySendError::Full(call) | TrySendError::Disconnected(call)) => {
                     let _ = lock_state(&ivars.state).settle(call.navigation, call.request);
-                    reply_immediate_error(
-                        message,
-                        &ivars.world,
+                    let refused = PageOutcome::refused(
                         call.request,
+                        &document,
                         "host renderer dispatch queue is unavailable",
                     );
+                    reply_immediate_error(message, &ivars.world, &refused);
                 }
             }
         }
     }
 }
 
-fn reply_immediate_error(
-    message: &WKScriptMessage,
-    world: &WKContentWorld,
-    request: u32,
-    detail: &str,
-) {
+fn reply_immediate_error(message: &WKScriptMessage, world: &WKContentWorld, refused: &PageOutcome) {
     // SAFETY: callback WebView is live on the main thread.
     let Some(webview) = (unsafe { message.webView() }) else {
         return;
     };
-    let outcome = PageOutcome {
-        request,
-        ok: false,
-        payload: None,
-        code: Some(String::from("KELD-WV-011")),
-        detail: Some(detail.to_owned()),
-    };
-    let Ok(json) = serde_json::to_string(&outcome) else {
-        return;
-    };
-    let script = format!("globalThis.__keldBridgeNativeResult({json});");
-    evaluate_in_world(&webview, world, &script);
+    evaluate_in_world(&webview, world, &page_result_script(refused));
 }
 
 fn evaluate_in_world(webview: &WKWebView, world: &WKContentWorld, script: &str) {
@@ -935,9 +1029,416 @@ pub(super) fn service_main_tail_before(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
 
     /// The echo id `keld-core` passes today; any host-chosen id works the same.
     const ADMITTED: u16 = 1;
+    const NONCE_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NONCE_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// Runs the shipped scripts, rendered exactly as `install` renders them,
+    /// in the GH-1095 document model under Bun's `JavaScriptCore`.
+    fn run_script_harness(input: &Value) -> Value {
+        let program = format!(
+            "const PAGE_SCRIPT = {};\nconst ISOLATED_SCRIPT = {};\nconst INPUT = {input};\n{}",
+            serde_json::to_string(&render_bridge_script(PAGE_FACADE_SCRIPT, ADMITTED))
+                .expect("encode page script"),
+            serde_json::to_string(&render_bridge_script(ISOLATED_BRIDGE_SCRIPT, ADMITTED))
+                .expect("encode isolated script"),
+            include_str!("../../tests/fixtures/renderer_bridge_harness.js"),
+        );
+        let output = std::process::Command::new("bun")
+            .args(["-e", &program])
+            .output()
+            .expect("bun must be on PATH (same contract as the KEL-142 host tests)");
+        assert!(
+            output.status.success(),
+            "script harness failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("harness JSON")
+    }
+
+    /// The page-visible shape of one rejection, as the harness reports it.
+    fn assert_coded_rejection(record: &Value, code: &str, message: &str) {
+        assert_eq!(record["isError"], true, "{record}");
+        assert_eq!(record["name"], "Error", "{record}");
+        assert_eq!(record["message"], message, "message bytes are unchanged");
+        assert_eq!(record["string"], format!("Error: {message}"));
+        assert_eq!(record["code"], code, "{record}");
+        assert!(
+            message.starts_with(&format!("{code}: ")),
+            "code is the message prefix"
+        );
+        for attribute in ["own", "enumerable", "writable", "configurable"] {
+            assert_eq!(record[attribute], true, "code is {attribute}: {record}");
+        }
+        assert_eq!(record["keys"], json!(["code"]));
+        assert_eq!(record["json"], json!({"code": code}).to_string());
+    }
+
+    /// GH-1095 criteria 4, 10, 13 (AT-EC unit): every `window.keld.invoke`
+    /// rejection is an `Error` with an own, enumerable, string `code` equal
+    /// to the prefix of its unchanged message, and `pagehide` rejects a
+    /// pending call as outcome unknown.
+    #[test]
+    fn facade_rejections_carry_an_own_enumerable_code() {
+        let out = run_script_harness(&json!({
+            "scenario": "errors",
+            "nonce": NONCE_A,
+            "channel": ADMITTED,
+            "results": [
+                {"ok": false, "code": "KELD-WV-012", "detail": "no application generation is admitted; the call was not sent"},
+                {"ok": false, "code": "KELD-WV-013", "detail": "application link ended before the renderer reply"},
+                {"ok": false, "code": "KELD-API-001", "detail": "KELD-API-001: application channel call failed"},
+                {"ok": false},
+                {"ok": false, "code": "KELD-API-001", "detail": "KELD-API-001 failed"},
+                {"ok": false, "code": "KELD-WV-013", "detail": "KELD-API-001: x"},
+                {"ok": false, "code": "KELD-API-002", "detail": "KELD-API-001: x"},
+                {"ok": false, "code": "KELD-WV-011", "detail": "KELD-WV-011: already prefixed"},
+            ],
+        }));
+        for (local, message) in [
+            ("opts", "KELD-WV-011: opts is not supported by this bridge"),
+            ("channel", "KELD-WV-011: channel must be a nonzero u16"),
+            ("payload", "KELD-WV-011: payload must be a Uint8Array"),
+            (
+                "busy",
+                "KELD-WV-011: another renderer invoke is already pending",
+            ),
+        ] {
+            assert_coded_rejection(&out[local], "KELD-WV-011", message);
+        }
+        let results = out["results"].as_array().expect("results");
+        for (settled, (code, message)) in results.iter().zip([
+            (
+                "KELD-WV-012",
+                "KELD-WV-012: no application generation is admitted; the call was not sent",
+            ),
+            (
+                "KELD-WV-013",
+                "KELD-WV-013: application link ended before the renderer reply",
+            ),
+            (
+                "KELD-API-001",
+                "KELD-API-001: application channel call failed",
+            ),
+            ("KELD-WV-011", "KELD-WV-011: renderer bridge request failed"),
+            // r2 §4.9: a detail with the code but no ": " gains the prefix.
+            ("KELD-API-001", "KELD-API-001: KELD-API-001 failed"),
+            // A detail that starts with a different code is prefixed, never
+            // re-coded: err.code comes only from the code field.
+            ("KELD-WV-013", "KELD-WV-013: KELD-API-001: x"),
+            ("KELD-API-002", "KELD-API-002: KELD-API-001: x"),
+            // Idempotent: an already prefixed detail is not prefixed twice.
+            ("KELD-WV-011", "KELD-WV-011: already prefixed"),
+        ]) {
+            assert_eq!(settled.as_array().expect("one call").len(), 1);
+            assert_coded_rejection(&settled[0], code, message);
+        }
+        assert_eq!(results.len(), 8);
+        assert_eq!(out["pagehide"].as_array().expect("pagehide").len(), 1);
+        assert_coded_rejection(
+            &out["pagehide"][0],
+            "KELD-WV-013",
+            "KELD-WV-013: renderer document navigated before reply",
+        );
+        // The oracle's control: a plain Error is reported without a code.
+        assert_eq!(out["control"]["code"], Value::Null);
+        assert_eq!(out["control"]["own"], false);
+    }
+
+    /// GH-1095 criterion 12 (AT-S arm c, unit): the isolated world settles a
+    /// result only for its own document and its in-flight request. The
+    /// predecessor's stale refusal and a result for another request are
+    /// dropped without clearing `inflight`, so a relayed invoke is still
+    /// refused as busy; the successor settles once, from its own result, and
+    /// `document` never reaches the page. The payloads are the ones keld-wv
+    /// builds.
+    #[test]
+    fn isolated_results_settle_only_their_own_document_and_request() {
+        let stale = PageOutcome::refused(1, NONCE_A, "renderer document is stale or forged");
+        let own = PageOutcome::settled(
+            RendererBridgeOutcome::Reply {
+                webview: WebviewId(1),
+                navigation: 2,
+                request: 1,
+                payload: vec![7],
+            },
+            NONCE_B.to_owned(),
+        );
+        let out = run_script_harness(&json!({
+            "scenario": "settlement",
+            "predecessor": NONCE_A,
+            "successor": NONCE_B,
+            "channel": ADMITTED,
+            "staleRefusal": stale.to_json(),
+            "ownReply": own.to_json(),
+        }));
+        assert_eq!(out["sent"]["document"], NONCE_B);
+        assert_eq!(
+            out["sent"]["request"], 1,
+            "the same request id as the stale one"
+        );
+        assert_eq!(
+            out["afterStale"],
+            json!([]),
+            "the stale refusal crossed documents"
+        );
+        assert_eq!(
+            out["afterWrongRequest"],
+            json!([]),
+            "another request settled the call"
+        );
+        assert_eq!(out["nativeInvokes"], 1, "a dropped result cleared inflight");
+        assert_eq!(out["successor"], json!([{"ok": true, "value": [7]}]));
+        let relays = out["relays"].as_array().expect("relays");
+        assert_eq!(
+            relays.len(),
+            2,
+            "busy refusal and the one own reply: {relays:?}"
+        );
+        assert_eq!(relays[0]["request"], 99);
+        assert_eq!(relays[0]["code"], "KELD-WV-011");
+        assert_eq!(relays[1]["request"], 1);
+        for relay in relays {
+            assert!(
+                relay.get("document").is_none(),
+                "document reached the page: {relay}"
+            );
+        }
+        // The predecessor itself settled once, by its own pagehide.
+        assert_eq!(out["predecessor"].as_array().expect("predecessor").len(), 1);
+    }
+
+    /// GH-1095 criterion 7 (AT-S arm d, unit): the reset result a host
+    /// `navigate()` delivers settles the live document's call once as
+    /// outcome unknown; a later `pagehide` finds nothing to settle, and a
+    /// successor document drops the reset addressed to its predecessor.
+    #[test]
+    fn navigation_reset_result_settles_only_the_live_document_once() {
+        let reset = PageOutcome {
+            request: 0,
+            document: Some(NONCE_A.to_owned()),
+            ok: false,
+            payload: None,
+            code: Some(String::from("KELD-WV-013")),
+            detail: Some(String::from("renderer navigation started before reply")),
+        };
+        let out = run_script_harness(&json!({
+            "scenario": "reset",
+            "nonce": NONCE_A,
+            "successor": NONCE_B,
+            "channel": ADMITTED,
+            "reset": reset.to_json(),
+        }));
+        assert_eq!(out["afterReset"].as_array().expect("settled").len(), 1);
+        assert_coded_rejection(
+            &out["afterReset"][0],
+            "KELD-WV-013",
+            "KELD-WV-013: renderer navigation started before reply",
+        );
+        assert_eq!(
+            out["settled"], out["afterReset"],
+            "pagehide settled it again"
+        );
+        assert_eq!(
+            out["successor"],
+            json!([]),
+            "the successor settled from a stale reset"
+        );
+    }
+
+    /// GH-1095 criteria 7 and 13: a page script that replaces the global
+    /// `Error` after the facade installed cannot stop a rejection from
+    /// settling, and every rejection is still a genuine coded `Error`.
+    #[test]
+    fn rejections_settle_even_when_the_page_replaces_error() {
+        let out = run_script_harness(&json!({
+            "scenario": "tampered",
+            "nonce": NONCE_A,
+            "channel": ADMITTED,
+            "result": {"ok": false, "code": "KELD-WV-013", "detail": "application link ended before the renderer reply"},
+        }));
+        for path in ["localThrew", "resultThrew", "pagehideThrew"] {
+            assert_eq!(out[path], Value::Null, "{path}: {out}");
+        }
+        assert_coded_rejection(
+            &out["local"],
+            "KELD-WV-011",
+            "KELD-WV-011: opts is not supported by this bridge",
+        );
+        assert_eq!(out["result"].as_array().expect("result").len(), 1, "{out}");
+        assert_coded_rejection(
+            &out["result"][0],
+            "KELD-WV-013",
+            "KELD-WV-013: application link ended before the renderer reply",
+        );
+        assert_eq!(
+            out["pagehide"].as_array().expect("pagehide").len(),
+            1,
+            "{out}"
+        );
+        assert_coded_rejection(
+            &out["pagehide"][0],
+            "KELD-WV-013",
+            "KELD-WV-013: renderer document navigated before reply",
+        );
+    }
+
+    /// GH-1095 criterion 7: the script a host `navigate()` reset delivers
+    /// for the call it clears is produced without a fallible step, exactly
+    /// once, so no early return can leave that call unsettled; the later host
+    /// outcome then finds no entry.
+    #[test]
+    fn navigation_reset_yields_one_settling_script() {
+        let state = Arc::new(Mutex::new(BridgeState::new(WebviewId(2), ADMITTED)));
+        let (nonce, call) = {
+            let mut bridge = lock_state(&state);
+            bridge.bind_webview(0x2000).expect("bind WebView");
+            let nonce = bridge.bind().expect("bind");
+            let call = bridge
+                .admit_invoke(&nonce, 6, ADMITTED, vec![1])
+                .expect("admit");
+            (nonce, call)
+        };
+        let script: String = navigation_reset_script(&state).expect("the cleared call settles");
+        let json = script
+            .strip_prefix("globalThis.__keldBridgeNativeResult(")
+            .and_then(|rest| rest.strip_suffix(");"))
+            .expect("one native result call");
+        assert_eq!(
+            serde_json::from_str::<Value>(json).expect("result JSON"),
+            json!({
+                "request": 6,
+                "document": nonce,
+                "ok": false,
+                "code": "KELD-WV-013",
+                "detail": "renderer navigation started before reply",
+            })
+        );
+        assert_eq!(
+            navigation_reset_script(&state),
+            None,
+            "settled exactly once"
+        );
+        assert_eq!(
+            lock_state(&state).settle(call.navigation(), call.request()),
+            None,
+            "the later host outcome finds no entry"
+        );
+    }
+
+    /// GH-1095 AT-EC unit: the page facade constructs every rejection
+    /// through its one coded-error helper.
+    #[test]
+    fn page_facade_has_one_error_constructor() {
+        assert_eq!(PAGE_FACADE_SCRIPT.matches("new Error(").count(), 1);
+    }
+
+    /// GH-1095 criterion 12 (model): a request remembers the document nonce
+    /// it was admitted under; settling it returns that nonce once, and a
+    /// navigation reset hands the cleared request back with it.
+    #[test]
+    fn requests_carry_their_admitted_document_nonce() {
+        let mut state = BridgeState::new(WebviewId(6), ADMITTED);
+        state.bind_webview(0x6000).expect("bind WebView");
+        let nonce = state.bind().expect("bind");
+        let call = state
+            .admit_invoke(&nonce, 3, ADMITTED, vec![1])
+            .expect("admit");
+        assert_eq!(
+            state.settle(call.navigation(), call.request()),
+            Some(nonce.clone())
+        );
+        assert_eq!(state.settle(call.navigation(), call.request()), None);
+
+        let reset = state
+            .admit_invoke(&nonce, 4, ADMITTED, vec![2])
+            .expect("admit the call a reset clears");
+        let cleared = state.navigation_started().expect("the reset clears it");
+        assert_eq!(
+            (
+                cleared.navigation,
+                cleared.request,
+                cleared.document.as_str()
+            ),
+            (reset.navigation(), 4, nonce.as_str())
+        );
+        assert!(state.navigation_started().is_none(), "cleared only once");
+    }
+
+    /// GH-1095 criterion 12 (model): a native refusal names the document of
+    /// the envelope it refuses, and a host outcome names the document its
+    /// request was admitted under, in the JSON the isolated world receives.
+    #[test]
+    fn native_results_name_their_document() {
+        let refused = page_result_script(&PageOutcome::refused(
+            9,
+            NONCE_A,
+            "renderer document is stale or forged",
+        ));
+        let json = refused
+            .strip_prefix("globalThis.__keldBridgeNativeResult(")
+            .and_then(|rest| rest.strip_suffix(");"))
+            .expect("one native result call");
+        assert_eq!(
+            serde_json::from_str::<Value>(json).expect("result JSON"),
+            json!({
+                "request": 9,
+                "document": NONCE_A,
+                "ok": false,
+                "code": "KELD-WV-011",
+                "detail": "renderer document is stale or forged",
+            })
+        );
+        let settled = PageOutcome::settled(
+            RendererBridgeOutcome::Reply {
+                webview: WebviewId(1),
+                navigation: 2,
+                request: 5,
+                payload: vec![7],
+            },
+            NONCE_B.to_owned(),
+        );
+        assert_eq!(
+            settled.to_json(),
+            json!({"request": 5, "document": NONCE_B, "ok": true, "payload": [7]})
+        );
+    }
+
+    /// GH-1095 criterion 7 (AT-S arm d, model): a host `navigate()` reset
+    /// hands its cleared call to the bridge wrapper, which delivers its one
+    /// terminal; the later host outcome finds no entry and is dropped.
+    #[test]
+    fn navigation_reset_leaves_no_entry_for_the_later_host_outcome() {
+        let mut state = BridgeState::new(WebviewId(8), ADMITTED);
+        state.bind_webview(0x8000).expect("bind WebView");
+        let nonce = state.bind().expect("bind");
+        let call = state
+            .admit_invoke(&nonce, 4, ADMITTED, vec![1])
+            .expect("admit");
+        let cleared = state
+            .navigation_started()
+            .expect("the reset clears the call");
+        assert_eq!(
+            PageOutcome::navigation_reset(cleared).to_json(),
+            json!({
+                "request": 4,
+                "document": nonce,
+                "ok": false,
+                "code": "KELD-WV-013",
+                "detail": "renderer navigation started before reply",
+            })
+        );
+        assert!(state.pending.is_none());
+        assert_eq!(
+            state.settle(call.navigation(), call.request()),
+            None,
+            "the reset call cannot settle from its host outcome"
+        );
+    }
 
     #[test]
     fn navigation_invalidates_document_and_pending_renderer_call() {
@@ -973,9 +1474,10 @@ mod tests {
             Err("another renderer invoke is already pending")
         ));
         let navigation = state.navigation_generation;
-        assert!(state.settle(navigation, 2));
-        assert!(
-            !state.settle(navigation, 2),
+        assert_eq!(state.settle(navigation, 2), Some(nonce));
+        assert_eq!(
+            state.settle(navigation, 2),
+            None,
             "one app reply can settle only once"
         );
     }
@@ -1018,13 +1520,15 @@ mod tests {
             .admit_invoke(&new_nonce, 1, ADMITTED, vec![2])
             .expect("new call reuses local request id");
         assert_ne!(old.navigation(), new.navigation());
-        assert!(
-            !state.settle(old.navigation(), old.request()),
+        assert_eq!(
+            state.settle(old.navigation(), old.request()),
+            None,
             "late old outcome must not consume the new document's waiter"
         );
-        assert!(
+        assert_eq!(
             state.settle(new.navigation(), new.request()),
-            "current document still settles exactly once"
+            Some(new_nonce),
+            "current document still settles exactly once, under its own nonce"
         );
     }
 
@@ -1084,6 +1588,6 @@ mod tests {
             render_bridge_script(ISOLATED_BRIDGE_SCRIPT, 7)
                 .contains("if (call.channel !== 7 || !Array.isArray(call.payload)")
         );
-        assert!(PAGE_FACADE_SCRIPT.contains("new Error(\"KELD-WV-011: \" + detail)"));
+        assert!(PAGE_FACADE_SCRIPT.contains("coded(\"KELD-WV-011\", \"KELD-WV-011: \" + detail)"));
     }
 }

@@ -19,6 +19,12 @@ export type AppChannelHandler<Request, Response> =
   (request: Request) => Response | Promise<Response>;
 
 export interface Channels {
+  /**
+   * Registers the one handler for `channel`. Register it synchronously at
+   * module top level, before the first `app.whenReady()` and before any `fs`
+   * or `auth` call: a host call that arrives with no handler registered is
+   * answered `KELD-API-002` (GH-1095 §4.4).
+   */
   handle<Request, Response>(
     channel: AppChannel<Request, Response>,
     handler: AppChannelHandler<Request, Response>,
@@ -27,6 +33,19 @@ export interface Channels {
 
 function apiError(detail: string): Error {
   return new Error(`KELD-API-001: ${detail}`);
+}
+
+/**
+ * No Echo handler was registered when a host CALL arrived (GH-1095 §4.2,
+ * S11). `dispatchApplicationCall` throws it before decoding the request or
+ * running app code. `resolveEchoCall` checks registration before invoking the
+ * dispatcher; thrown errors cannot prove that no app code ran.
+ */
+export class NoApplicationHandlerError extends Error {
+  constructor() {
+    super("KELD-API-002: Echo channel has no registered handler");
+    this.name = "NoApplicationHandlerError";
+  }
 }
 
 function decodeEchoRequest(payload: Uint8Array): EchoRequest {
@@ -54,6 +73,11 @@ export const echoChannel: AppChannel<EchoRequest, EchoResponse> = Object.freeze(
 });
 
 let echoHandler: AppChannelHandler<EchoRequest, EchoResponse> | undefined;
+
+/** An S11 absence proof, sampled synchronously before the dispatcher runs. */
+export function noApplicationHandlerRegistered(channel: number): boolean {
+  return channel === ECHO_CHANNEL && echoHandler === undefined;
+}
 
 export const channels: Channels = {
   handle<Request, Response>(
@@ -94,7 +118,7 @@ export async function dispatchApplicationCall(
   }
   const handler = echoHandler;
   if (handler === undefined) {
-    throw apiError("Echo channel has no registered handler");
+    throw new NoApplicationHandlerError();
   }
   const request = echoChannel.decodeRequest(payload);
   const response = await handler(request);

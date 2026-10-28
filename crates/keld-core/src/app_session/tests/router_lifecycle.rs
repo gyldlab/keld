@@ -370,3 +370,135 @@ fn recovered_generation_orders_window_events_once_across_installation() {
     }
     println!("{RECOVERED_CHILD_OBSERVED}");
 }
+
+/// Every frame the role reads until the host ends the link.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn frames_until_link_loss(
+    client: &mut std::os::unix::net::UnixStream,
+) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
+    let mut frames = Vec::new();
+    loop {
+        match keld_ipc::link::read_frame(client) {
+            Ok(frame) => frames.push(frame),
+            Err(error) => {
+                assert!(
+                    error.to_string().starts_with("KELD-IPC-001"),
+                    "the role observes link loss, not {error}"
+                );
+                return frames;
+            }
+        }
+    }
+}
+
+/// GH-1095 AT-B3 (spec §4.5, owner decision Q3): a role CALL written before
+/// its `Quit` is run by the host, so a role that sees `KELD-IPC-022` for such
+/// a call cannot infer "not executed". The census is the host's own REPLY
+/// for that CALL, read in wire order before the Quit REPLY. Control: an Echo
+/// CALL written after the accepted `Quit` is never run (no REPLY before EOF).
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn gh1095_call_written_before_quit_is_run_by_the_host() {
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::echo::{EchoRequest, EchoResponse};
+    use keld_ipc::link::AppLinkDeadlines;
+
+    let (server, mut client) = UnixStream::pair().expect("session pair");
+    client
+        .set_app_link_deadlines(Some(Duration::from_secs(5)))
+        .expect("client deadlines");
+    let (window_tx, _window_rx) = mpsc::channel();
+    let (guardian_tx, guardian_rx) = mpsc::channel();
+    let (eof_tx, eof_rx) = mpsc::channel::<()>();
+    let guardian_thread = std::thread::spawn(move || {
+        let Ok(TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare)) =
+            guardian_rx.recv_timeout(Duration::from_secs(5))
+        else {
+            panic!("accepted Quit must first prepare owner shutdown");
+        };
+        prepare.send(Ok(())).expect("preparation reply");
+        let Ok(TestPrimaryOwnerCommand::Shutdown(shutdown)) =
+            guardian_rx.recv_timeout(Duration::from_secs(5))
+        else {
+            panic!("accepted Quit must then shut the owner down");
+        };
+        eof_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("link EOF before owner shutdown");
+        shutdown.send(Ok(())).expect("shutdown reply");
+    });
+    let router = PrimaryRouter::start(
+        server,
+        window_tx,
+        PlatformPrimaryOwnerHandle {
+            command_tx: guardian_tx,
+        },
+        SessionShutdownState::new(),
+    )
+    .expect("primary router");
+
+    let before = EchoRequest {
+        message: "written-before-quit".to_owned(),
+        count: 51,
+    };
+    let after = EchoRequest {
+        message: "written-after-quit".to_owned(),
+        count: 53,
+    };
+    // The role writes all three frames before it reads anything.
+    for (correlation, channel, payload) in [
+        (51_u32, ECHO_CHANNEL, encode(&before).expect("Echo request")),
+        (
+            52,
+            LIFECYCLE_CHANNEL,
+            encode(&LifecycleRequest::Quit).expect("Quit request"),
+        ),
+        (53, ECHO_CHANNEL, encode(&after).expect("Echo request")),
+    ] {
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            channel,
+            CorrelationId(correlation),
+            &payload,
+        )
+        .expect("role CALL");
+    }
+
+    let answered = frames_until_link_loss(&mut client);
+    eof_tx.send(()).expect("record EOF");
+    let replies: Vec<u32> = answered
+        .iter()
+        .filter(|(header, _)| header.kind == FrameKind::Reply)
+        .map(|(header, _)| header.corr.0)
+        .collect();
+    println!("GH1095_AT_B3 replies_in_wire_order={replies:?}");
+    // Census 1: the host ran the CALL written before the Quit, and answered
+    // it before the Quit REPLY.
+    assert_eq!(replies, [51, 52], "{answered:?}");
+    let (echo_header, echo_payload) = &answered[0];
+    assert_eq!(echo_header.channel, ECHO_CHANNEL);
+    assert_eq!(
+        decode::<EchoResponse>(echo_payload).expect("Echo response"),
+        EchoResponse {
+            message: before.message,
+            count: before.count,
+        }
+    );
+    assert_eq!(
+        decode::<LifecycleResponse>(&answered[1].1).expect("Quit response"),
+        LifecycleResponse::Quit
+    );
+    // Control: nothing answers the CALL written after the accepted Quit.
+    assert!(
+        answered.iter().all(|(header, _)| header.corr.0 != 53),
+        "a CALL behind the accepted Quit ran: {answered:?}"
+    );
+    router.shutdown().expect("router shutdown");
+    guardian_thread.join().expect("owner thread joins");
+}
