@@ -1,7 +1,8 @@
 # Spec: macOS guarded native dialog broker (GH-478, F06-T2)
 
-Status: draft
-Linear: GH-478 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-10-24
+Status: approved
+Linear: GH-478 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-10-28
+Approval: owner-delegated acceptance of the exact v2 spec input (SHA-256 `a3137e6d826d93788845b57c4295917b34be54b61f7fcc939903ab3432fc73c2`) and the existing architecture05 path-only amendment is recorded at [GH478 comment 6476354568](https://github.com/gyldlab/keld/issues/478#issuecomment-6476354568); no native/product acceptance is claimed.
 
 ## 1. Goal & non-goals
 
@@ -19,6 +20,12 @@ Non-goals:
 - Implementing `showMessageBoxSync`, `showOpenDialogSync`, `showSaveDialogSync`,
   `showErrorBox` or certificate-trust dialogs; #564 and F06-T14 own those consumers.
   This broker **does** provide the shared native *message-panel* operation used by #564.
+  The separately approved GH499 migration contract permits a macOS-only,
+  hash-bound dirty-close adaptation to awaited `showMessageBox(...).response`.
+  Its exact patch bytes and native reentrancy/Save/Cancel/Discard proof remain
+  separate gates. GH564 is required for the unchanged synchronous-source route,
+  not automatically for that qualified adapted MVP. No additional app rewrite
+  is authorized here.
 - New kipc transport, socket, Worker, sendSync trick, modal thread, global JS pump,
   queue/replay owner or window-ID minter. GH-527, #528 and GH-531 already own them.
 - Adding dialog-selected paths to FsBroker's retained scopes, providing sandbox
@@ -64,6 +71,12 @@ Non-goals:
   value is `undefined`; `:876-887` constructs the synchronous message
   options including `type:'question'`, `title:'Confirm'` and `noLink:true`.
   This is caller-source evidence, not proof that a KELD broker works.
+- Pinned [macOS file-dialog implementation](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/ui/file_dialog_mac.mm)
+  `SetAllowedFileTypes` and `PopUpButtonHandler::selectFormat` determine
+  initial/group-switch filter behavior; source observation is not a Keld run.
+- [Approved GH499 migration contract](https://github.com/gyldlab/keld/blob/9959cb45608164c789e7e2e7fb7ab0e5eed039ca/docs/specs/gh499-drawio-hand-authored-migration.md)
+  §4.4 and [exact owner approval](https://github.com/gyldlab/keld/issues/499#issuecomment-6465227830)
+  permit the separately gated macOS dirty-close async adaptation.
 - [#478 acceptance brief](https://github.com/gyldlab/keld/issues/478),
   [#564 consumer handoff](https://github.com/gyldlab/keld/issues/564#issuecomment-6381751522),
   [#528 transport acceptance](https://github.com/gyldlab/keld/issues/528#issuecomment-6370844113).
@@ -80,12 +93,30 @@ implements that different grammar.
 
 ## 3. Acceptance criteria (binary observations)
 
-**A1 — exact grant and source.** Given one real app role and verified manifest
-`{"app":{"system":["dialog"]}}`, a valid dialog CALL reaches native admission
-**once**. With an absent, empty, malformed, duplicated or wildcard-like literal,
-non-app principal, unverified digest or wrong role, admission returns an existing
-canonical **typed KELD-GUARD denial** whose fix names `/app/system`, with **zero**
-NSPanel/NSAlert creation. No developer shortcut and no automatically enabled legacy.
+**A1a — immutable-policy boot preflight.** Malformed JSONC, duplicate
+object keys, invalid bytes or a mismatched verified digest are rejected by
+the existing retained-handle policy loader before starting an app child,
+bootstrap listener or application window/panel. Preserve the loader's existing
+typed startup error and resource-absence proof. No authenticated dialog CALL
+exists at this cut, so no correlated Guard ERR is promised. Do not move
+preflight after startup to manufacture one. The already opened policy handle
+is an input, not a newly permitted app resource.
+
+**A1b — exact grant on a valid live CALL.** Given a well-formed digest-verified
+manifest, an authenticated current app role and a valid dialog CALL, exactly
+`{"app":{"system":["dialog"]}}` reaches native admission once. Missing/empty
+system list, wrong node type, duplicate array literals, unknown literals and
+wildcard-like strings fail the proposed guard-owned evaluator with canonical
+typed `KELD-GUARD` ERR on that CALL and fix pointer `/app/system`, with zero
+native panel creation. Duplicate JSON object keys belong to A1a, not this atom.
+No developer shortcut or automatic legacy enablement.
+
+**A1c — caller identity before authorization.** An unauthenticated, stale or
+wrong-role link is refused by its existing owning bootstrap/session rule with
+zero dialog admission and no fabricated CALL response. Independently, the guard
+evaluator rejects non-AppProcess principals before grant lookup. A valid app
+link with an invalid parent is tested separately under A5; it does not bypass
+the identity/permission checks or become another principal.
 
 **A2 — open dialog result.** Given grant and a selected ordinary file on a real
 Mac, `dialog.showOpenDialog()` resolves a Promise to
@@ -112,11 +143,17 @@ With a checkbox label, the actual native checked state is returned.
 
 **A5 — parent identity.** The host resolves a supplied **host-minted**
 `WindowRef` under the *current authenticated caller role generation* and real
-native UI object, not by caller-controlled numeric OS handle. A shown parent
-uses an attached modal **sheet**; no parent or a valid but hidden parent uses
-an independent alert/panel. A stale, destroyed, cross-app or forged parent is
-rejected **before** native presentation (not silently retargeted to a different
-window). The hidden-parent fallback itself is not a grant widening.
+native UI object, not by caller-controlled numeric OS handle. A supplied valid
+parent uses the asynchronous upstream **sheet** API, whether visible or hidden;
+only an absent parent uses an independent alert/panel. This follows the pinned
+async native source branch, not the synchronous method's visibility fallback.
+Actual hidden-parent async appearance/completion remains **UNKNOWN** until the
+pinned Electron and Keld native oracle cases run; source branch equality alone
+does not prove parity. Do not invent a hidden parent, retarget to another window
+or silently replace the sheet with a detached modal. A stale, destroyed,
+cross-app or forged parent is rejected before native presentation. The Host
+rechecks current owner/ref at UI claim and again before publishing a result;
+retirement cancels/drains the owned panel rather than retargeting its result.
 
 **A6 — independent native custody.** Each admitted dialog owns exactly one
 native object, one generation-bound original CALL and its one terminal outcome.
@@ -213,14 +250,17 @@ correlation/wake; `@keld/api` decodes values/typed terminal outcomes; the
 Proposed internal contract, **not yet an exported production type**:
 
 ```rust
-// In the owning IPC/native interface; exact identifiers are chosen on admission.
+// Private Core custody only; it is not a public Native type or wire payload.
 struct DialogOwner {
     window: Option<WindowRef>, // GH531 host incarnation, never OS window number
-    role: RoleInstance,        // authenticated host metadata, not caller payload
+    identity: PrimaryLinkIdentity, // actual Core-authenticated metadata, not wire
+    attempt: u32,             // existing Core generation fence, not wire
     correlation: CorrelationId,
     request_nonce: DialogNonce, // lookup only, never a permission
 }
 
+// Wire request/reply definitions belong to keld-native/src/dialog.rs, following
+// Native Auth's canonical DTO ownership; reuse keld-ipc::codec postcard primitives.
 enum DialogRequestV1 {
     Open { nonce: DialogNonce, parent: Option<WindowRef>, options: OpenOptions },
     Save { nonce: DialogNonce, parent: Option<WindowRef>, options: SaveOptions },
@@ -231,12 +271,19 @@ enum DialogReplyV1 {
     Open { canceled: bool, file_paths: Vec<String> },
     Save { canceled: bool, file_path: String },
     Message { response: u32, checkbox_checked: bool },
+    Cancel { disposition: CancelDisposition },
+}
+enum CancelDisposition {
+    Requested,        // matched custody is tombstoned; not proof of native drain
+    AlreadyCompleted, // one fixed last-completed nonce; original is not answered twice
 }
 ```
 
-**Important:** This sketch does *not* mint a second `WindowRef` or
-`RoleInstance`. It refers to approved GH531 and KEL75 types when their
-actual existing owner is connected. Only `parent`, the bounded cancellation
+**Important:** This sketch does *not* mint a second window or role identity.
+It uses the existing `keld_ipc::window::WindowRef { id, incarnation }` and
+Core's `PrimaryCallerContext { identity, attempt, reader_stop }` metadata.
+`PrimaryLinkIdentity` and attempt remain private Core custody; Native receives
+only its admitted operation, never caller-selected role authority. Only `parent`, the bounded cancellation
 nonce and validated options are on the wire; `role`, verified manifest and
 effective generation are injected by Host acceptance from the authenticated
 link. The requester is
@@ -248,6 +295,39 @@ Host's authenticated role identity*. It is not a bearer capability and may
 never cancel a different role/generation's panel; duplicates are refused.
 The nonce and `Cancel` variant are proposed GH478 wire-schema work and
 require the ordinary GH508/receiver-contract review before implementation.
+
+Valid facade calls keep the Electron names and overloads:
+`showOpenDialog(options)` / `showOpenDialog(parent, options)`,
+`showSaveDialog(options)` / `showSaveDialog(parent, options)`, and
+`showMessageBox(options)` / `showMessageBox(parent, options)`. They return
+Promises of the A2/A3/A4 values. Explicit null/undefined parent means absent;
+a supplied BrowserWindow is resolved through its private brand/identity owner,
+not a public numeric id. The single extraction owner is
+`packages/@keld/electron/src/browser-window.ts`: a package-private module
+reader is installed from BrowserWindow's class lexical scope so it can test
+the genuine `#ref` brand, call the existing private `#state()` live-mirror
+check, then return that same immutable `#ref`. The reader has no duplicate
+WeakMap, Symbol key, generation store or copied liveness predicate. It does
+not read public `id`, call `isDestroyed()`, use `instanceof`, invoke getters
+or call through caller-controlled methods. Null/undefined omission is handled
+by dialog overload normalization; any supplied wrong-brand object, prototype
+forgery, Proxy (including a Proxy of a genuine wrapper) or revoked Proxy is
+refused before sending. A stale/destroyed wrapper or revoked mirror fails the
+existing #state path. The helper is imported only by dialog.ts, never re-exported
+from the public Electron index or exposed as a public BrowserWindow method.
+This local check does not replace Host identity/parent checks at admission,
+UI claim and result publication. Unsupported or wrong-type options fail at the facade
+boundary before serialization; input validation may throw synchronously as
+the pinned JS boundary does. Host policy/lifecycle/native failures reject the
+Promise with canonical typed errors. No timeout manufactures a user result.
+
+The package-private `LifecycleLink.callDialog(payload, deadlineMs)` follows
+existing callAuth on that same WorkerLink, checking closed/Quit state; it is
+not a new public generic request facility. The API dialog service owns bounded
+nonce allocation, typed wire encoding/decoding, and one same-link cleanup CALL
+after IPC006. The Electron facade owns option/result compatibility only.
+The default caller deadline is finite 600,000 ms and starts before Host
+admission; the independent Host deadline and cleanup bounds remain distinct.
 
 ### 4.2 Permission, channel and profile
 
@@ -264,7 +344,13 @@ anything. This is **not** the old prefix/path matcher and not a separate
 broker-local permission test. Add one shared `keld-guard::capability::DIALOG`
 constant. `dispatch_privileged` borrows the host-selected verified manifest
 and evaluates the exact system grant once before allocating a panel.
-The requested parent cannot override the guard.
+The requested parent cannot override the guard. Extend the owning `evaluate`
+and `json_pointer_for` capability branch; no copied parser or path/glob policy.
+Every wire operation, including Cancel, is evaluated against the same immutable
+verified generation manifest. A live matching Cancel additionally checks owned
+custody. Revocation, link loss and Quit invoke Core-owned retirement directly;
+there is no new after-revocation wire permission exception and no weakening of
+the channel table's `Authority::Guarded` contract.
 
 At implementation, consume **the present** `crates/keld-ipc/src/channel_table.rs`
 and append one `dialog` `GuardedCall` entry using that day's next real numeric
@@ -320,8 +406,10 @@ remains ambient and is disclosed as forfeited containment.
     unsupported until independently observed and approved. This deliberately
     limits Electron parity: if the *real* unmodified draw.io fixture requires
     one of them, the matching #477 cell remains fail.
-  - **Save:** only `defaultPath?:string` and `filters?:FileFilter[]` for
-    the pinned draw.io call, using the same omission/path/filter rules.
+  - **Save:** `defaultPath?:string`, `filters?:FileFilter[]` and the known
+    optional `securityScopedBookmarks?:false`, using the same omission/path/filter
+    rules. Open admits the same false-only bookmark option. Absent, undefined
+    and false request no bookmark; true is unsupported before native effects.
     An unimplemented Save `properties` member is rejected before UI.
     `securityScopedBookmarks:true` is also rejected before any OS effect;
     the first-proof Save creates/writes no destination itself.
@@ -331,28 +419,48 @@ remains ambient and is disclosed as forfeited containment.
     per extension. Admit a simple extension without slash, dot-prefix,
     NUL or wildcard, or the exact `"*"` all-files token; reject other
     globs and malformed objects before UI. An empty filters array is the
-    native unfiltered case. These ceilings are proposed first-proof caps,
-    not an assertion that Electron has the same caps.
+    native unfiltered case. These ceilings are first-proof caps, not Electron caps.
+    The pinned macOS `SetAllowedFileTypes` initially applies the first group,
+    and for two or more groups creates a labelled `NSPopUpButton` accessory;
+    selecting a group replaces the allowed types with that group's extensions.
+    The exact `*` token makes only that selected group unrestricted. It does
+    not union all groups. It reduces a compound extension to its final suffix
+    and deduplicates that group's suffixes. Preserve names/group order and
+    actual selector behavior: the original renderer's ordinary Open supplies
+    draw.io, VSDX, Mermaid and All Files as four groups. A first-group-only
+    implementation and a union of all groups fail different native controls.
+    Reuse pinned AppKit bindings and implement actual group-switch behavior;
+    any added type-identifier binding or deprecated-API exception requires its
+    owning dependency/lint review, not an unreviewed generic filter abstraction.
   - **Message (shared with GH564):** `message:string`, optional
     `type` from `none|info|error|question|warning`, `buttons:string[]`,
     bounded `defaultId`/`cancelId` indexes, `normalizeAccessKeys:boolean`,
-    `title:string`, `noLink:boolean`, `checkboxLabel:string` and
+    `title:string`, `detail:string`, `noLink:boolean`, `checkboxLabel:string` and
     `checkboxChecked:boolean`. The actual draw.io values
     `type:'question'`, `title:'Confirm'` and `noLink:true` are **admitted**.
-    `title` is passed through according to real AppKit presentation
-    support; it may be visually absent on macOS and must not trigger a
-    rejection. Pinned Electron documents `noLink` as Windows-specific;
+    `title` is validated but inert on macOS, matching pinned native Electron.
+    `detail` maps to NSAlert informative text: the original parentless updater
+    error path supplies it, so it is not silently unsupported in this MVP. Pinned Electron documents `noLink` as Windows-specific;
     on macOS validate its boolean type, then give it **no native effect**.
-    Unknown message options (including icon, detail, and unsupported
-    `AbortSignal` in the first proof) fail before UI. Button and text
-    fields stay inside the request's 16 KiB envelope.
+    Unknown message options (including icon and unsupported `AbortSignal` in
+    the first proof) fail before UI. Button and text fields stay inside the
+    request's 16 KiB envelope. Omitted/empty buttons use the native OK result
+    mapped to response 0; defaultId omission uses the native default (-1 in
+    canonical input), and cancelId omission follows pinned Electron's fallback
+    calculation. Explicit indexes must address the effective button set.
+    Normalize access keys before native labels and preserve actual Return/Escape
+    behavior. Checkbox state is read from the actual suppression control;
+    checkboxChecked without a nonempty checkboxLabel is invalid.
 - This exact *unmodified source* fixture is an admission gate, not a mock:
   `showOpenDialog(win,{defaultPath,filters,properties})` and
   `showSaveDialog(win,{defaultPath,filters})` at draw.io lines
   4195–4219, plus `showMessageBoxSync(mainWindow,{type:'question',
   buttons:['Save','Cancel','Discard Changes'],defaultId:0,cancelId:1,
   noLink:true,normalizeAccessKeys:true,title:'Confirm',message:...})`
-  at lines 876–887. Record real runtime optional values, test both
+  at lines 876–887. GH499's approved migration direction may replace only the
+  synchronous call/assignment with awaited async response under its separately
+  approved exact patch; the options and this native contract remain unchanged.
+  Record real runtime optional values, test both
   present-`undefined` and absent separately, then require actual Mac
   selected/Cancel/open/save and clicked 0/1/2 outcomes. A source parse
   without real panel observation does not flip #477 to pass.
@@ -360,18 +468,36 @@ remains ambient and is disclosed as forfeited containment.
   negative control; the limits above and all unsupported flags remain
   explicit divergences until separately approved.
 - UI presentation is exactly once after authorization and parent lookup.
-  Prefer OS completion callbacks to blocking the Host UI loop. A visible
-  parent uses a sheet; parentless/hidden-parent behavior uses the AppKit
-  path that reproduces the pinned oracle and keeps cancellation deliverable.
-  Electron's internal use of `runModal` is evidence about Electron, not an
-  instruction to add a blocking Host implementation or second event loop.
+  Open/Save use `beginSheetModalForWindow_completionHandler` for a supplied
+  valid parent and `beginWithCompletionHandler` only for an absent parent; the
+  latter is modeless, not an application-modal loop. Message uses NSAlert
+  sheets for a supplied valid parent and `runModal` deferred in a one-shot
+  main CFRunLoop block **outside** Tao's callback only for an absent parent.
+  Hidden supplied-parent runtime behavior is a separate upstream/Keld oracle
+  gate; the synchronous hidden-parent fallback is not this async contract. Never call runModal
+  directly inside the existing main-owner service: Tao's in-callback guard
+  prevents its ordinary command delivery there. The actual Keld WV bridge
+  positive/negative experiment in §10 establishes this scheduling choice,
+  not a shipping Host cancellation implementation. Main native ownership
+  survives modal unwind; no state/registry borrow is held across it. Final
+  replies are scheduled after callback transaction unwind. Open/Save sheet
+  completion may precede invisibility: order out and observe actual closure.
+  Extend the existing main-owner resolver to a Core-validated WebviewId through
+  the live views map; preserve Auth's original anchor adapter. Reuse existing
+  window_registry admitted_entry/admitted_view identity checks, never copy
+  them. Observe current visibility on UI for oracle/custody evidence, never
+  use a guessed JavaScript mirror to choose an unapproved fallback.
 - At most **one panel per authenticated role** may be outstanding, whether
   invoked by the sync facade, an async facade or another role-owned Worker.
   An overlap (including a nested callback or a same-window retry) fails
   `DialogBusy` before allocating a second native object; globally retained
-  panels have a **proposed Host-wide cap of 8** (subject to capacity review)
-  and typed refusal. This is a Host-owned reservation released exactly
-  once on completion/cancel.
+  panels have a **Host-wide cap of 8** and typed refusal. A reservation remains
+  charged until physical native closure and callback quiescence, including
+  tombstoned delayed UI work. Do not nest an application-modal alert or add
+  an implicit AppKit sheet queue when an existing native modal owns admission;
+  refuse Busy until that owner drains. A bounded DIALOG command still reaches
+  opcode decoding at panel capacity so Cancel is not rejected before its
+  cleanup intent can be known. Only new Open/Save/Message consume panel slots.
   No native queue can outlive its role or turn into a second modal loop.
 - A panel's retained handle/callback and its owning generation are enrolled
   in a Host-owned custody table before native presentation. Completion first
@@ -404,9 +530,17 @@ remains ambient and is disclosed as forfeited containment.
   tombstone and dismisses its owned panel; a cancellation arriving *before*
   queued UI presentation prevents the panel from ever appearing. A later
   success or stale callback cannot overturn the tombstone. A Cancel whose
-  nonce was never admitted cannot allocate UI or affect a different role.
-  Cleanup is authorized by matching existing ownership even if a previous
-  dialog grant was revoked; no new operation gets authorized by Cancel.
+  nonce was never admitted cannot allocate UI, tombstone storage or affect a
+  different role. Nonzero u64 nonces increase per authenticated generation;
+  reject reuse/exhaustion, never wrap. Original reservation precedes UI enqueue,
+  and same-link FIFO orders a later Cancel after that reservation. Retain the
+  one active record/tombstone until callback quiescence; at most one fixed
+  last-completed nonce/disposition supports idempotent completed cancellation.
+  No unbounded history or caller-created pre-admission tombstone map.
+  The wire Cancel still passes the exact dialog guard under that generation's
+  immutable verified manifest, then matches custody. Core independently owns
+  retirement after revocation/death; it accepts no new after-revocation CALL
+  on the strength of a stale grant. No new operation is authorized by Cancel.
   The single Host writer sends an independent ACK/`REPLY(c_cancel)` or
   refusal for the Cancel CALL. For a **matched, admitted original still
   pending**, it additionally sends exactly one original-correlation
@@ -537,10 +671,13 @@ Implement only after approval, in the existing owners:
   `channel_allocations.txt` and **generated** TS constant through the one
   approved generator, with source/golden-vector negative controls.
 - `crates/keld-native/src/dialog.rs` plus allowed crate-local tests,
-  module export, UI-affinity/native handle custody.
+  module export, canonical request/reply DTOs, UI-affinity/native handle custody.
+  Extend the existing `packages/@keld/kipc/scripts/echo-codegen.ts` owner for
+  `packages/@keld/api/src/dialog.generated.ts` and drift/golden-vector checks;
+  do not create another generator or hand-edit the generated codec.
 - `crates/keld-core/src/app_session.rs` is the **existing protected primary
-  reader** (`read_primary_frames`); it must win an explicit GH824/#834 and
-  GH449 owner-coordinated claim before the single existing
+  reader** (`read_primary_frames`); it must win a fresh path-level GH478 claim
+  coordinated with current GH824/GH449/GH1073 overlapping writers before the single existing
   `dispatch_privileged`/guarded-CALL seam is extended to route the
   canonical generated dialog channel. Tests may live under
   `crates/keld-core/src/app_session/`, but that directory alone does not
@@ -551,7 +688,10 @@ Implement only after approval, in the existing owners:
   deliver guarded UI requests and owned cleanup to current native windows.
 - `packages/@keld/api/src/dialog.ts` and **one existing app singleton**;
   `packages/@keld/electron/src/dialog.ts` thin async compatibility facade;
-  `packages/@keld/electron/src/index.ts` exports the facade.
+  `packages/@keld/electron/src/browser-window.ts` owns the package-private
+  genuine-brand extraction of its existing #ref plus reuse of #state liveness;
+  `packages/@keld/electron/src/index.ts` exports only the public dialog facade,
+  never that internal reader. Coordinate BrowserWindow's active owner first.
 - `crates/keld-compat/fixtures/native-corpus` and mapped #477 tests as
   approved by its source/test owner. The already published first #477
   synchronous red baseline remains GH564-owned and stays fail for #478.
@@ -559,7 +699,7 @@ Implement only after approval, in the existing owners:
 Must not touch: `crates/keld-core/src/app_session.rs` or GH449 active writer's
 regions without a separately won claim/owner coordination; GH824 runtime
 shutdown, `keld-ipc` transport Worker implementation, GuardedPrimary and
-Guardian timeouts, `#834` owner regions, Windows/Linux native production,
+Guardian timeouts, current overlapping Core owner regions, Windows/Linux native production,
 root workspace dependency pins, `docs/specs/gh527*` or `docs/specs/gh531*`
 without a new expressly approved amendment. Shared `tools/ci-inputs.json`
 needs its existing single-writer/branch-specific review and canonical rebind.
@@ -578,9 +718,13 @@ coordinated change and independent wire/lifecycle review.
       negative grant/principal/duplicate/wildcard controls, and one new
       append-only channel table entry using current maximum id + 1.
       Obtain the protected `app_session.rs` single-router owner claim.
-- [ ] **T4:** Real macOS asynchronous **message** panel behind the guard,
-      actual visible-parent and no/hidden-parent mapping; compile/fault tests,
-      OS panel witness and exact result. This supplies GH564's shared broker.
+- [ ] **T4:** Complete asynchronous **message** vertical behind the guard:
+      supplied-parent sheets and deferred absent-parent native operation,
+      hidden supplied-parent upstream/Keld oracle and cleanup evidence,
+      same-link timeout/Cancel custody, original terminal correlation, physical
+      close/quiescence, and healthy next call. No partial UI export before
+      cleanup exists. This supplies GH499's qualified async dirty-close route
+      and the native broker that GH564 may independently consume.
 - [ ] **T5:** Real Mac open/save panels, selected/cancelled shapes, exact
       OS-selected absolute paths and no-FsBroker-grant property; alias/symlink rows
       labelled observed, unknown or divergence.
@@ -592,9 +736,18 @@ coordinated change and independent wire/lifecycle review.
       in implementing PR, strict/public-API, guard and exact-head CI gates;
       prove optional present-`undefined` source inputs and keep public
       compatibility score honest.
-- [ ] **T8:** GH564 independently consumes T4's shared broker and GH527's
-      existing `callBlocking` for synchronous clicked-index behavior,
-      after its **own approved spec**, never in this branch.
+- [ ] **T8:** For unchanged synchronous app source, GH564 independently
+      consumes T4's broker and existing callBlocking under its own approved
+      spec. For the approved GH499 adapted route, its owner instead qualifies
+      exact async patch bytes and native dirty-close reentrancy. Neither
+      route is inferred passed from the other; no additional source hunk.
+
+The first production vertical contains the message portions of T2/T3/T4/T6/T7
+together: guard, canonical channel/codec, Core admission/custody, real native
+message operation/cleanup and thin async facade with meaningful tests. It must
+not land a public dialog export or a routed production stub awaiting later
+cleanup. Open/Save is the next complete vertical and retains its filter/path
+obligations; the remaining public methods are not invented placeholders.
 
 T4/T5 may be independently tested after the shared T3 gate; T6 validates their
 composition, not just their individual wrappers. No incomplete T4-only
@@ -604,11 +757,13 @@ implementation may be labelled a complete GH478 acceptance.
 
 | Criterion | Test owner and observed positive | Independent falsifier (one fault) |
 |---|---|---|
-| A1 | Guard/Core: verified permission vs zero NSPanel construction on denied call | Remove guard evaluation: denied call shows native UI and test fails |
+| A1a | Existing boot preflight: malformed/duplicate-object policy or mismatched digest retains its typed startup failure and zero new app child/listener/window/panel | Move verification after app startup: independent resource counters become nonzero |
+| A1b | Valid verified app-role CALL: exact grant versus absent/wrong/duplicate-array/unknown/wildcard literals and zero native constructors on denial | Remove guard evaluation: denied CALL creates UI |
+| A1c | Bootstrap/session rejects untrusted/stale/wrong role; separately evaluator rejects non-AppProcess before grants | Reuse app grants for another principal or admit untrusted link: identity owner check fails |
 | A2 | Real Mac: select one file, then Cancel; observe exact filePaths and zero scopes. With both `openFile` and `openDirectory`, separately select an ordinary file and a directory; with `multiSelections` also select both in one result. Observe both native selection flags and exact selected paths. | Return last selected path on Cancel, or force directories-only when both flags are present: ordinary-file selection/result fails; a files-only mutant fails the directory case. |
 | A3 | Real Mac: select save target, then Cancel; file unchanged until app writes; `securityScopedBookmarks:true` denied before UI | Create/truncate target in supported dialog mode or silently accept bookmarks: sentinel/denial control fails |
 | A4 | Real Mac: distinct button index 0/1/2, checkbox off/on; async Promise value shape | Always return defaultId: a non-default click fails |
-| A5 | Real Mac: shown parent attached sheet, hidden/absent fallback, stale/forged window refusal | Accept recycled WindowId with old generation: UI attaches and fails |
+| A5 | Supplied parent uses async sheet API; absent uses detached operation; run separate real Electron/Keld hidden-parent oracle without assuming sync fallback. Genuine live wrapper passes package-private brand/#state reader; stale/forged/wrong/proxy/revoked objects fail before send; Host rechecks owner/ref at UI and reply | Public id/getter/instanceof substitution admits forgery or executes a callback; bypass Host incarnation/role check attaches/replies to wrong owner; hidden→detached fallback mutation violates the selected source branch |
 | A6 | Subprocess + real panel: kill role and inject late callback, next call succeeds | Drop callback owner without closing panel: native census detects leak |
 | A7 | Actual event-loop delivery while modal active; host Quit remains bounded | Deliver UI cleanup only in default mode: watchdog/control fails |
 | A8 | Path from panel; guarded FS read denied with no grant; zero grant snapshots change | Treat selected path as FS scope: denied read succeeds and fails |
@@ -617,6 +772,8 @@ implementation may be labelled a complete GH478 acceptance.
 | A11 | GH566 v44.4.5 expected-fail cells actually run; flip only against native proof | Remove mapped test from execution: manifest admission fails |
 | A12 | Run pinned unmodified draw.io Open/Save/Message argument objects, including present-`undefined` and absent, native UI result/cancel/0-1-2 clicks; show each known option is admitted | Treat all present-`undefined` as unsupported or remove `noLink` allowlist: source-exact valid call fails before panel; accept unknown `bogus:undefined`: pre-UI denial control fails |
 | A13 transport/correlation | Deterministic real WorkerLink/Core fixture: deliver `CALL(c_orig)`, induce `KELD-IPC-006` local timeout/Worker abandon, then `Cancel(c_cancel)` with distinct ACK/`REPLY(c_cancel)` **and** terminal `ERR(c_orig)` (or genuine prior committed `REPLY(c_orig)`); verify original abandoned-id release exactly once, zero retained abandoned entries and next call success after **256+1 = 257** successful timeouts/cancels on one healthy link; dead-link cleanup has no fabricated wire reply | ACK `c_cancel` but omit `ERR(c_orig)`: original abandoned entries accumulate and 257th cleanup closes link with `KELD-IPC-027`; double-terminal `c_orig` or pretend Cancel ACK retires original: independent correlation/once-only assertions fail |
+| A13 cleanup admission | One active dialog and original correlation remain pending while another same-channel Cancel reaches actual Core decode; no second native panel | Reuse one-panel capacity as a pre-payload rejection of every CALL: Cancel is refused and cleanup fails |
+| A12 macOS filters | Four actual source groups; first group initially, VSDX and All Files selectable with corresponding allowed types | Union groups accepts VSDX under first-group restriction; first-only implementation cannot change to VSDX/All Files |
 | A13 native/owner | Real Mac: delay Host-to-UI admission until after Bun `callBlocking` expiry, same-link Cancel and Host tombstone, actual physical panel dismissal or suppressed late presentation, native handle count zero within proposed bound, stale click fenced and healthy next call; separate original/Cancel correlation captures and denied cross-role/generation Cancel; second concurrent async call denied without a second panel | Remove Host Cancel relay or tombstone, suppress modal-mode physical cleanup or permit stale callback: late panel/leaked handle crosses bound despite transport ACK/ERR; remove `DialogBusy`: two native panels appear |
 
 The upstream October 24 Electron oracle ran 75 pinned observations, including
@@ -657,47 +814,94 @@ and GH527 outbound/inbound caps. Credit extension is conditional on observed
 retained traffic (GH528), not automatically introduced. Never raise existing
 Host/Guardian/IPC deadlines to compensate for UI blocking.
 
-## 10. Open questions (must be explicitly resolved before Status: approved)
+## 10. Owner-delegated design decisions; implementation gates remain
 
-1. **Human-interaction and caller-abort clocks:** approve or change the
-   distinct Host **600,000 ms** limit and proposed **10 s from live-link
-   caller timeout / 5 s from Host-observed role/link loss** physical
-   cancellation limits. Validate the same guarded-channel nonce/Cancel
-   mechanism with GH527/Core owners on *delayed Host admission* and real
-   Cocoa modal callbacks. GH527's local Worker `abandon` is not a Host
-   cancellation; if the relay cannot meet the bounds, leave this
-   contract **BLOCKED**, with no spec approval or sync compatibility pass.
-   Existing Host20/Guardian/KIPC/cleanup service clocks are unchanged.
-2. **Permission grammar for exact system literals:** confirm the proposed
-   `{"app":{"system":["dialog"]}}` syntax, canonical denial at
-   `/app/system`, duplicate/unknown literal handling, and the `keld-guard`
-   method ownership. This is intentionally distinct from current
-   `evaluate("group.action", path)` behavior.
-3. **Error-code allocation:** assign stable new dialog-specific codes through
-   the current error-code registry *at implementation time*. The typed
-   categories here are normative; no numeric codes are reserved in advance.
-4. **macOS native modal fallback and objc2 safety:** choose the concrete
-   parentless/hidden-parent panel API after one compiling/native-dispatch
-   prototype proves cancellation and UI command delivery. If a new unsafe
-   operation is necessary, obtain a narrowly scoped allowlist amendment and
-   source/FFI review **before** implementation.
-5. **Selection/alias and symlink limits:** the first-proof file-open/save
-   tests must observe alias resolution and POSIX symlink behavior before
-   declaring Electron equivalence. The pinned Electron 44.4.5 documentation
-   provides `noResolveAliases` and Mac App Store bookmark options. The first
-   proof **refuses** unimplemented option variants; adding them requires
-   separate native evidence. Unsupported variants stay explicit unknown/
-   recorded divergence, not silent path normalization or a forged bookmark.
-6. **Source-exact admissibility and architecture ownership:** approve
-   the first-proof typed option allowlist/bounds (including present
-   `undefined`, `title`, macOS-inert `noLink`), one-per-role panel policy,
-   proposed Host-wide capacity 8,
-   and same-PR `docs/architecture/05-webview-and-native.md` path-only
-   reconciliation with the FS/architecture owner. A separate strict
-   selection-derived grant still belongs to F06-T15. Record the
-   `app_session.rs` primary-router winning owner claim before touching it.
+The repository owner accepts the exact v2 design under the user-delegated
+decision, recorded at [GH478 comment 6476354568](https://github.com/gyldlab/keld/issues/478#issuecomment-6476354568). The choices
+below are fixed for this spec; implementation, generated channel allocation,
+named owner claims/reviews and native acceptance remain separate gates. This
+design approval does not claim native/Host/product acceptance has passed.
 
-Approval authorizes the bounded **macOS** design and test tasks only; it does
-not imply the unrelated #564 synchronous consumer, #449 window registry,
-GH528 cross-platform transport, real KELD product acceptance or a PR merge
-is complete.
+1. **Clocks:** 600,000 ms absolute Host interaction deadline from original
+   admission; physical suppression/cleanup within 10 s of live-link caller
+   timeout, or 5 s of Host-observed role/link retirement. Existing Host20,
+   guardian, FS and IPC clocks remain unchanged. The bounds are acceptance
+   requirements, not measured by the primitive probe. Failed bounded cleanup
+   invokes the existing fatal/custody owner, never fabricated user Cancel.
+2. **Permission:** exact `app.system:["dialog"]` in the guard-owned evaluator,
+   pointer `/app/system`, principal-first default deny, duplicate/unknown/
+   wildcard refusal. Every wire Cancel still uses dispatch_privileged and
+   matching existing custody. Immutable generation revocation/death is cleaned
+   up by Core lifecycle, without a wire permission exception.
+3. **Wire/errors:** typed Open/Save/Message/Cancel and CancelDisposition on
+   one append-only guarded channel, original and Cancel correlations distinct.
+   At inspected main a866a7c5, channel allocations are echo1/fs2/lifecycle3/
+   auth4/window5, so6 is the next candidate. NATIVE009–016 have no current
+   registered/source use; proposed categories are InvalidDialogRequest,
+   Unsupported, InvalidParent, ParentRetired, Busy, Expired, Cancelled and
+   NativeFailure in that order. These are not reservations: the designated
+   schema/error writer refreshes the actual allocation tables immediately
+   before recording them, preserves every existing ID, and regenerates through
+   the canonical owner. Role retirement keeps existing IPC023 semantics.
+4. **Native:** callback-based file panels/sheets and deferred-outside-Tao
+   absent-parent NSAlert as §4.3. A supplied hidden parent remains on the
+   pinned async sheet branch; actual upstream/Keld hidden behavior is an
+   explicit unrun acceptance gate, not a Keld safety divergence. One actual Keld WV experiment on macOS26.5.1
+   with verified main-equivalent F2 source observed visible/modal alert,
+   real AppWindowCommand::Quit, service abort, response-1001, invisible/
+   nonmodal state and normal drained exit. Direct-in-service entry blocked
+   delivery; removing only native abort left the modal hung. This qualifies
+   the existing-loop scheduling primitive only, not Host DIALOG routing.
+   Exact Native/WV unsafe operations and any feature/dependency delta retain
+   their independent owner gates; the private probe grants no production allow.
+5. **Paths:** data only, no FS scope/handle/bookmark/file-write effect.
+   Default alias resolution is native; unsupported noResolveAliases and true
+   bookmarks reject before UI. Symlink/alias selections require separate real
+   fixtures before parity claims. Approve the accompanying architecture05
+   reconciliation, while strict intent-derived grants remain F06-T15-owned.
+6. **Source/public contract:** source-exact Open/Save options and actual Mac
+   selectable filter groups; async Message also admits detail and omitted
+   buttons. Parentless Message remains supported, including the source's boot
+   error form. Adopt GH499's already-approved macOS-only async dirty-close
+   direction as the minimal adapted-MVP route; exact patch bytes and real
+   repeated-close/two-window/save-failure/late-result tests still belong to
+   GH499. The original source needs GH564 if that patch is omitted. Whole-app
+   correctness is not inferred from an isolated caller or a configured update
+   suppression field: GH452 and the inert GH491 adapter must supply their own
+   actual environment/no-side-effect proof.
+
+**Passed versus open evidence.** Pinned Electron44.4.5 file_dialog_mac.mm
+explicitly initializes the first filter group and installs a popup accessory
+for multiple groups; selectFormat replaces allowed types with the selected
+group, including its `*` behavior. It does not union all groups. The actual
+original Open renderer passes four groups. This is primary-source proof;
+native Keld filter switching is not yet executed.
+
+Current WorkerLink.call has a pending map and supports simultaneous async
+correlations; the single blocking reply slot restricts callBlocking nesting,
+not all CALLs. A real Bun1.4.4 WorkerLink probe with a mock peer observed
+same-channel original1/cancel2 while original1 was pending, separately routed
+both replies, then original3 timeout IPC006/cancel4/late original terminal and
+healthy5. It used one existing link and no production channel allocation.
+This proves producer feasibility only. Actual Core DIALOG capacity, custody,
+guard, original-terminal and257-cycle native recovery remain acceptance work.
+There is no existing LifecycleLink.asyncRequest API: add only its package-private
+dialog method following callAuth/callFs on the same WorkerLink; no replacement
+transport or generic new request framework.
+
+**Ownership before first edit.** GH478's latest spec-only claim expired
+2026-10-27T22:30Z; GH449 F2's Core claim expired Oct28 11:30Z; GH824's latest
+bounded shared-Cargo claim was released. These facts do not grant a new writer.
+GH1073 retains a live claim until Oct29 02:30Z on named Windows/Core tests and
+GH527 spec rows. Open PR1282 and1018 touch app_session.rs; PR1150 touches window
+registry/router. PR834 is merged. Root must designate one actual GH478 Core
+writer and the shared channel/schema/error/dependency writer, post/read back
+the path-level claim, and reconcile those exact overlapping diffs before code.
+No protected file is deemed free merely because an older claim expired.
+
+Approval authorizes the bounded macOS test-first implementation sequence, not
+GH564 sync completion, GH499 exact patch/native success, strict containment,
+full app scoring, release, or merge. A product operation remains unknown until
+its own acceptance passes. Failure of the chosen same-link/native composition
+stops that vertical for a named owner correction; it does not authorize a
+second principal/link, event pump, queue or broad permission.

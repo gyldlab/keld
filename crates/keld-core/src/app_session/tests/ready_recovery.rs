@@ -38,7 +38,7 @@ fn initial_ready_router() -> (
 
 /// [`initial_ready_router`] whose UI loop's command receiver the test keeps, as the
 /// live wake bridge holds it until the first terminal command.
-fn initial_ready_router_with_window_loop() -> (
+pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
     PrimaryRouterHandle,
     BootstrapStream,
     Receiver<TestPrimaryOwnerCommand>,
@@ -66,6 +66,7 @@ fn initial_ready_router_with_window_loop() -> (
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(false)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
+        windows: None,
         recovery_armed: Arc::new(AtomicBool::new(false)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
         shutdown: SessionShutdownState::new(),
