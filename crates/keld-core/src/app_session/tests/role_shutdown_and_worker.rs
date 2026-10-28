@@ -71,10 +71,8 @@ fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
 /// the role has closed, so the answer's failure is certain. *Negative
 /// control:* a failed answer that propagates as a session error sends the
 /// UI `Fatal` instead of `Quit`.
-/// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
-/// finding).
 #[test]
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
     let (t, mut client) = guarded_test_router();
     let (stalled_tx, stalled) = mpsc::sync_channel(1);

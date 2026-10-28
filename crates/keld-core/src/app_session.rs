@@ -101,7 +101,7 @@ use keld_ipc::codec::{decode, encode};
 use keld_ipc::frame::{CorrelationId, FrameKind};
 #[cfg(all(test, target_os = "macos"))]
 use keld_ipc::link::read_primary_app_frame_interruptible_with_privileged_call;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::link::read_quit_drain_frame_with_privileged_calls;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::link::{
@@ -5873,13 +5873,13 @@ struct PrimaryRouterHandle {
     auth_commands: Option<SyncSender<AuthWork>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     quit_drain_hooks: Arc<Mutex<QuitDrainTestHooks>>,
 }
 
 /// Test hooks for the post-Quit drain: [`PrimaryRouterHandle::stall_next_quit_drain`]
 /// and [`PrimaryRouterHandle::observe_next_quit_drain_end`].
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 #[derive(Default)]
 struct QuitDrainTestHooks {
     stall: Option<(SyncSender<()>, Receiver<()>)>,
@@ -5891,7 +5891,7 @@ struct QuitDrainTestHooks {
 
 /// How a post-Quit drain ended (GH-527 §4.9). Every end leads to the same
 /// host-initiated close; tests observe which one it was.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QuitDrainEnd {
     /// The role ended the link: its EOF, or a reset (the normal end).
@@ -6426,7 +6426,7 @@ impl PrimaryRouterHandle {
     ///
     /// It cannot fail: every way the drain ends leads to the same
     /// host-initiated close, so the caller's link close and tail always run.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn answer_calls_after_quit(&self, attempt: u32, reader: &mut BootstrapStream) {
         let started = Instant::now();
         let (Some(idle_deadline), Some(hard_deadline)) = (
@@ -6435,14 +6435,14 @@ impl PrimaryRouterHandle {
         ) else {
             return;
         };
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
         let idle_deadline = self
             .stall_quit_drain_for_test(started)
             .unwrap_or(idle_deadline);
         let end = self.drain_calls_after_quit(attempt, reader, idle_deadline, hard_deadline);
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
         self.report_quit_drain_end(end);
-        #[cfg(not(all(test, any(target_os = "macos", target_os = "linux"))))]
+        #[cfg(not(all(test, any(target_os = "macos", target_os = "linux", windows))))]
         let _ = end;
     }
 
@@ -6451,7 +6451,7 @@ impl PrimaryRouterHandle {
     /// accepted shutdown: a role that closes right after its Quit REPLY ends
     /// it at that EOF, and an answer it can no longer receive (`EPIPE`, a
     /// reset, `NotConnected`) ends it quietly as a lost link.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn drain_calls_after_quit(
         &self,
         attempt: u32,
@@ -6501,7 +6501,7 @@ impl PrimaryRouterHandle {
     }
 
     /// Test hook: reports how the next post-Quit drain ended.
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     #[cfg(not(keld_core_native_renderer_main))]
     fn observe_next_quit_drain_end(&self, end: SyncSender<QuitDrainEnd>) {
         self.quit_drain_hooks
@@ -6510,7 +6510,7 @@ impl PrimaryRouterHandle {
             .end = Some(end);
     }
 
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     fn report_quit_drain_end(&self, end: QuitDrainEnd) {
         let observer = self
             .quit_drain_hooks
@@ -6526,7 +6526,7 @@ impl PrimaryRouterHandle {
     /// Test hook: holds the next post-Quit drain before its first read until
     /// the test resumes it, then gives it an idle deadline that has already
     /// passed, as a host stall longer than its idle backstop would.
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     #[cfg(not(keld_core_native_renderer_main))]
     fn stall_next_quit_drain(&self, stalled: SyncSender<()>, resume: Receiver<()>) {
         self.quit_drain_hooks
@@ -6537,7 +6537,7 @@ impl PrimaryRouterHandle {
 
     /// Returns the injected idle deadline (`started`, already passed) when
     /// the hook is armed.
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     fn stall_quit_drain_for_test(&self, started: Instant) -> Option<Instant> {
         let (stalled, resume) = self
             .quit_drain_hooks
@@ -6893,19 +6893,14 @@ impl PrimaryRouterHandle {
         if let Err(fs_error) = self.quiesce_and_drain_fs() {
             return collapse_app_results([auth_retirement, Err(fs_error)]);
         }
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         self.answer_calls_after_quit(attempt, reader);
-        self.finish_quit_link_and_tail(
-            auth_retirement,
-            #[cfg(windows)]
-            reader,
-        )
+        self.finish_quit_link_and_tail(auth_retirement)
     }
 
     fn finish_quit_link_and_tail(
         &self,
         auth_retirement: Result<(), HostAppError>,
-        #[cfg(windows)] reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
         let Ok(mut current_guard) = self.current.lock() else {
             return collapse_app_results([
@@ -6925,10 +6920,6 @@ impl PrimaryRouterHandle {
                 )),
             ]);
         };
-        #[cfg(windows)]
-        let peer_close = await_windows_quit_peer_close(reader);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let peer_close = Ok(());
         let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
             active.identity,
             active.attempt,
@@ -6944,7 +6935,6 @@ impl PrimaryRouterHandle {
         drop(current_guard);
         collapse_app_results([
             auth_retirement,
-            peer_close,
             link_close,
             self.finish_tail("lifecycle Quit"),
         ])
@@ -7571,7 +7561,7 @@ impl PrimaryRouter {
             auth_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
@@ -7681,7 +7671,7 @@ impl PrimaryRouter {
             auth_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
@@ -8388,55 +8378,6 @@ fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotConnected => Ok(()),
         Err(source) => Err(app_io(phase, &source)),
-    }
-}
-
-#[cfg(windows)]
-fn await_windows_quit_peer_close(reader: &mut BootstrapStream) -> Result<(), HostAppError> {
-    let deadline = Instant::now()
-        .checked_add(APP_LINK_IO_DEADLINE)
-        .ok_or_else(|| app_detail("lifecycle Quit drain", "peer-close deadline overflow"))?;
-    await_windows_quit_peer_close_until(reader, deadline)
-}
-
-#[cfg(windows)]
-fn await_windows_quit_peer_close_until(
-    reader: &mut BootstrapStream,
-    deadline: Instant,
-) -> Result<(), HostAppError> {
-    let mut unexpected = [0_u8; 1];
-    loop {
-        match reader.read(&mut unexpected) {
-            Ok(0) => return Ok(()),
-            Ok(_) => {
-                return Err(app_detail(
-                    "lifecycle Quit drain",
-                    "app sent bytes after the terminal Quit reply",
-                ));
-            }
-            Err(error)
-                if matches!(error.raw_os_error(), Some(109 | 232 | 233))
-                    || error.kind() == io::ErrorKind::NotConnected =>
-            {
-                return Ok(());
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(app_detail(
-                        "lifecycle Quit drain",
-                        "app did not close after the terminal Quit reply deadline",
-                    ));
-                }
-            }
-            Err(error) => return Err(app_io("lifecycle Quit drain", &error)),
-        }
     }
 }
 

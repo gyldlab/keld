@@ -490,7 +490,7 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
 /// reports the close as `KELD-IPC-022`. *Negative control:* a Quit that does
 /// not close the link ends the drain at `IdleBackstop`.
 #[test]
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     let (role, t) =
         WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
