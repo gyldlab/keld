@@ -135,6 +135,10 @@ struct ServerInner {
     /// stream refuses to start new I/O once it is set, and a waiter that
     /// re-arms after a refusal reads it before it waits again.
     cancelled: AtomicBool,
+    /// Set once by [`WindowsNamedPipeStream::shutdown`] before it retires the
+    /// HANDLE, and never cleared. A later read then reports end of file, as a
+    /// read after a socket's `shutdown` does, instead of a closed-handle error.
+    shut_down: AtomicBool,
     #[cfg(test)]
     accept_pending: AtomicBool,
     #[cfg(test)]
@@ -379,6 +383,7 @@ impl WindowsNamedPipeServer {
                 connected: AtomicBool::new(false),
                 consumed: AtomicBool::new(false),
                 cancelled: AtomicBool::new(false),
+                shut_down: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
@@ -708,6 +713,7 @@ impl WindowsNamedPipeServer {
                 connected: AtomicBool::new(true),
                 consumed: AtomicBool::new(true),
                 cancelled: AtomicBool::new(false),
+                shut_down: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
@@ -1116,24 +1122,41 @@ impl WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
         };
         let _lifecycle = server.lock_lifecycle();
+        // As in `close_terminal`: a read or write past its final check
+        // finishes issuing before the cancel, and none issues after the
+        // HANDLE is retired. Lock order lifecycle -> io_issue -> pipe.
+        let _io_issue = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let cancel_error = server.cancel_pending_io().err();
-        // SAFETY: this is the live server pipe handle. Cancelling does not
-        // free another operation's OVERLAPPED or buffer; each operation owner
-        // retains and observes its own state. Disconnect only breaks the pipe
-        // connection so peer and local waiters can finish.
-        let disconnect_error = if self.inner.connected.swap(false, Ordering::AcqRel) {
-            match server.raw_pipe() {
-                Ok(pipe) if unsafe { DisconnectNamedPipe(pipe) } == 0 => {
-                    let error = io::Error::last_os_error();
-                    (!matches!(error.raw_os_error(), Some(109 | 232 | 233))).then_some(error)
-                }
-                Ok(_) => None,
-                Err(error) => Some(error),
-            }
-        } else {
-            None
-        };
-        disconnect_error.or(cancel_error).map_or(Ok(()), Err)
+        self.inner.connected.store(false, Ordering::Release);
+        self.inner.shut_down.store(true, Ordering::Release);
+        // Retire the HANDLE rather than call DisconnectNamedPipe, which
+        // discards every byte the peer has not read yet (#1073 W2). Each
+        // pending operation keeps its own pin until it has observed the
+        // cancel above, so this end closes only after that; the peer then
+        // reads everything written before the close, then ERROR_BROKEN_PIPE.
+        drop(
+            self.inner
+                .pipe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+        cancel_error.map_or(Ok(()), Err)
+    }
+
+    /// Test seam for a faulty owner: the instance's abortive
+    /// [`WindowsNamedPipeServer::close_terminal`], which discards bytes the
+    /// peer has not read yet, unlike [`Self::shutdown`].
+    #[cfg(test)]
+    pub(crate) fn close_terminal_for_test(&self) -> io::Result<()> {
+        WindowsNamedPipeServer {
+            inner: Arc::clone(&self.inner),
+        }
+        .close_terminal()
     }
 
     #[cfg(test)]
@@ -1200,7 +1223,11 @@ impl Read for WindowsNamedPipeStream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.refuse_if_cancelled()?;
-        let pinned_pipe = self.pinned_pipe()?;
+        let pinned_pipe = match self.pinned_pipe() {
+            Ok(pipe) => pipe,
+            Err(_) if self.inner.shut_down.load(Ordering::Acquire) => return Ok(0),
+            Err(error) => return Err(error),
+        };
         #[cfg(test)]
         wait_at_test_consume_gate(&self.inner.after_raw_pipe_borrow);
         let result = overlapped_io(
