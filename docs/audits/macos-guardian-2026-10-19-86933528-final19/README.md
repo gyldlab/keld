@@ -112,8 +112,17 @@ historical statuses, source identities, counts and forbidden security/merge
 claims. The checker does not validate the correctness of every prose claim or
 every native test oracle.
 
-These follow-on Python scripts run on explicit local invocation. The standard
-hosted audit verifier and GitHub status checks do not automatically execute
-them, so hosted CI green cannot be presented as their execution. The new PR
-must remain **OPEN / DRAFT / UNMERGED** pending independent exact-tip source
-review and the remaining #824 work.
+The canonical `docs/audits/verify.py` now invokes the existing final19 verifier
+and fails if it fails or its script or immutable Git evidence is missing.
+`docs/audits/test_verify.py` runs the dedicated final19 negative controls and
+canonical-process regressions for disposition/span corruption and missing
+evidence. The existing hosted audit job and local audit recipe already invoke
+these canonical entrypoints; no separate job is needed. This is structural
+validation only, not native execution or semantic certification.
+
+Earlier explicit local execution receipts remain historical evidence for their
+original commits. Earlier hosted green statuses did **not** execute these nested
+checks and are not retroactively upgraded by this integration. The immutable
+#990/#949/#952 pins and original receipt hashes remain unchanged. The PR must
+remain **OPEN / DRAFT / UNMERGED** pending independent exact-tip source review
+and the remaining #824 work.
