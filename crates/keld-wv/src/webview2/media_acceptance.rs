@@ -316,6 +316,7 @@ fn run_media_acceptance() -> Result<(), WvError> {
     let watchdog_probe = std::env::var("KELD_MEDIA_WATCHDOG_PROBE").ok();
     match watchdog_probe.as_deref() {
         Some("work") => run_with_watchdog(WATCHDOG_PROBE_DEADLINE, block_watchdog_probe),
+        Some("outer") => block_outer_deadline_probe(),
         None => run_with_watchdog(FIXTURE_DEADLINE, run_media_acceptance_inner),
         Some(_) => Err(failure("unknown watchdog probe mode")),
     }
@@ -327,6 +328,20 @@ fn block_watchdog_probe() -> Result<(), WvError> {
     let (_block_tx, block_rx) = mpsc::channel::<()>();
     let _ = block_rx.recv();
     Err(failure("watchdog probe returned before process exit"))
+}
+
+/// A real native child blocks after publishing a flush-complete phase marker;
+/// the independent PowerShell parent must terminate it within its unchanged
+/// five-second outer deadline. Avoid cold-launching legacy powershell.exe,
+/// which can exhaust that budget before executing its first statement.
+fn block_outer_deadline_probe() -> Result<(), WvError> {
+    println!("KELD_MEDIA_PHASE outer-probe-block");
+    std::io::stdout().flush().map_err(failure)?;
+    let (_block_tx, block_rx) = mpsc::channel::<()>();
+    let _ = block_rx.recv();
+    Err(failure(
+        "outer-deadline probe returned before parent termination",
+    ))
 }
 
 fn run_media_acceptance_inner() -> Result<(), WvError> {
