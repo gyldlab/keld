@@ -278,7 +278,8 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 ///
 /// The client reads nothing until the guardian's `Shutdown`, which the
 /// Quit tail sends only after it has closed the link. So what it reads
-/// depends only on what the close keeps.
+/// depends only on what the close keeps. The drain ends at its idle
+/// backstop (`QuitDrainEnd::IdleBackstop`), because that client never closes.
 ///
 /// Every OS expects the same frames: Windows runs the same post-Quit drain
 /// since the W1 fix (#1073, gh527 §10), and its close keeps the unread
@@ -287,6 +288,8 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     let (t, mut client) = guarded_test_router();
+    let (end_tx, drain_end) = mpsc::sync_channel(1);
+    t.router.handle().observe_next_quit_drain_end(end_tx);
     let target = t.allowed.join("after-quit.txt");
     // All three frames are buffered before the host can finish the Quit:
     // its REPLY waits on the shutdown attribution acknowledged below.
@@ -324,6 +327,14 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
+    // The client neither writes nor closes until the guardian's Shutdown, so
+    // the drain can only end at its idle backstop, not at the hard deadline.
+    assert_eq!(
+        drain_end
+            .recv_timeout(Duration::from_secs(5))
+            .expect("drain end"),
+        QuitDrainEnd::IdleBackstop
+    );
     let frames: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
         read_frames_until_eof(&mut client)
             .iter()

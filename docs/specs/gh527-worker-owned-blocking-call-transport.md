@@ -1065,8 +1065,7 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     `ENOTCONN` before reaching the write half and sends no FIN (XNU
     `soshutdownlock_final`, `bsd/kern/uipc_socket.c` at `f6217f89`), which is why
     the halves are shut separately.
-    Windows keeps its existing post-`Quit` peer-close check, which treats bytes after
-    the REPLY as an error, until T5 qualifies the same rule there.
+    Windows runs the same drain since the W1 fix (#1073, §10).
 
 ### 4.10 Platform notes and runtime seam
 
@@ -1501,8 +1500,10 @@ W1 and W2 were Windows production defects tracked by #1073; both are fixed (belo
     until the retirement has returned), the three write-then-close cases run on Windows
     again, and the end-to-end criterion 6 case asserts only the 023, each passing with
     every CPU busy (table above).
-- **Unix by OS fact.** `quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it`:
-  a named pipe has no half-close.
+- **Unix by OS fact.** `quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it`
+  and `quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof`: a named pipe
+  has no half-close. On Windows, `quit_drain_ends_quietly_when_its_answer_finds_the_role_gone`
+  covers a host stall with a buffered CALL read after the role's full close.
 - **Windows case (#1073).** `retire_answers_are_bounded_when_the_peer_stops_reading` has
   a Windows case of the same name. The Unix oracle does not carry over, for two reasons.
   The standard library has no nonblocking named pipe. And an app-link deadline is per
