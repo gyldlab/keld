@@ -147,13 +147,10 @@ fn read_frames_until_eof(client: &mut BootstrapStream) -> Vec<(keld_ipc::FrameHe
 /// in its FS drain, are both pending; an echo call is answered at once and
 /// never gets an ERR.
 ///
-/// Windows states today's behaviour (#528 T5, finding W2 in gh527 §10).
-/// The host's close there is `DisconnectNamedPipe`, which discards a
-/// pipe's unread data. This client has no read pending until
-/// `retire_generation` has returned, because the test thread is its only
-/// reader. So both `KELD-IPC-023` answers are written, then discarded,
-/// and the client reads only the close. The W2 fix flips this to the
-/// Unix expectation.
+/// This client has no read pending until `retire_generation` has returned,
+/// because the test thread is its only reader. On Windows the answers
+/// therefore survive only if the host's close keeps unread pipe data, which
+/// `DisconnectNamedPipe` does not (#1073 W2, gh527 §10).
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
@@ -179,25 +176,20 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
             (header.kind, header.channel, header.corr, error.code)
         })
         .collect();
-    let expected = if cfg!(windows) {
-        // W2: the answers were written and then discarded by the close.
-        Vec::new()
-    } else {
-        vec![
-            (
-                FrameKind::Err,
-                FS_CHANNEL,
-                CorrelationId(11),
-                "KELD-IPC-023".to_owned(),
-            ),
-            (
-                FrameKind::Err,
-                LIFECYCLE_CHANNEL,
-                CorrelationId(12),
-                "KELD-IPC-023".to_owned(),
-            ),
-        ]
-    };
+    let expected = vec![
+        (
+            FrameKind::Err,
+            FS_CHANNEL,
+            CorrelationId(11),
+            "KELD-IPC-023".to_owned(),
+        ),
+        (
+            FrameKind::Err,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(12),
+            "KELD-IPC-023".to_owned(),
+        ),
+    ];
     assert_eq!(
         answers, expected,
         "exactly the two pending calls are answered, then the link closes"
@@ -290,15 +282,11 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 /// Quit tail sends only after it has closed the link. So what it reads
 /// depends only on what the close keeps.
 ///
-/// Windows states today's behaviour (#528 T5, findings W1 and W2 in gh527
-/// §10):
-/// - W1: Windows has no post-Quit drain. Its tail reads the buffered FS
-///   CALL as a fault and closes, so no `KELD-IPC-024` is written.
-/// - W2: its close is `DisconnectNamedPipe`, which also discards the unread
-///   Quit REPLY.
-///
-/// So the client reads only the close. The FS CALL still never runs. The
-/// W1/W2 fix flips this to the Unix expectation.
+/// Windows states today's behaviour (#528 T5, finding W1 in gh527 §10):
+/// Windows has no post-Quit drain. Its tail reads the buffered FS CALL as a
+/// fault and closes, so no `KELD-IPC-024` is written. The close keeps the
+/// unread Quit REPLY (#1073 W2), so the client reads only that REPLY. The
+/// FS CALL still never runs. The W1 fix flips this to the Unix expectation.
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_received_calls_with_024_and_runs_none() {
@@ -356,17 +344,18 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
                 (header.kind, header.channel, header.corr, body)
             })
             .collect();
+    let quit_reply = (
+        FrameKind::Reply,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(20),
+        String::from("Quit"),
+    );
     let expected = if cfg!(windows) {
-        // W1 wrote no 024; W2 discarded the unread REPLY at the close.
-        Vec::new()
+        // W1 wrote no 024; the close kept the unread REPLY.
+        vec![quit_reply]
     } else {
         vec![
-            (
-                FrameKind::Reply,
-                LIFECYCLE_CHANNEL,
-                CorrelationId(20),
-                String::from("Quit"),
-            ),
+            quit_reply,
             (
                 FrameKind::Err,
                 FS_CHANNEL,
