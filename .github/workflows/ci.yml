@@ -364,7 +364,10 @@ jobs:
         run: |
           set -euo pipefail
           # An --exact filter with zero selected tests succeeds unless the pass count is checked.
-          out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"
+          if ! out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
       # KEL-19 container spec §5: AC1 on the workspace-built release host. The test
@@ -379,7 +382,10 @@ jobs:
           set -euo pipefail
           cargo build --release -p keld-host
           # An --exact filter that matches nothing exits 0, so require the one pass.
-          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
+          if ! out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
       # KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c) on the workspace-built
@@ -398,14 +404,23 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p keld-updater-helper
-          out="$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)"
+          if ! out="$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 2 passed;' <<<"$out"
-          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
+          if ! out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
           mkdir -p "$RUNNER_TEMP/ac2-helper"
-          out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"
+          if ! out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
           printf '%s\n' "$out"
           grep -q 'test result: ok\. 1 passed;' <<<"$out"
       - name: rustdoc (warnings deny)

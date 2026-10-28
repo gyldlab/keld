@@ -332,6 +332,31 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("Linux and Windows native acceptance tests print cargo failure output", () => {
+  const f = fixture();
+  const bash =
+    process.platform === "win32"
+      ? "C:\\Program Files\\Git\\bin\\bash.exe"
+      : "bash";
+  for (const name of [
+    "Real Linux foreign-owner refusal (KEL-167)",
+    "Real Windows release host identity container round trip (KEL-19)",
+    "Real Windows release updater helper loader and container (KEL-53 T4d S9c)",
+  ]) {
+    const selected = step(f, "check", name);
+    if (typeof selected.run !== "string")
+      throw new Error(`${name}: missing script`);
+    const mock =
+      "cargo() { if [ \"$1\" = test ]; then printf 'cargo failure diagnostic: fixture\\n' >&2; return 17; fi; return 0; }\n";
+    const result = Bun.spawnSync([bash, "-c", mock + selected.run], {
+      env: { ...process.env, RUNNER_TEMP: tmpdir() },
+    });
+    expect(result.exitCode, name).not.toBe(0);
+    expect(new TextDecoder().decode(result.stdout), name).toContain(
+      "cargo failure diagnostic: fixture",
+    );
+  }
+});
 test("KEL-167 Linux exact test rejects a zero-test result", () => {
   const linux = step(
     fixture(),
@@ -632,6 +657,24 @@ test("non-CodeQL jobs cannot override workflow read-only token privileges", () =
   }
 });
 
+test("native CI jobs reject unreviewed container and services overrides", () => {
+  for (const jobName of [
+    "check",
+    "windows-media",
+    "router-contracts",
+  ] as const) {
+    for (const [key, value] of [
+      ["container", "rust:latest"],
+      ["services", { override: { image: "alpine:latest" } }],
+    ] as const) {
+      const f = fixture();
+      (f.jobs[jobName] as Record<string, unknown>)[key] = value;
+      expect(() => check(f), `${jobName}.${key}`).toThrow(
+        `jobs.${jobName} must not set container or services`,
+      );
+    }
+  }
+});
 test("native Clippy and Nextest matrix must use every router-selected OS", () => {
   const baseline = fixture();
   expect(() => check(baseline)).not.toThrow();

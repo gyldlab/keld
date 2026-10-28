@@ -1412,6 +1412,16 @@ export function checkWorkflowSecurity(source: string): void {
   // A skipped consumer, shell-init injection or altered run command could
   // otherwise produce a green job without executing any native test.
   const nativeCheck = mapping(jobs.check, "jobs.check");
+  for (const jobName of ["check", "windows-media", "router-contracts"]) {
+    const nativeJob = mapping(jobs[jobName], `jobs.${jobName}`);
+    if (
+      ["container", "services"].some((key) => Object.hasOwn(nativeJob, key))
+    ) {
+      fail(
+        `jobs.${jobName} must not set container or services; an unreviewed image could replace native tools.`,
+      );
+    }
+  }
   const nativeStrategy = mapping(nativeCheck.strategy, "jobs.check.strategy");
   const nativeMatrix = mapping(
     nativeStrategy.matrix,
@@ -1449,7 +1459,10 @@ export function checkWorkflowSecurity(source: string): void {
   const reviewedLinuxProof = [
     "set -euo pipefail",
     "# An --exact filter with zero selected tests succeeds unless the pass count is checked.",
-    'out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"',
+    'if ! out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"; then',
+    "  printf '%s\\n' \"$out\"",
+    "  exit 1",
+    "fi",
     "printf '%s\\n' \"$out\"",
     "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
     "",
@@ -1841,7 +1854,7 @@ export function checkWorkflowSecurity(source: string): void {
   // the complete parsed steps afterwards also rejects inserted executable
   // steps, changed ordering, and environment/PATH writers between gates.
   const reviewedStepInventories: Record<string, string> = {
-    check: "51acadbe65ae3a740fce50e8f0df5b3db9f054fe4bbc36818bfced9770f0b9a3",
+    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
     "codeql-rust":
       "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
     "codeql-javascript-typescript":
