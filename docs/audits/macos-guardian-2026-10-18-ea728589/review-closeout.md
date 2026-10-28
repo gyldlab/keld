@@ -72,3 +72,17 @@ production code.
 ## Exact source-delta evidence after #949
 
 The separate `source-review-tip-953.csv` compares all **79** tracked Guardian paths at #953 `46b91848db10f81156cebe0c6c34dec90082eaba` against the 77 at #949 `899e287ea487f38ec1cd347f7c9db8f1927348ef`: **70 unchanged exact Git blobs, 7 modified, 2 added test files**. The two additions are `authenticated_runner/tests.rs` (#952) and `macos_host_death_guardian/support/tests.rs` (#953). All changed paths remain explicitly linked to their source-owning draft PRs. A changed file does **not** inherit its historical review merely because its path matches; native tests and final-head independent code review/CI are distinct recorded gates. At #953 local Mac full core+runtime Nextest 479/479 passed with 5 skipped and strict Clippy/fmt/source census/hygiene passed; hosted/independent review outcomes belong to exact PR heads, not to the historic #949 review.
+
+
+## Errata — 28 October 2026: historical pins are not current acceptance
+
+The original CSV/JSON records and hashes above are preserved as historical evidence.
+Their `current_*` fields name historical #953 `46b91848`, not #953 observed on
+28 October (`8dd43926297479851c555596aafa012ee992c7e5`). Read the separately dated
+[source reconciliation and qualifications](source-review-2026-10-28.md) and
+[86-path delta](source-delta-2026-10-28.csv) before interpreting any reviewed status.
+The known final-newline deadline oracle specifically remains unresolved and supersedes
+an unqualified `reviewed-no-change` interpretation. Current-source canonical census
+enforcement and native falsifiers are still pending with their existing owners.
+This appendix does not rewrite historic receipts, claim current-main/whole-repository
+acceptance, or authorize merging.
