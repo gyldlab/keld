@@ -127,15 +127,17 @@ fn run_legacy_api_ready(inherited_hint: Option<&str>) {
     reader
         .get_mut()
         .set_read_timeout(Some(PRODUCT_DEADLINE))
-        .expect("control EOF deadline");
-    let mut trailing = Vec::new();
-    reader
-        .read_to_end(&mut trailing)
-        .expect("control socket EOF after Bun reap");
-    assert!(
-        trailing.is_empty(),
-        "unexpected control bytes: {trailing:?}"
-    );
+        .expect("control closure deadline");
+    // The reaped Bun's test TCP peer may close abortively on Windows. A single
+    // read still rejects any buffered or trailing byte before accepting closure.
+    let mut trailing = [0_u8; 1];
+    match reader.read(&mut trailing) {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        result => {
+            panic!("unexpected control closure after Bun reap: {result:?}; byte={trailing:?}")
+        }
+    }
     drop(reader);
     // A direct staged Host has no CLI cleanup sentinel. Release the stage's
     // directory guards before explicitly closing this test-owned workspace.
