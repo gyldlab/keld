@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,83 +41,85 @@ assert.equal(declared.WorkerLink, sibling.WorkerLink);
 
 test("real packed SDK installs offline with one API app identity", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "keld-sdk-package-"));
-  const source = Object.fromEntries(
-    ["api", "kipc"].map((name) => [
-      name,
-      JSON.parse(
-        readFileSync(
-          resolve(import.meta.dir, `../../${name}/package.json`),
-          "utf8",
+  try {
+    const source = Object.fromEntries(
+      ["api", "kipc"].map((name) => [
+        name,
+        JSON.parse(
+          readFileSync(
+            resolve(import.meta.dir, `../../${name}/package.json`),
+            "utf8",
+          ),
         ),
-      ),
-    ]),
-  );
-  const build = Bun.spawnSync(["bun", producer, scratch], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(build.exitCode, new TextDecoder().decode(build.stderr)).toBe(0);
-  const second = join(scratch, "second");
-  mkdirSync(second);
-  const rebuild = Bun.spawnSync(["bun", producer, second], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(rebuild.exitCode, new TextDecoder().decode(rebuild.stderr)).toBe(0);
-  for (const name of ["api", "kipc"]) {
-    expect(
-      readFileSync(join(scratch, `keld-${name}-${source[name].version}.tgz`)),
-    ).toEqual(
-      readFileSync(join(second, `keld-${name}-${source[name].version}.tgz`)),
+      ]),
     );
-  }
-  const api = join(scratch, `keld-api-${source.api.version}.tgz`);
-  const kipc = join(scratch, `keld-kipc-${source.kipc.version}.tgz`);
-  const consumer = join(scratch, "consumer");
-  mkdirSync(consumer);
-  writeFileSync(
-    join(consumer, "package.json"),
-    JSON.stringify({
-      name: "sdk-consumer",
-      private: true,
-      type: "module",
-      dependencies: {
-        "@keld/api": `file:${api}`,
-        "@keld/kipc": `file:${kipc}`,
-      },
-    }),
-  );
-  const install = Bun.spawnSync(
-    [
-      "npm",
-      "install",
-      "--offline",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--cache",
-      join(scratch, "cache"),
-    ],
-    { cwd: consumer, stdout: "pipe", stderr: "pipe" },
-  );
-  expect(install.exitCode, new TextDecoder().decode(install.stderr)).toBe(0);
-  const manifest = JSON.parse(
-    readFileSync(join(consumer, "node_modules/@keld/api/package.json"), "utf8"),
-  );
-  expect(manifest.dependencies["@keld/kipc"]).toBe(source.kipc.version);
-  for (const name of ["api", "kipc"]) {
-    const installed = JSON.parse(
+    const build = Bun.spawnSync(["bun", producer, scratch], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(build.exitCode, new TextDecoder().decode(build.stderr)).toBe(0);
+    const second = join(scratch, "second");
+    mkdirSync(second);
+    const rebuild = Bun.spawnSync(["bun", producer, second], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(rebuild.exitCode, new TextDecoder().decode(rebuild.stderr)).toBe(0);
+    for (const name of ["api", "kipc"]) {
+      expect(
+        readFileSync(join(scratch, `keld-${name}-${source[name].version}.tgz`)),
+      ).toEqual(
+        readFileSync(join(second, `keld-${name}-${source[name].version}.tgz`)),
+      );
+    }
+    const api = join(scratch, `keld-api-${source.api.version}.tgz`);
+    const kipc = join(scratch, `keld-kipc-${source.kipc.version}.tgz`);
+    const consumer = join(scratch, "consumer");
+    mkdirSync(consumer);
+    writeFileSync(
+      join(consumer, "package.json"),
+      JSON.stringify({
+        name: "sdk-consumer",
+        private: true,
+        type: "module",
+        dependencies: { "@keld/api": `file:${api}` },
+        overrides: { "@keld/kipc": `file:${kipc}` },
+      }),
+    );
+    const install = Bun.spawnSync(
+      [
+        "npm",
+        "install",
+        "--offline",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--cache",
+        join(scratch, "cache"),
+      ],
+      { cwd: consumer, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(install.exitCode, new TextDecoder().decode(install.stderr)).toBe(0);
+    const manifest = JSON.parse(
       readFileSync(
-        join(consumer, `node_modules/@keld/${name}/package.json`),
+        join(consumer, "node_modules/@keld/api/package.json"),
         "utf8",
       ),
     );
-    expect(installed.devDependencies).toEqual(source[name].devDependencies);
-  }
-  const probe = join(consumer, "probe.mjs");
-  writeFileSync(
-    probe,
-    `import {strict as assert} from "node:assert";
+    expect(manifest.dependencies["@keld/kipc"]).toBe(source.kipc.version);
+    for (const name of ["api", "kipc"]) {
+      const installed = JSON.parse(
+        readFileSync(
+          join(consumer, `node_modules/@keld/${name}/package.json`),
+          "utf8",
+        ),
+      );
+      expect(installed.devDependencies).toEqual(source[name].devDependencies);
+    }
+    const probe = join(consumer, "probe.mjs");
+    writeFileSync(
+      probe,
+      `import {strict as assert} from "node:assert";
 import {createRequire} from "node:module";
 import * as api from "@keld/api";
 import {app} from "@keld/api/internal/app";
@@ -124,182 +128,295 @@ import "@keld/api/internal/window-codec";
 assert.equal(api.app, app);
 assert.equal(api.app, createRequire(import.meta.url)("@keld/api").app);
 assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChannel", "fs", "isCallError"].sort());`,
-  );
-  const run = Bun.spawnSync(["bun", probe], {
-    cwd: consumer,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(run.exitCode, new TextDecoder().decode(run.stderr)).toBe(0);
-  writeFileSync(
-    join(consumer, "consumer.ts"),
-    `import { app, isCallError } from "@keld/api";
+    );
+    const run = Bun.spawnSync(["bun", probe], {
+      cwd: consumer,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(run.exitCode, new TextDecoder().decode(run.stderr)).toBe(0);
+    // Repack the actual produced API after deleting only its declared edge.
+    const mutant = join(scratch, "mutant");
+    mkdirSync(mutant);
+    const unpack = Bun.spawnSync(["tar", "-xzf", api, "-C", mutant], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(unpack.exitCode, new TextDecoder().decode(unpack.stderr)).toBe(0);
+    const mutantPackage = join(mutant, "package");
+    const mutantManifestPath = join(mutantPackage, "package.json");
+    const mutantManifest = JSON.parse(readFileSync(mutantManifestPath, "utf8"));
+    delete mutantManifest.dependencies["@keld/kipc"];
+    writeFileSync(mutantManifestPath, JSON.stringify(mutantManifest));
+    const repack = Bun.spawnSync(
+      ["bun", "pm", "pack", "--ignore-scripts", "--destination", mutant],
+      { cwd: mutantPackage, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(repack.exitCode, new TextDecoder().decode(repack.stderr)).toBe(0);
+    const negative = join(mutant, "consumer");
+    mkdirSync(negative);
+    writeFileSync(
+      join(negative, "package.json"),
+      JSON.stringify({
+        name: "sdk-negative",
+        private: true,
+        type: "module",
+        dependencies: {
+          "@keld/api": `file:${join(mutant, `keld-api-${source.api.version}.tgz`)}`,
+        },
+        overrides: { "@keld/kipc": `file:${kipc}` },
+      }),
+    );
+    const negativeInstall = Bun.spawnSync(
+      [
+        "npm",
+        "install",
+        "--offline",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--cache",
+        join(scratch, "negative-cache"),
+      ],
+      { cwd: negative, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(
+      negativeInstall.exitCode,
+      new TextDecoder().decode(negativeInstall.stderr),
+    ).toBe(0);
+    expect(existsSync(join(negative, "node_modules/@keld/kipc"))).toBe(false);
+    writeFileSync(join(negative, "probe.mjs"), readFileSync(probe));
+    const negativeImport = Bun.spawnSync(["bun", "probe.mjs"], {
+      cwd: negative,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(negativeImport.exitCode).not.toBe(0);
+    expect(new TextDecoder().decode(negativeImport.stderr)).toContain(
+      "@keld/kipc",
+    );
+    writeFileSync(
+      join(consumer, "consumer.ts"),
+      `import { app, isCallError } from "@keld/api";
 import { app as internalApp } from "@keld/api/internal/app";
 import type { LifecycleLink } from "@keld/api/internal/link";
 import type { WindowRef } from "@keld/api/internal/window-codec";
 void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRef; void [link!, ref!];`,
-  );
-  writeFileSync(
-    join(consumer, "tsconfig.json"),
-    JSON.stringify({
-      compilerOptions: {
-        strict: true,
-        noEmit: true,
-        target: "ES2024",
-        module: "Preserve",
-        moduleResolution: "Bundler",
-        lib: ["ES2024", "DOM"],
-      },
-      files: ["consumer.ts"],
-    }),
-  );
-  const tsc = resolve(import.meta.dir, "../node_modules/.bin/tsc");
-  const typecheck = Bun.spawnSync([tsc, "-p", "tsconfig.json"], {
-    cwd: consumer,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(
-    typecheck.exitCode,
-    new TextDecoder().decode(typecheck.stdout) +
-      new TextDecoder().decode(typecheck.stderr),
-  ).toBe(0);
-  // Reuse the source retention and alias witnesses against installed emitted JS.
-  // Only their module paths and Rust-owned fixture path change; their assertions remain intact.
-  const apiSource = import.meta.dir;
-  const emitted = join(consumer, "node_modules/@keld/api");
-  const vector = resolve(
-    apiSource,
-    "../../../../crates/keld-ipc/tests/fixtures/window-v0.tsv",
-  );
-  for (const name of [
-    "window-source.test.ts",
-    "window-source-release.test-role.ts",
-    "window-source-diagnostic-release.test-role.ts",
-    "link-quit-release.test.ts",
-    "link-quit-release.test-role.ts",
-    "link-last-window.test.ts",
-    "link-last-window.test-role.ts",
-    "window-state-phase.test-role.ts",
-  ]) {
-    let sourceText = readFileSync(join(apiSource, name), "utf8");
-    for (const module of ["window-source", "window-codec", "link", "mirror"]) {
-      sourceText = sourceText.replaceAll(
-        `"./${module}.ts"`,
-        JSON.stringify(join(emitted, `${module}.js`)),
-      );
-    }
-    sourceText = sourceText.replace(
-      /join\(\s*import\.meta\.dir,\s*"\.\.\/\.\.\/\.\.\/\.\.\/crates\/keld-ipc\/tests\/fixtures\/window-v0\.tsv",\s*\)/,
-      JSON.stringify(vector),
     );
-    writeFileSync(join(consumer, name), sourceText);
-  }
-  const sourceProof = Bun.spawnSync(
-    [
-      "bun",
-      "test",
-      "window-source.test.ts",
-      "link-quit-release.test.ts",
-      "link-last-window.test.ts",
-    ],
-    {
+    writeFileSync(
+      join(consumer, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2024",
+          module: "Preserve",
+          moduleResolution: "Bundler",
+          lib: ["ES2024", "DOM"],
+        },
+        files: ["consumer.ts"],
+      }),
+    );
+    const tsc = resolve(import.meta.dir, "../node_modules/.bin/tsc");
+    const typecheck = Bun.spawnSync([tsc, "-p", "tsconfig.json"], {
       cwd: consumer,
       stdout: "pipe",
       stderr: "pipe",
-    },
-  );
-  expect(
-    sourceProof.exitCode,
-    new TextDecoder().decode(sourceProof.stdout) +
-      new TextDecoder().decode(sourceProof.stderr),
-  ).toBe(0);
-  for (const mode of [
-    "push",
-    "freeze",
-    "get",
-    "iterator",
-    "integer",
-    "bigint",
-    "byteLength",
-    "brand",
-    "invocation",
-    "inherited-slot",
-    "public-copy-slot",
-    "native-primitives",
-    "failure-error",
-    "failure-define",
-    "failure-startsWith",
-    "view-custody",
-    "escape-values",
-    "escape-clear",
-    "escape-iterator",
-    "lifecycle-length",
-    "err-iterator",
-    "err-startsWith",
-    "err-subarray",
-    "err-length",
-    "err-textdecoder",
-    "err-decode",
-  ]) {
-    const phase = Bun.spawnSync(
-      ["bun", join(consumer, "window-state-phase.test-role.ts"), mode],
+    });
+    expect(
+      typecheck.exitCode,
+      new TextDecoder().decode(typecheck.stdout) +
+        new TextDecoder().decode(typecheck.stderr),
+    ).toBe(0);
+    // Reuse the source retention and alias witnesses against installed emitted JS.
+    // Only their module paths and Rust-owned fixture path change; their assertions remain intact.
+    const apiSource = import.meta.dir;
+    const emitted = join(consumer, "node_modules/@keld/api");
+    const vector = resolve(
+      apiSource,
+      "../../../../crates/keld-ipc/tests/fixtures/window-v0.tsv",
+    );
+    for (const name of [
+      "window-source.test.ts",
+      "window-source-release.test-role.ts",
+      "window-source-diagnostic-release.test-role.ts",
+      "link-quit-release.test.ts",
+      "link-quit-release.test-role.ts",
+      "link-last-window.test.ts",
+      "link-last-window.test-role.ts",
+      "window-state-phase.test-role.ts",
+    ]) {
+      let sourceText = readFileSync(join(apiSource, name), "utf8");
+      for (const module of [
+        "window-source",
+        "window-codec",
+        "link",
+        "mirror",
+      ]) {
+        sourceText = sourceText.replaceAll(
+          `"./${module}.ts"`,
+          JSON.stringify(join(emitted, `${module}.js`)),
+        );
+      }
+      sourceText = sourceText.replace(
+        /join\(\s*import\.meta\.dir,\s*"\.\.\/\.\.\/\.\.\/\.\.\/crates\/keld-ipc\/tests\/fixtures\/window-v0\.tsv",\s*\)/,
+        JSON.stringify(vector),
+      );
+      writeFileSync(join(consumer, name), sourceText);
+    }
+    const sourceProof = Bun.spawnSync(
+      [
+        "bun",
+        "test",
+        "window-source.test.ts",
+        "link-quit-release.test.ts",
+        "link-last-window.test.ts",
+      ],
       {
         cwd: consumer,
-        env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "0" },
         stdout: "pipe",
         stderr: "pipe",
       },
     );
-    expect(phase.exitCode, new TextDecoder().decode(phase.stderr)).toBe(0);
-    expect(JSON.parse(new TextDecoder().decode(phase.stdout))).toEqual({
-      mode,
-      hits: 0,
-      variant: mode.startsWith("failure-") ? "rejected" : "Created",
-    });
-  }
-  const transport = join(consumer, "node_modules/@keld/kipc/transport.js");
-  const original = readFileSync(transport, "utf8");
-  async function workerProbe() {
-    return runLayout({
-      closeOnOpen: true,
-      ready: (stdout) => stdout.includes("main-open="),
-      async write(dir) {
+    expect(
+      sourceProof.exitCode,
+      new TextDecoder().decode(sourceProof.stdout) +
+        new TextDecoder().decode(sourceProof.stderr),
+    ).toBe(0);
+    for (const mode of [
+      "push",
+      "freeze",
+      "get",
+      "iterator",
+      "integer",
+      "bigint",
+      "byteLength",
+      "brand",
+      "invocation",
+      "inherited-slot",
+      "public-copy-slot",
+      "native-primitives",
+      "failure-error",
+      "failure-define",
+      "failure-startsWith",
+      "view-custody",
+      "escape-values",
+      "escape-clear",
+      "escape-iterator",
+      "lifecycle-length",
+      "err-iterator",
+      "err-startsWith",
+      "err-subarray",
+      "err-length",
+      "err-textdecoder",
+      "err-decode",
+    ]) {
+      const phase = Bun.spawnSync(
+        ["bun", join(consumer, "window-state-phase.test-role.ts"), mode],
+        {
+          cwd: consumer,
+          env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "0" },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      expect(phase.exitCode, new TextDecoder().decode(phase.stderr)).toBe(0);
+      expect(JSON.parse(new TextDecoder().decode(phase.stdout))).toEqual({
+        mode,
+        hits: 0,
+        variant: mode.startsWith("failure-") ? "rejected" : "Created",
+      });
+    }
+    // The installed API's real LifecycleLink, not a WorkerLink mock, reaches a private peer.
+    const lifecycleRole = join(consumer, "package-lifecycle.test-role.ts");
+    writeFileSync(
+      lifecycleRole,
+      readFileSync(
+        resolve(apiSource, "../fixtures/package-lifecycle.test-role.ts"),
+      ),
+    );
+    function lifecycle() {
+      return Bun.spawnSync(["bun", lifecycleRole], {
+        cwd: consumer,
+        env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 10_000,
+      });
+    }
+    const live = lifecycle();
+    expect(live.exitCode, new TextDecoder().decode(live.stderr)).toBe(0);
+    expect(new TextDecoder().decode(live.stdout).trim()).toBe(
+      "PASS installed-api-real-worker-source-end",
+    );
+    const installedLink = join(emitted, "link.js");
+    const originalLink = readFileSync(installedLink, "utf8");
+    try {
+      for (const statement of [
+        "attachMirror(workerLink, windowSource);",
+        "windowSource?.end(err);",
+      ]) {
+        expect(originalLink.split(statement)).toHaveLength(2);
         writeFileSync(
-          join(dir, "main.js"),
-          `import { appendFileSync } from "node:fs";
+          installedLink,
+          originalLink.replace(statement, "void 0;"),
+        );
+        const rejected = lifecycle();
+        expect(rejected.exitCode).not.toBe(0);
+        expect(new TextDecoder().decode(rejected.stderr)).toContain(
+          statement.startsWith("attachMirror")
+            ? "SOURCE_FACT_NOT_DISPATCHED"
+            : "Missing expected exception",
+        );
+      }
+    } finally {
+      writeFileSync(installedLink, originalLink);
+    }
+    const transport = join(consumer, "node_modules/@keld/kipc/transport.js");
+    const original = readFileSync(transport, "utf8");
+    async function workerProbe() {
+      return runLayout({
+        closeOnOpen: true,
+        ready: (stdout) => stdout.includes("main-open="),
+        async write(dir) {
+          writeFileSync(
+            join(dir, "main.js"),
+            `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.KELD_TEST_EVALS, "eval\\n");
 import { WorkerLink, isCallError } from ${JSON.stringify(transport)};
 WorkerLink.open({ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3], callReceivers: [] } }).then(
   () => console.log("main-open=opened"),
   (err) => console.log("main-open=" + (isCallError(err) ? err.code : "untyped")));
 `,
-        );
-        return "main.js";
-      },
+          );
+          return "main.js";
+        },
+      });
+    }
+    const intact = await workerProbe();
+    expect(intact.connections).toBe(1);
+    expect(intact.evals).toBe(1);
+    const newline = original.indexOf("\n");
+    const first = original.slice(0, newline);
+    const last = first.at(-1);
+    writeFileSync(
+      transport,
+      first.slice(0, -1) + (last === "0" ? "1" : "0") + original.slice(newline),
+    );
+    const corrupt = await workerProbe();
+    expect(corrupt.connections).toBe(0);
+    expect(corrupt.stdout.trim()).toBe("main-open=KELD-IPC-005");
+    writeFileSync(transport, original);
+    const installedKipc = join(consumer, "node_modules/@keld/kipc");
+    renameSync(installedKipc, `${installedKipc}-removed`);
+    const missing = Bun.spawnSync(["bun", probe], {
+      cwd: consumer,
+      stdout: "pipe",
+      stderr: "pipe",
     });
+    expect(missing.exitCode).not.toBe(0);
+    renameSync(`${installedKipc}-removed`, installedKipc);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
-  const intact = await workerProbe();
-  expect(intact.connections).toBe(1);
-  expect(intact.evals).toBe(1);
-  const newline = original.indexOf("\n");
-  const first = original.slice(0, newline);
-  const last = first.at(-1);
-  writeFileSync(
-    transport,
-    first.slice(0, -1) + (last === "0" ? "1" : "0") + original.slice(newline),
-  );
-  const corrupt = await workerProbe();
-  expect(corrupt.connections).toBe(0);
-  expect(corrupt.stdout.trim()).toBe("main-open=KELD-IPC-005");
-  writeFileSync(transport, original);
-  const installedKipc = join(consumer, "node_modules/@keld/kipc");
-  renameSync(installedKipc, `${installedKipc}-removed`);
-  const missing = Bun.spawnSync(["bun", probe], {
-    cwd: consumer,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(missing.exitCode).not.toBe(0);
-  renameSync(`${installedKipc}-removed`, installedKipc);
 }, 30_000);
