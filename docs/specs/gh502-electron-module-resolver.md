@@ -6,7 +6,7 @@ Linear: GH-502 (GitHub tracker under #517) · Owner: @0monish / GYLDLAB · Updat
 
 Authority: [GH-502](https://github.com/gyldlab/keld/issues/502) latest Agent Brief; [X02-A1 binding decision, GH-412](https://github.com/gyldlab/keld/issues/412); [X03-T3 conformance owner, GH-569](https://github.com/gyldlab/keld/issues/569). Original design basis: `origin/main 522acf123f703a450a1710efea5ddf677470c10e`.
 
-Disposition: **OPEN / DRAFT / DO NOT MERGE**. This draft neither authorizes implementation nor establishes installed-app/OS/product evidence.
+Disposition: **OPEN / DRAFT / DO NOT MERGE**. The user approved this exact resolver design at [GH-502 comment 6469526861](https://github.com/gyldlab/keld/issues/502#issuecomment-6469526861). PR #1173 remains open/DRAFT/DO NOT MERGE while GH-569 conformance, the API/KIPC artifact-provider, X02-T3/#497 installed-graph admission, GH-593 launcher, and native/product acceptance gates remain. Approval does not establish installed-app, OS, or product evidence.
 
 ## 1. Goal & non-goals
 
@@ -103,7 +103,7 @@ X02-T3, not GH-502, installs the `"electron": "npm:@keld/electron@<approved-pinn
 
 ## 6. Tasks (one reviewable responsibility per stage)
 
-- [ ] T0 — Publish this exact **specification only** as OPEN/DRAFT; get human `Status: approved`. Align GH-412's architecture correction through #497's owner, not by an unreviewed local edit.
+- [ ] T0 — Publish this exact **specification only** as OPEN/DRAFT. The user's approval of this exact resolver source and status promotion is recorded at [GH-502 comment 6469526861](https://github.com/gyldlab/keld/issues/502#issuecomment-6469526861), and `Status: approved` is recorded above. Keep T0 open until #497's owner completes the GH-412 architecture correction and integration; this approval does not authorize code or product acceptance.
 - [ ] T1 — GH-569 owner lands X03-T3 conformance cells and pinned Electron v44.4.5 reference evidence, with explicit fail/unknown expected statuses. This is a prerequisite to GH-502 code.
 - [ ] T2 — After T0/T1, GH-502 owner implements one installed package entry + exports and actual CJS/ESM identity tests. The separate API/KIPC owner supplies any missing transitive package closure before claiming R05.
 - [ ] T3 — Migrate KEL-72 owned fixtures from `tsconfig.paths` and inert `bunfig [alias]` to the installed alias. Exercise all listed negative controls and maintain current lifecycle behavior.
@@ -129,4 +129,4 @@ No runtime change from this spec. The future guard adds cold entry-evaluation wo
 
 ## 10. Open questions / implementation dependencies
 
-The **design choice** (single dependency alias, one module entry, five exports, no dual resolver) is settled by GH-412. **Blocking work** remains: human approval of this draft, GH-569's separately owned conformance implementation, packable `@keld/api` → `@keld/kipc` dependency graph, and #497's architecture/migration reconciliation. If Node26/Bun requires a generated single-file target, first capture the actual installed-case failure and then apply `4.2's one-target alternative; do not invent a second resolver or declare the existing TypeScript package Node-compatible without executing it.
+The **design choice** (single dependency alias, one module entry, five exports, no dual resolver) is settled by GH-412; exact-source approval is recorded at [GH-502 comment 6469526861](https://github.com/gyldlab/keld/issues/502#issuecomment-6469526861). **Blocking work** remains: GH-569's separately owned conformance implementation, the packable `@keld/api` → `@keld/kipc` dependency graph and named provider owner, and #497's architecture/migration reconciliation. If Node26/Bun requires a generated single-file target, first capture the actual installed-case failure and then apply `4.2's one-target alternative; do not invent a second resolver or declare the existing TypeScript package Node-compatible without executing it.
