@@ -2184,9 +2184,9 @@ configuration, not code.** This is the Rspack/Rolldown lesson applied to desktop
 `docs/research/library/agents-tooling/05-rust-wave.md`).
 "Median" is defined and measured, not vibed: we maintain an identified corpus of
 open-source Electron apps and publish operation-level evidence only for committed
-corpus members. The pinned first draw.io proof is not an unmodified-source
-demonstration unless its native synchronous-dialog path passes: the proposed
-fallback is **configuration plus one disclosed macOS-only source edit** (#499).
+corpus members. The proposed first draw.io proof includes **configuration plus
+enumerated, separately gated macOS-only source adaptations** (#499); its exact
+source and native receipts must support any unmodified-source claim.
 Static migration estimates are not product compatibility scores.
 
 ## 1. The developer experience (the whole flow)
@@ -2212,6 +2212,7 @@ Keld migrate static analysis — my-electron-app
   not generated: keld.compat.ts (no schema/reader)
   not generated: bunfig electron alias (package dependency is the resolver)
   removed if present under --write: tsconfig paths.electron (second resolver)
+  blocked if effective tsconfig/jsconfig mappings redirect Electron imports (inherited/wildcard inputs included)
   authority: explicit legacy requires separate consent; zero-authority claim forfeited
   dropped inputs: Chromium switches / disableBlinkFeatures / updater setFeedURL (reasons printed)
   next: approve diffs and run real macOS Host/GUI acceptance; no product PASS inferred
@@ -2223,12 +2224,17 @@ Keld migrate static analysis — my-electron-app
 |---|---|---|
 | `keld.config.ts` | root `name` and `entry` per existing hello-config reader; #452 role env and #453 single-instance only after their own grammar is implemented | future `keld migrate --write` |
 | `keld.permissions.jsonc` | unique root `profile` and exact literal grants (03-security, #586/#588, #541/#552); Legacy is never implicit | future `keld migrate --write` |
-| `package.json` (edited) | the `electron` dependency resolves to `@keld/electron` through #502's one installed package resolver; updater uses #491 adapter; rewrite/remove Electron-binary and builder scripts | future `keld migrate --write` |
+| `package.json` (edited) | declare the `electron` dependency alias to #502's package; updater uses #491 adapter; rewrite/remove Electron-binary and builder scripts. Declaration edits do not establish installed-graph or launch admission | future `keld migrate --write` |
 
 No `keld.build.ts` (reserved build verb), `keld.compat.ts` (no live reader),
-`bunfig.toml` alias or `tsconfig.json` resolver entry. A pre-existing
-`compilerOptions.paths.electron` is removed by an explicitly approved,
-reversible `--write` change; the report names every omission and reason.
+`bunfig.toml` alias or generated tsconfig/jsconfig Electron resolver mapping.
+The pre-existing root `compilerOptions.paths.electron` removal requires an
+explicitly approved, owned, reversible `--write` change. Qualification also
+checks the effective inherited and wildcard mappings for all five Electron
+specifiers; removing one literal key is insufficient. Other conflicting
+configuration is diagnosed with its source/owner and refused, without granting
+new writes to shared, inherited or third-party config or generating an override.
+The report names every omission and reason.
 No `src-tauri/`, Rust files or new IDL in the first-proof migration path.
 
 `keld.config.ts` **current normative root shape** (not the former nested
@@ -2244,15 +2250,33 @@ export default {
 
 For a macOS Electron facade, the approved #446 form instead declares
 `initialWindow: "none"` and **omits** `renderer` so the app owns window
-creation. DRAFT #1171 produces that schema-2 descriptor; Host-side admission
-and native Ready-before-first-window remain pending. The future migration
-output must not present this as a working draw.io launch until those gates pass.
+creation. The current CLI emits schema 2 and the macOS Core/Host path selects
+`HostInitialized` without an initial renderer. This source support does not
+establish delivery of the original draw.io graph or its native workflow.
+
+Before app or dependency evaluation, #499 supplies the approved installed
+package/lock/file and effective-resolution evidence; the existing staging and
+Host launch path consumes it, bound to the actual delivered graph on every
+generation. #593 owns the independent no-runtime-auto-install spawn prerequisite.
+A root dependency key, the no-install flag or a package duplicate guard cannot
+substitute for this admission. Missing, foreign, nested-shadowed or changed
+inputs refuse with the owning typed Keld diagnostic before candidate evaluation.
+
+The existing CLI boot/package owner must also deliver the entry-relative code,
+preload and assets and the qualified canonical SDK/KIPC transport instance. The
+dev stage is nested under the project, so upward package lookup remains part of
+admission; entry-only staging does not supply arbitrary sibling files. Equal
+transport bytes do not prove import/preload identity or early capture. These
+remain implementation gates in the [GH497 output contract](../specs/gh497-first-proof-migration-output.md),
+separate from declaration edits and documentation approval.
 
 ## 3. How the shim works (layers)
 
-1. **One package resolver**: the app's main-process code `require("electron")`
-   and ESM imports resolve to `@keld/electron` via the installed dependency
-   named `electron` (#502), **not** a plugin, Bun alias or tsconfig path.
+1. **One package resolver**: the installed dependency named `electron` aliases
+   `@keld/electron` (#502). Its bare name and `/main`, `/renderer`, `/common`,
+   `/utility` subpaths map through package exports to one synchronous physical
+   entry for CommonJS require and ESM imports. No plugin, Bun alias or
+   tsconfig/jsconfig mapping replaces that resolution.
    `process.versions.electron` is shimmed; `process.type` reports
    `browser`/`renderer` appropriately.
 2. **Main-process modules** (`app`, `BrowserWindow`, `ipcMain`, `dialog`, `Menu`,
@@ -2310,7 +2334,7 @@ Historical dev experiment: Bun 1.3.14 did **not** remap runtime
 `import "electron"` from `bunfig.toml` `[alias]`; the v0 test fixture
 used a `tsconfig.json` `compilerOptions.paths` workaround. Neither
 workaround is emitted by migration: #502 owns the single installed-package
-resolver with self-contained ESM/default/CommonJS entry points.
+resolver with one self-contained entry for ESM/default/CommonJS forms.
 The current package exports a `BrowserWindow` subset backed by the
 macOS Host-owned native window registry for creation/adoption, selected
 geometry and state, close/destroy, and recovery events. Linux and Windows
