@@ -488,6 +488,10 @@
         "crates/keld-host/tests/no_flag/windows/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag_macos.rs",
+        "crates/keld-host/tests/no_flag/macos/module_process.rs",
+        "crates/keld-compat/tests/module_process_corpus.rs",
+        "crates/keld-compat/tests/module_process_reference.rs",
         "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
         "crates/keld-host/tests/no_flag/macos/facade_window.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
@@ -507,14 +511,14 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "25135468c867d3f34236df2c2d2acbbe18f088ee776bdfa7352d5b04c749ab8c"
+      "sha256": "59c606ba218c62f05a4076be9995275743caaa88ba86d65abf5ef71eea80cce4"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "ee0269a568c886bb66bd2b2cc93b0f0a82f6128f5a44dc42b60fc9984dff863c"
+      "sha256": "e1436c12b8b92ac87e27cf312d59965749014df681004262869527398cc4d0c2"
     },
     "policy-readers": {
       "patterns": [
@@ -524,14 +528,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "889633cf6ab6458bb8b27d314bc15896b1fdc465e41352d47172f19b104ad3f3"
+      "sha256": "b54721d9f58ea8314a4dffa0057c747e827166e76ae4129fa7e514cb21c19a50"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "45030d85edabe02dff5f2b92dd2b6ac410afe90334bea001a46a0add246f7815"
+      "sha256": "ad9a8171d95dd644cd8eb158636154b77b0eebf5b7de047b0d2cb30310070c2a"
     },
     "rustdoc-readers": {
       "patterns": [
@@ -541,13 +545,13 @@
         "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "36969f1177a5eee0a9e358a29f098b72bc08694feb524d1f410e9893948097f7"
+      "sha256": "30eaae5bd0050a8c63796e0164b2c44ad3d84c2400530ed30ad87016ef428a36"
     },
     "dependency-command": {
       "patterns": [
         "justfile"
       ],
-      "sha256": "0ca05c51e5bf6357dc7523af90b8fe241956194fa405f41d2ed1ab6d5bde6c7c"
+      "sha256": "6c86664370001bcdc8d3e6f3386ea17a293edad7ea158a4c4695adb73d6ed94f"
     },
     "status-test-readers": {
       "patterns": [
@@ -557,7 +561,7 @@
         "rust-toolchain.toml",
         "justfile"
       ],
-      "sha256": "36da3ec137e50f169a391c8cd41e948fa0fed94627ceecf42a0531dba2e595dd"
+      "sha256": "265e56c85ca7f438be8f5d39dc7c763d58b950ad36e7a184693d96124b2dc40b"
     }
   },
   "live_inputs": {
@@ -587,7 +591,9 @@
       "packages/@keld/electron/*",
       "packages/@keld/api/*",
       "packages/@keld/kipc/src/transport.ts",
-      "crates/keld-compat/fixtures/lifecycle-corpus/*"
+      "crates/keld-compat/fixtures/lifecycle-corpus/*",
+      "crates/keld-host/**",
+      "crates/keld-cli/src/**"
     ],
     "keld-update": [
       "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
