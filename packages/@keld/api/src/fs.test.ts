@@ -1,6 +1,5 @@
 /** Public adapter controls over the real canonical WorkerLink; no native FS authority claim. */
 import { describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,19 +18,13 @@ import {
   encodeVarint,
   withIoDeadline,
 } from "../../kipc/src/transport.ts";
+import {
+  freshWin32AppLinkPipe,
+  rejectionOf,
+} from "../../kipc/test/app-link-host.ts";
 import { fs } from "./index.ts";
 
 const TOKEN = new Uint8Array(32).fill(0x72);
-
-async function rejection(promise: Promise<unknown>): Promise<Error> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof Error) return error;
-    throw error;
-  }
-  throw new Error("operation unexpectedly succeeded");
-}
 
 test("local argument and Unicode failures always return rejected Promises", async () => {
   for (const call of [
@@ -45,7 +38,7 @@ test("local argument and Unicode failures always return rejected Promises", asyn
       promise = call();
     }).not.toThrow();
     expect(promise).toBeInstanceOf(Promise);
-    expect((await rejection(promise!)).message).toStartWith("KELD-IPC-003");
+    expect((await rejectionOf(promise!)).message).toStartWith("KELD-IPC-003");
   }
 });
 
@@ -81,20 +74,14 @@ interface Host {
 }
 
 async function start(scenario: string): Promise<Host> {
-  // Unix: a socket in a fresh 0o700 temp dir. Windows (KEL-101): the app link
-  // is a named pipe, and the transport accepts only the host-minted
-  // `\\.\pipe\keld-<64 lowercase hex>` shape (`isWin32PipeEndpoint`; anything
-  // else is read as a diagnostic port). A pipe name lives in the NPFS
-  // namespace, not a directory, so none is made or removed.
+  // Unix: a socket in a fresh 0o700 temp dir. Windows (KEL-101): a fresh
+  // named pipe, so no directory is made or removed.
   const root =
     process.platform === "win32"
       ? undefined
       : mkdtempSync(join(tmpdir(), "kf"));
   if (root !== undefined) chmodSync(root, 0o700);
-  const path =
-    root === undefined
-      ? String.raw`\\.\pipe\keld-${randomBytes(32).toString("hex")}`
-      : join(root, "a.s");
+  const path = root === undefined ? freshWin32AppLinkPipe() : join(root, "a.s");
   const reader = new FrameReader();
   const drain = new DrainSignal();
   let connectionCount = 0;

@@ -13,11 +13,14 @@
  * in `@keld/kipc`.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  freshWin32AppLinkPipe,
+  rejectionOf,
+} from "../../kipc/test/app-link-host.ts";
 import {
   APP_LINK_IO_DEADLINE_MS,
   decodeCallError,
@@ -118,26 +121,6 @@ async function rejectWithin<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-/**
- * What `promise` rejected with, settled by a plain `await`.
- *
- * The host-side close checks below use this rather than `expect(pending).rejects`.
- * On Windows (Bun 1.4.4) that matcher's wait on a pending promise missed a
- * named-pipe peer's close once the host socket had received data (a minimal
- * repro, and five of these six checks), so the read hit its kill switch; a
- * plain `await` saw the same close within ~2 ms (GH-1114). The assertion made
- * on the error is unchanged.
- */
-async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof Error) return error;
-    throw error;
-  }
-  throw new Error("expected a rejection; the promise resolved");
 }
 
 describe("parseWin32Port", () => {
@@ -439,10 +422,7 @@ describe("LifecycleLink over a platform app-link host, one role process per case
   // Unix: `sockaddr_un.sun_path` is 104 bytes on macOS (108 on Linux). A path
   // under the package tree plus `.test-run/<pid>-<ts>-<rand>/e.sock` overflows.
   // Short unique 0o700 dir under tmpdir, same contract as keld-cli bind_unix_echo.
-  // Windows (KEL-101): the app link is a named pipe, and the transport accepts
-  // only the host-minted `\\.\pipe\keld-<64 lowercase hex>` shape
-  // (`isWin32PipeEndpoint`; anything else is read as a diagnostic port). A pipe
-  // name lives in the NPFS namespace, not a directory, so none is made.
+  // Windows (KEL-101): a fresh named pipe per case, so no directory is made.
   const root =
     process.platform === "win32"
       ? undefined
@@ -450,9 +430,7 @@ describe("LifecycleLink over a platform app-link host, one role process per case
   if (root !== undefined) chmodSync(root, 0o700);
   /** A fresh endpoint per case; `file` names the Unix socket inside `root`. */
   const endpoint = (file: string): string =>
-    root === undefined
-      ? String.raw`\\.\pipe\keld-${randomBytes(32).toString("hex")}`
-      : join(root, file);
+    root === undefined ? freshWin32AppLinkPipe() : join(root, file);
   const roleScript = join(
     import.meta.dir,
     "..",
