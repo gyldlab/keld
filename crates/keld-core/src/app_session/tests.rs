@@ -13,20 +13,242 @@ use std::process::{Command, Stdio};
 use super::{
     ActivePrimaryGeneration, AppLinkDeadlines, AppWindowCommand, Arc, AtomicBool, AtomicU32,
     BOOT_FILE, BootstrapStream, CorrelationId, Duration, FS_CHANNEL, File, FrameKind,
-    GuardSnapshot, HashMap, HostAppError, Instant, LIFECYCLE_CHANNEL, LifecycleEvent,
-    MAX_BOOT_BYTES, ManifestError, Mutex, Ordering, PERMISSIONS_FILE, PendingFsCall,
-    PlatformPrimaryOwnerHandle, PrimaryLinkIdentity, PrimaryRouter, PrimaryRouterHandle, Receiver,
-    SESSION_CLI_LEASE_LOST, SESSION_LIFECYCLE_QUIT, SESSION_RUNNING, SessionShutdownState,
-    admit_kipc_transport_sidecar, app_detail, io, load_verified_manifest, mpsc, parse_boot_bytes,
-    thread, validate_from_root, write_frame,
+    GuardSnapshot, HashMap, HostAppError, InitialWindow, Instant, LIFECYCLE_CHANNEL,
+    LifecycleEvent, MAX_BOOT_BYTES, ManifestError, Mutex, Ordering, PERMISSIONS_FILE,
+    PendingFsCall, PlatformPrimaryOwnerHandle, PrimaryLinkIdentity, PrimaryRouter,
+    PrimaryRouterHandle, Receiver, SESSION_CLI_LEASE_LOST, SESSION_LIFECYCLE_QUIT, SESSION_RUNNING,
+    SessionShutdownState, admit_kipc_transport_sidecar, app_detail, io, load_verified_manifest,
+    mpsc, parse_boot_bytes, thread, validate_from_root, write_frame,
 };
 
 #[cfg(any(target_os = "macos", windows))]
-use super::{WebProfileSelection, startup_resource_snapshot};
+use super::{ValidatedInitialWindow, WebProfileSelection, startup_resource_snapshot};
 
 // The every-OS `finish_tail` per-cause test also runs on macOS.
 #[cfg(target_os = "macos")]
 use super::SESSION_HANDOVER;
+
+#[cfg(target_os = "macos")]
+#[test]
+fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
+    use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
+    for (trigger, expected) in [
+        (AppReadyTrigger::HostInitialized, "1"),
+        (AppReadyTrigger::NavigationReady, "0"),
+    ] {
+        for ambient in ["0", "1", "unknown"] {
+            let mut command = std::process::Command::new("unused-guardian");
+            command
+                .arg("entry-inode")
+                .env(NATIVE_WINDOW_FACADE_ENV, ambient);
+            configure_guardian_boot_mode(&mut command, trigger);
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                ["entry-inode", expected]
+            );
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(name, _)| *name == NATIVE_WINDOW_FACADE_ENV)
+                    .and_then(|(_, value)| value),
+                Some(std::ffi::OsStr::new(expected))
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn facade_and_renderer_ready_milestones_cannot_cross_or_repeat() {
+    use super::{AppReadyTrigger, accept_boot_ready_trigger};
+
+    for expected in [
+        AppReadyTrigger::NavigationReady,
+        AppReadyTrigger::HostInitialized,
+    ] {
+        let wrong = match expected {
+            AppReadyTrigger::NavigationReady => AppReadyTrigger::HostInitialized,
+            AppReadyTrigger::HostInitialized => AppReadyTrigger::NavigationReady,
+        };
+        let mut accepted = false;
+        let foreign = accept_boot_ready_trigger(expected, wrong, &mut accepted)
+            .expect_err("foreign Ready event must fail before publication");
+        assert_eq!(foreign.code(), "KELD-CORE-044");
+        assert!(!accepted);
+        accept_boot_ready_trigger(expected, expected, &mut accepted)
+            .expect("one correct Ready event");
+        let repeated = accept_boot_ready_trigger(expected, expected, &mut accepted)
+            .expect_err("duplicate Ready is fatal, not silently replayed");
+        assert_eq!(repeated.code(), "KELD-CORE-044");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn facade_init_deadline_arms_only_on_loop_entry_and_ends_at_first_init() {
+    use super::{AppReadyTrigger, initial_milestone_poll};
+    use std::sync::OnceLock;
+
+    let entered = OnceLock::new();
+    assert!(
+        entered.get().is_none(),
+        "engine install has no active Init deadline"
+    );
+    let now = Instant::now();
+    entered
+        .set(now + keld_wv::INITIAL_MILESTONE_DEADLINE)
+        .expect("first native loop entry");
+    let deadline = *entered.get().expect("deadline armed once");
+    assert!(deadline > now);
+    assert_eq!(
+        initial_milestone_poll(None, now),
+        super::APP_LINK_READER_POLL
+    );
+    assert_eq!(
+        initial_milestone_poll(
+            Some(deadline),
+            deadline
+                .checked_sub(Duration::from_millis(20))
+                .expect("valid before deadline"),
+        ),
+        Duration::from_millis(20)
+    );
+    assert_eq!(
+        initial_milestone_poll(Some(deadline), deadline),
+        Duration::ZERO
+    );
+    assert_eq!(
+        initial_milestone_poll(Some(deadline), deadline + Duration::from_secs(1)),
+        Duration::ZERO
+    );
+    let mut signaled = false;
+    super::accept_boot_ready_trigger(
+        AppReadyTrigger::HostInitialized,
+        AppReadyTrigger::HostInitialized,
+        &mut signaled,
+    )
+    .expect("first Init is accepted");
+    assert!(signaled, "post-Init sessions disarm the milestone bound");
+    assert_eq!(
+        initial_milestone_poll(None, deadline + Duration::from_secs(30)),
+        super::APP_LINK_READER_POLL,
+        "a healthy Init must disarm the deadline even when still windowless"
+    );
+    assert!(
+        now + keld_wv::INITIAL_MILESTONE_DEADLINE >= deadline,
+        "a healthy windowless session must not time out after Init"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn queued_late_first_init_cannot_bypass_absolute_deadline() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    // No sleeps or scheduler assumptions: even a queued event wins a zero
+    // timeout, so the receiver must decide using the genuine native timestamp.
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("monotonic clock supports one-second predecessor");
+    let clock = OnceLock::new();
+    clock.set(deadline).expect("arm first-Init absolute bound");
+    let (send, events) = mpsc::channel();
+    send.send(AppWindowEvent::HostInitialized {
+        observed_at: deadline + Duration::from_millis(1),
+    })
+    .expect("queue one late UI first turn");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Expired,
+        "queued late Init must not publish Ready or disarm the terminal"
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Expired,
+        "a non-terminal successful receive must not consume an invalid Init"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("monotonic clock supports one-second predecessor");
+    let clock = OnceLock::new();
+    clock.set(deadline).expect("arm first-Init absolute bound");
+    let on_time = deadline
+        .checked_sub(Duration::from_millis(1))
+        .expect("monotonic clock supports preceding native event");
+    let first = AppWindowEvent::HostInitialized {
+        observed_at: on_time,
+    };
+    let (send, events) = mpsc::channel();
+    send.send(first).expect("queue genuine timely UI event");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Event(first),
+        "coordinator descheduling must not transform timely native Init into timeout"
+    );
+    send.send(AppWindowEvent::LastWindowClosed)
+        .expect("healthy windowless session may continue");
+    assert_eq!(
+        receive_initial_milestone(&events, None),
+        InitialMilestoneReceive::Event(AppWindowEvent::LastWindowClosed),
+        "once Init is accepted the expired clock is no longer armed"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn busy_non_init_queue_and_empty_deadline_both_expire_without_ready() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("monotonic clock supports one-second predecessor");
+    let clock = OnceLock::new();
+    clock.set(deadline).expect("arm first-Init absolute bound");
+    let (send, events) = mpsc::channel();
+    send.send(AppWindowEvent::LastWindowClosed)
+        .expect("queue non-Init event after absolute expiry");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Expired,
+        "busy queue cannot perpetually avoid a timeout"
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Expired,
+        "empty deadline expiry still takes bounded terminal path"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn unarmed_first_init_timestamp_cannot_mint_ready() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    // The native producer must arm the shared loop-entry clock before sending
+    // a genuine first Init. An unarmed / untrusted milestone cannot be accepted.
+    let clock = OnceLock::new();
+    let (send, events) = mpsc::channel();
+    send.send(AppWindowEvent::HostInitialized {
+        observed_at: Instant::now(),
+    })
+    .expect("queue a milestone with no loop-entry clock");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock)),
+        InitialMilestoneReceive::Expired,
+        "unarmed native clock must not authorize Ready"
+    );
+}
 
 #[cfg(any(target_os = "linux", windows))]
 use super::{
@@ -47,9 +269,9 @@ use super::{HOST_ANSWER_BUDGET, QuitDrainEnd};
 
 #[cfg(target_os = "macos")]
 use super::{
-    AuthConfiguration, BoundPrimaryGeneration, FsWorkItem, FsWorkerCommand, IpcError,
-    PendingFsWriteFailure, PrimaryCallerContext, RoleOwner, ValidatedBootSelection,
-    collapse_app_results, dispatch_primary_echo, finish_link_shutdown, run_fs_worker, run_guarded,
+    AuthConfiguration, FsWorkItem, FsWorkerCommand, IpcError, PendingFsWriteFailure,
+    PrimaryCallerContext, ValidatedBootSelection, collapse_app_results, dispatch_primary_echo,
+    finish_link_shutdown, run_fs_worker, run_guarded,
 };
 
 #[cfg(target_os = "macos")]
@@ -99,6 +321,11 @@ include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
 include!("tests/filesystem_guard_and_recovery.rs");
 include!("tests/guarded_router_and_quit.rs");
+// The existing macOS declaration stays with its historical selector. Linux
+// reuses the same real Runtime/HELLO identity proof without any GUI claim.
+#[cfg(target_os = "linux")]
+#[path = "tests/accepted_primary_identity.rs"]
+mod accepted_primary_identity_linux;
 include!("tests/role_shutdown_and_worker.rs");
 include!("tests/successor_single_flight.rs");
 include!("tests/generation_correlation_and_auth.rs");

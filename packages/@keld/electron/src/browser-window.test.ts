@@ -7,11 +7,11 @@
  * below is a cell's exact `test_name`; `corpus_registry` admits a cell only when its
  * case passed once on a declared platform (gh566 D8, D13).
  *
- * Every cell is red today. `@keld/electron` exports no `BrowserWindow`, so each case
- * asserts that current behaviour and passes (gh532 rule 3). A cited cell records
- * `expected_verdict: fail` with the ticket that implements it (GH-449, GH-450 or
- * GH-455). That ticket's change inverts the case to assert the cited sentence and
- * flips the cell in the same PR.
+ * The public first-window subset is now exported. These Bun cases exercise
+ * fail-closed non-Host admission and API shape without inventing a native Host.
+ * The real macOS process/WindowId/veto/Destroy oracle is the shipping
+ * keld-host no_flag_macos::facade_window acceptance. Unqualified Electron
+ * corpus cells remain fail or unknown, never silently declared compatible.
  *
  * The getter, state and close cases probe only the members their own ticket adds, so
  * GH-449's constructor leaves the GH-450 cases unchanged. The creation and triage cases
@@ -58,8 +58,8 @@ function presentStatics(names: readonly string[]): string[] {
 }
 
 /**
- * A window built from the draw.io options, or `undefined` while construction throws.
- * Construction throwing is today's state; the creation and triage cases assert it.
+ * A window built from the draw.io options, or `undefined` without an authenticated
+ * Keld Host. The native constructor contract is proved in a real Host test.
  */
 function constructedWindow(): unknown {
   try {
@@ -136,11 +136,10 @@ const ESCALATING_WEB_PREFERENCES = [
   { allowRunningInsecureContent: true },
 ] as const;
 
-/** Asserts today's construction outcome: a TypeError because no constructor is exported. */
-function expectNoConstructor(options: object): void {
+/** No Host means no locally minted or pretend BrowserWindow identity. */
+function expectNoHostWindow(options: object): void {
   const error = constructionError(options);
-  expect(error).toBeInstanceOf(TypeError);
-  expect(error.message).not.toContain("KELD-");
+  expect(error.message).toContain("KELD-CORE-040");
 }
 
 /** Registers `event` on the app facade, attempts one construction, and counts calls. */
@@ -151,55 +150,64 @@ function appEventCallsDuringConstruction(event: string): number {
   };
   app.on(event, listener);
   try {
-    expectNoConstructor(DRAWIO_OPTIONS);
+    expectNoHostWindow(DRAWIO_OPTIONS);
   } finally {
     app.removeListener(event, listener);
   }
   return calls;
 }
 
-describe("GH-449 window registry cells, red until implemented", () => {
+describe("GH-449 window registry: no-Host negative controls", () => {
   // browser-window.md:523 "Each ID is unique among all `BrowserWindow` instances ..."
   // Ordered observable: two constructions return windows whose ids are distinct
   // integers. That the id is the host-delivered WindowId is gh531 criterion 1, which
   // GH-449 proves in its own tests; the Electron sentence cannot falsify provenance.
-  test("window.constructor.host-id today: @keld/electron exports no BrowserWindow constructor, so no window id exists", () => {
-    expect(typeof exportedBrowserWindow()).toBe("undefined");
-    expectNoConstructor(DRAWIO_OPTIONS);
+  test("window.constructor.host-id: exported constructor refuses to mint a local ID without Host Ready", () => {
+    expect(typeof exportedBrowserWindow()).toBe("function");
+    expectNoHostWindow(DRAWIO_OPTIONS);
   });
 
   // app.md:282 "Emitted when a new [browserWindow](browser-window.md) is created."
   // Ordered observable: one construction emits browser-window-created exactly once,
   // with that window.
-  test("app.browser-window-created.once-per-window today: construction throws, so a browser-window-created listener never runs", () => {
+  test("app.browser-window-created.once-per-window: unhosted constructor emits no creation event", () => {
     expect(appEventCallsDuringConstruction("browser-window-created")).toBe(0);
   });
 
   // app.md:291 "Emitted when a new [webContents](web-contents.md) is created."
   // Ordered observable: one construction emits web-contents-created exactly once,
   // with that window's webContents.
-  test("app.web-contents-created.once-per-window today: construction throws, so a web-contents-created listener never runs", () => {
+  test("app.web-contents-created.once-per-window: unhosted constructor emits no content event", () => {
     expect(appEventCallsDuringConstruction("web-contents-created")).toBe(0);
   });
 
   // browser-window.md:470 "Returns `BrowserWindow[]` - An array of all opened browser windows."
   // Ordered observable: after one construction, getAllWindows() returns synchronously
   // an Array (not a Promise) that contains that window.
-  test("window.get-all-windows.sync today: BrowserWindow.getAllWindows does not exist", () => {
-    expect(presentStatics(["getAllWindows"])).toEqual([]);
+  test("window.get-all-windows.sync: local empty read has no Host side effects", () => {
+    expect(presentStatics(["getAllWindows"])).toEqual(["getAllWindows"]);
+    expect(
+      (
+        exportedBrowserWindow() as typeof electron.BrowserWindow
+      ).getAllWindows(),
+    ).toEqual([]);
   });
 
   // browser-window.md:474 "Returns `BrowserWindow | null` - The window that is focused
   // in this application, otherwise returns `null`."
   // Ordered observable: getFocusedWindow() returns synchronously the focused window or null.
-  test("window.get-focused-window.sync today: BrowserWindow.getFocusedWindow does not exist", () => {
-    expect(presentStatics(["getFocusedWindow"])).toEqual([]);
+  test("window.get-focused-window.sync: no focused window without native fact", () => {
+    expect(presentStatics(["getFocusedWindow"])).toEqual(["getFocusedWindow"]);
+    expect(electron.BrowserWindow.getFocusedWindow()).toBeNull();
   });
 
   // browser-window.md:277 "Emitted when window is maximized."
   // Ordered observable: maximize(), then inside the 'maximize' listener isMaximized() is true.
-  test("window.maximize.state-in-listener today: BrowserWindow has no maximize or isMaximized", () => {
-    expect(presentInstanceMethods(["maximize", "isMaximized"])).toEqual([]);
+  test("window.maximize.state-in-listener: exposed accessors cannot construct without Host Ready", () => {
+    expect(presentInstanceMethods(["maximize", "isMaximized"])).toEqual([
+      "maximize",
+      "isMaximized",
+    ]);
   });
 
   // browser-window.md:753 "When querying for a BrowserWindow's fullscreen status, you
@@ -207,58 +215,60 @@ describe("GH-449 window registry cells, red until implemented", () => {
   // have been emitted." (link targets elided here; the manifest quotes them verbatim)
   // Ordered observable: setFullScreen(true), then once 'enter-full-screen' has been
   // emitted, isFullScreen() is true.
-  test("window.set-full-screen.state today: BrowserWindow has no setFullScreen or isFullScreen", () => {
-    expect(presentInstanceMethods(["setFullScreen", "isFullScreen"])).toEqual(
-      [],
-    );
+  test("window.set-full-screen.state: exposed accessors cannot construct without Host Ready", () => {
+    expect(presentInstanceMethods(["setFullScreen", "isFullScreen"])).toEqual([
+      "setFullScreen",
+      "isFullScreen",
+    ]);
   });
 });
 
-describe("GH-455 constructor triage cells, red until implemented", () => {
+describe("GH-455 constructor triage: no-Host negative controls", () => {
   // browser-window.md:156 "It creates a new `BrowserWindow` with native properties as
   // set by the `options`."
   // Ordered observable: new BrowserWindow(<draw.io main-window options>) returns a
   // window, and getAllWindows() grows by one.
-  test("window.constructor.drawio-options today: the draw.io main-window options create no window and throw TypeError, not a triage error", () => {
-    expectNoConstructor(DRAWIO_OPTIONS);
+  test("window.constructor.drawio-options: safe draw.io options pass security triage but cannot create without Host", () => {
+    expectNoHostWindow(DRAWIO_OPTIONS);
   });
 
   // Same sentence. Ordered observable once GH-455 lands: for each escalating value,
   // construction throws the KELD-COMPAT triage error naming the safe value, and no
   // window is created. Electron honours these values, so the implemented refusal is a
   // recorded divergence against this sentence, not parity.
-  test("window.constructor.escalating-web-preferences today: each escalating value throws TypeError, not a KELD-COMPAT triage refusal", () => {
+  test("window.constructor.escalating-web-preferences: six unsafe values refuse before Host access", () => {
     expect(ESCALATING_WEB_PREFERENCES).toHaveLength(6);
     for (const escalation of ESCALATING_WEB_PREFERENCES) {
-      expectNoConstructor({
+      const error = constructionError({
         ...DRAWIO_OPTIONS,
         webPreferences: { ...DRAWIO_OPTIONS.webPreferences, ...escalation },
       });
+      expect(error.message).toContain("KELD-COMPAT-010");
     }
   });
 });
 
-describe("GH-450 close state machine cells, red until implemented", () => {
+describe("GH-450 close API: no-Host negative controls", () => {
   // browser-window.md:193 "Calling `event.preventDefault()`\nwill cancel the close."
   // Ordered observable: a native close request emits 'close' once; its listener calls
   // preventDefault(); the window stays open (isDestroyed() false, no 'closed').
-  test("window.close-event.prevent-default today: BrowserWindow has no close, so no close event can be vetoed", () => {
-    expect(presentInstanceMethods(["close"])).toEqual([]);
+  test("window.close-event.prevent-default: close method is exposed only on Host-backed windows", () => {
+    expect(presentInstanceMethods(["close"])).toEqual(["close"]);
   });
 
   // browser-window.md:661 "and `close` event will also not be emitted\nfor this window,
   // but it guarantees the `closed` event will be emitted."
   // Ordered observable: destroy() emits no 'close', and 'closed' is emitted.
-  test("window.destroy.closed-without-close today: BrowserWindow has no destroy", () => {
-    expect(presentInstanceMethods(["destroy"])).toEqual([]);
+  test("window.destroy.closed-without-close: destroy method is exposed only on Host-backed windows", () => {
+    expect(presentInstanceMethods(["destroy"])).toEqual(["destroy"]);
   });
 
   // browser-window.md:519 "Reading this property throws `Object has been destroyed`
   // once the window has been destroyed"
   // Ordered observable: destroy() returns; reading win.webContents throws an Error whose
   // message contains the exact text Object has been destroyed.
-  test("window.web-contents.read-after-destroy-throws today: BrowserWindow has no destroy, so no window can be read after destruction", () => {
-    expect(presentInstanceMethods(["destroy"])).toEqual([]);
+  test("window.web-contents.read-after-destroy-throws: public Destroy requires a Host-created window", () => {
+    expect(presentInstanceMethods(["destroy"])).toEqual(["destroy"]);
   });
 
   // browser-window.md:221 "Emitted when the window is closed."
@@ -266,15 +276,18 @@ describe("GH-450 close state machine cells, red until implemented", () => {
   // vetoed, closes the window; 'closed' is emitted. (That the second close() is a new
   // attempt is close()'s "Try to close the window", browser-window.md:666; the cell
   // asserts only the cited 'closed' emission.)
-  test("window.close.repeat-after-veto-emits-closed today: BrowserWindow has no close", () => {
-    expect(presentInstanceMethods(["close"])).toEqual([]);
+  test("window.close.repeat-after-veto-emits-closed: public close requires a Host-created window", () => {
+    expect(presentInstanceMethods(["close"])).toEqual(["close"]);
   });
 
   // browser-window.md:661, as for window.destroy.closed-without-close.
   // Ordered observable: close() vetoed by preventDefault(); destroy() emits no 'close',
   // and 'closed' is emitted.
-  test("window.destroy.after-veto-emits-closed today: BrowserWindow has neither close nor destroy", () => {
-    expect(presentInstanceMethods(["close", "destroy"])).toEqual([]);
+  test("window.destroy.after-veto-emits-closed: public Destroy requires a Host-created window", () => {
+    expect(presentInstanceMethods(["close", "destroy"])).toEqual([
+      "close",
+      "destroy",
+    ]);
   });
 });
 
@@ -286,7 +299,7 @@ describe("unknown cells: v44.4.5 source receipts, not doc citations", () => {
   // gin_helper/wrappable.cc L70-72 calls _init -> lib/browser/api/browser-window.ts L94
   // emits 'browser-window-created'. Both run inside the constructor, so the observed
   // order is web-contents-created, browser-window-created, constructor return.
-  test("app.window-created-events.constructor-order today: no creation event and no constructor return exist to order", () => {
+  test("app.window-created-events.constructor-order: no fabricated events before Host Create", () => {
     const order: string[] = [];
     const onWindow = (): void => {
       order.push("browser-window-created");
@@ -297,7 +310,7 @@ describe("unknown cells: v44.4.5 source receipts, not doc citations", () => {
     app.on("browser-window-created", onWindow);
     app.on("web-contents-created", onContents);
     try {
-      expectNoConstructor(DRAWIO_OPTIONS);
+      expectNoHostWindow(DRAWIO_OPTIONS);
     } finally {
       app.removeListener("browser-window-created", onWindow);
       app.removeListener("web-contents-created", onContents);
@@ -309,14 +322,30 @@ describe("unknown cells: v44.4.5 source receipts, not doc citations", () => {
   // getAllWindows to BaseWindow::GetAll; gin_helper/trackable_object.h L84-86 returns
   // weak_map_->Values(); key_weak_map.h L73 stores them in a std::unordered_map, so
   // Electron's order is unspecified and Keld's creation order is ▲-stronger, never parity.
-  test("window.get-all-windows.order today: no BrowserWindow.getAllWindows exists whose order could be observed", () => {
-    expect(presentStatics(["getAllWindows"])).toEqual([]);
+  test("window.get-all-windows.order: no window can be invented by the local collection", () => {
+    expect(presentStatics(["getAllWindows"])).toEqual(["getAllWindows"]);
   });
 
   // Source receipt (Electron 694f4585): electron_api_base_window.cc BaseWindow::OnWindowClosed
   // calls MarkDestroyed() at L182 before Emit("closed") at L184, so isDestroyed() is
   // true inside a 'closed' listener (PANEL-D6).
-  test("window.closed.is-destroyed-in-listener today: BrowserWindow has no isDestroyed", () => {
-    expect(presentInstanceMethods(["isDestroyed"])).toEqual([]);
+  test("window.closed.is-destroyed-in-listener: public isDestroyed requires a Host-created window", () => {
+    expect(presentInstanceMethods(["isDestroyed"])).toEqual(["isDestroyed"]);
   });
+});
+
+test("constructor options cannot impersonate the internal replay identity", () => {
+  // A malicious options Proxy may answer every Symbol lookup. It must still
+  // reach the normal Host-Ready fence, never the replay constructor path.
+  const hostile = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (typeof property === "symbol") return { id: 1, incarnation: 1n };
+        return undefined;
+      },
+    },
+  );
+  expect(constructionError(hostile).message).toContain("KELD-CORE-040");
+  expect(electron.BrowserWindow.getAllWindows()).toEqual([]);
 });
