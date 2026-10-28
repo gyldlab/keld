@@ -488,6 +488,10 @@
         "crates/keld-host/tests/no_flag/windows/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag_macos.rs",
+        "crates/keld-host/tests/no_flag/macos/module_process.rs",
+        "crates/keld-compat/tests/module_process_corpus.rs",
+        "crates/keld-compat/tests/module_process_reference.rs",
         "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
         "crates/keld-host/tests/no_flag/macos/facade_window.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
@@ -507,14 +511,14 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "c0ef0c90df14436b82816b6e5d8c99adb13cf56ffffa48b1263d0f988aaf0265"
+      "sha256": "555318a2acc5e022b394fca2aa946482e6b6d348eb8c4d7679199551b0c174df"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "6d5fef731fa483dc9ce0df09d868ea6ad3b87c3d851de255014dfd48ac2f7f68"
+      "sha256": "e1436c12b8b92ac87e27cf312d59965749014df681004262869527398cc4d0c2"
     },
     "policy-readers": {
       "patterns": [
@@ -524,7 +528,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "4ba4daa40d59f974c1f0cfe5cde711b811de9348d7ad71fca8aecf1829645b5c"
+      "sha256": "b54721d9f58ea8314a4dffa0057c747e827166e76ae4129fa7e514cb21c19a50"
     },
     "audit-readers": {
       "patterns": [
@@ -587,7 +591,9 @@
       "packages/@keld/electron/*",
       "packages/@keld/api/*",
       "packages/@keld/kipc/src/transport.ts",
-      "crates/keld-compat/fixtures/lifecycle-corpus/*"
+      "crates/keld-compat/fixtures/lifecycle-corpus/*",
+      "crates/keld-host/**",
+      "crates/keld-cli/src/**"
     ],
     "keld-update": [
       "crates/keld-pack/tests/fixtures/windows-v0-content.tar"
