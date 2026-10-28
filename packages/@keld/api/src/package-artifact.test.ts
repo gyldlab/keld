@@ -239,6 +239,7 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
     for (const name of [
       "window-source.test.ts",
       "window-source-release.test-role.ts",
+      "window-source-semantic-release.test-role.ts",
       "window-source-diagnostic-release.test-role.ts",
       "link-quit-release.test.ts",
       "link-quit-release.test-role.ts",
@@ -261,6 +262,10 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
       sourceText = sourceText.replace(
         /join\(\s*import\.meta\.dir,\s*"\.\.\/\.\.\/\.\.\/\.\.\/crates\/keld-ipc\/tests\/fixtures\/window-v0\.tsv",\s*\)/,
         JSON.stringify(vector),
+      );
+      sourceText = sourceText.replaceAll(
+        'resolve(import.meta.dir, "../node_modules/typescript")',
+        JSON.stringify(resolve(apiSource, "../node_modules/typescript")),
       );
       writeFileSync(join(consumer, name), sourceText);
     }
