@@ -2340,6 +2340,18 @@ impl SessionShutdownState {
 }
 
 #[cfg(target_os = "macos")]
+fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTrigger) {
+    // One validated boot decision supplies both the strict private argument and
+    // the existing compatibility environment input. Neither reads caller env.
+    let mode = if ready_trigger == AppReadyTrigger::HostInitialized {
+        "1"
+    } else {
+        "0"
+    };
+    command.arg(mode).env(NATIVE_WINDOW_FACADE_ENV, mode);
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned handle transition contiguous
 fn run_app(
     boot: AppBootSelection,
@@ -2385,19 +2397,9 @@ fn run_app(
         .arg(&root)
         .arg(&entry_path)
         .arg(entry_metadata.dev().to_string())
-        .arg(entry_metadata.ino().to_string())
-        // The verified boot mode selects the facade subscription barrier, not
-        // authority. An app may edit its own env but cannot make the host admit
-        // an unsubscribed or non-primary window CALL. Overwrite inherited values
-        // for renderer boots so callers cannot force a facade Ready barrier.
-        .env(
-            NATIVE_WINDOW_FACADE_ENV,
-            if ready_trigger == AppReadyTrigger::HostInitialized {
-                "1"
-            } else {
-                "0"
-            },
-        )
+        .arg(entry_metadata.ino().to_string());
+    configure_guardian_boot_mode(&mut guardian_command, ready_trigger);
+    guardian_command
         // The facade Host's blocked pre-Init main stack can retain an open
         // native profile when its coordinator terminates the process. Only
         // the parent Host may delete this dev stage after a proved return;

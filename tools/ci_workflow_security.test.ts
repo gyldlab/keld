@@ -1566,6 +1566,30 @@ test("Windows media acceptance must execute without step-level skip or failure m
   }
 });
 
+test("Windows media rejects unreviewed path and environment writers", () => {
+  const inventoryError =
+    "Windows media reviewed step inventory/order must not acquire unreviewed executable or environment writers";
+  for (const variable of ["GITHUB_PATH", "GITHUB_ENV"]) {
+    const f = fixture();
+    const steps = f.jobs["windows-media"]!.steps;
+    const acceptance = steps.findIndex(
+      (candidate) =>
+        candidate.name === "Windows media guard acceptance (KEL-132)",
+    );
+    expect(acceptance).toBeGreaterThan(0);
+    steps.splice(acceptance, 0, {
+      name: "Unreviewed Windows media prelude",
+      run: 'echo /tmp/harmless >> "$' + variable + '"',
+    });
+    expect(() => check(f), variable).toThrow(inventoryError);
+  }
+  const changed = fixture();
+  changed.jobs["windows-media"]!.steps[0]!.env = {
+    PATH: "C:\\unreviewed",
+  };
+  expect(() => check(changed), "checkout environment").toThrow(inventoryError);
+});
+
 test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded releases", () => {
   for (const [jobName, reviewed, unpinned, previous] of [
     [
