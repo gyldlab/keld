@@ -21,6 +21,8 @@ MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
 UTF8 = "utf-8"
 FINAL19 = "macos-guardian-2026-10-19-86933528-final19"
+OVERLAYS = "macos-guardian-2026-10-19-bb739295-overlays-952"
+OVERLAY_POLICY = runpy.run_path(str(HERE / OVERLAYS / "verify_overlays.py"))
 FINAL19_POLICY = runpy.run_path(str(HERE / FINAL19 / "verify_final19.py"))
 
 
@@ -82,6 +84,7 @@ class AuditVerifyTests(unittest.TestCase):
             [
                 "git", "fetch", "-q", str(REPO), audited_keld_revision,
                 *(FINAL19_POLICY[key] for key in ("PARENT", "BASELINE", "SOURCE")),
+                *(OVERLAY_POLICY[key] for key in ("PARENT", "BASELINE", "SNAPSHOT", "COMPOSED_PARENT")),
             ],
             cwd=self.repo,
             check=True,
@@ -153,6 +156,42 @@ class AuditVerifyTests(unittest.TestCase):
     def test_current_fixture_passes(self) -> None:
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_canonical_dispatch_checks_overlays(self) -> None:
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Guardian #952 overlay structural evidence: PASS", result.stdout)
+
+    def test_missing_overlay_verifier_fails_closed(self) -> None:
+        (self.audits / OVERLAYS / "verify_overlays.py").unlink()
+        self.assert_rejected("Guardian overlays verifier failed")
+
+    def test_missing_overlay_bundle_fails_closed(self) -> None:
+        shutil.rmtree(self.audits / OVERLAYS)
+        self.assert_rejected("Guardian overlays verifier failed")
+
+    def test_composed_parent_checkout_drift_is_rejected(self) -> None:
+        target = self.audits / FINAL19 / "README.md"
+        target.write_text(target.read_text(encoding=UTF8) + "\nUnrecorded drift\n", encoding=UTF8)
+        self.assert_rejected("composed parent checkout changed: README.md")
+
+    def test_overlay_negative_controls_pass(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-B", str(self.audits / OVERLAYS / "test_verify_overlays.py")],
+            cwd=self.repo, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_overlay_corruption_is_rejected_by_canonical_process(self) -> None:
+        for name in ("ledger_77.csv", "overlay_evidence.json", "summary.json", "composed_parent.json"):
+            with self.subTest(file=name):
+                target = self.audits / OVERLAYS / name
+                original = target.read_bytes()
+                target.write_bytes(b"{}")
+                try:
+                    self.assert_rejected("Guardian overlays verifier failed")
+                finally:
+                    target.write_bytes(original)
 
     def test_final19_negative_controls_pass(self) -> None:
         result = subprocess.run(

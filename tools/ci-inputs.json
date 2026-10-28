@@ -384,14 +384,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "0c782559db4c9a693abc59d130dd07037023a1892a07b2102691326d44685f79"
+      "sha256": "2aabfe9e59d157e3835ae1e40a3cdbe13bd80b2d1177644690649da9d6ea94aa"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "012add4fcf674c0fa9a7dead6d2f0e744546ee406cc10be6aa249ee6777e82e7"
+      "sha256": "47fc17ecb3f10e16795c5145e4840b85ad9196350c49693971164e3777686418"
     },
     "rustdoc-readers": {
       "patterns": [
