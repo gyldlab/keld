@@ -1,6 +1,6 @@
 # Spec: pinned draw.io Desktop hand-authored first-proof migration (GH-499)
 
-Status: draft
+Status: approved
 Linear: GH-499 (#517 GitHub tracker of record; KEL-78 reference) · Owner: @0monish / GYLDLAB · Updated: 2026-10-28
 Disposition: **OPEN / DRAFT / DO NOT MERGE**. This contract is a proposed, unexecuted migration artifact; no Mac draw.io product operation or packaged installation is proven.
 Source basis: `origin/main c5c3302189120a6753395a2533a3b7f50bb7b928`, [GH #420 PANEL-P3 source experiment](https://github.com/gyldlab/keld/issues/420#issuecomment-6034980014), [GH #499 independent source reconciliation](https://github.com/gyldlab/keld/issues/499#issuecomment-6381951308).
