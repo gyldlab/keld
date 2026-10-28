@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const TRANSPORT = join(import.meta.dir, "transport.ts");
 
@@ -97,7 +98,7 @@ describe("Node cold import and accessor admission (#1289)", () => {
         [
           "node",
           "-e",
-          `import(${JSON.stringify(staged)}).then(m => { const c = require(${JSON.stringify(staged)}); if (m.WorkerLink !== c.WorkerLink) process.exitCode = 1; }).catch(e => { console.error(e); process.exitCode = 1; })`,
+          `import(${JSON.stringify(pathToFileURL(staged).href)}).then(m => { const c = require(${JSON.stringify(staged)}); if (m.WorkerLink !== c.WorkerLink) process.exitCode = 1; }).catch(e => { console.error(e); process.exitCode = 1; })`,
         ],
         { stdout: "pipe", stderr: "pipe" },
       );
@@ -121,7 +122,7 @@ describe("Node cold import and accessor admission (#1289)", () => {
           }
           require('node:module').syncBuiltinESMExports();
           globalThis.SharedArrayBuffer = new Proxy(SharedArrayBuffer, { construct(target, args, newTarget) { setups++; return Reflect.construct(target, args, newTarget); } });
-          const esm = await import(${JSON.stringify(staged)});
+          const esm = await import(${JSON.stringify(pathToFileURL(staged).href)});
           const cjs = require(${JSON.stringify(staged)});
           let hits = 0;
           const options = { get link() { hits++; throw Error('options read'); } };
@@ -168,7 +169,7 @@ describe("Node cold import and accessor admission (#1289)", () => {
             const descriptor = Object.getOwnPropertyDescriptor;
             Object.getOwnPropertyDescriptor = (object, key) => object === MessageChannel.prototype && key === ${JSON.stringify(port)}
               ? (${JSON.stringify(shape)} === 'missing' ? undefined : { get: 1 }) : descriptor(object, key);
-            const module = await import(${JSON.stringify(staged)});
+            const module = await import(${JSON.stringify(pathToFileURL(staged).href)});
             let hits = 0;
             const options = { get link() { hits++; throw Error('options read'); } };
             const error = await module.WorkerLink.open(options).then(() => null, e => e);
