@@ -213,7 +213,10 @@ fn windows_boot_files_validate_without_the_dev_stage_dacl() {
     assert_eq!(selection.app.root, root);
     assert_eq!(selection.app.name, "Fixture");
     assert_eq!(selection.app.entry_path, Path::new("main.ts"));
-    assert_eq!(selection.app.renderer_html, b"<p>installed</p>\n");
+    assert!(matches!(
+        &selection.app.initial_window,
+        ValidatedInitialWindow::Renderer(bytes) if bytes == b"<p>installed</p>\n"
+    ));
     assert_eq!(
         selection.permissions_digest,
         decode_digest(DIGEST).expect("fixture digest")

@@ -279,27 +279,8 @@ pub(crate) fn bundle_public_api_entry(
 
 /// Bundles an `@keld/api` entry with the kipc transport left external as
 /// `./kipc-transport.ts` (GH-527 §4.2: the Worker's entry is that file).
-const KIPC_SIDECAR_BUILD: &str = r#"const [entry, out] = process.argv.slice(2);
-const result = await Bun.build({
-  entrypoints: [entry],
-  target: "bun",
-  format: "esm",
-  plugins: [{
-    name: "kipc-transport-sidecar",
-    setup(build) {
-      build.onResolve({ filter: /[\\/]kipc[\\/]src[\\/]transport\.ts$/ }, () => ({
-        path: "./kipc-transport.ts",
-        external: true,
-      }));
-    },
-  }],
-});
-if (!result.success) {
-  console.error(result.logs);
-  process.exit(1);
-}
-await Bun.write(out, result.outputs[0]);
-"#;
+const KIPC_SIDECAR_BUILD: &str =
+    include_str!("../../../../../packages/@keld/api/fixtures/staged-api-bundle.ts");
 
 /// The page's beacon server and the handles the test keeps for it.
 struct RenderBeacon {
