@@ -7879,6 +7879,16 @@ fn read_primary_frames(
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const HOST_ANSWER_BUDGET: Duration = APP_LINK_READER_POLL;
 
+// The write deadline each best-effort answer ran under, read from the
+// writer itself on the writing thread once a test arms it. A Windows
+// deadline is per handle, so no clone can read the writer's
+// (`AppLinkDeadlines`); GH-528 T2 on Windows (gh527 §10).
+#[cfg(all(test, windows))]
+thread_local! {
+    static ANSWER_WRITE_DEADLINES: std::cell::RefCell<Option<Vec<Option<Duration>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Writes best-effort terminal `ERR` answers (`KELD-IPC-023` or
 /// `KELD-IPC-024`, GH-527 §4.9) on a link the caller closes next, each write
 /// bounded by [`HOST_ANSWER_BUDGET`]. Returns `false` once a write fails or
@@ -7897,9 +7907,15 @@ fn write_best_effort_answers(
     {
         return false;
     }
-    answers
-        .into_iter()
-        .all(|(channel, corr)| keld_ipc::write_call_error(writer, channel, corr, error).is_ok())
+    answers.into_iter().all(|(channel, corr)| {
+        #[cfg(all(test, windows))]
+        ANSWER_WRITE_DEADLINES.with_borrow_mut(|seen| {
+            if let Some(seen) = seen {
+                seen.push(writer.app_link_write_deadline().ok().flatten());
+            }
+        });
+        keld_ipc::write_call_error(writer, channel, corr, error).is_ok()
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
