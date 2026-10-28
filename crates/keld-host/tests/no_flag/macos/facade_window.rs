@@ -545,7 +545,8 @@ fn stage_electron(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
          import \"./state-phase-observer.ts\";\n\
          import {{ getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow }} from {app};\n\
          import {{ LifecycleLink }} from {api_link};\n\
-         delete process.env.KELD_NATIVE_WINDOW_FACADE;\n\
+         Reflect.deleteProperty(process.env, \"KELD_NATIVE_WINDOW_FACADE\");\n\
+         if (Reflect.get(process.env, \"KELD_NATIVE_WINDOW_FACADE\") !== undefined) throw new Error(\"native pre-import Quit probe did not delete actual environment\");\n\
          const {{ app, BrowserWindow }} = await import({electron});\n\
          if (app.isReady()) throw new Error(\"native pre-import Quit probe missed pre-Ready boundary\");\n\
          const earlyQuit = app.quit().then(() => {{\n\
