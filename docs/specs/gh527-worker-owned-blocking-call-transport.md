@@ -1312,11 +1312,12 @@ named pipe), and the host closes with the production `shutdown_app_link`. The ke
 router cases (criteria 6, 7 and the host half of 8) run on every OS on the shared
 `primary_test_stream_pair`, except the Unix cases recorded in §10. A real platform
 difference is a per-OS expectation that cites its OS fact, never a skip. A tracked
-product defect is not an OS fact, so it is the one exception: a case that a tracked
-Windows defect (#1073) makes nondeterministic may be gated to Unix, citing that issue,
-whose completion check removes the gate. Finding W2 is fixed (#1073): the Windows
-close keeps every byte written before it, so the write-then-close cases run on Windows
-with the Unix expectation. Until finding W1 (#1073) is fixed, the criterion 7 router
+product defect is not an OS fact, so it is the one exception: a case that the tracked
+Windows defect W1 (#1073) makes inapplicable, because Windows has no post-Quit drain,
+may be gated to Unix, citing that issue, whose W1 completion check removes the gate.
+Finding W2 is fixed (#1073): the Windows close keeps the bytes written before it (§10
+states what was measured), so no case is gated for W2 any more and the write-then-close
+cases run on Windows with the Unix expectation. Until W1 is fixed, the criterion 7 router
 case asserts today's Windows behaviour, which its fix flips. The CI `ubuntu-latest`
 and `windows-latest` legs are the Linux and Windows evidence; a write-then-close case
 is Windows evidence only together with its native every-CPU-busy record (§10), because
@@ -1418,8 +1419,8 @@ before the fix (2026-10-21, #666 low-finding follow-up) and after it (#1073):
 
 The after-fix column ran on 2026-10-28 on Windows 11 build 26300 with 16 logical CPUs.
 With the old `DisconnectNamedPipe` restored as a temporary mutation, the same busy runs
-failed again: criterion 5 0 of 5, `onEnd` 0 of 5, retirement 0 of 5, the REPLY case 1 of
-10 and the end-to-end 023 case 2 of 15.
+failed again: criterion 5 failed 5 of 5, `onEnd` failed 5 of 5, retirement failed 5 of 5,
+the REPLY case failed 1 of 10 and the end-to-end 023 case failed 2 of 15.
 
 So W2 also lost data that a reading role should get, whenever its transport Worker
 was late to read: the effect was not limited to a non-reading peer.
@@ -1459,11 +1460,16 @@ W1 is a Windows production defect tracked by #1073, whose completion check is th
   under load a reading role lost them too (table above).
   - *Fix:* the stream shutdown cancels its own pending I/O and retires the shared pipe
     HANDLE instead of disconnecting; each in-flight operation keeps its pin until it
-    observes the cancel, so the HANDLE closes right after. A native probe with the
+    observes the cancel, so the HANDLE closes right after. If the cancel itself reports
+    an error, the shutdown falls back to `DisconnectNamedPipe`, so I/O it could not
+    cancel cannot keep the peer connected until that I/O's own deadline; that rare path
+    discards unread bytes as before. A native probe with the
     production pipe flags (#1073, 1,380 runs, idle and every CPU busy, Rust and Bun 1.4.4
     clients) delivered every written byte with this close and none with
     `DisconnectNamedPipe` for a late reader; the peer then reads `ERROR_BROKEN_PIPE`
-    (Bun: `close` without `EPIPE`). `CloseHandle` never waited (70 µs maximum). The
+    (Bun: `close` without `EPIPE`). `CloseHandle` never waited (70 µs maximum). Not
+    measured: data survival when the host process exits right after the close, and
+    client read delays longer than about 0.6 s. The
     rejected route, a flush bounded by `HOST_ANSWER_BUDGET`, needs a thread to cancel a
     synchronous `FlushFileBuffers`. Admission-time closes of rejected or expired peers
     still disconnect, because discarding is their intent.
