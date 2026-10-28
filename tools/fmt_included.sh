@@ -149,12 +149,25 @@ run() {
     local -a args=(--edition "$edition")
     [[ "$mode" == check ]] && args+=(--check)
     local -a files=()
+    local root resolved_dir resolved
+    root="$(pwd -P)"
     while IFS= read -r path; do
-        # Tool modules also appear in #[path] discovery. Keep every tools/ path
-        # on the non-recursive, tracked-only route below, including those modules.
-        case "$path" in
-            "" | tools/*) ;;
-            *) files[${#files[@]}]="$path" ;;
+        [[ -z "$path" ]] && continue
+        if [[ -L "$path" ]]; then
+            echo "fmt_included: refusing symlinked source $path" >&2
+            return 1
+        fi
+        if ! resolved_dir="$(cd "$(dirname "$path")" && pwd -P)"; then
+            echo "fmt_included: cannot resolve discovered source $path" >&2
+            return 1
+        fi
+        resolved="$resolved_dir/$(basename "$path")"
+        # Resolved aliases into tools must use stdin formatting so that
+        # rustfmt never follows an untracked tool child.
+        case "$resolved" in
+            "$root"/tools/*) ;;
+            "$root"/*) files[${#files[@]}]="$path" ;;
+            *) echo "fmt_included: discovered source escapes checkout: $path" >&2; return 1 ;;
         esac
     done < <(printf '%s\n%s\n' "$included" "$declared" | sort -u)
     if ((${#files[@]})); then rustfmt "${args[@]}" "${files[@]}" || return; fi
@@ -245,6 +258,16 @@ RS
     tools/fmt_included.sh >/dev/null
     cmp -s tools/nested/scratch_child.rs "$temp/child-original" || {
         echo "FAIL: tools #[path] write modified an untracked child" >&2; exit 1;
+    }
+    # A path alias into tools must not recurse into an untracked tool child.
+    printf '\n#[path = "../../../tools/standalone.rs"]\nmod alias_tool;\n' >>crates/demo/src/obs.rs
+    printf 'mod scratch_child;\nfn standalone() {}\n' >tools/standalone.rs
+    printf 'fn   child(   ) {}\n' >tools/scratch_child.rs
+    cp tools/scratch_child.rs "$temp/aliased-child-original"
+    check || { echo "FAIL: aliased tools path modified untracked check scope" >&2; cat "$temp/out" >&2; exit 1; }
+    tools/fmt_included.sh >/dev/null
+    cmp -s tools/scratch_child.rs "$temp/aliased-child-original" || {
+        echo "FAIL: aliased tools path modified untracked child" >&2; exit 1;
     }
     # stdin must use the source's nearest config, not only the checkout root.
     printf 'hard_tabs = true\nnewline_style = "Unix"\n' >tools/nested/rustfmt.toml
