@@ -335,8 +335,8 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
         resolve(apiSource, "../fixtures/package-lifecycle.test-role.ts"),
       ),
     );
-    function lifecycle() {
-      return Bun.spawnSync(["bun", lifecycleRole], {
+    function lifecycle(generation: "initial" | "recovery") {
+      return Bun.spawnSync(["bun", lifecycleRole, generation], {
         cwd: consumer,
         env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
         stdout: "pipe",
@@ -344,10 +344,18 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
         timeout: 10_000,
       });
     }
-    const live = lifecycle();
+    const live = lifecycle("initial");
     expect(live.exitCode, new TextDecoder().decode(live.stderr)).toBe(0);
     expect(new TextDecoder().decode(live.stdout).trim()).toBe(
-      "PASS installed-api-real-worker-source-end",
+      "PASS installed-api-real-worker-source-end initial",
+    );
+    // The first child has exited and disposed its peer before the new realm starts.
+    const recovered = lifecycle("recovery");
+    expect(recovered.exitCode, new TextDecoder().decode(recovered.stderr)).toBe(
+      0,
+    );
+    expect(new TextDecoder().decode(recovered.stdout).trim()).toBe(
+      "PASS installed-api-real-worker-source-end recovery",
     );
     const installedLink = join(emitted, "link.js");
     const originalLink = readFileSync(installedLink, "utf8");
@@ -361,11 +369,11 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
           installedLink,
           originalLink.replace(statement, "void 0;"),
         );
-        const rejected = lifecycle();
+        const rejected = lifecycle("recovery");
         expect(rejected.exitCode).not.toBe(0);
         expect(new TextDecoder().decode(rejected.stderr)).toContain(
           statement.startsWith("attachMirror")
-            ? "SOURCE_FACT_NOT_DISPATCHED"
+            ? "GENERATION_REPLAY_NOT_APPLIED"
             : "Missing expected exception",
         );
       }
