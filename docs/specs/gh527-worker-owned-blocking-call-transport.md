@@ -1329,14 +1329,11 @@ and Windows against the platform's `BootstrapStream` (a Unix socket, or the KEL-
 named pipe), and the host closes with the production `shutdown_app_link`. The keld-core
 router cases (criteria 6, 7 and the host half of 8) run on every OS on the shared
 `primary_test_stream_pair`, except the Unix cases recorded in §10. A real platform
-difference is a per-OS expectation that cites its OS fact, never a skip. A tracked
-product defect is not an OS fact, so it is the one exception: a case that the tracked
-Windows defect W1 (#1073) makes inapplicable, because Windows has no post-Quit drain,
-may be gated to Unix, citing that issue, whose W1 completion check removes the gate.
-Finding W2 is fixed (#1073): the Windows close keeps the bytes written before it (§10
-states what was measured), so no case is gated for W2 any more and the write-then-close
-cases run on Windows with the Unix expectation. Until W1 is fixed, the criterion 7 router
-case asserts today's Windows behaviour, which its fix flips. The CI `ubuntu-latest`
+difference is a per-OS expectation that cites its OS fact, never a skip. Findings W2
+and W1 are fixed (#1073): the Windows close keeps the bytes written before it, and
+Windows runs the same post-Quit drain (§10 states what was measured). No case is gated
+for either any more, and the write-then-close and criterion 7 cases run on Windows with
+the Unix expectation. The CI `ubuntu-latest`
 and `windows-latest` legs are the Linux and Windows evidence; a write-then-close case
 is Windows evidence only together with its native every-CPU-busy record (§10), because
 two or three green runs of it would prove nothing.
@@ -1420,7 +1417,7 @@ and `windows-latest` legs are the real hosts.
 | 1–4, 8–10, 12–14, 18–20 (T1 harness) | pass | pass |
 | 5 (a close without `ERR` throws 022 and keeps prior records) | pass | pass since the W2 fix (#1073), with every CPU busy (below) |
 | 6 (retire answers pending calls with `KELD-IPC-023`) | pass | pass since the W2 fix (#1073): the non-reading router peer reads both 023s, and the Bun end-to-end case asserts the 023 only, with every CPU busy (below) |
-| 7 (post-Quit calls get `KELD-IPC-024`, none run) | pass | does not hold (W1). The router case asserts today's behaviour: the client reads the Quit REPLY (kept since the W2 fix) and no `KELD-IPC-024`, and the router's join reports `KELD-CORE-037`. The 7(a) Bun case gets the real REPLY, but its trailing CALL also faults the tail (W1) |
+| 7 (post-Quit calls get `KELD-IPC-024`, none run) | pass | pass since the W1 fix (#1073): the router case reads the Quit REPLY then the 024 and the router joins cleanly; the 7(a) Bun case's trailing CALL is drained, with every CPU busy (below) |
 | 8, host half (Worker death fails the generation) | pass | pass |
 | 11 (second open and second connect refused) | pass (`KELD-IPC-005`; role sees `ENOENT`) | pass (`KELD-IPC-005`; host-side open gets `ERROR_PIPE_BUSY`) |
 
@@ -1447,16 +1444,15 @@ the REPLY case failed 1 of 10 and the end-to-end 023 case failed 2 of 15.
 So W2 also lost data that a reading role should get, whenever its transport Worker
 was late to read: the effect was not limited to a non-reading peer.
 
-W1 is a Windows production defect tracked by #1073, whose completion check is the W1
-*First check* flip below. W2 is fixed (below).
+W1 and W2 were Windows production defects tracked by #1073; both are fixed (below).
 
-- **Finding W1 (criterion 7, Windows).** Windows has no post-Quit drain. After the
-  Quit REPLY, its tail waits for the peer's close, and any byte is a fault ("app sent
+- **Finding W1 (criterion 7, Windows) — fixed (#1073).** Windows had no post-Quit drain. After the
+  Quit REPLY, its tail waited for the peer's close, and any byte was a fault ("app sent
   bytes after the terminal Quit reply", `await_windows_quit_peer_close_until`). So a
   CALL the role wrote before it ended the link fails the tail instead of getting
   `KELD-IPC-024`. Since T3 made `quit()` asynchronous, app code can write calls behind
-  the Quit, so this affects real Windows apps, not only tests. Evidence:
-  `quit_drain_answers_received_calls_with_024_and_runs_none` asserts today's Windows
+  the Quit, so this affects real Windows apps, not only tests. Evidence before the fix:
+  `quit_drain_answers_received_calls_with_024_and_runs_none` asserted the old Windows
   behaviour on `windows-latest`: the client reads the Quit REPLY but no
   `KELD-IPC-024`, the FS CALL never runs, and the router's join reports that fault as
   `KELD-CORE-037`. The
@@ -1464,16 +1460,21 @@ W1 is a Windows production defect tracked by #1073, whose completion check is th
   `bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes` meets W1 the
   same way: the role's echo CALL after its Quit fails the Windows tail, so its join
   also reports `KELD-CORE-037`, while the role still sees the real Quit REPLY and then
-  `KELD-IPC-022`. Both cases share one helper that asserts this on Windows (first
+  `KELD-IPC-022`. Both cases shared one helper that asserted this on Windows (first
   observed natively on a Windows 11 host, 2026-10-21).
-  - *Proposed root-cause fix:* run `answer_calls_after_quit` and
-    `drain_calls_after_quit` on Windows, and delete the Windows peer-close wait.
-    `read_quit_drain_frame` is generic over `Read`, and the Windows stream already
-    has the `HOST_ANSWER_BUDGET` write deadline.
-  - W1 needed W2, because the drain's 024 answers are also followed by the close;
-    W2 is fixed.
-  - *First check:* `quit_drain_answers_received_calls_with_024_and_runs_none` flips to
-    the Unix expectation on `windows-latest`.
+  - *Fix:* Windows runs `answer_calls_after_quit` and `drain_calls_after_quit`, and
+    the Windows peer-close wait is deleted. `read_quit_drain_frame` is generic over
+    `Read`, and the Windows stream already has the `HOST_ANSWER_BUDGET` write deadline.
+    W1 needed W2, because the drain's 024 answers are also followed by the close.
+  - *Check:* with the tests flipped and the host unfixed, three cases fail on Windows:
+    `quit_drain_answers_received_calls_with_024_and_runs_none` reads no 024, and both
+    `quit_drain_answers_are_bounded_when_the_peer_stops_reading` and
+    `bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes` report
+    `KELD-CORE-037`. With the fix, they pass with the Unix expectation, as do
+    `quit_drain_ends_quietly_when_its_answer_finds_the_role_gone` and
+    `bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof`; every CPU busy:
+    20 of 20 runs of all five cases pass (Windows 11 build 26300,
+    16 busy loops on 16 logical CPUs).
 - **Finding W2 (criterion 6, Windows) — fixed (#1073).** The Windows host close
   (`shutdown_app_link` calling `DisconnectNamedPipe`) discarded a pipe's unread data,
   which Microsoft documents for `DisconnectNamedPipe`. So `KELD-IPC-023` answers
