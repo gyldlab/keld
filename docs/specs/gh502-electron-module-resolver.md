@@ -1,6 +1,6 @@
 # Spec: one installed Electron module resolver (GH-502)
 
-Status: draft
+Status: approved
 
 Linear: GH-502 (GitHub tracker under #517) · Owner: @0monish / GYLDLAB · Updated: 2026-10-28
 
