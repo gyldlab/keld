@@ -511,14 +511,14 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "555318a2acc5e022b394fca2aa946482e6b6d348eb8c4d7679199551b0c174df"
+      "sha256": "823522adf9894682cb16a2fb1095e9f3c6c1289c24accdb287d96a71adbf59d3"
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
       ],
-      "sha256": "ee0269a568c886bb66bd2b2cc93b0f0a82f6128f5a44dc42b60fc9984dff863c"
+      "sha256": "2f91dae2dd28be5864bfdd46b2332ca4c1a824c1efde5855b55da91b2ca95f86"
     },
     "policy-readers": {
       "patterns": [
@@ -574,7 +574,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "df2b206c6f7e8e0ed63f2acc24ffbb053bc84eb4b8efbca3d851cf2f77c953fd",
+    "membership_sha256": "2d031dce23870cff5d680547499a00e672dbd487c9485dc94d805af6a0319ab2",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
