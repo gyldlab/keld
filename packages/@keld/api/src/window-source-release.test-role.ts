@@ -1,7 +1,7 @@
 /** Standalone lifetime regression; no link attachment or heap-byte/native claim. */
 import { WindowSource, type WindowSnapshot } from "./window-source.ts";
 import { encodeWindowEvent } from "./window-codec.ts";
-import { isCallError, linkError } from "../../kipc/src/transport.ts";
+import { isCallError, linkError } from "@keld/kipc";
 import { heapStats } from "bun:jsc";
 
 function requireFact(condition: unknown, message: string): asserts condition {

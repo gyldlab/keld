@@ -17,7 +17,7 @@ import {
   encodePostcardString,
   encodeVarint,
   withIoDeadline,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { fs } from "./index.ts";
 
 const TOKEN = new Uint8Array(32).fill(0x72);

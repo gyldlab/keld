@@ -9,7 +9,7 @@ import {
   linkError,
   withIoDeadline,
   type KeldCallError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import {
   encodeWindowEvent,
   type WindowEvent,
