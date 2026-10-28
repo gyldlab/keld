@@ -165,6 +165,33 @@ fi
 [[ "$("$REAL_GIT" -C "$DEST" rev-parse HEAD)" == "$before_local" ]]
 [[ "$(wc -l < "$KELD_GIT_CALLS" | tr -d ' ')" == "$before_calls" ]]
 
+# Failed local-only clone rewrites must not publish arbitrary real Git stderr.
+clone_parent="$TMP_ROOT/clone rewrite parent"
+mkdir -p "$clone_parent"
+synthetic_rewrite_marker='KELD_TEST_ONLY_REWRITE_MARKER_X71'
+rewritten="file://$TMP_ROOT/$synthetic_rewrite_marker/"
+clone_env=(
+    GIT_CONFIG_COUNT=2
+    "GIT_CONFIG_KEY_0=url.${rewritten}.insteadOf"
+    "GIT_CONFIG_VALUE_0=$HTTPS"
+    "GIT_CONFIG_KEY_1=url.${rewritten}.insteadOf"
+    "GIT_CONFIG_VALUE_1=$SSH"
+)
+if env "${clone_env[@]}" "$REAL_GIT" clone "$HTTPS" "$TMP_ROOT/rewritten-probe" >"$TMP_ROOT/probe.out" 2>"$TMP_ROOT/probe.err"; then
+    echo 'FAIL: intentionally missing rewritten clone unexpectedly succeeded' >&2; exit 1
+fi
+grep -Fq "$synthetic_rewrite_marker" "$TMP_ROOT/probe.err" || {
+    echo 'FAIL: synthetic Git rewrite fixture did not reach real Git error path' >&2; exit 1;
+}
+if ! env "${clone_env[@]}" "$TOOL" sync "$clone_parent" >"$TMP_ROOT/clone.stdout" 2>"$TMP_ROOT/clone.stderr"; then
+    echo 'FAIL: failed clone did not retain hook-safe successful skip' >&2; exit 1
+fi
+grep -Fq 'cannot clone keld-research via HTTPS or SSH' "$TMP_ROOT/clone.stderr"
+if grep -Fq "$synthetic_rewrite_marker" "$TMP_ROOT/clone.stdout" "$TMP_ROOT/clone.stderr"; then
+    echo 'FAIL: rewritten origin marker leaked through clone diagnostics' >&2; exit 1
+fi
+[[ ! -e "$clone_parent/docs/research/.git" ]]
+
 # A failed status read must never be mistaken for an empty change list.
 KELD_FAIL_STATUS=1; export KELD_FAIL_STATUS
 before_calls="$(wc -l < "$KELD_GIT_CALLS" | tr -d ' ')"

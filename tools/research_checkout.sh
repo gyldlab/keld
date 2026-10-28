@@ -59,20 +59,16 @@ sync_research() {
     fi
 
     mkdir -p "$(dirname "$DEST")"
-    err="$(mktemp)"
-    if git clone "$HTTPS" "$DEST" 2>"$err"; then
-        rm -f "$err"
-        echo "research-sync: cloned $HTTPS → $DEST"
+    if git clone "$HTTPS" "$DEST" 2>/dev/null; then
+        echo "research-sync: cloned $HTTPS ? $DEST"
         exit 0
     fi
-    if git clone "$SSH" "$DEST" 2>>"$err"; then
-        rm -f "$err"
-        echo "research-sync: cloned $SSH → $DEST"
+    if git clone "$SSH" "$DEST" 2>/dev/null; then
+        echo "research-sync: cloned $SSH ? $DEST"
         exit 0
     fi
-    detail="$(tr '\n' ' ' <"$err" | head -c 240)"
-    rm -f "$err"
-    warn_skip "cannot clone keld-research via HTTPS or SSH (${detail:-auth/network}). Private repo — grant access or skip."
+    warn_skip "cannot clone keld-research via HTTPS or SSH (auth/network). Private repo ? grant access or skip."
+
 }
 
 push_research() {
