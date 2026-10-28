@@ -1614,10 +1614,25 @@ export function checkWorkflowSecurity(source: string): void {
       "rustfmt job must preserve its changed-Rust routing and failing exit status.",
     );
   }
+  // The formatter is merge-critical. An injected BASH_ENV, PATH, container
+  // or job setting can replace the executed binary without changing cargo fmt.
+  const fmtContext = "rustfmt job must preserve its reviewed execution context";
+  exactKeys(
+    fmtJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"],
+    fmtContext,
+  );
+  if (
+    fmtJob.name !== "rustfmt" ||
+    fmtJob["runs-on"] !== "ubuntu-latest" ||
+    scalar(fmtJob["timeout-minutes"]) !== "10" ||
+    fmtJob.needs !== "changes"
+  ) {
+    fail(fmtContext);
+  }
   const fmtCommands = fmt.filter((step) => Object.hasOwn(step, "run"));
-  // Other independent run steps cannot suppress the exit status of this step.
-  // Preserve one exact, unwrapped Cargo formatter invocation, but do not
-  // reject unrelated diagnostic steps in the formatting job.
+  // Preserve the exact unwrapped Cargo formatter invocation and included-file
+  // checks. The full step inventory is frozen below to reject any prelude.
   const cargoFmtCommands = fmtCommands.filter(
     (step) => step.run === "cargo fmt --all --check",
   );
@@ -1854,6 +1869,7 @@ export function checkWorkflowSecurity(source: string): void {
   // the complete parsed steps afterwards also rejects inserted executable
   // steps, changed ordering, and environment/PATH writers between gates.
   const reviewedStepInventories: Record<string, string> = {
+    fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
     "codeql-rust":
       "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
@@ -1870,9 +1886,11 @@ export function checkWorkflowSecurity(source: string): void {
         digest
     ) {
       fail(
-        jobName === "check"
-          ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
-          : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
+        jobName === "fmt"
+          ? "rustfmt reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+          : jobName === "check"
+            ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+            : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
       );
     }
   }

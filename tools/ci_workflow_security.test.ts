@@ -950,6 +950,54 @@ test("rustfmt Cargo command and changed-Rust routing preserve executable failure
   );
 });
 
+test("rustfmt rejects unreviewed job execution contexts", () => {
+  const mutations: Array<[string, Record<string, unknown>]> = [
+    ["BASH_ENV", { env: { BASH_ENV: "/tmp/hostile-env" } }],
+    ["PATH", { env: { PATH: "/tmp/hostile-bin" } }],
+    ["container", { container: "ubuntu:22.04" }],
+    ["services", { services: { db: { image: "postgres:16" } } }],
+    ["runner", { "runs-on": "ubuntu-22.04" }],
+  ];
+  for (const [name, mutation] of mutations) {
+    const workflow = fixture();
+    Object.assign(workflow.jobs.fmt!, mutation);
+    expect(() => check(workflow), name).toThrow(
+      "rustfmt job must preserve its reviewed execution context",
+    );
+  }
+});
+
+test("rustfmt rejects injected steps and step-level environment overrides", () => {
+  const mutations: Array<[string, (steps: Step[]) => void]> = [
+    [
+      "GITHUB_PATH prelude",
+      (steps) =>
+        steps.splice(2, 0, {
+          run: 'echo /tmp/hostile-bin >> "$GITHUB_PATH"',
+        }),
+    ],
+    [
+      "BASH_ENV setup",
+      (steps) => {
+        steps[1]!.env = { BASH_ENV: "/tmp/hostile-env" };
+      },
+    ],
+    [
+      "checkout PATH replacement",
+      (steps) => {
+        steps[0]!.env = { PATH: "/tmp/hostile-bin" };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const workflow = fixture();
+    mutate(workflow.jobs.fmt!.steps);
+    expect(() => check(workflow), name).toThrow(
+      "rustfmt reviewed step inventory/order must not acquire unreviewed executable or environment writers",
+    );
+  }
+});
+
 test("inherited custom shells cannot false-green terminal required results", () => {
   for (const scope of ["workflow", "fmt", "required"] as const) {
     const workflow = fixture();
@@ -1985,10 +2033,10 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
     f.jobs.check!.steps.push({ name: "Install a tool", run });
     expect(() => check(f)).toThrow("runs apt without step timeout-minutes");
   }
-  // Negative controls: a name that mentions apt-get, a flow-mapped step with a
-  // timeout in an unfrozen job, a quoted timeout and an unrelated word do not fail.
+  // Negative controls in unfrozen jobs: benign apt-like names, flow mapping,
+  // quoted timeouts, and unrelated words must not trigger the apt guard.
   const named = fixture();
-  named.jobs.fmt!.steps.push({
+  named.jobs["linux-gui-smoke"]!.steps.push({
     name: "Diagnose apt-get mirror",
     run: "echo ok\n",
   });
@@ -2008,7 +2056,9 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
   });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();
-  unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
+  unrelated.jobs["linux-gui-smoke"]!.steps.push({
+    run: "echo adapter aptitude\n",
+  });
   expect(() => check(unrelated)).not.toThrow();
 });
 
