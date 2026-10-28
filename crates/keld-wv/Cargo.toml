@@ -44,7 +44,7 @@ tao = "0.35.3"
 # the first view. These are the exact objc2 versions already pinned by Wry.
 objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
 objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID"] }
-objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow"] }
+objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow", "NSScreen"] }
 block2 = { workspace = true, optional = true }
 objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
 objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
