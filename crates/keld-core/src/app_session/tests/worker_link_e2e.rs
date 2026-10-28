@@ -3,9 +3,8 @@
 //! GH-527 `WorkerLink` fixture
 //! (`packages/@keld/kipc/test/worker-link-role.ts`) against the guarded
 //! primary router on a real authenticated app link. Every OS with a router
-//! runs them (#528 T5). Windows has no post-Quit drain (`await_windows_quit_peer_close`
-//! is its Quit tail), so the drain-end case is a Unix expectation and Windows
-//! states its own (gh527 §10, T5 finding).
+//! runs them (#528 T5), Windows with the same post-Quit drain since the W1
+//! fix (#1073, gh527 §10).
 //! The colocated host lifecycle receipt case uses the parent
 //! framed socket-pair fixture without a Bun WorkerLink role or HELLO. It qualifies
 //! core reservation/acceptance only; OS acknowledgment remains separate.
@@ -418,8 +417,8 @@ fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
             .expect("UI Quit"),
         AppWindowCommand::Quit
     );
-    // The later echo CALL is a byte after the Quit REPLY: on Windows that is
-    // finding W1 (gh527 §10), which the helper asserts.
+    // The later echo CALL arrives after the Quit REPLY; the post-Quit drain
+    // reads it on every OS, so the router shuts down cleanly.
     assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 
@@ -490,7 +489,7 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
 /// reports the close as `KELD-IPC-022`. *Negative control:* a Quit that does
 /// not close the link ends the drain at `IdleBackstop`.
 #[test]
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     let (role, t) =
         WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
@@ -529,53 +528,6 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     );
     let report = role.finish();
     // The role accepted the real `LifecycleResponse::Quit` REPLY.
-    assert_eq!(
-        report_value(&report, "quit"),
-        Some("returned"),
-        "{report:?}"
-    );
-    assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
-    t.router.shutdown().expect("router shutdown after Quit");
-}
-
-/// The Windows half of the case above (#528 T5). Windows has no post-Quit
-/// drain: after the real `LifecycleResponse::Quit` REPLY, its Quit tail waits
-/// for the role to close the link and treats any byte as a fault
-/// (`await_windows_quit_peer_close_until`). A role that closes on the REPLY
-/// therefore ends that wait at its close, the tail asks the owner to shut
-/// down, and the UI quits. The role's `onEnd` reports `KELD-IPC-022`.
-/// *Negative control:* a peer that never closes holds the wait to its
-/// deadline instead (`quit_peer_close_wait_is_bounded_for_a_non_closing_client`).
-/// A CALL written after the REPLY would fail this tail, not get `KELD-IPC-024`:
-/// that is the gh527 criterion 7 finding for Windows (gh527 §10).
-#[test]
-#[cfg(windows)]
-fn bun_role_closes_on_the_quit_reply_and_windows_awaits_its_close() {
-    let (role, t) =
-        WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
-    let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-        .guardian
-        .recv_timeout(Duration::from_secs(20))
-        .expect("Quit attribution")
-    else {
-        panic!("Quit skipped shutdown attribution");
-    };
-    prepare.send(Ok(())).expect("acknowledge attribution");
-    let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-        .guardian
-        .recv_timeout(Duration::from_secs(20))
-        .expect("the Quit tail reaches the owner after the role's close")
-    else {
-        panic!("unexpected owner command after the Quit REPLY");
-    };
-    shutdown.send(Ok(())).expect("acknowledge owner shutdown");
-    assert_eq!(
-        t.window
-            .recv_timeout(Duration::from_secs(5))
-            .expect("UI Quit"),
-        AppWindowCommand::Quit
-    );
-    let report = role.finish();
     assert_eq!(
         report_value(&report, "quit"),
         Some("returned"),

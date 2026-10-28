@@ -157,7 +157,7 @@ fn successor_drain_test_router(
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
     let router = PrimaryRouter::finish_start(

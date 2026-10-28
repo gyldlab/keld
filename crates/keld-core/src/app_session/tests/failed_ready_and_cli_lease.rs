@@ -44,7 +44,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
     let error = handle

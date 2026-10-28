@@ -78,7 +78,7 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         auth_commands: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
     (handle, client, command_rx, window_rx)
