@@ -192,3 +192,48 @@ correction. Native macOS falsifiers, full local format/Clippy/workspace tests/to
 exact final-head hosted checks, independent source review and owner acceptance remain
 separate requirements. Keep both review requests open until their remaining evidence and
 integration dependencies are satisfied. GH #824 remains incomplete and do-not-merge.
+
+
+## Enforcement supplement — 28 October 2026
+
+A subsequent, separate checker phase closes the *canonical census integration*
+dependency above, without changing the original ledger or historical receipts.
+`docs/audits/verify.py` now unconditionally validates this dated CSV through the
+existing canonical audit entrypoint. It compares all four pinned Git inventories,
+the current tracked index and CRLF-normalized checkout bytes, exact full blob IDs,
+delta labels, read ranges and the allowed qualified dispositions; `native_execution`
+must remain `NOT RUN`. Missing ledger, source/path drift, unmerged/indirect source,
+forged blob and invented disposition/native labels fail closed. This is a fixed dated
+review: later source changes require reviewed replacement/updated dated evidence and
+corresponding pin integration, not automatic inheritance from matching file counts.
+
+The existing canonical regression suite exercises the actual subprocess entrypoint:
+changed checkout and staged-only blobs, added/deleted tracked paths, missing ledger
+or pinned object, duplicate row, invented full/native acceptance, and forged blob.
+Original public-audit history tests and valid CRLF-equivalent source/CSV remain valid.
+Failure-first and dispatch-removal evidence belongs to the exact checker publication
+receipt; merely defining a helper is not an enforcement result.
+
+This supersedes only the earlier *manual-only/canonical-integration pending* statement
+for this dated census once the checker lands. It does not authenticate prose reasoning,
+reviewer identity or native evidence, and does not close the final-newline native oracle,
+#834/#824 custody, full local/tooling, installed-product or whole-repository gates.
+No native execution was added. Other audit branches have different canonical dispatch
+owners/bundles and need separately coordinated integration; this PR does not alter them.
+
+### Hosted admission is a separate consumer edge
+
+Local mandatory `audit-docs` is not evidence of hosted execution: the existing
+`Public audit registry contracts` step is guarded by `docs=true`, and its job by
+`hygiene || docs`. A narrow live-Guardian consumer in `tools/ci-inputs.json` therefore
+emits `input_docs` for the same four roots; `tools/ci_changes.sh` maps it to the
+existing docs lane without removing Rust selection. Unrelated runtime Rust keeps
+its prior route. This is not a new workflow/job, and does not select all jobs merely
+because a Guardian source path changed. Existing unknown-input fallback is unchanged.
+
+`tools/ci_changes_test.sh` covers Rust-only modified and newly named scoped paths,
+requiring both docs and Rust, with an unrelated-runtime negative control. These are
+actual shell-router regression definitions, not a Python model of shell behavior.
+The cloud Python input-contract checks and shell syntax checks do not substitute
+for full shell/Cargo router execution; that requires its actual toolchain/hosted
+receipt. Source approval, hosted outcomes and remaining native gates stay separate.

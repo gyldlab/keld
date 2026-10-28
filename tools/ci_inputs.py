@@ -240,7 +240,7 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
             uncertain = True
         for consumer in contract["consumers"]:
             outputs = consumer["outputs"]
-            allowed = {"input_rust", "input_ts", "input_all", "input_registry", "input_mermaid"}
+            allowed = {"input_rust", "input_ts", "input_all", "input_registry", "input_mermaid", "input_docs"}
             if not outputs or any(not (output.startswith("local_") or output in allowed) for output in outputs):
                 raise ValueError("invalid consumer output")
             reader_set = contract["reader_sets"][consumer["reader_set"]]

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import shutil
@@ -18,6 +19,14 @@ REPO = HERE.parent.parent
 MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
 UTF8 = "utf-8"
+GUARDIAN_SOURCE = "e0ababf1f07217a44199e7e3c0e69ceba6ea929e"
+GUARDIAN_AUDIT = "macos-guardian-2026-10-18-ea728589"
+GUARDIAN_ROOTS = (
+    "crates/keld-runtime/src/macos_guardian.rs",
+    "crates/keld-runtime/src/macos_guardian/",
+    "crates/keld-runtime/tests/macos_host_death_guardian.rs",
+    "crates/keld-runtime/tests/macos_host_death_guardian/",
+)
 
 
 class AuditVerifyTests(unittest.TestCase):
@@ -57,12 +66,35 @@ class AuditVerifyTests(unittest.TestCase):
         manifest_path.write_bytes(original_manifest)
 
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        # Share immutable input objects read-only, as a local --shared clone
+        # would. Fetching the entire current history from a partial clone can
+        # require unrelated promisor blobs; no fixture source bytes come from it.
+        objects = subprocess.check_output(
+            ["git", "-C", str(REPO), "rev-parse", "--path-format=absolute", "--git-path", "objects"],
+            text=True,
+        ).strip()
+        (self.repo / ".git/objects/info/alternates").write_text(objects + "\n", encoding=UTF8)
         subprocess.run(["git", "config", "user.name", "audit-test"], cwd=self.repo, check=True)
         subprocess.run(
             ["git", "config", "user.email", "audit-test@example.invalid"],
             cwd=self.repo,
             check=True,
         )
+        # Materialize the immutable reviewed source, not whatever the caller has
+        # edited locally. These are input bytes only; no Rust/native code runs.
+        source_paths = subprocess.check_output(
+            ["git", "-C", str(REPO), "ls-tree", "-r", "--name-only", "-z",
+             GUARDIAN_SOURCE, "--", *GUARDIAN_ROOTS]
+        )
+        for raw_path in source_paths.split(b"\0"):
+            if not raw_path:
+                continue
+            relative = raw_path.decode(UTF8)
+            destination = self.repo / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(subprocess.check_output(
+                ["git", "-C", str(REPO), "show", f"{GUARDIAN_SOURCE}:{relative}"]
+            ))
         subprocess.run(["git", "add", "."], cwd=self.repo, check=True)
         subprocess.run(["git", "commit", "-qm", "snapshot"], cwd=self.repo, check=True)
         anchor = subprocess.check_output(
@@ -144,6 +176,83 @@ class AuditVerifyTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(needle, result.stderr)
     def test_current_fixture_passes(self) -> None:
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+    @property
+    def guardian_ledger(self) -> Path:
+        return self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-28.csv"
+
+    def mutate_guardian_row(self, field: str, value: str) -> None:
+        with self.guardian_ledger.open(encoding=UTF8, newline="") as stream:
+            reader = csv.DictReader(stream)
+            fields = reader.fieldnames
+            rows = list(reader)
+        rows[0][field] = value
+        with self.guardian_ledger.open("w", encoding=UTF8, newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_guardian_current_blob_change_is_rejected(self) -> None:
+        source = self.repo / GUARDIAN_ROOTS[0]
+        source.write_bytes(source.read_bytes() + b"\n// independent changed-byte control\n")
+        self.assert_rejected("Guardian current source differs")
+
+    def test_guardian_staged_blob_cannot_hide_behind_restored_checkout(self) -> None:
+        source = self.repo / GUARDIAN_ROOTS[0]
+        original = source.read_bytes()
+        source.write_bytes(original + b"\n// staged-only mutation\n")
+        subprocess.run(["git", "add", str(source)], cwd=self.repo, check=True)
+        source.write_bytes(original)
+        self.assert_rejected("Guardian current source differs")
+
+    def test_guardian_missing_pinned_object_is_rejected(self) -> None:
+        verifier = self.audits / "verify.py"
+        verifier.write_text(verifier.read_text(encoding=UTF8).replace(
+            GUARDIAN_SOURCE, "1" * 40), encoding=UTF8)
+        self.assert_rejected("Guardian current ledger/source unavailable or invalid")
+
+    def test_guardian_added_tracked_path_is_rejected(self) -> None:
+        source = self.repo / GUARDIAN_ROOTS[1] / "unreviewed_fixture.rs"
+        source.write_text("// unreviewed source\n", encoding=UTF8)
+        subprocess.run(["git", "add", str(source)], cwd=self.repo, check=True)
+        self.assert_rejected("Guardian current path inventory differs")
+
+    def test_guardian_deleted_tracked_path_is_rejected(self) -> None:
+        subprocess.run(["git", "rm", "-q", GUARDIAN_ROOTS[0]], cwd=self.repo, check=True)
+        self.assert_rejected("Guardian current path inventory differs")
+
+    def test_guardian_missing_current_ledger_is_rejected(self) -> None:
+        self.guardian_ledger.unlink()
+        self.assert_rejected("Guardian current ledger")
+
+    def test_guardian_invented_full_acceptance_is_rejected(self) -> None:
+        self.mutate_guardian_row("current_disposition", "full-security-acceptance")
+        self.assert_rejected("Guardian qualified disposition differs")
+
+    def test_guardian_invented_native_acceptance_is_rejected(self) -> None:
+        self.mutate_guardian_row("native_execution", "PASS")
+        self.assert_rejected("Guardian native execution must remain NOT RUN")
+
+    def test_guardian_forged_blob_is_rejected(self) -> None:
+        self.mutate_guardian_row("current955_blob", "0" * 40)
+        self.assert_rejected("Guardian pinned blob differs")
+
+    def test_guardian_forged_original_reviewed_blob_is_rejected(self) -> None:
+        self.mutate_guardian_row("original_reviewed_blob", "0" * 40)
+        self.assert_rejected("Guardian original reviewed blob differs")
+
+    def test_guardian_duplicate_row_is_rejected(self) -> None:
+        lines = self.guardian_ledger.read_text(encoding=UTF8).splitlines(keepends=True)
+        self.guardian_ledger.write_text("".join(lines + [lines[1]]), encoding=UTF8)
+        self.assert_rejected("Guardian duplicate or empty path")
+
+    def test_guardian_crlf_checkout_and_ledger_pass(self) -> None:
+        source = self.repo / GUARDIAN_ROOTS[0]
+        for path in (source, self.guardian_ledger):
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stderr)
 

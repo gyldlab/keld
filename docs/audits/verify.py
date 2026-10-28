@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
@@ -150,8 +151,122 @@ def historical_audit_states(
     return states
 
 
-def main() -> int:
+# Dated source review, not a native/security acceptance certificate. Advancing
+# this evidence requires a separately reviewed dated ledger/pin update.
+GUARDIAN_LEDGER = ROOT / "macos-guardian-2026-10-18-ea728589" / "source-delta-2026-10-28.csv"
+GUARDIAN_PINS = {
+    "baseline949": "ea728589d0143df134c0f21fe5cf335240018d6a",
+    "historical953": "46b91848db10f81156cebe0c6c34dec90082eaba",
+    "current953": "8dd43926297479851c555596aafa012ee992c7e5",
+    "current955": "e0ababf1f07217a44199e7e3c0e69ceba6ea929e",
+}
+GUARDIAN_ROOTS = (
+    "crates/keld-runtime/src/macos_guardian.rs",
+    "crates/keld-runtime/src/macos_guardian/",
+    "crates/keld-runtime/tests/macos_host_death_guardian.rs",
+    "crates/keld-runtime/tests/macos_host_death_guardian/",
+)
+GUARDIAN_COLUMNS = (
+    "path,baseline949_blob,historical953_blob,current953_blob,current955_blob,"
+    "original_reviewed_blob,original_review_disposition,historical_disposition,"
+    "vs_baseline949,vs_historical953,current_disposition,static_read_range,"
+    "static_review,native_execution"
+).split(",")
+
+
+def verify_guardian_current_source() -> list[str]:
+    """Bind the dated qualified ledger to immutable pins, index and checkout.
+
+    This proves path/blob/evidence-label integrity only. It cannot authenticate
+    prose reasoning, reviewer identity, native receipts or containment claims.
+    """
     errors: list[str] = []
+    try:
+        with GUARDIAN_LEDGER.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream, strict=True)
+            if reader.fieldnames != GUARDIAN_COLUMNS:
+                return ["Guardian current ledger has unexpected columns"]
+            rows = list(reader)
+        if any(set(row) != set(GUARDIAN_COLUMNS) or None in row.values() for row in rows):
+            return ["Guardian current ledger has malformed rows"]
+        by_path = {row["path"]: row for row in rows}
+        if len(by_path) != len(rows) or "" in by_path:
+            return ["Guardian duplicate or empty path in current ledger"]
+        pinned: dict[str, dict[str, str]] = {}
+        for label, commit in GUARDIAN_PINS.items():
+            tree = subprocess.check_output(
+                ["git", "-C", str(REPO), "ls-tree", "-r", "-z", commit, "--", *GUARDIAN_ROOTS],
+                stderr=subprocess.PIPE,
+            )
+            pinned[label] = {}
+            for entry in filter(None, tree.split(b"\0")):
+                meta, name = entry.split(b"\t", 1)
+                mode, kind, blob = meta.decode("ascii").split()
+                if mode != "100644" or kind != "blob":
+                    return ["Guardian pinned inventory contains indirect/non-file entry"]
+                pinned[label][name.decode("utf-8")] = blob
+        current = pinned["current955"]
+        if not current or set(by_path) != set(current) or pinned["current953"] != current:
+            return ["Guardian current ledger path inventory differs from pinned source"]
+        index = subprocess.check_output(
+            ["git", "-C", str(REPO), "ls-files", "--stage", "-z", "--", *GUARDIAN_ROOTS],
+            stderr=subprocess.PIPE,
+        )
+        indexed: dict[str, str] = {}
+        for entry in filter(None, index.split(b"\0")):
+            meta, name = entry.split(b"\t", 1)
+            mode, blob, stage = meta.decode("ascii").split()
+            if mode != "100644" or stage != "0":
+                return ["Guardian current inventory has indirect/unmerged entry"]
+            indexed[name.decode("utf-8")] = blob
+        if set(indexed) != set(current):
+            errors.append("Guardian current path inventory differs from dated review")
+        for relative, row in by_path.items():
+            for label, tree in pinned.items():
+                if row[label + "_blob"] != tree.get(relative, ""):
+                    errors.append(f"Guardian pinned blob differs: {label}: {relative}")
+            if row["original_reviewed_blob"] != pinned["baseline949"].get(relative, ""):
+                errors.append(f"Guardian original reviewed blob differs: {relative}")
+            historical = pinned["historical953"].get(relative)
+            for label in ("baseline949", "historical953"):
+                original = pinned[label].get(relative)
+                change = "added" if original is None else (
+                    "unchanged" if original == current[relative] else "modified")
+                if row["vs_" + label] != change:
+                    errors.append(f"Guardian delta classification differs: {relative}")
+            changed = historical != current[relative]
+            disposition = "unchanged-blob-only; historical-qualifications-retained; no-new-native-acceptance"
+            if changed:
+                disposition = "bounded-static-review; not-native-acceptance"
+                if "/tests/" in relative or relative.endswith("/tests.rs"):
+                    disposition = "bounded-static-review-with-qualifications; not-native-acceptance"
+            if relative.endswith(("/tests/bootstrap_shutdown_race.rs", "/tests/test_support.rs")):
+                disposition = "unresolved-final-newline-deadline-oracle-gap; no-security-closure"
+            if row["current_disposition"] != disposition:
+                errors.append(f"Guardian qualified disposition differs: {relative}")
+            if row["native_execution"] != "NOT RUN":
+                errors.append(f"Guardian native execution must remain NOT RUN: {relative}")
+            if not row["static_review"].strip():
+                errors.append(f"Guardian static review reference is empty: {relative}")
+            path = REPO / relative
+            if path.is_symlink() or path.resolve() != path.absolute() or not path.is_file():
+                errors.append(f"Guardian current source missing or indirect: {relative}")
+                continue
+            # Match Git's text checkout equivalence, not filesystem newline style.
+            content = path.read_bytes().replace(b"\r\n", b"\n")
+            blob = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+            if blob != current[relative] or indexed.get(relative) != current[relative]:
+                errors.append(f"Guardian current source differs: {relative}")
+            expected_range = f"1-{len(content.splitlines())}" if changed else ""
+            if row["static_read_range"] != expected_range:
+                errors.append(f"Guardian static read range differs: {relative}")
+    except (OSError, ValueError, UnicodeError, csv.Error, subprocess.CalledProcessError) as exc:
+        errors.append(f"Guardian current ledger/source unavailable or invalid: {exc}")
+    return errors
+
+
+def main() -> int:
+    errors: list[str] = verify_guardian_current_source()
     registry = REGISTRY.read_text(encoding="utf-8")
     repo_readme = REPO_README.read_text(encoding="utf-8")
     if "(docs/audits/README.md)" not in repo_readme:
