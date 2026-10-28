@@ -174,6 +174,30 @@ class AttemptMetricTests(unittest.TestCase):
         self.assertEqual(second["observed_runner_seconds"], 69)
         self.assertEqual(second["observed_parallel_wall_seconds"], 80)
 
+    def test_inherited_required_gate_does_not_fake_second_attempt_success(self):
+        # A rerun jobs endpoint may repeat a completed required job from attempt
+        # one, with the same ID and timestamps but run_attempt set to two.
+        first_gate = job(2, "CI required", 30, 31, 45)
+        original = page(
+            job(1, "change router", 0, 10, 25),
+            first_gate,
+        )
+        carried_gate = job(2, "CI required", 30, 31, 45, attempt=2)
+        second = page(
+            carried_gate,
+            job(3, "clippy + test (macos-latest)", 5000, 5001, 5050,
+                attempt=2),
+        )
+        report = analyse_run(run(attempts=2), {1: [original], 2: [second]})
+        self.assertTrue(report["first_attempt_ci_required_success_observed"])
+        self.assertTrue(report["attempts"][1]["jobs"][0]["inherited_previous_attempt"])
+        self.assertIsNone(report["attempts"][1]["jobs"][0]["execution_seconds"])
+        self.assertIsNone(report["attempts"][1]["ci_required_result_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_success_observed"])
+        self.assertIsNone(report["attempts"][1]["ci_required_completed_at"])
+        self.assertIsNone(report["latest_time_to_ci_required_seconds"])
+        self.assertEqual(report["attempts"][1]["observed_runner_seconds"], 49)
+
     def test_invalid_step_payload_fails_cleanly_and_boolean_attempt_keys_are_refused(self):
         invalid = job(1, "CI required", 0, 10, 20)
         invalid["steps"] = {"instead": "of an array"}

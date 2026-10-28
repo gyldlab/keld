@@ -188,7 +188,14 @@ def _attempt_summary(number, pages, run_id, head_sha, seen_before):
     ordered = [item for item in jobs if item["time_quality"] == "ordered"]
     valid = [item for item in ordered if item["execution_seconds"] is not None]
     gates = [item for item in jobs if item["name"] == "CI required"]
-    gate = gates[0] if len(gates) == 1 and gates[0]["time_quality"] == "ordered" else None
+    # A job repeated verbatim by the rerun API did not execute in this
+    # attempt. It cannot attest a new required result or completion time.
+    gate = (
+        gates[0] if len(gates) == 1
+        and gates[0]["time_quality"] == "ordered"
+        and not gates[0]["inherited_previous_attempt"]
+        else None
+    )
     result = gate["conclusion"] if gate else None
     observed_success = (
         result == "success" and gate["status"] == "completed"

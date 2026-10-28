@@ -514,7 +514,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "de49a18164d9f093bc1f3771082d3d0560b690b9e85786e590d1182a357f648f"
+      "sha256": "6d5fef731fa483dc9ce0df09d868ea6ad3b87c3d851de255014dfd48ac2f7f68"
     },
     "policy-readers": {
       "patterns": [
@@ -524,7 +524,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "f2a105f24c4b81cf80035efb5b05129bb7d54a03013e8c68a97f6c7f75f0d726"
+      "sha256": "ccb6aa018c60777695407518242ca5f7f868390d0bfa912cce3d9464bf6f9e50"
     },
     "audit-readers": {
       "patterns": [
