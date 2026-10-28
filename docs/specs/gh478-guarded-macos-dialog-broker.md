@@ -279,6 +279,13 @@ enum CancelDisposition {
 }
 ```
 
+The first Message vertical assigns postcard request and reply discriminants
+`Message = 0` and `Cancel = 1`; unknown discriminants are rejected. Open and
+Save are appended only with their real payload contracts and MUST NOT renumber
+these values. The sketch above describes the eventual operations, not their
+wire order. The rejected empty Open/Save placeholders and the owner decision
+are recorded in [GH478 comment 6477314551](https://github.com/gyldlab/keld/issues/478#issuecomment-6477314551).
+
 **Important:** This sketch does *not* mint a second window or role identity.
 It uses the existing `keld_ipc::window::WindowRef { id, incarnation }` and
 Core's `PrimaryCallerContext { identity, attempt, reader_stop }` metadata.
