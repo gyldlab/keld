@@ -507,7 +507,7 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "320d472dddf1b56ea1b542222ce974ed7b1d168285a33f679b26d0d6139554c9"
+      "sha256": "e67a70416036f9622e012016ea2618e86927419a1d30b27674c8f21d607e5437"
     },
     "bun-readers": {
       "patterns": [

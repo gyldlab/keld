@@ -5,7 +5,7 @@ use std::{fs, process::Command};
 use crate::{DARK_BG, PRODUCT_TITLE};
 
 pub(crate) struct StageFixture {
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     pub(crate) project: std::path::PathBuf,
 }
 
@@ -22,10 +22,7 @@ impl StageFixture {
         fs::write(project.join("src/main.ts"), "console.log('fixture');\n").expect("project entry");
         fs::write(project.join("index.html"), "<p id=exact>fixture</p>\n")
             .expect("project renderer");
-        Self {
-            _root: root,
-            project,
-        }
+        Self { root, project }
     }
 
     /// Builds a real public API role with the canonical external transport sidecar.
@@ -51,8 +48,7 @@ impl StageFixture {
             &source,
             format!(
                 "import {{ app }} from {api};\n\
-                 import {{ nativeFacadeBootSelected, isCallError }} from {transport};\n{}",
-                LEGACY_API_READY_ROLE
+                 import {{ nativeFacadeBootSelected, isCallError }} from {transport};\n{LEGACY_API_READY_ROLE}"
             ),
         )
         .expect("write real legacy API role");
@@ -89,8 +85,8 @@ impl StageFixture {
     /// Removes the test-owned workspace after staged directory guards are released.
     /// This is fixture cleanup, not proof of CLI-owned dev-stage deletion.
     pub(crate) fn close_fixture(self) {
-        let root = self._root.path().to_owned();
-        self._root
+        let root = self.root.path().to_owned();
+        self.root
             .close()
             .expect("close test-owned fixture workspace");
         assert!(
