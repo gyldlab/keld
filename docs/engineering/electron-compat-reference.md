@@ -19,8 +19,16 @@ Rows bind the Electron baseline and immutable inventory source separately from t
 Keld `last_verified_sha` and assessment time. Counts include documented fields and
 inherited/overloaded entries, not supported-member totals. `source_status` describes
 only inspected source: `partial`, `absent_current_facade`, `no_expected_root_binding`,
-`unassessed_returned_class`, `unassessed_field_contract`, or `unassessed_element`.
-Root-export absence is not a verdict on returned classes or structure fields.
+`unassessed_nonroot_class`, `unassessed_field_contract`, or `unassessed_element`.
+Non-root classes include owned/event-delivered objects and nested constructors
+(including 10 TouchBar constructors), not only returned objects. Their notes
+record selected, non-exhaustive producer paths: `blocked_upstream` means the
+required root/owner is unavailable in the inspected facade; `absent` means a
+selected property or event production is missing on a present owner. Neither is
+a whole-class, member, or native conformance verdict. Dock is macOS-only and
+documented as undefined elsewhere, not an all-platform failure. Evidence links
+pin Keld facade source and Electron producer contracts separately. Root-export
+absence is not a verdict on non-root classes or structure fields.
 `member_scope` and `native_status` retain the limits of the evidence; source/test
 declarations are not executed conformance or native-OS receipts. The source audit
 reproduced the committed inventory, not a fresh hash of the Electron release asset.
