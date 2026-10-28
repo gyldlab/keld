@@ -131,9 +131,13 @@ Historical dev experiment: Bun 1.3.14 did **not** remap runtime
 `import "electron"` from `bunfig.toml` `[alias]`; the v0 test fixture
 used a `tsconfig.json` `compilerOptions.paths` workaround. Neither
 workaround is emitted by migration: #502 owns the single installed-package
-resolver with self-contained ESM/default/CommonJS entry points. Other Tier 1
-surfaces (`BrowserWindow`, `ipcMain`, preload/`contextBridge`, …) are later
-slices. `keld migrate` is not live.
+resolver with self-contained ESM/default/CommonJS entry points.
+The current package exports a `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux and Windows
+currently refuse facade-window subscription; this is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 

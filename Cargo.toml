@@ -52,7 +52,7 @@ postcard = { version = "1", features = ["alloc"] }
 
 # --- Dependency review (KEL-53/T2 / AGENTS.md gate) ---
 # Names: base64 0.23.1, blake3 1.8.7, ed25519-dalek 3.0.0,
-#   semver 1.0.28, zstd 0.14.0
+#   semver 1.0.28, zstd 0.14.3
 # Purpose: verify the approved v0 detached-signature/full-package contract:
 #   strict standard-base64 signature bytes, strict Ed25519, transport/content
 #   BLAKE3, SemVer precedence floors, and bounded streaming zstd decode.
@@ -63,12 +63,12 @@ postcard = { version = "1", features = ["alloc"] }
 # Features: base64 disables its new unsafe SIMD default; ed25519-dalek omits
 #   signing/random/PKCS#8/batch features; zstd omits legacy/dictionary/build
 #   extras. Licenses are in deny.toml's existing allow-list. All MSRVs are <=
-#   the workspace Rust 1.97 floor. KEL-53 records current-source receipts.
+#   the workspace Rust 1.99 floor. KEL-53 records current-source receipts.
 base64 = { version = "=0.23.1", default-features = false }
 blake3 = "=1.8.7"
 ed25519-dalek = { version = "=3.0.0", default-features = false }
 semver = "=1.0.28"
-zstd = { version = "=0.14.0", default-features = false }
+zstd = { version = "=0.14.3", default-features = false }
 
 # --- Dependency review (KEL-42 / AGENTS.md gate) ---
 # Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)
@@ -120,7 +120,7 @@ getrandom = "0.4"
 #   `/bin/kill` subprocess — external executable and a second failure domain on
 #   the cleanup path; (c) PID-by-PID kill — races reuse and misses descendants;
 #   (d) process group without an independent guardian — no actor survives host
-#   death to signal it. Exact current crates.io release; MSRV 1.69 <= Keld 1.97.
+#   death to signal it. Exact current crates.io release; MSRV 1.69 <= Keld 1.99.
 # Default features are off; `signal` (which implies `process`) supplies group
 # signaling and `fs` supplies safe descriptor-kind/CLOEXEC validation for the
 # private liveness bootstrap. License: MIT (deny.toml allow-list).
@@ -137,7 +137,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["fs", "signal
 #   broader runtime surface; winapi duplicates an older binding; the 2025
 #   Experimental_CreateProcessInSandbox API is explicitly experimental and
 #   does not implement the frozen manual LPAC contract. License MIT OR
-#   Apache-2.0; MSRV 1.71 <= workspace 1.97. Unsafe is isolated to reviewed
+#   Apache-2.0; MSRV 1.71 <= workspace 1.99. Unsafe is isolated to reviewed
 #   Windows platform modules with exact handle/pointer lifetime proofs.
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_Isolation", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 # --- Dependency review (KEL-78/T4 / AGENTS.md gate) ---
@@ -166,7 +166,7 @@ rustix = { version = "=1.1.4", default-features = false, features = ["fs", "std"
 #   would duplicate platform policy and require new production unsafe. Exact
 #   pins bind the reviewed Bytecode Alliance v4.0.3 source. Licenses are
 #   Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; neither crate declares
-#   an MSRV, so the workspace Rust 1.97 compile/test gates are the evidence.
+#   an MSRV, so the workspace Rust 1.99 compile/test gates are the evidence.
 cap-std = { version = "=4.0.3", default-features = false }
 cap-fs-ext = { version = "=4.0.3", default-features = false, features = ["std"] }
 # KEL-78/T4: official safe Landlock ABI wrapper used by the in-sandbox
