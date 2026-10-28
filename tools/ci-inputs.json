@@ -384,14 +384,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "bfb48f54569b363ce1213a70f4b137e865169cfda3184e39bc57002d7cf1a07f"
+      "sha256": "0c782559db4c9a693abc59d130dd07037023a1892a07b2102691326d44685f79"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "d4131ce637656e3bd0719ecd25ce4d3ba800fb0677f2e995bf5fdc248323f1d8"
+      "sha256": "012add4fcf674c0fa9a7dead6d2f0e744546ee406cc10be6aa249ee6777e82e7"
     },
     "rustdoc-readers": {
       "patterns": [
@@ -401,7 +401,7 @@
         "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "d9f8dba8f146432443dcbc74dfab262fdaf8eb4aa33f81354b7c64a21c894f6f"
+      "sha256": "5d3965d175b0e869a991c77fb98823f899d81df5a20f28642b07285d2b50f905"
     },
     "dependency-command": {
       "patterns": [
