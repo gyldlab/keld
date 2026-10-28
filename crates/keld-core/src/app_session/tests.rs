@@ -264,8 +264,11 @@ use super::{
     LifecycleRequest, LifecycleResponse, PathBuf, Sender, SyncSender, decode, encode,
 };
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use super::{HOST_ANSWER_BUDGET, QuitDrainEnd};
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use super::HOST_ANSWER_BUDGET;
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use super::QuitDrainEnd;
 
 #[cfg(target_os = "macos")]
 use super::{
@@ -303,9 +306,9 @@ use super::TestSessionSeam;
 
 #[cfg(windows)]
 use super::{
-    GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation, ValidatedAppIdentity,
-    WINDOWS_SHARING_VIOLATION, WebView2Engine, WindowsBootMode, WindowsDevLeaseMonitor,
-    WindowsProfileMode, await_windows_quit_peer_close_until, clear_windows_handle_inheritance,
+    ANSWER_WRITE_DEADLINES, GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation,
+    ValidatedAppIdentity, WINDOWS_SHARING_VIOLATION, WebView2Engine, WindowsBootMode,
+    WindowsDevLeaseMonitor, WindowsProfileMode, clear_windows_handle_inheritance,
     current_windows_executable, decode_digest, installed_package_error,
     publish_windows_lease_result, receive_direct_owner_reply, remove_windows_dev_stage_with,
     run_direct_startup_if_session_running, select_windows_boot_route_with,
