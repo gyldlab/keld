@@ -248,16 +248,22 @@ test("native configuration alone can reject unchanged TypeScript", () => {
 
 type FixtureJob = {
   steps: Step[];
+  defaults?: { run: { shell?: string; "working-directory"?: string } };
   env?: Record<string, unknown>;
   permissions?: Record<string, unknown>;
   strategy?: { matrix: Record<string, unknown> };
   needs?: unknown;
   if?: unknown;
+  "runs-on"?: unknown;
+  "continue-on-error"?: unknown;
   "timeout-minutes"?: unknown;
 };
 type Fixture = {
   jobs: Record<string, FixtureJob>;
+  on?: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
   env?: Record<string, unknown>;
+  defaults?: { run: { shell?: string; "working-directory"?: string } };
 };
 const source = readFileSync(
   join(import.meta.dir, "../.github/workflows/ci.yml"),
@@ -270,11 +276,34 @@ const selectedRustToolchain = readFileSync(
   join(import.meta.dir, "../rust-toolchain.toml"),
   "utf8",
 );
+// Both versions come from the live pin, so a toolchain bump never turns a
+// mutation below into a silent no-op.
+const selectedRust = String(
+  (Bun.TOML.parse(selectedRustToolchain) as { toolchain: { channel: string } })
+    .toolchain.channel,
+);
+const staleRust = selectedRust.replace(
+  /\.(\d+)$/,
+  (_, patch: string) => `.${Number(patch) + 1}`,
+);
+if (!/^\d+\.\d+\.\d+$/.test(selectedRust) || staleRust === selectedRust) {
+  throw new Error(
+    `rust-toolchain.toml must pin an exact X.Y.Z channel, got ${selectedRust}`,
+  );
+}
+const staleRustToolchain = selectedRustToolchain.replace(
+  `"${selectedRust}"`,
+  `"${staleRust}"`,
+);
+if (staleRustToolchain === selectedRustToolchain)
+  throw new Error("stale-pin mutation did not apply");
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 const requiredRustInstallerJobs = [
   "changes",
+  "router-contracts",
   "fmt",
   "check",
+  "windows-media",
   "doctest",
   "linux-gui-smoke",
   "msrv",
@@ -303,6 +332,905 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+test("Linux and Windows native acceptance tests print cargo failure output", () => {
+  const f = fixture();
+  const bash =
+    process.platform === "win32"
+      ? "C:\\Program Files\\Git\\bin\\bash.exe"
+      : "bash";
+  for (const name of [
+    "Real Linux foreign-owner refusal (KEL-167)",
+    "Real Windows release host identity container round trip (KEL-19)",
+    "Real Windows release updater helper loader and container (KEL-53 T4d S9c)",
+  ]) {
+    const selected = step(f, "check", name);
+    if (typeof selected.run !== "string")
+      throw new Error(`${name}: missing script`);
+    const mock =
+      "cargo() { if [ \"$1\" = test ]; then printf 'cargo failure diagnostic: fixture\\n' >&2; return 17; fi; return 0; }\n";
+    const result = Bun.spawnSync([bash, "-c", mock + selected.run], {
+      env: { ...process.env, RUNNER_TEMP: tmpdir() },
+    });
+    expect(result.exitCode, name).not.toBe(0);
+    expect(new TextDecoder().decode(result.stdout), name).toContain(
+      "cargo failure diagnostic: fixture",
+    );
+  }
+});
+test("KEL-167 Linux exact test rejects a zero-test result", () => {
+  const linux = step(
+    fixture(),
+    "check",
+    "Real Linux foreign-owner refusal (KEL-167)",
+  );
+  expect(linux.shell).toBe("bash");
+  if (typeof linux.run !== "string") throw new Error("KEL-167 script missing");
+  expect(linux.run).toContain(
+    "real_linux_second_account_refuses_foreign_owned_project",
+  );
+  const bash =
+    process.platform === "win32"
+      ? "C:\\Program Files\\Git\\bin\\bash.exe"
+      : "bash";
+  const script =
+    'cargo() { printf \'%s\\n\' "$KELD_MOCK_CARGO_STDOUT"; return "$KELD_MOCK_CARGO_EXIT"; }\n' +
+    linux.run;
+  const run = (stdout: string, exitCode = 0) =>
+    Bun.spawnSync([bash, "-c", script], {
+      env: {
+        ...process.env,
+        KELD_MOCK_CARGO_STDOUT: stdout,
+        KELD_MOCK_CARGO_EXIT: String(exitCode),
+      },
+    });
+  expect(
+    run("test result: ok. 0 passed; 0 failed; 1 filtered out").exitCode,
+  ).not.toBe(0);
+  expect(run("test result: ok. 1 passed; 0 failed").exitCode).toBe(0);
+  expect(run("test result: FAILED. 0 passed; 1 failed", 101).exitCode).not.toBe(
+    0,
+  );
+});
+
+test("KEL-167 Linux proof cannot be skipped or replaced while CI remains green", () => {
+  const stepName = "Real Linux foreign-owner refusal (KEL-167)";
+  const mutations: Array<[string, (selected: Step) => void]> = [
+    [
+      "skip the security proof",
+      (selected) => {
+        selected.if = false;
+      },
+    ],
+    [
+      "replace the exact test selector",
+      (selected) => {
+        selected.run = String(selected.run).replace(
+          "real_linux_second_account_refuses_foreign_owned_project",
+          "not_a_real_linux_security_test",
+        );
+      },
+    ],
+    [
+      "remove the one-pass assertion",
+      (selected) => {
+        selected.run = String(selected.run).replace(
+          "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+          "true",
+        );
+      },
+    ],
+    [
+      "disable the real-OS proof environment",
+      (selected) => {
+        (selected.env as Step).KELD_REAL_LINUX_OWNER_PROOF = "0";
+      },
+    ],
+    [
+      "suppress the script with a custom shell",
+      (selected) => {
+        selected.shell = "bash -c true {0}";
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const f = fixture();
+    mutate(step(f, "check", stepName));
+    expect(() => check(f), label).toThrow("KEL-167");
+  }
+});
+
+test("router contract regression runs independently without releasing its required gate", () => {
+  const workflow = fixture();
+  const job = workflow.jobs["router-contracts"];
+  expect(job).toBeDefined();
+  expect(
+    job!.steps.some(
+      (candidate) =>
+        candidate.name === "Router contract tests" &&
+        candidate.run === "tools/ci_changes_test.sh",
+    ),
+  ).toBe(true);
+  expect(
+    workflow.jobs.changes!.steps.some(
+      (candidate) => candidate.name === "Router contract tests",
+    ),
+  ).toBe(false);
+  expect(workflow.jobs.required!.needs).toContain("router-contracts");
+});
+
+test("independent router regression job is unconditional, exact and required", () => {
+  for (const [name, mutate] of [
+    [
+      "absent job",
+      (f: Fixture) => {
+        delete f.jobs["router-contracts"];
+      },
+    ],
+    [
+      "job skipped",
+      (f: Fixture) => {
+        f.jobs["router-contracts"]!.if = false;
+      },
+    ],
+    [
+      "job queued behind classifier",
+      (f: Fixture) => {
+        f.jobs["router-contracts"]!.needs = "changes";
+      },
+    ],
+    [
+      "missing test",
+      (f: Fixture) => {
+        f.jobs["router-contracts"]!.steps.pop();
+      },
+    ],
+    [
+      "duplicate test",
+      (f: Fixture) => {
+        const steps = f.jobs["router-contracts"]!.steps;
+        steps.push(structuredClone(steps.at(-1)!));
+      },
+    ],
+    [
+      "echo-only test",
+      (f: Fixture) => {
+        f.jobs["router-contracts"]!.steps.at(-1)!.run =
+          "echo tools/ci_changes_test.sh";
+      },
+    ],
+    [
+      "conditional test",
+      (f: Fixture) => {
+        f.jobs["router-contracts"]!.steps.at(-1)!.if = false;
+      },
+    ],
+    [
+      "partial history",
+      (f: Fixture) => {
+        (f.jobs["router-contracts"]!.steps[0]!.with as Record<string, unknown>)[
+          "fetch-depth"
+        ] = 1;
+      },
+    ],
+    [
+      "suite back in blocking router",
+      (f: Fixture) => {
+        f.jobs.changes!.steps.splice(2, 0, {
+          name: "Router contract tests",
+          run: "tools/ci_changes_test.sh",
+        });
+      },
+    ],
+    [
+      "required needs missing",
+      (f: Fixture) => {
+        f.jobs.required!.needs = (f.jobs.required!.needs as string[]).filter(
+          (name) => name !== "router-contracts",
+        );
+      },
+    ],
+    [
+      "result handoff changed",
+      (f: Fixture) => {
+        (
+          step(f, "required", "Verify required CI results").env as Record<
+            string,
+            unknown
+          >
+        ).KELD_RESULT_ROUTER_CONTRACTS = "success";
+      },
+    ],
+    [
+      "result argument missing",
+      (f: Fixture) => {
+        const evaluator = step(f, "required", "Verify required CI results");
+        evaluator.run = String(evaluator.run).replace(
+          '"$KELD_RESULT_ROUTER_CONTRACTS"',
+          "",
+        );
+      },
+    ],
+  ] as const) {
+    const altered = fixture();
+    mutate(altered);
+    expect(() => check(altered), name).toThrow();
+  }
+});
+
+test("CI retains main push and every pull request without trigger filters", () => {
+  const mutants: Array<[string, (f: Fixture) => void]> = [
+    [
+      "missing push",
+      (f) => {
+        delete f.on!.push;
+      },
+    ],
+    [
+      "wrong push branch",
+      (f) => {
+        f.on!.push = { branches: ["no-ci-push"] };
+      },
+    ],
+    [
+      "limited push path",
+      (f) => {
+        f.on!.push = { branches: ["main"], paths: ["docs/**"] };
+      },
+    ],
+    [
+      "missing pull request",
+      (f) => {
+        delete f.on!.pull_request;
+      },
+    ],
+    [
+      "limited pull request",
+      (f) => {
+        f.on!.pull_request = { paths: ["docs/**"] };
+      },
+    ],
+    [
+      "unexpected privileged trigger",
+      (f) => {
+        f.on!.pull_request_target = null;
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutants) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow(
+      "CI workflow must run on main pushes and all pull requests",
+    );
+  }
+});
+
+test("CI workflow-wide token privileges stay read-only", () => {
+  const mutants: Array<[string, (f: Fixture) => void]> = [
+    [
+      "missing permissions",
+      (f) => {
+        delete f.permissions;
+      },
+    ],
+    [
+      "contents write",
+      (f) => {
+        f.permissions!.contents = "write";
+      },
+    ],
+    [
+      "extra actions write",
+      (f) => {
+        f.permissions!.actions = "write";
+      },
+    ],
+    [
+      "extra security events write",
+      (f) => {
+        f.permissions!["security-events"] = "write";
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutants) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), name).toThrow(
+      "CI workflow permissions must remain read-only",
+    );
+  }
+});
+
+test("non-CodeQL jobs cannot override workflow read-only token privileges", () => {
+  for (const jobName of [
+    "check",
+    "router-contracts",
+    "windows-media",
+    "required",
+    "deny",
+  ]) {
+    const f = fixture();
+    f.jobs[jobName]!.permissions = { contents: "write", actions: "write" };
+    expect(() => check(f), jobName).toThrow(
+      "non-CodeQL jobs must inherit read-only workflow permissions",
+    );
+  }
+});
+
+test("native CI jobs reject unreviewed container and services overrides", () => {
+  for (const jobName of [
+    "check",
+    "windows-media",
+    "router-contracts",
+  ] as const) {
+    for (const [key, value] of [
+      ["container", "rust:latest"],
+      ["services", { override: { image: "alpine:latest" } }],
+    ] as const) {
+      const f = fixture();
+      (f.jobs[jobName] as Record<string, unknown>)[key] = value;
+      expect(() => check(f), `${jobName}.${key}`).toThrow(
+        `jobs.${jobName} must not set container or services`,
+      );
+    }
+  }
+});
+test("native Clippy and Nextest matrix must use every router-selected OS", () => {
+  const baseline = fixture();
+  expect(() => check(baseline)).not.toThrow();
+  for (const mutate of [
+    (f: Fixture) => {
+      f.jobs.check!.strategy = {
+        "fail-fast": false,
+        matrix: { os: ["windows-latest"] },
+      } as FixtureJob["strategy"];
+    },
+    (f: Fixture) => {
+      f.jobs.check!.strategy = {
+        "fail-fast": false,
+        matrix: {
+          os: "${{ fromJSON(needs.changes.outputs.check_os) }}",
+          exclude: [{ os: "macos-latest" }],
+        },
+      } as FixtureJob["strategy"];
+    },
+    (f: Fixture) => {
+      f.jobs.check!.strategy = {
+        matrix: { os: "${{ fromJSON(needs.changes.outputs.check_os) }}" },
+      };
+    },
+    (f: Fixture) => {
+      f.jobs.check!["runs-on"] = "windows-latest";
+    },
+  ]) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f)).toThrow(
+      "native check must use the router-owned OS matrix",
+    );
+  }
+});
+
+test("change router output bindings cannot forge native OS or selected test inventory", () => {
+  for (const [name, spoof] of [
+    ["check_os", '["windows-latest"]'],
+    ["rust_documentation_only", "true"],
+    ["rust", "false"],
+    ["packages", "keld-wv"],
+    ["codeql_rust", "false"],
+    ["deny", "false"],
+  ]) {
+    const f = fixture();
+    const output = (f.jobs.changes as Step).outputs as Record<string, unknown>;
+    output[name!] = spoof;
+    expect(() => check(f), name).toThrow(
+      "change router outputs must match the trusted classifier bindings",
+    );
+  }
+  const added = fixture();
+  ((added.jobs.changes as Step).outputs as Record<string, unknown>).shadow =
+    "false";
+  expect(() => check(added)).toThrow(
+    "change router outputs must match the trusted classifier bindings",
+  );
+});
+
+test("change router classifier must execute its exact authoritative script", () => {
+  for (const mutate of [
+    (f: Fixture) => {
+      step(f, "changes", "Classify changed-path ownership").run =
+        'echo \'check_os=["windows-latest"]\' >> "$GITHUB_OUTPUT"';
+    },
+    (f: Fixture) => {
+      step(f, "changes", "Classify changed-path ownership").id = "fake";
+    },
+    (f: Fixture) => {
+      step(f, "changes", "Classify changed-path ownership").env = {
+        KELD_CI_EVENT_NAME: "push",
+      };
+    },
+    (f: Fixture) => {
+      step(f, "changes", "Classify changed-path ownership").if = "false";
+    },
+    (f: Fixture) => {
+      f.jobs.changes!.steps.unshift({
+        id: "classify",
+        run: "echo 'rust=false' >> \"$GITHUB_OUTPUT\"",
+      });
+    },
+  ]) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f)).toThrow(
+      "change router classifier must run the reviewed command and source",
+    );
+  }
+});
+
+test("router executable steps cannot rewrite the classifier script before it runs", () => {
+  for (const mutate of [
+    (f: Fixture) => {
+      const prior = step(f, "changes", "Source budget tool tests");
+      prior.run =
+        String(prior.run) + '\nprintf "rust=false\\n" > tools/ci_changes.sh\n';
+    },
+    (f: Fixture) => {
+      f.jobs.changes!.steps.splice(6, 0, {
+        name: "Prepare router",
+        run: 'echo "rust=false" > tools/ci_changes.sh',
+      });
+    },
+    (f: Fixture) => {
+      (f.jobs.changes as Step)["if"] = "false";
+    },
+    (f: Fixture) => {
+      (f.jobs.changes as Step)["runs-on"] = "windows-latest";
+    },
+  ]) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f)).toThrow(
+      "change router job must preserve its reviewed executable steps and context",
+    );
+  }
+});
+
+test("CI rejects unreviewed external actions, including mutable Docker image tags", () => {
+  const unreviewed = [
+    "docker://alpine:latest",
+    `docker://ghcr.io/example/unknown@sha256:${"0".repeat(64)}`,
+    `unreviewed/third-party-action@${"0".repeat(40)}`,
+    `oven-sh/setup-bun@${"0".repeat(40)}`,
+  ];
+  for (const uses of unreviewed) {
+    const f = fixture();
+    // The CodeQL JS job has the power to publish code-scanning results.
+    // An extra action before analysis must not inherit that privilege.
+    f.jobs["codeql-javascript-typescript"]!.steps.splice(2, 0, { uses });
+    expect(() => check(f), uses).toThrow(
+      "CI workflow steps must use only reviewed immutable action refs",
+    );
+  }
+});
+
+test("selected native and MSRV checks cannot become false-green via continue-on-error", () => {
+  const msrv = fixture();
+  const selected = step(msrv, "msrv", "cargo check on MSRV toolchain");
+  selected.run = "exit 1";
+  selected["continue-on-error"] = true;
+  expect(() => check(msrv)).toThrow(
+    "CI workflow jobs and steps must not tolerate failures",
+  );
+
+  const job = fixture();
+  job.jobs.msrv!["continue-on-error"] = true;
+  expect(() => check(job)).toThrow(
+    "CI workflow jobs and steps must not tolerate failures",
+  );
+
+  const harmlessLookingFalse = fixture();
+  step(harmlessLookingFalse, "msrv", "cargo check on MSRV toolchain")[
+    "continue-on-error"
+  ] = false;
+  expect(() => check(harmlessLookingFalse)).toThrow(
+    "CI workflow jobs and steps must not tolerate failures",
+  );
+
+  // GitHub YAML accepts inline flow mappings, which the older line-oriented
+  // Rust scanner missed. This must fail against parsed effects, not styling.
+  const start = source.indexOf("      - name: cargo check on MSRV toolchain\n");
+  const end = source.indexOf("\n  deny:\n", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const flow =
+    source.slice(0, start) +
+    "      - {name: cargo check on MSRV toolchain, run: 'exit 1', continue-on-error: true}\n" +
+    source.slice(end);
+  expect(() => checkWorkflowSecurity(flow)).toThrow(
+    "CI workflow jobs and steps must not tolerate failures",
+  );
+});
+
+function executableFmtLines(run: unknown): Set<string> {
+  // This CI step contains literal commands, not a generated shell program.
+  // Match entire executable lines; echoed text and comments must not satisfy
+  // the test that protects the otherwise-unreachable included Rust files.
+  return new Set(
+    String(run ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim()),
+  );
+}
+
+test("rustfmt avoids compiled Cargo cache without reducing format coverage", () => {
+  const workflow = fixture();
+  const steps = workflow.jobs.fmt!.steps;
+  expect(
+    steps.some((step) =>
+      String(step.uses ?? "").startsWith("Swatinem/rust-cache@"),
+    ),
+  ).toBe(false);
+  expect(
+    steps.some(
+      (step) => String(step.run ?? "").trim() === "cargo fmt --all --check",
+    ),
+  ).toBe(true);
+  const included = steps.find(
+    (step) => step.name === "rustfmt include!d and macro-body #[path] files",
+  );
+  const lines = executableFmtLines(included?.run);
+  expect(lines.has("tools/fmt_included.sh test")).toBe(true);
+  expect(lines.has("tools/fmt_included.sh --check")).toBe(true);
+  for (const fake of [
+    "echo tools/fmt_included.sh test\necho tools/fmt_included.sh --check",
+    "# tools/fmt_included.sh test\n# tools/fmt_included.sh --check",
+    "true # tools/fmt_included.sh test\ntrue # tools/fmt_included.sh --check",
+  ]) {
+    const muted = executableFmtLines(fake);
+    expect(muted.has("tools/fmt_included.sh test")).toBe(false);
+    expect(muted.has("tools/fmt_included.sh --check")).toBe(false);
+  }
+});
+
+test("required included-file format commands cannot be skipped or shell-swallowed", () => {
+  for (const mutation of [
+    "skip",
+    "ignore-error",
+    "swallow-shell",
+    "echo-only",
+  ] as const) {
+    const workflow = fixture();
+    const included = step(
+      workflow,
+      "fmt",
+      "rustfmt include!d and macro-body #[path] files",
+    );
+    if (mutation === "skip") included.if = false;
+    if (mutation === "ignore-error") included["continue-on-error"] = true;
+    if (mutation === "swallow-shell") included.shell = "bash -c true {0}";
+    if (mutation === "echo-only") {
+      included.run =
+        "echo tools/fmt_included.sh test\necho tools/fmt_included.sh --check";
+    }
+    expect(() => check(workflow)).toThrow(
+      "rustfmt included-file commands must execute exactly",
+    );
+  }
+});
+
+test("rustfmt Cargo command and changed-Rust routing preserve executable failure", () => {
+  for (const mutation of [
+    "skip",
+    "ignore-error",
+    "swallow-shell",
+    "ignore-script",
+  ] as const) {
+    const workflow = fixture();
+    const cargo = workflow.jobs.fmt!.steps.find(
+      (candidate) => candidate.run === "cargo fmt --all --check",
+    )!;
+    if (mutation === "skip") cargo.if = false;
+    if (mutation === "ignore-error") cargo["continue-on-error"] = true;
+    if (mutation === "swallow-shell") cargo.shell = "bash -c true {0}";
+    if (mutation === "ignore-script")
+      cargo.run = "set +e\ncargo fmt --all --check\ntrue";
+    expect(() => check(workflow)).toThrow(
+      "rustfmt cargo fmt command must execute exactly",
+    );
+  }
+  const skipped = fixture();
+  skipped.jobs.fmt!.if = false;
+  expect(() => check(skipped)).toThrow("rustfmt job must preserve");
+  const hiddenCache = fixture();
+  hiddenCache.jobs.fmt!.steps.splice(2, 0, {
+    uses: "sWatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0",
+  });
+  expect(() => check(hiddenCache)).toThrow(
+    "rustfmt must not restore or save a compiled Cargo cache",
+  );
+});
+
+test("rustfmt rejects unreviewed job execution contexts", () => {
+  const mutations: Array<[string, Record<string, unknown>]> = [
+    ["BASH_ENV", { env: { BASH_ENV: "/tmp/hostile-env" } }],
+    ["PATH", { env: { PATH: "/tmp/hostile-bin" } }],
+    ["container", { container: "ubuntu:22.04" }],
+    ["services", { services: { db: { image: "postgres:16" } } }],
+    ["runner", { "runs-on": "ubuntu-22.04" }],
+  ];
+  for (const [name, mutation] of mutations) {
+    const workflow = fixture();
+    Object.assign(workflow.jobs.fmt!, mutation);
+    expect(() => check(workflow), name).toThrow(
+      "rustfmt job must preserve its reviewed execution context",
+    );
+  }
+});
+
+test("rustfmt rejects injected steps and step-level environment overrides", () => {
+  const mutations: Array<[string, (steps: Step[]) => void]> = [
+    [
+      "GITHUB_PATH prelude",
+      (steps) =>
+        steps.splice(2, 0, {
+          run: 'echo /tmp/hostile-bin >> "$GITHUB_PATH"',
+        }),
+    ],
+    [
+      "BASH_ENV setup",
+      (steps) => {
+        steps[1]!.env = { BASH_ENV: "/tmp/hostile-env" };
+      },
+    ],
+    [
+      "checkout PATH replacement",
+      (steps) => {
+        steps[0]!.env = { PATH: "/tmp/hostile-bin" };
+      },
+    ],
+  ];
+  for (const [name, mutate] of mutations) {
+    const workflow = fixture();
+    mutate(workflow.jobs.fmt!.steps);
+    expect(() => check(workflow), name).toThrow(
+      "rustfmt reviewed step inventory/order must not acquire unreviewed executable or environment writers",
+    );
+  }
+});
+
+test("inherited custom shells cannot false-green terminal required results", () => {
+  for (const scope of ["workflow", "fmt", "required"] as const) {
+    const workflow = fixture();
+    if (scope === "workflow")
+      workflow.defaults = { run: { shell: "bash -c true {0}" } };
+    else
+      workflow.jobs[scope]!.defaults = { run: { shell: "bash -c true {0}" } };
+    expect(() => check(workflow)).toThrow("must not set defaults.run.shell");
+  }
+  const nonblocking = fixture();
+  nonblocking.jobs.required!["continue-on-error"] = true;
+  expect(() => check(nonblocking)).toThrow(
+    "CI required must not tolerate failures",
+  );
+  for (const mutation of ["skip", "ignore-error", "swallow-shell"] as const) {
+    const workflow = fixture();
+    const evaluator = step(workflow, "required", "Verify required CI results");
+    if (mutation === "skip") evaluator.if = false;
+    if (mutation === "ignore-error") evaluator["continue-on-error"] = true;
+    if (mutation === "swallow-shell") evaluator.shell = "bash -c true {0}";
+    expect(() => check(workflow)).toThrow(
+      "CI required evaluator must execute directly",
+    );
+  }
+});
+
+test("inherited working directories cannot redirect executable CI gates", () => {
+  for (const scope of ["workflow", "fmt", "changes"] as const) {
+    const workflow = fixture();
+    if (scope === "workflow")
+      workflow.defaults = { run: { "working-directory": "./spoof" } };
+    else
+      workflow.jobs[scope]!.defaults = {
+        run: { "working-directory": "./spoof" },
+      };
+    expect(() => check(workflow), scope).toThrow(
+      "must not set defaults.run.working-directory",
+    );
+  }
+});
+
+test("required job must still run when an upstream required lane fails", () => {
+  const valid = fixture();
+  expect(valid.jobs.required!.if).toBe("${{ always() }}");
+  for (const condition of [
+    undefined,
+    null,
+    false,
+    true,
+    "always()",
+    "${{ false }}",
+    "${{ success() }}",
+    "${{ !cancelled() }}",
+    "${{ always() && false }}",
+  ]) {
+    const workflow = fixture();
+    if (condition === undefined) delete workflow.jobs.required!.if;
+    else workflow.jobs.required!.if = condition;
+    expect(() => check(workflow), String(condition)).toThrow(
+      "CI required must use exact always() condition",
+    );
+  }
+});
+
+test("required evaluator runs exactly the reviewed 35-argument blocking script", () => {
+  const original = String(
+    step(fixture(), "required", "Verify required CI results").run,
+  );
+  expect(
+    original.startsWith(
+      "tools/ci_required.sh test\ntools/ci_required.sh check \\\n",
+    ),
+  ).toBe(true);
+  for (const [label, changed] of [
+    ["early exit bypass", "exit 0\n" + original],
+    ["early no-op", "true\n" + original],
+    ["prepended diagnostics", "echo start\n" + original],
+    [
+      "test command echoed",
+      original.replace(
+        "tools/ci_required.sh test",
+        "echo tools/ci_required.sh test",
+      ),
+    ],
+    [
+      "gate command echoed",
+      original.replace(
+        "tools/ci_required.sh check",
+        "echo tools/ci_required.sh check",
+      ),
+    ],
+    [
+      "first result spoofed",
+      original.replace('"$KELD_RESULT_CHANGES"', '"success"'),
+    ],
+    ["shell failure disabled", "set +e\n" + original],
+    ["final command appended", original + "exit 0\n"],
+  ] as const) {
+    expect(changed, label + " mutation applied").not.toBe(original);
+    const workflow = fixture();
+    step(workflow, "required", "Verify required CI results").run = changed;
+    expect(() => check(workflow), label).toThrow(
+      "CI required evaluator must run exact reviewed script",
+    );
+  }
+});
+
+test("required evaluator rejects injected shell startup and command search overrides", () => {
+  for (const [name, value] of [
+    ["BASH_ENV", "tools/ci_required.sh"],
+    ["PATH", "/tmp/other-bin"],
+    ["GITHUB_ENV", "/tmp/other-env"],
+    ["SHELLOPTS", "errexit"],
+    ["BASHOPTS", "expand_aliases"],
+    ["IFS", "/"],
+    ["ENV", "/tmp/other-env"],
+  ] as const) {
+    const workflow = fixture();
+    const env = step(workflow, "required", "Verify required CI results")
+      .env as Step;
+    env[name] = value;
+    expect(() => check(workflow), name).toThrow(
+      "CI required evaluator environment",
+    );
+  }
+  const spoofed = fixture();
+  (
+    step(spoofed, "required", "Verify required CI results").env as Step
+  ).KELD_RESULT_CHANGES = "success";
+  expect(() => check(spoofed)).toThrow("CI required evaluator environment");
+});
+
+test("required evaluator cannot inherit unreviewed workflow or job environments", () => {
+  for (const [name, value] of [
+    ["BASH_ENV", "tools/ci_required.sh"],
+    ["PATH", "/tmp/other-bin"],
+    ["GITHUB_ENV", "/tmp/other-env"],
+  ] as const) {
+    const workflow = fixture();
+    (workflow.env as Step)[name] = value;
+    expect(() => check(workflow), "workflow " + name).toThrow(
+      "CI workflow environment",
+    );
+
+    const required = fixture();
+    required.jobs.required!.env = { [name]: value };
+    expect(() => check(required), "required job " + name).toThrow(
+      "CI required job must not set env",
+    );
+  }
+  const changedDefault = fixture();
+  (changedDefault.env as Step).CARGO_INCREMENTAL = "1";
+  expect(() => check(changedDefault)).toThrow("CI workflow environment");
+});
+
+test("required job keeps its hosted runner, full dependency set and exact two-step order", () => {
+  const mutations: Array<[string, (workflow: Fixture) => void]> = [
+    [
+      "self-hosted runner",
+      (f) => {
+        f.jobs.required!["runs-on"] = "self-hosted";
+      },
+    ],
+    [
+      "wrong runner",
+      (f) => {
+        f.jobs.required!["runs-on"] = "windows-latest";
+      },
+    ],
+    [
+      "extended deadline",
+      (f) => {
+        f.jobs.required!["timeout-minutes"] = 45;
+      },
+    ],
+    [
+      "missing required lane",
+      (f) => {
+        f.jobs.required!.needs = (f.jobs.required!.needs as string[]).filter(
+          (name) => name !== "fmt",
+        );
+      },
+    ],
+    [
+      "missing gitleaks",
+      (f) => {
+        f.jobs.required!.needs = (f.jobs.required!.needs as string[]).filter(
+          (name) => name !== "secrets",
+        );
+      },
+    ],
+    [
+      "extra unreviewed dependency",
+      (f) => {
+        (f.jobs.required!.needs as string[]).push("irrelevant");
+      },
+    ],
+    [
+      "prepended environment mutation step",
+      (f) => {
+        f.jobs.required!.steps.splice(1, 0, {
+          run: 'echo BASH_ENV=tools/other.sh >> "$GITHUB_ENV"',
+        });
+      },
+    ],
+    [
+      "checkout dropped",
+      (f) => {
+        f.jobs.required!.steps.shift();
+      },
+    ],
+    [
+      "required steps reversed",
+      (f) => {
+        f.jobs.required!.steps.reverse();
+      },
+    ],
+    [
+      "extra job strategy",
+      (f) => {
+        (f.jobs.required as Step).strategy = {
+          matrix: { os: ["ubuntu-latest"] },
+        };
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const workflow = fixture();
+    mutate(workflow);
+    expect(() => check(workflow), label).toThrow("CI required");
+  }
+});
+
 test("every Rust installer agrees with the exact pin and immutable action commit", () => {
   expect(() =>
     checkRustToolchainPins(source, selectedRustToolchain),
@@ -314,11 +1242,11 @@ test("every Rust installer agrees with the exact pin and immutable action commit
   expect(installers.length).toBe(requiredRustInstallerJobs.length);
 
   // A single stale installer may not hide behind nine current copies.
-  (installers[3]!.with as Record<string, unknown>).toolchain = "1.97.1";
+  (installers[3]!.with as Record<string, unknown>).toolchain = staleRust;
   expect(() =>
     checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
   ).toThrow("must select Rust");
-  (installers[3]!.with as Record<string, unknown>).toolchain = "1.99.1";
+  (installers[3]!.with as Record<string, unknown>).toolchain = selectedRust;
 
   // A changed action SHA is independent from the compiler version, but all
   // jobs must use the same reviewed immutable action implementation.
@@ -326,21 +1254,17 @@ test("every Rust installer agrees with the exact pin and immutable action commit
   expect(() =>
     checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
   ).toThrow("same reviewed immutable");
-  expect(() =>
-    checkRustToolchainPins(
-      source,
-      selectedRustToolchain.replace("1.99.1", "1.97.1"),
-    ),
-  ).toThrow("must select Rust");
+  expect(() => checkRustToolchainPins(source, staleRustToolchain)).toThrow(
+    "must select Rust",
+  );
 });
 
 test("Rust toolchain admission reads the actual TOML toolchain table, never a decoy", () => {
-  const decoy =
-    '[decoy]\nchannel = "1.99.1"\n[toolchain]\nchannel = "1.97.1"\ncomponents = ["rustfmt", "clippy"]\n';
+  const decoy = `[decoy]\nchannel = "${selectedRust}"\n[toolchain]\nchannel = "${staleRust}"\ncomponents = ["rustfmt", "clippy"]\n`;
   expect(() => checkRustToolchainPins(source, decoy)).toThrow(
     "must select Rust",
   );
-  const duplicate = '[toolchain]\nchannel = "1.99.1"\nchannel = "1.97.1"\n';
+  const duplicate = `[toolchain]\nchannel = "${selectedRust}"\nchannel = "${staleRust}"\n`;
   expect(() => checkRustToolchainPins(source, duplicate)).toThrow();
 });
 
@@ -443,6 +1367,46 @@ test("a Rustup environment override cannot shadow the pinned compiler", () => {
   }
 });
 
+test("a run step cannot shadow the pinned compiler for later steps", () => {
+  for (const [script, message] of [
+    [
+      'echo RUSTUP_TOOLCHAIN=stable >> "$GITHUB_ENV"',
+      "must not set RUSTUP_TOOLCHAIN",
+    ],
+    ["RUSTUP_TOOLCHAIN=stable cargo build", "must not set RUSTUP_TOOLCHAIN"],
+    ["rustup default stable", "must not change the Rustup default"],
+    ['rustup "override" set nightly', "must not change the Rustup default"],
+    [
+      "rustup --quiet override set nightly",
+      "must not change the Rustup default",
+    ],
+    ["rustup \\\n  override set nightly", "must not change the Rustup default"],
+    [
+      'echo RUSTUP_\\\nTOOLCHAIN=stable >> "$GITHUB_ENV"',
+      "must not set RUSTUP_TOOLCHAIN",
+    ],
+  ] as const) {
+    const workflow = fixture();
+    // Insert after the installer so the existing setup-order rule stays satisfied.
+    workflow.jobs.fmt!.steps.splice(2, 0, { run: script });
+    expect(() =>
+      checkRustToolchainPins(
+        Bun.YAML.stringify(workflow),
+        selectedRustToolchain,
+      ),
+    ).toThrow(message);
+  }
+  // Call-site toolchain selection (the MSRV job's shape) changes nothing for
+  // other commands and stays admitted.
+  const workflow = fixture();
+  workflow.jobs.fmt!.steps.splice(2, 0, {
+    run: "rustup toolchain install 1.0.0 --profile minimal\ncargo +1.0.0 check",
+  });
+  expect(() =>
+    checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain),
+  ).not.toThrow();
+});
+
 test("source-budget reporting stays advisory, visible and unprivileged", () => {
   const workflow = fixture();
   const s = step(workflow, "changes", "Source budget proposals (report only)");
@@ -460,6 +1424,43 @@ test("source-budget reporting stays advisory, visible and unprivileged", () => {
   expect(String(env.KELD_BUDGET_HEAD_SHA)).toContain(
     "github.event.pull_request.head.sha",
   );
+});
+
+test("offline CI attempt reporter regressions execute in the always-on router", () => {
+  const job = step(
+    fixture(),
+    "changes",
+    "CI attempt timing reporter regression tests",
+  );
+  expect(String(job.run ?? "").trim()).toBe(
+    "python3 -B tools/test_ci_attempt_metrics.py",
+  );
+  expect(job.if).toBeUndefined();
+  expect(job["continue-on-error"]).toBeUndefined();
+});
+
+test("CI attempt reporter tests cannot be skipped or shell-swallowed", () => {
+  for (const mutation of [
+    "skip",
+    "ignore-error",
+    "swallow-shell",
+    "echo-only",
+  ] as const) {
+    const workflow = fixture();
+    const reporter = step(
+      workflow,
+      "changes",
+      "CI attempt timing reporter regression tests",
+    );
+    if (mutation === "skip") reporter.if = false;
+    if (mutation === "ignore-error") reporter["continue-on-error"] = true;
+    if (mutation === "swallow-shell") reporter.shell = "bash -c true {0}";
+    if (mutation === "echo-only")
+      reporter.run = "echo python3 -B tools/test_ci_attempt_metrics.py";
+    expect(() => check(workflow)).toThrow(
+      "CI attempt timing reporter tests must execute exactly",
+    );
+  }
 });
 
 test("source-budget tool unit tests run in normal unprivileged CI", () => {
@@ -505,6 +1506,355 @@ test("new Rust test imports require explicit names in normal unprivileged CI", (
   );
 });
 
+test("Windows media runner avoids unused Bun and rustfmt installation", () => {
+  const steps = fixture().jobs["windows-media"]!.steps;
+  const bunSetup = steps.filter(
+    (candidate) =>
+      typeof candidate.uses === "string" &&
+      candidate.uses.toLowerCase().startsWith("oven-sh/setup-bun@"),
+  );
+  expect(bunSetup).toHaveLength(0);
+  const installers = steps.filter(
+    (candidate) =>
+      typeof candidate.uses === "string" &&
+      candidate.uses.startsWith("dtolnay/rust-toolchain@"),
+  );
+  expect(installers).toHaveLength(1);
+  expect((installers[0]!.with as Record<string, unknown>).components).toBe(
+    "clippy",
+  );
+});
+
+test("Windows media acceptance must execute without step-level skip or failure masking", () => {
+  for (const [label, edit] of [
+    [
+      "literal false condition",
+      (media: Step) => {
+        media.if = false;
+      },
+    ],
+    [
+      "expression false condition",
+      (media: Step) => {
+        media.if = "${{ false }}";
+      },
+    ],
+    [
+      "failure tolerance",
+      (media: Step) => {
+        media["continue-on-error"] = true;
+      },
+    ],
+    [
+      "different shell",
+      (media: Step) => {
+        media.shell = "bash";
+      },
+    ],
+  ] as const) {
+    const altered = fixture();
+    edit(
+      step(
+        altered,
+        "windows-media",
+        "Windows media guard acceptance (KEL-132)",
+      ),
+    );
+    expect(() => check(altered), label).toThrow(
+      "Windows media acceptance step",
+    );
+  }
+});
+
+test("Windows media rejects unreviewed path and environment writers", () => {
+  const inventoryError =
+    "Windows media reviewed step inventory/order must not acquire unreviewed executable or environment writers";
+  for (const variable of ["GITHUB_PATH", "GITHUB_ENV"]) {
+    const f = fixture();
+    const steps = f.jobs["windows-media"]!.steps;
+    const acceptance = steps.findIndex(
+      (candidate) =>
+        candidate.name === "Windows media guard acceptance (KEL-132)",
+    );
+    expect(acceptance).toBeGreaterThan(0);
+    steps.splice(acceptance, 0, {
+      name: "Unreviewed Windows media prelude",
+      run: 'echo /tmp/harmless >> "$' + variable + '"',
+    });
+    expect(() => check(f), variable).toThrow(inventoryError);
+  }
+  const changed = fixture();
+  changed.jobs["windows-media"]!.steps[0]!.env = {
+    PATH: "C:\\unreviewed",
+  };
+  expect(() => check(changed), "checkout environment").toThrow(inventoryError);
+});
+
+test("both Nextest installers pin 0.9.149 and reject unpinned or downgraded releases", () => {
+  for (const [jobName, reviewed, unpinned, previous] of [
+    [
+      "check",
+      "nextest@0.9.149,just@1.58.0",
+      "nextest,just@1.58.0",
+      "nextest@0.9.148,just@1.58.0",
+    ],
+    ["windows-media", "nextest@0.9.149", "nextest", "nextest@0.9.148"],
+  ] as const) {
+    const clean = fixture();
+    const installer = clean.jobs[jobName]!.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+    );
+    expect(installer).toBeDefined();
+    expect(installer!.uses).toBe(
+      "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+    );
+    expect((installer!.with as Step).tool).toBe(reviewed);
+    expect((installer!.with as Step).fallback).toBe("none");
+    expect(() => check(clean)).not.toThrow();
+
+    // v2.87.29 cannot resolve 0.9.149 from its embedded manifest.
+    const oldAction = fixture();
+    const staleInstaller = oldAction.jobs[jobName]!.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+    )!;
+    staleInstaller.uses =
+      "taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283";
+    expect(() => check(oldAction)).toThrow("reviewed immutable action refs");
+
+    for (const rejected of [
+      unpinned,
+      previous,
+      jobName === "check" ? "nextest@9999.0.0,just@1.58.0" : "nextest@9999.0.0",
+    ]) {
+      const altered = fixture();
+      const downgraded = altered.jobs[jobName]!.steps.find((candidate) =>
+        String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+      )!;
+      (downgraded.with as Step).tool = rejected;
+      expect(() => check(altered), `${jobName}: ${rejected}`).toThrow(
+        "reviewed taiki installer inputs",
+      );
+    }
+  }
+});
+
+test("Nextest version verifier is mandatory on both native runner jobs", () => {
+  const expected =
+    "cargo nextest --version | grep -E '^cargo-nextest 0[.]9[.]149 [(]'";
+  for (const jobName of ["check", "windows-media"] as const) {
+    const clean = fixture();
+    const steps = clean.jobs[jobName]!.steps;
+    const installer = steps.findIndex((step) =>
+      String(step.uses ?? "").startsWith("taiki-e/install-action@"),
+    );
+    const verifier = steps[installer + 1];
+    expect(verifier?.name).toBe("Verify cargo-nextest 0.9.149");
+    expect(verifier?.shell).toBe("bash");
+    expect(verifier?.run).toBe(expected);
+    expect(() => check(clean)).not.toThrow();
+    for (const mutation of [
+      "removed",
+      "changed",
+      "skipped",
+      "ignored",
+      "moved",
+    ] as const) {
+      const altered = fixture();
+      const mutated = altered.jobs[jobName]!.steps;
+      const index = mutated.findIndex(
+        (step) => step.name === "Verify cargo-nextest 0.9.149",
+      );
+      if (mutation === "removed") mutated.splice(index, 1);
+      if (mutation === "changed")
+        mutated[index]!.run = "echo cargo-nextest 0.9.149";
+      if (mutation === "skipped") mutated[index]!.if = false;
+      if (mutation === "ignored") mutated[index]!["continue-on-error"] = true;
+      if (mutation === "moved")
+        mutated.splice(index + 2, 0, ...mutated.splice(index, 1));
+      expect(() => check(altered), `${jobName}/${mutation}`).toThrow();
+    }
+  }
+});
+
+test("both Nextest installers refuse unreviewed tools and integrity overrides", () => {
+  for (const jobName of ["check", "windows-media"] as const) {
+    const clean = fixture();
+    const actual = clean.jobs[jobName]!.steps.find((candidate) =>
+      String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+    );
+    expect(actual).toBeDefined();
+    expect(() => check(clean)).not.toThrow();
+    for (const [name, edit] of [
+      [
+        "checksum disabled",
+        (inputs: Record<string, unknown>) => {
+          inputs.checksum = false;
+        },
+      ],
+      [
+        "fallback to cargo-binstall",
+        (inputs: Record<string, unknown>) => {
+          inputs.fallback = "cargo-binstall";
+        },
+      ],
+      [
+        "fallback to cargo-install",
+        (inputs: Record<string, unknown>) => {
+          inputs.fallback = "cargo-install";
+        },
+      ],
+      [
+        "unreviewed tool",
+        (inputs: Record<string, unknown>) => {
+          inputs.tool = "cargo-hack";
+        },
+      ],
+    ] as const) {
+      const altered = fixture();
+      const installer = altered.jobs[jobName]!.steps.find((candidate) =>
+        String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+      )!;
+      edit(installer.with as Record<string, unknown>);
+      expect(() => check(altered), `${jobName}: ${name}`).toThrow(
+        "reviewed taiki installer inputs",
+      );
+    }
+  }
+});
+
+test("required native main gates cannot skip, swallow failures or inherit unsafe environment", () => {
+  const mutations: Array<[string, (workflow: Fixture) => void]> = [
+    [
+      "native tests skipped",
+      (f) => {
+        step(f, "check", "test").if = false;
+      },
+    ],
+    [
+      "Clippy skipped",
+      (f) => {
+        step(f, "check", "clippy (warnings deny)").if = false;
+      },
+    ],
+    [
+      "native test ignores failure",
+      (f) => {
+        step(f, "check", "test")["continue-on-error"] = true;
+      },
+    ],
+    [
+      "native test shell overridden",
+      (f) => {
+        step(f, "check", "test").shell = "bash -c true {0}";
+      },
+    ],
+    [
+      "native test script swallowed",
+      (f) => {
+        step(f, "check", "test").run =
+          "echo cargo nextest run --profile ci --no-tests=pass";
+      },
+    ],
+    [
+      "Clippy script swallowed",
+      (f) => {
+        step(f, "check", "clippy (warnings deny)").run =
+          "echo cargo clippy -- -D warnings";
+      },
+    ],
+    [
+      "native step BASH_ENV",
+      (f) => {
+        (step(f, "check", "test").env as Step).BASH_ENV = "./untrusted.sh";
+      },
+    ],
+    [
+      "Clippy step BASH_ENV",
+      (f) => {
+        (step(f, "check", "clippy (warnings deny)").env as Step).BASH_ENV =
+          "./untrusted.sh";
+      },
+    ],
+    [
+      "native step PATH",
+      (f) => {
+        (step(f, "check", "test").env as Step).PATH = "/tmp/untrusted";
+      },
+    ],
+    [
+      "native job BASH_ENV",
+      (f) => {
+        (f.jobs.check!.env as Step).BASH_ENV = "./untrusted.sh";
+      },
+    ],
+    [
+      "native job PATH",
+      (f) => {
+        (f.jobs.check!.env as Step).PATH = "/tmp/untrusted";
+      },
+    ],
+    [
+      "media job PATH",
+      (f) => {
+        f.jobs["windows-media"]!.env = { PATH: "C:\\untrusted" };
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), label).toThrow();
+  }
+});
+
+test("native check rejects unreviewed steps or environment writers before Clippy and Nextest", () => {
+  for (const variable of ["GITHUB_PATH", "GITHUB_ENV", "BASH_ENV"]) {
+    const f = fixture();
+    const steps = f.jobs.check!.steps;
+    const clippy = steps.findIndex(
+      (item) => item.name === "clippy (warnings deny)",
+    );
+    expect(clippy).toBeGreaterThan(0);
+    steps.splice(clippy, 0, {
+      name: "Unreviewed environment writer",
+      run: `printf '%s\\n' /tmp/harmless >> "$${variable}"`,
+    });
+    expect(() => check(f), variable).toThrow(
+      "native check reviewed step inventory",
+    );
+  }
+  const changed = fixture();
+  step(changed, "check", "Worktree cache tool native tests").run +=
+    '\nprintf "%s\\n" /tmp/harmless >> "$GITHUB_PATH"\n';
+  expect(() => check(changed)).toThrow("native check reviewed step inventory");
+});
+
+test("native jobs reject missing, duplicate or delayed reviewed Nextest installers", () => {
+  for (const jobName of ["check", "windows-media"] as const) {
+    for (const kind of ["missing", "duplicate", "delayed"] as const) {
+      const altered = fixture();
+      const steps = altered.jobs[jobName]!.steps;
+      const index = steps.findIndex((candidate) =>
+        String(candidate.uses ?? "").startsWith("taiki-e/install-action@"),
+      );
+      expect(index).toBeGreaterThan(0);
+      const installer = steps[index]!;
+      if (kind === "missing") steps.splice(index, 1);
+      if (kind === "duplicate")
+        steps.splice(index, 0, structuredClone(installer));
+      if (kind === "delayed") {
+        steps.splice(index, 1);
+        steps.push(installer);
+      }
+      const reason =
+        kind === "delayed"
+          ? "reviewed taiki installer must precede"
+          : "must contain exactly one reviewed taiki installer";
+      expect(() => check(altered), `${jobName}: ${kind}`).toThrow(reason);
+    }
+  }
+});
+
 test("Windows media oracle matches its reviewed full-file digest", () => {
   expect(() => checkWindowsMediaOracle(windowsMediaOracle)).not.toThrow();
   const mutated = Buffer.concat([
@@ -518,9 +1868,80 @@ test("Windows media oracle matches its reviewed full-file digest", () => {
 
 const codeqlJobs = codeqlLanguages.map((language) => `codeql-${language}`);
 
+test("CodeQL Rust stays on hosted macOS for platform-specific semantic coverage", () => {
+  expect(fixture().jobs["codeql-rust"]!["runs-on"]).toBe("macos-latest");
+  for (const runner of [
+    "ubuntu-24.04",
+    "ubuntu-latest",
+    "self-hosted",
+    "${{ matrix.os }}",
+  ]) {
+    const f = fixture();
+    f.jobs["codeql-rust"]!["runs-on"] = runner;
+    expect(() => check(f)).toThrow("CodeQL Rust must use macos-latest");
+  }
+});
+
 for (const language of codeqlLanguages) {
   const job = `codeql-${language}`;
   const other = codeqlLanguages.find((candidate) => candidate !== language)!;
+
+  test(`CodeQL ${language} rejects extra executable steps and job environment overrides`, () => {
+    const injected = fixture();
+    injected.jobs[job]!.steps.splice(-1, 0, {
+      name: "Unreviewed command",
+      run: "echo harmless",
+    });
+    expect(() => check(injected)).toThrow("CodeQL reviewed step inventory");
+    const env = fixture();
+    env.jobs[job]!.env = { BASH_ENV: "./unreviewed.sh" };
+    expect(() => check(env)).toThrow("CodeQL job environment");
+    const runner = fixture();
+    runner.jobs[job]!["runs-on"] = "self-hosted";
+    expect(() => check(runner)).toThrow(
+      language === "rust"
+        ? "CodeQL Rust must use macos-latest"
+        : "CodeQL job runner",
+    );
+  });
+
+  test(`CodeQL ${language} cannot tolerate job-level analysis failures`, () => {
+    for (const value of [true, false, "${{ true }}"]) {
+      const f = fixture();
+      f.jobs[job]!["continue-on-error"] = value;
+      expect(() => check(f)).toThrow(
+        `CodeQL job ${job} must fail on analyzer errors`,
+      );
+    }
+  });
+
+  test(`CodeQL ${language} init and analyze must use an identical immutable SHA`, () => {
+    const f = fixture();
+    const init = step(f, job, "Initialize CodeQL");
+    const analyze = step(f, job, "Analyze and upload CodeQL results");
+    expect(String(init.uses)).toMatch(
+      /^github\/codeql-action\/init@[0-9a-f]{40}$/,
+    );
+    expect(String(analyze.uses)).toBe(
+      String(init.uses).replace("/init@", "/analyze@"),
+    );
+    analyze.uses = `github/codeql-action/analyze@${"0".repeat(40)}`;
+    expect(() => check(f)).toThrow(
+      "CodeQL init and analyze must use the same pinned commit",
+    );
+  });
+
+  test(`CodeQL ${language} rejects uniformly changed unreviewed pinned actions`, () => {
+    const f = fixture();
+    const init = step(f, job, "Initialize CodeQL");
+    const analyze = step(f, job, "Analyze and upload CodeQL results");
+    const unreviewedSha = "0".repeat(40);
+    init.uses = `github/codeql-action/init@${unreviewedSha}`;
+    analyze.uses = `github/codeql-action/analyze@${unreviewedSha}`;
+    expect(() => check(f)).toThrow(
+      "CodeQL init and analyze must use the reviewed pinned commit",
+    );
+  });
 
   test(`CodeQL cannot omit the ${language} job`, () => {
     const f = fixture();
@@ -636,31 +2057,160 @@ test("apt timeout reads the parsed run script, not names or layout", () => {
     f.jobs.check!.steps.push({ name: "Install a tool", run });
     expect(() => check(f)).toThrow("runs apt without step timeout-minutes");
   }
-  // Negative controls: a name that mentions apt-get, a flow-mapped step with a
-  // timeout, a quoted timeout and an unrelated word do not fail.
+  // Negative controls in unfrozen jobs: benign apt-like names, flow mapping,
+  // quoted timeouts, and unrelated words must not trigger the apt guard.
   const named = fixture();
-  named.jobs.fmt!.steps.push({
+  named.jobs["linux-gui-smoke"]!.steps.push({
     name: "Diagnose apt-get mirror",
     run: "echo ok\n",
   });
   expect(() => check(named)).not.toThrow();
-  expect(() =>
-    checkWorkflowSecurity(
-      source.replace(
-        "      - name: clippy (warnings deny)\n",
-        "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n      - name: clippy (warnings deny)\n",
-      ),
-    ),
-  ).not.toThrow();
+  const flowMarker = "      - name: Build Linux media guard probe\n";
+  const flowed = source.replace(
+    flowMarker,
+    "      - { run: 'sudo apt-get install -y jq', timeout-minutes: 15 }\n" +
+      flowMarker,
+  );
+  expect(flowed).not.toBe(source);
+  expect(() => checkWorkflowSecurity(flowed)).not.toThrow();
   const quoted = fixture();
-  quoted.jobs.check!.steps.push({
+  quoted.jobs["linux-gui-smoke"]!.steps.push({
     run: "sudo apt-get install -y jq\n",
     "timeout-minutes": "15",
   });
   expect(() => check(quoted)).not.toThrow();
   const unrelated = fixture();
-  unrelated.jobs.fmt!.steps.push({ run: "echo adapter aptitude\n" });
+  unrelated.jobs["linux-gui-smoke"]!.steps.push({
+    run: "echo adapter aptitude\n",
+  });
   expect(() => check(unrelated)).not.toThrow();
+});
+
+const b3MainSaveIf =
+  "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
+const b3BunNoCache =
+  "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}";
+const b3BunJobs = ["check", "bun-test", "hygiene"] as const;
+
+function b3BunAction(f: Fixture, jobName: string): Step {
+  const actions = f.jobs[jobName]!.steps.filter((step) =>
+    String(step.uses ?? "")
+      .toLowerCase()
+      .startsWith("oven-sh/setup-bun@"),
+  );
+  expect(actions.length, jobName).toBe(1);
+  return actions[0]!;
+}
+
+test("B3 Bun action post-cache save is disabled for every PR and non-main push", () => {
+  for (const job of b3BunJobs) {
+    const action = b3BunAction(fixture(), job);
+    expect((action.with as Step)["no-cache"], job).toBe(b3BunNoCache);
+    for (const unsafe of [
+      undefined,
+      false,
+      "false",
+      "${{ github.event_name != 'pull_request' }}",
+      "${{ github.ref != 'refs/heads/main' }}",
+      "${{ github.event_name != 'push' }}",
+    ]) {
+      const f = fixture();
+      const inputs = b3BunAction(f, job).with as Step;
+      if (unsafe === undefined) delete inputs["no-cache"];
+      else inputs["no-cache"] = unsafe;
+      expect(() => check(f), `${job} ${String(unsafe)}`).toThrow(
+        "B3 Bun cache must be disabled outside protected-main pushes",
+      );
+    }
+  }
+});
+
+test("B3 Bun setup ownership rejects duplicated and rogue post-cache savers", () => {
+  const duplicate = fixture();
+  duplicate.jobs.hygiene!.steps.push({ ...b3BunAction(duplicate, "hygiene") });
+  expect(() => check(duplicate)).toThrow(
+    "B3 Bun cache setup must appear exactly once",
+  );
+  const rogue = fixture();
+  rogue.jobs.fmt!.steps.push({ ...b3BunAction(rogue, "check") });
+  expect(() => check(rogue)).toThrow("B3 Bun cache action not approved in job");
+});
+
+const b3RustCacheJobs = [
+  "check",
+  "windows-media",
+  "doctest",
+  "linux-gui-smoke",
+  "msrv",
+  "deny",
+] as const;
+
+function b3CacheStep(f: Fixture, jobName: string): Step {
+  const steps = f.jobs[jobName]!.steps.filter((candidate) =>
+    String(candidate.uses ?? "")
+      .toLowerCase()
+      .startsWith("swatinem/rust-cache@"),
+  );
+  expect(steps.length, jobName).toBe(1);
+  return steps[0]!;
+}
+
+test("B3 Cargo cache writes are restricted to trusted protected-main pushes", () => {
+  for (const job of b3RustCacheJobs) {
+    const f = fixture();
+    const cache = b3CacheStep(f, job);
+    const inputs = cache.with as Step;
+    expect(inputs["save-if"], job).toBe(b3MainSaveIf);
+    for (const unsafe of [
+      undefined,
+      "true",
+      "${{ github.event_name == 'push' }}",
+      "${{ github.ref == 'refs/heads/main' }}",
+      "${{ github.event_name != 'pull_request' }}",
+    ]) {
+      const mutated = fixture();
+      const inputs = b3CacheStep(mutated, job).with as Step;
+      if (unsafe === undefined) delete inputs["save-if"];
+      else inputs["save-if"] = unsafe;
+      expect(() => check(mutated), `${job}: ${unsafe}`).toThrow(
+        "B3 Cargo cache save must require trusted protected-main push",
+      );
+    }
+    const duplicate = fixture();
+    duplicate.jobs[job]!.steps.push({ ...b3CacheStep(duplicate, job) });
+    expect(() => check(duplicate), job).toThrow(
+      job === "deny"
+        ? "jobs.deny must run exactly"
+        : "B3 Cargo cache action must appear exactly once in its reviewed job",
+    );
+  }
+  const moved = fixture();
+  moved.jobs.fmt!.steps.push({
+    uses: b3CacheStep(moved, "check").uses,
+    with: { "save-if": b3MainSaveIf },
+  });
+  expect(() => check(moved)).toThrow(
+    "rustfmt must not restore or save a compiled Cargo cache",
+  );
+});
+
+test("B3 signed WebKitGTK caches save only on a miss during protected-main push", () => {
+  for (const job of webkitgtkAptJobs) {
+    const f = fixture();
+    const save = step(f, job, "Save WebKitGTK .deb cache");
+    expect(String(save.if), job).toContain(
+      "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+    );
+    const weakened = fixture();
+    const saveStep = step(weakened, job, "Save WebKitGTK .deb cache");
+    saveStep.if = String(saveStep.if).replace(
+      " && github.event_name == 'push' && github.ref == 'refs/heads/main'",
+      "",
+    );
+    expect(() => check(weakened), job).toThrow(
+      "B3 WebKitGTK cache save must require trusted protected-main push",
+    );
+  }
 });
 
 for (const job of webkitgtkAptJobs) {
@@ -852,6 +2402,33 @@ test("pull_request_target workflows never check out or run pull-request code", (
       "x.yml",
     ),
   ).not.toThrow();
+});
+
+test("B3 low-trust pull_request_target forbids workflow and job cache-mode overrides", () => {
+  for (const mode of ["write", "write-only", "${{ inputs.cache_mode }}"]) {
+    const workflow = Bun.YAML.parse(keldbot) as Record<string, unknown> & {
+      jobs: Record<string, Record<string, unknown>>;
+    };
+    workflow["cache-mode"] = mode;
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(
+          Bun.YAML.stringify(workflow),
+          "keldbot.yml",
+        ),
+      `workflow ${mode}`,
+    ).toThrow("cache-mode");
+    const perJob = Bun.YAML.parse(keldbot) as typeof workflow;
+    perJob.jobs[Object.keys(perJob.jobs)[0]!]!["cache-mode"] = mode;
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(
+          Bun.YAML.stringify(perJob),
+          "keldbot.yml",
+        ),
+      `job ${mode}`,
+    ).toThrow("cache-mode");
+  }
 });
 
 test("no other step may use actions/cache, so apt index lists are never cached", () => {
@@ -1056,7 +2633,10 @@ test("the deny job admits no Docker action, including the former cargo-deny-acti
       0,
       { uses, with: { command: "check" } },
     );
-    expect(() => check(f), uses).toThrow("jobs.deny must run exactly");
+    const reason = uses.startsWith("taiki-e/")
+      ? "taiki installer is not approved in jobs.deny"
+      : "jobs.deny must run exactly";
+    expect(() => check(f), uses).toThrow(reason);
   }
   const missing = fixture();
   delete missing.jobs.deny;
@@ -1095,7 +2675,7 @@ test("nothing in the deny job can replace or redirect the verified binary", () =
   // The policy must read the event's own tree, not another ref.
   const ref = fixture();
   (ref.jobs.deny!.steps[0]!.with as Step).ref = "main";
-  expect(() => check(ref)).toThrow("jobs.deny checkout");
+  expect(() => check(ref)).toThrow("event-owned checkout");
 });
 
 for (const style of ["block", "flow", "alias"] as const) {
@@ -1113,7 +2693,12 @@ for (const style of ["block", "flow", "alias"] as const) {
         "      - name: Initialize CodeQL\n",
         inserted + "      - name: Initialize CodeQL\n",
       );
-      if (secure) expect(() => checkWorkflowSecurity(mutated)).not.toThrow();
+      // Credentials-disabled alone is insufficient for a privileged CodeQL
+      // job: every additional step must also be reviewed and inventoried.
+      if (secure)
+        expect(() => checkWorkflowSecurity(mutated)).toThrow(
+          "CodeQL reviewed step inventory",
+        );
       else
         expect(() => checkWorkflowSecurity(mutated)).toThrow(
           "persist-credentials: false",
@@ -1145,6 +2730,78 @@ test("every checkout must be protected; one secure step cannot mask another", ()
   expect(checked).toBeGreaterThan(1);
 });
 
+test("every CI checkout must use the event-owned repository and source tree", () => {
+  const workflow = fixture();
+  const forbiddenInputs: Array<[string, unknown]> = [
+    ["ref", "refs/heads/main"],
+    ["repository", "untrusted/keld"],
+    ["path", "other-checkout"],
+    ["sparse-checkout", "tools/**"],
+    ["filter", "blob:none"],
+    ["submodules", true],
+    ["token", "unreviewed-token"],
+    ["ssh-key", "unreviewed-key"],
+    ["clean", false],
+    ["fetch-depth", 1],
+  ];
+  let checked = 0;
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    for (const [index, candidate] of job.steps.entries()) {
+      if (
+        typeof candidate.uses !== "string" ||
+        !candidate.uses.toLowerCase().startsWith("actions/checkout@")
+      )
+        continue;
+      for (const [input, value] of forbiddenInputs) {
+        const mutated = fixture();
+        (mutated.jobs[jobName]!.steps[index]!.with as Step)[input] = value;
+        expect(() => check(mutated), jobName + " checkout " + input).toThrow(
+          "event-owned checkout",
+        );
+      }
+      checked++;
+    }
+  }
+  expect(checked).toBeGreaterThan(10);
+});
+
+test("flow-style and aliased checkouts cannot select another source", () => {
+  const examples: Array<[string, string]> = [
+    [
+      "flow ref",
+      "      - { uses: '" +
+        checkout +
+        "', with: { persist-credentials: false, ref: refs/heads/main } }\n",
+    ],
+    [
+      "flow repository",
+      "      - { uses: '" +
+        checkout +
+        "', with: { persist-credentials: false, repository: untrusted/keld } }\n",
+    ],
+    [
+      "aliased ref",
+      "      - &source_checkout { uses: '" +
+        checkout +
+        "', with: { persist-credentials: false, ref: refs/heads/main } }\n      - *source_checkout\n",
+    ],
+    [
+      "case and path alias",
+      "      - { uses: 'Actions/Checkout/.@3d3c42e5aac5ba805825da76410c181273ba90b1', with: { persist-credentials: false, path: other-checkout } }\n",
+    ],
+  ];
+  for (const [label, inserted] of examples) {
+    const mutated = source.replace(
+      "      - name: Initialize CodeQL\n",
+      inserted + "      - name: Initialize CodeQL\n",
+    );
+    expect(mutated, label + " mutation applied").not.toBe(source);
+    expect(() => checkWorkflowSecurity(mutated), label).toThrow(
+      "event-owned checkout",
+    );
+  }
+});
+
 test("checkout repository case and subpaths cannot bypass its policy", () => {
   for (const name of ["ACTIONS/CHECKOUT", "Actions/Checkout/."]) {
     for (const protectedCheckout of [true, false]) {
@@ -1153,7 +2810,8 @@ test("checkout repository case and subpaths cannot bypass its policy", () => {
         uses: `${name}@3d3c42e5aac5ba805825da76410c181273ba90b1`,
         with: { "persist-credentials": !protectedCheckout },
       });
-      if (protectedCheckout) expect(() => check(f)).not.toThrow();
+      if (protectedCheckout)
+        expect(() => check(f)).toThrow("CodeQL reviewed step inventory");
       else expect(() => check(f)).toThrow("persist-credentials: false");
     }
   }
