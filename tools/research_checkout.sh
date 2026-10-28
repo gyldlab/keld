@@ -92,7 +92,7 @@ push_research() {
         exit 1
     }
     if ! research_origin_ok "$origin"; then
-        echo "error: research-push: refusing ? origin is not 0monish/keld-research (HTTPS or SSH). Fix remote; Keld parent untouched." >&2
+        echo "error: research-push: refusing — origin is not 0monish/keld-research (HTTPS or SSH). Fix remote; Keld parent untouched." >&2
         exit 1
     fi
 
@@ -103,7 +103,7 @@ push_research() {
         exit 1
     }
     if [[ -z "$push_origin" || "$push_origin" == *$'\n'* ]] || ! research_origin_ok "$push_origin"; then
-        echo "error: research-push: refusing ? origin push URL is not one exact 0monish/keld-research destination. Fix remote; Keld parent untouched." >&2
+        echo "error: research-push: refusing — origin push URL is not one exact 0monish/keld-research destination. Fix remote; Keld parent untouched." >&2
         exit 1
     fi
     branch="$(git -C "$DEST" symbolic-ref --quiet --short HEAD 2>/dev/null)" || {

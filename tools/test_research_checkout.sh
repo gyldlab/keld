@@ -146,7 +146,7 @@ before_calls="$(wc -l < "$KELD_GIT_CALLS" | tr -d ' ')"
 "$REAL_GIT" -C "$DEST" remote set-url origin "$credential_origin"
 run push "$PARENT" credentialed-origin-refusal
 [[ "$status" == 1 ]]
-grep -Fq 'refusing' "$TMP_ROOT/stderr"
+grep -Fq 'refusing — origin is not' "$TMP_ROOT/stderr"
 if grep -Fq "$synthetic_secret" "$TMP_ROOT/stdout" "$TMP_ROOT/stderr"; then
     echo 'FAIL: rejected origin printed credentials' >&2
     exit 1
@@ -155,7 +155,7 @@ fi
 "$REAL_GIT" -C "$DEST" config remote.origin.pushurl "$credential_origin"
 run push "$PARENT" credentialed-pushurl-refusal
 [[ "$status" == 1 ]]
-grep -Fq 'origin push URL' "$TMP_ROOT/stderr"
+grep -Fq 'refusing — origin push URL' "$TMP_ROOT/stderr"
 if grep -Fq "$synthetic_secret" "$TMP_ROOT/stdout" "$TMP_ROOT/stderr"; then
     echo 'FAIL: rejected origin push URL printed credentials' >&2
     exit 1
