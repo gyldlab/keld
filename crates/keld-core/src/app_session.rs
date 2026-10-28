@@ -177,6 +177,8 @@ const DIGEST_PREFIX: &str = "sha256:";
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
+#[cfg(any(target_os = "macos", windows))]
+const NATIVE_WINDOW_FACADE_ENV: &str = "KELD_NATIVE_WINDOW_FACADE";
 #[cfg(windows)]
 const WINDOWS_DEV_STAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
@@ -2389,7 +2391,7 @@ fn run_app(
         // an unsubscribed or non-primary window CALL. Overwrite inherited values
         // for renderer boots so callers cannot force a facade Ready barrier.
         .env(
-            "KELD_NATIVE_WINDOW_FACADE",
+            NATIVE_WINDOW_FACADE_ENV,
             if ready_trigger == AppReadyTrigger::HostInitialized {
                 "1"
             } else {
@@ -3361,6 +3363,9 @@ fn windows_primary_config(
         .arg("run")
         .arg(root.join(entry_path))
         .current_dir(root)
+        // This boot path owns a legacy renderer; inherited Host hints cannot
+        // select the facade subscription barrier in any Bun generation.
+        .env(NATIVE_WINDOW_FACADE_ENV, "0")
         .env_remove(DEV_LEASE_ENV)
         .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV);
     #[cfg(debug_assertions)]
