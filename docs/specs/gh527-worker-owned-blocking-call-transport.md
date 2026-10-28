@@ -1502,8 +1502,25 @@ W1 is a Windows production defect tracked by #1073, whose completion check is th
     every CPU busy (table above).
 - **Unix by OS fact.** `quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it`:
   a named pipe has no half-close.
-- **Unknown on Windows.** `retire_answers_are_bounded_when_the_peer_stops_reading`: its
-  oracle counts the exact bytes a nonblocking Unix send buffer accepted, and the
-  standard library has no nonblocking named pipe. The bound is the same
-  `write_best_effort_answers` code on Windows, but there is no Windows evidence for
-  it.
+- **Windows case (#1073).** `retire_answers_are_bounded_when_the_peer_stops_reading` has
+  a Windows case of the same name. The Unix oracle does not carry over, for two reasons.
+  The standard library has no nonblocking named pipe. And an app-link deadline is per
+  handle on Windows, so a getter on a clone is not an oracle (`AppLinkDeadlines`).
+  The Windows case therefore works as follows:
+  - It fills the host-to-role direction with pattern bytes, under a short write
+    deadline, until a write cannot complete while nothing reads.
+  - A test-only witness in `write_best_effort_answers` (`cfg(all(test, windows))`) reads
+    the deadline on the writer itself before each answer. A duration assertion would
+    break the anti-flake rule in §7.
+  - It asserts that the one 023 ran under `HOST_ANSWER_BUDGET`, that retirement
+    succeeds and closes the link, and that the role reads exactly the accepted pattern
+    bytes (65,536, the pipe quota), then the close.
+
+  Negative controls, each applied alone:
+  - Leaving the writer's deadline in place records `APP_LINK_IO_DEADLINE`, and the
+    retirement is held for about 5 s.
+  - The old `DisconnectNamedPipe` close delivers 0 of the 65,536 queued bytes.
+  - A fill that stops at 32,769 bytes lets the 023 fit, and the role reads its 313
+    bytes after the pattern.
+
+  Native Windows 11 build 26300 with 16 busy loops on 16 logical CPUs: 20 of 20 pass.
