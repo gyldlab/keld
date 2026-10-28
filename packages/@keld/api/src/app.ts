@@ -7,7 +7,13 @@
  */
 import { dispatchApplicationCall } from "./channels.ts";
 import { LifecycleLink } from "./link.ts";
-import { linkError } from "../../kipc/src/transport.ts";
+import {
+  linkError,
+  stateMap,
+  stateMapDelete,
+  stateMapSet,
+  stateMapValues,
+} from "../../kipc/src/transport.ts";
 import type {
   WindowEvent,
   WindowRef,
@@ -50,7 +56,7 @@ let linkPromise: Promise<LifecycleLink> | undefined;
 let connectedLink: LifecycleLink | undefined;
 
 let nextListenerId = 1;
-const lastWindowClosedListeners = new Map<number, () => void>();
+const lastWindowClosedListeners = stateMap<number, () => void>();
 const windowFactListeners = new Set<(fact: WindowEvent) => void>();
 const deliveredWindowCloses = new WindowCloseReceipts();
 const readyWindowCatchUps = new Set<() => void>();
@@ -116,8 +122,9 @@ function safelyCatchUpWindow(catchUp: () => void): void {
 }
 
 function onLastWindowClosed(): void {
-  const snapshot = [...lastWindowClosedListeners.values()];
-  for (const listener of snapshot) {
+  const snapshot = stateMapValues(lastWindowClosedListeners);
+  for (let index = 0; index < snapshot.length; index += 1) {
+    const listener = snapshot[index]!;
     try {
       listener();
     } catch {
@@ -229,12 +236,12 @@ export const app: AppLifecycle = {
   onLastWindowClosed(listener: () => void): Unsubscribe {
     const id = nextListenerId;
     nextListenerId += 1;
-    lastWindowClosedListeners.set(id, listener);
+    stateMapSet(lastWindowClosedListeners, id, listener);
     let active = true;
     return () => {
       if (!active) return;
       active = false;
-      lastWindowClosedListeners.delete(id);
+      stateMapDelete(lastWindowClosedListeners, id);
     };
   },
 

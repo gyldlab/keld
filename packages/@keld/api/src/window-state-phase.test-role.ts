@@ -11,6 +11,7 @@ import {
   stateMap,
   stateMapGet,
   stateMapSet,
+  nativeFacadeBootSelected,
 } from "../../kipc/src/transport.ts";
 const mode = process.argv[2];
 let state: (bytes: Uint8Array) => void = () => {
@@ -64,7 +65,8 @@ if (mode === "lifecycle-length") {
       }),
     },
   }));
-  process.env.KELD_NATIVE_WINDOW_FACADE = "0";
+  if (nativeFacadeBootSelected)
+    throw new Error("expected legacy launch selection");
   const { LifecycleLink } = await import("./link.ts");
   const session = await LifecycleLink.connect("controlled", {
     onReady() {},

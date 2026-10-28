@@ -25,7 +25,11 @@ mock.module("../../kipc/src/transport.ts", () => ({
   ...transport,
   WorkerLink: { open: async () => worker },
 }));
-process.env.KELD_NATIVE_WINDOW_FACADE = "1";
+assert.equal(
+  transport.nativeFacadeBootSelected,
+  true,
+  "launch-selected native mode",
+);
 const { LifecycleLink } = await import("./link.ts");
 const emitted: string[] = [];
 const session = await LifecycleLink.connect("controlled-link", {

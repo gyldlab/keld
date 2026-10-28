@@ -114,6 +114,7 @@ app.on("window-all-closed", () => {}); // preserve Host session for native censu
 let readyCount = 0;
 app.on("ready", () => { readyCount += 1; });
 const early = app.isReady();
+await earlyQuit;
 await app.whenReady();
 for (const prefs of [
   { nodeIntegration: true },
@@ -134,10 +135,36 @@ for (const prefs of [
     throw new Error("unsafe webPreferences reached native Create or bypassed triage");
   }
 }
-const win = new BrowserWindow({
-  width: 640, height: 480,
-  webPreferences: { contextIsolation: true, nodeIntegration: false, webSecurity: true },
-});
+// A successful native Create must publish its wrapper without consulting the
+// application-realm Map membership method after the Host effect commits.
+const originalMapHas = Map.prototype.has;
+const originalWindowCall = LifecycleLink.prototype.callWindowBlocking;
+let membershipHooks = 0;
+let observedNativeCreate = false;
+let win: InstanceType<typeof BrowserWindow>;
+LifecycleLink.prototype.callWindowBlocking = function (request) {
+  const response = Reflect.apply(originalWindowCall, this, [request]);
+  if (request.variant === "Create" && response.variant === "Created") {
+    observedNativeCreate = true;
+    Map.prototype.has = function () {
+      membershipHooks += 1;
+      throw new Error("application Map.has entered native-window publication");
+    };
+  }
+  return response;
+};
+try {
+  win = new BrowserWindow({
+    width: 640, height: 480,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, webSecurity: true },
+  });
+} finally {
+  Map.prototype.has = originalMapHas;
+  LifecycleLink.prototype.callWindowBlocking = originalWindowCall;
+}
+if (!observedNativeCreate || membershipHooks !== 0) {
+  throw new Error("native Create was not published without an application membership hook");
+}
 if (early || !app.isReady() || readyCount !== 1) {
   throw new Error("native Ready/Subscribe completion barrier failed");
 }
@@ -485,6 +512,12 @@ fn stage_electron(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
     .expect("absolute Electron import");
     let app = serde_json::to_string(&repo.join("packages/@keld/api/src/app.ts").to_string_lossy())
         .expect("absolute API import");
+    let api_link = serde_json::to_string(
+        &repo
+            .join("packages/@keld/api/src/link.ts")
+            .to_string_lossy(),
+    )
+    .expect("absolute lifecycle adapter import");
     let transport = serde_json::to_string(
         &repo
             .join("packages/@keld/kipc/src/transport.ts")
@@ -510,8 +543,16 @@ fn stage_electron(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
     let source = format!(
         "import {{ assertStatePhase }} from \"./state-phase-probe.ts\";\n\
          import \"./state-phase-observer.ts\";\n\
-         import {{ app, BrowserWindow }} from {electron};\n\
-         import {{ getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow }} from {app};\n{ELECTRON_WINDOW_ROLE}"
+         import {{ getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow }} from {app};\n\
+         import {{ LifecycleLink }} from {api_link};\n\
+         delete process.env.KELD_NATIVE_WINDOW_FACADE;\n\
+         const {{ app, BrowserWindow }} = await import({electron});\n\
+         if (app.isReady()) throw new Error(\"native pre-import Quit probe missed pre-Ready boundary\");\n\
+         const earlyQuit = app.quit().then(() => {{\n\
+           throw new Error(\"pre-import environment deletion authorized forceful native Quit\");\n\
+         }}, (error) => {{\n\
+           if (!(error instanceof Error) || !error.message.startsWith(\"KELD-COMPAT-012:\")) throw error;\n\
+         }});\n{ELECTRON_WINDOW_ROLE}"
     );
     crate::renderer_bridge::bundle_public_api_entry(
         &fixture.project,

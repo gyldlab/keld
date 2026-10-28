@@ -41,7 +41,12 @@ for (const mode of [
         join(import.meta.dir, "window-state-phase.test-role.ts"),
         mode,
       ],
-      { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+      {
+        env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "0" },
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+      },
     );
     const [exit, stdout, stderr] = await Promise.all([
       child.exited,

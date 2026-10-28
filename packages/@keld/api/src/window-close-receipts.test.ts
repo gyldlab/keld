@@ -73,3 +73,44 @@ test("Veto ack arriving before retained Created/CloseRequested dispatch suppress
   });
   expect(pending()).toEqual([]);
 });
+
+// Poisoning runs in a disposable process so no Bun runner/native client sees it.
+for (const mode of [
+  "control",
+  "constructor",
+  "get",
+  "set",
+  "delete",
+  "values",
+  "next",
+  "freeze",
+  "push",
+  "array-iterator",
+  "numeric-setter",
+]) {
+  test(`receipt ledger preserves authenticated catch-up under ${mode}`, async () => {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        `${import.meta.dir}/window-close-receipts.test-role.ts`,
+        mode,
+      ],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
+    try {
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect({ code, stdout, stderr }).toEqual({
+        code: 0,
+        stdout: `PASS receipt-integrity ${mode}\n`,
+        stderr: "",
+      });
+    } finally {
+      if (child.exitCode === null) child.kill();
+      await child.exited;
+    }
+  }, 10_000);
+}

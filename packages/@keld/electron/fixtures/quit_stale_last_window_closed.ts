@@ -2,7 +2,11 @@
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
 
-process.env.KELD_NATIVE_WINDOW_FACADE = "1";
+if (process.env.KELD_NATIVE_WINDOW_FACADE !== "1") {
+  throw new Error(
+    "fixture requires native facade selection in the launch environment",
+  );
+}
 let notifyLastWindow: () => void = () => {
   throw new Error("the facade omitted the one last-window-closed listener");
 };

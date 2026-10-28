@@ -11,6 +11,8 @@ for (const scenario of [
   "refusal",
   "explicit-close",
   "subscription-failure",
+  "selection-delete",
+  "selection-zero",
 ]) {
   test(`local termination releases window source after earlier fact drain: ${scenario}`, async () => {
     const child = Bun.spawn(
@@ -19,7 +21,12 @@ for (const scenario of [
         join(import.meta.dir, "link-quit-release.test-role.ts"),
         scenario,
       ],
-      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      {
+        env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
     try {
       const [code, stdout, stderr] = await withIoDeadline(

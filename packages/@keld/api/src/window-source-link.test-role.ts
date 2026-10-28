@@ -1,7 +1,11 @@
 /** Real BootstrapListener/WorkerLink regressions; host half: worker_link.rs. */
 import assert from "node:assert/strict";
 import { LifecycleLink, type LifecycleHandler } from "./link.ts";
-import { isCallError, withIoDeadline } from "../../kipc/src/transport.ts";
+import {
+  isCallError,
+  withIoDeadline,
+  nativeFacadeBootSelected,
+} from "../../kipc/src/transport.ts";
 import { Worker, MessagePort } from "node:worker_threads";
 import { WorkerLink, FrameKind } from "../../kipc/src/transport.ts";
 import type { WindowEvent } from "./window-codec.ts";
@@ -9,7 +13,11 @@ import type { WindowEvent } from "./window-codec.ts";
 const mode = process.argv[2];
 const ref = { id: 7, incarnation: 300n };
 const second = { id: 8, incarnation: 301n };
-process.env.KELD_NATIVE_WINDOW_FACADE = "1";
+assert.equal(
+  nativeFacadeBootSelected,
+  true,
+  "Host mode must precede transport import",
+);
 const nextJob = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 const report = (key: string, value: string | number | boolean): void =>

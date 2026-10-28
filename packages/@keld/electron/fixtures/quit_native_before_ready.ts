@@ -1,5 +1,9 @@
 /** Negative: windowless-looking pre-Ready facade Quit must not kill recovery. */
-process.env.KELD_NATIVE_WINDOW_FACADE = "1";
+if (process.env.KELD_NATIVE_WINDOW_FACADE !== "1") {
+  throw new Error(
+    "fixture requires native facade selection in the launch environment",
+  );
+}
 delete process.env.KELD_APP_LINK;
 const { app } = await import("../src/index.ts");
 

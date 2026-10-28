@@ -55,6 +55,7 @@ import {
   encodeVarint,
   kipcError,
   linkError,
+  nativeFacadeBootSelected,
   quitAndCloseLink,
   stateByteLength,
   type KeldCallError,
@@ -158,7 +159,7 @@ export class LifecycleLink {
     // A verified schema-two Host sets the role hint before the Guardian spawns
     // Bun. This hint does not grant window authority: the existing authenticated
     // primary link, host Subscribe admission and per-window owner still do that.
-    const facadeWindows = process.env.KELD_NATIVE_WINDOW_FACADE === "1";
+    const facadeWindows = nativeFacadeBootSelected;
     const workerLink = await WorkerLink.open({
       link,
       receive: facadeWindows

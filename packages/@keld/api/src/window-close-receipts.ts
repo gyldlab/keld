@@ -4,6 +4,14 @@
  * synchronous caller is parked. A mirror snapshot alone has no proof that the
  * CloseRequested callback reached this role before earlier Bounds callbacks.
  */
+import {
+  stateFreeze,
+  stateMap,
+  stateMapGet,
+  stateMapSet,
+  stateMapDelete,
+  stateMapValues,
+} from "../../kipc/src/transport.ts";
 import type { WindowEvent, WindowRef } from "./window-codec.ts";
 
 export interface DeliveredWindowClose {
@@ -11,16 +19,15 @@ export interface DeliveredWindowClose {
   readonly closeSeq: bigint;
 }
 
+interface CloseRecord {
+  readonly ref: Readonly<WindowRef>;
+  pending: bigint | null;
+  /** Highest authenticated settled close; bounded to one scalar per Host id. */
+  ackedThrough: bigint | null;
+}
+
 export class WindowCloseReceipts {
-  readonly #records = new Map<
-    number,
-    {
-      readonly ref: Readonly<WindowRef>;
-      pending: bigint | null;
-      /** Highest authenticated settled close; bounded to one scalar per Host id. */
-      ackedThrough: bigint | null;
-    }
-  >();
+  readonly #records = stateMap<number, CloseRecord>();
 
   observe(fact: WindowEvent): void {
     const { id, incarnation } = fact.window;
@@ -29,7 +36,7 @@ export class WindowCloseReceipts {
       // is parked. A correlated Veto reply can therefore arrive before this
       // Created(pending) reaches the subscriber. Carry the one-scalar Host-ack
       // watermark across that delayed dispatch; never resurrect an old close.
-      const previous = this.#records.get(id);
+      const previous = stateMapGet(this.#records, id);
       const ackedThrough =
         previous?.ref.incarnation === incarnation
           ? previous.ackedThrough
@@ -40,16 +47,16 @@ export class WindowCloseReceipts {
         fact.pending_close <= ackedThrough
           ? null
           : fact.pending_close;
-      this.#records.set(id, {
-        ref: Object.freeze({ id, incarnation }),
+      stateMapSet(this.#records, id, {
+        ref: stateFreeze({ id, incarnation }),
         pending,
         ackedThrough,
       });
       return;
     }
-    const earlier = this.#records.get(id);
+    const earlier = stateMapGet(this.#records, id);
     if (!earlier || earlier.ref.incarnation !== incarnation) return;
-    if (fact.variant === "Destroyed") this.#records.delete(id);
+    if (fact.variant === "Destroyed") stateMapDelete(this.#records, id);
     if (fact.variant === "CloseRequested") {
       // A later *dispatched* fact may be older than an already acknowledged
       // Host Veto because the transport may apply ahead of its user cursor.
@@ -64,13 +71,13 @@ export class WindowCloseReceipts {
 
   /** Only after the exact Host CloseReply ack; preserve later dispatched seq. */
   acceptHostCloseReply(window: WindowRef, closeSeq: bigint): void {
-    const previous = this.#records.get(window.id);
+    const previous = stateMapGet(this.#records, window.id);
     if (previous && previous.ref.incarnation !== window.incarnation) return;
     if (!previous) {
       // Source may already have applied Created while its user dispatch is
       // still queued. No unbounded per-close tombstones: one watermark only.
-      this.#records.set(window.id, {
-        ref: Object.freeze({ id: window.id, incarnation: window.incarnation }),
+      stateMapSet(this.#records, window.id, {
+        ref: stateFreeze({ id: window.id, incarnation: window.incarnation }),
         pending: null,
         ackedThrough: closeSeq,
       });
@@ -83,14 +90,26 @@ export class WindowCloseReceipts {
   }
 
   pending(): readonly DeliveredWindowClose[] {
-    const result: DeliveredWindowClose[] = [];
-    for (const record of this.#records.values()) {
+    // Copy through the canonical owner, then compact only its existing own
+    // indices. Neither iteration nor append may expose private records through
+    // an application-replaced iterator, push method or inherited numeric setter.
+    const result = stateMapValues<number, CloseRecord | DeliveredWindowClose>(
+      this.#records,
+    );
+    let count = 0;
+    for (let index = 0; index < result.length; index += 1) {
+      // Compaction writes at or behind index; unread slots remain CloseRecord.
+      const record = result[index] as CloseRecord;
       if (record.pending !== null) {
-        result.push(
-          Object.freeze({ window: record.ref, closeSeq: record.pending }),
-        );
+        result[count] = stateFreeze({
+          window: record.ref,
+          closeSeq: record.pending,
+        });
+        count += 1;
       }
     }
-    return Object.freeze(result);
+    result.length = count;
+    // Every retained slot was replaced with an immutable delivered receipt.
+    return stateFreeze(result as DeliveredWindowClose[]);
   }
 }

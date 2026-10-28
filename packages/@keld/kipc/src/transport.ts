@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:7345a48b56975461ea2af45870f4208d7570d28edc1dd329ea630452a428b943
+// @keld/kipc-transport sha256:7ab8f451c26147de76dbe794496aa3b8ae16756311808131e95103326c2df3fe
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -26,6 +26,11 @@ import {
   workerData,
   MessagePort,
 } from "node:worker_threads";
+import { isProxy } from "node:util/types";
+
+/** @internal Host-selected launch mode captured by the qualified native preload. */
+export const nativeFacadeBootSelected =
+  process.env.KELD_NATIVE_WINDOW_FACADE === "1";
 
 // The macOS guardian preloads this sidecar before application dependencies. These
 // immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers
@@ -36,11 +41,13 @@ const IntrinsicUint8Array = Uint8Array;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
 const IntrinsicMap = Map;
+const IntrinsicWeakMap = WeakMap;
 const IntrinsicArray = Array;
 const intrinsicFreeze = Object.freeze;
 const intrinsicSetPrototypeOf = Object.setPrototypeOf;
 const intrinsicDefineProperty = Object.defineProperty;
 const intrinsicDescriptor = Object.getOwnPropertyDescriptor;
+const intrinsicIsProxy = isProxy;
 const intrinsicInteger = Number.isInteger;
 const intrinsicBigInt = BigInt;
 const intrinsicMin = Math.min;
@@ -51,12 +58,15 @@ const intrinsicFloor = Math.floor;
 const intrinsicMapGet = Map.prototype.get;
 const intrinsicMapHas = Map.prototype.has;
 const intrinsicMapSet = Map.prototype.set;
+const intrinsicMapDelete = Map.prototype.delete;
 const intrinsicMapClear = Map.prototype.clear;
 const intrinsicMapValues = Map.prototype.values;
 const intrinsicMapNext = Object.getPrototypeOf(
   new IntrinsicMap().values(),
 ).next;
 const intrinsicMapSize = intrinsicDescriptor(Map.prototype, "size")!.get!;
+const intrinsicWeakMapGet = WeakMap.prototype.get;
+const intrinsicWeakMapSet = WeakMap.prototype.set;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
 const intrinsicByteLength = intrinsicDescriptor(
   typedArrayPrototype,
@@ -110,6 +120,9 @@ export function stateApply<A extends unknown[], R>(
 }
 /** @internal Freeze an internal own-data fact/snapshot. */
 export const stateFreeze: <T>(value: T) => Readonly<T> = intrinsicFreeze;
+/** @internal Define an own framework property without application hooks. */
+export const stateDefineProperty: typeof Object.defineProperty =
+  intrinsicDefineProperty;
 /** @internal Construct Source-owned state with the captured native constructor. */
 export function stateMap<K, V>(): Map<K, V> {
   return new IntrinsicMap<K, V>();
@@ -130,6 +143,31 @@ export function stateMapHas<K, V>(map: Map<K, V>, key: K): boolean {
 /** @internal Native Source mutation. */
 export function stateMapSet<K, V>(map: Map<K, V>, key: K, value: V): void {
   intrinsicApply(intrinsicMapSet, map, [key, value]);
+}
+/** @internal Remove private Source state without application method lookup. */
+export function stateMapDelete<K, V>(map: Map<K, V>, key: K): boolean {
+  return intrinsicApply(intrinsicMapDelete, map, [key]);
+}
+/** @internal Construct the private facade identity ledger. */
+export function stateWeakMap<K extends object, V>(): WeakMap<K, V> {
+  return new IntrinsicWeakMap<K, V>();
+}
+/** @internal Read identity without exposing the private ledger receiver. */
+export const stateWeakMapGet: <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+) => V | undefined = intrinsicApply(
+  Function.prototype.bind,
+  Function.prototype.call,
+  [intrinsicWeakMapGet],
+);
+/** @internal Record facade identity without application method lookup. */
+export function stateWeakMapSet<K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+): void {
+  intrinsicApply(intrinsicWeakMapSet, map, [key, value]);
 }
 /** @internal Clear the private Source map without exposing its receiver. */
 export function stateMapClear<K, V>(map: Map<K, V>): void {
@@ -1697,7 +1735,11 @@ function codeOfText(text: string): string {
 function stateErrorData(error: unknown, name: string): unknown {
   if (
     error === null ||
-    (typeof error !== "object" && typeof error !== "function")
+    (typeof error !== "object" && typeof error !== "function") ||
+    // A captured descriptor operation still invokes a Proxy's application trap.
+    // The native brand predicate rejects even revoked proxies without hooks;
+    // ordinary own-data diagnostics keep their existing code/text contract.
+    intrinsicIsProxy(error)
   )
     return undefined;
   const descriptor = intrinsicDescriptor(error, name);

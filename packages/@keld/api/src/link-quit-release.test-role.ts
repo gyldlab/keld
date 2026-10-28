@@ -66,7 +66,14 @@ mock.module("../../kipc/src/transport.ts", () => ({
   ...transport,
   WorkerLink: { open: async () => worker },
 }));
-process.env.KELD_NATIVE_WINDOW_FACADE = "1";
+assert.equal(
+  transport.nativeFacadeBootSelected,
+  true,
+  "launch-selected native mode",
+);
+// Exercise the actual LifecycleLink consumer independently of Electron's guard.
+if (mode === "selection-delete") delete process.env.KELD_NATIVE_WINDOW_FACADE;
+if (mode === "selection-zero") process.env.KELD_NATIVE_WINDOW_FACADE = "0";
 const { LifecycleLink } = await import("./link.ts");
 let connected: Awaited<ReturnType<typeof LifecycleLink.connect>> | undefined;
 const connecting = LifecycleLink.connect("controlled-link", {
@@ -106,7 +113,8 @@ if (mode !== "subscription-failure") {
       session.callWindow({ variant: "Destroy", window: ref }),
       /KELD-CORE-045/,
     );
-  } else if (mode === "success") await session.quit();
+  } else if (mode === "success" || mode.startsWith("selection-"))
+    await session.quit();
   else await assert.rejects(session.quit(), (error) => error === refusal);
 } else assert.deepEqual(facts, ["Created"]);
 assert.equal(closeCalls, 1);

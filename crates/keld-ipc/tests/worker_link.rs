@@ -114,6 +114,14 @@ impl Role {
             .arg(scenario)
             .env("KELD_APP_LINK", app_link)
             .env("KELD_KIPC_TEST_HOOKS", "1")
+            .env(
+                "KELD_NATIVE_WINDOW_FACADE",
+                if scenario.starts_with("source-") {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

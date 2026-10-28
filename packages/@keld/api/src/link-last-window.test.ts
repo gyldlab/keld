@@ -9,7 +9,12 @@ import {
 test("sync Destroy may consume authenticated LastWindowClosed once before delayed dispatch", async () => {
   const child = Bun.spawn(
     [process.execPath, join(import.meta.dir, "link-last-window.test-role.ts")],
-    { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    {
+      env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   try {
     const [exit, stdout, stderr] = await withIoDeadline(

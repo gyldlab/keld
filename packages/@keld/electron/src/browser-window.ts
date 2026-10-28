@@ -20,6 +20,18 @@ import type {
   WindowRef,
   WindowRequest,
 } from "../../api/src/window-codec.ts";
+import {
+  stateDefineProperty,
+  stateFreeze,
+  stateMap,
+  stateMapDelete,
+  stateMapGet,
+  stateMapHas,
+  stateMapSet,
+  stateWeakMap,
+  stateWeakMapGet,
+  stateWeakMapSet,
+} from "../../kipc/src/transport.ts";
 import { emitNativeAppEvent } from "./app.ts";
 
 /** Known draw.io preferences; other fields are reported, never made authoritative. */
@@ -108,7 +120,7 @@ export interface BrowserWindow {
 }
 
 /** Only the Host's original identity pair can select a window. */
-const windows = new Map<number, BrowserWindow>();
+const windows = stateMap<number, BrowserWindow>();
 
 function diagnostic(message: string): Error {
   return new Error(
@@ -194,14 +206,19 @@ function ignoredOptionDiagnostics(options: BrowserWindowOptions): void {
 // The user-facing WebContents must never expose a method that can forge a
 // native Host Destroyed tombstone. The sole release closure lives in this
 // module-private WeakMap, not on the returned instance or its prototype.
-const hostContentsRelease = new WeakMap<BrowserWindowWebContents, () => void>();
+const hostContentsRelease = stateWeakMap<
+  BrowserWindowWebContents,
+  () => void
+>();
 
 class BrowserWindowWebContents extends EventEmitter {
   #destroyed = false;
 
   constructor() {
     super();
-    hostContentsRelease.set(this, () => this.#releaseAfterHostDestroyed());
+    stateWeakMapSet(hostContentsRelease, this, () =>
+      this.#releaseAfterHostDestroyed(),
+    );
   }
 
   isDestroyed(): boolean {
@@ -228,7 +245,7 @@ class BrowserWindowWebContents extends EventEmitter {
 function releaseContentsAfterHostDestroyed(
   contents: BrowserWindowWebContents,
 ): void {
-  const release = hostContentsRelease.get(contents);
+  const release = stateWeakMapGet(hostContentsRelease, contents);
   if (!release)
     throw diagnostic("Host WebContents release capability is missing");
   release();
@@ -242,14 +259,14 @@ export class BrowserWindow extends EventEmitter {
   // Dispatch-order barrier only: Host/mirror still own pending-close state.
   // A recovered Created(pending_close), or an ordinary CloseRequested before
   // Ready, must emit 'close' before any later window fact after Ready.
-  static readonly #heldBeforeReadyCloses = new Map<
+  static readonly #heldBeforeReadyCloses = stateMap<
     number,
     { readonly ref: WindowRef; readonly closeSeq: bigint }
   >();
   // A Created fact can dispatch before Ready while a later Bounds has already
   // been applied by the WorkerLink. Retain only the Host-published baseline,
   // never a locally invented/current authoritative window state.
-  static readonly #receivedBounds = new Map<
+  static readonly #receivedBounds = stateMap<
     number,
     { readonly incarnation: bigint; readonly bounds: Readonly<Rect> }
   >();
@@ -269,71 +286,105 @@ export class BrowserWindow extends EventEmitter {
 
   constructor(options: BrowserWindowOptions = {}) {
     super();
-    // Replay windows are materialized from trusted WindowSource records, not
-    // from another Create request or a locally invented window identity.
-    const replayed = BrowserWindow.#replaying;
-    let adopted = false;
-    let ref: WindowRef;
-    if (replayed !== undefined) {
-      ref = replayed;
-    } else {
-      checkOptions(options);
-      // Read *all* caller-controlled diagnostic getters before the irreversible
-      // authenticated Host Create. A hostile getter cannot throw after the
-      // Host returned Created and strand an unreturned native window.
-      ignoredOptionDiagnostics(options);
-      const response = invokeWindowBlocking({
-        variant: "Create",
-        width: options.width ?? 800,
-        height: options.height ?? 600,
-        x: options.x ?? null,
-        y: options.y ?? null,
-      });
-      if (response.variant !== "Created" && response.variant !== "Adopted") {
+    // Only a successful new Created reply gives this constructor a bounded
+    // cleanup obligation. Adopted/replayed documents already predate it, and
+    // an IPC-022 Create outcome has no proven identity to destroy or retry.
+    let created: WindowRef | undefined;
+    let published = false;
+    try {
+      // Replay windows are materialized from trusted WindowSource records, not
+      // from another Create request or a locally invented window identity.
+      const replayed = BrowserWindow.#replaying;
+      let adopted = false;
+      let ref: WindowRef;
+      if (replayed !== undefined) {
+        ref = replayed;
+      } else {
+        checkOptions(options);
+        // Read *all* caller-controlled diagnostic getters before the irreversible
+        // authenticated Host Create. A hostile getter cannot throw after the
+        // Host returned Created and strand an unreturned native window.
+        ignoredOptionDiagnostics(options);
+        const response = invokeWindowBlocking({
+          variant: "Create",
+          width: options.width ?? 800,
+          height: options.height ?? 600,
+          x: options.x ?? null,
+          y: options.y ?? null,
+        });
+        if (response.variant !== "Created" && response.variant !== "Adopted") {
+          throw diagnostic(
+            `unexpected native Create response ${response.variant}`,
+          );
+        }
+        ref = response.window;
+        if (response.variant === "Created") created = ref;
+        adopted = response.variant === "Adopted";
+        const previous = stateMapGet(windows, ref.id);
+        if (
+          response.variant === "Adopted" &&
+          previous &&
+          previous.#ref.incarnation === ref.incarnation &&
+          !previous.isDestroyed()
+        ) {
+          previous.#publishCreation();
+          return previous;
+        }
+      }
+      const confirmed = getWindowSnapshot(ref);
+      if (!confirmed || confirmed.host_destroyed) {
         throw diagnostic(
-          `unexpected native Create response ${response.variant}`,
+          "native Create did not deliver a matching host-owned window fact",
         );
       }
-      ref = response.window;
-      adopted = response.variant === "Adopted";
-      const previous = windows.get(ref.id);
-      if (
-        response.variant === "Adopted" &&
-        previous &&
-        previous.#ref.incarnation === ref.incarnation &&
-        !previous.isDestroyed()
-      ) {
-        previous.#publishCreation();
-        return previous;
+      if (stateMapHas(windows, ref.id))
+        throw diagnostic("Host reused an active window id unexpectedly");
+      // TypeScript readonly is compile-time only. A writable public id can
+      // redirect Map cleanup to a different Host window (including its listeners).
+      stateDefineProperty(this, "id", {
+        value: ref.id,
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
+      this.#ref = stateFreeze({ id: ref.id, incarnation: ref.incarnation });
+      const delivered = stateMapGet(BrowserWindow.#receivedBounds, ref.id);
+      this.#lastDispatchedBounds =
+        delivered && delivered.incarnation === ref.incarnation
+          ? delivered.bounds
+          : confirmed.state.bounds;
+      // An Adopted host window also predates this JS facade, even if application
+      // code never called getAllWindows() to materialize its replay wrapper.
+      this.#recovered = replayed !== undefined || adopted;
+      stateMapSet(windows, ref.id, this);
+      published = true;
+      if (replayed === undefined) this.#publishCreation();
+    } catch (error) {
+      if (created && !published && !stateMapHas(windows, created.id)) {
+        try {
+          const response = invokeWindowBlocking({
+            variant: "Destroy",
+            window: created,
+          });
+          if (
+            response.variant !== "Destroyed" ||
+            !getWindowSnapshot(created)?.host_destroyed
+          ) {
+            throw diagnostic(
+              "failed constructor cleanup did not confirm native release",
+            );
+          }
+        } catch (cleanupError) {
+          throw new Error(
+            "KELD-COMPAT-010: native Create succeeded, but wrapper setup and its Destroy cleanup failed. Native release is unconfirmed; do not retry Create. Inspect the Host generation and recover the surviving window.",
+            { cause: { setup: error, cleanup: cleanupError } },
+          );
+        }
       }
+      // Once published, the private registry owns the wrapper even if an
+      // application creation callback throws. Never destroy that owned window.
+      throw error;
     }
-    const confirmed = getWindowSnapshot(ref);
-    if (!confirmed || confirmed.host_destroyed) {
-      throw diagnostic(
-        "native Create did not deliver a matching host-owned window fact",
-      );
-    }
-    if (windows.has(ref.id))
-      throw diagnostic("Host reused an active window id unexpectedly");
-    // TypeScript readonly is compile-time only. A writable public id can
-    // redirect Map cleanup to a different Host window (including its listeners).
-    Object.defineProperty(this, "id", {
-      value: ref.id,
-      enumerable: true,
-      writable: false,
-      configurable: false,
-    });
-    this.#ref = Object.freeze({ id: ref.id, incarnation: ref.incarnation });
-    const delivered = BrowserWindow.#receivedBounds.get(ref.id);
-    this.#lastDispatchedBounds =
-      delivered && delivered.incarnation === ref.incarnation
-        ? delivered.bounds
-        : confirmed.state.bounds;
-    // An Adopted host window also predates this JS facade, even if application
-    // code never called getAllWindows() to materialize its replay wrapper.
-    this.#recovered = replayed !== undefined || adopted;
-    windows.set(ref.id, this);
-    if (replayed === undefined) this.#publishCreation();
   }
 
   #publishCreation(): void {
@@ -350,7 +401,7 @@ export class BrowserWindow extends EventEmitter {
       (value) => !value.host_destroyed,
     );
     const result = snapshots.map(({ window }) => {
-      const previous = windows.get(window.id);
+      const previous = stateMapGet(windows, window.id);
       if (previous && previous.#ref.incarnation === window.incarnation)
         return previous;
       return BrowserWindow.#fromReplay(window);
@@ -365,14 +416,14 @@ export class BrowserWindow extends EventEmitter {
     closeSeq: bigint | null,
   ): void {
     if (closeSeq === null) return;
-    const previous = windows.get(ref.id);
+    const previous = stateMapGet(windows, ref.id);
     if (
       previous &&
       previous.#ref.incarnation === ref.incarnation &&
       previous.#lastCloseSeq === closeSeq
     )
       return;
-    const held = BrowserWindow.#heldBeforeReadyCloses.get(ref.id);
+    const held = stateMapGet(BrowserWindow.#heldBeforeReadyCloses, ref.id);
     if (held?.ref.incarnation === ref.incarnation && held.closeSeq === closeSeq)
       return;
     BrowserWindow.#receiveNativeClose(ref, closeSeq, true);
@@ -540,7 +591,8 @@ export class BrowserWindow extends EventEmitter {
     if (this.#destroyed) return;
     this.#destroyed = true;
     // The private Host pair, never a user-visible property, owns cleanup.
-    if (windows.get(this.#ref.id) === this) windows.delete(this.#ref.id);
+    if (stateMapGet(windows, this.#ref.id) === this)
+      stateMapDelete(windows, this.#ref.id);
     if (!fromDestroy) releaseContentsAfterHostDestroyed(this.#contents);
     this.#insideClosed = true;
     try {
@@ -632,7 +684,7 @@ export class BrowserWindow extends EventEmitter {
     ) {
       return;
     }
-    const previous = windows.get(ref.id);
+    const previous = stateMapGet(windows, ref.id);
     // A different incarnation is an ownership mismatch, not permission to
     // replace the caller's JS listeners with a new, unrelated wrapper.
     if (previous && previous.#ref.incarnation !== ref.incarnation) return;
@@ -642,9 +694,9 @@ export class BrowserWindow extends EventEmitter {
 
   static #flushHeldBeforeReadyClose(ref: WindowRef): void {
     if (!hostApp.isReady()) return;
-    const held = BrowserWindow.#heldBeforeReadyCloses.get(ref.id);
+    const held = stateMapGet(BrowserWindow.#heldBeforeReadyCloses, ref.id);
     if (!held || held.ref.incarnation !== ref.incarnation) return;
-    BrowserWindow.#heldBeforeReadyCloses.delete(ref.id);
+    stateMapDelete(BrowserWindow.#heldBeforeReadyCloses, ref.id);
     BrowserWindow.#dispatchNativeClose(held.ref, held.closeSeq);
   }
 
@@ -657,7 +709,7 @@ export class BrowserWindow extends EventEmitter {
     const ready = hostApp.isReady();
     const mustHold = fromReplay || !ready;
     if (mustHold) {
-      BrowserWindow.#heldBeforeReadyCloses.set(ref.id, {
+      stateMapSet(BrowserWindow.#heldBeforeReadyCloses, ref.id, {
         ref: { id: ref.id, incarnation: ref.incarnation },
         closeSeq: close_seq,
       });
@@ -692,13 +744,16 @@ export class BrowserWindow extends EventEmitter {
       (error: unknown) => {
         // A dead link ends the Host's generation, so no stale Allow is sent.
         if (mustHold) {
-          const held = BrowserWindow.#heldBeforeReadyCloses.get(ref.id);
+          const held = stateMapGet(
+            BrowserWindow.#heldBeforeReadyCloses,
+            ref.id,
+          );
           if (
             held &&
             held.ref.incarnation === ref.incarnation &&
             held.closeSeq === close_seq
           ) {
-            BrowserWindow.#heldBeforeReadyCloses.delete(ref.id);
+            stateMapDelete(BrowserWindow.#heldBeforeReadyCloses, ref.id);
           }
         }
         reportNativeCallbackError(
@@ -713,7 +768,7 @@ export class BrowserWindow extends EventEmitter {
     onWindowFactApplied(
       (fact: WindowEvent) => {
         if (fact.variant === "Created") {
-          BrowserWindow.#receivedBounds.set(fact.window.id, {
+          stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
             incarnation: fact.window.incarnation,
             bounds: fact.state.bounds,
           });
@@ -735,21 +790,24 @@ export class BrowserWindow extends EventEmitter {
           return;
         }
         if (fact.variant === "Destroyed") {
-          BrowserWindow.#receivedBounds.delete(fact.window.id);
+          stateMapDelete(BrowserWindow.#receivedBounds, fact.window.id);
         }
         if (fact.variant === "Bounds") {
-          const earlier = BrowserWindow.#receivedBounds.get(fact.window.id);
+          const earlier = stateMapGet(
+            BrowserWindow.#receivedBounds,
+            fact.window.id,
+          );
           if (earlier?.incarnation === fact.window.incarnation) {
             // The role may receive Bounds before it has materialized a facade
             // wrapper. That dispatched Host value is the later wrapper's
             // baseline; a subsequent move cannot fabricate a resize of it.
-            BrowserWindow.#receivedBounds.set(fact.window.id, {
+            stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
               incarnation: fact.window.incarnation,
               bounds: fact.bounds,
             });
           }
         }
-        const window = windows.get(fact.window.id);
+        const window = stateMapGet(windows, fact.window.id);
         if (!window || window.#ref.incarnation !== fact.window.incarnation)
           return;
         switch (fact.variant) {
@@ -757,7 +815,7 @@ export class BrowserWindow extends EventEmitter {
             {
               const prior = window.#lastDispatchedBounds;
               window.#lastDispatchedBounds = fact.bounds;
-              BrowserWindow.#receivedBounds.set(fact.window.id, {
+              stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
                 incarnation: fact.window.incarnation,
                 bounds: fact.bounds,
               });

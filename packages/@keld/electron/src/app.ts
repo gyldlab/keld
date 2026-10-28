@@ -11,19 +11,25 @@ import {
   hasObservedHostReady,
 } from "../../api/src/app.ts";
 
+import {
+  nativeFacadeBootSelected,
+  stateMap,
+  stateMapDelete,
+  stateMapGet,
+  stateMapSet,
+} from "../../kipc/src/transport.ts";
+
 type AppListener = (...args: never[]) => void;
 
-const listeners = new Map<string, AppListener[]>();
-// The Host selects the native facade boot before spawning the Bun main role.
-// Snapshot the hint at module initialization: application code changing
-// process.env after import cannot silently turn off the fail-closed Quit gate.
-// The actual `WindowSource`/Host subscription remains the sole authority.
-const nativeFacadeBoot = process.env.KELD_NATIVE_WINDOW_FACADE === "1";
+const listeners = stateMap<string, AppListener[]>();
+// The canonical Host-preloaded transport captures the launch selection before
+// application dependencies. Ready/Subscribe and Host ownership still authorize
+// window access; this immutable hint only selects the fail-closed Quit policy.
 let readyEventEmitted = false;
 let readyObservation: Promise<void> | undefined;
 
 function emit(event: string, ...args: unknown[]): void {
-  const snapshot = listeners.get(event);
+  const snapshot = stateMapGet(listeners, event);
   if (!snapshot) return;
   for (const listener of snapshot.slice()) {
     try {
@@ -71,12 +77,12 @@ function observeReady(): Promise<void> {
 }
 
 function hasListeners(event: string): boolean {
-  const list = listeners.get(event);
+  const list = stateMapGet(listeners, event);
   return list !== undefined && list.length > 0;
 }
 
 function removeAppListener(event: string, listener: AppListener): void {
-  const list = listeners.get(event);
+  const list = stateMapGet(listeners, event);
   if (!list) return;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     if (list[i] === listener) {
@@ -84,7 +90,7 @@ function removeAppListener(event: string, listener: AppListener): void {
       break;
     }
   }
-  if (list.length === 0) listeners.delete(event);
+  if (list.length === 0) stateMapDelete(listeners, event);
 }
 
 // A `window-all-closed` listener that does not quit keeps the app alive, except at a
@@ -100,7 +106,7 @@ function onLastWindowClosed(): void {
   // listeners as well as before the default quit. An unready/retired Source is
   // unknown, not proof of zero windows; fail closed instead of fabricating
   // application-wide closure while a dirty replacement may still be live.
-  if (nativeFacadeBoot) {
+  if (nativeFacadeBootSelected) {
     if (!apiApp.isReady()) return;
     try {
       if (getWindowSnapshots().some((window) => !window.host_destroyed)) return;
@@ -140,7 +146,7 @@ export const app = {
     // returns [] until the authenticated Ready barrier. That means 'unknown',
     // not 'no live windows'. Refuse a pre-Ready facade Quit too. Legacy
     // renderer boots keep their existing Quit contract unchanged.
-    if (nativeFacadeBoot && !apiApp.isReady()) {
+    if (nativeFacadeBootSelected && !apiApp.isReady()) {
       return Promise.reject(
         new Error(
           "KELD-COMPAT-012: native facade Quit is not authorized before Host Ready; the current window census has not been authenticated",
@@ -167,9 +173,9 @@ export const app = {
     // if the underlying API already observed the Host event. Pre-Ready
     // listeners remain enrolled in the existing one-shot observer.
     if (event === "ready" && hasObservedHostReady()) return;
-    const list = listeners.get(event) ?? [];
+    const list = stateMapGet(listeners, event) ?? [];
     list.push(listener);
-    listeners.set(event, list);
+    stateMapSet(listeners, event, list);
     if (event === "ready") ignoreIfUnawaited(observeReady());
   },
 
