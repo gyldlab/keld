@@ -4,8 +4,76 @@ fn strict_boot_schema_accepts_exact_v1() {
         .expect("exact schema-v1 descriptor");
     assert_eq!(parsed.name, "Fixture");
     assert_eq!(parsed.entry, Path::new("src/main.ts"));
-    assert_eq!(parsed.renderer, Path::new("index.html"));
+    assert!(
+        matches!(parsed.initial, InitialWindow::Renderer(path) if path == Path::new("index.html"))
+    );
     assert_eq!(parsed.permissions_digest.len(), 32);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn approved_schema_two_facade_boot_accepts_no_renderer() {
+    let bytes = br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
+    let parsed = parse_boot_bytes(bytes).expect("schema-two facade descriptor without renderer");
+    assert_eq!(parsed.name, "Fixture");
+    assert_eq!(parsed.entry, Path::new("src/main.ts"));
+    assert!(parsed.auth_configuration.is_empty());
+}
+
+#[test]
+fn schema_one_still_requires_renderer() {
+    let bytes = br#"{"schema":1,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
+    let error = must_err(
+        parse_boot_bytes(bytes),
+        "schema one still requires renderer",
+    );
+    assert_eq!(error.code(), "KELD-CORE-035");
+    assert!(error.to_string().contains("renderer"), "{error}");
+}
+
+#[test]
+fn schema_two_strictly_rejects_renderer_auth_profile_unknown_and_duplicate_fields() {
+    const FIELDS: &str = r#""name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}"#;
+    for injected in [
+        r#","renderer":"index.html""#,
+        r#","renderer":null"#,
+        r#","auth":{}"#,
+        r#","profile":"Legacy""#,
+        r#","initial_window":"none""#,
+        r#","name":"Duplicate""#,
+        r#","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}"#,
+    ] {
+        let payload = format!(r#"{{"schema":2,{FIELDS}{injected}}}"#);
+        let error = must_err(parse_boot_bytes(payload.as_bytes()), "strict schema two");
+        assert_eq!(error.code(), "KELD-CORE-035", "{payload}");
+    }
+    let duplicate_schema = format!(r#"{{"schema":2,"schema":1,{FIELDS}}}"#);
+    let error = must_err(
+        parse_boot_bytes(duplicate_schema.as_bytes()),
+        "duplicate discriminator",
+    );
+    assert_eq!(error.code(), "KELD-CORE-035");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn facade_stage_host_preflight_requires_no_renderer_file() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("private staged root");
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).expect("private stage");
+    fs::create_dir(root.path().join("src")).expect("source directory");
+    fs::write(root.path().join("src/main.ts"), "export {};\n").expect("entry");
+    fs::write(root.path().join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+    fs::write(root.path().join(BOOT_FILE), br#"{"schema":2,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#).expect("facade boot");
+    let selection = validate_from_root(root.path()).expect("exact facade preflight");
+    assert!(matches!(
+        selection.app.initial_window,
+        ValidatedInitialWindow::None
+    ));
+    assert!(selection.app.auth_configuration.is_empty());
+    assert_eq!(selection.app.name, "Fixture");
+    assert_eq!(selection.app.entry_path, Path::new("src/main.ts"));
+    assert!(!root.path().join("index.html").exists());
 }
 
 #[test]
@@ -171,7 +239,7 @@ fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
     let cases = [
         r#"{"schema":1,"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","unknown":1,"permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-        r#"{"schema":2,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
+        r#"{"schema":3,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"wrong.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
@@ -316,7 +384,10 @@ fn validated_root_opens_same_handle_targets_and_rejects_symlink_escape() {
     .expect("boot");
 
     let selection = validate_from_root(&root).expect("validated selection");
-    assert_eq!(selection.app.renderer_html, b"<p id=fixture>exact</p>\n");
+    assert!(matches!(
+        &selection.app.initial_window,
+        ValidatedInitialWindow::Renderer(bytes) if bytes == b"<p id=fixture>exact</p>\n"
+    ));
     assert_eq!(selection.app.name, "Fixture");
 
     let mut substituted: serde_json::Value =
@@ -334,7 +405,11 @@ fn validated_root_opens_same_handle_targets_and_rejects_symlink_escape() {
     fs::remove_file(root.join("index.html")).expect("remove renderer");
     symlink(&outside, root.join("index.html")).expect("escape symlink");
     assert_eq!(
-        selection.app.renderer_html, b"<p id=fixture>exact</p>\n",
+        match &selection.app.initial_window {
+            ValidatedInitialWindow::Renderer(bytes) => bytes.as_slice(),
+            ValidatedInitialWindow::None => panic!("renderer selection became facade"),
+        },
+        b"<p id=fixture>exact</p>\n",
         "post-selection renderer substitution changed consumed bytes"
     );
     assert_eq!(
@@ -366,7 +441,8 @@ fn guarded_preflight_preserves_read_error_before_resources() {
         .expect("write-only retained handle");
     let before = startup_resource_snapshot();
 
-    let error = run_guarded(selection).expect_err("read failure must fail preflight");
+    let error = run_guarded(selection, |_| -> ! { unreachable!() })
+        .expect_err("read failure must fail preflight");
     assert_eq!(error.code(), "KELD-GUARD004");
     assert_eq!(error.resources, before, "preflight advanced app resources");
     let message = error.to_string();
