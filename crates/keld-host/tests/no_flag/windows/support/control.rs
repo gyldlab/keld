@@ -222,22 +222,9 @@ pub(crate) fn accept_control_until(
         if let Some(child) = child.as_mut()
             && let Some(status) = child.try_wait().expect("observe early host exit")
         {
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            child
-                .stdout
-                .take()
-                .expect("captured host stdout")
-                .read_to_string(&mut stdout)
-                .expect("read host stdout");
-            child
-                .stderr
-                .take()
-                .expect("captured host stderr")
-                .read_to_string(&mut stderr)
-                .expect("read host stderr");
             panic!(
-                "host exited before control bind: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                "host exited before control bind: {status}\n{}",
+                exited_host_output(child)
             );
         }
         assert!(
@@ -343,23 +330,10 @@ fn read_control_line_or_host_failure_after_phase(
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
                 if let Some(status) = child.try_wait().expect("observe failed host") {
-                    let mut stdout = String::new();
-                    let mut stderr = String::new();
-                    child
-                        .stdout
-                        .take()
-                        .expect("captured failed host stdout")
-                        .read_to_string(&mut stdout)
-                        .expect("read failed host stdout");
-                    child
-                        .stderr
-                        .take()
-                        .expect("captured failed host stderr")
-                        .read_to_string(&mut stderr)
-                        .expect("read failed host stderr");
                     panic!(
-                        "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                        "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\n{}",
                         child.id(),
+                        exited_host_output(child),
                     );
                 }
                 assert!(
@@ -371,4 +345,24 @@ fn read_control_line_or_host_failure_after_phase(
             }
         }
     }
+}
+
+/// The captured stdout and stderr of a host that has already exited, for its
+/// failure report. Reading to the end cannot block once the host is gone.
+pub(crate) fn exited_host_output(child: &mut Child) -> String {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    child
+        .stdout
+        .take()
+        .expect("captured exited host stdout")
+        .read_to_string(&mut stdout)
+        .expect("read exited host stdout");
+    child
+        .stderr
+        .take()
+        .expect("captured exited host stderr")
+        .read_to_string(&mut stderr)
+        .expect("read exited host stderr");
+    format!("stdout:\n{stdout}\nstderr:\n{stderr}")
 }

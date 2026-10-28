@@ -5,19 +5,19 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::support::control::{
     accept_control_or_host_failure, accept_ready_generation, parse_descendant_pid,
     read_control_line, read_control_line_or_host_failure, try_read_control_line,
 };
 use crate::support::product::ProductFixture;
-use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
+use crate::support::renderer::{
+    HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
+};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
-    startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
+    ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 #[test]
@@ -326,35 +326,27 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
 }
 
 /// GH-1182 R1: Bun exits after its authenticated HELLO while the initial window
-/// is live and still navigating. The renderer's image request is accepted and
-/// never answered, and WebView2 raises `NavigationCompleted` (which drives
-/// Ready) only after `onload`, so the window cannot become Ready first. The
-/// pre-Ready recovery gate is still closed, so the host fails startup instead of
-/// provisioning a successor (architecture 06 §1).
+/// is live and its first navigation is held open ([`HeldRendererRequest`]), so
+/// the window cannot be `Ready` first. The pre-Ready recovery gate is still
+/// closed, so the host fails startup instead of provisioning a successor
+/// (architecture 06 §1).
 #[test]
 fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     let fixture = ProductFixture::new();
     let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind post-HELLO control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking post-HELLO control");
     let control_port = control_listener
         .local_addr()
         .expect("control address")
         .port();
-    let held_renderer = TcpListener::bind(("127.0.0.1", 0)).expect("bind held renderer");
-    let held_port = held_renderer.local_addr().expect("held address").port();
-    let (requested_tx, requested) = mpsc::channel();
-    let (release, release_rx) = mpsc::channel::<()>();
-    let holder = thread::spawn(move || {
-        // The accepted request stays unanswered until release, so the
-        // document's load cannot finish.
-        let accepted = held_renderer.accept();
-        let _ = requested_tx.send(accepted.is_ok());
-        let _ = release_rx.recv();
-        drop(accepted);
-    });
+    let held = HeldRendererRequest::bind();
     fs::write(
         fixture.project.join("index.html"),
         format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{held_port}/held.png\">\n"
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
+            held.port
         ),
     )
     .expect("write held renderer");
@@ -386,27 +378,10 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO DESCENDANT"),
         "DESCENDANT 0"
     );
-    // WebView2 startup bounds this wait; the request proves the window exists
-    // and its first navigation is in flight.
-    let deadline = Instant::now() + startup_kill_switch();
-    loop {
-        match requested.recv_timeout(Duration::from_millis(50)) {
-            Ok(accepted) => {
-                assert!(accepted, "held renderer accept failed");
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("held renderer thread ended"),
-        }
-        assert!(
-            child.try_wait().expect("observe post-HELLO host").is_none(),
-            "host exited before its renderer requested the held image"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "renderer did not request the held image"
-        );
-    }
+    // The 15 s initial-navigation deadline (KELD-WV-005) is still armed. The
+    // exit below must reach the owner before it fires; if it ever lost that
+    // race, the stderr assertion fails with KELD-WV-005 rather than passing.
+    held.await_connection(&mut child);
 
     writer
         .write_all(b"EXIT_PRE_READY\n")
@@ -430,7 +405,9 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         "{stderr}"
     );
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
-    assert!(stderr.contains("window=1"), "{stderr}");
+    // Corroboration only: this counts the window attempt; the held connection
+    // above is what proves the window was live and navigating.
+    assert!(stderr.contains("window=1]"), "{stderr}");
     let attempts = fs::read_dir(&fixture.project)
         .expect("list post-HELLO markers")
         .filter_map(Result::ok)
@@ -453,6 +430,5 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         "a successor reached the control service"
     );
     assert!(!process_exists(host_pid), "failed host remained live");
-    release.send(()).expect("release held renderer");
-    holder.join().expect("held renderer joins");
+    held.release();
 }
