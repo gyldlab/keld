@@ -1,7 +1,7 @@
 # Spec: SDK package artifacts
 Status: approved
 Linear: GH-1287 (#517) · Owner: @0monish · Updated: 2026-10-28
-Authority: Root's delegated decision recorded in GH-1287, under the user's explicit MVP decision delegation.
+Authority: Root's delegated decision recorded in GH-1287, under the user's explicit MVP decision delegation. The local-link correction was approved in GH-1287 comment 6470455185.
 
 ## 1. Goal & non-goals
 
@@ -25,9 +25,9 @@ Architecture 02 §1 owns the one transport Worker and its self-entry; architectu
 
 ## 4. Design
 
-API source uses `@keld/kipc`, with `file:../kipc` as its real development dependency. API source exports enumerate its four entries. A KIPC-owned cold producer invokes the existing pinned compiler with strict options, unbundled JS, declarations and relative extension rewrite. It derives distribution manifests from source, changes the one API dependency to the actual KIPC version, and packs real output. KIPC emits declarations and uses the existing standalone Bun release build and exported stamp/verification helpers. It remains one readable Worker self-entry; the transport is not bundled into API.
+API source uses `@keld/kipc`, with `link:../kipc` as its real local development dependency. API source exports enumerate its four entries. A KIPC-owned cold producer invokes the existing pinned compiler with strict options, unbundled JS, declarations and relative extension rewrite. It derives distribution manifests from source, changes the one API dependency to the actual KIPC version, and packs real output. KIPC emits declarations and uses the existing standalone Bun release build and exported stamp/verification helpers. It remains one readable Worker self-entry; the transport is not bundled into API.
 
-Ownership, trust and lifecycle remain with the existing API and Worker. This changes package resolution and distribution boundaries, not handle ownership, principal minting, wire protocol or permission model. Existing source-relative imports were rejected because they escape an installed package. A bundle-time resolver plugin was rejected because standard emission works and source dependency ownership is the root cause. Compatibility fallback: source development uses the local declared dependency. No performance improvement is claimed.
+Ownership, trust and lifecycle remain with the existing API and Worker. This changes package resolution and distribution boundaries, not handle ownership, principal minting, wire protocol or permission model. Existing source-relative imports were rejected because they escape an installed package. A bundle-time resolver plugin was rejected because standard emission works and source dependency ownership is the root cause. The ordinary local Bun link resolves to the canonical source realpath, avoiding the distinct module identity observed with `file:../kipc`; normal and frozen installs and source namespace/class identity are required. The distribution manifest still declares the exact KIPC version. Compatibility fallback: source development uses the local declared dependency. No performance improvement is claimed.
 
 Types/channels: no wire types or channels change. Capabilities and permission manifest: none. Runtime seam: package loading changes from repository-relative to declared package resolution; the process, grants, callback lifetimes and failure semantics remain owned by existing implementations. Migration includes source callers, generated adapters, mocks and staged-sidecar mapping; no permanent adapter is added. Platform behavior is unqualified beyond recorded Bun probes; Node 26.10 fails at canonical MessageChannel descriptor capture.
 
