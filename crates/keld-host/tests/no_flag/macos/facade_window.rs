@@ -884,3 +884,359 @@ fn native_schema_two_subscribe_creates_one_real_app_window_without_authority_lea
     );
     await_process_gone(bun_pid);
 }
+
+// F2 atoms A/B/C/E: actual shipping Host, no sidecar or an independently
+// resolved ordinary package copy, and actual env mutation before FIRST import.
+#[test]
+fn native_boot_without_sidecar_refuses_late_import_pre_ready_quit() {
+    assert_late_package_boot_mode(false, false);
+}
+
+#[test]
+fn native_boot_preload_does_not_mask_a_distinct_late_package_copy() {
+    assert_late_package_boot_mode(true, false);
+}
+
+#[test]
+fn recovered_native_window_survives_late_package_pre_ready_quit() {
+    assert_late_package_boot_mode(true, true);
+}
+
+const LATE_PACKAGE_BOOT_MODE_ROLE: &str = r#"
+import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
+import { existsSync, writeFileSync } from "node:fs";
+const control = createConnection({ path: process.env.KELD_T1B_CONTROL! });
+await new Promise<void>((resolve, reject) => { control.once("connect", resolve); control.once("error", reject); });
+const report = (message: string) => control.write(`${message}\n`);
+report(`BOUND ${process.pid}`);
+try {
+const generationPath = process.env.KELD_F2_GENERATION_FILE!;
+const successor = existsSync(generationPath);
+writeFileSync(generationPath, "started");
+// The recovery control's first role keeps the original environment, so the
+// unfixed implementation can create a real survivor before the downgrade.
+if (process.env.KELD_F2_RECOVER !== "1" || successor) {
+  // Reflect observes the actual environment even under expression substitution.
+  if (process.env.KELD_F2_HAS_SIDECAR === "1") {
+    Reflect.set(process.env, "KELD_NATIVE_WINDOW_FACADE", "0");
+    if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== "0") throw new Error("actual env was not zeroed");
+  } else {
+    Reflect.deleteProperty(process.env, "KELD_NATIVE_WINDOW_FACADE");
+    if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== undefined) throw new Error("actual env was not deleted");
+  }
+}
+const first = await import("./packages/@keld/kipc/src/transport.ts");
+if (process.env.KELD_F2_HAS_SIDECAR === "1") {
+  const preloaded = await import("./kipc-transport.ts");
+  if (first === preloaded || first.WorkerLink === preloaded.WorkerLink) throw new Error("distinct package copy collapsed into preload");
+}
+const { app, BrowserWindow } = await import("./packages/@keld/electron/src/index.ts");
+if (app.isReady()) throw new Error("pre-Ready boundary missed");
+let code = "accepted";
+try { await app.quit(); } catch (error) {
+  code = error instanceof Error ? error.message.split(":")[0] : "untyped";
+}
+report(`PREQUIT ${code}`);
+if (code !== "KELD-COMPAT-012") throw new Error("late package import bypassed native Quit barrier");
+app.on("window-all-closed", () => {});
+await app.whenReady();
+const win = BrowserWindow.getAllWindows()[0] ?? new BrowserWindow({ width: 320, height: 240 });
+let veto = true;
+win.on("close", (event) => { if (veto) event.preventDefault(); });
+report(`CREATED ${win.id}`);
+for await (const command of createInterface({ input: control })) {
+  if (command === "CRASH") {
+    process.exit(71);
+  } else if (command === "VETO") {
+    win.close();
+    report(`VETO ${win.isDestroyed()} ${BrowserWindow.getAllWindows().length}`);
+  } else if (command === "QUIT_WHILE_OPEN") {
+    let refusal = "accepted";
+    try { await app.quit(); } catch (error) { refusal = error instanceof Error ? error.message.split(":")[0] : "untyped"; }
+    report(`QUIT ${refusal}`);
+  } else if (command === "FINISH") {
+    veto = false;
+    win.destroy();
+    await app.quit();
+    report("FINISHED");
+    break;
+  }
+}
+control.end();
+} catch (error) {
+  report(`F2_ERROR ${String(error)}`);
+  throw error;
+}
+"#;
+
+fn stage_late_package(
+    fixture: &ProductFixture,
+    with_sidecar: bool,
+) -> keld_cli::boot::DevBootStage {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    fs::write(
+        fixture.project.join("src/main.ts"),
+        LATE_PACKAGE_BOOT_MODE_ROLE,
+    )
+    .expect("ordinary unbundled entry");
+    if with_sidecar {
+        fs::copy(
+            repo.join("packages/@keld/kipc/src/transport.ts"),
+            fixture.project.join("src/kipc-transport.ts"),
+        )
+        .expect("optional byte-identical sidecar");
+    }
+    fs::write(fixture.project.join("keld.config.ts"),
+        "export default { name: \"F2 late package\", entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n")
+        .expect("native schema two config");
+    let staged = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("actual Host stage");
+    crate::renderer_bridge::copy_public_package_sources(repo, &staged.root().join("src/packages"));
+    staged
+}
+
+fn assert_late_package_boot_mode(with_sidecar: bool, recover: bool) {
+    let fixture = ProductFixture::new("f2-late-package");
+    let staged = stage_late_package(&fixture, with_sidecar);
+    let listener_path = fixture.root.path().join("f2.sock");
+    let listener = UnixListener::bind(&listener_path).expect("late import control");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let child = Command::new(staged.host())
+        .process_group(0)
+        .current_dir(staged.root())
+        .env("KELD_T1B_CONTROL", &listener_path)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .env("KELD_NATIVE_WINDOW_FACADE", "unknown-caller-value")
+        .env("KELD_F2_HAS_SIDECAR", if with_sidecar { "1" } else { "0" })
+        .env("KELD_F2_RECOVER", if recover { "1" } else { "0" })
+        .env(
+            "KELD_F2_GENERATION_FILE",
+            fixture.root.path().join("generation"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("shipping no-flag Host");
+    let mut cleanup = ShippingLaunchCleanup::new(child);
+    let host = cleanup.cli.as_mut().expect("live Host");
+    let host_pid = host.id();
+    let _lease = host.stdin.take().expect("retain dev lease");
+    let stream = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
+    stream
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .expect("bounded read");
+    let mut reader = BufReader::new(stream.try_clone().expect("control clone"));
+    let mut writer = stream;
+    let bound = read_control_line(&mut reader);
+    let parts: Vec<_> = bound.split_whitespace().collect();
+    assert_eq!(parts.first().copied(), Some("BOUND"), "{bound}");
+    let mut bun_pid = parse_pid(parts.get(1).copied(), &bound);
+    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    assert_eq!(read_control_line(&mut reader), "PREQUIT KELD-COMPAT-012");
+    assert_eq!(read_control_line(&mut reader), "CREATED 1");
+    let initial = visible_app_windows(host_pid);
+    assert_eq!(initial.len(), 1, "real native Create");
+    if recover {
+        writer
+            .write_all(b"CRASH\n")
+            .expect("retire first authenticated generation");
+        let successor = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
+        successor
+            .set_read_timeout(Some(EVENT_DEADLINE))
+            .expect("successor read deadline");
+        reader = BufReader::new(successor.try_clone().expect("successor reader"));
+        writer = successor;
+        let bound = read_control_line(&mut reader);
+        let parts: Vec<_> = bound.split_whitespace().collect();
+        assert_eq!(parts.first().copied(), Some("BOUND"), "{bound}");
+        let successor_pid = parse_pid(parts.get(1).copied(), &bound);
+        assert_ne!(bun_pid, successor_pid, "recovery must mint a fresh process");
+        cleanup.record_authenticated_groups(process_group(host_pid), process_group(successor_pid));
+        assert_eq!(
+            read_control_line(&mut reader),
+            "PREQUIT KELD-COMPAT-012",
+            "pre-Subscribe successor Quit must never destroy the surviving native window"
+        );
+        assert_eq!(
+            read_control_line(&mut reader),
+            "CREATED 1",
+            "authenticated replay adopts the survivor"
+        );
+        await_visible_native_census(host_pid, &initial);
+        await_process_gone(bun_pid);
+        bun_pid = successor_pid;
+    }
+    writer.write_all(b"VETO\n").expect("native close veto");
+    assert_eq!(read_control_line(&mut reader), "VETO false 1");
+    await_visible_native_census(host_pid, &initial);
+    writer
+        .write_all(b"QUIT_WHILE_OPEN\n")
+        .expect("native Quit barrier");
+    assert_eq!(read_control_line(&mut reader), "QUIT KELD-COMPAT-012");
+    assert_eq!(visible_app_windows(host_pid), initial);
+    writer
+        .write_all(b"FINISH\n")
+        .expect("orderly close and Quit");
+    assert_eq!(read_control_line(&mut reader), "FINISHED");
+    drop(writer);
+    let output = wait_child_output(cleanup.release(), EVENT_DEADLINE);
+    assert!(
+        output.status.success(),
+        "late package Host failed: {output:?}"
+    );
+    await_visible_native_close(host_pid);
+    await_process_gone(bun_pid);
+    assert!(!staged.root().exists(), "dev stage survived native cleanup");
+    eprintln!(
+        "F2_NATIVE_EVIDENCE host={host_pid} final_bun={bun_pid} sidecar={with_sidecar} recovered={recover} same_native_rows={initial:?} quit=KELD-COMPAT-012 stage_deleted=true"
+    );
+}
+
+#[test]
+fn renderer_boot_keeps_legacy_ready_and_quit_after_parent_and_late_env_one() {
+    let fixture = ProductFixture::new("f2-legacy-package");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    fs::write(fixture.project.join("src/main.ts"), r#"
+import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
+Reflect.set(process.env, "KELD_NATIVE_WINDOW_FACADE", "1");
+if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== "1") throw new Error("actual env was not set");
+const transport = await import("./packages/@keld/kipc/src/transport.ts");
+const { app } = await import("./packages/@keld/electron/src/index.ts");
+await app.whenReady();
+const control = createConnection({ path: process.env.KELD_T1B_CONTROL! });
+await new Promise<void>((resolve, reject) => { control.once("connect", resolve); control.once("error", reject); });
+control.write(`LEGACY_READY ${process.pid} ${transport.nativeFacadeBootSelected}\n`);
+for await (const command of createInterface({ input: control })) {
+  if (command !== "QUIT") throw new Error(`unexpected ${command}`);
+  await app.quit();
+  control.write("LEGACY_QUIT_ACCEPTED\n");
+  break;
+}
+control.end();
+"#).expect("ordinary legacy package entry");
+    fs::write(
+        fixture.project.join("index.html"),
+        "<!doctype html><title>F2 legacy</title>",
+    )
+    .expect("legacy renderer");
+    fs::write(fixture.project.join("keld.config.ts"),
+        "export default { name: \"F2 legacy\", entry: \"src/main.ts\", renderer: \"index.html\" } as const;\n")
+        .expect("schema one config");
+    let staged = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("legacy shipping stage");
+    crate::renderer_bridge::copy_public_package_sources(repo, &staged.root().join("src/packages"));
+    let listener_path = fixture.root.path().join("legacy.sock");
+    let listener = UnixListener::bind(&listener_path).expect("legacy control");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let child = Command::new(staged.host())
+        .process_group(0)
+        .current_dir(staged.root())
+        .env("KELD_T1B_CONTROL", &listener_path)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .env("KELD_NATIVE_WINDOW_FACADE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("shipping renderer Host");
+    let mut cleanup = ShippingLaunchCleanup::new(child);
+    let host = cleanup.cli.as_mut().expect("live legacy Host");
+    let host_pid = host.id();
+    let _lease = host.stdin.take().expect("retain dev lease");
+    let stream = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
+    stream
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .expect("bounded legacy read");
+    let mut reader = BufReader::new(stream.try_clone().expect("legacy control clone"));
+    let mut writer = stream;
+    let ready = read_control_line(&mut reader);
+    let parts: Vec<_> = ready.split_whitespace().collect();
+    assert_eq!(parts.first().copied(), Some("LEGACY_READY"), "{ready}");
+    assert_eq!(parts.get(2).copied(), Some("false"), "{ready}");
+    let bun_pid = parse_pid(parts.get(1).copied(), &ready);
+    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    assert_eq!(
+        visible_app_windows(host_pid).len(),
+        1,
+        "legacy renderer is a real window"
+    );
+    writer.write_all(b"QUIT\n").expect("forceful legacy Quit");
+    assert_eq!(read_control_line(&mut reader), "LEGACY_QUIT_ACCEPTED");
+    drop(writer);
+    let output = wait_child_output(cleanup.release(), EVENT_DEADLINE);
+    assert!(output.status.success(), "legacy Host failed: {output:?}");
+    await_visible_native_close(host_pid);
+    await_process_gone(bun_pid);
+    assert!(!staged.root().exists(), "legacy stage cleanup");
+}
+
+#[test]
+fn no_sidecar_runtime_config_is_refused_before_the_shipping_entry_executes() {
+    for config in ["bunfig.toml", ".bunfig.toml"] {
+        let fixture = ProductFixture::new("f2-config-admission");
+        let marker = fixture.root.path().join("entry-executed");
+        fs::write(
+            fixture.project.join("src/main.ts"),
+            "await Bun.write(process.env.KELD_F2_ENTRY_MARKER!, 'executed');\n",
+        )
+        .expect("independent entry execution marker");
+        fs::write(fixture.project.join("keld.config.ts"),
+            "export default { name: \"F2 config\", entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n")
+            .expect("schema two config");
+        let staged = keld_cli::boot::stage_dev_boot(
+            &fixture.project,
+            Path::new(env!("CARGO_BIN_EXE_keld-host")),
+        )
+        .expect("no-sidecar stage");
+        fs::write(
+            staged.root().join(config),
+            "[define]\n\"process.env.KELD_NATIVE_WINDOW_FACADE\" = '\"0\"'\n",
+        )
+        .expect("hostile staged runtime config");
+        let mut child = Command::new(staged.host())
+            .process_group(0)
+            .current_dir(staged.root())
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .env("KELD_F2_ENTRY_MARKER", &marker)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("shipping Host config admission");
+        let host_pid = child.id();
+        let _lease = child.stdin.take().expect("retain startup lease");
+        let output = wait_child_output(child, EVENT_DEADLINE);
+        assert!(
+            !output.status.success(),
+            "runtime config executed: {output:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("staged runtime config {config}")),
+            "{stderr}"
+        );
+        assert!(
+            !marker.exists(),
+            "original entry executed before config refusal"
+        );
+        assert!(
+            visible_app_windows(host_pid).is_empty(),
+            "refusal allocated a native window"
+        );
+    }
+}
