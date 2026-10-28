@@ -198,8 +198,16 @@ pub const AUTH: ChannelEntry = ChannelEntry::new(
     Authority::Guarded(&[AUTH_BEGIN, AUTH_TOKEN]),
 );
 
+/// Host-owned window facts and commands (GH-449). Events require subscription.
+pub const WINDOW: ChannelEntry = ChannelEntry::new(
+    "window",
+    5,
+    ReceiveClass::HostCallWithEvents,
+    Authority::HostInternal,
+);
+
 /// Every allocated channel, in strictly increasing id order.
-pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH];
+pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW];
 
 // An invalid table does not build (spec §3 criteria 2-5).
 const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());
@@ -454,7 +462,7 @@ mod tests {
         Ok(())
     }
 
-    /// Criterion 1: the table lists exactly the four allocated channels, with the
+    /// Criterion 1: the table lists exactly the five allocated channels, with the
     /// spec §4.2 classes and authorities.
     #[test]
     fn table_lists_exactly_echo_fs_and_lifecycle() {
@@ -483,6 +491,12 @@ mod tests {
                     4,
                     ReceiveClass::GuardedCall,
                     Authority::Guarded(&["auth.begin", "auth.token"]),
+                ),
+                (
+                    "window",
+                    5,
+                    ReceiveClass::HostCallWithEvents,
+                    Authority::HostInternal,
                 ),
             ]
         );
@@ -594,7 +608,7 @@ mod tests {
     /// Criterion 3a: the real table matches the committed baseline.
     #[test]
     fn real_table_matches_the_committed_allocation_baseline() {
-        assert_eq!(BASELINE, "echo 1\nfs 2\nlifecycle 3\nauth 4\n");
+        assert_eq!(BASELINE, "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\n");
         assert_eq!(check_allocations(CHANNEL_TABLE, BASELINE), Ok(()));
     }
 
@@ -686,7 +700,7 @@ mod tests {
         for allocated in CHANNEL_TABLE {
             assert_eq!(entry(allocated.id()), Some(allocated));
         }
-        for unallocated in [0, 5, 9, u16::MAX] {
+        for unallocated in [0, 6, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
     }
@@ -878,11 +892,11 @@ mod tests {
         }
         assert_eq!(
             waiters,
-            ["fs", "lifecycle", "auth"],
+            ["fs", "lifecycle", "auth", "window"],
             "echo keeps its REPLY-only waiter"
         );
-        assert_eq!(receivers, ["lifecycle"]);
-        for unallocated in [0, 5, 9, u16::MAX] {
+        assert_eq!(receivers, ["lifecycle", "window"]);
+        for unallocated in [0, 6, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
         assert!(ReceiveClass::HostCallWithEvents.carries_host_events());

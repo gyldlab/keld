@@ -112,9 +112,7 @@ fn main() {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
-    let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
-        .map_err(keld_core::app_session::HostRunFailure::from)
-        .and_then(keld_core::app_session::run_guarded);
+    let result = run_validated_no_flag();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let retains_main_custody = result
         .as_ref()
@@ -145,6 +143,33 @@ fn main() {
         // This existing fatal exit is failure, never a physical-drain receipt.
         process::exit(1);
     }
+}
+
+fn run_validated_no_flag() -> Result<(), keld_core::app_session::HostRunFailure> {
+    let boot = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
+        .map_err(keld_core::app_session::HostRunFailure::from)?;
+    #[cfg(target_os = "macos")]
+    {
+        keld_core::app_session::run_guarded(boot, pre_init_terminal)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        keld_core::app_session::run_guarded(boot)
+    }
+}
+
+/// A stalled native Init cannot be unwound: its blocked main stack retains
+/// AppKit/presentation/profile custody and the live dev stage through exit.
+#[cfg(target_os = "macos")]
+fn pre_init_terminal(error: &keld_core::app_session::HostAppError) -> ! {
+    let mut stderr = std::io::stderr().lock();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    if env::var_os("KELD_T1B_STALL_BEFORE_INIT").is_some() {
+        let _ = writeln!(stderr, "KELD_T1B_TERMINAL_ENTERED");
+    }
+    let _ = writeln!(stderr, "{error}");
+    let _ = stderr.flush();
+    process::exit(1)
 }
 
 #[cfg(windows)]
@@ -381,14 +406,24 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         },
         std::io::stdout(),
     );
-    let cleanup = cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(format!(
-            "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
-            cleanup_root.display()
-        )),
-    });
+    // Schema-two facade startup can exit directly from the coordinator while
+    // AppKit is still blocked before Init. Its parent Host alone can prove
+    // native release and delete the stage on ordinary return. This flag is
+    // overwritten by that Host on the authenticated Guardian spawn.
+    let cleanup = if env::var_os("KELD_HOST_OWNS_FACADE_STAGE_CLEANUP")
+        == Some(std::ffi::OsString::from("1"))
+    {
+        cleanup_root.map(|_| ())
+    } else {
+        cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(format!(
+                "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
+                cleanup_root.display()
+            )),
+        })
+    };
     let report = report.map_err(|error| {
         format!(
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
@@ -431,6 +466,36 @@ fn guardian_bun_command(
     // the only one, so a child refused before its exec permit is its whole
     // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
     let mut command = Command::new("bun");
+    let sidecar = root.join("src").join("kipc-transport.ts");
+    match std::fs::metadata(&sidecar) {
+        Ok(metadata) if metadata.is_file() => {
+            // A local bunfig can replace Bun's CLI preload. The dev-stage
+            // producer copies only named boot artifacts; recheck the qualified
+            // cwd on every generation before the original entry is executed.
+            for config in ["bunfig.toml", ".bunfig.toml"] {
+                match std::fs::symlink_metadata(root.join(config)) {
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => {
+                        return Err(guardian_entry_error(format!(
+                            "KELD-CORE-037: staged runtime config {config} can override the canonical preload. Restage through `keld dev`."
+                        )));
+                    }
+                }
+            }
+            command.arg(format!("--preload={}", sidecar.display()));
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return Err(guardian_entry_error(String::from(
+                "KELD-CORE-037: staged kipc transport is not a regular file. Restage through `keld dev`.",
+            )));
+        }
+        Err(source) => {
+            return Err(guardian_entry_error(format!(
+                "KELD-CORE-037: staged kipc transport cannot be inspected: {source}. Restage through `keld dev`."
+            )));
+        }
+    }
     command
         .arg("run")
         .arg(root.join(entry))
@@ -566,6 +631,45 @@ mod tests {
         )
         .expect("validated stage must still produce the Bun command");
         assert_eq!(command.get_program(), "bun");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["run".as_ref(), entry.as_os_str()]
+        );
+
+        fs::create_dir(temp.path().join("src")).expect("transport directory");
+        let sidecar = temp.path().join("src/kipc-transport.ts");
+        fs::write(&sidecar, "export {};\n").expect("transport sidecar");
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            relative,
+            identity.dev(),
+            identity.ino(),
+            "/tmp/link#token",
+        )
+        .expect("canonical sidecar launch");
+        let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(args[0], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[1], "run");
+        assert_eq!(args[2], entry.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(temp.path()));
+        // Bun config can replace a CLI preload. Qualify every generation,
+        // including recovery after a previously absent config appears.
+        for config in ["bunfig.toml", ".bunfig.toml"] {
+            let config_path = temp.path().join(config);
+            fs::write(&config_path, "preload = [\"./app-hook.ts\"]\n").expect("hostile config");
+            let error = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                relative,
+                identity.dev(),
+                identity.ino(),
+                "/tmp/link#token",
+            )
+            .expect_err("ambient preload override must refuse launch");
+            assert!(error.to_string().contains("runtime config"), "{error}");
+            fs::remove_file(config_path).expect("restore qualified stage");
+        }
     }
 
     #[test]
