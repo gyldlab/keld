@@ -819,8 +819,16 @@ failure construction and diagnostics. Private Source maps and iterators stay beh
 that owner during public snapshot copying and terminal clearing. This bounded phase
 is GH527 §4.6; §4.5 liveness still invokes Worker termination synchronously, without
 an arbitrary Worker-prototype immunity guarantee. The macOS guarded primary preloads that same staged
-sidecar before the original entry and rejects a staged runtime config that could
-override preload ordering; an absent sidecar retains legacy direct-entry startup.
+sidecar before the original entry. On every generation, Core's validated boot kind
+supplies a strict private Guardian argument; Host supplies Bun's literal runtime
+define for the canonical mode expression, so later environment edits and separately
+resolved unchanged package copies cannot select a different facade policy. Host
+rejects staged root runtime configs on both sidecar and direct-entry launches and
+removes inherited `BUN_OPTIONS` before executing Bun, preserving qualified preload
+ordering. An absent sidecar retains direct-entry startup, including raw schema-two
+roles; the mode define does not require subscription or grant window authority.
+This is a bounded bug fix to the approved boot-selection invariant. It does not
+qualify late package copies' intrinsic captures after application mutation.
 After the transport's earlier-record drain, the helper holds no values at terminal
 finalization. Ordinary consumption may establish this; any additional residual
 clearing needs a reachable lifetime proof. The helper does not retain released payload copies or add an

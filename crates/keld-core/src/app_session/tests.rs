@@ -30,6 +30,35 @@ use super::SESSION_HANDOVER;
 
 #[cfg(target_os = "macos")]
 #[test]
+fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
+    use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
+    for (trigger, expected) in [
+        (AppReadyTrigger::HostInitialized, "1"),
+        (AppReadyTrigger::NavigationReady, "0"),
+    ] {
+        for ambient in ["0", "1", "unknown"] {
+            let mut command = std::process::Command::new("unused-guardian");
+            command
+                .arg("entry-inode")
+                .env(NATIVE_WINDOW_FACADE_ENV, ambient);
+            configure_guardian_boot_mode(&mut command, trigger);
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                ["entry-inode", expected]
+            );
+            assert_eq!(
+                command
+                    .get_envs()
+                    .find(|(name, _)| *name == NATIVE_WINDOW_FACADE_ENV)
+                    .and_then(|(_, value)| value),
+                Some(std::ffi::OsStr::new(expected))
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn facade_and_renderer_ready_milestones_cannot_cross_or_repeat() {
     use super::{AppReadyTrigger, accept_boot_ready_trigger};
 
