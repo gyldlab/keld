@@ -2,11 +2,11 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
-mod error;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod dialog_custody;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod dialog_custody_contract;
+mod error;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
