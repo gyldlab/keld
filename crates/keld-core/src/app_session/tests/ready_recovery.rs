@@ -290,6 +290,7 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
                     attempt: if case == "successor" { 3 } else { 1 },
                     writer,
                     reader_stop: Arc::new(AtomicBool::new(false)),
+                    dialog_nonce_high_water: 0,
                     pending_quit: None,
                 });
                 if case != "successor" {
