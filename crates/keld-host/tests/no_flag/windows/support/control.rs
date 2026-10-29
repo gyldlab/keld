@@ -42,6 +42,35 @@ pub(crate) fn accept_ready_generation(
     (reader, writer, pid, link)
 }
 
+/// The Bun pid and app link of a generation's `HELLO <pid> <link>` record.
+pub(crate) fn parse_hello(record: &str) -> (u32, String) {
+    let mut fields = record.split_whitespace();
+    assert_eq!(fields.next(), Some("HELLO"), "{record}");
+    let pid = fields
+        .next()
+        .expect("generation pid")
+        .parse::<u32>()
+        .expect("numeric generation pid");
+    let link = fields.next().expect("generation app link").to_owned();
+    assert!(fields.next().is_none(), "{record}");
+    (pid, link)
+}
+
+/// After the host has exited, no further generation connected to this control
+/// listener. The check never waits: it switches the listener to nonblocking.
+pub(crate) fn assert_no_control_connection(listener: &TcpListener, context: &str) {
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking control listener");
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "{context}"
+    );
+}
+
 pub(crate) fn parse_descendant_pid(record: &str) -> u32 {
     record
         .strip_prefix("DESCENDANT ")
@@ -119,15 +148,7 @@ fn accept_ready_generation_inner(
         "CONTROL_CONNECTED",
         kill_switches.record,
     );
-    let mut fields = hello.split_whitespace();
-    assert_eq!(fields.next(), Some("HELLO"), "{hello}");
-    let pid = fields
-        .next()
-        .expect("generation pid")
-        .parse::<u32>()
-        .expect("numeric generation pid");
-    let link = fields.next().expect("generation app link").to_owned();
-    assert!(fields.next().is_none(), "{hello}");
+    let (pid, link) = parse_hello(&hello);
     let descendant_record = read_control_line_or_host_failure_after_phase(
         &mut reader,
         child,
