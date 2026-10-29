@@ -37,6 +37,8 @@ mod preclick;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_phase.rs"]
+mod quit_phase;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -156,41 +158,29 @@ fn wait_public_host_with_phase(
     observer: &Observation,
     observation_succeeded: bool,
 ) -> Output {
-    wait_public_host_with_phase_after_wait(child, observer, observation_succeeded, || {})
+    public_host_wait(child, observer).public(observation_succeeded)
 }
 
-// This observer samples only while the original real Host is live, before
-// wait_child_output_observing checks the unchanged original exit deadline.
-fn wait_public_host_with_phase_after_wait(
+fn wait_retirement_host_with_phase(
     child: std::process::Child,
     observer: &Observation,
-    observation_succeeded: bool,
     after_wait: impl FnOnce(),
 ) -> Output {
-    let mut last_live_http_quit_stage = 0_u8;
-    let host_exit = catch_unwind(AssertUnwindSafe(|| {
-        wait_child_output_observing(child, EVENT_DEADLINE, || {
-            last_live_http_quit_stage = observer
-                .quit_progress
-                .load(std::sync::atomic::Ordering::Acquire);
-        })
-    }));
-    // Release caller-owned peers after waiting, including before a wait failure
-    // is rethrown and the fixture observer can Drop/join.
-    after_wait();
-    host_exit.unwrap_or_else(|failure| {
-        if observation_succeeded {
-            let stage = match last_live_http_quit_stage {
-                0 => "no_http_quit_observed",
-                1 => "http_quit_received",
-                2 => "observer_response_written",
-                _ => "invalid_observer_stage",
-            };
-            // Fixed phase enum only; never reveal HTTP/IPC data or native IDs.
-            eprintln!("KELD_KEL140_NATIVE_QUIT_PHASE last_live_http_stage={stage}");
-        }
-        resume_unwind(failure)
-    })
+    public_host_wait(child, observer).retirement(after_wait)
+}
+
+// The unchanged process wait owns custody, the 20s deadline and live-only callbacks.
+fn public_host_wait(
+    child: std::process::Child,
+    observer: &Observation,
+) -> quit_phase::Wait<'_, impl FnOnce(&mut dyn FnMut()) -> Output, impl FnMut(&str)> {
+    quit_phase::Wait::new(
+        &observer.quit_progress,
+        move |observe: &mut dyn FnMut()| {
+            wait_child_output_observing(child, EVENT_DEADLINE, observe)
+        },
+        |line: &str| eprintln!("{line}"),
+    )
 }
 
 fn run_launch_with_descendant_quit(

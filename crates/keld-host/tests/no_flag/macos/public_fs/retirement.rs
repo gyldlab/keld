@@ -149,10 +149,9 @@ fn run_launch_without_window_census(
     observer.quit.send(()).expect("release real public Quit");
     // Observation assertions above succeeded before this route reaches Quit.
     // Share the ordinary route's live-only sample and fixed-label diagnostic.
-    let output = super::wait_public_host_with_phase_after_wait(
+    let output = super::wait_retirement_host_with_phase(
         cleanup.cli.take().expect("retained real shipping host"),
         &observer,
-        true,
         // Keep the silent peer through the wait, then release it before any
         // wait failure is rethrown and the fixture observer can Drop/join.
         || drop(idle),
