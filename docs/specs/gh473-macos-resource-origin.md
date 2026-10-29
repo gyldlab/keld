@@ -318,9 +318,9 @@ document, rendered from typed Host policy without page input, wildcards, a
 scheme-wide source, or a `'self'` substitution. It is a placeholder below, never
 literal header text. The one policy renderer emits:
 
-~~~text
+```text
 default-src 'none'; script-src RESOURCE_ORIGIN 'wasm-unsafe-eval'; connect-src RESOURCE_ORIGIN; img-src RESOURCE_ORIGIN data:; media-src RESOURCE_ORIGIN; font-src RESOURCE_ORIGIN data:; style-src RESOURCE_ORIGIN 'unsafe-inline'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'
-~~~
+```
 
 Absent fetch destinations remain denied by `default-src 'none'`; explicitly deny
 objects and frames as above, and emit the independent `form-action`,
