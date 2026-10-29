@@ -3,6 +3,11 @@
 //! The first implemented variants are Message and Cancel. Later operations must
 //! append variants; neither nonce nor window reference conveys authority.
 
+/// Actual macOS `NSAlert` construction and sheet custody on the AppKit thread.
+/// The Host owns Guard, parent identity, correlation, and callback retirement.
+#[cfg(target_os = "macos")]
+pub mod macos_message;
+
 use std::fmt;
 
 use keld_ipc::{IpcError, codec, window::WindowRef};
