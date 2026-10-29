@@ -36,6 +36,7 @@ use wry::WebViewExtMacOS;
 
 use crate::WebviewId;
 pub use crate::engine::AppReadyTrigger;
+pub use crate::engine::MacDialogUiOutcome;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
@@ -314,7 +315,7 @@ impl WkWebViewEngine {
             events,
             None,
             AppReadyTrigger::NavigationReady,
-            &mut |_, _, _| Ok((true, None)),
+            &mut |_, _, _, _| Ok((true, None)),
             (&mut unproved, || {}),
         )
     }
@@ -323,7 +324,10 @@ impl WkWebViewEngine {
     ///
     /// `anchor` is the host-created view, never a caller-supplied selector.
     /// The resolver returns its actual `AppKit` window through wry's safe accessor.
-    /// `service` receives the main-thread marker, resolver, and stop intent; it
+    /// `service` receives the main-thread marker, the legacy Auth anchor,
+    /// an explicit `WebviewId` resolver for Host-validated dialog parents,
+    /// and stop intent. Both resolvers return only the current live Wry-owned
+    /// `NSWindow`; neither accepts a native pointer or creates a window. It
     /// returns (actual owner drained, next original absolute deadline), or an
     /// owned-custody failure. `retains_main_custody` is set on that failed cut,
     /// requiring the caller to retain this engine and the concrete service.
@@ -354,6 +358,7 @@ impl WkWebViewEngine {
         F: FnMut(
             MainThreadMarker,
             &mut dyn FnMut() -> Option<Retained<NSWindow>>,
+            &mut dyn FnMut(WebviewId) -> Option<Retained<NSWindow>>,
             bool,
         ) -> Result<(bool, Option<Instant>), WvError>,
     {
@@ -646,7 +651,13 @@ impl WkWebViewEngine {
                         .and_then(|id| views.get(&id.0))
                         .and_then(|view| view.webview.webview().window())
                 };
-                match service(main_thread, &mut resolve, stopping) {
+                let mut resolve_view = |id: WebviewId| {
+                    views
+                        .get(&id.0)
+                        .and_then(|view| view.registry_managed.then_some(view))
+                        .and_then(|view| view.webview.webview().window())
+                };
+                match service(main_thread, &mut resolve, &mut resolve_view, stopping) {
                     Ok(progress) => progress,
                     Err(error) => {
                         main_owner_failure.get_or_insert(error);
@@ -702,7 +713,13 @@ impl WkWebViewEngine {
                         .and_then(|id| views.get(&id.0))
                         .and_then(|view| view.webview.webview().window())
                 };
-                service(main_thread, &mut resolve, true)
+                let mut resolve_view = |id: WebviewId| {
+                    views
+                        .get(&id.0)
+                        .and_then(|view| view.registry_managed.then_some(view))
+                        .and_then(|view| view.webview.webview().window())
+                };
+                service(main_thread, &mut resolve, &mut resolve_view, true)
             };
             let progress = match progress {
                 Ok(progress) => progress,

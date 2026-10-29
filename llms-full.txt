@@ -2676,7 +2676,7 @@ through that spec's ordered tasks.
 | `window` | create/close/show/focus/bounds/state, titlebar styles (hiddenInset/overlay), vibrancy/mica/acrylic, always-on-top, parenting/modal, fullscreen | `BrowserWindow` |
 | `menu` | app menu, context menus, accelerators, role items (macOS roles complete) | `Menu`, `MenuItem` |
 | `tray` | icon, tooltip, menu, click events, template images | `Tray` |
-| `dialog` | open/save/message/error, scoped-path grants flow into fs scopes | `dialog` |
+| `dialog` | planned open/save/message/error; GH478 macOS legacy first-proof returns selected paths only, with **no implicit FsBroker scope**. Guarded FS requires an independent pre-existing grant; strict user-intent scope minting is deferred to F06-T15 and its own approved policy/OS proof | `dialog` |
 | `notify` | notifications with actions, macOS UNUserNotification / WinRT toast / libnotify | `Notification` |
 | `clipboard` | text/html/image/files, change polling where OS allows | `clipboard` |
 | `shortcut` | global shortcuts with conflict detection | `globalShortcut` |
@@ -2692,6 +2692,14 @@ through that spec's ordered tasks.
 | `autostart` | login items / registry / .desktop | `app.setLoginItemSettings` |
 | `dock/taskbar` | badge, progress, bounce, jump lists, thumbbar | `app.dock`, `setProgressBar` |
 | `capture` (Tier 3) | window/screen capture via ScreenCaptureKit / Graphics.Capture / PipeWire | `desktopCapturer` |
+
+**Dialog file authority (GH478 first-proof approved design, not implemented).** The selected
+path is result data, not a grant source. Under explicit legacy, direct Bun
+`node:fs` remains ambient and the containment tradeoff must be disclosed;
+the dialog must not silently widen `@keld/api` guarded FS permissions.
+Strict-profile access after a dialog selection needs separately approved
+user-intent/FS scope semantics under F06-T15. No native dialog broker or
+strict selection-derived grant is shipped merely by this architecture row.
 
 **Window ownership.** No keld-native broker owns the `window` row. keld-native depends
 only on ipc and guard, and native windows and webviews are UI-thread handles that
@@ -6194,6 +6202,54 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-native
 - message: Filesystem broker preparation failed or a call presented a different verified manifest snapshot
 - fix: Repair the absolute serviceable scopes or use the same verified snapshot, then start a fresh session.
+
+## KELD-NATIVE-009
+
+- crate: keld-core
+- message: The bounded native Message request or generation nonce is invalid or was already accepted
+- fix: Use positive increasing nonces from the current authenticated app-link generation and source-exact bounded Message options.
+
+## KELD-NATIVE-010
+
+- crate: keld-core
+- message: This form of native dialog presentation is not yet supported by the current macOS adapter
+- fix: Supply a live parented BrowserWindow for the first-proof async Message operation; do not enter a synchronous modal loop inside Tao.
+
+## KELD-NATIVE-011
+
+- crate: keld-core
+- message: The requested Message dialog parent is not an authenticated current-role BrowserWindow
+- fix: Use the Host-minted current-window reference, not a forged object or numeric native pointer.
+
+## KELD-NATIVE-012
+
+- crate: keld-core
+- message: The Message dialog parent was destroyed, closed, or belongs to a retired generation
+- fix: Wait for the successor's current window admission before requesting a new native dialog.
+
+## KELD-NATIVE-013
+
+- crate: keld-core
+- message: Another native Message dialog still owns this role's bounded panel capacity
+- fix: Wait until the prior panel and its native callback have physically drained, then make a fresh request.
+
+## KELD-NATIVE-014
+
+- crate: keld-core
+- message: The authenticated Message dialog exceeded its own finite native interaction deadline
+- fix: Inspect the real OS session and perform a new user-directed action; never automatically replay an unknown effect.
+
+## KELD-NATIVE-015
+
+- crate: keld-core
+- message: The original native Message operation was canceled before its terminal result committed
+- fix: Treat the original correlation as canceled, not as a clicked Cancel button or an acknowledgement of the new Cancel correlation.
+
+## KELD-NATIVE-016
+
+- crate: keld-core
+- message: The macOS native Message presentation or callback failed without a confirmed user selection
+- fix: Inspect Host and AppKit's reported cause and retry only as a fresh user-directed action after physical cleanup.
 
 ## KELD-COMPAT-001
 
