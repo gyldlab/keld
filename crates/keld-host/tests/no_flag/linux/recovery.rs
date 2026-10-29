@@ -10,11 +10,11 @@ use crate::support::{
         StrictGeneration, wait_child, wait_for_strict_generation, wait_process_identity_gone,
     },
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
-    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
+    renderer::{HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon},
 };
 use std::{
     fs,
-    io::{BufReader, Write as _},
+    io::{BufReader, Read as _, Write as _},
     net::TcpListener,
     os::unix::net::UnixListener,
     path::Path,
@@ -127,4 +127,71 @@ fn accept_generation(
     assert_nonzero_descendant(&read_control_line(&mut reader));
     let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
     (reader, writer, generation, link)
+}
+
+/// GH-1182 R1 on Linux: Bun exits after its authenticated HELLO while the initial
+/// window is live and its first navigation is held open ([`HeldRendererRequest`]),
+/// so the window cannot be `Ready` first. The pre-Ready recovery gate is still
+/// closed, so the host fails startup instead of provisioning a successor
+/// (architecture 06 §1).
+#[test]
+fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_path = fixture.root.path().join("post-hello-control.sock");
+    let listener = UnixListener::bind(&control_path).expect("bind post-HELLO control");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking post-HELLO control");
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage post-HELLO host");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", &control_path)
+        .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch post-HELLO host");
+    let (_reader, mut writer, generation, _link) = accept_generation(&listener, &mut host);
+    held.await_connection(&mut host);
+
+    // The initial navigation deadline (`keld_wv::INITIAL_MILESTONE_DEADLINE`)
+    // keeps running while the load is held. If it fires first, the host fails
+    // with that deadline instead, and the message assertion below rejects it.
+    writer
+        .write_all(b"EXIT_PRE_READY\n")
+        .expect("request post-HELLO exit");
+    writer.flush().expect("flush post-HELLO exit");
+    let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    assert!(
+        !status.success(),
+        "post-HELLO pre-Ready exit became success"
+    );
+    // Prove the sandbox is gone before reading to the end of the host's stderr.
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
+    let mut stderr = String::new();
+    host.stderr
+        .take()
+        .expect("captured post-HELLO stderr")
+        .read_to_string(&mut stderr)
+        .expect("read post-HELLO stderr");
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service"
+    );
+    held.release();
 }
