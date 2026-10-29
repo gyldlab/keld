@@ -198,12 +198,20 @@ function send(body: object): void {
 post(stringify({ v: 1, kind: "hello", href: location.href }));   // authority-free, no epoch
 installKeldFloor(send);                                           // KEL-142 §4.1
 installElectronFacade(send);                                      // #1154 shapes
-if (ENTRY_URIS.has(stripFragment(location.href))) runWrappedPreload(); // #1155 §4.2
+function stripQueryAndFragment(href: string): string {
+  const url = new URL(href);
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+if (ENTRY_URIS.has(stripQueryAndFragment(location.href))) runWrappedPreload(); // #1155 §4.2
 ```
 
 Rules: the text holds no secret. `ENTRY_URIS` is the set of qualified application entry
-URIs the Host embeds at registration from the same manifest snapshot it uses for A4; it is
-a convenience gate so the app preload does not execute in allowlisted remote documents or
+URIs the Host embeds at registration from the same manifest snapshot it uses for A4,
+with the same `stripQueryAndFragment` normalization applied to every embedded entry.
+Scheme, authority and exact entry path remain part of each key; only query and fragment
+are removed, matching §4.5's entry-path rule. This is a convenience gate so the app preload does not execute in allowlisted remote documents or
 error pages (it has no authority either way; A4 is the rule). A page can forge a
 `chrome.webview` `message` event and corrupt `epoch`; that only breaks its own calls. The
 `hello` message is sent once per document before any epoch exists; it carries no channel
@@ -353,12 +361,15 @@ a page or attacker reaches (E5 trigger a control). The Host therefore **cannot**
 application document from a replacement, and no epoch may be minted for it. Route D
 **requires** the application document to be loaded from a Host-identifiable URL:
 
-- either the exact `file://` URL of the entry file under the KEL-102-verified package root —
-  the probe shows `Source` carries the full path, and the Source rule compares the **full
-  URL**, never the `file://` origin, which every file document shares; whether that URL is
-  safe as identity depends on the path verification (B6), not on the stamp;
-- or a Keld-owned virtual host mapped to the verified package root (`DENY_CORS`), whose URL
-  is likewise compared in full.
+- either the exact `file://` entry path under the KEL-102-verified package root —
+  qualify the verified entry resource at commit (§4.5), not by the shared `file://` origin;
+  whether that path is safe as identity depends on path verification (B6), not on the stamp;
+- or a Keld-owned virtual host mapped to the verified package root (`DENY_CORS`), whose
+  verified entry resource is likewise qualified at commit (§4.5).
+
+Per-call Source checks follow §4.4: matching committed origin and, for `file:`, verified
+package-root containment, together with the current document epoch. Query and fragment
+are not compared (AC20); neither loading option requires per-call full-URL equality.
 
 The choice is owned by W3 #1185 (file-origin navigation/containment) together with
 #1192/KEL-102 (resource identity); T2 carries the `NavTarget::Html` → verified-URL change
