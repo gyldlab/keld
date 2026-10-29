@@ -3,6 +3,10 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod dialog_custody;
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod dialog_custody_contract;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5948,11 +5952,29 @@ struct ActivePrimaryGeneration {
     identity: PrimaryLinkIdentity,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
+    /// The authenticated current primary role owns this sequence. Its value
+    /// is protected by the same current-generation/transition lock as the
+    /// caller fence, and is reset only by installing a new Runtime generation.
+    /// The dialog effect owner must not copy or independently advance it.
+    dialog_nonce_high_water: u64,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
     /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
     /// the generation lock, so retirement answers it at most once and never
     /// after its real REPLY.
     pending_quit: Option<CorrelationId>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl ActivePrimaryGeneration {
+    /// Admit each positive Message nonce at most once for this authenticated
+    /// primary generation. The caller fence MUST run before invoking this.
+    fn accept_dialog_nonce(&mut self, nonce: u64) -> bool {
+        if nonce == 0 || nonce <= self.dialog_nonce_high_water {
+            return false;
+        }
+        self.dialog_nonce_high_water = nonce;
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -7300,6 +7322,7 @@ impl PrimaryRouterHandle {
                 identity,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
+                dialog_nonce_high_water: 0,
                 pending_quit: None,
             });
             drop(current);

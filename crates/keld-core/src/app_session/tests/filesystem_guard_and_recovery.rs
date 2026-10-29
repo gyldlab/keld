@@ -147,6 +147,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         attempt: 1,
         writer: server,
         reader_stop: Arc::clone(&reader_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
     let (guardian_tx, guardian_rx) = mpsc::channel();
@@ -285,6 +286,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         attempt: 1,
         writer: g1_server,
         reader_stop: Arc::clone(&reader_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
     let (guardian_tx, guardian_rx) = mpsc::channel();

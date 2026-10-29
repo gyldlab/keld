@@ -98,6 +98,7 @@ fn stale_and_foreign_link_contexts_are_inert_before_echo_decode() {
         attempt: 2,
         writer,
         reader_stop: Arc::clone(&current_stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     }));
     let shutdown = SessionShutdownState::new();
@@ -134,6 +135,7 @@ fn current_g2_context_dispatches_original_echo_and_stopped_context_is_inert() {
         attempt: 2,
         writer,
         reader_stop: Arc::clone(&stop),
+        dialog_nonce_high_water: 0,
         pending_quit: None,
     }));
     let caller = PrimaryCallerContext {

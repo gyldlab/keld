@@ -240,3 +240,81 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         );
     }
 }
+
+#[test]
+fn dialog_nonce_is_owned_by_the_authenticated_current_generation() {
+    let mut primary = AcceptedRole::start(RoleOwner::Primary);
+    let (bound, mut control) = primary.bind();
+    let principal = bound.principal();
+    let mut foreign = AcceptedRole::start(RoleOwner::AppBound);
+    let (foreign_bound, _) = foreign.bind();
+    let (owner, _commands) = mpsc::channel();
+    let (window, _events) = mpsc::channel();
+    let router = PrimaryRouter::start_bound(
+        bound,
+        window,
+        PlatformPrimaryOwnerHandle { command_tx: owner },
+        SessionShutdownState::new(),
+        None,
+        #[cfg(target_os = "macos")]
+        MacBoundStart {
+            auth_configuration: AuthConfiguration::new(),
+            presentation: None,
+            facade_windows: false,
+        },
+    )
+    .expect("actual authenticated primary router");
+    let handle = router.handle();
+    let caller = {
+        let current = handle.current.lock().expect("current primary lease");
+        let active = current.as_ref().expect("accepted generation installed");
+        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        PrimaryCallerContext {
+            attempt: active.attempt,
+            identity: active.identity,
+            reader_stop: Arc::clone(&active.reader_stop),
+        }
+    };
+    let mut wrong_role = caller.clone();
+    wrong_role.identity = PrimaryLinkIdentity::Role(foreign_bound.principal());
+    let mut wrong_attempt = caller.clone();
+    wrong_attempt.attempt += 1;
+    for refused in [&wrong_role, &wrong_attempt] {
+        super::super::with_primary_caller_locked(
+            &handle.current,
+            &handle.shutdown,
+            refused,
+            |_| panic!("foreign caller reached nonce owner"),
+        )
+        .expect("foreign context is inert");
+    }
+    super::super::with_primary_caller_locked(
+        &handle.current,
+        &handle.shutdown,
+        &caller,
+        |current| {
+            let active = current.as_mut().expect("verified current generation");
+            assert!(!active.accept_dialog_nonce(0));
+            assert!(active.accept_dialog_nonce(1));
+            assert!(!active.accept_dialog_nonce(1));
+            assert!(active.accept_dialog_nonce(2));
+            assert!(active.accept_dialog_nonce(u64::MAX));
+            assert!(!active.accept_dialog_nonce(u64::MAX));
+            Ok(())
+        },
+    )
+    .expect("actual primary owns nonce sequence");
+    control
+        .get_mut()
+        .write_all(b"ECHO\n")
+        .expect("healthy call");
+    assert_eq!(read_control(&mut control), "ECHO-OK");
+    router.shutdown().expect("actual router reader joined");
+    drop(foreign_bound);
+    for role in [&mut primary, &mut foreign] {
+        assert!(matches!(
+            role.finish(),
+            Some(keld_runtime::SupervisorOutcome::Stopped)
+        ));
+    }
+}

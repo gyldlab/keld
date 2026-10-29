@@ -134,6 +134,7 @@ fn successor_drain_test_router(
             attempt: 1,
             writer: g1_server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),

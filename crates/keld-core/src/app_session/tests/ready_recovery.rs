@@ -53,6 +53,7 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
             attempt: 1,
             writer: server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
