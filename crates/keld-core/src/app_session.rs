@@ -3738,8 +3738,15 @@ fn run_direct_app_session(
         .guard_snapshot
         .map(|snapshot| snapshot.verified.verified_sha256());
 
+    // The owner's typed cause outranks the window loop's own failure, which a
+    // terminal owner causes by ending the loop: a recovery-gate refusal
+    // (KELD-CORE-033), or a generation lost before the initial Ready.
     let owner_result = match owner_result {
-        Err(primary) if primary.code == "KELD-CORE-033" => {
+        Err(primary)
+            if primary.code == "KELD-CORE-033"
+                || (primary.code == "KELD-CORE-037"
+                    && primary.phase == PRIMARY_PRE_READY_PHASE) =>
+        {
             return Err(append_app_cleanup(
                 primary,
                 [
@@ -5652,6 +5659,10 @@ fn restart_failed_bound_generation(
     owned
 }
 
+/// The phase of the one typed startup failure for a primary generation lost
+/// before the initial window became `Ready` (GH-1182).
+const PRIMARY_PRE_READY_PHASE: &str = "primary generation before Ready";
+
 /// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
 /// one does. Linux and Windows route it through the direct owner so startup
 /// fails with the recovery gate's typed cause (GH-1182). macOS keeps the
@@ -5751,7 +5762,7 @@ fn drain_direct_primary_role_events(
         let Some(router) = router else {
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 return Err(app_detail(
-                    "primary generation before Ready",
+                    PRIMARY_PRE_READY_PHASE,
                     "Bun terminated before the initial window became ready",
                 ));
             }
@@ -7175,7 +7186,7 @@ impl PrimaryRouterHandle {
                     .fetch_max(attempt, Ordering::AcqRel);
                 if !self.window_ready.load(Ordering::Acquire) {
                     return Err(app_detail(
-                        "primary generation before Ready",
+                        PRIMARY_PRE_READY_PHASE,
                         "Bun terminated before the initial window became ready",
                     )
                     .into());
