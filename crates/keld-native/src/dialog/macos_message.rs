@@ -17,6 +17,10 @@ use objc2_foundation::NSString;
 
 use super::{DialogReplyV1, MessageKind, MessageOptions, validate_message_options};
 
+/// The typed `AppKit` parent shared by the native and Host UI service. This is
+/// only a Rust type alias; no caller mints or stores a raw native pointer.
+pub type MacMessageParent = NSWindow;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PanelState {
     Prepared,

@@ -2,10 +2,12 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
-#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+#[cfg(any(test, target_os = "macos"))]
 mod dialog_custody;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 mod dialog_custody_contract;
+#[cfg(target_os = "macos")]
+mod dialog_session;
 mod error;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
@@ -1331,6 +1333,7 @@ impl std::error::Error for HostRunFailure {
 #[cfg(target_os = "macos")]
 struct RetainedMacSession {
     _presentation: keld_native::auth::AsMainOwner,
+    _dialog_main: Option<dialog_session::DialogMainOwner>,
     _engine: WkWebViewEngine,
     _router: PrimaryRouter,
     _guardian: GuardianOwner,
@@ -2471,6 +2474,9 @@ fn run_app(
     )?;
     guardian_owner.attach_router(router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
+    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+    });
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
     let init_deadline = Arc::new(OnceLock::new());
@@ -2580,27 +2586,46 @@ fn run_app(
         window_events_tx,
         primary_view,
         ready_trigger,
-        &mut |main_thread, anchor, stopping| {
+        &mut |main_thread, anchor, dialog_parent, stopping| {
             if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
                 let detail = error.to_string();
                 presentation_unproved.get_or_insert(error);
                 return Err(WvError::EventLoop(detail));
             }
             let stop_scope = presentation_router.prepare_auth_presentation_drive(stopping);
-            match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
-                keld_native::auth::AsMainProgress::Pending { next_deadline } => {
-                    Ok((false, next_deadline))
-                }
-                keld_native::auth::AsMainProgress::Drained => Ok((true, None)),
-                keld_native::auth::AsMainProgress::Unproved { fault, .. } => {
-                    presentation_unproved.get_or_insert_with(|| {
-                        app_detail("auth presentation custody", format!("{fault:?}"))
-                    });
-                    Err(WvError::EventLoop(format!(
-                        "native presentation custody unproved: {fault:?}"
-                    )))
-                }
-            }
+            let (auth_drained, auth_deadline) =
+                match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
+                    keld_native::auth::AsMainProgress::Pending { next_deadline } => {
+                        (false, next_deadline)
+                    }
+                    keld_native::auth::AsMainProgress::Drained => (true, None),
+                    keld_native::auth::AsMainProgress::Unproved { fault, .. } => {
+                        presentation_unproved.get_or_insert_with(|| {
+                            app_detail("auth presentation custody", format!("{fault:?}"))
+                        });
+                        return Err(WvError::EventLoop(format!(
+                            "native presentation custody unproved: {fault:?}"
+                        )));
+                    }
+                };
+            let (dialog_drained, dialog_deadline) = if let Some(dialog) = &mut dialog_presentation {
+                dialog
+                    .drive(main_thread, dialog_parent, stopping)
+                    .map_err(|error| {
+                        let detail = error.to_string();
+                        presentation_unproved.get_or_insert(error);
+                        WvError::EventLoop(detail)
+                    })?
+            } else {
+                (true, None)
+            };
+            Ok((
+                auth_drained && dialog_drained,
+                match (auth_deadline, dialog_deadline) {
+                    (Some(auth), Some(dialog)) => Some(auth.min(dialog)),
+                    (auth, dialog) => auth.or(dialog),
+                },
+            ))
         },
         (&mut retains_main_custody, || {
             if ready_trigger == AppReadyTrigger::HostInitialized {
@@ -2625,6 +2650,7 @@ fn run_app(
             retained: Some(Box::new(RetainedMacSession {
                 _engine: engine,
                 _presentation: presentation_owner,
+                _dialog_main: dialog_presentation,
                 _router: router,
                 _guardian: guardian_owner,
                 _coordinator: event_coordinator,
@@ -2634,6 +2660,13 @@ fn run_app(
             })),
         });
     }
+    // The UI service has now returned a proved drained result. It retained a
+    // dedicated AppWindowEvent sender for real native sheet completions; if we
+    // join the event coordinator while this sender is still owned here, its
+    // receiver can never observe Disconnected on a facade-window session.
+    // Release only after the native main owner has finished its callback and
+    // physical sheet custody; the fatal/unproved branch above retains it.
+    drop(dialog_presentation.take());
     finish_guarded_session(guard_snapshot, |_| {
         drop(window_commands_tx);
         let event_result = event_coordinator
@@ -4639,6 +4672,12 @@ fn coordinate_window_events(
             }
             #[cfg(target_os = "macos")]
             AppWindowEvent::HostInitialized { .. } => signal_once(AppReadyTrigger::HostInitialized),
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::MacDialogFinished {
+                attempt,
+                nonce,
+                outcome,
+            } => router.dialog_native_finished(attempt, nonce, outcome),
             AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
                 router.signal_last_window_closed().map(drop)
             }
@@ -5877,6 +5916,9 @@ struct PrimaryRouterHandle {
     auth: Option<Arc<AuthSession>>,
     #[cfg(target_os = "macos")]
     auth_commands: Option<SyncSender<AuthWork>>,
+    /// One verified, immutable dialog policy and native effect custody owner.
+    #[cfg(target_os = "macos")]
+    dialog: Option<Arc<dialog_session::DialogSession>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
     #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -6313,10 +6355,29 @@ impl PrimaryRouterHandle {
     fn privileged_calls(&self) -> &'static [&'static keld_ipc::channel_table::ChannelEntry] {
         #[cfg(target_os = "macos")]
         if self.auth.is_some() {
+            return match (self.fs.is_some(), self.dialog.is_some()) {
+                (true, true) => &[
+                    &keld_ipc::channel_table::FS,
+                    &keld_ipc::channel_table::AUTH,
+                    &keld_ipc::channel_table::DIALOG,
+                ],
+                (true, false) => &[&keld_ipc::channel_table::FS, &keld_ipc::channel_table::AUTH],
+                (false, true) => &[
+                    &keld_ipc::channel_table::AUTH,
+                    &keld_ipc::channel_table::DIALOG,
+                ],
+                (false, false) => &[&keld_ipc::channel_table::AUTH],
+            };
+        }
+        #[cfg(target_os = "macos")]
+        if self.dialog.is_some() {
             return if self.fs.is_some() {
-                &[&keld_ipc::channel_table::FS, &keld_ipc::channel_table::AUTH]
+                &[
+                    &keld_ipc::channel_table::FS,
+                    &keld_ipc::channel_table::DIALOG,
+                ]
             } else {
-                &[&keld_ipc::channel_table::AUTH]
+                &[&keld_ipc::channel_table::DIALOG]
             };
         }
         if self.fs.is_some() {
@@ -6346,6 +6407,10 @@ impl PrimaryRouterHandle {
             ));
         };
         active.reader_stop.store(true, Ordering::Release);
+        #[cfg(target_os = "macos")]
+        if let Some(dialog) = &self.dialog {
+            dialog.retire(active.identity, active.attempt);
+        }
         let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
             active.identity,
             active.attempt,
@@ -6408,6 +6473,12 @@ impl PrimaryRouterHandle {
                 .map(|corr| (LIFECYCLE_CHANNEL, corr)),
         ];
         #[cfg(target_os = "macos")]
+        let dialog_pending = self
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.pending_original_for(active.identity, attempt))
+            .map(|corr| (keld_ipc::channel_table::DIALOG.id(), corr));
+        #[cfg(target_os = "macos")]
         let auth_pending = match self
             .auth
             .as_ref()
@@ -6428,7 +6499,16 @@ impl PrimaryRouterHandle {
         let auth_pending = std::iter::empty();
         write_best_effort_answers(
             &mut active.writer,
-            pending.into_iter().flatten().chain(auth_pending),
+            pending.into_iter().flatten().chain(auth_pending).chain({
+                #[cfg(target_os = "macos")]
+                {
+                    dialog_pending.into_iter()
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None.into_iter()
+                }
+            }),
             error,
         );
     }
@@ -7584,6 +7664,13 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
+            #[cfg(target_os = "macos")]
+            dialog: fs.map(|guard| {
+                Arc::new(dialog_session::DialogSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
             guardian,
             window_commands,
             #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -7694,6 +7781,13 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
+            #[cfg(target_os = "macos")]
+            dialog: fs.map(|guard| {
+                Arc::new(dialog_session::DialogSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
             guardian,
             window_commands,
             #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -8087,6 +8181,14 @@ fn read_primary_frames(
                             auth.admission(attempt, corr)
                         });
                 }
+                #[cfg(target_os = "macos")]
+                if entry.id() == keld_ipc::channel_table::DIALOG.id() {
+                    // Unlike a new Message, Cancel must remain decodable when
+                    // the original physically retained panel is at capacity.
+                    // Core's guarded owner determines the typed Busy result
+                    // after decoding the bounded, complete request.
+                    return GuardedCallAdmission::Admit;
+                }
                 GuardedCallAdmission::RejectSession
             },
         );
@@ -8211,6 +8313,13 @@ fn read_primary_frames(
                     && handle.shutdown.is_running() =>
             {
                 handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
+            }
+            #[cfg(target_os = "macos")]
+            (FrameKind::Call, channel)
+                if channel == keld_ipc::channel_table::DIALOG.id()
+                    && handle.shutdown.is_running() =>
+            {
+                handle.dispatch_dialog(caller, header.corr(), &payload)?;
             }
             (FrameKind::Call, channel) if channel == keld_ipc::channel_table::WINDOW.id() => {
                 handle.dispatch_window(caller, header.corr(), &payload)?;

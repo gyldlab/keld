@@ -455,20 +455,28 @@ impl WindowRegistry {
             Err(WindowError::NotReady)
         }
     }
-    fn admitted_entry(
-        &mut self,
-        owner: WindowOwner,
-        window: WindowRef,
-    ) -> Result<&mut Entry, WindowError> {
+    fn checked_entry(&self, owner: WindowOwner, window: WindowRef) -> Result<&Entry, WindowError> {
         self.require_ready()?;
         let entry = self
             .entries
-            .get_mut(&window.id.0)
+            .get(&window.id.0)
             .filter(|entry| entry.window == window && !matches!(entry.phase, Phase::Destroyed(_)))
             .ok_or(WindowError::StaleWindow)?;
         if !entry.owner_live || entry.owner != owner {
             return Err(WindowError::WrongOwner);
         }
+        Ok(entry)
+    }
+    fn admitted_entry(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Result<&mut Entry, WindowError> {
+        self.checked_entry(owner, window)?;
+        let entry = self
+            .entries
+            .get_mut(&window.id.0)
+            .ok_or(WindowError::StaleWindow)?;
         entry.adoptable = false;
         Ok(entry)
     }
@@ -478,6 +486,20 @@ impl WindowRegistry {
         window: WindowRef,
     ) -> Result<WebviewId, WindowError> {
         match self.admitted_entry(owner, window)?.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _) => Ok(native.view),
+            _ => Err(WindowError::StaleWindow),
+        }
+    }
+    /// The same checked owner/ready/incarnation resolver as native setters,
+    /// but without consuming the adoption mark. Busy/nonce refusal cannot
+    /// alter existing window state just by inspecting its potential parent.
+    #[cfg(target_os = "macos")]
+    pub(super) fn admitted_dialog_view(
+        &self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Result<WebviewId, WindowError> {
+        match self.checked_entry(owner, window)?.phase {
             Phase::Open(native) | Phase::ClosePending(native, _) => Ok(native.view),
             _ => Err(WindowError::StaleWindow),
         }

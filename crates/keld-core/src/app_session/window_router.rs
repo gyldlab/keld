@@ -43,6 +43,20 @@ impl WindowSession {
             subscribed: None,
         }
     }
+    #[cfg(target_os = "macos")]
+    pub(super) fn admitted_dialog_view(
+        &mut self,
+        owner: WindowOwner,
+        window: keld_ipc::window::WindowRef,
+    ) -> Result<keld_wv::WebviewId, WindowError> {
+        if self.subscribed != Some(owner) {
+            return Err(WindowError::WrongOwner);
+        }
+        if !self.native_supported {
+            return Err(WindowError::NotReady);
+        }
+        self.registry.admitted_dialog_view(owner, window)
+    }
 }
 
 /// Resolution precedes this classification. Metadata comes from the one table;
@@ -826,6 +840,13 @@ impl PrimaryRouterHandle {
                 return Err(app_detail(
                     "window native event",
                     "the first host Init milestone belongs only to the lifecycle coordinator",
+                ));
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::MacDialogFinished { .. } => {
+                return Err(app_detail(
+                    "window native event",
+                    "dialog completion must be dispatched by the event coordinator",
                 ));
             }
         };

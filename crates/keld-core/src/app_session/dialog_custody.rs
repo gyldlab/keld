@@ -30,6 +30,8 @@ pub(super) enum CancelResult {
 pub(super) enum TerminalKind {
     Cancelled,
     NativeResult,
+    NativeFailure,
+    Expired,
 }
 
 #[derive(Clone, Copy)]
@@ -57,6 +59,25 @@ pub(super) struct DialogCustody {
 }
 
 impl DialogCustody {
+    /// The one currently reserved effect. A native callback may only report
+    /// this owner; neither a callback nor an untrusted Cancel mints it.
+    pub(super) fn active_owner(&self) -> Option<DialogOwner> {
+        self.active.map(|active| active.owner)
+    }
+    pub(super) fn original_pending_for(
+        &self,
+        identity: PrimaryLinkIdentity,
+        attempt: u32,
+    ) -> Option<CorrelationId> {
+        self.active
+            .filter(|active| {
+                !active.retired
+                    && !active.terminal_taken
+                    && active.owner.identity == identity
+                    && active.owner.attempt == attempt
+            })
+            .map(|active| active.owner.correlation)
+    }
     pub(super) fn reserve(&mut self, owner: DialogOwner) -> Result<(), ReserveError> {
         if self.active.is_some() {
             return Err(ReserveError::Busy);
@@ -89,7 +110,11 @@ impl DialogCustody {
                     CancelResult::Requested
                 }
                 Some(TerminalKind::Cancelled) => CancelResult::Requested,
-                Some(TerminalKind::NativeResult) => CancelResult::AlreadyCompleted,
+                Some(
+                    TerminalKind::NativeResult
+                    | TerminalKind::NativeFailure
+                    | TerminalKind::Expired,
+                ) => CancelResult::AlreadyCompleted,
             };
         }
         if self.last_completed.is_some_and(|owner| {
@@ -115,6 +140,31 @@ impl DialogCustody {
             return false;
         }
         active.outcome = Some(TerminalKind::NativeResult);
+        true
+    }
+
+    /// A real native failure (not user dismissal) is its own terminal cause.
+    pub(super) fn commit_native_failure(&mut self, owner: DialogOwner) -> bool {
+        let Some(active) = self.active.as_mut().filter(|active| active.owner == owner) else {
+            return false;
+        };
+        if active.outcome.is_some() || active.retired {
+            return false;
+        }
+        active.outcome = Some(TerminalKind::NativeFailure);
+        true
+    }
+
+    /// An expired original is not an application's Cancel. Keep the native
+    /// panel reserved until actual callback/visibility quiescence is observed.
+    pub(super) fn expire(&mut self, owner: DialogOwner) -> bool {
+        let Some(active) = self.active.as_mut().filter(|active| active.owner == owner) else {
+            return false;
+        };
+        if active.outcome.is_some() || active.retired {
+            return false;
+        }
+        active.outcome = Some(TerminalKind::Expired);
         true
     }
 
