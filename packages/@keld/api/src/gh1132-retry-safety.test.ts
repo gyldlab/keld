@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { ECHO_CHANNEL, FrameKind, decodeCallError } from "../../kipc/src/transport.ts";
+import {
+  ECHO_CHANNEL,
+  FrameKind,
+  decodeCallError,
+} from "../../kipc/src/transport.ts";
 import { resolveEchoCall, type EchoCallHandler } from "./echo-call.ts";
 
 const PAYLOAD = Uint8Array.from([0, 0]);
@@ -12,13 +16,13 @@ const LOGICAL_ACTION = "one-logical-action";
 
 function latch(): { wait: Promise<void>; release: () => void } {
   let release = () => {};
-  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   return { wait, release };
 }
 
-function withSqlite(
-  run: (db: Database) => Promise<void>,
-): () => Promise<void> {
+function withSqlite(run: (db: Database) => Promise<void>): () => Promise<void> {
   return async () => {
     const directory = mkdtempSync(join(tmpdir(), "keld-gh1132-"));
     const db = new Database(join(directory, "actions.sqlite"));
@@ -35,9 +39,13 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
   test(
     "counterexample: API-001 can return before a deferred effect, so status-only resend commits twice",
     withSqlite(async (db) => {
-      db.exec("CREATE TABLE effects (id INTEGER PRIMARY KEY, logical_key TEXT NOT NULL)");
+      db.exec(
+        "CREATE TABLE effects (id INTEGER PRIMARY KEY, logical_key TEXT NOT NULL)",
+      );
       const insert = db.query("INSERT INTO effects (logical_key) VALUES (?1)");
-      const count = db.query("SELECT COUNT(*) AS n FROM effects WHERE logical_key = ?1");
+      const count = db.query(
+        "SELECT COUNT(*) AS n FROM effects WHERE logical_key = ?1",
+      );
       const committed = (): number =>
         (count.get(LOGICAL_ACTION) as { n: number }).n;
 
@@ -76,19 +84,28 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
   test(
     "safe app control: durable idempotency returns the recorded result in either completion order",
     withSqlite(async (db) => {
-      db.exec("CREATE TABLE effects (logical_key TEXT PRIMARY KEY, result INTEGER NOT NULL)");
+      db.exec(
+        "CREATE TABLE effects (logical_key TEXT PRIMARY KEY, result INTEGER NOT NULL)",
+      );
       const commit = db.query(
         "INSERT INTO effects (logical_key, result) VALUES (?1, ?2) ON CONFLICT(logical_key) DO NOTHING",
       );
-      const read = db.query("SELECT result FROM effects WHERE logical_key = ?1");
-      const count = db.query("SELECT COUNT(*) AS n FROM effects WHERE logical_key = ?1");
+      const read = db.query(
+        "SELECT result FROM effects WHERE logical_key = ?1",
+      );
+      const count = db.query(
+        "SELECT COUNT(*) AS n FROM effects WHERE logical_key = ?1",
+      );
       const committed = (key: string): number =>
         (count.get(key) as { n: number }).n;
 
       // The application, not Keld, uses a stable key carried in *both* CALL
       // payloads. An atomic insertion is the complete effect in this fixture;
       // real external effects need their own idempotent receiver/protocol.
-      const perform = (payload: Uint8Array, proposedResult: number): Uint8Array => {
+      const perform = (
+        payload: Uint8Array,
+        proposedResult: number,
+      ): Uint8Array => {
         const key = new TextDecoder().decode(payload);
         commit.run(key, proposedResult);
         const row = read.get(key) as { result: number } | null;
@@ -107,9 +124,15 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
         };
 
         try {
-          const firstAnswer = await resolveEchoCall(ECHO_CHANNEL, payload, first);
+          const firstAnswer = await resolveEchoCall(
+            ECHO_CHANNEL,
+            payload,
+            first,
+          );
           expect(firstAnswer.kind).toBe(FrameKind.Err);
-          expect(decodeCallError(firstAnswer.payload).code).toBe("KELD-API-001");
+          expect(decodeCallError(firstAnswer.payload).code).toBe(
+            "KELD-API-001",
+          );
           expect(committed(key)).toBe(0);
 
           if (order === "original-first") {
@@ -119,8 +142,10 @@ describe("GH-1132: a status snapshot is not a replay fence", () => {
 
           // Competing retries propose a different result (65 versus 66).
           // Both MUST read the single durable winner's recorded value.
-          const retry = await resolveEchoCall(ECHO_CHANNEL, payload, async (_channel, bytes) =>
-            perform(bytes, 65),
+          const retry = await resolveEchoCall(
+            ECHO_CHANNEL,
+            payload,
+            async (_channel, bytes) => perform(bytes, 65),
           );
           expect(retry.kind).toBe(FrameKind.Reply);
 
