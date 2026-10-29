@@ -518,7 +518,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "e0f60698cf1cf273b714f913ba55052d0162d47ae8380d93129d28bd94810655"
+      "sha256": "70e9c06e5e6ec73cf3d4b1baee3e275d8b9c5797a03d63e95bc9b6d3f5e4a2ba"
     },
     "policy-readers": {
       "patterns": [
@@ -574,7 +574,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "f2cedb490921d8a876e28a17ca1330ca4326de1ac3881f3d17f2f7de0da4e312",
+    "membership_sha256": "34a54e852004173f624923b26f7a596985785d6ada2097f443ac6089e72eca7d",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
