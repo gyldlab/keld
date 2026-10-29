@@ -534,7 +534,7 @@ dispatch and callback execution must not block the Host UI thread.
 The current KEL-142 v1 bridge has a separate wrapping u64 counter;
 it must **not** become a second Electron authority source. Consume
 GH-542's **one checked u32 host-owned generation** and qualified
-native document bind (GH-541 `4.3/N11). Same-document hash changes,
+native document bind (GH-541 `4.3/N11`). Same-document hash changes,
 cancelled provisional renderer navigation and surviving document
 across Bun reconnect keep document identity but do not automatically
 replay any pending request. Trusted Host full-document loads revoke
