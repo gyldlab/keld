@@ -85,6 +85,16 @@ const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const CONTROL_LINE_LIMIT: usize = 4096;
+
+/// Kill switch over a wait that includes a `WebView2` startup, never a
+/// synchronization wait. The host builds its engine only after Bun binds;
+/// `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND` owns that startup's bound, and
+/// `PRODUCT_DEADLINE` covers the rest of the wait. The pre-READY renderer beacon
+/// in `product_cycle` reads it; post-READY beacon waits keep `PRODUCT_DEADLINE`.
+fn startup_kill_switch() -> Duration {
+    keld_wv::webview2::WEBVIEW2_STARTUP_BOUND + PRODUCT_DEADLINE
+}
+
 #[test]
 fn keld_dev_windows_helper() {
     let Some(project) = std::env::var_os("KELD_T4_HELPER_PROJECT") else {
