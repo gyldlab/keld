@@ -1068,10 +1068,13 @@ remains and the step is outside a session end; then every **admitted** deferred
 `REPLY Destroyed`, in correlation/admission order. The new bounded Host admission
 budget is **64 outstanding Destroy correlations per window** while `Closing`;
 attempt 65 receives immediate `ERR KELD-CORE-046` on its own correlation (no
-window effects and no reply from `Released`). The fixed number is a reviewed
-capacity-policy proposal on integration PR #1181, distinct from the Worker
-abandonment and Auth quotas. The original unlimited C8 assumption is unsafe if
-AppKit Release stalls; this amendment requires independent GH531 owner review.
+window effects and no reply from `Released`). The fixed number is the
+[accepted per-window admission policy](https://github.com/gyldlab/keld/pull/1181#discussion_r4371478951)
+on PR #1181, distinct from Worker abandonment and Auth quotas. This supersedes
+the original unlimited C8 assumption for a stalled AppKit Release. Acceptance of
+this numeric policy alone establishes neither an application-wide resource/CPU
+budget nor a physical heap/RSS bound, and does not replace cumulative-admission
+or Source-memory qualification.
 *Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
 because its `Create` was admitted before this step, as an Electron constructor returns
 before any later close completes; so the session cannot quit before it opens.
