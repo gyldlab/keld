@@ -223,14 +223,22 @@ fn read_held_milestone(
 #[test]
 fn held_milestone_final_newline_must_precede_original_deadline() {
     let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-    let before = deadline - std::time::Duration::from_nanos(1);
-    for completed_at in [before, deadline, deadline + std::time::Duration::from_nanos(1)] {
+    let before = deadline
+        .checked_sub(std::time::Duration::from_nanos(1))
+        .expect("test deadline has a preceding tick");
+    for completed_at in [
+        before,
+        deadline,
+        deadline + std::time::Duration::from_nanos(1),
+    ] {
         let (mut receiver, mut sender) = UnixStream::pair().expect("native milestone receipt pair");
         receiver
             .set_nonblocking(true)
             .expect("bounded milestone receipt test");
         let record = b"AUTHENTICATED 12345\n";
-        sender.write_all(record).expect("queue literal native receipt");
+        sender
+            .write_all(record)
+            .expect("queue literal native receipt");
         let mut checks = 0;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             read_held_milestone(&mut receiver, "AUTHENTICATED", deadline, || {

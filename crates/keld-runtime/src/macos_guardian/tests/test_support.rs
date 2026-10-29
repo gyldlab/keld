@@ -228,7 +228,9 @@ fn spawned_receipt_final_newline_must_precede_original_deadline() {
     use std::io::Write as _;
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    let before = deadline - Duration::from_nanos(1);
+    let before = deadline
+        .checked_sub(Duration::from_nanos(1))
+        .expect("test deadline has a preceding tick");
     for completed_at in [before, deadline, deadline + Duration::from_nanos(1)] {
         let (mut receiver, mut sender) = UnixStream::pair().expect("native spawned receipt pair");
         receiver
