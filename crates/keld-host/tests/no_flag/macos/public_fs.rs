@@ -151,12 +151,21 @@ fn run_launch(fixture: &PublicFsProject, launch: usize, exercise: Exercise) -> L
     run_launch_with_descendant_quit(fixture, launch, exercise, None)
 }
 
-// This observer samples only while the original real Host is live, before
-// wait_child_output_observing checks the unchanged original exit deadline.
 fn wait_public_host_with_phase(
     child: std::process::Child,
     observer: &Observation,
     observation_succeeded: bool,
+) -> Output {
+    wait_public_host_with_phase_after_wait(child, observer, observation_succeeded, || {})
+}
+
+// This observer samples only while the original real Host is live, before
+// wait_child_output_observing checks the unchanged original exit deadline.
+fn wait_public_host_with_phase_after_wait(
+    child: std::process::Child,
+    observer: &Observation,
+    observation_succeeded: bool,
+    after_wait: impl FnOnce(),
 ) -> Output {
     let mut last_live_http_quit_stage = 0_u8;
     let host_exit = catch_unwind(AssertUnwindSafe(|| {
@@ -166,6 +175,9 @@ fn wait_public_host_with_phase(
                 .load(std::sync::atomic::Ordering::Acquire);
         })
     }));
+    // Release caller-owned peers after waiting, including before a wait failure
+    // is rethrown and the fixture observer can Drop/join.
+    after_wait();
     host_exit.unwrap_or_else(|failure| {
         if observation_succeeded {
             let stage = match last_live_http_quit_stage {
