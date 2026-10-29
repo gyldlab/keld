@@ -43,15 +43,23 @@ function objectFields(
   input: unknown,
   supported: ReadonlySet<string>,
 ): Map<string, unknown> {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+  if (input === null || typeof input !== "object") {
     return invalid("expected a plain options object");
+  }
+  let isArray: boolean;
+  let prototype: object | null;
+  try {
+    isArray = Array.isArray(input);
+    prototype = Object.getPrototypeOf(input);
+  } catch {
+    return invalid("options could not be inspected safely");
+  }
+  if (isArray) return invalid("expected a plain options object");
+  if (prototype !== Object.prototype && prototype !== null) {
+    return invalid("custom-prototype input is unsupported");
   }
   let descriptors: PropertyDescriptorMap;
   try {
-    const prototype = Object.getPrototypeOf(input);
-    if (prototype !== Object.prototype && prototype !== null) {
-      return invalid("custom-prototype input is unsupported");
-    }
     descriptors = Object.getOwnPropertyDescriptors(input);
   } catch {
     return invalid("options could not be inspected safely");
@@ -73,10 +81,14 @@ function objectFields(
 
 /** Copy a dense ordinary array using only data descriptors, refusing getters. */
 function denseArray(input: unknown, max: number, name: string): unknown[] {
-  if (
-    !Array.isArray(input) ||
-    Object.getPrototypeOf(input) !== Array.prototype
-  ) {
+  let isPlainArray: boolean;
+  try {
+    isPlainArray =
+      Array.isArray(input) && Object.getPrototypeOf(input) === Array.prototype;
+  } catch {
+    return invalid(`${name} cannot be inspected safely`);
+  }
+  if (!isPlainArray) {
     return invalid(`${name} must be a plain array`);
   }
   let descriptors: PropertyDescriptorMap;

@@ -156,6 +156,36 @@ test("untrusted objects and getters never perform side effects during early admi
   }
 });
 
+test("revoked and throwing Proxy inspection returns typed COMPAT-010 without a panel", () => {
+  const revokedArray = Proxy.revocable([], {});
+  const revokedObject = Proxy.revocable({}, {});
+  revokedArray.revoke();
+  revokedObject.revoke();
+  const throwingPrototype = new Proxy([], {
+    getPrototypeOf() {
+      throw new TypeError("deliberate prototype inspection trap");
+    },
+  });
+  for (const input of [
+    revokedObject.proxy,
+    { filters: revokedArray.proxy },
+    { properties: revokedArray.proxy },
+    { filters: [revokedObject.proxy] },
+    { filters: throwingPrototype },
+    { properties: throwingPrototype },
+  ]) {
+    expect(() => normalizeOpenDialogOptions(input)).toThrow("KELD-COMPAT-010");
+  }
+  for (const input of [
+    revokedObject.proxy,
+    { filters: revokedArray.proxy },
+    { filters: [revokedObject.proxy] },
+    { filters: throwingPrototype },
+  ]) {
+    expect(() => normalizeSaveDialogOptions(input)).toThrow("KELD-COMPAT-010");
+  }
+});
+
 test("byte and count bounds reject malformed extensions without widening native file access", () => {
   const filter = (extensions: unknown) => ({ name: "File", extensions });
   for (const extensions of [
