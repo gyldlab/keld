@@ -133,7 +133,7 @@ impl Fixture {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown: SessionShutdownState::new(),
             fs: snapshot.as_ref().map(super::super::GuardSnapshot::fs_weak),
             fs_worker_commands: None,

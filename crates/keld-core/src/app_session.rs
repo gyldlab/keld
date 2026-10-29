@@ -5967,10 +5967,12 @@ struct PrimaryRouterHandle {
     windows: Option<Arc<Mutex<window_router::WindowSession>>>,
     recovery_armed: Arc<AtomicBool>,
     last_revoked_attempt: Arc<AtomicU32>,
-    /// The attempt whose app link ended before the initial `Ready` (0: none).
-    /// Written and read only under the shutdown transition guard that also
-    /// publishes `Ready`, so one order holds (PR #1300 review).
-    pre_ready_link_failed: Arc<AtomicU32>,
+    /// The app link ended before the initial `Ready`. Written and read only
+    /// under the shutdown transition guard that also publishes `Ready`, so one
+    /// order holds (PR #1300 review). A flag, not an attempt: before `Ready` the
+    /// recovery gate is closed, so only the first generation can ever be
+    /// current, and a stale reader's EOF never reaches the latch.
+    pre_ready_link_failed: Arc<AtomicBool>,
     shutdown: SessionShutdownState,
     fs: Option<Weak<FsDispatchSession>>,
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
@@ -6092,7 +6094,7 @@ impl PrimaryRouterHandle {
             // The reader observed this generation's link end first: publish no
             // `Ready` and arm no recovery. The owner's `Revoked` then meets the
             // closed gate and fails startup with its typed pre-Ready cause.
-            if self.pre_ready_link_failed.load(Ordering::Acquire) != 0 {
+            if self.pre_ready_link_failed.load(Ordering::Acquire) {
                 return Ok(());
             }
             if !self.mark_window_registry_ready_guarded()? {
@@ -7495,15 +7497,16 @@ impl PrimaryRouterHandle {
         self.guardian.fail_generation(attempt)
     }
 
-    /// Records that `attempt`'s app link ended before the initial `Ready`,
-    /// under the transition guard [`Self::signal_ready`] publishes `Ready`
-    /// under. A `Ready` already published keeps the after-Ready recovery
-    /// path; otherwise every later `Ready` and its recovery arm are refused,
-    /// whether or not the owner has handled the failure yet.
-    fn latch_pre_ready_link_failure(&self, attempt: u32) {
+    /// Records that the current generation's app link ended before the
+    /// initial `Ready`, under the transition guard [`Self::signal_ready`]
+    /// publishes `Ready` under. A `Ready` already published keeps the
+    /// after-Ready recovery path; otherwise every later `Ready` and its
+    /// recovery arm are refused, whether or not the owner has handled the
+    /// failure yet.
+    fn latch_pre_ready_link_failure(&self) {
         let _transition = self.shutdown.transition_guard();
         if !self.window_ready.load(Ordering::Acquire) {
-            self.pre_ready_link_failed.store(attempt, Ordering::Release);
+            self.pre_ready_link_failed.store(true, Ordering::Release);
         }
     }
 
@@ -7677,7 +7680,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(true)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -7788,7 +7791,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -8219,7 +8222,7 @@ fn read_primary_frames(
                     // asynchronously, and a `Ready` published meanwhile would
                     // arm recovery for this failed generation.
                     if PRE_READY_LINK_EOF_DEFERS_TO_OWNER {
-                        handle.latch_pre_ready_link_failure(attempt);
+                        handle.latch_pre_ready_link_failure();
                     }
                     handle.fail_pending_echo_for_attempt(
                         attempt,

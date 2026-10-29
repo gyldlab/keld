@@ -69,7 +69,7 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         windows: None,
         recovery_armed: Arc::new(AtomicBool::new(false)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-        pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
+        pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
         shutdown: SessionShutdownState::new(),
         fs: None,
         fs_worker_commands: None,
