@@ -16,6 +16,7 @@
 import { writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
 import { LifecycleLink } from "../src/link.ts";
 
 function marker(line: string): void {
@@ -29,8 +30,7 @@ const token = minted?.split("#")[1] ?? "a".repeat(64);
 const endpoint = minted?.split("#")[0];
 const absent =
   process.platform === "win32"
-    ? String.raw`\\.\pipe\keld-` +
-      Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")
+    ? freshWin32AppLinkPipe()
     : join(
         endpoint !== undefined ? dirname(endpoint) : tmpdir(),
         `keld-kel72-absent-${process.pid}.sock`,

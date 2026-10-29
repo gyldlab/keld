@@ -228,6 +228,18 @@ EOF
     expect_downloads "a same-size tampered cache file is replaced from the mirror" "liba_1.0_amd64.deb"
     grep -q 'staged 1 verified from the cache, rejected 1' "$temp/out" || fail "self-test: the tampered file was not rejected"
 
+    # A matching SHA256 alone is not sufficient: the archive's size must also
+    # match the freshly signed plan. This negative control detects removing
+    # the size comparison even when every cached byte hashes correctly.
+    cp "$temp/mirror/liba_1.0_amd64.deb" "$cache/liba_1.0_amd64.deb"
+    write_plan
+    awk '$2 == "liba_1.0_amd64.deb" { $3 += 1 } { print }' "$temp/plan" >"$temp/plan.next"
+    mv "$temp/plan.next" "$temp/plan"
+    run_install || { cat "$temp/out" >&2; fail "self-test 'cache size mismatch' failed"; }
+    expect_downloads "a correct-hash cache entry with wrong planned size is rejected" "liba_1.0_amd64.deb"
+    grep -q 'staged 1 verified from the cache, rejected 1' "$temp/out" ||
+        fail "self-test: a wrong planned size was not rejected"
+
     # Negative control: a plan line without SHA256 (MD5 only) is never staged.
     cp "$temp/mirror/liba_1.0_amd64.deb" "$cache/liba_1.0_amd64.deb"
     sed -i.bak 's/SHA256:[0-9a-f]*/MD5Sum:0123456789abcdef0123456789abcdef/' "$temp/plan" && rm -f "$temp/plan.bak"
@@ -245,27 +257,32 @@ EOF
     grep -q 'rejected 1' "$temp/out" || { cat "$temp/out" >&2; fail "self-test: a hostile file name was not rejected"; }
     echo "ok: a hostile planned file name is rejected"
 
-    # The two symlink controls need POSIX file and directory symlinks. Windows Git
-    # Bash's default `ln -s` copies instead, which would make them vacuous or
-    # false failures; only there are they skipped, and the Ubuntu change-router
-    # job still runs them. Anywhere else a missing symlink fails the self-test.
+    # The file and directory controls need real POSIX symlinks. Windows Git
+    # Bash may copy one or both kinds instead; skip only the unsupported kind
+    # there. Ubuntu must run all three controls or fail closed.
     mkdir "$temp/probe-dir"
     : >"$temp/probe-file"
     ln -s "$temp/probe-file" "$temp/probe-file-link" 2>/dev/null || true
     ln -s "$temp/probe-dir" "$temp/probe-dir-link" 2>/dev/null || true
-    local symlinks=yes
-    [[ -L "$temp/probe-file-link" && -L "$temp/probe-dir-link" ]] || symlinks=no
-    if [[ "$symlinks" == no ]]; then
+    local file_symlinks=yes dir_symlinks=yes
+    [[ -L "$temp/probe-file-link" ]] || file_symlinks=no
+    [[ -L "$temp/probe-dir-link" ]] || dir_symlinks=no
+    if [[ "$file_symlinks" == no || "$dir_symlinks" == no ]]; then
         case "$(uname -s)" in
             MINGW* | MSYS* | CYGWIN*)
-                echo "info: skipped the two symlink controls: this Windows shell's ln -s makes no POSIX symlink (Ubuntu CI runs them)"
+                if [[ "$file_symlinks" == no ]]; then
+                    echo "info: skipped the two file-symlink controls: Windows ln -s makes no POSIX file link (Ubuntu CI runs them)"
+                fi
+                if [[ "$dir_symlinks" == no ]]; then
+                    echo "info: skipped the directory-symlink control: Windows ln -s makes no POSIX directory link (Ubuntu CI runs it)"
+                fi
                 ;;
             *)
-                fail "self-test: ln -s did not create a symlink, so the symlink controls cannot run"
+                fail "self-test: ln -s did not create both POSIX symlink kinds, so all controls cannot run"
                 ;;
         esac
     fi
-    if [[ "$symlinks" == yes ]]; then
+    if [[ "$file_symlinks" == yes ]]; then
         # Negative control: a planted cache symlink is never staged, and the refresh
         # replaces it instead of writing the downloaded package through it.
         write_plan
@@ -279,6 +296,20 @@ EOF
         [[ -f "$cache/liba_1.0_amd64.deb" && ! -L "$cache/liba_1.0_amd64.deb" ]] ||
             fail "self-test: the planted symlink was not replaced by the verified package"
         echo "ok: a planted cache symlink is replaced, never written through"
+
+        # A symlink can contain exact valid archive bytes. The SHA256 check
+        # alone would accept it; the -L guard must reject this link anyway.
+        rm -f "$cache/liba_1.0_amd64.deb"
+        ln -s "$temp/mirror/liba_1.0_amd64.deb" "$cache/liba_1.0_amd64.deb"
+        run_install || { cat "$temp/out" >&2; fail "self-test 'valid-package symlink' failed"; }
+        expect_downloads "a valid-hash symlink is never staged" "liba_1.0_amd64.deb"
+        grep -q 'staged 1 verified from the cache' "$temp/out" ||
+            fail "self-test: a valid-hash symlink was incorrectly staged"
+        [[ -f "$cache/liba_1.0_amd64.deb" && ! -L "$cache/liba_1.0_amd64.deb" ]] ||
+            fail "self-test: the valid-hash symlink was not replaced by an ordinary cache file"
+    fi
+
+    if [[ "$dir_symlinks" == yes ]]; then
         # A symlinked cache directory is refused outright.
         ln -s "$cache" "$temp/c/linked-cache"
         if PATH="$temp/bin:$PATH" KELD_WEBKITGTK_PACKAGES="liba libb" "$self" install "$temp/c/linked-cache" >"$temp/out" 2>&1; then

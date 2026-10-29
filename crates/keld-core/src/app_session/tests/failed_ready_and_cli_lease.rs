@@ -30,6 +30,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(false)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
+        windows: None,
         recovery_armed: Arc::new(AtomicBool::new(false)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
         shutdown: SessionShutdownState::new(),
@@ -43,7 +44,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
     let error = handle
