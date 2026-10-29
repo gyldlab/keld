@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::support::control::exited_host_output;
+use crate::support::process::exited_child_output;
 use crate::windows_renderer_http::{
     PendingRendererRequest, RendererRequestRead, accept_renderer_connection,
     read_renderer_request_line,
@@ -280,7 +280,7 @@ impl HeldRendererRequest {
             {
                 panic!(
                     "host exited before its renderer connected to the held resource: {status}\n{}",
-                    exited_host_output(child)
+                    exited_child_output(child)
                 );
             }
             assert!(
