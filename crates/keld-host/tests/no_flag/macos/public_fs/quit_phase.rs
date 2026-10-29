@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// One wait recipe; the real process wait retains its existing custody owner.
 pub(super) struct Wait<'a, W, E> {
     progress: &'a AtomicU8,
-    wait: W,
+    collect_output: W,
     emit: E,
 }
 
@@ -15,10 +15,10 @@ where
     W: FnOnce(&mut dyn FnMut()) -> Output,
     E: FnMut(&str),
 {
-    pub(super) fn new(progress: &'a AtomicU8, wait: W, emit: E) -> Self {
+    pub(super) fn new(progress: &'a AtomicU8, collect_output: W, emit: E) -> Self {
         Self {
             progress,
-            wait,
+            collect_output,
             emit,
         }
     }
@@ -36,12 +36,12 @@ where
     fn finish(self, observation_succeeded: bool, after_wait: impl FnOnce()) -> Output {
         let Self {
             progress,
-            wait,
+            collect_output,
             mut emit,
         } = self;
         let mut last_live_http_quit_stage = 0_u8;
         let host_exit = catch_unwind(AssertUnwindSafe(|| {
-            wait(&mut || {
+            collect_output(&mut || {
                 last_live_http_quit_stage = progress.load(Ordering::Acquire);
             })
         }));
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn failed_public_observations_suppress_quit_attribution() {
         let (lines, events) = failed_wait(false, 2, false, true);
-        assert!(lines.is_empty());
+        assert_eq!(lines, Vec::<String>::new());
         assert_eq!(events, ["wait", "caught"]);
     }
 
@@ -206,7 +206,7 @@ mod tests {
             assert_eq!(output.status.code(), Some(17));
             assert_eq!(output.stdout, b"retained stdout");
             assert_eq!(output.stderr, b"retained stderr");
-            assert!(lines.is_empty());
+            assert_eq!(lines, Vec::<String>::new());
             let expected = if retirement {
                 vec!["wait", "drop_peer"]
             } else {
