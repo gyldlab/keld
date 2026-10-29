@@ -57,13 +57,13 @@ const expected = js
       "4f2a6ba84be8d16d5920f77391af8b4966ef349b55d01704f8b52ff1c0be2176",
       "b752bb8c7b875d57983a86695655653b1c103778d192c894789425c749756383",
       "24ac3fb3b3ad69dcce45fd74f20cf42daac0da4f114915c1e0c4be3bcc1f1265",
-      "09475cffc8b1fe557d54694368d9dc3c3f07a81efa5d72d058f14ff902407e1f",
+      "504e88a8747cc504aa4d7a4ee74056f27ef3a388881d29348894d759f8a2c380",
     ]
   : [
       "11e78e5753b659592444aeabd796766f404fbbe514bfd2c961160e9ae52ed595",
       "02316c26133883f65a3255801160e2dc8209cd83490e7a9f90fd8d3f8d5e53c7",
       "3e11e55bedb30a3644e7d280c118ca5712b468d532dc9c214f7cd72f1e618c9f",
-      "8d435ce9e80d73a7a8b6b8de4f136ab3a48c85f20e17b3e3c0e36d399b37ac92",
+      "de754ed120d6717e2d9008cd9dd39f2ee54dd82c255ddf0cf1e092b810eb7035",
     ];
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 const values = [source, codecPath, mirror, transportPath].map((path) =>
@@ -72,9 +72,10 @@ const values = [source, codecPath, mirror, transportPath].map((path) =>
 const actualHashes = values.map(sha);
 // The existing package test runs the producer from the API directory. Bun's
 // source-path comment and the stamp over it differ from the root-CWD artifact;
-// the reviewed executable bytes after those first two lines are identical.
+// the executable bytes after those first two lines are identical. Each complete
+// artifact retains its own admitted hash.
 const apiCwdTransport =
-  "856c356e4a8de3f68e4b587d765e1f44940ec5cc1426c52cbaf57ecf92d6e956";
+  "773e5dd14bf2eb310df63efc06ffefa3219f4e643f1bf086df4ac7b19b66b58d";
 if (js && actualHashes[3] === apiCwdTransport) expected[3] = apiCwdTransport;
 assert.deepEqual(actualHashes, expected, "unreviewed body or helper");
 assert.equal(

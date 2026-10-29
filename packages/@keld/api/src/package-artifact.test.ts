@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -65,12 +66,17 @@ test("real packed SDK installs offline with one API app identity", async () => {
       stderr: "pipe",
     });
     expect(rebuild.exitCode, new TextDecoder().decode(rebuild.stderr)).toBe(0);
+    const packageHashes: Record<string, string> = {};
     for (const name of ["api", "kipc"]) {
-      expect(
-        readFileSync(join(scratch, `keld-${name}-${source[name].version}.tgz`)),
-      ).toEqual(
+      const packed = readFileSync(
+        join(scratch, `keld-${name}-${source[name].version}.tgz`),
+      );
+      expect(packed).toEqual(
         readFileSync(join(second, `keld-${name}-${source[name].version}.tgz`)),
       );
+      packageHashes[`@keld/${name}`] = createHash("sha256")
+        .update(packed)
+        .digest("hex");
     }
     const api = join(scratch, `keld-api-${source.api.version}.tgz`);
     const kipc = join(scratch, `keld-kipc-${source.kipc.version}.tgz`);
@@ -127,14 +133,30 @@ import "@keld/api/internal/link";
 import "@keld/api/internal/window-codec";
 assert.equal(api.app, app);
 assert.equal(api.app, createRequire(import.meta.url)("@keld/api").app);
-assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChannel", "fs", "isCallError"].sort());`,
+assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChannel", "fs", "isCallError"].sort());
+console.log(JSON.stringify({
+  sdkConsumer: true,
+  runtime: typeof Bun === "undefined" ? "node" : "bun",
+  version: typeof Bun === "undefined" ? process.version : Bun.version,
+}));`,
     );
-    const run = Bun.spawnSync(["bun", probe], {
-      cwd: consumer,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(run.exitCode, new TextDecoder().decode(run.stderr)).toBe(0);
+    const runtimes: Record<string, string> = {};
+    for (const runtime of ["bun", "node"]) {
+      const run = Bun.spawnSync([runtime, probe], {
+        cwd: consumer,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(
+        run.exitCode,
+        `${runtime}: ${new TextDecoder().decode(run.stderr)}`,
+      ).toBe(0);
+      const result = JSON.parse(new TextDecoder().decode(run.stdout));
+      expect(result.sdkConsumer).toBe(true);
+      expect(result.runtime).toBe(runtime);
+      expect(typeof result.version).toBe("string");
+      runtimes[runtime] = result.version;
+    }
     // Repack the actual produced API after deleting only its declared edge.
     const mutant = join(scratch, "mutant");
     mkdirSync(mutant);
@@ -186,15 +208,17 @@ assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChann
     ).toBe(0);
     expect(existsSync(join(negative, "node_modules/@keld/kipc"))).toBe(false);
     writeFileSync(join(negative, "probe.mjs"), readFileSync(probe));
-    const negativeImport = Bun.spawnSync(["bun", "probe.mjs"], {
-      cwd: negative,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(negativeImport.exitCode).not.toBe(0);
-    expect(new TextDecoder().decode(negativeImport.stderr)).toContain(
-      "@keld/kipc",
-    );
+    for (const runtime of ["bun", "node"]) {
+      const negativeImport = Bun.spawnSync([runtime, "probe.mjs"], {
+        cwd: negative,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(negativeImport.exitCode).not.toBe(0);
+      expect(new TextDecoder().decode(negativeImport.stderr)).toContain(
+        "@keld/kipc",
+      );
+    }
     writeFileSync(
       join(consumer, "consumer.ts"),
       `import { app, isCallError } from "@keld/api";
@@ -422,13 +446,23 @@ WorkerLink.open({ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3]
     writeFileSync(transport, original);
     const installedKipc = join(consumer, "node_modules/@keld/kipc");
     renameSync(installedKipc, `${installedKipc}-removed`);
-    const missing = Bun.spawnSync(["bun", probe], {
-      cwd: consumer,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(missing.exitCode).not.toBe(0);
+    for (const runtime of ["bun", "node"]) {
+      const missing = Bun.spawnSync([runtime, probe], {
+        cwd: consumer,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(missing.exitCode).not.toBe(0);
+      expect(new TextDecoder().decode(missing.stderr)).toContain("@keld/kipc");
+    }
     renameSync(`${installedKipc}-removed`, installedKipc);
+    console.log(
+      JSON.stringify({
+        sdkPackageArtifacts: packageHashes,
+        producerCwd: process.cwd(),
+        runtimes,
+      }),
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
