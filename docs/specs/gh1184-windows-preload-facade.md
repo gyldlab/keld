@@ -1,6 +1,7 @@
 # Spec: Windows WebView2 preload compatibility through a Host-enforced declared facade (GH-1184 W1, route D)
 
-Status: draft (revision r4 after isolated reviews r1 and r2 of the #1184 B2 amendment; r3 was `2ae5aedd`)
+Status: draft (revision r5 after isolated reviews r1–r3 of the #1184 B2 amendment; r3 is `a765b4a5`, r4 is
+`043170ca` — rebased from local `2ae5aedd`/`e5870822` onto `06718ac1`)
 Linear: GH-1184 (GitHub tracker under #517; parent program #1182 W1; renderer epic #483) ·
 Owner: @amishabenramani (real Windows operator) · Updated: 2026-10-29
 
@@ -144,25 +145,25 @@ counters on the app-link writer, the Bun handler and the Host audit log read 0.
 | AC02 Bridge is not a boundary | A hostile page poisons `JSON`, `Array.prototype`, `chrome.webview.postMessage`, redefines the exposed key, then calls granted and ungranted channels | Host admits or refuses exactly as for a clean page; the page gains no channel it lacked. | Remove the Host literal-grant step, keep the bridge → ungranted channel reaches Bun → RED (tracker negative control (c), AC22). |
 | AC03 Top-level event only | An iframe whose `src` is **the verified application entry URL itself** (same origin, same path, inside the package root) reads the nonce from `top` and posts a well-formed envelope through its **own** `chrome.webview` | Every per-call rule except the event rule is satisfied; it arrives only on `ICoreWebView2Frame2::WebMessageReceived`, which this slice does not register; zero effects. A control posted via `top.keld.invoke` is admitted. | Register the admission handler on `Frame2` too → the iframe post reaches Bun → RED (only the event rule stood between it and the effect). |
 | AC04 Eligibility before epoch | `ContentLoading` fires for (a) the qualified application document, (b) an allowlisted-navigation remote document, (c) an error page at an allowlisted URL (`IsErrorPage == TRUE`), (d) the `about:srcdoc` error page | Only (a) receives an epoch; (b)–(d) enter FailedClosed/`channels: []` with no epoch and every call from them refused. | Skip the `IsErrorPage` check → (c) receives an epoch → RED. Separately, qualify by URL-text equality instead of #1192 §4.4 resource identity → a spoofed same-text document receives an epoch → RED. Separately, skip the `NavigationId` match → a `ContentLoading` injected by the test hook with a `NavigationId` no allowed `NavigationStarting` recorded receives an epoch → RED. |
-| AC05 Source rule (per call) | A message carrying the **current, valid epoch** (stolen by a same-process script) arrives with a `Source` that (a) has a scheme other than the committed document's: `about:srcdoc` (the error page — E5 `p1-exec-b.json` 5/5: its `Source` **is** the string `about:srcdoc` and the bridge ran there), `about:blank`, `data:`, `blob:null/…` or `chrome-error://…`; (b) for an `https` application, a different tuple origin (`https://evil.example/…`); (c) for a `file:` application, an empty host but a path **outside** the verified package root (crafted `file:///…/outside/x.html` document that obtained the nonce); (d) for a `file:` application, a non-empty host (`file://localhost/…`, UNC `file://server/share/…`) | Each refused by the Source rule alone (event rule and epoch rule already pass); zero effects. Controls admitted: the same epoch from the committed document's in-root path, and from a mixed-case or percent-encoded spelling of an in-root path (`file:///D:/APP/INDEX.HTML`, `…/index%2Ehtml` — one identity class under the parser). Golden vectors for the same cases run as pure Rust against the one parser. | Replace `file_url_root_relative` with a comparison of serialised origins (`"null" == "null"`) → for a `file:` application every opaque-origin `Source` in (a) is admitted → RED. Separately, replace it with a comparison of `Url::origin()` values → every `file:` control is refused, because `file:` origins are opaque and unique (`url` 2.5.8, the workspace's locked version: `origin.rs` L33, doc-test `lib.rs` L859–863) → RED. Separately, keep only the `scheme == file` half of the rule → case (c) is admitted → RED. Separately, compare components case-sensitively → the mixed-case control is refused → RED. Exactly one rule decides each case. |
+| AC05 Source rule (per call) | A message carrying the **current, valid epoch** (stolen by a same-process script) arrives with a `Source` that (a) has a scheme other than the committed document's: `about:srcdoc` (the error page — E5 `p1-exec-b.json` 5/5: its `Source` **is** the string `about:srcdoc` and the bridge ran there), `about:blank`, `data:`, `blob:null/…` or `chrome-error://…`; (b) for an `https` application, a different tuple origin (`https://evil.example/…`); (c) for a `file:` application, an empty host but a path **outside** the verified package root (crafted `file:///…/outside/x.html` document that obtained the nonce); (d) for a `file:` application, a non-empty host: UNC `file://server/share/…` on device; `file://localhost/…` as a pure-Rust vector only (Chromium likely strips `localhost`, so it may be unreachable on device) | Each refused by the Source rule alone (event rule and epoch rule already pass); zero effects. Controls admitted: the same epoch from the committed document's in-root path; from a mixed-case or percent-encoded spelling of an in-root path (`file:///D:/APP/INDEX.HTML`, `…/index%2Ehtml` — one identity class under the parser); and, for an admitted root `D:/Keld Test/Ünï/`, from Chromium's canonical `file:///D:/Keld%20Test/%C3%9Cn%C3%AF/index.html`. Golden vectors for the same cases run as pure Rust against the one parser. | Replace `file_url_root_relative` with a comparison of serialised origins (`"null" == "null"`), keeping the `scheme == file` half → cases (c) and (d) are admitted → RED (the scheme half still refuses (a)). Separately, replace it with a comparison of `Url::origin()` values → every `file:` control is refused, because `file:` origins are opaque and unique (`url` 2.5.8, the workspace's locked version: `origin.rs` L33, doc-test `lib.rs` L852–866) → RED. Separately, keep only the `scheme == file` half of the rule → case (c) is admitted → RED. Separately, compare components case-sensitively → the mixed-case control is refused → RED. Separately, decide membership with the arch 03 §2 byte matcher (`path_in_scope`) against the root's spelling → the percent-encoded non-ASCII control is refused → RED. Exactly one rule decides each case. |
 | AC18 Host-identifiable load | The application is loaded with `NavigateToString` (today's path, `mod.rs:3654`) instead of the verified URL | `ContentLoading` reports `Source = about:blank` (source probe 3/3); the eligibility rule mints **no** epoch; the bridge's calls are refused not-ready forever and the window fails with the typed `hello`-deadline error. Loaded from the verified URL, the same application receives an epoch. | Qualify an `about:blank` document because the Host "knows" it just loaded the app string → an attacker-reached `about:blank` (E5 trigger a control) is indistinguishable and receives an epoch → RED. |
 | AC06 Epoch nonce | A message from the previous document A, replayed by the Host test hook after same-origin document A2's `ContentLoading`; or a nonce not byte-equal to the current one | Refused; zero effects; the epoch is posted to the new document at `ContentLoading` (E5: 24/24 per variant = 12 trials × 2 documents). Natural late delivery is a separate gate (§10 B7). | Admit by `Source` + generation only → the same-origin A→A2 replay is admitted → RED (tracker negative control (d), AC22). |
 | AC07 Not-ready refusal | A page calls an exposed method or `window.keld.invoke` before the document's epoch arrived | Void APIs return `undefined`, `invoke` rejects with the typed not-ready error, **nothing is queued or replayed**; a call after the epoch succeeds. | Buffer and flush on epoch → the early call produces a late Bun entry → RED. |
 | AC08 Renderer-side epoch check (**correctness guard, not a security control**) | The Host posts a reply/event stamped with epoch e₁ after document B (e₂) committed (host-replayed, as in E5 variant harness) | The bridge drops it (and drops anything received before its own epoch); B's facade listeners never fire. This keeps stale replies away from B's facade callbacks; it protects nothing from a hostile page, whose own raw `chrome.webview` `message` listener sees every post (AC21 is the security control). | Remove the bridge's stamp check → the stale post is delivered to B's facade listener → RED. |
 | AC09 Literal grant | Current document, matching epoch, channel `c` without `el:c` in `windows.<w>.channels` | Exactly #1191 AC5: `KELD-GUARD003`, zero effects; a granted neighbour produces one Bun entry. For a route-D window the fix text says to re-run `keld migrate`; it does not say to add `el:c` by hand (§4.8 rule 3). | Prefix/case-fold match → `el:cX`/`EL:c` admitted → RED (#1191 `G552-P04-literal`). |
-| AC10 Navigation policy | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case | Every top-level `NavigationStarting` whose Uri is outside the allowlist has `Cancel` set and the application document survives (E5: 5/5 veto, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). Allowlisted navigations proceed. For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. | Replace the scheme rule with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. Separately, compare the scheme case-sensitively against a lower-case list → `ABOUT:BLANK`/`DATA:` forms proceed → RED. |
+| AC10 Navigation policy | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case | Every top-level `NavigationStarting` whose Uri is outside the allowlist (for `file:`, outside the verified package root per the parser) has `Cancel` set and the application document survives (E5: 5/5 veto per arm, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). Allowlisted navigations proceed. For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. | Replace the allowlist with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. |
 | AC11 Runtime flag untouched | Any build | `AdditionalBrowserArguments` stays empty; no `--disable-features` naming `msWebView2CancellableAboutNavigations`; cancellable `about:` navigation is never disabled. | Add the flag → AC10's `about:blank` control replaces the document → RED. |
 | AC12 Popups | `window.open` with `_blank`/`target`, `opener` forms | `NewWindowRequested` → `SetHandled(TRUE)` (existing `guarded_navigation.rs:142-152`); no popup exists (E5 f1/f2: handled, 0 windows). | Drop the handler → unaccounted popup → RED. |
 | AC13 Generated grants | `keld migrate` sees `ipcMain.on('a')`, `ipcMain.handle('b')`, `ipcMain.once('c')`, `ipcMain.handleOnce('d')`, `ipcMain.on(dyn)` and window W's preload exposes only the fixed-channel, fully forwarding method F-B1 (`doA: (...xs) => send('a', ...xs)`) | `windows.W.channels == ["el:a"]`, with `"$keldWindowChannelGrants": 1` and `windows.W.preload.digest`; `b`, `c`, `d` and `dyn` are reported ungranted. For the page-chosen-channel pass-through F-B the result is `["el:a","el:b","el:c","el:d"]`. A flagged method on the same channel that omits arguments (`doA: () => send('a')`) with a matching attestation yields the same `["el:a"]`, never more. | Grant every `ipcMain` literal regardless of the preload's reachable sinks → `el:b` appears for W → RED (over-grant). Separately, collect only `on`/`handle` registrations → F-B's result lacks `el:c`/`el:d` and those handlers are unreachable → RED (under-grant; draw.io registers ten channels with `ipcMain.once`). |
 | AC14 Digest binding | The admitted preload bytes' SHA-256 differs from `windows.W.preload.digest` | The Host treats W as `channels: []` and fails the window with a typed error naming the fix (`re-run keld migrate`); a matching digest loads the grants. | Ignore the digest → grants produced for another preload apply → RED (tracker negative control (b), AC22). |
-| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-O (§4.8). Every single-rule fixture forwards all other arguments by rest/spread, so exactly one rule can flag it | F-B, F-B1, F-B2 and F-O not flagged; every other fixture flagged, and the recorded `verdict.flags` names **only** the rule its row names; F-G1 flagged although representation-only (conservative); F-G (the combined draw.io shape) carries three flags. | Each mutant removes one rule: drop the page-input data-flow edge → F-A, F-D pass → RED; treat omitted or truncated arguments as pass-through (the inverted former mutant) → F-C, F-J pass → RED; ignore constant arguments → F-H passes → RED; ignore preload-assigned fields → F-I passes → RED; ignore inbound values (rule (b)) → F-F, F-K, F-L pass → RED; flag only non-literal `process.argv` reads → F-M passes → RED; treat dynamic `require`/`eval` as resolvable → F-E passes → RED; let the analyzer "prove" F-G1 representation-only by pattern → F-G1 passes silently → RED (conservatism falsifier); F-G stays flagged under every single mutant. Over-flag falsifier: flag every sink call → F-B/F-B1/F-B2 flagged → RED. |
-| AC19 Verdict and attestation binding | Window W's `preload.digest` is d₁ and the recorded `verdict.flags` is non-empty; the manifest holds (i) no attestation, (ii) an attestation bound to d₂ ≠ d₁, (iii) an attestation bound to d₁; separately (iv) `preload.verdict` is absent, (v) `channels` lists `el:x` not in `verdict.reachableSinks`, and (vi) `verdict.digest` is d₀ ≠ d₁ (the developer edited the preload and hand-updated `preload.digest` without re-running `keld migrate`) | (i), (ii), (iv), (vi): the Host loads W with `channels: []` and a typed error whose fix says re-run `keld migrate` (and, for (i)/(ii), attest digest d₁); (iii): W loads with exactly the §4.8 **Grants** intersection; (v): W's grants are rejected (`KELD-GUARD005`-class), not filtered. A release build re-runs the classifier on the admitted bytes and refuses to package W when the result differs from the recorded verdict. | Accept an attestation by file path or window key instead of digest → case (ii) loads → RED. Separately, skip the ⊆-reachable-sinks check → case (v) grants `el:x` → RED. Separately, treat a missing verdict as "no flags" → case (iv) loads grants → RED. Separately, skip the `verdict.digest == preload.digest` check → case (vi) loads stale grants → RED. |
+| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-Q (§4.8). Every single-rule fixture forwards all other arguments by rest/spread, so exactly one rule can flag it | F-B, F-B1, F-B2 and F-O not flagged; every other fixture flagged, and the recorded `verdict.flags` names **only** the rule its row names; F-G1 flagged although representation-only (conservative; branch and delete); F-G (the combined draw.io shape) carries three flags. | Each mutant removes one rule: drop the page-input data-flow edge → F-A, F-D pass → RED (F-G1 stays flagged by its delete); treat a page-derived channel as pass-through → F-P passes → RED; treat omitted or truncated arguments as pass-through (the inverted former mutant) → F-C, F-J pass → RED; ignore constant arguments → F-H passes → RED; ignore writes, deletes and mutating calls on page-input values → F-I, F-Q pass → RED; ignore inbound values (rule (b)) → F-F, F-K, F-L pass → RED; flag only non-literal `process.argv` reads → F-M passes → RED; treat dynamic `require`/`eval` as resolvable → F-E passes → RED; let the analyzer "prove" F-G1 representation-only by pattern → F-G1 passes silently → RED (conservatism falsifier); F-G stays flagged under every single mutant. Over-flag falsifier: flag every sink call → F-B/F-B1/F-B2 flagged → RED. |
+| AC19 Verdict and attestation binding | Window W's `preload.digest` is d₁ and the recorded `verdict.flags` is non-empty; the manifest holds (i) no attestation, (ii) an attestation bound to d₂ ≠ d₁, (iii) an attestation bound to d₁; separately (iv) `preload.verdict` is absent, (v) `channels` lists `el:x` not in `verdict.reachableSinks`, (vi) `verdict.digest` is d₀ ≠ d₁ (the developer edited the preload and hand-updated `preload.digest` without re-running `keld migrate`), and (vii) `preload.digest == verdict.digest == d₁` but the recorded flags or sinks are stale (hand-edited, or produced by an older classifier) | (i), (ii), (iv), (vi): the Host loads W with `channels: []` and a typed error whose fix says re-run `keld migrate` (and, for (i)/(ii), attest digest d₁); (iii): W loads with exactly the §4.8 **Grants** intersection; (v): W's grants are rejected (`KELD-GUARD005`-class), not filtered; (vii): a release build re-runs the classifier on the admitted bytes, finds a different verdict and refuses to package W with a typed error. | Accept an attestation by file path or window key instead of digest → case (ii) loads → RED. Separately, skip the ⊆-reachable-sinks check → case (v) grants `el:x` → RED. Separately, treat a missing verdict as "no flags" → case (iv) loads grants → RED. Separately, skip the `verdict.digest == preload.digest` check → case (vi) loads stale grants → RED. Separately, skip the release recompute → case (vii) is packaged → RED. |
 | AC16 Same-document stability | `pushState` to `?route=2#frag`, `replaceState` to `?route=3`, a hash change (`SourceChanged` with `IsNewDocument == FALSE`, source probe v2 3/3), cancelled provisional navigation | Epoch and generation unchanged; a pending granted call completes once; a new granted call after each change is admitted (its `Source` now carries the new query/fragment). | Rotate the epoch on `SourceChanged(IsNewDocument == FALSE)` → the pending call is refused → RED. |
 | AC20 Identity is decided at commit, not per Source string | After `pushState` to `?route=2#frag` the page makes a granted call; its `Source` is `file:///…/index.html?route=2#frag` (source probe v2) — and the first call posted immediately after `pushState` may still carry the pre-push `Source` (`SourceChanged` arrived after it, 3/3) | Both calls are admitted: the epoch binds the committed document; the per-call Source rule checks the scheme, then the tuple origin (`https`) or empty host plus in-root path through the one parser (`file:`), never query/fragment equality. | Compare the full `Source` URL to the committed URL → the post-`pushState` call is refused → RED. |
 | AC21 Host→renderer generation check (security control) | Document A's granted `invoke` is admitted; the Bun handler's reply is held until B's `ContentLoading` has been processed (deterministic test gate); B's first inline script installs a raw `chrome.webview` `message` listener that counts every post | The Host drops the reply because the target generation moved (§4.4 Host→renderer rule): B's raw-listener counter for posts stamped e₁ reads 0 and the Host's post counter for e₁ after B's `ContentLoading` reads 0. A reply whose target is still current is delivered once. | Remove the Host-side generation check → B's raw listener receives A's reply (counter ≥ 1) → RED (tracker negative control (e), AC22). The natural race between a post and a concurrent commit is not deterministic and is probed under §10 B7, arm H. |
 | AC22 Route-D premise mutants (the tracker negative control) | One hostile page, five single-fault Host or `keld migrate` builds, each in its own process: (a) the classifier treats omitted arguments as pass-through; (b) the Host ignores the preload digest; (c) the literal-grant check is removed; (d) admission uses `Source` + generation without the nonce; (e) the Host-side generation check on Host→renderer delivery is removed | The unmodified baseline refuses every attempt with zero effects. Each forbidden effect is counted independently of the Host's refusal log: a Bun-side handler-entry counter keyed by channel and argument list for (a)–(d), and the page's raw `message` listener counter for (e). | (a) baseline: F-C is flagged, no attestation exists, W has `channels: []`; mutant: F-C passes unflagged, W is granted `el:open-file`, and the page posts `invoke('open-file', '<page path>')` directly → a Bun entry with an argument the preload never sends → RED; (b) = AC14's mutant; (c) = AC02's mutant (the literal-grant step removed; AC09's prefix/case-fold mutant is a different fault and stays in AC09); (d) = AC06's mutant (A→A2 replay reaches Bun); (e) = AC21's mutant. AC03 (top-level event), AC05 (Source rule) and AC19 (grants ⊆ reachable sinks) carry the remaining premise mutants. The bridge's epoch check (AC08) is not one of them. |
 | AC23 Isolation is never reported | (a) A fixture preload records `process.contextIsolated` and calls `contextBridge.exposeInMainWorld('probe', { isolated: process.contextIsolated })`; (b) `keld migrate` runs over F-O (§4.8), which exposes a privileged API only when `process.contextIsolated` is truthy and a limited one otherwise | (a) The first inline page script reads `window.probe.isolated === false`; the exposure succeeded (route-D divergence: in Electron, `exposeInMainWorld` throws when `contextIsolated` is false — §4.2). (b) `verdict.reachableSinks` is `["el:pub"]`: `process.contextIsolated` is constant-folded to `false`, so only the branch the application actually takes is counted; the report lists every preload read of `process.contextIsolated`, and an aliased or computed read is flagged under rule 2(d). | (a) Report `true` (the former Q3 recommendation) → the probe reads `true` → RED. (b) Count sinks from both branches → `el:priv` is granted although the application chose the limited API → RED. |
-| AC24 In-flight hold (state machine) | Pure Rust test of the Host→renderer delivery state machine with a stub engine: (1) `NavigationStarting(n)` → reply due → `ContentLoading(n)`; (2) `NavigationStarting(n)` with `Cancel` → reply due → `ContentLoading(n)` (E5 trigger b shape) → `NavigationCompleted(n, IsSuccess = FALSE)`; (3) `NavigationStarting(n)` → reply due → `NavigationCompleted(n, IsSuccess = FALSE)` with no `ContentLoading(n)`; (4) two overlapping navigations n₁, n₂, `ContentLoading(n₂)` only; (5) `NavigationStarting(n)` → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)` and no `SourceChanged(IsNewDocument = FALSE)` | (1), (2), (4): the stub engine receives **no** post for the old epoch; the old epoch is revoked. (3): the held reply is released once to the unchanged document. (5): treated as a document change — revoke, FailedClosed, `onLoss`; no held reply released. | Remove the hold → the stub receives the old-epoch post between `NavigationStarting` and `ContentLoading` in (1) → RED. Separately, start the hold only for navigations the policy allowed → (2) emits the post → RED. Separately, end the hold at the first completion → (4) emits the post → RED. Separately, release held posts on any completion without `ContentLoading` → (5) emits the post → RED. |
+| AC24 In-flight hold (state machine) | Pure Rust test of the Host→renderer delivery state machine with a stub engine: (1) `NavigationStarting(n)` → reply due → `ContentLoading(n)`; (2) `NavigationStarting(n)` with `Cancel` → reply due → `ContentLoading(n)` (E5 trigger b shape) → `NavigationCompleted(n, IsSuccess = FALSE)`; (3) `NavigationStarting(n)` → reply due → `NavigationCompleted(n, IsSuccess = FALSE)` with no `ContentLoading(n)`; (4) `NavigationStarting(n₁)` → `NavigationStarting(n₂)` → reply due → `NavigationCompleted(n₁, IsSuccess = FALSE)` → `ContentLoading(n₂)`, then a reply due for the new epoch; (5) `NavigationStarting(n)` → reply due → `SourceChanged(IsNewDocument = TRUE)` → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)`; (6) `NavigationStarting(n)` → reply due → `SourceChanged(IsNewDocument = FALSE)` (an unrelated `pushState`) → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)` | (1), (2), (4): the stub engine receives **no** post for the old epoch; the old epoch is revoked; in (4) the reply for the new epoch is delivered exactly once (liveness). (3), (6): the held reply is released once to the unchanged document. (5): treated as a document change — revoke, FailedClosed, `onLoss`; no held reply released. | Remove the hold → the stub receives the old-epoch post between `NavigationStarting` and `ContentLoading` in (1) → RED. Separately, start the hold only for navigations the policy allowed → (2) emits the post → RED. Separately, end the hold at the first completion → (4) emits the old-epoch post after `NavigationCompleted(n₁)` → RED. Separately, release held posts on any completion without `ContentLoading` → (5) emits the post → RED. Separately, key the rule on the absence of `SourceChanged(IsNewDocument = FALSE)` (the r4 rule) → (6) is masked or (5) misfires, depending on order → RED. |
 | AC17 Receipt | A Windows acceptance claim | Runtime `BrowserVersionString`, OS build, head, manifest digest, preload digest, per-AC counters, each RED control's output. | Missing runtime string or mocked `WebMessageReceived` → validator RED. |
 
 ## 4. Design
@@ -197,8 +198,8 @@ independent of A6 (a renderer-side epoch check cannot stop the page's raw listen
 1. **No IPC authority or Host-delivered data exists only in preload code.** The page can do
    whatever the preload can and read whatever the preload receives; the Host grants exactly
    the literals `keld migrate` generated for this window and this preload digest. A preload
-   that may narrow what the page can cause or see is flagged (§4.8) and runs only with a
-   digest-bound attestation. The epoch nonce is page-readable; it authenticates the
+   that may narrow what the page can cause or see is flagged (§4.8) and its window receives
+   grants only with a digest-bound attestation. The epoch nonce is page-readable; it authenticates the
    document, not the sender, and conveys no authority the document lacks.
 2. **The Host authenticates frame, document and epoch, not the JavaScript world.**
    Admission = top-level event ∧ current nonce of the document qualified at commit ∧
@@ -246,6 +247,10 @@ capability, and that is what the classifier and attestation decide.
    bridge's `epoch` before the real one arrives (§4.3) — self-harm only.
 8. AC1's preload trust root and rule 1's digest both rest on the unowned Windows trust root
    (§10 B4).
+9. While a top-level navigation is pending (§4.4 in-flight hold) the Host delivers no reply or
+   event to the old document; anything due then is discarded at commit — for example an
+   `invoke` issued from a `beforeunload` handler never resolves. Electron keeps delivering
+   to the old document until the swap. AC24; T1 scoreboard entry.
 
 ### 4.3 The bridge script
 
@@ -273,17 +278,18 @@ function send(body: object): void {
 post(stringify({ v: 1, kind: "hello", href: location.href }));   // authority-free, no epoch
 installKeldFloor(send);                                           // KEL-142 §4.1
 installElectronFacade(send);                                      // #1154 shapes
-if (ENTRY_PATHS.has(location.origin + location.pathname)) runWrappedPreload(); // #1155 §4.2
+const key = location.protocol + "//" + location.host + location.pathname;   // scheme + authority + path
+if (ENTRY_KEYS.has(location.protocol === "file:" ? asciiLower(key) : key)) runWrappedPreload(); // #1155 §4.2
 ```
 
-Rules: the text holds no secret. `ENTRY_PATHS` is the set of qualified application entry
-resources as origin + path (query and fragment are not identity, exactly as §4.5) that the
-Host embeds at registration from the same manifest snapshot it uses for A4; it is a
-convenience gate so the app preload does not execute in allowlisted remote documents or
-error pages (it has no authority either way; A4 is the rule). For `file:` the Host embeds
-the spelling the page will report (`location.origin` is `"file://"` on 156, source probe)
-and the gate compares ASCII-case-insensitively, so a mixed-case spelling that the parser
-qualifies also runs the preload. A page can forge a
+Rules: the text holds no secret. `ENTRY_KEYS` is the set of qualified application entry
+resources as scheme + authority + path (query and fragment are not identity, exactly as
+§4.5). The Host derives each key from the exact URL it passes to `Navigate`, serialised once
+by the URL owner (§4.4), ASCII-lowercased for `file:`, and embeds the set at registration
+from the same manifest snapshot it uses for A4. The gate computes the same form from
+`location`. It is a convenience gate so the app preload does not execute in allowlisted
+remote documents or error pages; it has no authority either way (A4 is the rule), so a
+spelling mismatch only skips the preload, and AC01 detects that. A page can forge a
 `chrome.webview` `message` event and corrupt `epoch`; that only breaks its own calls. The
 `hello` message is sent once per document before any epoch exists; it carries no channel
 and requests nothing.
@@ -301,19 +307,20 @@ only caller of `dispatch_privileged` (#1191 T4).**
 fn on_web_message(view: &ViewState, args: &ICoreWebView2WebMessageReceivedEventArgs) {
     // 1. top-level event: registered on ICoreWebView2 only.
     let env = Envelope::parse_bounded(args.TryGetWebMessageAsString()?)?;   // 4 KiB + header
-    let src = parse_url(args.Source()?);                                     // None if unparsable
+    let source = args.Source()?;                    // the RAW string WebView2 stamped; never re-serialised
+    let src: &str = &source;
     if env.kind == Kind::Hello {
         // 2'. authority-free diagnostics: noted only if `src` passes the same per-call
         //     scheme/origin/root check (step 3) against the entry the Host is loading; never
         //     waits for an epoch, never grants anything.
-        return view.note_hello(src.filter(|s| source_ok(s, view.loading_entry())));
+        return view.note_hello(source_ok(src, view.loading_entry()));
     }
     // 2. epoch byte-equal to the CURRENT committed eligible document's nonce (identity was
     //    decided once, at that document's ContentLoading — A4).
     let Some(doc) = view.qualified_document() else { return refuse(Refusal::NoDocument) };
     if !doc.epoch.matches(&env.document) { return refuse(Refusal::Epoch); }
     // 3. Source per call (one function, also used by step 2'):
-    let Some(src) = src.filter(|s| source_ok(s, &doc.entry)) else { return refuse(Refusal::Source) };
+    if !source_ok(src, &doc.entry) { return refuse(Refusal::Source); }
     // hand-off: stamped with (WebviewId, NonZeroU32 generation, digest-bound window key).
     view.forwarder.submit(Stamped { id: view.id, generation: doc.generation, window: view.window_key, env });
 }
@@ -332,17 +339,37 @@ fn forward(stamped: Stamped) {
 fn source_ok(src: &str, entry: &QualifiedEntry) -> bool {
     match entry.scheme {
         // https (a Keld-owned virtual host, if B6 chooses one): the committed tuple origin.
-        EntryScheme::Https => https_tuple_origin(src) == Some(&entry.tuple_origin),
+        // keld-guard parses `src` once with `url` 2.5.8 and returns the https tuple origin.
+        EntryScheme::Https => keld_guard::https_tuple_origin(src) == Some(entry.tuple_origin),
         // file: exactly `scheme == file && file_url_root_relative(source, admitted_root).is_ok()`.
         // keld-guard's ONE file: URL parser (W3 #1185 §4.4) decides membership: empty host,
         // one percent-decode, ordinal case-insensitive in-root components, package grammar
         // per component; query and fragment cut. No origin equality, no second path helper.
-        EntryScheme::File => url_scheme_is(src, "file")
+        // `url_scheme_is` is the parser's own R1 test (ASCII case-insensitive `file:` prefix of
+        // the raw string), not a URL parse; the parser gets the raw string.
+        EntryScheme::File => keld_guard::url_scheme_is(src, "file")
             && keld_guard::file_url_root_relative(src, &entry.admitted_root).is_ok(),
     }
     // Any other scheme (about:, data:, javascript:, blob:, chrome-error:, …) never matches.
 }
 ```
+
+**URL parsing has one owner.** Every URL decision in this spec receives the raw string
+WebView2 reported (`Source`, `NavigationStarting` `Uri`) and parses it at most once:
+
+| Option | Fidelity to Chromium's WHATWG parsing | Owners | Dependency gate | Double-parse risk | Mean |
+| --- | --- | --- | --- | --- | --- |
+| **(a) keld-guard owns every URL decision: W3's hand-written `file:` parser on the raw string; `url` 2.5.8 (WHATWG) for non-`file:` schemes** | 8 | 9 (one crate, already the security leaf) | 6 (direct dependency; version already locked via `tao`/`wry`) | 9 | **8.0** |
+| (b) `keld-wv` parses with `url`; keld-guard keeps only the `file:` parser | 8 | 4 (two owners) | 6 | 6 | 6.0 |
+| (c) hand-written `https` parser in keld-guard | 3 (IDNA, IPv4 spellings, percent-encoded hosts) | 9 | 10 | 8 | 7.5 |
+
+Chosen: (a). `keld_guard::https_tuple_origin(raw)` parses once and returns the tuple only
+for `https`. A `file:` string is never parsed by `url`: `url` rewrites `file://localhost/`
+to `file:///`, so feeding a re-serialised URL to `file_url_root_relative` would bypass W3's
+R2 (no authority). `NavigationStarting` dispatches on the raw string's scheme prefix: `file:`
+goes to the parser; anything else is matched as the raw, Chromium-canonical `Uri` by the
+arch 03 §2 scope matcher (spell destinations as the host sends them). No component
+re-serialises a URL and hands it to another. This opens the dependency gate (§8).
 
 Refusal order, as the code above runs it: no-document, then epoch, then Source; all three
 precede a grant miss (#1191 AC8). A window whose
@@ -369,12 +396,23 @@ guard. The Host rule:
    `about:srcdoc` still raised `ContentLoading` (E5 trigger b: `NS+Cancel > CL > NC(ok=False)`).
    A navigation leaves the set at its `ContentLoading` (the old epoch is revoked and every
    post held for it is discarded) or at its `NavigationCompleted` without a `ContentLoading`.
-   In the second case: `IsSuccess == FALSE` means no commit and the held posts are released
-   to the unchanged document, still subject to rule 1; `IsSuccess == TRUE` without an
-   observed `SourceChanged(IsNewDocument == FALSE)` (for example a back/forward-cache
-   restore, if WebView2 raises no `ContentLoading` for it — UNKNOWN on 156) is treated as a
-   document change: revoke, FailedClosed, `onLoss`, nothing released. Posts are held within
-   #540's credits. Reason: the Host learns of a commit only through the asynchronous
+   In the second case: `IsSuccess == FALSE` means no commit, and the held posts are released
+   to the unchanged document, still subject to rule 1. With `IsSuccess == TRUE`, if a
+   `SourceChanged(IsNewDocument == TRUE)` arrived after this navigation's
+   `NavigationStarting` and no `ContentLoading` followed it, a new document took over
+   without the commit event (for example a back/forward-cache restore, if WebView2 raises no
+   `ContentLoading` for it — UNKNOWN on 156): revoke, FailedClosed, `onLoss`, nothing
+   released. Otherwise (a same-document or no-op completion) the held posts are released,
+   still subject to rule 1. The rule keys on the positive new-document signal because
+   `SourceChanged` carries no `NavigationId`, so an unrelated `pushState`
+   (`IsNewDocument == FALSE`) must not decide it. `SourceChanged(IsNewDocument == TRUE)`
+   preceded `ContentLoading` in every source-probe run (`source-v1`/`source-v2`, 3/3 each).
+   Liveness: all 1,064 top-level `NavigationStarting` events in E5's logs, 270 of them
+   cancelled, ended in a `NavigationCompleted` with the same `NavigationId` (counted by
+   review r3), so the pending set drains. Whether WebView2 raises `NavigationStarting` for a
+   same-document navigation is UNKNOWN (`source-v2` did not subscribe); the T2 receipt
+   records the event sequence for a fragment navigation and a back/forward-cache restore.
+   Posts are held within #540's credits. Reason: the Host learns of a commit only through the asynchronous
    `ContentLoading` event, so a post issued in the gap could reach the next document while
    rule 1 still passes.
 3. **Residual the hold cannot close.** A post handed to `PostWebMessageAsString` *before*
@@ -393,7 +431,11 @@ components `file_url_root_relative` returns under the verified package root; or 
 Keld-owned virtual-host entry) **and** the bytes served for it are that verified resource —
 never URL text alone, never a `NavigateToString` load. Identity
 is decided **once, here**; the epoch binds to that committed document. Otherwise the
-document is FailedClosed with `channels: []`.** Same-document
+document is FailedClosed with `channels: []`.** Each window's entry resources come from its
+generated window entry (§4.8 window mapping; entry derivation is #1192's). A same-window
+navigation to another in-root page that is not an entry is allowed by policy but gets no
+epoch, and `onLoss` applies; a multi-page application declares each page as an entry
+(#1192). Same-document
 history/hash changes (`SourceChanged` with `IsNewDocument == FALSE`) keep the epoch; the
 per-call Source rule (§4.4 step 3) then checks only the scheme and the tuple origin (`https`)
 or the empty host and in-root path (`file:`).
@@ -408,7 +450,7 @@ A document loaded with `NavigateToString` can never satisfy this rule (its `Sour
 | `ContentLoading`, rule not satisfied (error page, remote allowlisted document, unknown `NavigationId`) | +1 then FailedClosed | Revoke; no epoch; apply `onLoss` |
 | `document.open()`/`write` in the application document (E5 g: 5/5 replaced, no `NavigationStarting`, no `ContentLoading`) | +0 | **Host-unvetoable limit #2.** Same document, same epoch, same authority; the page blanked itself. Electron's `will-navigate` cannot see it either. No Host action; recorded in the report |
 | Hash / `pushState` / cancelled provisional navigation | +0 | Keep nonce and work (AC16) |
-| `NavigationCompleted(IsSuccess == TRUE)` for a pending navigation that raised no `ContentLoading` and no `SourceChanged(IsNewDocument == FALSE)` (e.g. a back/forward-cache restore, if WebView2 raises no `ContentLoading` for it — UNKNOWN on 156) | +1 then FailedClosed | Treat as a document change: revoke; release nothing held; apply `onLoss` (AC24 case 5). AC16 is the falsifier that this never fires for a same-document change |
+| `NavigationCompleted(IsSuccess == TRUE)` for a pending navigation after which a `SourceChanged(IsNewDocument == TRUE)` arrived and no `ContentLoading` (e.g. a back/forward-cache restore, if WebView2 raises no `ContentLoading` for it — UNKNOWN on 156) | +1 then FailedClosed | Treat as a document change: revoke; release nothing held; apply `onLoss` (AC24 case 5). A completion with only `SourceChanged(IsNewDocument == FALSE)` releases the held posts (AC24 case 6) |
 | Trusted Host load (`onLoss: reload-entry`) | +1 before the engine call | Revoke, then `Navigate`; bounded to **3 automatic recoveries per window lifetime**, then close with a typed error |
 | Bun role restart | +0 | Keep document and nonce; revoke old correlations |
 | Destroy | terminal | Revoke; numeric id never reused |
@@ -459,13 +501,20 @@ the media principal construction accordingly with the KEL-102 owner.
 
 - `allow` entries use the **existing vetted path/URL scope matcher** (arch 03 §2: `/**`
   suffix, authority must be named, literal separator). The application entry resource is
-  always allowed. The `NavigationStarting` Uri is parsed first (scheme and host case-folded
-  as the URL standard requires; an unparsable Uri is cancelled), so case never decides.
-  Anything else is cancelled in `NavigationStarting`, including every
-  `about:`/`data:`/`javascript:`/`blob:` URI in any case (the matcher cannot name those
-  authorities, so they never match; no scheme list is hand-maintained). `IsUserInitiated`
+  always allowed. The raw `NavigationStarting` `Uri` is dispatched on its scheme prefix
+  (§4.4 URL owner): `file:` goes to the parser below; anything else is matched as the raw,
+  Chromium-canonical string, and an unparsable `Uri` is cancelled. Anything else is
+  cancelled in `NavigationStarting`, including every `about:`/`data:`/`javascript:`/`blob:`
+  URI in any letter case: no allowlist entry can name those authorities, so they never
+  match, and no scheme list is hand-maintained. `IsUserInitiated`
   does not relax it. E5 ran the `about:` forms (including `ABOUT:BLANK`); `data:`, `blob:`
   and `javascript:` are not yet run on device (AC10).
+- **W1's navigation position (aligned with W3 #1185 r2, `5ecd3496` §4.6, design A′).** The
+  allowlist — and, for `file:`, the parser — decides `Cancel` on the original
+  `NavigationStarting` before any generation change. `will-navigate` is a notification
+  only: the Host never replays a page navigation. A page-initiated navigation is +0 until
+  its `ContentLoading` (+1 at commit). The only "+1 before the engine call" load is the
+  bounded `onLoss: reload-entry` recovery (§4.5). This answers W3 571f6bda's B4 for W1.
 - For a `file:` destination, in-root membership is decided by `file_url_root_relative`
   against the admitted root (the same owner as the per-call `Source` rule), never by a byte
   pattern; `allow` entries cover non-`file:` destinations.
@@ -552,7 +601,10 @@ rule 2 exists:
 >   unmodified exposure parameter; the argument list after the channel is exactly the
 >   exposure's remaining arguments, forwarded by identity (`(c, ...xs) => send(c, ...xs)`
 >   or `arguments`); and no page-input-dependent branch lies on the path. Hence a
->   page-input-dependent branch or transform, a constant argument, an omitted or truncated
+>   page-input-dependent branch or transform, a channel computed from page input
+>   (`send('app:' + c, ...xs)`), any write, delete or mutating call on a page-input value or
+>   anything reachable from it (`m.x = …`, `delete m.x`, `Object.assign(m, …)`,
+>   `Object.defineProperty(m, …)`), a constant argument, an omitted or truncated
 >   argument (`(c, x) => send(c, x)` drops trailing arguments), a reordered or overwritten
 >   argument, and a preload-assigned field on a page-input object (`m.reqId = n++`) each
 >   flag the call;
@@ -613,12 +665,14 @@ flagged (conservative), never silently passed.
 | F-G | `request: (m) => { m.reqId = n++; if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m); }` (the draw.io shape) | combined: preload-assigned field, a representation-only branch, truncation | flagged (a), three flags |
 | F-G1 | `request: (m, ...xs) => { if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m, ...xs); }` | representation-only by the definition (see below), not provable | flagged (a) (conservative) |
 | F-H | `getConfig: (...xs) => invoke('read-config', 'config.json', ...xs)` | narrowing (constant argument) | flagged (a) |
-| F-I | `save: (m, ...xs) => { m.user = USER; send('save', m, ...xs); }` | narrowing (preload-assigned field) | flagged (a) |
+| F-I | `save: (m, ...xs) => { m.user = USER; send('save', m, ...xs); }` | narrowing (write on page input: preload-assigned field) | flagged (a) |
 | F-J | `sendMessage: (c, x) => send(c, x)` | narrowing (truncated trailing arguments) | flagged (a) |
 | F-K | `on('auth', (e, ...v) => { token = v; })` | data held (consume without forward) | flagged (b) |
 | F-L | `getUser: (...xs) => invoke('user', ...xs).then((u) => u.name)` | data held (reply field-selected) | flagged (b) |
 | F-M | `const mode = process.argv[1];` | argv read (literal index) | flagged (c) |
 | F-N | `const tok = process.argv.find((a) => a.startsWith('--token='));` | argv read (search) | flagged (c) |
+| F-P | `prefixed: (c, ...xs) => send('app:' + c, ...xs)` | narrowing (channel computed from page input) | flagged (a); reachable sinks = `ipcMain` literals starting `app:` |
+| F-Q | `save: (m, ...xs) => { delete m.extra; send('save', m, ...xs); }` | narrowing (delete on page input) | flagged (a) |
 | F-O | `if (process.contextIsolated) contextBridge.exposeInMainWorld('api', { priv: (...xs) => send('priv', ...xs) }); else window.api = { pub: (...xs) => send('pub', ...xs) };` | branch on isolation; constant-folded to `false` | not flagged; `reachableSinks == ["el:pub"]` (AC23) |
 
 **Rule 3 — recorded verdict and attestation (trust model stated plainly).** The preload
@@ -694,7 +748,10 @@ arguments; that is what the T6 review reads, and it is not established here.
 **Grants.** For window `w` with preload `P` (verdict pass-through):
 `channels(w)` = literal channels of `ipcMain.on/once/handle/handleOnce` in the main process
 **∩** literal channels of outbound sinks reachable from `P`'s exposures; if any reachable sink takes its
-channel from page input (F-B), the intersection is the full `ipcMain` literal set. Dynamic
+channel from page input unchanged (F-B), the intersection is the full `ipcMain` literal set; a
+channel computed from page input by literal concatenation (F-P) reaches only the `ipcMain`
+literals of that form; any other computed channel yields the full set, and the report states
+that over-grant explicitly. Dynamic
 `ipcMain` names are reported ungranted. The report also lists every preload read of
 `process.contextIsolated` (AC23). A flagged `P` **without** an attestation for its
 digest yields `channels: []` and the report line `✘ preload has N flagged sites that may
@@ -788,8 +845,8 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
 | `wv2_first_inline_floor` (device, ignored-by-default, dedicated STA harness like `media_acceptance`) | AC01 | First inline writes `typeof window.keld.invoke` + exposed keys to `document.title`; Host reads after `NavigationCompleted`. Mutant installs via `ExecuteScript` at DOMContentLoaded. |
 | `wv2_poisoned_page_no_widening` | AC02 | Poison then call granted/ungranted/forged; forwarder + fake Bun counters. |
 | `wv2_same_origin_iframe_frame2` | AC03 | Same-origin srcdoc iframe reads `top` nonce, posts via own `chrome.webview`; assert 0 top-level events; mutant registers `Frame2`. |
-| `wv2_eligibility_matrix` | AC04 | (a)–(d) documents on loopback `https` (port 0) with an error page served at an allowlisted path (HTTP 500 → `IsErrorPage`) and `about:srcdoc`; epoch-post counter per document; two mutants. |
-| `wv2_source_rule` + `guard_file_url_source_vectors` (pure Rust, every OS) | AC05 | Device: messages from the app document, an out-of-root file document, `about:blank`, the `about:srcdoc` error page, a `file://localhost/…` spelling, a mixed-case in-root spelling. Pure Rust: the same cases as golden vectors through `file_url_root_relative` and the https tuple check. Four mutants (serialised-origin compare, `Url::origin()` compare, scheme-only, case-sensitive). |
+| `wv2_eligibility_matrix` | AC04 | (a)–(d) documents on loopback `https` (port 0) with an error page served at an allowlisted path (HTTP 500 → `IsErrorPage`) and `about:srcdoc`; epoch-post counter per document; three mutants. |
+| `wv2_source_rule` + `guard_file_url_source_vectors` (pure Rust; Windows-only until W3 #1185 resolves the parser's `CompareStringOrdinal` dependency) | AC05 | Device: messages from the app document, an out-of-root file document, `about:blank`, the `about:srcdoc` error page, a `file://localhost/…` spelling, a mixed-case in-root spelling. Pure Rust: the same cases as golden vectors through `file_url_root_relative` and the https tuple check. Five mutants (serialised-origin compare, `Url::origin()` compare, scheme-only, case-sensitive, byte matcher). |
 | `wv2_epoch_rotation` | AC06, AC16 | A→B cross-origin, A→A2 same-origin reload, hash/pushState; host-replayed A envelopes after B's `ContentLoading`; mutant admits by Source + generation. |
 | `wv2_not_ready_refusal` | AC07 | Fixture calls before epoch; assert `undefined`/typed rejection, 0 queued, later success; mutant buffers. |
 | `wv2_stale_post_dropped` | AC08 | Host test hook posts an e₁-stamped event after B commits; B's facade listener counter 0; mutant removes the bridge check. Correctness guard only. |
@@ -798,10 +855,13 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
 | `wv2_route_d_premise_matrix` | AC22 | One hostile page × five single-fault builds (a)–(e), each its own process, baseline first and last; Bun-side handler-entry counter keyed by channel + argument list, page raw-listener counter; zero-effect baseline. |
 | `wv2_isolation_not_reported` | AC23 | Fixture preload exposes `process.contextIsolated`; first inline reads it; mutant reports `true`. |
 | `guard_channel_literal` (#1191 tests) | AC09 | Pure Rust. |
+| `wv2_string_load_refused` | AC18 | Device: load the fixture with `NavigateToString`; assert `Source == about:blank`, no epoch, typed `hello`-deadline error; mutant qualifies `about:blank`. |
+| `migrate_verdict_binding` | AC19 | Pure Rust over generated manifests for cases (i)–(vii); five mutants; case (vii) runs the release-build recompute. |
+| `wv2_identity_at_commit` | AC20 | Device: `pushState`/`replaceState`/hash then granted calls, including one posted immediately after `pushState`; mutant compares the full `Source`. |
 | `wv2_navigation_matrix` | AC10 | E5 triggers × destinations plus `data:`/`blob:`/`javascript:` in lower and upper case, 5 veto + 3 control runs each, with/without `SendInput` activation; heartbeat oracle; two mutants (exact denylist; case-sensitive scheme). |
 | `wv2_environment_args_empty` + source grep | AC11 | Unit. |
 | `wv2_popup_handled` | AC12 | Existing KEL-168 test. |
-| `migrate_grant_generation` | AC13 | Golden manifest for F-B, F-B1 and attested F-C against a fixed `ipcMain` set; mutant grants all literals. |
+| `migrate_grant_generation` | AC13 | Golden manifest for F-B, F-B1 and attested F-C against a fixed `ipcMain` set; two mutants (grant all literals; collect only `on`/`handle`). |
 | `wv2_digest_binding` | AC14 | Tamper one preload byte after migrate; assert `channels: []` + typed error; mutant ignores digest. |
 | `migrate_classifier_fixtures` | AC15, AC23(b) | F-A..F-O + pinned draw.io preload bytes (expected: exactly the seven sites of §4.8); one mutant per rule plus the over-flag and F-G conservatism mutants. |
 | Receipt validator | AC17 | `tools/` check of the acceptance comment fields. |
@@ -828,7 +888,10 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
   `SetCancel`, `add_ContentLoading`, `add_WebMessageReceived`, `PostWebMessageAsString`,
   `AddScriptToExecuteOnDocumentCreated`); local `// SAFETY:` proofs; issue-scoped update of
   `crates/keld-wv/AGENTS.md`'s Windows FFI list; independent unsafe gate on the final diff.
-- **Dependency addition:** none.
+- **Dependency addition: yes.** `url` 2.5.8 as a direct, workspace-pinned dependency of
+  `keld-guard` for `https_tuple_origin` (§4.4 URL owner). The version is already in
+  `Cargo.lock` through `tao`/`wry`, but the dependency gate (`.agents/dependencies.md`) and
+  the keld-guard owner's acceptance still apply.
 
 ## 9. Perf impact
 
@@ -854,15 +917,15 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
 
   *What to build*, replacing its final sentence:
 
-  > Native evidence showed that no supported WebView2 API separates the page and preload worlds. Under the architecture decision recorded at <DECISION_COMMENT_URL> (effective with #1307 approval), route D — the "documented emulation" of architecture 04 §3 item 3 — replaces world separation with Host enforcement, and the facade MUST NOT report isolation it lacks (`process.contextIsolated` is `false`, #1307 AC23).
+  > Native evidence showed that no supported WebView2 API separates the page and preload worlds. Under the architecture decision proposed at <DECISION_COMMENT_URL> (effective only with #1307's exact-content approval; until then the previous text below applies), route D — the "documented emulation" of architecture 04 §3 item 3 — replaces world separation with Host enforcement, and the facade MUST NOT report isolation it lacks (`process.contextIsolated` is `false`, #1307 AC23).
 
   *Acceptance criterion 2*, replacing it:
 
-  > **(Amended 2026-10-29 for Windows route D; effective with #1307 approval, until then the previous text below applies — see <DECISION_COMMENT_URL>.)** Prove the three route-D rules that replace world separation. **(i) No IPC authority or Host-delivered data exists only in preload code.** `keld migrate`'s conservative classifier flags every preload whose sink calls are not wholly page-controlled (page-input-dependent branches or transforms; constant, omitted, truncated or overwritten arguments; preload-assigned fields), every inbound listener or `invoke` reply whose payload does not reach a page-facing callback unchanged (including consume-without-forward such as `on('auth', (e, t) => { token = t })`), every `process.argv` read, and indeterminate code. A flagged preload runs only with a developer attestation bound to the recorded preload digest that covers every flagged site and never widens grants; Keld reviews this mechanism, not each attestation, and a wrong attestation silently loses the narrowing. The Host loads grants only when the admitted preload bytes hash to the recorded digest (trust root: #1307 blocker B4), a verdict is recorded, and grants ⊆ `verdict.reachableSinks`. **(ii) The Host authenticates every call:** top-level `WebMessageReceived` only; the current epoch nonce of a document whose identity was decided once at commit; a browser-stamped `Source` whose scheme is that document's (so `about:`, `data:`, `javascript:` and `blob:` are refused) and which, for `https`, has that document's tuple origin and, for `file:`, has an empty host and a percent-decoded, case-folded path inside the verified package root as decided by keld-guard's one `file:` URL parser shared with W3 #1185 (never full-URL equality, never a comparison of opaque origins); and an exact literal `el:` channel grant — except `window.keld.invoke`, which routes only KEL-142's declared Echo channel `1`. The page never receives raw Host objects, and no token other than its own document epoch or an already-revoked one. **(iii) Navigation and eligibility are Host policy:** every top-level `NavigationStarting` outside the manifest allowlist is cancelled, including every `about:`, `data:`, `javascript:` and `blob:` URI, with schemes compared case-insensitively (whether `javascript:` raises `NavigationStarting` at all is UNKNOWN, #1307 AC10); `NewWindowRequested` is denied; the runtime's cancellable-`about:` navigation is never disabled; a document receives an epoch only at `ContentLoading` with `IsErrorPage == FALSE`, an allowed `NavigationId` and verified resource identity (never URL text, never a `NavigateToString` load). Top-level `about:srcdoc` (an error page commits despite `Cancel`; FailedClosed with bounded recovery) and `document.open()` (no navigation event; no Host action) are recorded Host-unvetoable limits.
+  > **(Proposed amendment for Windows route D; effective only with #1307's exact-content approval, until then the previous text below applies — see <DECISION_COMMENT_URL>.)** Prove the three route-D rules that replace world separation. **(i) No IPC authority or Host-delivered data exists only in preload code.** `keld migrate`'s conservative classifier flags every preload whose sink calls are not wholly page-controlled (page-input-dependent branches or transforms; constant, omitted, truncated or overwritten arguments; preload-assigned fields), every inbound listener or `invoke` reply whose payload does not reach a page-facing callback unchanged (including consume-without-forward such as `on('auth', (e, t) => { token = t })`), every `process.argv` read, and indeterminate code. A flagged preload's window receives grants only with a developer attestation bound to the recorded preload digest that covers every flagged site and never widens grants; Keld reviews this mechanism, not each attestation, and a wrong attestation silently loses the narrowing. The Host loads grants only when the admitted preload bytes hash to the recorded digest (trust root: #1307 blocker B4), a verdict is recorded, and grants ⊆ `verdict.reachableSinks`. **(ii) The Host authenticates every call:** top-level `WebMessageReceived` only; the current epoch nonce of a document whose identity was decided once at commit; a browser-stamped `Source` whose scheme is that document's (so `about:`, `data:`, `javascript:` and `blob:` are refused) and which, for `https`, has that document's tuple origin and, for `file:`, has an empty host and a percent-decoded, case-folded path inside the verified package root as decided by keld-guard's one `file:` URL parser shared with W3 #1185 (never full-URL equality, never a comparison of opaque origins); and an exact literal `el:` channel grant — except `window.keld.invoke`, which routes only KEL-142's declared Echo channel `1`. The page never receives raw Host objects, and no token other than its own document epoch or an already-revoked one. **(iii) Navigation and eligibility are Host policy:** every top-level `NavigationStarting` outside the manifest allowlist (for `file:` destinations: outside the verified package root, as decided by keld-guard's one parser) is cancelled, including every `about:`, `data:`, `javascript:` and `blob:` URI in any letter case (whether `javascript:` raises `NavigationStarting` at all is UNKNOWN, #1307 AC10); `NewWindowRequested` is denied; the runtime's cancellable-`about:` navigation is never disabled; a document receives an epoch only at `ContentLoading` with `IsErrorPage == FALSE`, an allowed `NavigationId` and verified resource identity (never URL text, never a `NavigateToString` load). Top-level `about:srcdoc` (an error page commits despite `Cancel`; FailedClosed with bounded recovery) and `document.open()` (no navigation event; no Host action) are recorded Host-unvetoable limits.
 
   *Deterministic negative control*, replacing its paragraph:
 
-  > **(Amended 2026-10-29 for Windows route D; effective with #1307 approval.)** Run each of the following single-fault mutants in its own process against the same hostile page. Each mutant must produce its forbidden effect, counted independently of the Host's own refusal log, while the unmodified baseline refuses every attempt with zero effects: (a) the classifier treats omitted arguments as pass-through — fixture F-C (`openFile: () => invoke('open-file')`) passes unflagged, the window is granted `el:open-file`, and a direct page post carrying an argument the preload never sends produces a Bun handler entry; (b) the Host ignores the preload digest — grants recorded for another preload apply (a Bun handler entry on a channel the loaded preload cannot reach); (c) the literal-grant check is removed — an ungranted channel reaches a Bun handler; (d) admission uses `Source` + generation without the epoch nonce — a message from previous document A, replayed to the Host after same-origin document A2's `ContentLoading`, reaches a Bun handler; (e) the Host-side generation check on Host→renderer delivery is removed — the next document's raw `chrome.webview` `message` listener receives a reply addressed to the previous document. A stale-document IPC replay (previous document → Host, after the next document's `ContentLoading`) must also be refused with no native side effect. The bridge's own epoch check is a correctness guard, not a security control, and is not one of these mutants.
+  > **(Proposed amendment for Windows route D; effective only with #1307's exact-content approval, until then the previous text below applies.)** Run each of the following single-fault mutants in its own process against the same hostile page. Each mutant must produce its forbidden effect, counted independently of the Host's own refusal log, while the unmodified baseline refuses every attempt with zero effects: (a) the classifier treats omitted arguments as pass-through — fixture F-C (`openFile: () => invoke('open-file')`) passes unflagged, the window is granted `el:open-file`, and a direct page post carrying an argument the preload never sends produces a Bun handler entry; (b) the Host ignores the preload digest — grants recorded for another preload apply (a Bun handler entry on a channel the loaded preload cannot reach); (c) the literal-grant check is removed — an ungranted channel reaches a Bun handler; (d) admission uses `Source` + generation without the epoch nonce — a message from previous document A, replayed to the Host after same-origin document A2's `ContentLoading`, reaches a Bun handler; (e) the Host-side generation check on Host→renderer delivery is removed — the next document's raw `chrome.webview` `message` listener receives a reply addressed to the previous document. A stale-document IPC replay (previous document → Host, after the next document's `ContentLoading`) must also be refused with no native side effect. The bridge's own epoch check is a correctness guard, not a security control, and is not one of these mutants.
 - **B3 Windows application-document oracle:** #1192 §4.4 eligibility (verified resource
   identity, not URL text) has no Windows implementation; E5 qualified by URL. The #1192
   owner must name the Windows oracle or accept this spec's T2 as it.
@@ -870,9 +933,15 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
   it AC14's digest has no trust anchor. Owner to be assigned on #1182/#484.
 - **B5 Every reused contract is an open draft:** #1191, #1192, #1154, #1190, #1155, #540
   (#1122), and the W3 #1185 spec draft that defines keld-guard's `file:` URL parser (local
-  commit `571f6bda`, not yet published) on which the `file:` Source rule depends. This spec cannot be approved as implementable before those it consumes are at
+  commit `571f6bda`, not yet published) on which the `file:` Source rule depends. W1
+  inherits that parser's fail-closed availability defects, tracked on W3 (#1185 review r1
+  P2-3/P2-4): R6 refuses `//`; an admitted root containing `~` (8.3, TEMP or dev-stage
+  paths) cannot be admitted, so every `file:` call is refused; and R7 needs Windows-only
+  `CompareStringOrdinal`, so the parser's vectors run on Windows only until W3 resolves it. This spec cannot be approved as implementable before those it consumes are at
   least approved; list re-checked at approval time.
-- **B6 Loading-path decision (W3 #1185 + #1192/KEL-102):** today's `NavigateToString` path
+- **B6 Loading-path decision (W3 #1185 + #1192/KEL-102).** W1's navigation position for W3
+  is stated in §4.6 (allowlist first, notification-only `will-navigate`, no replay, +1 only
+  at commit). Today's `NavigateToString` path
   yields `Source = about:blank` (source probe 3/3) and can never qualify (§4.6a). The owners
   must record which Host-identifiable URL compat windows load — exact `file://` under the
   verified package root, or a Keld-owned virtual host — and how KEL-102 verifies that exact
@@ -912,11 +981,15 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
     `PostWebMessageAsString` immediately before `NavigationStarting`. At-risk set = posts
     stamped with A's epoch that the Host handed to the engine inside a window W around A's
     `NavigationStarting` (W fixed by the probe before it runs and recorded in the receipt),
-    as counted by the Host. Builds: (1) generation check only (hold
-    removed) — must show ≥ 1 old-epoch post received by the next document, or the arm reads
-    "rule not exercised" and the forcing is revised; (2) full rule — MUST show 0 received;
-    any post handed over *before* `NavigationStarting` that the next document receives is a
-    blocker (§4.4 rule 3), not a divergence.
+    as counted by the Host, **split** into a post-`NavigationStarting` subset (rule 2's
+    risk) and a pre-`NavigationStarting` subset (rule 3's residual). The pre subset is forced
+    separately: A runs a busy loop between the Host's post and a same-process A→A2
+    navigation, so the post is still queued when A2 commits. Builds: (1) generation check
+    only (hold removed) — must show ≥ 1 post-subset message received by the next document,
+    or the arm reads "rule not exercised" for rule 2 and the forcing is revised; (2) full
+    rule — MUST show 0 received from the post subset. For the pre subset, any message the
+    next document receives is a blocker (§4.4 rule 3), not a divergence; if no variant shows
+    a pre-subset message delivered late, rule 3 reads "rule not exercised", never "safe".
 
 **Open questions:**
 
@@ -954,7 +1027,8 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
    file. Safety of the path as identity is B6 (KEL-102), not a Source question.
 7. **Q7 (`window.keld.invoke` widening):** numeric channels beyond Echo `1` need KEL-142/#508
    grammar; none proposed here.
-8. **Q8 — RESOLVED (owner-delegated decision, 2026-10-29; rules widened in r3):** gating is
+8. **Q8 — PROPOSED in r3 (rules widened in r3–r5); becomes the decision with exact-content
+   approval of this spec (§10 B2):** gating is
    defined as narrowing of what the page can cause or see; the static classifier is
    conservative and flags what it cannot prove (§4.8 rule 2 (a)–(d)); a flagged preload runs
    on route D only with a developer attestation bound to its digest that covers every flagged
