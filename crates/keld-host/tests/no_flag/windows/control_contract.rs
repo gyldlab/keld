@@ -363,7 +363,8 @@ fn delegation_waits_report_an_exited_parent_with_its_output() {
 
 /// A dev CLI's host inherits its stdio, so the CLI can exit while a descendant
 /// still holds its pipes. The exited-parent report must still return, within
-/// `PIPE_DRAIN_KILL_SWITCH`, marking the held pipe instead of blocking on it.
+/// `PIPE_DRAIN_KILL_SWITCH`, with what the parent wrote before exiting and a
+/// marker for the held pipe, instead of blocking on it.
 #[test]
 fn delegation_wait_report_does_not_block_on_a_pipe_a_descendant_holds() {
     const HOLDER: &str = "GH1182_PIPE_HOLDER";
@@ -372,7 +373,7 @@ fn delegation_wait_report_does_not_block_on_a_pipe_a_descendant_holds() {
     // while `exit /b 31` ends the parent at once.
     let mut parent = Command::new("cmd.exe")
         .raw_arg(format!(
-            "/d /c start \"\" /b powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60; '{HOLDER}' | Out-Null\" & exit /b 31"
+            "/d /c start \"\" /b powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60; '{HOLDER}' | Out-Null\" & echo GH1182_HELD_STDOUT & echo GH1182_HELD_STDERR 1>&2 & exit /b 31"
         ))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -403,7 +404,13 @@ fn delegation_wait_report_does_not_block_on_a_pipe_a_descendant_holds() {
         .map(String::as_str)
         .or_else(|| failure.downcast_ref::<&str>().copied())
         .expect("panic message");
-    for expected in ["exit code: 31", "<pipe still open at its kill switch>"] {
+    // What the parent wrote before exiting survives the descendant's open pipe.
+    for expected in [
+        "exit code: 31",
+        "stdout:\nGH1182_HELD_STDOUT",
+        "stderr:\nGH1182_HELD_STDERR",
+        "<pipe still open at its kill switch>",
+    ] {
         assert!(message.contains(expected), "missing {expected}: {message}");
     }
     assert!(

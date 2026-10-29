@@ -4,6 +4,7 @@ use std::io::Read;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0};
@@ -227,29 +228,70 @@ pub(crate) fn bounded_output(
 /// Kill switch for reading a pipe to its end once its process has exited or been killed.
 pub(crate) const PIPE_DRAIN_KILL_SWITCH: Duration = Duration::from_secs(10);
 
-/// Reads `pipe` to its end on its own thread; the receiver yields the text then.
-pub(crate) fn read_pipe_on_thread(mut pipe: impl Read + Send + 'static) -> Receiver<String> {
-    let (text_tx, text_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let read = pipe.read_to_end(&mut bytes);
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let text = match read {
-            Ok(_) => text,
-            Err(error) => format!("{text}\n<pipe read failed: {error}>"),
-        };
-        let _ = text_tx.send(text);
-    });
-    text_rx
+/// A pipe [`read_pipe_on_thread`] reads to its end; every chunk is kept as it
+/// arrives, so its text so far survives a write end that never closes.
+pub(crate) struct PipeText {
+    read: Arc<Mutex<PipeRead>>,
+    ended: Receiver<()>,
 }
 
-/// The text of a pipe [`read_pipe_on_thread`] reads, or a marker when the pipe is still
-/// open at `deadline` (a live process holds its write end). The reader thread is then
-/// left blocked on the pipe; it ends when the last write end closes.
-pub(crate) fn pipe_text_by(reader: &Receiver<String>, deadline: Instant) -> String {
-    reader
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .unwrap_or_else(|_| "<pipe still open at its kill switch>".to_owned())
+#[derive(Default)]
+struct PipeRead {
+    bytes: Vec<u8>,
+    failure: Option<String>,
+    ended: bool,
+}
+
+/// Reads `pipe` to its end on its own thread.
+pub(crate) fn read_pipe_on_thread(mut pipe: impl Read + Send + 'static) -> PipeText {
+    let read = Arc::new(Mutex::new(PipeRead::default()));
+    let (ended_tx, ended) = mpsc::channel();
+    let shared = Arc::clone(&read);
+    thread::spawn(move || {
+        let mut chunk = [0_u8; 4096];
+        let failure = loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break None,
+                Ok(count) => shared
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .bytes
+                    .extend_from_slice(&chunk[..count]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => break Some(error.to_string()),
+            }
+        };
+        let mut state = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        state.failure = failure;
+        state.ended = true;
+        drop(state);
+        let _ = ended_tx.send(());
+    });
+    PipeText { read, ended }
+}
+
+/// The text of a pipe [`read_pipe_on_thread`] reads by `deadline`. If the pipe is
+/// still open then (a live process holds its write end), this is the text read so
+/// far followed by a marker; the reader thread stays blocked on the pipe and ends
+/// when the last write end closes.
+pub(crate) fn pipe_text_by(pipe: &PipeText, deadline: Instant) -> String {
+    let _ = pipe
+        .ended
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    let state = pipe.read.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut text = String::from_utf8_lossy(&state.bytes).into_owned();
+    if let Some(failure) = &state.failure {
+        text.push_str("\n<pipe read failed: ");
+        text.push_str(failure);
+        text.push('>');
+    }
+    if !state.ended {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str("<pipe still open at its kill switch>");
+    }
+    text
 }
 
 pub(crate) fn process_exists(pid: u32) -> bool {
