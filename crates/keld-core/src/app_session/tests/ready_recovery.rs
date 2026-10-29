@@ -546,39 +546,8 @@ fn pre_ready_link_eof_defers_to_the_owner_generation_outcome() {
 #[cfg(any(target_os = "linux", windows))]
 fn pre_ready_link_eof_refuses_a_later_ready_and_its_recovery_arm() {
     let (handle, mut g1_client, owner_rx) = initial_ready_router();
-    let owner = thread::spawn(move || {
-        let mut requests = Vec::new();
-        // Ends once every router handle (and its command sender) is dropped.
-        while let Ok(command) = owner_rx.recv() {
-            match command {
-                TestPrimaryOwnerCommand::FailGeneration(attempt, reply) => {
-                    requests.push(format!("FailGeneration({attempt})"));
-                    reply.send(Ok(())).expect("acknowledge the link failure");
-                }
-                TestPrimaryOwnerCommand::ArmRecovery(_, reply) => {
-                    requests.push(String::from("ArmRecovery"));
-                    reply.send(Ok(())).expect("acknowledge the recovery arm");
-                }
-                TestPrimaryOwnerCommand::DenyRecovery => {
-                    requests.push(String::from("DenyRecovery"));
-                }
-                _ => requests.push(String::from("unexpected owner command")),
-            }
-        }
-        requests
-    });
-    let (mut reader, peer) = primary_test_stream_pair();
-    drop(peer);
-    let caller = super::PrimaryCallerContext {
-        attempt: 1,
-        identity: PrimaryLinkIdentity::Fixture,
-        reader_stop: Arc::new(AtomicBool::new(false)),
-    };
-    let reader_handle = handle.clone();
-    thread::spawn(move || super::read_primary_frames(&mut reader, &reader_handle, &caller))
-        .join()
-        .expect("pre-Ready reader joins")
-        .expect("pre-Ready EOF leaves the outcome to the owner");
+    let owner = answering_test_owner(owner_rx);
+    process_link_eof(&handle);
 
     handle
         .signal_ready()
@@ -610,6 +579,88 @@ fn pre_ready_link_eof_refuses_a_later_ready_and_its_recovery_arm() {
         owner.join().expect("test owner joins"),
         ["FailGeneration(1)"],
         "the pre-Ready EOF must reach the owner and nothing may arm recovery"
+    );
+}
+
+/// An owner that acknowledges every link failure and recovery arm, records
+/// each request, and returns them once every router handle is dropped.
+#[cfg(any(target_os = "linux", windows))]
+fn answering_test_owner(
+    owner_rx: Receiver<TestPrimaryOwnerCommand>,
+) -> thread::JoinHandle<Vec<String>> {
+    thread::spawn(move || {
+        let mut requests = Vec::new();
+        while let Ok(command) = owner_rx.recv() {
+            match command {
+                TestPrimaryOwnerCommand::FailGeneration(attempt, reply) => {
+                    requests.push(format!("FailGeneration({attempt})"));
+                    reply.send(Ok(())).expect("acknowledge the link failure");
+                }
+                TestPrimaryOwnerCommand::ArmRecovery(_, reply) => {
+                    requests.push(String::from("ArmRecovery"));
+                    reply.send(Ok(())).expect("acknowledge the recovery arm");
+                }
+                TestPrimaryOwnerCommand::DenyRecovery => {
+                    requests.push(String::from("DenyRecovery"));
+                }
+                _ => requests.push(String::from("unexpected owner command")),
+            }
+        }
+        requests
+    })
+}
+
+/// Runs the first generation's reader over a link whose peer has closed, so
+/// it processes exactly one EOF, and waits for it to return.
+#[cfg(any(target_os = "linux", windows))]
+fn process_link_eof(handle: &PrimaryRouterHandle) {
+    let (mut reader, peer) = primary_test_stream_pair();
+    drop(peer);
+    let caller = super::PrimaryCallerContext {
+        attempt: 1,
+        identity: PrimaryLinkIdentity::Fixture,
+        reader_stop: Arc::new(AtomicBool::new(false)),
+    };
+    let reader_handle = handle.clone();
+    thread::spawn(move || super::read_primary_frames(&mut reader, &reader_handle, &caller))
+        .join()
+        .expect("reader joins")
+        .expect("a link EOF leaves the outcome to the owner");
+}
+
+/// PR #1300 review (P2-3): the pre-Ready latch must ignore an EOF that comes
+/// after Ready. That link failure takes the after-Ready recovery path, and a
+/// later `NavigationReady` (a re-navigation of the same window) must still
+/// publish `Ready`; an unconditional latch would silently refuse it.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn post_ready_link_eof_leaves_a_later_ready_published() {
+    let (handle, mut g1_client, owner_rx) = initial_ready_router();
+    let owner = answering_test_owner(owner_rx);
+    handle.signal_ready().expect("initial Ready");
+    assert!(handle.window_ready.load(Ordering::Acquire));
+    assert!(handle.recovery_armed.load(Ordering::Acquire));
+    process_link_eof(&handle);
+    assert!(
+        !handle.pre_ready_link_failed.load(Ordering::Acquire),
+        "an EOF after Ready set the pre-Ready latch"
+    );
+    handle.signal_ready().expect("a later Ready");
+    for which in ["initial", "later"] {
+        let (header, payload) =
+            keld_ipc::link::read_frame(&mut g1_client).expect("lifecycle frame");
+        assert_eq!(header.kind, FrameKind::Event);
+        assert_eq!(header.channel, LIFECYCLE_CHANNEL);
+        assert_eq!(
+            decode::<LifecycleEvent>(&payload).expect("lifecycle payload"),
+            LifecycleEvent::Ready,
+            "the {which} Ready was not published"
+        );
+    }
+    drop(handle);
+    assert_eq!(
+        owner.join().expect("test owner joins"),
+        ["ArmRecovery", "FailGeneration(1)"]
     );
 }
 
