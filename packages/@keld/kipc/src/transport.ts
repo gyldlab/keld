@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:38c197383c5ece1e6b2907b23274f9a4e7260c55dfae7d3ba1ad6804dcb06744
+// @keld/kipc-transport sha256:11703ad7b5efccc74227e166d225a2628813a1c958391cc77d62547b3c8194a9
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -24,8 +24,194 @@ import {
   parentPort,
   receiveMessageOnPort,
   workerData,
-  type MessagePort,
+  MessagePort,
 } from "node:worker_threads";
+import { isProxy } from "node:util/types";
+
+/** @internal Host-selected launch mode captured by the qualified native preload. */
+export const nativeFacadeBootSelected =
+  process.env.KELD_NATIVE_WINDOW_FACADE === "1";
+
+// The macOS guardian preloads this sidecar before application dependencies. These
+// immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers
+// never invoke a saved method through mutable Function.prototype methods.
+const intrinsicApply = Reflect.apply;
+const IntrinsicError = Error;
+const IntrinsicUint8Array = Uint8Array;
+const IntrinsicInt32Array = Int32Array;
+const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
+const IntrinsicMap = Map;
+const IntrinsicWeakMap = WeakMap;
+const IntrinsicArray = Array;
+const intrinsicFreeze = Object.freeze;
+const intrinsicSetPrototypeOf = Object.setPrototypeOf;
+const intrinsicDefineProperty = Object.defineProperty;
+const intrinsicDescriptor = Object.getOwnPropertyDescriptor;
+const intrinsicIsProxy = isProxy;
+const intrinsicInteger = Number.isInteger;
+const intrinsicBigInt = BigInt;
+const intrinsicMin = Math.min;
+const intrinsicMax = Math.max;
+const intrinsicPerformance = performance;
+const intrinsicNow = performance.now;
+const intrinsicFloor = Math.floor;
+const intrinsicMapGet = Map.prototype.get;
+const intrinsicMapHas = Map.prototype.has;
+const intrinsicMapSet = Map.prototype.set;
+const intrinsicMapDelete = Map.prototype.delete;
+const intrinsicMapClear = Map.prototype.clear;
+const intrinsicMapValues = Map.prototype.values;
+const intrinsicMapNext = Object.getPrototypeOf(
+  new IntrinsicMap().values(),
+).next;
+const intrinsicMapSize = intrinsicDescriptor(Map.prototype, "size")!.get!;
+const intrinsicWeakMapGet = WeakMap.prototype.get;
+const intrinsicWeakMapSet = WeakMap.prototype.set;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const intrinsicByteLength = intrinsicDescriptor(
+  typedArrayPrototype,
+  "byteLength",
+)!.get!;
+const intrinsicBuffer = intrinsicDescriptor(
+  typedArrayPrototype,
+  "buffer",
+)!.get!;
+const intrinsicByteOffset = intrinsicDescriptor(
+  typedArrayPrototype,
+  "byteOffset",
+)!.get!;
+const intrinsicTypedTag = intrinsicDescriptor(
+  typedArrayPrototype,
+  Symbol.toStringTag,
+)!.get!;
+const intrinsicStartsWith = String.prototype.startsWith;
+const intrinsicExec = RegExp.prototype.exec;
+const intrinsicSlice = String.prototype.slice;
+const IntrinsicMessageChannel = MessageChannel;
+const intrinsicChannelPort1 = intrinsicDescriptor(
+  MessageChannel.prototype,
+  "port1",
+)?.get;
+const intrinsicChannelPort2 = intrinsicDescriptor(
+  MessageChannel.prototype,
+  "port2",
+)?.get;
+const intrinsicPortPost = MessagePort.prototype.postMessage;
+const intrinsicTerminate = Worker.prototype.terminate;
+const IntrinsicTextDecoder = TextDecoder;
+const intrinsicTextDecode = TextDecoder.prototype.decode;
+const intrinsicSetImmediate = setImmediate;
+const intrinsicConsole = console;
+const intrinsicConsoleError = console.error;
+const atomicLoad = Atomics.load;
+const atomicStore = Atomics.store;
+const atomicAdd = Atomics.add;
+const atomicNotify = Atomics.notify;
+const atomicCompareExchange = Atomics.compareExchange;
+const atomicWait = Atomics.wait;
+
+/** @internal Invoke a captured framework method without late Function lookups. */
+export function stateApply<A extends unknown[], R>(
+  method: (...args: A) => R,
+  receiver: unknown,
+  args: A,
+): R {
+  return intrinsicApply(method, receiver, args);
+}
+/** @internal Freeze an internal own-data fact/snapshot. */
+export const stateFreeze: <T>(value: T) => Readonly<T> = intrinsicFreeze;
+/** @internal Define an own framework property without application hooks. */
+export const stateDefineProperty: typeof Object.defineProperty =
+  intrinsicDefineProperty;
+/** @internal Construct Source-owned state with the captured native constructor. */
+export function stateMap<K, V>(): Map<K, V> {
+  return new IntrinsicMap<K, V>();
+}
+/** @internal Native Source/transport lookup without application method lookup. */
+export const stateMapGet: <K, V>(
+  map: ReadonlyMap<K, V>,
+  key: K,
+) => V | undefined = intrinsicApply(
+  Function.prototype.bind,
+  Function.prototype.call,
+  [intrinsicMapGet],
+);
+/** @internal Native Source membership lookup. */
+export function stateMapHas<K, V>(map: Map<K, V>, key: K): boolean {
+  return intrinsicApply(intrinsicMapHas, map, [key]);
+}
+/** @internal Native Source mutation. */
+export function stateMapSet<K, V>(map: Map<K, V>, key: K, value: V): void {
+  intrinsicApply(intrinsicMapSet, map, [key, value]);
+}
+/** @internal Remove private Source state without application method lookup. */
+export function stateMapDelete<K, V>(map: Map<K, V>, key: K): boolean {
+  return intrinsicApply(intrinsicMapDelete, map, [key]);
+}
+/** @internal Construct the private facade identity ledger. */
+export function stateWeakMap<K extends object, V>(): WeakMap<K, V> {
+  return new IntrinsicWeakMap<K, V>();
+}
+/** @internal Read identity without exposing the private ledger receiver. */
+export const stateWeakMapGet: <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+) => V | undefined = intrinsicApply(
+  Function.prototype.bind,
+  Function.prototype.call,
+  [intrinsicWeakMapGet],
+);
+/** @internal Record facade identity without application method lookup. */
+export function stateWeakMapSet<K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+): void {
+  intrinsicApply(intrinsicWeakMapSet, map, [key, value]);
+}
+/** @internal Clear the private Source map without exposing its receiver. */
+export function stateMapClear<K, V>(map: Map<K, V>): void {
+  intrinsicApply(intrinsicMapClear, map, []);
+}
+/** @internal Copy values without exposing the private map or its iterator. */
+export function stateMapValues<K, V>(map: ReadonlyMap<K, V>): V[] {
+  const iterator = intrinsicApply(intrinsicMapValues, map, []);
+  const values: V[] = [];
+  for (;;) {
+    const step = intrinsicApply(
+      intrinsicMapNext,
+      iterator,
+      [],
+    ) as IteratorResult<V>;
+    if (step.done) return values;
+    intrinsicDefineProperty(values, values.length, {
+      __proto__: null,
+      value: step.value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
+  }
+}
+/** @internal Native Source census. */
+export function stateMapSize<K, V>(map: Map<K, V>): number {
+  return intrinsicApply(intrinsicMapSize, map, []);
+}
+/** @internal Intrinsic brand check; does not invoke constructor @@hasInstance. */
+export function stateIsUint8Array(value: unknown): value is Uint8Array {
+  return intrinsicApply(intrinsicTypedTag, value, []) === "Uint8Array";
+}
+/** @internal Read native storage length without an application getter. */
+export function stateByteLength(value: Uint8Array): number {
+  return intrinsicApply(intrinsicByteLength, value, []);
+}
+/** @internal Private dense helper backing; bounded own indices preserve its shape. */
+export function stateSlots<T>(capacity: number): (T | undefined)[] {
+  const slots = new IntrinsicArray<T | undefined>(capacity);
+  intrinsicSetPrototypeOf(slots, null);
+  for (let index = 0; index < capacity; index += 1) slots[index] = undefined;
+  return slots;
+}
 
 const MAGIC_BYTES = new Uint8Array([0x4b, 0x49]); // "KI", matches Rust `u16::from_le_bytes(*b"KI")`
 /** Mirrors `keld_ipc::PROTOCOL_VERSION`. */
@@ -46,22 +232,27 @@ export const FS_CHANNEL = 2;
 export const LIFECYCLE_CHANNEL = 3;
 /** Channel `auth` (`keld_ipc::channel_table::AUTH`). */
 export const AUTH_CHANNEL = 4;
+/** Channel `window` (`keld_ipc::channel_table::WINDOW`). */
+export const WINDOW_CHANNEL = 5;
 /** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
   | typeof FS_CHANNEL
   | typeof LIFECYCLE_CHANNEL
-  | typeof AUTH_CHANNEL;
+  | typeof AUTH_CHANNEL
+  | typeof WINDOW_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
   FS_CHANNEL,
   LIFECYCLE_CHANNEL,
   AUTH_CHANNEL,
+  WINDOW_CHANNEL,
 ]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
+  WINDOW_CHANNEL,
 ]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
@@ -83,6 +274,11 @@ export const FrameKind = {
   Grant: 9,
   Ping: 10,
 } as const;
+
+// Save the canonical owner's values for protected branches without changing
+// the public readonly object's descriptors or introducing wire literals.
+const stateEventKind = FrameKind.Event;
+const stateErrKind = FrameKind.Err;
 
 export type FrameKindValue = (typeof FrameKind)[keyof typeof FrameKind];
 
@@ -165,6 +361,15 @@ export const RECEIVE_POLICIES = {
   } as ReceivePolicy,
   lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
 } as const;
+
+/**
+ * Host-side window CALL receiver, mirroring `ReceivePolicy::window_receiver`.
+ * Reuses the lifecycle structured CALL rules and the generated window id;
+ * Core owns authenticated principal and subscription admission.
+ */
+export function windowReceiver(): ReceivePolicy {
+  return { ...RECEIVE_POLICIES.lifecycleReceiver, channel: WINDOW_CHANNEL };
+}
 
 export function echoReplyWaiter(corr: number): ReceivePolicy {
   return {
@@ -263,7 +468,7 @@ export function primaryAppReceiver(): ReceivePolicy {
 }
 
 export function kipcError(code: string, detail: string): Error {
-  return new Error(`${code}: ${detail}`);
+  return new IntrinsicError(`${code}: ${detail}`);
 }
 
 function payloadTooLarge(detail?: string): Error {
@@ -1093,10 +1298,15 @@ export async function connectKipcSocket(
 
 /** Encodes a `u32` as an unsigned LEB128 varint. Rejects anything outside that range. */
 export function encodeVarint(n: number): Uint8Array {
-  if (!Number.isInteger(n) || n < 0 || n > 0xffff_ffff) {
+  if (
+    typeof n !== "number" ||
+    !Number.isInteger(n) ||
+    n < 0 ||
+    n > 0xffff_ffff
+  ) {
     throw kipcError(
       "KELD-IPC-003",
-      `varint value must be an integer in [0, 4294967295], got ${n}`,
+      `varint value must be an integer in [0, 4294967295], got ${typeof n === "number" ? n : typeof n}`,
     );
   }
   const bytes: number[] = [];
@@ -1107,6 +1317,25 @@ export function encodeVarint(n: number): Uint8Array {
     if (v !== 0) byte |= 0x80;
     bytes.push(byte);
   } while (v !== 0);
+  return new Uint8Array(bytes);
+}
+
+/** Encodes an exact Rust u64 as an unsigned LEB128 varint without Number conversion. */
+export function encodeU64Varint(n: bigint): Uint8Array {
+  if (typeof n !== "bigint" || n < 0n || n > 0xffff_ffff_ffff_ffffn) {
+    throw kipcError(
+      "KELD-IPC-003",
+      "u64 varint value must be a bigint in [0, 18446744073709551615]",
+    );
+  }
+  const bytes: number[] = [];
+  let value = n;
+  do {
+    let byte = Number(value & 0x7fn);
+    value >>= 7n;
+    if (value !== 0n) byte |= 0x80;
+    bytes.push(byte);
+  } while (value !== 0n);
   return new Uint8Array(bytes);
 }
 
@@ -1127,11 +1356,15 @@ function decodeVarintAt(
   truncatedDetail: string,
   width: 32 | 64 = 32,
 ): [number | bigint, number] {
-  if (!Number.isInteger(offset) || offset < 0 || offset > bytes.length) {
+  if (
+    !intrinsicInteger(offset) ||
+    offset < 0 ||
+    offset > stateByteLength(bytes)
+  ) {
     throw kipcError(
       "KELD-IPC-003",
       "varint offset must be an integer in [0, " +
-        bytes.length +
+        stateByteLength(bytes) +
         "], got " +
         offset,
     );
@@ -1143,7 +1376,8 @@ function decodeVarintAt(
   const maximumBytes = width === 32 ? 5 : 10;
   const finalMaximum = width === 32 ? 0x0f : 0x01;
   for (let byteIndex = 0; byteIndex < maximumBytes; byteIndex += 1) {
-    if (pos >= bytes.length) throw kipcError("KELD-IPC-003", truncatedDetail);
+    if (pos >= stateByteLength(bytes))
+      throw kipcError("KELD-IPC-003", truncatedDetail);
     const byte = bytes[pos];
     pos += 1;
     if (byteIndex === maximumBytes - 1 && byte > finalMaximum) {
@@ -1157,7 +1391,8 @@ function decodeVarintAt(
     if (width === 32) result += (byte & 0x7f) * placeValue;
     else
       wideResult =
-        (wideResult ?? 0n) | (BigInt(byte & 0x7f) << BigInt(byteIndex * 7));
+        (wideResult ?? 0n) |
+        (intrinsicBigInt(byte & 0x7f) << intrinsicBigInt(byteIndex * 7));
     if ((byte & 0x80) === 0)
       return [width === 32 ? result : (wideResult ?? 0n), pos];
     placeValue *= 128;
@@ -1194,24 +1429,34 @@ export function decodePostcardStringAt(
   bytes: Uint8Array,
   offset: number,
 ): [string, number] {
-  const [len, afterLen] = decodeVarintAt(
+  const lengthRecord = decodeVarintAt(
     bytes,
     offset,
     "truncated postcard string",
   );
+  const len = lengthRecord[0];
+  const afterLen = lengthRecord[1];
   const end = afterLen + len;
-  const text = bytes.subarray(afterLen, end);
-  if (text.length !== len) {
+  if (end > stateByteLength(bytes)) {
     throw kipcError(
       "KELD-IPC-003",
       "postcard string length does not match payload",
     );
   }
+  const text = new IntrinsicUint8Array(
+    intrinsicApply(intrinsicBuffer, bytes, []),
+    intrinsicApply(intrinsicByteOffset, bytes, []) + afterLen,
+    len,
+  );
   try {
     // A postcard String carries data, not a text-file encoding signature.
     // Preserve U+FEFF rather than consuming it as a byte-order mark.
     return [
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(text),
+      intrinsicApply(
+        intrinsicTextDecode,
+        new IntrinsicTextDecoder("utf-8", { fatal: true, ignoreBOM: true }),
+        [text],
+      ),
       end,
     ];
   } catch {
@@ -1284,12 +1529,16 @@ export function decodeCallError(payload: Uint8Array): {
   code: string;
   message: string;
 } {
-  const [code, afterCode] = decodePostcardStringAt(payload, 0);
-  const [message, end] = decodePostcardStringAt(payload, afterCode);
-  if (end !== payload.length) {
+  const codeRecord = decodePostcardStringAt(payload, 0);
+  const code = codeRecord[0];
+  const afterCode = codeRecord[1];
+  const messageRecord = decodePostcardStringAt(payload, afterCode);
+  const message = messageRecord[0];
+  const end = messageRecord[1];
+  if (end !== stateByteLength(payload)) {
     throw kipcError("KELD-IPC-003", "trailing bytes after CallError");
   }
-  if (!code.startsWith("KELD-")) {
+  if (!intrinsicApply(intrinsicStartsWith, code, ["KELD-"])) {
     throw kipcError(
       "KELD-IPC-003",
       "CallError code is not a KELD-* identifier",
@@ -1299,7 +1548,7 @@ export function decodeCallError(payload: Uint8Array): {
 }
 
 export function errorFromErrFrame(payload: Uint8Array): Error {
-  if (payload.length === 0) {
+  if (stateByteLength(payload) === 0) {
     return kipcError("KELD-IPC-005", "peer sent Err with empty payload");
   }
   let call: { code: string; message: string };
@@ -1433,15 +1682,18 @@ const TERMINAL_CODES: ReadonlyMap<number, { code: string; text: string }> =
 
 /** Builds an `Error` that carries its registered code as a field. */
 function codedError(code: string, message: string): KeldCallError {
-  const error = new Error(
-    message.startsWith(code) ? message : `${code}: ${message}`,
+  const error = new IntrinsicError(
+    intrinsicApply(intrinsicStartsWith, message, [code])
+      ? message
+      : `${code}: ${message}`,
   );
-  Object.defineProperty(error, "code", {
+  intrinsicDefineProperty(error, "code", {
+    __proto__: null,
     value: code,
     enumerable: true,
     writable: true,
     configurable: true,
-  });
+  } as PropertyDescriptor);
   return error as KeldCallError;
 }
 
@@ -1449,7 +1701,7 @@ function terminalError(
   state: number,
   cause: string | undefined,
 ): KeldCallError {
-  const entry = TERMINAL_CODES.get(state);
+  const entry = stateMapGet(TERMINAL_CODES, state);
   if (entry === undefined) {
     return codedError(
       "KELD-IPC-005",
@@ -1478,6 +1730,49 @@ function uncodedText(err: unknown): string {
 function codeOfText(text: string): string {
   const match = /^KELD-[A-Z]+-\d{3}/.exec(text);
   return match === null ? "KELD-IPC-001" : match[0];
+}
+
+function stateErrorData(error: unknown, name: string): unknown {
+  if (
+    error === null ||
+    (typeof error !== "object" && typeof error !== "function") ||
+    // A captured descriptor operation still invokes a Proxy's application trap.
+    // The native brand predicate rejects even revoked proxies without hooks;
+    // ordinary own-data diagnostics keep their existing code/text contract.
+    intrinsicIsProxy(error)
+  )
+    return undefined;
+  const descriptor = intrinsicDescriptor(error, name);
+  return descriptor === undefined
+    ? undefined
+    : intrinsicDescriptor(descriptor, "value")?.value;
+}
+function stateErrorMessage(error: unknown): string {
+  const message = stateErrorData(error, "message");
+  return typeof message === "string"
+    ? message
+    : typeof error === "string"
+      ? error
+      : "state applier failed";
+}
+function stateFailureCode(error: unknown): string {
+  const code = stateErrorData(error, "code");
+  if (typeof code === "string") return code;
+  const message = stateErrorData(error, "message");
+  return typeof message === "string"
+    ? (intrinsicApply(intrinsicExec, /^KELD-[A-Z]+-\d{3}/, [message])?.[0] ??
+        "KELD-IPC-005")
+    : "KELD-IPC-005";
+}
+function stateFailureText(error: unknown): string {
+  const message = stateErrorData(error, "message");
+  if (typeof message !== "string") return "state applier failed";
+  const prefix = intrinsicApply(intrinsicExec, /^KELD-[A-Z]+-\d{3}: /, [
+    message,
+  ]);
+  return prefix === null
+    ? message
+    : intrinsicApply(intrinsicSlice, message, [prefix[0].length]);
 }
 
 /** Role-supplied inbound frames beyond replies to its own calls; narrows, never grants (§4.7). */
@@ -2094,11 +2389,9 @@ function ringCopy(
   pos: number,
   len: number,
 ): Uint8Array {
-  const out = new Uint8Array(len);
-  const at = pos & mask;
-  const first = Math.min(len, ring.length - at);
-  out.set(ring.subarray(at, at + first), 0);
-  if (first < len) out.set(ring.subarray(0, len - first), first);
+  const out = new IntrinsicUint8Array(len);
+  for (let index = 0; index < len; index += 1)
+    out[index] = ring[(pos + index) & mask];
   return out;
 }
 
@@ -2124,12 +2417,14 @@ export class WorkerLink {
   readonly #slot: Uint8Array;
   readonly #ring: Uint8Array;
   readonly #mask: number;
+  /** @internal Upper bound already imposed by normalized ring bytes/records. */
+  declare readonly stateFactCapacity: number;
   readonly #worker: Worker;
   readonly #causePort: MessagePort;
   readonly #table: InboundTable;
   readonly #hooks: WorkerLinkTestHooks | undefined;
   readonly #pending = new Map<number, PendingAsyncCall>();
-  readonly #appliers = new Map<number, (payload: Uint8Array) => void>();
+  readonly #appliers = stateMap<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
   readonly #callHandlers = new Map<
     number,
@@ -2196,14 +2491,21 @@ export class WorkerLink {
     causePort: MessagePort,
     hooks: WorkerLinkTestHooks | undefined,
   ) {
-    this.#ctrl = new Int32Array(sab, 0, CONTROL_WORDS);
-    this.#slot = new Uint8Array(sab, CONTROL_BYTES, config.replyBytes);
-    this.#ring = new Uint8Array(
+    this.#ctrl = new IntrinsicInt32Array(sab, 0, CONTROL_WORDS);
+    this.#slot = new IntrinsicUint8Array(sab, CONTROL_BYTES, config.replyBytes);
+    this.#ring = new IntrinsicUint8Array(
       sab,
       CONTROL_BYTES + config.replyBytes,
       config.ringBytes,
     );
     this.#mask = config.ringBytes - 1;
+    intrinsicDefineProperty(this, "stateFactCapacity", {
+      __proto__: null,
+      value: intrinsicMin(
+        config.ringRecords,
+        intrinsicFloor(config.ringBytes / HEADER_LEN),
+      ),
+    } as PropertyDescriptor);
     this.#worker = worker;
     this.#causePort = causePort;
     this.#table = config.table;
@@ -2230,6 +2532,15 @@ export class WorkerLink {
     options: WorkerLinkOptions,
     hooks: WorkerLinkTestHooks | undefined,
   ): Promise<WorkerLink> {
+    if (
+      typeof intrinsicChannelPort1 !== "function" ||
+      typeof intrinsicChannelPort2 !== "function"
+    ) {
+      throw linkError(
+        "KELD-IPC-005",
+        "This runtime has no early-captured MessageChannel accessor pair. Open the app link under the qualified Bun runtime",
+      );
+    }
     const config = validateWorkerLinkOptions(options);
     // The name is not identity: a bundle named transport.js passes every check
     // in requireStagedTransport, so the file's bytes must be the stamped
@@ -2242,18 +2553,28 @@ export class WorkerLink {
       );
     }
     workerLinkOpened = true;
-    const sab = new SharedArrayBuffer(
+    const sab = new IntrinsicSharedArrayBuffer(
       CONTROL_BYTES + config.replyBytes + config.ringBytes,
     );
     if (
       typeof KELD_KIPC_RELEASE === "undefined" &&
       hooks?.counterStart !== undefined
     ) {
-      const ctrl = new Int32Array(sab, 0, CONTROL_WORDS);
+      const ctrl = new IntrinsicInt32Array(sab, 0, CONTROL_WORDS);
       for (const word of [W_BYTES, A_BYTES, R_BYTES])
-        Atomics.store(ctrl, word, hooks.counterStart | 0);
+        atomicStore(ctrl, word, hooks.counterStart | 0);
     }
-    const { port1, port2 } = new MessageChannel();
+    const channel = new IntrinsicMessageChannel();
+    const port1 = intrinsicApply(
+      intrinsicChannelPort1,
+      channel,
+      [],
+    ) as MessagePort;
+    const port2 = intrinsicApply(
+      intrinsicChannelPort2,
+      channel,
+      [],
+    ) as MessagePort;
     const boot: WorkerLinkBoot = {
       marker: WORKER_LINK_MARKER,
       sab,
@@ -2305,7 +2626,7 @@ export class WorkerLink {
     try {
       const corr = this.#allocateCorr();
       this.#blockingCorr = corr;
-      Atomics.store(this.#ctrl, BLOCKING, corr | 0);
+      atomicStore(this.#ctrl, BLOCKING, corr | 0);
       this.#post({ t: "call", corr, channel, payload, blocking: true });
       return this.#park(corr, deadlineMs);
     } finally {
@@ -2339,7 +2660,7 @@ export class WorkerLink {
         // The link already ended: every end path requests a dispatch task,
         // whose finalize rejects this call with the code STATE records (§4.6),
         // never 006, and no abandon goes to an ended Worker.
-        if (Atomics.load(this.#ctrl, STATE) !== 0) return;
+        if (atomicLoad(this.#ctrl, STATE) !== 0) return;
         this.#pending.delete(corr);
         this.#post({ t: "abandon", corr });
         reject(
@@ -2367,13 +2688,13 @@ export class WorkerLink {
     applier: (payload: Uint8Array) => void,
   ): void {
     this.#requireEventChannel(channel);
-    if (this.#appliers.has(channel)) {
+    if (stateMapHas(this.#appliers, channel)) {
       throw linkError(
         "KELD-IPC-005",
         `channel ${channel} already has a state applier`,
       );
     }
-    this.#appliers.set(channel, applier);
+    stateMapSet(this.#appliers, channel, applier);
   }
 
   /** Framework-only answer to host CALLs on a `receive.callReceivers` channel; at most one per channel. */
@@ -2432,9 +2753,9 @@ export class WorkerLink {
         this.#endListeners.delete(listener);
       };
     }
-    const state = Atomics.load(this.#ctrl, STATE);
+    const state = atomicLoad(this.#ctrl, STATE);
     let removed = false;
-    setImmediate(() => {
+    intrinsicSetImmediate(() => {
       if (!removed) listener(this.#endError(state));
     });
     return () => {
@@ -2460,7 +2781,9 @@ export class WorkerLink {
   }
 
   #post(message: ToWorker): void {
-    this.#worker.postMessage(message);
+    // The node Worker wrapper looks up its hidden public port's method late.
+    // Reuse our existing owned port with one native FIFO for all ToWorker data.
+    intrinsicApply(intrinsicPortPost, this.#causePort, [message]);
   }
 
   #allocateCorr(): number {
@@ -2473,11 +2796,10 @@ export class WorkerLink {
 
   /** Records a main-side terminal code; the first compare-and-exchange on `STATE` wins (§4.5). */
   #recordMain(state: number, cause: string): boolean {
-    if (Atomics.compareExchange(this.#ctrl, STATE, 0, state) !== 0)
-      return false;
+    if (atomicCompareExchange(this.#ctrl, STATE, 0, state) !== 0) return false;
     this.#localCause = cause;
-    Atomics.add(this.#ctrl, SEQ, 1);
-    Atomics.notify(this.#ctrl, SEQ);
+    atomicAdd(this.#ctrl, SEQ, 1);
+    atomicNotify(this.#ctrl, SEQ);
     return true;
   }
 
@@ -2520,7 +2842,7 @@ export class WorkerLink {
   }
 
   #throwIfTerminal(): void {
-    const state = Atomics.load(this.#ctrl, STATE);
+    const state = atomicLoad(this.#ctrl, STATE);
     if (state !== 0) throw this.#terminalError(state);
   }
 
@@ -2533,7 +2855,9 @@ export class WorkerLink {
   #failLink(detail: string, code = "KELD-IPC-005"): void {
     const cause = `${code}: ${detail}`;
     if (this.#recordMain(STATE_CLOSED, cause)) {
-      console.error(`kipc WorkerLink: ${cause}`);
+      intrinsicApply(intrinsicConsoleError, intrinsicConsole, [
+        `kipc WorkerLink: ${cause}`,
+      ]);
       this.#post({ t: "close" });
     }
     this.#forceDispatch();
@@ -2545,14 +2869,14 @@ export class WorkerLink {
    * kick (§4.6). A second dispatch task is harmless.
    */
   #forceDispatch(): void {
-    Atomics.store(this.#ctrl, KICK, 1);
-    setImmediate(() => this.#runDispatchTask());
+    atomicStore(this.#ctrl, KICK, 1);
+    intrinsicSetImmediate(() => this.#runDispatchTask());
   }
 
   #terminateWorker(): void {
     if (this.#terminated) return;
     this.#terminated = true;
-    void this.#worker.terminate();
+    void intrinsicApply(intrinsicTerminate, this.#worker, []);
   }
 
   /** Main's wait loop (§4.5 step 3). */
@@ -2560,25 +2884,25 @@ export class WorkerLink {
     const ctrl = this.#ctrl;
     const words =
       typeof KELD_KIPC_RELEASE === "undefined" ? this.#hooks?.words : undefined;
-    const started = performance.now();
+    const started = intrinsicApply(intrinsicNow, intrinsicPerformance, []);
     const deadlineAt = started + deadlineMs;
-    let heartbeat = Atomics.load(ctrl, HEARTBEAT);
+    let heartbeat = atomicLoad(ctrl, HEARTBEAT);
     let heartbeatAt = started;
     let claimedAt: number | undefined;
     for (;;) {
-      const seen = Atomics.load(ctrl, SEQ);
-      if (Atomics.load(ctrl, REPLY_READY) === 1) return this.#takeReply();
+      const seen = atomicLoad(ctrl, SEQ);
+      if (atomicLoad(ctrl, REPLY_READY) === 1) return this.#takeReply();
       if (typeof KELD_KIPC_RELEASE === "undefined")
         this.#hooks?.beforeStateCheck?.();
-      if (Atomics.load(ctrl, STATE) !== 0) return this.#endPark(corr);
-      const now = performance.now();
-      const beat = Atomics.load(ctrl, HEARTBEAT);
+      if (atomicLoad(ctrl, STATE) !== 0) return this.#endPark(corr);
+      const now = intrinsicApply(intrinsicNow, intrinsicPerformance, []);
+      const beat = atomicLoad(ctrl, HEARTBEAT);
       if (beat !== heartbeat) {
         heartbeat = beat;
         heartbeatAt = now;
       } else if (now - heartbeatAt >= WORKER_LIVENESS_WINDOW_MS) {
         if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
-          Atomics.add(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
+          atomicAdd(words, WORKER_LINK_TEST_WORDS.LIVENESS_BRANCH, 1);
         }
         this.#recordMain(
           STATE_WORKER_LOST,
@@ -2594,10 +2918,7 @@ export class WorkerLink {
           this.#hooks?.beforeDeadlineCas?.() === false
         )
           continue;
-        if (
-          Atomics.compareExchange(ctrl, BLOCKING, corr | 0, 0) ===
-          (corr | 0)
-        ) {
+        if (atomicCompareExchange(ctrl, BLOCKING, corr | 0, 0) === (corr | 0)) {
           this.#post({ t: "abandon", corr });
           throw linkError(
             "KELD-IPC-006",
@@ -2605,10 +2926,10 @@ export class WorkerLink {
           );
         }
         // The Worker already claimed the reply: wait for its publish, bounded.
-        claimedAt = performance.now();
+        claimedAt = intrinsicApply(intrinsicNow, intrinsicPerformance, []);
         if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
-          Atomics.store(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 1);
-          Atomics.notify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
+          atomicStore(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED, 1);
+          atomicNotify(words, WORKER_LINK_TEST_WORDS.DEADLINE_CAS_FAILED);
         }
       }
       if (
@@ -2616,7 +2937,7 @@ export class WorkerLink {
         now - claimedAt >= WORKER_LIVENESS_WINDOW_MS
       ) {
         if (typeof KELD_KIPC_RELEASE === "undefined" && words !== undefined) {
-          Atomics.add(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
+          atomicAdd(words, WORKER_LINK_TEST_WORDS.POST_CLAIM_BRANCH, 1);
         }
         this.#recordMain(
           STATE_WORKER_LOST,
@@ -2630,11 +2951,11 @@ export class WorkerLink {
         claimedAt === undefined
           ? deadlineAt
           : claimedAt + WORKER_LIVENESS_WINDOW_MS;
-      const slice = Math.max(
+      const slice = intrinsicMax(
         1,
-        Math.min(WORKER_HEARTBEAT_INTERVAL_MS, nextCheck - now),
+        intrinsicMin(WORKER_HEARTBEAT_INTERVAL_MS, nextCheck - now),
       );
-      Atomics.wait(ctrl, SEQ, seen, slice);
+      atomicWait(ctrl, SEQ, seen, slice);
     }
   }
 
@@ -2644,29 +2965,30 @@ export class WorkerLink {
    * and wins (§4.1 edge A8 to A6); otherwise the call throws the recorded code.
    */
   #endPark(corr: number): Uint8Array {
-    Atomics.compareExchange(this.#ctrl, BLOCKING, corr | 0, 0);
-    if (Atomics.load(this.#ctrl, REPLY_READY) === 1) return this.#takeReply();
-    throw this.#terminalError(Atomics.load(this.#ctrl, STATE));
+    atomicCompareExchange(this.#ctrl, BLOCKING, corr | 0, 0);
+    if (atomicLoad(this.#ctrl, REPLY_READY) === 1) return this.#takeReply();
+    throw this.#terminalError(atomicLoad(this.#ctrl, STATE));
   }
 
   /** Wake drain and copy-out (§4.5 step 3, §4.6 step 1). */
   #takeReply(): Uint8Array {
     const ctrl = this.#ctrl;
-    const kind = Atomics.load(ctrl, REPLY_KIND);
-    const len = Atomics.load(ctrl, REPLY_LEN);
-    const at = Atomics.load(ctrl, REPLY_AT) >>> 0;
+    const kind = atomicLoad(ctrl, REPLY_KIND);
+    const len = atomicLoad(ctrl, REPLY_LEN);
+    const at = atomicLoad(ctrl, REPLY_AT) >>> 0;
     let bytes: Uint8Array;
     try {
       if (typeof KELD_KIPC_RELEASE === "undefined")
         this.#hooks?.beforeWakeDrain?.();
       this.#applyUpTo(at);
-      bytes = new Uint8Array(len);
-      bytes.set(this.#slot.subarray(0, len));
+      bytes = new IntrinsicUint8Array(len);
+      for (let index = 0; index < len; index += 1)
+        bytes[index] = this.#slot[index];
     } finally {
-      Atomics.store(ctrl, REPLY_READY, 0);
+      atomicStore(ctrl, REPLY_READY, 0);
       this.#requestDispatch();
     }
-    if (kind === FrameKind.Err) throw this.#callErrorOrFail(bytes);
+    if (kind === stateErrKind) throw this.#callErrorOrFail(bytes);
     return bytes;
   }
 
@@ -2675,29 +2997,31 @@ export class WorkerLink {
     try {
       decodeCallError(payload);
     } catch (err) {
-      this.#failLink(`an ERR payload is not a CallError: ${errorText(err)}`);
-      return this.#terminalError(Atomics.load(this.#ctrl, STATE));
+      this.#failLink(
+        `an ERR payload is not a CallError: ${stateErrorMessage(err)}`,
+      );
+      return this.#terminalError(atomicLoad(this.#ctrl, STATE));
     }
     return errorFromErrFrame(payload) as KeldCallError;
   }
 
   /** Runs state appliers for EVENT records from `A_BYTES` up to `limit` (§4.6 step 1). */
   #applyUpTo(limit: number): void {
-    let a = Atomics.load(this.#ctrl, A_BYTES) >>> 0;
+    let a = atomicLoad(this.#ctrl, A_BYTES) >>> 0;
     while (a !== limit) {
       const header = ringHeader(this.#ring, this.#mask, a);
       if (!this.#applyRecord(a, header)) {
-        throw this.#terminalError(Atomics.load(this.#ctrl, STATE));
+        throw this.#terminalError(atomicLoad(this.#ctrl, STATE));
       }
       a = (a + HEADER_LEN + header.len) >>> 0;
-      Atomics.store(this.#ctrl, A_BYTES, a | 0);
+      atomicStore(this.#ctrl, A_BYTES, a | 0);
     }
   }
 
   /** Applies one record's state fact; a throwing applier ends the link (§4.6). */
   #applyRecord(pos: number, header: FrameHeader): boolean {
-    if (header.kind !== FrameKind.Event) return true;
-    const applier = this.#appliers.get(header.channel);
+    if (header.kind !== stateEventKind) return true;
+    const applier = stateMapGet(this.#appliers, header.channel);
     if (applier === undefined) return true;
     this.#applying = true;
     try {
@@ -2708,8 +3032,8 @@ export class WorkerLink {
       // delivery at this record and end the link.
       this.#deliveryStopAt = pos;
       this.#failLink(
-        `the state applier for channel ${header.channel} threw: ${uncodedText(err)}`,
-        keldCodeOf(err),
+        `the state applier for channel ${header.channel} threw: ${stateFailureText(err)}`,
+        stateFailureCode(err),
       );
       return false;
     } finally {
@@ -2718,8 +3042,8 @@ export class WorkerLink {
   }
 
   #requestDispatch(): void {
-    if (Atomics.compareExchange(this.#ctrl, KICK, 0, 1) === 0) {
-      setImmediate(() => this.#runDispatchTask());
+    if (atomicCompareExchange(this.#ctrl, KICK, 0, 1) === 0) {
+      intrinsicSetImmediate(() => this.#runDispatchTask());
     }
   }
 
@@ -2736,17 +3060,17 @@ export class WorkerLink {
   #dispatch(): void {
     const ctrl = this.#ctrl;
     const r = this.#drainRing();
-    Atomics.store(ctrl, KICK, 0);
+    atomicStore(ctrl, KICK, 0);
     // STATE is loaded before W_BYTES: every record appended before the Worker
     // recorded STATE is then visible to the W_BYTES load (§4.6 step 3).
-    const state = Atomics.load(ctrl, STATE);
-    if (Atomics.load(ctrl, W_BYTES) >>> 0 !== r) {
+    const state = atomicLoad(ctrl, STATE);
+    if (atomicLoad(ctrl, W_BYTES) >>> 0 !== r) {
       this.#requestDispatch();
     } else {
       if (typeof KELD_KIPC_RELEASE === "undefined") {
         this.#hooks?.onDispatchIdle?.(
-          Atomics.load(ctrl, R_RECS) >>> 0,
-          Atomics.load(ctrl, W_RECS) >>> 0,
+          atomicLoad(ctrl, R_RECS) >>> 0,
+          atomicLoad(ctrl, W_RECS) >>> 0,
         );
       }
       if (state !== 0) this.#finalize(state);
@@ -2762,9 +3086,9 @@ export class WorkerLink {
    */
   #drainRing(): number {
     const ctrl = this.#ctrl;
-    const end = Atomics.load(ctrl, W_BYTES) >>> 0;
-    let r = Atomics.load(ctrl, R_BYTES) >>> 0;
-    let rRecs = Atomics.load(ctrl, R_RECS) >>> 0;
+    const end = atomicLoad(ctrl, W_BYTES) >>> 0;
+    let r = atomicLoad(ctrl, R_BYTES) >>> 0;
+    let rRecs = atomicLoad(ctrl, R_RECS) >>> 0;
     let failed = false;
     let firstError: unknown;
     while (r !== end) {
@@ -2774,9 +3098,9 @@ export class WorkerLink {
       // After finalize only frames that arrived after a main-recorded end
       // remain; the link is gone, so they are released, never delivered.
       let deliver = !this.#deliveryStopped && !this.#finalized;
-      if (deliver && Atomics.load(ctrl, A_BYTES) >>> 0 === r) {
+      if (deliver && atomicLoad(ctrl, A_BYTES) >>> 0 === r) {
         deliver = this.#applyRecord(r, header);
-        if (deliver) Atomics.store(ctrl, A_BYTES, (r + envelope) | 0);
+        if (deliver) atomicStore(ctrl, A_BYTES, (r + envelope) | 0);
         else this.#deliveryStopped = true;
       }
       const payload = deliver
@@ -2785,8 +3109,8 @@ export class WorkerLink {
       const release = (): void => {
         r = (r + envelope) >>> 0;
         rRecs = (rRecs + 1) >>> 0;
-        Atomics.store(ctrl, R_BYTES, r | 0);
-        Atomics.store(ctrl, R_RECS, rRecs | 0);
+        atomicStore(ctrl, R_BYTES, r | 0);
+        atomicStore(ctrl, R_RECS, rRecs | 0);
       };
       if (payload === undefined) {
         release();
@@ -2827,7 +3151,7 @@ export class WorkerLink {
       }
     }
     if (failed) {
-      setImmediate(() => {
+      intrinsicSetImmediate(() => {
         throw firstError;
       });
     }
@@ -2876,7 +3200,7 @@ export class WorkerLink {
           );
           return;
         }
-        if (Atomics.load(this.#ctrl, STATE) !== 0) return;
+        if (atomicLoad(this.#ctrl, STATE) !== 0) return;
         this.#post({
           t: "answer",
           channel: header.channel,
@@ -2905,14 +3229,14 @@ export class WorkerLink {
       waiter.reject(this.#terminalError(state));
     }
     // In a later task, so every pending call's rejection handlers ran first.
-    setImmediate(() => {
+    intrinsicSetImmediate(() => {
       const listeners = [...this.#endListeners];
       this.#endListeners.clear();
       for (const listener of listeners) {
         try {
           listener(this.#endError(state));
         } catch (err) {
-          setImmediate(() => {
+          intrinsicSetImmediate(() => {
             throw err;
           });
         }
@@ -2964,8 +3288,9 @@ export class WorkerLink {
  * reply: one asynchronous CALL carrying `LifecycleRequest::Quit` that never
  * parks the caller (PANEL-P2, #419: `app.quit` returns immediately), and the
  * link closes fully the moment its REPLY or typed failure settles, on every
- * OS. A call still pending then rejects with `KELD-IPC-022`, which callers
- * treat as the host drain's `KELD-IPC-024` (§4.4; both terminal, neither ran).
+ * OS. A call still pending then rejects with `KELD-IPC-022`; its execution
+ * outcome can be unknown, so callers must not replay it. A host drain's
+ * `KELD-IPC-024` is separate proof of nonexecution (§4.4, GH-531 O11).
  * The host reads EOF at once, so its post-Quit drain ends without waiting on
  * its backstop. Resolves once the REPLY is `LifecycleResponse::Quit`; any other
  * REPLY rejects with `KELD-IPC-003`, and a host ERR with its own `CallError`.
@@ -3064,7 +3389,9 @@ class TransportWorker {
     };
     process.on("uncaughtException", onFault);
     process.on("unhandledRejection", onFault);
-    this.#port.on("message", (message: ToWorker) => this.#onMessage(message));
+    this.#causePort.on("message", (message: ToWorker) =>
+      this.#onMessage(message),
+    );
     try {
       const { endpoint, token } = parseAppLink(link);
       this.#socket = await connectKipcSocket(

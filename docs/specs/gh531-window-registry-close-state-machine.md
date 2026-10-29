@@ -157,12 +157,15 @@ fail. "Owner" is the implementing ticket.
 11. **Undecodable fact is terminal.** This criterion covers decode failures only.
     Given a window `EVENT` whose discriminant is unknown to the adapter, or whose
     payload is not valid postcard for `WindowEvent`, when it arrives, then the link
-    closes with the cause `KELD-IPC-005` (gh527 §4.4: a throwing applier records
-    `STATE = 22`, and the cause is written to the role log) after earlier records are
-    delivered, and no getter returns a value newer than the last applied fact. A
-    parked `Create` or `Destroy`, and every pending call, then throws `KELD-IPC-022`
-    whose detail names that `KELD-IPC-005` cause. The codec's internal `KELD-IPC-003`
-    is never surfaced. The other gh527 transport wake codes (`KELD-IPC-022` to
+    ends delivery at the failing record and drains earlier records, including earlier
+    answers to pending calls. When this source failure wins the existing
+    first-terminal-recorder transition, the cause is `KELD-IPC-005` (gh527 §4.4:
+    `STATE = 22`, with the cause written to the role log); a prior terminal cause
+    keeps its priority. No getter returns a value newer than the last applied fact.
+    A parked `Create` or `Destroy`, and still-unanswered pending calls, throw
+    `KELD-IPC-022` naming the recorded cause. The codec's internal `KELD-IPC-003`
+    is never surfaced as that cause. This follows the approved GH-1142 correction
+    recorded in §4.d. The other gh527 transport wake codes (`KELD-IPC-022` to
     `KELD-IPC-027`, gh527 §4.4) stay distinct and pass through to a parked `Create` or
     `Destroy` unchanged; the facade never remaps or swallows them. *NC 1:* skipping the
     unknown record and continuing fails, because the mirror then serves state that the
@@ -185,6 +188,15 @@ fail. "Owner" is the implementing ticket.
     same task that `whenReady()` resolves in, then it succeeds. *NC:* starting the
     registry after Ready is written makes this first `Create` fail with the registry's
     not-ready error. Owner: F02-T2.
+    *Before Ready (amended by #657).* `Subscribe` to `window` is accepted before Ready.
+    Given a facade boot whose first Ready write has not happened, when a role whose
+    link is subscribed to `window` sends `Create` or any other window call, then it gets
+    `KELD-CORE-040` and no native window is created (an unsubscribed link gets
+    `KELD-CORE-045`, which is checked first). The registry leaves its not-ready
+    state immediately before the first Ready is written, in the same router
+    transition (gh446 D4). *NC:*
+    marking the registry ready when it is constructed serves that `Create`. Owner:
+    F02-T2 (the first window call).
 15. **Renderer boots unchanged.** Given a renderer-declared (non-facade) boot, the
     existing KEL-96 macOS close and `LastWindowClosed` tests pass unchanged, and no
     window-channel frame is written. *NC:* routing the host-created initial window
@@ -214,14 +226,63 @@ fail. "Owner" is the implementing ticket.
     entry (`Authority::HostInternal`, #613 criterion 16). Window events for a window are
     written only to the app link of that window's `owner_role_generation`, which is
     always a `primary` role declared in KEL-75, and only after that link subscribed with
-    the X05-T2 `lifecycle` `Subscribe` call. The facade subscribes before its first
-    `Create`. `SubscribeRefused` applies, and changes no state, when the link's role is
+    the X05-T2 `lifecycle` `Subscribe` call. The facade sends `Subscribe` when its link
+    binds (at `LifecycleLink` construction over `WorkerLink.open`). Sending the call
+    is not readiness. **Completion barrier (2026-10-23 approved amendment):** on the
+    first accepted subscription, the host transfers the surviving windows and writes
+    the complete `Created` replay before the correlated lifecycle `Subscribed`
+    reply, through the same ordered writer (§4.b ordering rule 4). That reply marks
+    replay completion, including an empty replay. The facade must apply every
+    replayed window fact and accept that reply, as well as receive the host's `Ready`,
+    before it emits public `app` `ready`, resolves `whenReady()`, returns true from
+    `isReady()`, or permits the constructor to issue a usable `Create`. These
+    conditions may arrive in either order: successor g2 can receive raw `Ready`
+    during installation before its host reader processes `Subscribe`. That raw event
+    alone must not open any public readiness surface. A refused or incomplete
+    subscription cannot open the barrier. Repeating an accepted subscription is
+    idempotent under gh508 criterion 16: it neither replays the windows again nor
+    resets their `adoptable` marks. A raw (non-facade) role that never subscribes leaves
+    surviving windows in the recovery gap until session end, and a native close stays
+    held there
+    (T2). That is a recorded limitation owned by F02-T3 (#450). `SubscribeRefused` applies, and changes no state, when the link's role is
     not the declared `primary` (`RoleNotAdmitted`), when the host has no window entry
     (`UnknownChannel`, a peer newer than its host), or for the reasons #613 defines.
     *NC 1:* broadcasting to every connected role fails, because a second authenticated
     `app-bound` role link that also sends `Subscribe` is refused `RoleNotAdmitted` and
     receives no window frame. *NC 2:* an unsubscribed primary link receives zero window
-    frames. Owner: F02-T2. F06-T5 reuses this rule for display and theme facts.
+    frames. **Barrier fixture:** deliver g2 raw `Ready` first, hold the subscription
+    replay/reply behind an explicit fence, and assert that all three public readiness
+    surfaces remain closed and no constructor `Create` is issued. Release the full
+    replay followed by the accepted reply; a `ready` listener and a `whenReady()`
+    continuation must observe the complete mirror and may construct immediately.
+    Repeat with zero survivors. Independently hold `Ready` after a completed
+    subscription and assert the same closed barrier. *NC 3:* publishing readiness on
+    raw `Ready` or merely sending `Subscribe` fails the first fence. *NC 4:* writing
+    `Subscribed` before the final replay event fails the host wire-order assertion;
+    skipping a replay applier fails the listener's mirror assertion. *NC 5:* repeating
+    `Subscribe` after adoption and re-arming the consumed mark fails the idempotence
+    assertion. Owner: F02-T2, coordinated with F01-T2's public readiness adapter.
+    F06-T5 reuses the admission rule, not this window-specific replay barrier, for
+    display and theme facts.
+
+    **No unbounded rendererless Init (GH446 AC15/20, 2026-10-25):** A
+    schema-two macOS boot creates no initial native application window.
+    The coordinator has a 15-second absolute bound from entry into Tao's
+    application loop until the genuine `HostInitialized` first-Init event.
+    It cannot rely on Tao proxy commands before `applicationDidFinishLaunching`.
+    On expiry it reports `KELD-CORE-037` with the typed detail "the UI loop did
+    not deliver its first turn within 15 s", refuses Ready/recovery, stops
+    further worker admissions and invokes bounded UI-independent Guardian/role
+    cleanup. It then calls the shipping binary's borrowed
+    `fn(&HostAppError) -> !` terminal exactly once. The blocked main thread
+    retains its `!Send` AppKit, presentation and profile owners until process
+    exit, and an unproved dev stage is not deleted; process exit alone is not
+    evidence of physical cleanup. An actual first Init disarms the deadline,
+    so a healthy windowless app may keep running beyond 15 seconds. A
+    debug-only real Host/Guardian/Bun child test withholds pre-Init, checks
+    one typed terminal entry and no Ready, Bun retirement, a failed Host exit,
+    and retained stage. This separate first-milestone bound does not change
+    the legacy renderer navigation deadline. See approved GH446 D6 / AC15–20.
 
 ### (e) Close state machine (the #419 rules plus PANEL-D19)
 
@@ -418,6 +479,29 @@ fail. "Owner" is the implementing ticket.
     *NC:* reverting the paragraph leaves §3 attributing windows to the keld-native
     surface, and spec review fails. Owner: this spec.
 
+### (i) Adoption after role loss (D6; amended by #657)
+
+46. **A successor `Create` adopts before it builds.** Given successor g2 past
+    criterion 20's completion barrier, windows 41 and 43 adoptable, 42 claimed by a
+    setter: three `Create`s answer `Adopted 41`, `Adopted 43`, `Created 44`, and the fake
+    UI port builds exactly one window. The host fixture has advanced and retired its
+    earlier entries, while g2's fresh facade allocation counter would start at 1.
+    Each adopting constructor must return the same replayed facade object, retain its
+    host-supplied `HostWindowRef`/wire `WindowRef`, and address later calls with that
+    pair. The native identities of all three survivors, including already-claimed 42,
+    are unchanged; native retention does not depend on adoption eligibility.
+    A `Create` before `Subscribe` answers `ERR 045`, builds nothing. *NC 1:* deleting
+    the adoption arm builds on the first `Create`; deleting the 045 check builds before
+    `Subscribe`. *NC 2:* minting a facade id or substituting the fresh local allocation
+    counter fails the noncoincident host-reference assertions. **Independent positive
+    control:** with no eligible survivor, two intentional application `Create`s must
+    return two distinct windows and facade objects and cause two native builds.
+    *NC 3:* a one-window cap, returning the first object for every constructor, or
+    suppressing the second legitimate `Create` fails that control. *Falsifier:* a
+    native build when that `Create` has an eligible adoptable survivor (with T3's
+    renderer-authority matching once T3 lands), or a changed native identity of any
+    survivor. Owner: F02-T2.
+
 ## 4. Design
 
 ### 4.0 First-principles and reuse decision
@@ -594,14 +678,25 @@ pub enum WindowResponse {
     ReplyApplied,                        // 5
     ReplyStale,                          // 6; plus one host diagnostic
     Destroyed,                           // 7; written after the Destroyed EVENT
+    Adopted { window: WindowRef },       // 8; a successor Create adopted a transferred window
+                                         //    (D6 scope, criterion 46): no EVENT, no state change
+                                         //    (amended by #657)
 }
 ```
+
+The `Adopted` row reconciles the existing [GH-657 owner
+approval](https://github.com/gyldlab/keld/pull/657#issuecomment-6371083658),
+technical `a04e1ed889733a64cc33c1b64535e02b4afb0902`, carried by
+`bb43e474577297f0792740676994aa153e5df1dd`. Its D6 behavior still requires the
+approved recovery integration; payload support alone does not complete it.
 
 Every `ERR` is a `CallError` with a registered code (02 §2). This spec reserves the
 next free numbers. FACT (2026-10-07): `origin/main`'s registry ends at
 `KELD-CORE-037`, and no open PR's diff adds a higher `KELD-CORE-*` code (#609 and #287
 only cite `KELD-CORE-037`). The implementing PR re-checks main and open PRs before it
 registers each code in `docs/engineering/keld-error-codes.md` with a fix sentence.
+`KELD-CORE-044` is gh446's. FACT (2026-10-08): `KELD-CORE-045` is unused on
+`origin/main` `3107ec88` and in every open PR's diff (amended by #657).
 
 | Code | Meaning | Registered by |
 |---|---|---|
@@ -610,7 +705,8 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
 | `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
-| `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T3 |
+| `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
+| `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
 "Object has been destroyed" and triage errors are `KELD-COMPAT-*`.
 
@@ -626,7 +722,11 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 4. Reply placement: a `REPLY` is written after every `EVENT` that its call caused
    (`Created` before `Created`; `Destroyed`, then any `LastWindowClosed`, before
    `Destroyed`, T11). With gh527 step 1, the
-   caller therefore sees host state as of the reply.
+   caller therefore sees host state as of the reply. The window `Subscribe` refinement
+   (2026-10-23 approved amendment) uses this same rule across channels: the complete
+   window `Created` replay precedes the correlated lifecycle `Subscribed` reply.
+   Applying the replay and accepting that reply completes criterion 20's subscription
+   barrier; no new completion message or wire variant is introduced.
 5. Cross-channel: for the last window, `Destroyed` (window channel) is written before
    `LastWindowClosed` (lifecycle channel) on the same link (criterion 32).
 
@@ -680,7 +780,7 @@ F02 owns one primitive in `@keld/api`. F06-T5 reuses it for display and theme fa
 export interface MirrorSource<Fact> {
   /** Channel id from the X05-T4 generated constants. */
   readonly channel: number;
-  /** Throws on an unknown discriminant or bad payload; the link closes with cause KELD-IPC-005 (criterion 11). */
+  /** Throws on an unknown discriminant or bad payload; criterion 11 owns terminal-cause priority. */
   decode(payload: Uint8Array): Fact;
   /** Synchronous; mutates mirror state only; never calls user code. */
   apply(fact: Fact): void;
@@ -689,6 +789,51 @@ export interface MirrorSource<Fact> {
 }
 export function attachMirror<Fact>(link: WorkerLink, source: MirrorSource<Fact>): void;
 ```
+
+**Scoped mirror amendment approved — 2026-10-24:** [GH-1142's exact-content
+owner approval](https://github.com/gyldlab/keld/issues/1142#issuecomment-6374810328)
+binds [technical proposal `ad857aa3`](https://github.com/gyldlab/keld/blob/ad857aa3e26b42ff9ffc7d22c6449d8ebe99c588/docs/specs/gh1142-mirror-fact-retention.md),
+file SHA-256 `5fa690e57feafdf238ca16240b86242c9ab1ecdb76df65aab41b841f4d63fdd1`.
+The following retention/source-failure correction preserves the existing ring,
+terminal-cause and earlier-answer owners; production sources still need heap/alias qualification.
+
+For each admitted event, the helper calls `decode` exactly once in the state-applier
+phase and calls `apply` with that value. Only after apply succeeds does it retain
+that exact value for the same record. The ordinary event-dispatch callback removes
+the retained entry before calling `source.dispatch` with the applied value; it does
+not decode again. Object identity is preserved; primitives, including undefined,
+are valid values. The helper neither admits frames nor schedules listeners.
+
+This permits physical heap storage outside the ring for derived facts. Pending and
+in-flight helper-held facts correspond one-for-one to still-retained same-channel
+event records; their aggregate count is no greater than the matching retained event
+count. Storage metadata and consumed slots do not grow independently of this bound.
+The helper uses private, preinitialized null-prototype own slots with wrapped
+head/count indices. Its capacity is the canonical Worker's normalized
+`min(ringRecords, floor(ringBytes / HEADER_LEN))`, an upper bound already imposed
+by ring admission, rather than an additional quota. Consumed slots are cleared
+before dispatch; neither append/shift history nor inherited numeric setters can
+grow its storage or retain consumed facts. The canonical transport owns the captured
+operations used by the synchronous decode/apply/wake-drain/copy path, including
+failure construction and diagnostics. Private Source maps and iterators stay behind
+that owner during public snapshot copying and terminal clearing. This bounded phase
+is GH527 §4.6; §4.5 liveness still invokes Worker termination synchronously, without
+an arbitrary Worker-prototype immunity guarantee. The macOS guarded primary preloads that same staged
+sidecar before the original entry. On every generation, Core's validated boot kind
+supplies a strict private Guardian argument; Host supplies Bun's literal runtime
+define for the canonical mode expression, so later environment edits and separately
+resolved unchanged package copies cannot select a different facade policy. Host
+rejects staged root runtime configs on both sidecar and direct-entry launches and
+removes inherited `BUN_OPTIONS` before executing Bun, preserving qualified preload
+ordering. An absent sidecar retains direct-entry startup, including raw schema-two
+roles; the mode define does not require subscription or grant window authority.
+This is a bounded bug fix to the approved boot-selection invariant. It does not
+qualify late package copies' intrinsic captures after application mutation.
+After the transport's earlier-record drain, the helper holds no values at terminal
+finalization. Ordinary consumption may establish this; any additional residual
+clearing needs a reachable lifetime proof. The helper does not retain released payload copies or add an
+independent frame/byte backlog. Each production source needs reviewed maximum shape,
+heap budget and alias/lifetime accounting before attachment; count is not a byte cap.
 
 `attachMirror` registers `apply` through gh527's `setStateApplier` (at most one per
 channel) and `dispatch` on the same channel's event delivery. The contract:
@@ -701,13 +846,16 @@ channel) and `dispatch` on the same channel's event delivery. The contract:
    before `callBlocking` returns; listeners run after resume (criterion 19). A read is
    never fresher than the last applied host fact. ▲ divergence: Electron reads native
    state synchronously, so a user resize in progress is visible to Electron sooner.
-4. **Terminal on failure.** A throwing `apply` or `decode` closes the link with the
-   cause `KELD-IPC-005` (gh527 §4.4 and §4.6; criterion 11), and parked or pending
-   calls throw `KELD-IPC-022` naming that cause. keld-ipc's meanings are kept:
-   `KELD-IPC-003` is the codec failure inside `decode` and is never surfaced, and
-   `KELD-IPC-005` ("unexpected kipc frame or session state") is the link-close cause,
-   the same layering 02 §2 uses for an undecodable `ERR` payload. gh527's other wake
-   codes pass through unchanged. A mirror that missed a fact must not serve state.
+4. **Terminal on source failure.** Decode and apply run only in the framework state
+   phase. When a source failure wins the existing first-terminal-recorder transition,
+   its close cause is normalized to `KELD-IPC-005`; an internal codec `KELD-IPC-003`
+   does not escape as that cause. The existing transport ends delivery at the failing
+   record and drains earlier records, including earlier answers to pending calls.
+   Parked and still-unanswered pending callers report `KELD-IPC-022` naming the
+   recorded cause. A prior terminal cause and other transport wake codes keep their
+   existing priority. No failed fact is retained or dispatched. User dispatch exceptions remain
+   isolated listener failures; they do not become source failures or retain the
+   consumed entry. A mirror that missed a source fact cannot continue serving state.
 5. **Admission.** Facts reach only roles the host admits (criterion 20). For the first
    proof, that is the current primary RoleInstance generation.
 6. **Writes.** Setters are non-blocking `CALL`s, legal in `Open` and in
@@ -715,8 +863,55 @@ channel) and `dispatch` on the same channel's event delivery. The contract:
    `EVENT` arrives (#449). So `isMaximized()` immediately after `maximize()` may still
    be false. Inside the `'maximize'` listener it is true.
 
-The window mirror entry keeps the host facts (`WindowState`, live or host-destroyed,
-pending `close_seq`). The Electron-facing tombstones are separate (§4.e).
+**Q5/Q6 CloseReply settlement is not a speculative setter.** The pending `close_seq`
+bookkeeping is retired only after the one correlated, authenticated Host
+`REPLY ReplyApplied` to the exact `CloseReply(window id, incarnation, seq,
+verdict)` call. A successful Q5/Veto response proves the Host has already moved
+the window from `ClosePending(seq)` to `Open`; Q6/Allow proves it moved to
+`Closing` but **does not** yet prove physical release or `Destroyed`. Do not wait
+for a new, unallocated
+wire `EVENT` to clear the previous pending sequence. The API snapshots the
+primitive window pair, sequence and verdict *before encoding/sending* so a
+mutable caller cannot redirect a delayed acknowledgement. The source clears
+only an exact still-pending pair/sequence; a newer pending close is never
+cleared by an old Q5 reply. The dispatched-fact receipt ledger holds one
+monotonic per-incarnation acknowledged sequence watermark so a pre-applied but
+**not yet dispatched** Created/CloseRequested fact cannot resurrect a settled
+old sequence after the correlated Host reply. Denied/stale/lost replies and
+unrelated setter responses do not clear anything. The next unacknowledged
+`CloseRequested(seq + 1)` still requires its own `'close'`/verdict; neither
+mirror may invent an Allow. This is a bounded client interpretation of the
+existing Q5/Q6 Host reply, not an additional Host authority, second transport,
+new wire event or promise of draw.io Quit compatibility.
+
+**Settled Source amendment approved — 2026-10-27:** [GH-1149's public approval
+and scoped claim receipt](https://github.com/gyldlab/keld/issues/1149#issuecomment-6426874535)
+binds the [stage-one Source amendment](gh1149-settled-source-reclamation.md),
+independently admitted technical draft SHA-256
+`b9a0e5cf186cd4435b09a4f05da74ff8e2e9305fc745ddb00d9d7b3c2927468d`
+against source `fab00474c045f5b5b303e7f8752c2004af5ea10f`. Design admission
+leaves source/consumer qualification and production acceptance gates open.
+
+The window Source keeps full host facts (`WindowState`, pending `close_seq`,
+host-destroyed state) through the matching `Destroyed` dispatch callback. The
+blocking Destroy continuation can still read the pre-applied terminal snapshot.
+After that callback, including a throw, `finally` replaces only the exact matching
+host-destroyed snapshot in the existing map with a shared scalar marker. `get`
+and `all` omit retired snapshots; caller-held immutable snapshots remain caller-owned.
+`Map.has(id)` and unchanged map size preserve exact historical ID rejection,
+sparse IDs and the cumulative1024 guard. Compact history remains history-dependent.
+The Electron-facing tombstones are separate (§4.e); no terminal-wrapper registry is added.
+
+Explicit LifecycleLink close stops calls immediately and lets WorkerLink drain
+earlier facts before the existing `onEnd` disposes Source. Subscription-failure
+cleanup uses that same close path. Source owns nonthrowing close-reply eligibility:
+failed, absent and terminal pairs do not mutate Source or receipt bookkeeping, so a
+later Source failure cannot replace an earlier correlated `ReplyApplied`. Live
+exact pairs still advance the receipt watermark when a newer close is pending;
+only the matching sequence clears Source pending state. First-cause and earlier
+answer/fact drain rules above remain unchanged. Host storage, native mapping,
+pending64 and cumulative1024 are unchanged; native and physical-byte qualification
+remain separate gates.
 
 ### 4.e Close state machine
 
@@ -731,8 +926,27 @@ Host registry, per window:
 | `Destroyed` | tombstone; pair retired for the session | none |
 
 Per-window registry state is `(WindowGeneration, WebviewId, owner_role_generation,
-state, last close_seq)`. `Create` admission mints a new entry in `Opening` with
+state, last close_seq, adoptable)` (`adoptable` amended by #657). A non-adopting `Create`
+admission mints a new entry in `Opening` with
 `owner_role_generation` set to the calling link's RoleInstance generation.
+
+**Subscription before the table (amended by #657).** A `window` CALL from a link not
+subscribed to `window` is refused `KELD-CORE-045` before any other check and changes no
+state (criterion 46). `Subscribe` itself is accepted before Ready; the not-ready check
+(`KELD-CORE-040`, criterion 14) applies only to subscribed links. A supervised restart starts unsubscribed (gh508 c16), so a
+successor's transfer has one point, its `Subscribe`.
+The first accepted subscription's full replay precedes its `Subscribed` reply;
+criterion 20 defines when the facade can expose readiness. An idempotent repeat does
+not transfer or replay again and does not re-arm an `adoptable` mark.
+
+**Adoption before the table (amended by #657).** A `Create` from the owner while one or
+more of its windows are `adoptable` mints nothing. It answers `REPLY Adopted { window }`
+for the lowest-`WindowId` adoptable window, writes no EVENT, and clears that window's
+`adoptable` mark. It is not an input of the transition table, so the 76 rows below are
+unchanged. The every-pair enumeration test also asserts that an adopting `Create`
+leaves every window's state unchanged. `adoptable` is set for each `Open` window
+transferred at `Subscribe`, and it is also cleared by the owner's first
+window-addressed CALL naming that window and by `Destroyed`.
 
 **Admission before the table.** Every app call that names a window passes two checks,
 in order, before the transition table: (1) the pair resolves to an entry with the same
@@ -819,7 +1033,7 @@ test enumerates every pair and asserts its row.
 | C5 | `Closing` | `Reply current` | — | impossible: no request pending in `Closing`; classified as `Reply stale` |
 | C6 | `Closing` | `Reply stale` | `Closing` | `REPLY ReplyStale`, one host diagnostic (T7) |
 | C7 | `Closing` | `Setter` | `Closing` | ERR 038 |
-| C8 | `Closing` | `Destroy` | `Closing` | one more deferred `REPLY Destroyed`, written at the `Released` row |
+| C8 | `Closing` | `Destroy` | `Closing` | If fewer than 64 pending Destroy correlations exist for this window, admit one more deferred `REPLY Destroyed`, written at `Released`; at the 64-call Host capacity, refuse this new correlation immediately with correlated nonterminal `ERR KELD-CORE-046`, without appending or changing native state |
 | C9 | `Closing` | `Released` | `Destroyed` | T11 below |
 | C10 | `Closing` | `Role loss` | `Closing` | nothing; already closing (an earlier `Destroy` reply is not written, because the owner link is retired) |
 | C11 | `Closing` | `Session end` | `Closing` | nothing; already closing |
@@ -850,7 +1064,14 @@ when a request is pending and the sequence matches, so in every other state it i
 **T11 (row C9).** In one step on the owner link's single writer, and only while that
 link is live and not retired (after a `Role loss` row nothing is written): `Destroyed`, if a
 `Created` was written for this window; then `LastWindowClosed`, if no live window
-remains and the step is outside a session end; then every deferred `REPLY Destroyed`.
+remains and the step is outside a session end; then every **admitted** deferred
+`REPLY Destroyed`, in correlation/admission order. The new bounded Host admission
+budget is **64 outstanding Destroy correlations per window** while `Closing`;
+attempt 65 receives immediate `ERR KELD-CORE-046` on its own correlation (no
+window effects and no reply from `Released`). The fixed number is a reviewed
+capacity-policy proposal on integration PR #1181, distinct from the Worker
+abandonment and Auth quotas. The original unlimited C8 assumption is unsafe if
+AppKit Release stalls; this amendment requires independent GH531 owner review.
 *Live* means `Opening`, `Open`, `ClosePending` or `Closing`. An `Opening` window counts
 because its `Create` was admitted before this step, as an Electron constructor returns
 before any later close completes; so the session cannot quit before it opens.
@@ -1093,6 +1314,18 @@ reversible, and each names the observation that reopens it.
   from an approved contract. *Falsifier:* KEL-143 or F02-T11 shows that a successor
   cannot safely adopt a window it did not create (for example, renderer state that
   cannot be re-bound).
+  *Scope (2026-10-08; D6 unchanged).* The registry owns adoption. Per link: `window`
+  CALLs before `Subscribe` are refused `KELD-CORE-045` (criterion 46). Per window:
+  `adoptable` is set at transfer and cleared by adoption, by the owner's first
+  window-addressed CALL, or by `Destroyed`. A `Create` adopts the lowest-`WindowId`
+  adoptable window owned by the caller, answering `Adopted { window }` with no EVENT
+  and no state change; otherwise it creates. The constructor returns the replayed
+  object. The app owns navigation of adopted windows. *Falsifier and NCs:* criterion
+  46. (amended by #657)
+  *Approval history:* the 2026-10-07 decision above remains the historical owner
+  record. The scoped 2026-10-23 amendment in §5 explicitly qualifies the schema-2
+  document guarantee under the separate exact-content approval linked above; the
+  earlier decision is not approval of that new wording.
 - **D5. Channel id.** F02-T2 appends the window-state channel entry under #508's rule
   (draft PR #613). This spec fixes no number. *Falsifier:* #613's approved rule
   assigns ids by a mechanism other than an appended table entry.
@@ -1138,9 +1371,15 @@ export interface CloseEvent { preventDefault(): void; readonly defaultPrevented:
 export interface BrowserWindowEventMap {
   close: [event: CloseEvent];
   closed: [];
+  /** Native Bounds changed x or y (not a resize-only fact). */
+  move: [];
   maximize: [];
   unmaximize: [];
   resize: [];
+  focus: [];
+  blur: [];
+  'enter-full-screen': [];
+  'leave-full-screen': [];
 }
 export interface WebContentsEventMap { destroyed: [] }
 
@@ -1294,9 +1533,28 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 - Must not touch: the `WebEngine` trait; frame layout, `PROTOCOL_VERSION`, `HELLO`;
   `keld-guard` evaluation; keld-runtime's `RoleRegistry`; the Windows and Linux
   backends beyond exhaustive-match arms; the workspace `Cargo.toml` (no dependency).
-- Adoption (D6): no KEL-139 amendment; AC5 holds for every boot mode. The transfer and
-  replay in the keld-core registry, the `Created.pending_close` field and its vector,
-  and the facade's replay handling in `@keld/electron` are in this slice's T2.
+- **Scoped recovery decision — approved under 2026-10-23 owner delegation,
+  independent review and exact-content approval (GH #446 / PR #657, record above).**
+  Schema 1 retains native-window and document identity under the existing KEL-139
+  AC5 contract. In schema 2, every surviving native window retains its identity across
+  Bun-role recovery, whether it is eligible for constructor adoption, already claimed,
+  or still unclaimed. Its document identity remains unchanged until the recovered
+  application explicitly navigates it. This is an explicit, scoped amendment to the
+  schema-2 document-continuity guarantee; it does not relabel the historical KEL-139 or D6
+  approval as approval of the new wording. Authentication, RoleInstance generation
+  fencing, navigation generation ownership, and the existing retired FsBroker
+  quiescence prerequisite remain unchanged. No close or shutdown behavior changes.
+  *Falsifiers:* an independent native observer finds any surviving window replaced;
+  a document identity changes before the recovered app's explicit navigation; a stale
+  RoleInstance generation gains authority; or successor Ready/privileged calls become
+  observable before retired FS work quiesces. The delegated choice and owning claim
+  and separate exact-content approval are linked in the amendment provenance above.
+  Implementation acceptance remains required; the historical approval is unchanged.
+- Re-slice (amended by #657): the D6 transfer, the `Created` replay at `Subscribe`
+  without `pending_close`, `adoptable`, criterion 46, `WindowResponse::Adopted`,
+  `KELD-CORE-045`, and the constructor returning the replayed object are in this
+  slice's T1. The `Created.pending_close` field and its vector, and closes
+  during the recovery gap, are in T2.
 - Architecture sentences changed in this PR
   (`docs/architecture/05-webview-and-native.md` §3, after the module table): one new
   paragraph, "**Window ownership.**", stating that (1) no keld-native broker owns the
@@ -1315,21 +1573,30 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   with pinned byte tests, the `app_session.rs` handler and per-link subscription
   state, the `LifecycleSession` refusal, and their criterion 20 tests; the keld-core
   registry with T1, T2, T11 and T12, `owner_role_generation` and the admission checks;
-  the reserved `KELD-CORE-038` to `042`; `Create` (blocking via #528)
+  the reserved `KELD-CORE-038` to `043` and `045`; `Create` (blocking via #528)
   and the state events; the mirror primitive; getters, setters, `id`, `getAllWindows`
   in creation order, `getFocusedWindow`; `browser-window-created` and
   `web-contents-created` emitted once per window by the constructor after `Create`
   returns (their mutual order is cited from v44.4.5 source in that PR); the retired
   and forged pair errors; the lib.rs and product-status drift fix; the 03 sentence.
   Interim: a native close in a facade boot still tears down at once and writes
-  `Destroyed` (no veto yet), so criterion 4 is exercisable. Criteria 1–14, 16–17, 19–20,
-  41–44.
+  `Destroyed` (no veto yet), so criterion 4 is exercisable. Role loss (amended by
+  #657): the D6 transfer and `Created` replay at `Subscribe` (criterion 30 without
+  `pending_close`); `adoptable`; criterion 46; `WindowResponse::Adopted`;
+  `KELD-CORE-045`; the constructor returning the replayed object, with
+  `browser-window-created` and `web-contents-created` once, at adoption; the ▲ cell
+  `app.window.adopted-survivor`. Criteria 1–14, 16–17,
+  19–20, 41–44 and 46, and criterion 30 without `pending_close`.
 - [ ] T2 = F02-T3 (#450). T3–T10; `RequestClose`, `CloseReply`, `Destroy` (blocking);
   facade `'close'`, `close()`, `destroy()`, both tombstones, `'closed'`; common-modes
   delivery; removal of T1's interim teardown; the full transition table with its
-  every-pair unit test; `KELD-CORE-043`; the D6 adoption (ownership transfer, the
-  `Created` replay with `pending_close`, the recovery gap). Criteria 15, 18, 21–33.
-- [ ] T3 = F02-T4 (#455). The triage table. Criteria 36–40.
+  every-pair unit test; the `Created.pending_close` field and closes
+  during the recovery gap (the transfer, replay and adoption are T1's; amended by
+  #657). Criteria 15, 18, 21–33.
+- [ ] T3 = F02-T4 (#455). The triage table. Criteria 36–40. Adoption matching (amended
+  by #657): a successor `Create` adopts the lowest-`WindowId` adoptable window whose
+  triaged renderer-authority options equal the request's; if none matches, it creates.
+  There is no refusal code.
 - F01-T3 (#451) owns criteria 34–35 and the `before-quit` half of 33. They are listed
   here only as consumed contracts.
 
@@ -1337,8 +1604,9 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
 
 | Criteria | Test | Kind |
 |---|---|---|
-| 2–6, 21, 25–27, 30, 31, 33 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 76 (state, input) rows of §4.e | unit |
-| 20 | `lifecycle.rs` pinned `Subscribe` bytes; `app_session.rs` link tests for an unsubscribed primary, a subscribed primary and a refused `app-bound` role | unit, integration |
+| 2–6, 21, 25–27, 30, 31, 33, 46 | pure registry state-machine tests in keld-core with a fake UI port and an injected clock; no AppKit; one test enumerates all 76 (state, input) rows of §4.e and asserts that an adopting `Create` changes no window's state | unit |
+| 20 | `lifecycle.rs` pinned `Subscribe` bytes; `app_session.rs` link tests for an unsubscribed primary, a subscribed primary and a refused `app-bound` role; host replay-before-accepted-reply ordering; facade fences for g2 raw Ready before replay/reply, completed subscription before Ready, empty replay, and idempotent repeat | unit, integration |
+| 1, 46 | facade identity/adoption fixtures whose host references differ from the fresh facade allocation counter; all-survivor native identity checks; two legitimate Creates with no eligible survivor produce two windows | unit, integration |
 | 8, 10, 11 | the golden-vector file replayed by `cargo test -p keld-ipc` and `bun test`; existing vectors and the KEL-133 corpus unmodified | unit, cross-language |
 | 9, 43 | the X05-T4 drift check and table validation | unit |
 | 1, 13, 14, 16, 17, 20, 22–24, 32, 36–38 | real-Mac host + Bun fixture (macOS GUI session); the frame counter is read from the host link | integration |
@@ -1363,6 +1631,12 @@ Counts, not durations, are the oracle.
 
 - **Wire protocol:** yes. A new app-link channel, payloads and receive-policy rows; no
   `PROTOCOL_VERSION` bump (§4.b).
+  The 2026-10-23 amendment additionally requires named independent wire-order review
+  of the complete replay before the existing correlated `Subscribed` reply and the
+  facade's replay-application barrier (criterion 20, §4.b rule 4), on the exact final
+  diff. This refines the window consumer of gh508 criterion 16 / §4.4 step 6 without
+  changing its admission rules, idempotence, payloads, discriminants or subscription
+  owner; no new wire variant is added.
 - **Public API:** yes. `@keld/electron` `BrowserWindow`, `WebContents`,
   `BrowserWindowOptions`, `WebPreferences` and the event maps ("Public surface"); the
   `@keld/api` internal mirror; keld-ipc public wire types and the lifecycle
