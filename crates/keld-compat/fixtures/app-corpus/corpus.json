@@ -32,7 +32,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.ready.emitted-once: a ready listener does not run before host Ready, then runs exactly once, also when host Ready is delivered again",
-      "negative_control": "Emitting ready before host Ready, or emitting it again when the link delivers host Ready a second time, makes the mapped case fail."
+      "negative_control": "Emitting ready before Host Ready, emitting it again on a duplicate Host Ready, or including a listener registered after the API Ready state becomes true but before the facade promise reaction makes the mapped case fail."
     },
     {
       "operation_id": "app.ready.api-first-late-listener",
@@ -42,14 +42,13 @@
         "quote": "Emitted once, when Electron has finished initializing.",
         "quote_sha256": "sha256:7a2bff1feb8305c9ec9e082bf905b09a5b05c69586060bace3ddb17134118123"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-446",
+      "expected_verdict": "pass",
       "platforms": [
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
-      "test_name": "app.ready.api-first-late-listener today: facade replays ready to a listener added after the underlying API observed Host Ready",
-      "negative_control": "Current RED: Host Ready is observed by the API before a facade ready listener registers, but the facade delivers a late callback. If production suppresses that replay, this mapped present-behaviour test must fail until GH-446 inverts it and flips this verdict to pass."
+      "test_name": "app.ready.api-first-late-listener: no ready replay to a listener registered after the API observed Host Ready",
+      "negative_control": "Removing the guard that checks the underlying API Ready state before the Electron facade first observes it restores the erroneous late callback and makes the mapped test fail. A blanket suppression of Ready instead fails the separate pre-Ready listener and once-only cells."
     },
     {
       "operation_id": "app.when-ready.is-ready-agreement",

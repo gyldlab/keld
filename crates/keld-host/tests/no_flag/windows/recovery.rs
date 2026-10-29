@@ -5,17 +5,21 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::support::control::{
-    accept_control_or_host_failure, accept_ready_generation, parse_descendant_pid,
-    read_control_line, read_control_line_or_host_failure, try_read_control_line,
+    accept_control_or_host_failure, accept_ready_generation, assert_no_control_connection,
+    parse_descendant_pid, parse_hello, read_control_line, read_control_line_or_host_failure,
+    try_read_control_line,
 };
+use crate::support::process::{assert_process_signaled_within, open_process_for_wait};
 use crate::support::product::ProductFixture;
-use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
+use crate::support::renderer::{
+    HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
+};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
-    ui_end_kill_switch, wait_child, wait_for_host_window,
+    stalled_navigation_end_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 #[test]
@@ -108,13 +112,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     let mut g2_writer = g2.try_clone().expect("g2 control acknowledgment writer");
     let mut g2_reader = BufReader::new(g2);
     let g2_hello = read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 HELLO");
-    let mut g2_fields = g2_hello.split_whitespace();
-    assert_eq!(g2_fields.next(), Some("HELLO"), "{g2_hello}");
-    let g2_pid = g2_fields
-        .next()
-        .expect("g2 pid")
-        .parse::<u32>()
-        .expect("numeric g2 pid");
+    let (g2_pid, _g2_link) = parse_hello(&g2_hello);
     let g2_descendant =
         read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
     assert_eq!(parse_descendant_pid(&g2_descendant), 0);
@@ -313,12 +311,234 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
         })
         .count();
     assert_eq!(attempts, 1, "a pre-Ready crash provisioned a successor");
-    assert!(
-        matches!(
-            control_listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ),
-        "pre-Ready child reached the control service"
+    assert_no_control_connection(
+        &control_listener,
+        "pre-Ready child reached the control service",
     );
     assert!(!process_exists(host_pid), "failed host remained live");
+}
+
+/// GH-1182 R1: Bun exits after its authenticated HELLO while the initial window
+/// is live and its first navigation is held open ([`HeldRendererRequest`]), so
+/// the window cannot be `Ready` first. The pre-Ready recovery gate is still
+/// closed, so the host fails startup instead of provisioning a successor
+/// (architecture 06 §1).
+#[test]
+fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind post-HELLO control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking post-HELLO control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let marker = fixture.project.join("post-hello-attempt");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage post-HELLO host");
+    let mut child = dev_stage_command(stage.root(), stage.host())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T3_PRE_READY_MARKER", &marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch post-HELLO host");
+    let host_pid = child.id();
+    let control = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    let mut reader = BufReader::new(control.try_clone().expect("clone post-HELLO control"));
+    let mut writer = control;
+    parse_hello(&read_control_line_or_host_failure(
+        &mut reader,
+        &mut child,
+        "post-HELLO HELLO",
+    ));
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO DESCENDANT"),
+        "DESCENDANT 0"
+    );
+    // The 15 s initial-navigation deadline (KELD-WV-005) is still armed. The
+    // exit below must reach the owner before it fires; if it ever lost that
+    // race, the stderr assertion fails with KELD-WV-005 rather than passing.
+    held.await_connection(&mut child);
+
+    writer
+        .write_all(b"EXIT_PRE_READY\n")
+        .expect("request post-HELLO exit");
+    writer.flush().expect("flush post-HELLO exit");
+    // The live window makes this a host-fatal Bun exit with a WebView2 UI end.
+    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
+    assert!(
+        !status.success(),
+        "post-HELLO pre-Ready exit became success"
+    );
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured post-HELLO stderr")
+        .read_to_string(&mut stderr)
+        .expect("read post-HELLO stderr");
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    // Corroboration only: this counts the window attempt; the held connection
+    // above is what proves the window was live and navigating.
+    assert!(stderr.contains("window=1]"), "{stderr}");
+    let attempts = fs::read_dir(&fixture.project)
+        .expect("list post-HELLO markers")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("post-hello-attempt.")
+        })
+        .count();
+    assert_eq!(
+        attempts, 1,
+        "a post-HELLO pre-Ready exit provisioned a successor"
+    );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
+    assert!(!process_exists(host_pid), "failed host remained live");
+    held.release();
+}
+
+/// GH-1182 R2: the initial navigation never completes. Its renderer connection
+/// is held ([`HeldRendererRequest`]), so `NavigationCompleted` cannot fire and
+/// the window never becomes `Ready`. The `WebView2` initial-navigation deadline
+/// (`keld_wv::INITIAL_MILESTONE_DEADLINE`) must then fail startup with
+/// `KELD-WV-005`, take the Bun generation down with the host, and provision no
+/// successor.
+#[test]
+fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
+    let fixture = ProductFixture::new();
+    let control_listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("bind stalled-navigation control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking stalled-navigation control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let generations = fixture.project.join("stalled-generation");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage stalled-navigation host");
+    let mut child = dev_stage_command(stage.root(), stage.host())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T4_GENERATION_MARKER", &generations)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch stalled-navigation host");
+    let host_pid = child.id();
+    let control = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    let mut reader = BufReader::new(control.try_clone().expect("clone stalled control"));
+    let hello = read_control_line_or_host_failure(&mut reader, &mut child, "stalled HELLO");
+    let (bun_pid, _link) = parse_hello(&hello);
+    // Opened while Bun is live, so its exit is observed on this exact process.
+    let bun = open_process_for_wait(bun_pid, false);
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "stalled DESCENDANT"),
+        "DESCENDANT 0"
+    );
+    held.await_connection(&mut child);
+
+    let status = wait_child(
+        &mut child,
+        Instant::now() + stalled_navigation_end_kill_switch(),
+    );
+    assert!(!status.success(), "stalled navigation became success");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured stalled-navigation stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stalled-navigation stderr");
+    assert!(stderr.contains("KELD-WV-005"), "{stderr}");
+    assert!(
+        stderr.contains("initial renderer navigation did not finish before the startup deadline"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    let span = first_navigation_deadline_span(&stderr);
+    assert!(
+        span + DEADLINE_ANCHOR_TOLERANCE >= keld_wv::INITIAL_MILESTONE_DEADLINE,
+        "navigation deadline fired after {span:?}, before {:?}: {stderr}",
+        keld_wv::INITIAL_MILESTONE_DEADLINE
+    );
+    assert_process_signaled_within(&bun, "stalled-navigation Bun", PRODUCT_DEADLINE);
+    assert_eq!(
+        fs::read_to_string(&generations).expect("read stalled generation marker"),
+        "1\n",
+        "a stalled navigation provisioned a successor generation"
+    );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
+    assert!(!process_exists(host_pid), "failed host remained live");
+    held.release();
+}
+
+/// The `WebView2` loop takes its navigation-deadline anchor just before the
+/// diagnostic records `loop_setup_at_ms`, and both stamps are floored to whole
+/// milliseconds. The measured span can therefore fall short of the deadline by
+/// that anchor-to-record gap (one lock acquisition, which a preempted thread can
+/// stretch over a few scheduler quanta) plus 1 ms. A deadline armed shorter or
+/// earlier falls short by far more.
+const DEADLINE_ANCHOR_TOLERANCE: Duration = Duration::from_millis(100);
+
+/// The host's own measurement of its initial-navigation deadline, from the
+/// `first-navigation` diagnostic the `KELD-WV-005` failure carries: the span from
+/// message-loop setup (where the deadline is armed) to the recorded expiry.
+fn first_navigation_deadline_span(stderr: &str) -> Duration {
+    let diagnostic = &stderr[stderr
+        .find("first-navigation ")
+        .unwrap_or_else(|| panic!("no first-navigation diagnostic: {stderr}"))..];
+    let field = |key: &str| -> u64 {
+        let start = diagnostic
+            .find(key)
+            .unwrap_or_else(|| panic!("no {key} in {diagnostic}"))
+            + key.len();
+        let value = diagnostic[start..]
+            .trim_start_matches("Some(")
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or_default();
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("non-numeric {key} in {diagnostic}"))
+    };
+    assert!(
+        diagnostic.starts_with("first-navigation phase=navigation-deadline-elapsed "),
+        "{diagnostic}"
+    );
+    let expired = field(" phase_at_ms=");
+    let armed = field(" loop_setup_at_ms=");
+    Duration::from_millis(
+        expired
+            .checked_sub(armed)
+            .unwrap_or_else(|| panic!("deadline expiry precedes loop setup: {diagnostic}")),
+    )
 }

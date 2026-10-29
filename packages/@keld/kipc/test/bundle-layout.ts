@@ -5,11 +5,12 @@
  * and reports stdout, the listener's connection count and an evaluation
  * counter. Each run is its own process, because a realm opens one link.
  */
-import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "bun:test";
+
+import { freshWin32AppLinkPipe } from "./app-link-host.ts";
 
 /** Any 32-byte token: the listener never answers HELLO. */
 export const TOKEN_HEX = "ab".repeat(32);
@@ -39,7 +40,7 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
   const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
   const path =
     process.platform === "win32"
-      ? `\\\\.\\pipe\\keld-${randomBytes(32).toString("hex")}`
+      ? freshWin32AppLinkPipe()
       : join(dir, "s.sock");
   const evalsPath = join(dir, "evals.txt");
   let connections = 0;
