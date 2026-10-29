@@ -6,6 +6,10 @@
 /// Native-owned file type grouping; this is not a picker or a new authority.
 #[cfg(target_os = "macos")]
 pub mod file_filter;
+/// Retained macOS file panels on Tao main owner; their real OS acceptance is
+/// a separate gate from the source-exact Postcard file dialog DTO.
+#[cfg(target_os = "macos")]
+pub mod macos_file;
 /// Actual macOS `NSAlert` construction and sheet custody on the AppKit thread.
 /// The Host owns Guard, parent identity, correlation, and callback retirement.
 #[cfg(target_os = "macos")]
