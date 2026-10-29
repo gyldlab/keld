@@ -9,8 +9,8 @@ states only the Windows adapter deltas, each naming the gh531 section it plugs i
 (§4.a). It builds on #1181 (macOS facade), merged 2026-10-28 as `41b81ecb` (final head
 `d264cc51`), and on the #1073 Windows Quit-tail fixes (#1279, #1282; #1073 closed
 2026-10-28). Every code and spec citation below is at `main`
-`457a9c3b37f71179f167bd1f8c706c461cc4c479`: r6 re-mapped all 227 by content match (the
-r6 reconciliation bundle, §2). No source change and no production claim
+`457a9c3b37f71179f167bd1f8c706c461cc4c479`: r6 re-mapped all 227 by content match, 225 by
+script and 2 by hand (the r6 reconciliation bundle, §2). No source change and no production claim
 accompany this draft. Claim: issue comment
 <https://github.com/gyldlab/keld/issues/1188#issuecomment-6459160769>.
 
@@ -24,11 +24,11 @@ with `KELD-CORE-034` (FACT, `crates/keld-core/src/app_session.rs:1340-1351`, cal
 from `validate_windows_boot_files` at `:1447`; `run_app_direct` repeats the same
 refusal inline at `:3431-3438`); the session is built with `window_native_support:
 None` (FACT, `app_session.rs:7613-7615`), so a window `Subscribe` answers
-`SubscribeRefused { NotSubscribable }` (FACT, PR
+`SubscribeRefused { NotSubscribable }` (FACT, `main`
 `crates/keld-core/src/app_session/window_router.rs:387-395`) and a window `CALL`
 answers `KELD-CORE-045` (FACT, `window_router.rs:451-458`; `KELD-CORE-042` is reached
-only with `Some(false)`, `:475-477`, which nothing sets today); the WebView2 loop treats
-any registry command as an invariant fault (FACT, PR
+only with `Some(false)`, `:475-478`, which nothing sets today); the WebView2 loop treats
+any registry command as an invariant fault (FACT, `main`
 `crates/keld-wv/src/webview2/mod.rs:3330-3343`, `:3388-3394`); and the live Windows
 loop drops the view on every `CloseRequested` and emits `LastWindowClosed` at once
 (FACT, main `webview2/mod.rs:3355-3370`, `:2816-2834`). A close cannot be cancelled.
@@ -76,8 +76,8 @@ Non-goals (owners in parentheses):
   `:268`: 15 s bound, `KELD-CORE-037` terminal, unproved dev stage not deleted) and the Bun
   boot-mode and sidecar preload rule (`:821-831`; rewritten by 9e00c273 as "a bounded bug fix
   to the approved boot-selection invariant").
-- `docs/architecture/01-overview.md` crate table; `02-ipc.md` (PR diff: window channel
-  id 5, no frame or `HELLO` change); `03-security.md`; `04-electron-compat.md` (PR
+- `docs/architecture/01-overview.md` crate table; `02-ipc.md` (#1181 diff: window channel
+  id 5, no frame or `HELLO` change); `03-security.md`; `04-electron-compat.md` (#1181
   sentence "Linux and Windows currently refuse facade-window subscription");
   `05-webview-and-native.md` §3 "Window ownership" (`:302-304`).
 - `docs/specs/kel96-no-flag-host-boot.md`; `kel259-windows-test-layout.md` (test
@@ -90,6 +90,11 @@ Non-goals (owners in parentheses):
 - Native probe evidence ("the U1/U6 bundle"): `D:\WORK\keld\.git\keld-closeout\claude-feaa86ad-d52c-4d93-8003-dd7422968b19\evidence\gh1188-u1u6\`
   (`results.json` sha256 `0032b352…fb45c18`, `SHA256SUMS` sha256 `8e966958…bb001f91`, every
   listed file verified `OK`; per-run JSON under `runs\`, probe source under `source\`).
+  The probe ran on Windows 11 10.0.26300.9711, WebView2 Runtime 156.0.4314.50, tao
+  0.35.3, webview2-com 0.38.2, windows 0.61.3: 55 runs, all exit 0, no lingering
+  `msedgewebview2` or probe process after any run, using Keld's `webview2/mod.rs` as it
+  stood at `2458836f` (sha256 `1247c842…b614a3`) with one declared deviation
+  (`with_focused(false)` on the builder). Facts from it are marked FACT (probe).
 - Native atom-E evidence ("the U10 bundle", 2026-10-29, Windows 11 26300.9711, WebView2
   156.0.4314.50, `webview2-com` 0.38.2): `D:\WORK\keld\.git\keld-closeout\claude-feaa86ad-d52c-4d93-8003-dd7422968b19\evidence\u10-atom-e\`
   (`SHA256SUMS` sha256 `81bbcc09…f5bb9bb5`; probe source `main.rs`, runs `run1-3.txt`,
@@ -98,11 +103,6 @@ Non-goals (owners in parentheses):
 - r6 reconciliation bundle: `D:\WORK\keld\.git\keld-closeout\claude-feaa86ad-d52c-4d93-8003-dd7422968b19\evidence\gh1188-w2-reconcile\`
   (checker `reconcile.py`, `mapping.tsv` with every citation's old pin, old and new range and
   match confidence, `deltas.md`; `SHA256SUMS` listed there).
-  Windows 11 10.0.26300.9711, WebView2 Runtime 156.0.4314.50, tao 0.35.3, webview2-com
-  0.38.2, windows 0.61.3; 55 runs, all exit 0, no lingering `msedgewebview2` or probe
-  process after any run; Keld's `webview2/mod.rs` at `2458836f` (sha256 `1247c842…b614a3`)
-  with one declared deviation (`with_focused(false)` on the builder). Facts from it are
-  marked FACT (probe).
 - Doc drift found, not fixed here: `crates/keld-wv/src/webview2/mod.rs:39-41` says async
   completions are delivered by `webview2_com::wait_with_pump`, but production uses
   Keld's own loop (`wait_for_launch_with_message_pump_until` `:597-617` over
@@ -131,7 +131,7 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
    elapse, then no `READY` is written; the Windows pre-Init terminal runs exactly once
    with `KELD-CORE-037` and the detail "the UI loop did not deliver its first turn within
    15 s"; the Bun child is retired (pid gone); the host exit status is a failure. Stage
-   disposition is AC19's (the Windows host never deletes its own stage; PR
+   disposition is AC19's (the Windows host never deletes its own stage; 
    `keld-host/src/main.rs:111-134` is macOS/Linux-only). *NC:* writing Ready from
    `HELLO` publishes `READY` before Init.
 3. **Admission is the verified boot only.** Given `initialWindow: "none"`, when
@@ -166,12 +166,19 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
    override canonical boot selection or preload" text (`keld-host/src/main.rs:480-487`),
    with or without a sidecar. Given the
    staged sidecar replaced by a symlink or a junction, the launch is refused (strictest
-   rule, D13). *NC 1a:* launching without the define makes the transport read the deleted
-   environment, so `nativeFacadeBootSelected` is false and the observation flips.
-   *NC 1b:* the preload's job is now capture order, not the hint: the fixture's first
-   module replaces an intrinsic that the transport captures at module load (from the
-   capture set gh531 `:816-818` qualifies) with a recorder. With `--preload`, transport
-   traffic never calls the recorder; launched without `--preload`, it does. *NC 2:* a
+   rule, D13). *NC 1a:* on a direct-entry stage with no sidecar (so no preload), launching without
+   the define makes the transport, evaluated after the deletion, read the deleted
+   environment, so `nativeFacadeBootSelected` is false and the observation flips. With a
+   sidecar the preload evaluates the transport before the deletion, so this NC would not
+   discriminate there.
+   *NC 1b:* the preload's job is now capture order, not the hint. Fixture shape: the
+   bundled `renderer_bridge` layout, where the app imports the same staged
+   `./kipc-transport.ts` instance that was preloaded (`renderer_bridge.rs:254-275`). The
+   fixture's first module replaces `Reflect.apply`, which the transport captures at
+   module load (`transport.ts:38`; gh531 `:816-818`), with a recorder that counts only
+   calls whose stack includes `kipc-transport.ts`. Expected (INFERRED until T1 runs it):
+   with `--preload` that count is 0 during a window call; without `--preload` it is
+   above 0. *NC 2:* a
    stage with `bunfig.toml` launches (sidecar and direct-entry cases). *NC 3:* a junction
    sidecar launches. *NC 4:* an inherited `BUN_OPTIONS=--preload=<attacker>` runs before
    the transport.
@@ -193,7 +200,7 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
    `views.clear()` (`:3308`) drops the window: census 0 and a `Navigate` error.
 8. **Pre-Ready construction refused.** Given a facade boot whose `app.ready` has not
    resolved, when `new BrowserWindow()` runs, then it throws `KELD-CORE-040` ("native
-   window access requires Host Ready and accepted replay", PR
+   window access requires Host Ready and accepted replay", 
    `packages/@keld/api/src/app.ts:293-299`), no channel-5 `Create` frame is written and
    the census is 0. *NC:* publishing `app.ready` before the window `Subscribe` replay
    lets the constructor write `Create` first.
@@ -215,7 +222,7 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
     exactly one `CLOSED 1`; the host observes Tao `WindowEvent::Destroyed` for that HWND
     before it writes `WindowReleased`; census 0; `'closed'` precedes
     `'window-all-closed'`; with a `'window-all-closed'` listener that does not quit, the
-    session stays live and a follow-up create/destroy succeeds (PR
+    session stays live and a follow-up create/destroy succeeds (
     `facade_window.rs:574`), proving the loop wrote no `LastWindowClosed`; and, under
     `profile-test-hooks` with the hang guard shortened to a few seconds (D16), the
     session outlives that guard, proving no release barrier was armed. *NC 1:* writing
@@ -225,12 +232,12 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
     (`HangGuardExpired`, `:2699-2701`) while the fixture still holds the session.
 11. **Forged pairs refused; successor untouched.** Given window A destroyed and window B
     live, when raw `invokeWindow` sends `Destroy` with `(B.id, A.generation)` and then
-    `SetMaximized` with `(B.id, B.generation + 1)` (the macOS `STALE` shape, PR
+    `SetMaximized` with `(B.id, B.generation + 1)` (the macOS `STALE` shape, 
     `facade_window.rs:78-89`, asserted at `:869`), then each answers `KELD-CORE-038`,
     B's HWND handle and witness are unchanged, and census stays 1. *NC:* a matcher on
     `WindowId` alone destroys B on the first call.
 12. **Tombstone, no resurrection.** After `CLOSED 1`, `win.isDestroyed()` is true,
-    `getSize()` throws `KELD-COMPAT-011` ("Object has been destroyed": `getSize` PR
+    `getSize()` throws `KELD-COMPAT-011` ("Object has been destroyed": `getSize` 
     `browser-window.ts:516-519` through `#state()` `:494-501`; `:489` is the
     `webContents` getter), a raw call with A's retired pair answers `KELD-CORE-038`,
     and the next `Create` mints `(2, w')` with `w' > w`. *NC:* reusing a retired pair
@@ -303,7 +310,7 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
     then window B's controller attempt fails.
 19. **Stage disposition (`keld dev` lane only).** On Windows the host never deletes its
     stage; the `keld dev` private cleanup process does (`keld-host/src/main.rs:279-292`,
-    `WindowsDevStageCleanup::prepare` `app_session.rs:1528-1562`) once the attempt
+    `WindowsDevStageCleanup::prepare` `app_session.rs:1526-1562`) once the attempt
     Job reports zero processes. Given a facade boot launched through `keld dev`, when
     the host exits by `Quit` or by the AC2 terminal, then the stage count returns to 0
     (`no_flag_windows.rs:362-374` `wait_for_dev_stage_count`) only after every pid of
@@ -329,15 +336,18 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
     change makes `Quit` exit before the new browser is gone (tree non-empty). *NC 2:*
     accepting the old pid's event as release in regime (ii) does the same. *NC 3:*
     dropping the environment before `Quit` makes the barrier wait for an event that is
-    never raised (`GraceExpired`). *NC 4 (lingering retired generation, D8e):* in the
-    unit test, the retired handle is a real process the test controls and keeps alive
-    (a spawned child that waits on a test pipe). The barrier must stay not-ready after
-    the current generation's exit, must become ready only once the test releases the
-    child, and with the hang guard shortened must fail `KELD-WV-009` naming that pid.
-    The single-fault mutant discards the retired handle at re-bind (today's drop) and
-    reports ready while the child is alive. On the device, a `profile-test-hooks` hook
-    admits the same controlled child as a retired generation of a real session, and the
-    test asserts the record is still `stopping`, not `idle`, while it lives.
+    never raised (`GraceExpired`). *NC 4 (lingering retired generation, D8e):* decided
+    by the keld-wv unit test of the D8 state machine. The retired generation is a real
+    process the test controls and keeps alive (a spawned child that waits on a test
+    pipe), fed through the same re-bind entry point a pid change uses. The barrier must
+    stay not-ready after the current generation's exit; must stay not-ready after the
+    child exits until that pid's normal exit record is fed; must fail `KELD-WV-009`
+    naming the pid when the hang guard is shortened; and must fail `KELD-WV-009` on an
+    abnormal exit record for the retired pid. The single-fault mutant discards the old
+    generation at re-bind (today's drop) and reports ready while the child is alive. A
+    device half runs only if U13 is approved: it moves to AC18's installed harness,
+    where the lifecycle record exists, and asserts the record stays `stopping`, not
+    `idle`, while the injected generation lives.
 
 ## 4. Design
 
@@ -357,7 +367,7 @@ second WndProc is needed; Keld chooses *when* to drop.
 | # | Atom | Owner / boundary (in → out) | Failure mode | Observable | Edges | First falsifier | Status |
 |---|---|---|---|---|---|---|---|
 | A1 | Windows Init milestone | keld-wv Windows loop → keld-core coordinator; in: first `NewEvents(StartCause::Init)` of `run_return` (FACT, tao `event_loop/runner.rs:310-312`); out: `HostInitialized { observed_at }`, then Ready | Ready before the loop runs, or never for a zero-window boot | AC1, AC2 | ← A13 | Ready on `HELLO` | FACT: the loop already observes its first turn (`webview2/mod.rs:3262-3270`); emission is the delta; reuse `first_host_init_turn` generalised over the user-event type (`wkwebview/mod.rs:1039-1045`) |
-| A2 | Schema-2 admission | keld-core `validate_windows_boot_files` / `run_app_direct`; in: descriptor; out: `ValidatedInitialWindow::None` | unverified descriptor admitted; renderer boot changed | AC3 | → A12, A17, A18 | `schema 2` plus `renderer` admitted | FACT: refused at `:1447` and inline at `:3431-3438`; today `main` matches on `parsed.initial` and admits only its `Renderer` arm (`:1450-1451`). The `main` test `app_session/tests/windows_profile_and_boot.rs::windows_boot_files_refuse_a_schema_2_facade_boot` (1372fbd3) pins the `KELD-CORE-034` refusal that D2 removes; T1 replaces it with AC3's admission test as a recorded contract change, not a weakened test |
+| A2 | Schema-2 admission | keld-core `validate_windows_boot_files` / `run_app_direct`; in: descriptor; out: `ValidatedInitialWindow::None` | unverified descriptor admitted; renderer boot changed | AC3 | → A12, A17, A18 | `schema 2` plus `renderer` admitted | FACT: refused at `:1447` and inline at `:3431-3438`; today `main` matches on `parsed.initial` (`:1450-1451`); its `None` arm exists (`:1458`) but is unreachable because `:1447` refuses first. The `main` test `app_session/tests/windows_profile_and_boot.rs::windows_boot_files_refuse_a_schema_2_facade_boot` (1372fbd3) pins the `KELD-CORE-034` refusal that D2 removes; T1 replaces it with AC3's admission test as a recorded contract change, not a weakened test |
 | A3 | Multi-controller, one lease, one environment | keld-wv engine; in: `CreateWindow` N; out: N `View`s on the one `ICoreWebView2Environment` | per-window environment or lease | AC15 | ← W6 for profile kind | second `webview2*` directory | FACT: one environment per engine (`:2851-2855`) |
 | A4 | Close-veto custody | loop `CloseRequested` arm → registry; out: `WindowCloseRequested { view }` only | immediate drop (`close_requested_view`) | AC9 | → A8, A9, A20 | HWND changes on Cancel | FACT primitive; delta is policy |
 | A5 | Last window / quit / relaunch | registry T11 → facade policy → `Quit` → loop terminal → release barrier → profile release → scavenge | residual descendant or lease blocks relaunch | AC14 | ← A4, A9, A10, A21 | relaunch fails admission | FACT: terminal path exists (`:3317-3329`, `:3380-3397`) |
@@ -382,7 +392,7 @@ second WndProc is needed; Keld chooses *when* to drop.
 
 Promoted edges: A4→A8→A5; A9 and A10 and A21 are hidden couplings inside today's
 `CloseRequested`/loop-entry code and are each their own atom; A7→A4/A20 (ordering of
-buffered events during a build); A13→A1; A18→A12 (the preload captures the hint before
+buffered events during a build); A13→A1; A18→A12 (the launch define fixes the hint before
 any app code); W4→A19/A22.
 
 Ownership, process, memory, I/O, lifecycle, trust and failure facts:
@@ -390,7 +400,7 @@ Ownership, process, memory, I/O, lifecycle, trust and failure facts:
 - Handles: HWND, controller and webview stay in keld-wv's `View` (`:2337-2341`) on the
   UI thread; the registry maps `WindowId → WebviewId` (gh531 §4.a). No handle crosses kipc.
 - Process: one browser process per user-data folder (A3); its exit is the release
-  barrier's liveness fact (`ProfileReleaseWait`, `:2529-2760`).
+  barrier's liveness fact (`ProfileReleaseWait`, `:2529-2749`).
 - Queues: core → UI through `AppWindowCommand` and `spawn_app_wake_bridge` (`:3480-3513`);
   UI → core through the one FIFO `AppWindowEvent` sender. Core owns last-sent state and
   changed-only filtering (`wkwebview/managed_windows.rs:418-427`); keld-wv keeps no
@@ -400,7 +410,7 @@ Ownership, process, memory, I/O, lifecycle, trust and failure facts:
   for every persistent boot, as macOS marks it at store bind. The first build's
   `mark_profile_running` (`:3149-3162`) stays and is then a no-op.
 - Trust: the facade hint selects a barrier, never authority (gh531 `:828-829`);
-  the preloaded sidecar captures it before app code (A18); every pair and `close_seq`
+  the launch define fixes it before app code (A18); every pair and `close_seq`
   is validated by the shared registry.
 - Failure: a build failure is `WindowBuildFailed { stage }` → `ERR KELD-CORE-041`
   (gh531 O2), after the half-built HWND is gone (A8, D12); a loop invariant fault stays
@@ -413,7 +423,7 @@ Reuse evaluated (reuse before rewrite):
 | gh531 registry, router, codec, `WindowSource`, facade `BrowserWindow` | reused unchanged. Windows flips `native_supported` and feeds the same `AppWindowEvent`s. |
 | Tao `CloseRequested` veto primitive | reused (A4). **Rejected:** a second Win32 WndProc/subclass (duplicates Tao's; issue #1188 forbids it). |
 | Existing WebView2 engine: `create_controller`, `install_guarded_media_permissions`, `fit_controller`, `View` drop, `ProfileReleaseWait`, `PersistentStopTransition`, `BrowserExitWake` | reused; `create()` cannot run in-loop (needs `self.event_loop`, `:3522-3526`), so the build body is factored to take the `target` the `run_return` closure already receives (`:3263`); the in-loop nested pump is proven (A7). **Rejected:** a second engine; a per-window environment; asynchronous `ControllerReady` completion (unneeded after U1). |
-| PR macOS helpers `initial_renderer_pending` (`engine.rs:248-253`), `first_host_init_turn` (`wkwebview/mod.rs:1039-1045`), checked `next_view_id` and `checked_logical_bounds` (`managed_windows.rs:334-374`), borderless `SetFullScreen` (`:198-203`) | hoisted into one platform-neutral keld-wv module and reused; macOS keeps its behaviour, only import paths move. **Rejected:** Windows copies. |
+| macOS helpers `initial_renderer_pending` (`engine.rs:248-253`), `first_host_init_turn` (`wkwebview/mod.rs:1039-1045`), checked `next_view_id` and `checked_logical_bounds` (`managed_windows.rs:334-374`), borderless `SetFullScreen` (`:198-203`) | hoisted into one platform-neutral keld-wv module and reused; macOS keeps its behaviour, only import paths move. **Rejected:** Windows copies. |
 | Sidecar admission: Linux `admit_kipc_transport_sidecar` (`app_session.rs:3899-3915`, the strictest existing copy), macOS preload + `bunfig` refusal (`keld-host/src/main.rs:478-512`), Windows `open_relative_file_windows` (`:1731-1783`) | the Linux helper is generalised into the one owner (symlink refusal everywhere, plus the Windows reparse-point check, the `bunfig` refusal on every launch, the boot-mode define and `BUN_OPTIONS` removal that macOS runs today) and consumed by the Linux launcher, the guardian and `windows_primary_config` (A18). **Rejected:** a Windows exemption; a fourth copy in keld-core. |
 | Profile lease | reused per session. **Rejected:** per-window lease. |
 | Windows host test harness (`ProductFixture`, TCP `KELD_T1B_CONTROL`, `dev_stage_command`, `wait_for_host_window`, `run_product_cycle`, `process_tree_report`, `InstalledApp`) | reused; census/witness helpers added to `support/window.rs` (A15, A19, A23). **Rejected:** a shared three-OS harness (kel259 §4). |
@@ -430,14 +440,14 @@ stop record after Init. Compatibility fallback: renderer-declared boots keep tod
 
 | # | Delta | Plugs into | Evidence |
 |---|---|---|---|
-| D1 | Windows leaves the parked list; Linux stays. T1 builds the session with `window_native_support: Some(false)` (Subscribe accepted, replay empty, calls answer `042`, facade Ready published); T2 flips to `Some(true)`. No interim where the CLI/Host admit a facade app that dies `045` at connect | gh531 §1, §4.b, Platform notes | `app_session.rs:7613-7615`, `:7707-7708`; `window_router.rs:387-395`, `:475-477` |
+| D1 | Windows leaves the parked list; Linux stays. T1 builds facade sessions with `window_native_support: Some(false)`; renderer boots keep `None`, so the non-macOS `NavigationReady` gate (`app_session.rs:4628`) still signals their Ready (Subscribe accepted, replay empty, calls answer `042`, facade Ready published); T2 flips to `Some(true)`. No interim where the CLI/Host admit a facade app that dies `045` at connect | gh531 §1, §4.b, Platform notes | `app_session.rs:7613-7615`, `:7707-7708`; `window_router.rs:387-395`, `:475-478` |
 | D2 | `validate_windows_boot_files` admits `InitialWindow::None`; `run_app_direct` drops its inline refusal; `ensure_initial_window_supported` becomes Linux-only; `create_app` is skipped for facade boots | §4.c | `:1340-1351`, `:1447`, `:3431-3438`; main `:3667` |
-| D3 | `AppReadyTrigger` and `AppWindowEvent::HostInitialized` cfg widened to Windows and re-exported from `webview2`; `run_app_until_quit` gains `ready_trigger` and a loop-entry callback (the macOS `startup` pair, `wkwebview/mod.rs:342-352`); `HostInitialized` emitted once at `first_loop_turn` (`:3262-3270`); `coordinate_window_events` takes `ready_trigger` and `init_watch` on Windows; `run_guarded`/`run_unprivileged` take the pre-Init terminal on Windows and `keld-host/src/main.rs` supplies it | §4.c; PR "No unbounded rendererless Init" | `engine.rs:149-153`, `:290-299`; `app_session.rs:4600-4643`, `:2603`, `:1888-1890`, `:1947-1949`; `main.rs:147-171` |
+| D3 | `AppReadyTrigger` and `AppWindowEvent::HostInitialized` cfg widened to Windows and re-exported from `webview2`; `run_app_until_quit` gains `ready_trigger` and a loop-entry callback (the macOS `startup` pair, `wkwebview/mod.rs:342-352`); `HostInitialized` emitted once at `first_loop_turn` (`:3262-3270`); `coordinate_window_events` takes `ready_trigger` and `init_watch` on Windows; `run_guarded`/`run_unprivileged` take the pre-Init terminal on Windows and `keld-host/src/main.rs` supplies it | §4.c; gh531 "No unbounded rendererless Init" (`:268`) | `engine.rs:149-153`, `:290-299`; `app_session.rs:4600-4643`, `:2603`, `:1888-1890`, `:1947-1949`; `main.rs:147-171` |
 | D4 | `CreateWindow { build, … }` builds in-loop: Tao window via `target` with `with_visible(false)`, D14 frame correction, controller via `create_controller` (A7), guard handlers before any navigation (`:3570-3574`), `SetBounds` + `SetIsVisible` (`:3592-3606`; learnings 2026-08-14), empty initial document, `mark_profile_running` (a no-op after A21), the D7 attempt-flag clear on a pid-binding completion, `set_visible(true)`; snapshot from the built window (`outer_position`, `outer_size`, `scale_factor`, `is_focused`, `is_maximized`, `fullscreen()`; tao `window.rs:213`, `:264`, `:508`, `:200`, `:613`, `:669`) through `checked_logical_bounds`; ids from `next_view_id`; answer `WindowBuilt` | §4.a snapshot source, O1 | main `:3527-3645` |
 | D5 | Close path by boot kind: in a facade session every `CloseRequested` whose HWND is a managed view sends `WindowCloseRequested { view }` and nothing else; an HWND in `releasing` or unknown is ignored with one diagnostic (gh531 C3/D3). Renderer sessions keep the legacy arm untouched | §4.c `:764-765`, §4.e P3/Q3/C3/D3, criterion 15 | main `:3355-3370`, `:2816-2834`; `wkwebview/mod.rs:555-573` |
 | D6 | `DestroyWindow { view }`: remove the `View` (controller `Close()`, then Tao's posted destroy), record its Tao `WindowId` in `releasing`, write `WindowReleased { view }` only on the matching `WindowEvent::Destroyed`, which arrives in a later loop turn (22–61 ms after the drop, A20); consume the entry once; while the entry is pending, events for that HWND (`Resized`, `Focused`, `CloseRequested`, `Moved`) are ignored (D5) and the registry stays in `Closing` (gh531 C-rows) | §4.e C9 "Released" | tao facts §4.0; U1/U6 bundle |
 | D7 | Facade boots: the loop never writes `LastWindowClosed`; `commit_profile_stop` and `release.arm()` run only on `Quit`/`Fatal`, after every managed `View` is dropped (controllers closed before the barrier starts, `:2628-2629`); `from_selected_environment` writes `Running` as its last step, once the environment is bound to the verified user-data folder and the exit observer is registered (A21), so the loop-entry `PersistentStopTransition` binds `Running` for every boot and a zero-window persistent `Quit` takes the existing Running→Stopping→Idle chain; `advance` is unchanged. Guard: the engine owns one `unresolved_controller_attempt` flag, so it survives from `create_app` into the loop. It is set immediately before every `CreateCoreWebView2Controller` call (`:1720-1723`) and cleared only when a completion binds a browser pid (D8a). A failure after the set, including the pre-launch `launched.map_err` return (`:1736`), leaves it set. While it is set, `finish_profile_release` returns `LifecycleUnproven` (`KELD-WV-009`) before consulting `exit_ready`, so neither a pid of 0 nor an earlier browser's latched exit can admit `Idle`. Cost: a failed controller attempt makes the session end typed and the successor quarantine and probe; that fails closed. With the flag clear and pid 0, no browser exists (U10 bundle) | §4.e T11; gh531 `:1465-1467` | main `:3250`, `:3317-3329`; arm doc `:2628-2629` |
-| D8 | Browser-generation binding (live path, U6 resolved). (a) At every in-loop controller completion read `BrowserProcessId`; if no handle is registered or the pid differs from `expected_browser_pid`, re-bind atomically: unregister the old `BrowserExitWake` (its `Drop` unregisters the wait) but keep its process handle as a retired generation (e) unless `WaitForSingleObject(handle, 0)` already reports it signaled, then register the new handle, so one registration exists at any time (`keld-wv/AGENTS.md:5`), set the pid, and reset `observed`, `post_exit_deadline` and `armed_at`, because `poll` latches a `BrowserProcessExited` of the *old* process before any `arm` (`:2655-2683`), `exit_ready` would otherwise be satisfied by stale state (`:2728-2732`) and `finish_profile_release` would accept it (`:3124-3127`). (b) The exit handler ignores any `BrowserProcessExited` whose pid ≠ the currently expected pid, with one diagnostic: in the 125–237 ms regime the OLD pid's event arrives during the NEW controller's creation pump (12/12). (c) Same-pid reuse (gap ≤ 86 ms, 16/16): the pid is unchanged, so no re-bind; the reused browser raises its one exit event only at the final close, and the latch stays valid because the registered handle is the same kernel object. (d) The environment stays referenced until `finish_profile_release` (dropping it suppresses the event, 0/10). (e) Retired-generation custody (review finding, rpipaliya 2026-10-29): the engine keeps every retired browser process handle (`OpenProcess` SYNCHRONIZE, already sanctioned) in an ordered list with no wait registration of its own. When the current generation's exit is latched, or a wake fires, the loop drops every retired handle that `WaitForSingleObject(handle, 0)` reports signaled. If any retired handle is still unsignaled, the single `BrowserExitWake` is re-registered on the oldest one, so one registration still exists at any time. A retired handle is discarded only once its process is proven exited; never on a pid change. The handle keeps the kernel object alive, so pid reuse cannot confuse it. Rule for "release observed": the latched event's pid equals the expected pid, no controller created after that pid's last close uses it, **and the retired list is empty**. While any retired generation is unsignaled, `exit_ready` is false. If the hang guard expires first, `finish_profile_release` fails `KELD-WV-009` and names the lingering retired pid; it never writes `Idle` | KEL-53 release barrier | main `:2389-2402`, `:2618-2627`, `:2655-2683`; U1/U6 bundle `U6_summary` |
+| D8 | Browser-generation binding (live path, U6 resolved). A *generation* is one browser process: its pid, its `OpenProcess` SYNCHRONIZE handle (`open_browser_process`, `:2373-2385`), and its own `BrowserProcessExited` record. (a) **Bind.** At every in-loop controller completion read `BrowserProcessId` and open its handle. If the handle cannot be opened, the generation stays unresolved: the D7 `unresolved_controller_attempt` flag is not cleared, so the session fails closed at release (`open_browser_process` returns `None` on failure today, `:2373-2385`). Re-bind when no handle is registered, when the pid differs from `expected_browser_pid`, or when the pid is equal but the registered handle is already signaled or `observed` is already latched (the OS may have reused the pid for a new browser). Re-bind: unregister the old `BrowserExitWake`; if `UnregisterWaitEx` fails the handle cannot be moved (today's `Drop` leaks it), so the session fails `KELD-WV-009` rather than lose custody. Then move the old generation, with any exit record it already has, to the retired list (e), register the new handle, so one registration exists at any time (`keld-wv/AGENTS.md:5`), set the pid, and reset `observed`, `post_exit_deadline` and `armed_at`, because `poll` latches a `BrowserProcessExited` of the *old* process before any `arm` (`:2656-2683`), `exit_ready` would otherwise be satisfied by stale state (`:2728-2732`) and `finish_profile_release` would accept it (`:3124-3127`). (b) **Route every exit event.** An event for the current pid latches as today. An event for a retired pid is recorded on that retired entry; in the 125–237 ms regime the old pid's event arrives during the new controller's creation pump (12/12), so this record is normally present. An abnormal exit kind on a retired entry fails `KELD-WV-009`, as it does for the current one. An event for a pid that is neither is ignored with one diagnostic. (c) **Same-pid reuse** (gap ≤ 86 ms, 16/16): the pid is unchanged and the registered handle is unsignaled with nothing latched, so no re-bind; the reused browser raises its one exit event only at the final close. INFERRED that it is the same browser: an unsignaled handle names a live process, and a live process's pid is not reissued; any other state re-binds under (a). (d) The environment stays referenced until `finish_profile_release` (dropping it suppresses the event, 0/10). (e) **Retired-generation custody** (review finding, rpipaliya 2026-10-29). The engine keeps every retired generation in an ordered list with no wait registration of its own. An entry is discharged only when **both** its handle is signaled **and** its own normal `BrowserProcessExited` is recorded, because the handle alone does not prove the user-data folder was released (`:211-217`; the post-exit grace exists for this gap). Each entry has its own post-exit grace, armed when its handle is first seen signaled; expiry fails `KELD-WV-009`. The list is swept at every re-bind and every wake. While the current generation is latched and the list is non-empty, the single `BrowserExitWake` is re-registered on the oldest entry whose handle is unsignaled, so one registration still exists. `poll`, `next_deadline` and `schedule` keep judging `armed_at` + hang guard while the list is non-empty; today they return early once `observed` is set (`:2648-2650`, `:2736-2738`). `exit_ready` checks, in order: the pid-0 short-circuit (gated by the D7 flag), then the list (non-empty → not ready), then `observed`. Rule for "release observed": the latched event's pid equals the expected pid, no controller created after that pid's last close uses it, and the retired list is empty. At hang-guard expiry with entries left, `finish_profile_release` fails `KELD-WV-009` through a new keld-wv-internal `ProfileReleaseFault` variant that carries the lingering pid (today's variants carry none, `:1503`); it never writes `Idle`. List size is bounded by the number of retired browser processes still alive or awaiting their event | KEL-53 release barrier | main `:2389-2402`, `:2618-2627`, `:2656-2683`; U1/U6 bundle `U6_summary` |
 | D9 | The v0 first-navigation deadline is armed only by the legacy `create_app` window (`initial_renderer_pending`); managed views live in their own map and never arm it | §4.c compat arm | main `:3240`, `:3293-3315`; `engine.rs:248-253` |
 | D10 | `Resized` re-fits managed controllers too (`fit_controller`); `Moved`/`Resized` → read state → forward `WindowBounds`/`WindowMaximized`/`WindowFullScreen` observations (no keld-wv filtering, B4); `SetMaximized` → `set_maximized`; `SetFullScreen` → borderless (the macOS choice, `managed_windows.rs:198-203`; Tao Windows also implements exclusive mode, `window.rs:699-705`, which Keld does not use) | §4.b ordering rules 2–3, P12–P15 | tao `event_loop.rs:1212`, `:1227`; `window.rs:601`, `:675` |
 | D11 | Focus fact derived from activation: on every Tao `Focused(_)` and every controller `GotFocus`/`LostFocus`, the loop reads `GetActiveWindow() == hwnd` on the UI thread and forwards `WindowFocus { focused }` from that value only; Tao's `Focused(false)` during `MoveFocus` therefore produces no fact, since the window stays active. The controller events (WebView2 COM handlers registered at build) and the `GetActiveWindow` query are new production `unsafe` (§8). Rejected alternatives in A14 | §4.b P13 | A14 facts |
@@ -468,7 +478,7 @@ pub fn run_app_until_quit(
     on_loop_entry: impl FnOnce(),
 ) -> Result<(), WvError>;
 
-// loop-private; no `last` map — Core owns last-sent state (PR managed_windows.rs:418-427)
+// loop-private; no `last` map — Core owns last-sent state (`managed_windows.rs:418-427`)
 struct ManagedViews {
     managed: BTreeMap<u32, View>,                       // registry-managed views
     releasing: BTreeMap<tao::window::WindowId, Releasing>, // awaiting WindowEvent::Destroyed
@@ -514,7 +524,7 @@ none. Channel 5 and its payloads are gh531's; Windows begins answering them.
   profile `Stopping` at the last close request, arms release there, writes
   `LastWindowClosed`; Ready comes from the first navigation (`NavigationReady →
   signal_ready`, main `app_session.rs:4622-4634`; outside macOS it signals Ready there
-  only while no window registry exists, which T2 must keep); Bun starts without the
+  only while no window registry exists, which T1 must keep); Bun starts without the
   transport preload; the stop record is snapshotted at loop entry.
 - After: for facade boots the keld-core registry owns identity and close policy; the
   loop executes `CreateWindow`/`DestroyWindow`/setters and reports facts; Ready comes
@@ -587,7 +597,7 @@ All real-Windows tests live in the existing `no_flag_windows` target
 (`crates/keld-host/tests/no_flag_windows.rs:18-58`; kel259 families) and use its TCP
 control protocol (`support/product_cycle.rs:28-50`), `dev_stage_command`
 (`no_flag_windows.rs:376-383`) and `ProductFixture` (a schema-2 variant writes
-`keld.config.ts` with `initialWindow: "none"` and no renderer, mirroring PR
+`keld.config.ts` with `initialWindow: "none"` and no renderer, mirroring 
 `facade_ready.rs:44-52`). The persistent-profile row uses `support/installed.rs`
 `InstalledApp` (KEL-254 T3 Part B fixture).
 
@@ -599,7 +609,7 @@ control protocol (`support/product_cycle.rs:28-50`), `dev_stage_command`
 | 2 | `facade_ready.rs::windows_schema_two_stalled_init_exits_through_the_binary_terminal_once` (`cfg(all(feature = "profile-test-hooks", debug_assertions))`): asserts terminal once, Bun gone, failed exit status, stage directory present | real-Windows, debug fixture |
 | 3 (renderer unchanged) | existing `lifecycle.rs`, `recovery.rs`, `dev_lifecycle.rs` unchanged, plus one assertion that no channel-5 frame is written | existing + one assertion |
 | 6, 7, 9, 10, 11, 12 | `facade_window.rs::windows_electron_browser_window_uses_native_host_and_vetoes_wm_close` (vocabulary `PUBLIC_CREATED`, `VETO`, `CLOSE_EVENT`, `VERIFY_VETO`, `VETO_VERIFIED`, `STALE`, `ALLOW`, `CLOSED` as `facade_window.rs:70-95`, `:632-736`; stimulus A16; census A15; witness A19; child-HWND set and lease share-denied probes) | real-Windows integration |
-| 5 NC1, 9 NC, 10 NC1/NC2, 7 NC, 16 NC | mutation runs: documented local patches (no `--preload`; immediate `View` drop on `CloseRequested`; `WindowReleased` at drop; legacy arm in a facade session under the D16 shortened hang guard; managed views kept in the legacy `views` map; `BuildFailed` before `Destroyed`); record the failing assertion and line in the PR evidence; patches are never committed | mutation control |
+| 5 NC1a/NC1b/NC4, 9 NC, 10 NC1/NC2, 7 NC, 16 NC | mutation runs: documented local patches (no define; no `--preload`; an inherited `BUN_OPTIONS` preload; immediate `View` drop on `CloseRequested`; `WindowReleased` at drop; legacy arm in a facade session under the D16 shortened hang guard; managed views kept in the legacy `views` map; `BuildFailed` before `Destroyed`); record the failing assertion and line in the PR evidence; patches are never committed | mutation control |
 | 13 | `facade_window.rs::windows_focus_fact_is_activation_without_transient_blur` (counts focus facts across the build's `MoveFocus`; activates a helper process window, then the host window) | real-Windows integration |
 | 15 | `facade_window.rs::windows_two_browser_windows_share_one_profile_lease_and_browser_process` (counts `webview2*` directories under the control dir) | real-Windows integration |
 | 16 | `facade_window.rs::windows_controller_failure_after_minting_releases_the_hwnd` (needs U7) | real-Windows, debug fixture |
@@ -707,8 +717,8 @@ confirms the A21 reading of KEL-135 recorded under U10.
   (the host's own deletion is macOS/Linux, `keld-host/src/main.rs:111-134`); the
   `keld dev` private cleanup process deletes it after the attempt Job empties
   (`run_windows_dev_stage_cleanup`, `main.rs:279-292`; `WindowsDevStageCleanup::prepare`,
-  `app_session.rs:1528-1562`), so the macOS "unproved stage not deleted" rule (PR
-  gh531 `:279-282`) and `KELD_HOST_OWNS_FACADE_STAGE_CLEANUP` (`app_session.rs:2403-2414`)
+  `app_session.rs:1526-1562`), so the macOS "unproved stage not deleted" rule
+  (gh531 `:279-282`) and `KELD_HOST_OWNS_FACADE_STAGE_CLEANUP` (`app_session.rs:2403-2414`)
   do not transfer. Stage disposition is asserted only in the `keld dev` lane (AC19).
   *Remaining probe:* AC19's terminal variant (does the Job empty promptly after the
   pre-Init terminal, with the blocked main thread's COM/profile owners never dropped?).
@@ -758,6 +768,12 @@ confirms the A21 reading of KEL-135 recorded under U10.
   `keld-host/tests/no_flag/windows/profiles/sessions.rs` (`:43-56`, `:394`),
   which `sessions.rs` and `handover.rs` use today. AC18 reuses it; keld-wv needs no new
   reader.
+- **U13 (D8e, AC21 NC4) Retired-generation device hook.** No such hook exists on `main`;
+  the only Windows release hook is `KELD_TEST_WINDOWS_BARRIER_GRACE_EXPIRY`. *Decision
+  needed:* owner approval for a `profile-test-hooks` child-only environment variable
+  (same class as U7) that hands one test-owned process handle to the D8 re-bind site as
+  a retired generation, with the keld-core scrub D16 uses. Until approved, AC21 NC4 is
+  decided by the unit test alone.
 - **U12 (A19, D14) Frame-delta exactness.** Tao's `set_inner_size` derives the outer
   rect with `AdjustWindowRectExForDpi` (tao `util.rs:91-101`, `:143-150`) while
   `outer_size()` reads `GetWindowRect` (`window.rs:264-270`); whether the two agree on
