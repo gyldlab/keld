@@ -6,6 +6,9 @@ use keld_ipc::window::{WindowGeneration, WindowId, WindowRef};
 use sha2::{Digest as _, Sha256};
 use std::sync::mpsc;
 
+#[path = "publication_tests.rs"]
+mod publication;
+
 fn with_manifest(
     source: &str,
 ) -> (

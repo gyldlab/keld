@@ -9,11 +9,18 @@ use crate::support::process::{await_process_gone, process_group};
 use crate::support::product::ProductFixture;
 use std::fs;
 use std::io::{BufReader, Write as _};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::time::Instant;
+
+#[path = "dialog_file_selection.rs"]
+mod selection;
+
+#[cfg(debug_assertions)]
+#[path = "dialog_startup.rs"]
+mod startup;
 
 const FILE_ROLE: &str = r#"
 import { createConnection } from "node:net";
@@ -26,7 +33,7 @@ await new Promise<void>((resolve, reject) => {
   control.once("error", reject);
 });
 function report(s: string): void { control.write(`${s}\n`); }
-report(`ROLE_BOUND ${process.pid}`);
+report(`ROLE_BOUND ${process.pid} ${process.ppid}`);
 app.on("window-all-closed", () => {});
 await app.whenReady();
 const win = new BrowserWindow({ width: 640, height: 480 });
@@ -134,38 +141,132 @@ fn visible_windows(pid: u32) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
+struct FilePaths {
+    _accessible_directory: Option<tempfile::TempDir>,
+    directory: PathBuf,
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+impl FilePaths {
+    fn new(fixture: &ProductFixture, directory_hint: bool) -> Self {
+        // The system file-panel process must enumerate this owned directory.
+        // Retain TempDir until the Host exits; never modify a shared directory.
+        let accessible_directory =
+            std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT").map(|parent| {
+                tempfile::Builder::new()
+                    .prefix("keld-gh478-visible-open-")
+                    .tempdir_in(parent)
+                    .expect("create owned OS-visible native file selection fixture")
+            });
+        let directory = accessible_directory.as_ref().map_or_else(
+            || fixture.root.path().join("keld-gh478-visible-open-files"),
+            |dir| dir.path().to_path_buf(),
+        );
+        if accessible_directory.is_none() {
+            fs::create_dir(&directory).expect("fixture-owned visible directory");
+        }
+        let source = directory.join("gh478-fixture.drawio");
+        fs::write(
+            &source,
+            b"<mxfile><diagram>GH478 positive</diagram></mxfile>",
+        )
+        .expect("one fixture-local real Open source");
+        let destination = if directory_hint {
+            directory.join("gh478-chosen.drawio")
+        } else {
+            fixture.root.path().join("gh478-chosen.drawio")
+        };
+        assert!(!destination.exists(), "Save is path-only, not a write");
+        Self {
+            _accessible_directory: accessible_directory,
+            directory,
+            source,
+            destination,
+        }
+    }
+}
+
+fn compile_ax(fixture: &ProductFixture, action: &str) -> PathBuf {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("tests/fixtures/macos_dialog_ax_{action}.swift"));
+    let executable = fixture.root.path().join(format!("ax-{action}"));
+    let output = Command::new("/usr/bin/swiftc")
+        .arg(source)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("compile independent exact-Host native observer");
+    assert!(
+        output.status.success(),
+        "{action} compilation failed: {output:?}"
+    );
+    executable
+}
+
+fn run_ax(command: &mut Command) -> Output {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch exact-Host native observer");
+    wait_child_output(child, EVENT_DEADLINE)
+}
+
+struct NativeDialog {
+    host_pid: u32,
+    baseline: Vec<serde_json::Value>,
+    reader: BufReader<UnixStream>,
+    writer: UnixStream,
+    button_helper: PathBuf,
+}
+
+impl NativeDialog {
+    fn submit(&mut self, operation: &str) {
+        writeln!(self.writer, "{operation}").expect("one authenticated user-directed request");
+        assert_eq!(read_control_line(&mut self.reader), "SUBMITTED");
+    }
+
+    fn await_detached(&self, operation: &str) {
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        while visible_windows(self.host_pid) != self.baseline {
+            assert!(
+                Instant::now() < deadline,
+                "{operation} left a native sheet behind"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn press(&mut self, operation: &str, expected: &str, button: &str) {
+        self.submit(operation);
+        let activation = run_ax(
+            Command::new(&self.button_helper)
+                .arg(self.host_pid.to_string())
+                .arg(button),
+        );
+        assert!(
+            activation.status.success(),
+            "{operation} native click failed: {activation:?}"
+        );
+        let result = read_control_line(&mut self.reader);
+        assert_eq!(result, expected, "{operation}: {result}");
+        self.await_detached(operation);
+    }
+}
+
+fn run_real_host_files(
+    include_positive_selection: bool,
+    cancel_cycles: usize,
+    directory_hint: bool,
+) {
     assert!(
         cancel_cycles >= 2,
         "native repeated proof must cover Open and Save"
     );
     let fixture = ProductFixture::new("gh478-real-open-save");
-    // The macOS file-panel XPC process must be able to enumerate the fixture.
-    // Test an owned, visible temporary directory outside the per-process
-    // private Darwin temp root when the harness explicitly supplies one.
-    // TempDir owns and removes only this exact newly created test directory.
-    let accessible_source_directory =
-        std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT").map(|parent| {
-            tempfile::Builder::new()
-                .prefix("keld-gh478-visible-open-")
-                .tempdir_in(parent)
-                .expect("create owned OS-visible native file selection fixture")
-        });
-    let visible_directory = accessible_source_directory
-        .as_ref()
-        .map(|dir| dir.path().to_path_buf())
-        .unwrap_or_else(|| fixture.root.path().join("gh478-visible-files"));
-    if accessible_source_directory.is_none() {
-        fs::create_dir(&visible_directory).expect("fixture-owned visible directory");
-    }
-    let positive_source = visible_directory.join("gh478-fixture.drawio");
-    fs::write(
-        &positive_source,
-        b"<mxfile><diagram>GH478 positive</diagram></mxfile>",
-    )
-    .expect("one fixture-local real Open source");
-    let save_destination = fixture.root.path().join("gh478-chosen.drawio");
-    assert!(!save_destination.exists(), "Save is path-only, not a write");
+    let paths = FilePaths::new(&fixture, directory_hint);
     let staged = stage(&fixture);
     let socket = fixture.root.path().join("native-file.sock");
     let listener = UnixListener::bind(&socket).expect("owned single control listener");
@@ -174,8 +275,22 @@ fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
         .process_group(0)
         .current_dir(staged.root())
         .env("KELD_T1B_CONTROL", &socket)
-        .env("KELD_T1B_SAVE_DEST", &save_destination)
-        .env("KELD_T1B_OPEN_PATH", &positive_source)
+        .env(
+            "KELD_T1B_SAVE_DEST",
+            if directory_hint {
+                &paths.directory
+            } else {
+                &paths.destination
+            },
+        )
+        .env(
+            "KELD_T1B_OPEN_PATH",
+            if directory_hint {
+                &paths.directory
+            } else {
+                &paths.source
+            },
+        )
         .env("KELD_DEV_LEASE", "stdin-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -191,7 +306,6 @@ fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
         .set_read_timeout(Some(EVENT_DEADLINE))
         .expect("bounded socket read");
     let mut reader = BufReader::new(connection.try_clone().expect("reader clone"));
-    let mut writer = connection;
     let bound = read_control_line(&mut reader);
     assert!(bound.starts_with("ROLE_BOUND "), "{bound}");
     let bun_pid = parse_pid(bound.split_whitespace().nth(1), &bound);
@@ -203,19 +317,16 @@ fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
     );
     let baseline = visible_windows(host_pid);
     assert_eq!(baseline.len(), 1, "one real Host-owned parent");
-    let ax =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/macos_dialog_ax_press.swift");
-    let clicker = fixture.root.path().join("ax-press");
-    let compiled = Command::new("/usr/bin/swiftc")
-        .arg(&ax)
-        .arg("-o")
-        .arg(&clicker)
-        .output()
-        .expect("build independent OS UI clicker");
-    assert!(compiled.status.success(), "AX compile failed: {compiled:?}");
+    let mut dialog = NativeDialog {
+        host_pid,
+        baseline,
+        reader,
+        writer: connection,
+        button_helper: compile_ax(&fixture, "press"),
+    };
     for index in 0..=cancel_cycles {
-        // Run exactly cancel_cycles real native file panels, followed by one
-        // healthy Message on the *same* authenticated Bun role/WorkerLink.
+        // Exactly cancel_cycles physical panels, then a healthy Message on the
+        // same authenticated Bun role and WorkerLink.
         let (operation, expected, button) = if index == cancel_cycles {
             ("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save")
         } else if index % 2 == 0 {
@@ -223,144 +334,18 @@ fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
         } else {
             ("SAVE_CANCEL", "SAVE_RESULT true true", "Cancel")
         };
-        writeln!(writer, "{operation}").expect("one authenticated user-directed request");
-        assert_eq!(read_control_line(&mut reader), "SUBMITTED");
-        let clicked = Command::new(&clicker)
-            .arg(host_pid.to_string())
-            .arg(button)
-            .output()
-            .expect("real AppKit accessible button");
-        assert!(
-            clicked.status.success(),
-            "{operation} native click failed: {clicked:?}"
-        );
-        let result = read_control_line(&mut reader);
-        assert_eq!(result, expected, "{operation}: {result}");
-        let deadline = Instant::now() + EVENT_DEADLINE;
-        while visible_windows(host_pid) != baseline {
-            assert!(
-                Instant::now() < deadline,
-                "{operation} left a native sheet behind"
-            );
-            std::thread::yield_now();
-        }
+        dialog.press(operation, expected, button);
     }
     if include_positive_selection {
-        let selection_source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/macos_dialog_ax_select_file.swift");
-        let selection_helper = fixture.root.path().join("ax-select-file");
-        let built = Command::new("/usr/bin/swiftc")
-            .arg(&selection_source)
-            .arg("-o")
-            .arg(&selection_helper)
-            .output()
-            .expect("compile exact-Host native file selector");
-        assert!(
-            built.status.success(),
-            "native selector compilation failed: {built:?}"
-        );
-        for (operation, prefix, button, selected) in [
-            (
-                "SAVE_SELECT",
-                "SAVE_SELECTED false ",
-                "Save",
-                &save_destination,
-            ),
-            (
-                "OPEN_SELECT",
-                "OPEN_SELECTED false ",
-                "Open",
-                &positive_source,
-            ),
-        ] {
-            eprintln!("GH478_POSITIVE_PHASE {operation} begin");
-            writeln!(writer, "{operation}").expect("genuine file selection requested");
-            assert_eq!(read_control_line(&mut reader), "SUBMITTED");
-            eprintln!("GH478_POSITIVE_PHASE {operation} submitted");
-            if operation == "OPEN_SELECT"
-                && let (Ok(helper), Ok(capture_path)) = (
-                    std::env::var("KELD_TEST_WINDOW_ID_HELPER"),
-                    std::env::var("KELD_TEST_CAPTURE_PATH"),
-                )
-            {
-                let sheet = Command::new(&clicker)
-                    .arg(host_pid.to_string())
-                    .arg("Cancel")
-                    .arg("--observe")
-                    .output()
-                    .expect("wait for actual Open sheet before diagnostic capture");
-                assert!(sheet.status.success(), "Open sheet missing: {sheet:?}");
-                let ids = Command::new(helper)
-                    .arg(host_pid.to_string())
-                    .output()
-                    .expect("query only this Host's current native window ID");
-                let stdout = String::from_utf8(ids.stdout).expect("window ID output UTF-8");
-                let number = stdout
-                    .split_whitespace()
-                    .find_map(|token| token.strip_prefix("WINDOW_ID="));
-                if let Some(number) = number {
-                    let result = Command::new("/usr/sbin/screencapture")
-                        .args(["-x", "-o", "-l", number, &capture_path])
-                        .output()
-                        .expect("capture exact Host-owned window for native acceptance review");
-                    eprintln!(
-                        "GH478_SCREENSHOT_EXIT={} PATH={capture_path}",
-                        result.status
-                    );
-                }
-            }
-            let click = if operation == "OPEN_SELECT" {
-                Command::new(&selection_helper)
-                    .arg(host_pid.to_string())
-                    .arg(selected)
-                    .output()
-                    .expect("real OS file selection through exact Host")
-            } else {
-                Command::new(&clicker)
-                    .arg(host_pid.to_string())
-                    .arg(button)
-                    .output()
-                    .expect("actual native file chooser button")
-            };
-            assert!(
-                click.status.success(),
-                "{operation} UI selection unavailable: {click:?}"
-            );
-            eprintln!("GH478_POSITIVE_PHASE {operation} button pressed");
-            let result = read_control_line(&mut reader);
-            eprintln!("GH478_POSITIVE_PHASE {operation} result {result}");
-            assert!(result.starts_with(prefix), "native result: {result}");
-            let value = Path::new(result.trim_start_matches(prefix));
-            assert_eq!(
-                value.file_name(),
-                selected.file_name(),
-                "real OS filename expected"
-            );
-            assert_eq!(
-                value.parent().and_then(|p| p.canonicalize().ok()),
-                selected.parent().and_then(|p| p.canonicalize().ok()),
-                "real path must remain in dedicated test fixture, not a guessed directory",
-            );
-            assert!(
-                !save_destination.exists(),
-                "native Save only returned a path; no file created"
-            );
-            let deadline = Instant::now() + EVENT_DEADLINE;
-            while visible_windows(host_pid) != baseline {
-                assert!(
-                    Instant::now() < deadline,
-                    "native chooser did not physically detach"
-                );
-                std::thread::yield_now();
-            }
-        }
+        selection::selected_paths(&mut dialog, &fixture, &paths, directory_hint);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
     }
-    writer
+    dialog
+        .writer
         .write_all(b"FINISH\n")
         .expect("quit real native Host");
-    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
-    drop(reader);
-    drop(writer);
+    assert_eq!(read_control_line(&mut dialog.reader), "QUIT_REPLY");
+    drop(dialog);
     let output = wait_child_output(cleanup.release(), EVENT_DEADLINE);
     assert!(
         output.status.success(),
@@ -371,15 +356,23 @@ fn run_real_host_files(include_positive_selection: bool, cancel_cycles: usize) {
 
 #[test]
 fn real_host_open_save_cancel_and_next_message_use_one_authenticated_dialog_link() {
-    run_real_host_files(false, 2);
+    run_real_host_files(false, 2, false);
 }
 
 #[test]
 fn real_host_open_and_save_positive_paths_are_native_and_save_does_not_write() {
-    run_real_host_files(true, 2);
+    run_real_host_files(true, 2, false);
+}
+
+#[test]
+fn real_host_directory_default_paths_keep_folder_and_save_filename_distinct() {
+    // The independent AX helper must find the fixture's exact directory and
+    // file row. Save additionally checks its initial name before editing it;
+    // neither helper navigates to repair an incorrectly chosen directory.
+    run_real_host_files(true, 2, true);
 }
 
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
-    run_real_host_files(false, 257);
+    run_real_host_files(false, 257, false);
 }

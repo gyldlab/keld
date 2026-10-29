@@ -73,19 +73,30 @@ impl std::fmt::Debug for MacFilePanel {
 fn default_hint(panel: &NSSavePanel, hint: Option<&String>, is_save: bool) {
     let Some(hint) = hint else { return };
     let path = Path::new(hint);
-    if path.is_absolute()
-        && let Some(parent) = path.parent()
-    {
+    // Match the pinned Electron distinction between a directory hint and a
+    // filename hint. This metadata lookup configures UI only; it opens no
+    // selected file and grants no filesystem authority.
+    let is_directory = path.is_absolute() && path.is_dir();
+    let directory = if is_directory {
+        Some(path)
+    } else if path.is_absolute() {
+        path.parent()
+    } else {
+        None
+    };
+    if let Some(directory) = directory {
         let url = NSURL::fileURLWithPath_isDirectory(
-            &NSString::from_str(&parent.to_string_lossy()),
+            &NSString::from_str(&directory.to_string_lossy()),
             true,
         );
         panel.setDirectoryURL(Some(&url));
     }
-    // `nameFieldStringValue` is a Save-panel destination field, not an Open
-    // file-browser selection. Setting it on NSOpenPanel can change the native
-    // column view without selecting an actual file.
-    if is_save && let Some(file) = path.file_name().and_then(|name| name.to_str()) {
+    // A directory is never a proposed Save filename. Open filename-field
+    // parity is separate from choosing the correct initial directory.
+    if is_save
+        && !is_directory
+        && let Some(file) = path.file_name().and_then(|name| name.to_str())
+    {
         panel.setNameFieldStringValue(&NSString::from_str(file));
     }
 }

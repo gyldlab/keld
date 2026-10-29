@@ -200,7 +200,7 @@ impl PrimaryRouterHandle {
         let Some((owner, result)) = terminal else {
             return Ok(());
         };
-        let _transition = self.shutdown.transition_guard();
+        let transition = self.shutdown.transition_guard();
         let mut current = self
             .current
             .lock()
@@ -229,9 +229,33 @@ impl PrimaryRouterHandle {
         } else {
             result
         };
-        match result {
+        let written = match result {
             Ok(value) => write_reply(active, owner.correlation, &value),
             Err(error) => write_error(active, owner.correlation, &error.call_error()),
+        };
+        let Err(primary) = written else {
+            return Ok(());
+        };
+        let cleanup = self.retire_current_generation_locked(
+            &mut current,
+            owner.attempt,
+            "dialog terminal write lost",
+            "dialog terminal write link close",
+        );
+        // The existing Guardian owns successor recovery. Release both locks
+        // before waiting for its acknowledgment, just as auth publication does.
+        drop(current);
+        drop(transition);
+        let recovery = self.link_failed(owner.attempt);
+        match (cleanup, recovery) {
+            (Ok(()), Ok(())) => {
+                eprintln!("{primary}");
+                Ok(())
+            }
+            (cleanup, recovery) => Err(super::super::append_app_cleanup(
+                primary,
+                [cleanup, recovery],
+            )),
         }
     }
 }

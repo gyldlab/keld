@@ -34,9 +34,27 @@ guard let application = NSRunningApplication(processIdentifier: pid_t(pid)) else
 }
 fputs("GH478_TARGET_ACTIVATION_POLICY=\(application.activationPolicy.rawValue) FRONTMOST_PID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)\n", stderr)
 
+// Apple scopes this timeout to every AX object in this observer process.
+// Each phase keeps its original six-second budget, including nested traversals.
+guard AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1) == .success else {
+    fputs("NATIVE_AX_TIMEOUT_CONFIGURATION_FAILED\n", stderr); exit(18)
+}
+var observationPhase = "setup"
+var observationDeadline = ProcessInfo.processInfo.systemUptime + 6
+func requireObservationTime() {
+    guard ProcessInfo.processInfo.systemUptime < observationDeadline else {
+        fputs("NATIVE_AX_OBSERVATION_DEADLINE phase=\(observationPhase)\n", stderr); exit(19)
+    }
+}
 func attr(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+    requireObservationTime()
     var result: CFTypeRef?
-    return AXUIElementCopyAttributeValue(element, key as CFString, &result) == .success ? result : nil
+    let status = AXUIElementCopyAttributeValue(element, key as CFString, &result)
+    requireObservationTime()
+    guard status != .cannotComplete else {
+        fputs("NATIVE_AX_MESSAGE_INCOMPLETE phase=\(observationPhase)\n", stderr); exit(20)
+    }
+    return status == .success ? result : nil
 }
 func findButton(_ element: AXUIElement, _ label: String, _ depth: Int = 0) -> AXUIElement? {
     if depth > 15 { return nil }
@@ -52,52 +70,14 @@ let process = AXUIElementCreateApplication(pid_t(pid))
 // A CLI-launched Host can remain in the background during tests. Request
 // foreground status for this exact Host, but send no global HID input. Every
 // action below uses its own AX tree and must verify the native outcome.
+requireObservationTime()
 let frontmostRequest = AXUIElementSetAttributeValue(
     process, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+requireObservationTime()
 fputs("GH478_TARGET_AX_FRONTMOST_REQUEST=\(frontmostRequest.rawValue)\n", stderr)
 if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid_t(pid) {
     // Focus can lag; file discovery and OS action stay PID-scoped regardless.
     fputs("GH478_TARGET_NOT_YET_FRONTMOST\n", stderr)
-}
-func dump(_ node: AXUIElement, _ depth: Int, _ remaining: inout Int) {
-    if depth > 10 || remaining == 0 { return }
-    remaining -= 1
-    let role = attr(node, kAXRoleAttribute as String) as? String ?? "-"
-    let title = attr(node, kAXTitleAttribute as String) as? String ?? ""
-    let value = attr(node, kAXValueAttribute as String) as? String ?? ""
-    let description = attr(node, kAXDescriptionAttribute as String) as? String ?? ""
-    fputs("AX_DEPTH=\(depth) ROLE=\(role) TITLE=\(String(title.prefix(60))) VALUE=\(String(value.prefix(110))) DESC=\(String(description.prefix(60)))\n", stderr)
-    if role == "AXBrowser" || role == "AXScrollArea" || role == "AXSheet" || role == "AXTextField" {
-        var names: CFArray?
-        if AXUIElementCopyAttributeNames(node, &names) == .success,
-           let names = names as? [String] {
-            fputs("AX_ATTRIBUTES role=\(role) keys=\(names.joined(separator: ","))\n", stderr)
-        }
-        var actions: CFArray?
-        if AXUIElementCopyActionNames(node, &actions) == .success,
-           let actions = actions as? [String] {
-            fputs("AX_ACTIONS role=\(role) actions=\(actions.joined(separator: ","))\n", stderr)
-        }
-    }
-    for child in attr(node, kAXChildrenAttribute as String) as? [AXUIElement] ?? [] {
-        dump(child, depth + 1, &remaining)
-    }
-}
-func inspectBrowserColumns(_ node: AXUIElement, _ depth: Int = 0) {
-    if depth > 14 { return }
-    if attr(node, kAXRoleAttribute as String) as? String == "AXBrowser" {
-        for key in ["AXColumns", "AXVisibleColumns"] {
-            let columns = attr(node, key) as? [AXUIElement] ?? []
-            fputs("GH478_BROWSER \(key) count=\(columns.count)\n", stderr)
-            for column in columns {
-                var remaining = 110
-                dump(column, 0, &remaining)
-            }
-        }
-    }
-    for child in attr(node, kAXChildrenAttribute as String) as? [AXUIElement] ?? [] {
-        inspectBrowserColumns(child, depth + 1)
-    }
 }
 func usableOpen() -> AXUIElement? {
     for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
@@ -133,9 +113,10 @@ func currentFolder(_ node: AXUIElement, _ depth: Int = 0) -> String? {
     return nil
 }
 let expectedFolder = (fileParent as NSString).lastPathComponent
-let fileDeadline = Date().addingTimeInterval(6)
+observationPhase = "file-row"
+observationDeadline = ProcessInfo.processInfo.systemUptime + 6
 var matches: [(AXUIElement, AXUIElement, Int)] = []
-while Date() < fileDeadline {
+while ProcessInfo.processInfo.systemUptime < observationDeadline {
     matches.removeAll()
     for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
         guard currentFolder(window) == expectedFolder, let nativeBrowser = browser(window) else {
@@ -159,40 +140,44 @@ while Date() < fileDeadline {
     if !matches.isEmpty { break }
     Thread.sleep(forTimeInterval: 0.05)
 }
+requireObservationTime()
 guard matches.count == 1 else {
     fputs("EXACT_NATIVE_FILE_ROW_COUNT=\(matches.count) EXPECTED=1\n", stderr)
     exit(14)
 }
 let (fileList, fileRow, column) = matches[0]
 var selectable = DarwinBoolean(false)
-guard AXUIElementIsAttributeSettable(fileList, kAXSelectedChildrenAttribute as CFString, &selectable) == .success,
-      selectable.boolValue else {
+requireObservationTime()
+let settableStatus = AXUIElementIsAttributeSettable(fileList, kAXSelectedChildrenAttribute as CFString, &selectable)
+requireObservationTime()
+guard settableStatus == .success, selectable.boolValue else {
     fputs("NATIVE_FILE_ROW_NOT_ACCESSIBILITY_SELECTABLE\n", stderr)
     exit(15)
 }
 // This acts on the genuine system file-picker row. The AX setter may report
 // a transient status while selection takes effect; only a newly enabled OS
 // Open button AND the Host's exact returned path count as success.
+requireObservationTime()
 let rowAction = AXUIElementSetAttributeValue(
     fileList, kAXSelectedChildrenAttribute as CFString, NSArray(array: [fileRow]))
+requireObservationTime()
 fputs("GH478_EXACT_FILE_ROW_SELECTION column=\(column) ax_status=\(rowAction.rawValue)\n", stderr)
-let selectionDeadline = Date().addingTimeInterval(6)
+observationPhase = "open-enable"
+observationDeadline = ProcessInfo.processInfo.systemUptime + 6
 var selected: AXUIElement?
-while Date() < selectionDeadline {
+while ProcessInfo.processInfo.systemUptime < observationDeadline {
     selected = usableOpen()
     if selected != nil { break }
     Thread.sleep(forTimeInterval: 0.05)
 }
 guard let button = selected else {
     fputs("NATIVE_OPEN_NOT_ENABLED_AFTER_EXACT_FILE_ROW_SELECTION\n", stderr)
-    var remaining = 140
-    for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
-        dump(window, 0, &remaining)
-        inspectBrowserColumns(window)
-    }
     exit(12)
 }
-guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
+requireObservationTime()
+let pressStatus = AXUIElementPerformAction(button, kAXPressAction as CFString)
+requireObservationTime()
+guard pressStatus == .success else {
     fputs("ACTUAL_OPEN_BUTTON_PRESS_FAILED\n", stderr)
     exit(13)
 }
