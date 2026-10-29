@@ -18,19 +18,13 @@ import {
   encodeVarint,
   withIoDeadline,
 } from "@keld/kipc";
+import {
+  freshWin32AppLinkPipe,
+  rejectionOf,
+} from "../../kipc/test/app-link-host.ts";
 import { fs } from "./index.ts";
 
 const TOKEN = new Uint8Array(32).fill(0x72);
-
-async function rejection(promise: Promise<unknown>): Promise<Error> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof Error) return error;
-    throw error;
-  }
-  throw new Error("operation unexpectedly succeeded");
-}
 
 test("local argument and Unicode failures always return rejected Promises", async () => {
   for (const call of [
@@ -44,7 +38,7 @@ test("local argument and Unicode failures always return rejected Promises", asyn
       promise = call();
     }).not.toThrow();
     expect(promise).toBeInstanceOf(Promise);
-    expect((await rejection(promise!)).message).toStartWith("KELD-IPC-003");
+    expect((await rejectionOf(promise!)).message).toStartWith("KELD-IPC-003");
   }
 });
 
@@ -80,9 +74,14 @@ interface Host {
 }
 
 async function start(scenario: string): Promise<Host> {
-  const root = mkdtempSync(join(tmpdir(), "kf"));
-  chmodSync(root, 0o700);
-  const path = join(root, "a.s");
+  // Unix: a socket in a fresh 0o700 temp dir. Windows (KEL-101): a fresh
+  // named pipe, so no directory is made or removed.
+  const root =
+    process.platform === "win32"
+      ? undefined
+      : mkdtempSync(join(tmpdir(), "kf"));
+  if (root !== undefined) chmodSync(root, 0o700);
+  const path = root === undefined ? freshWin32AppLinkPipe() : join(root, "a.s");
   const reader = new FrameReader();
   const drain = new DrainSignal();
   let connectionCount = 0;
@@ -223,14 +222,14 @@ async function start(scenario: string): Promise<Host> {
         if (role.exitCode === null) role.kill();
         await role.exited;
         listener.stop(true);
-        rmSync(root, { recursive: true, force: true });
+        if (root !== undefined) rmSync(root, { recursive: true, force: true });
       },
     };
   } catch (error) {
     if (role.exitCode === null) role.kill();
     await role.exited;
     listener.stop(true);
-    rmSync(root, { recursive: true, force: true });
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
     throw error;
   }
 }
@@ -260,246 +259,236 @@ function fitReadLength(): number {
   return size;
 }
 
-describe.skipIf(process.platform === "win32")(
-  "public FS on the existing singleton",
-  () => {
-    test("write snapshots call-entry bytes and lifecycle, Echo and FS share one connection", async () => {
-      const host = await start("snapshot");
-      try {
-        await host.send(
-          FrameKind.Call,
-          ECHO_CHANNEL,
-          77,
-          new Uint8Array([0, 0]),
-        );
-        let write: Awaited<ReturnType<Host["next"]>> | undefined;
-        let echo = false;
-        while (write === undefined || !echo) {
-          const frame = await host.next();
-          if (frame.header.channel === ECHO_CHANNEL) {
-            expect(frame.header.kind).toBe(FrameKind.Reply);
-            expect(frame.header.corr).toBe(77);
-            expect(frame.payload).toEqual(new Uint8Array([0, 0]));
-            echo = true;
-          } else {
-            expect(frame.header.channel).toBe(FS_CHANNEL);
-            expect(frame.payload).toEqual(
-              new Uint8Array([1, 2, 47, 112, 3, 0, 255, 65]),
-            );
-            write = frame;
-          }
-        }
-        await host.send(
-          FrameKind.Reply,
-          FS_CHANNEL,
-          write.header.corr,
-          new Uint8Array([1]),
-        );
-        const read = await host.next();
-        expect(read.header.channel).toBe(FS_CHANNEL);
-        expect(read.payload).toEqual(new Uint8Array([0, 2, 47, 112]));
-        await host.send(
-          FrameKind.Reply,
-          FS_CHANNEL,
-          read.header.corr,
-          new Uint8Array([0, 3, 0, 255, 65]),
-        );
-        await replyQuit(host);
-        expect(await host.finish()).toContain("read=[0,255,65]");
-        expect(host.connections()).toBe(1);
-      } finally {
-        await host.dispose();
-      }
-    });
-
-    test("wrong variants, unknown/truncated/trailing codec replies reject without retiring the link", async () => {
-      const host = await start("variants");
-      try {
-        for (const response of [
-          [1],
-          [0, 0, 0],
-          [0, 2, 5],
-          [127],
-          [0, 0],
-          [0, 3, 0, 255, 65],
-          [1],
-        ]) {
-          const call = await host.next();
-          expect(call.header.channel).toBe(FS_CHANNEL);
-          await host.send(
-            FrameKind.Reply,
-            FS_CHANNEL,
-            call.header.corr,
-            new Uint8Array(response),
+describe("public FS on the existing singleton", () => {
+  test("write snapshots call-entry bytes and lifecycle, Echo and FS share one connection", async () => {
+    const host = await start("snapshot");
+    try {
+      await host.send(FrameKind.Call, ECHO_CHANNEL, 77, new Uint8Array([0, 0]));
+      let write: Awaited<ReturnType<Host["next"]>> | undefined;
+      let echo = false;
+      while (write === undefined || !echo) {
+        const frame = await host.next();
+        if (frame.header.channel === ECHO_CHANNEL) {
+          expect(frame.header.kind).toBe(FrameKind.Reply);
+          expect(frame.header.corr).toBe(77);
+          expect(frame.payload).toEqual(new Uint8Array([0, 0]));
+          echo = true;
+        } else {
+          expect(frame.header.channel).toBe(FS_CHANNEL);
+          expect(frame.payload).toEqual(
+            new Uint8Array([1, 2, 47, 112, 3, 0, 255, 65]),
           );
+          write = frame;
         }
-        await replyQuit(host);
-        expect(await host.finish()).toContain("read=[0,255,65]");
-        expect(host.connections()).toBe(1);
-      } finally {
-        await host.dispose();
       }
-    });
+      await host.send(
+        FrameKind.Reply,
+        FS_CHANNEL,
+        write.header.corr,
+        new Uint8Array([1]),
+      );
+      const read = await host.next();
+      expect(read.header.channel).toBe(FS_CHANNEL);
+      expect(read.payload).toEqual(new Uint8Array([0, 2, 47, 112]));
+      await host.send(
+        FrameKind.Reply,
+        FS_CHANNEL,
+        read.header.corr,
+        new Uint8Array([0, 3, 0, 255, 65]),
+      );
+      await replyQuit(host);
+      expect(await host.finish()).toContain("read=[0,255,65]");
+      expect(host.connections()).toBe(1);
+    } finally {
+      await host.dispose();
+    }
+  });
 
-    test("native ERR preserves its original code, message and fix", async () => {
-      const host = await start("host-error");
+  test("wrong variants, unknown/truncated/trailing codec replies reject without retiring the link", async () => {
+    const host = await start("variants");
+    try {
+      for (const response of [
+        [1],
+        [0, 0, 0],
+        [0, 2, 5],
+        [127],
+        [0, 0],
+        [0, 3, 0, 255, 65],
+        [1],
+      ]) {
+        const call = await host.next();
+        expect(call.header.channel).toBe(FS_CHANNEL);
+        await host.send(
+          FrameKind.Reply,
+          FS_CHANNEL,
+          call.header.corr,
+          new Uint8Array(response),
+        );
+      }
+      await replyQuit(host);
+      expect(await host.finish()).toContain("read=[0,255,65]");
+      expect(host.connections()).toBe(1);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  test("native ERR preserves its original code, message and fix", async () => {
+    const host = await start("host-error");
+    try {
+      const call = await host.next();
+      const message =
+        "KELD-GUARD002: outside scope. Fix: choose an allowed path.";
+      const code = encodePostcardString("KELD-GUARD002");
+      const detail = encodePostcardString(message);
+      const payload = new Uint8Array(code.length + detail.length);
+      payload.set(code);
+      payload.set(detail, code.length);
+      await host.send(FrameKind.Err, FS_CHANNEL, call.header.corr, payload);
+      await replyQuit(host);
+      expect(await host.finish()).toContain(
+        `error=${JSON.stringify({ code: "KELD-GUARD002", message })}`,
+      );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  test("pending Quit after Ready rejects public calls before its reply and emits zero FS CALLs", async () => {
+    const host = await start("pending-quit");
+    try {
+      const quit = await host.next();
+      expect(quit.header.channel).toBe(LIFECYCLE_CHANNEL);
+      // Keep Quit's reply held. A removed admission guard must fail on the
+      // actual forbidden frame immediately, rather than waiting for a call deadline.
+      const unexpected = host.next().then(
+        (frame) => ({
+          outcome: "unexpected-frame",
+          kind: frame.header.kind,
+          channel: frame.header.channel,
+          corr: frame.header.corr,
+        }),
+        (error: unknown) => ({
+          outcome: "unexpected-close",
+          error: String(error),
+        }),
+      );
+      const rejectedBeforeReply = host
+        .reported("rejected-before-quit-reply")
+        .then(() => ({ outcome: "rejected-before-reply" }));
+      expect(await Promise.race([unexpected, rejectedBeforeReply])).toEqual({
+        outcome: "rejected-before-reply",
+      });
+      await host.send(
+        FrameKind.Reply,
+        LIFECYCLE_CHANNEL,
+        quit.header.corr,
+        new Uint8Array([0]),
+      );
+      await host.finish();
+      expect(
+        host.receivedChannels().filter((channel) => channel === FS_CHANNEL),
+      ).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  test("explicit private lifecycle close retains ordinary closed-error shape and emits no FS", async () => {
+    const host = await start("close");
+    try {
+      expect(await host.finish()).toContain("closed=true");
+      expect(
+        host.receivedChannels().filter((channel) => channel === FS_CHANNEL),
+      ).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  test("external link death retains the exact recorded error object", async () => {
+    const host = await start("dead");
+    try {
+      expect((await host.next()).header.channel).toBe(FS_CHANNEL);
+      host.close();
+      expect(await host.finish()).toContain('"code":"KELD-IPC-022"');
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  for (const scenario of [
+    "capacity-fit",
+    "capacity-over",
+    "capacity-occupied",
+  ]) {
+    test(`async read ${scenario} keeps the canonical ring boundary`, async () => {
+      const host = await start(scenario);
       try {
         const call = await host.next();
-        const message =
-          "KELD-GUARD002: outside scope. Fix: choose an allowed path.";
-        const code = encodePostcardString("KELD-GUARD002");
-        const detail = encodePostcardString(message);
-        const payload = new Uint8Array(code.length + detail.length);
-        payload.set(code);
-        payload.set(detail, code.length);
-        await host.send(FrameKind.Err, FS_CHANNEL, call.header.corr, payload);
-        await replyQuit(host);
-        expect(await host.finish()).toContain(
-          `error=${JSON.stringify({ code: "KELD-GUARD002", message })}`,
+        expect(call.header.kind).toBe(FrameKind.Call);
+        expect(call.header.channel).toBe(FS_CHANNEL);
+        const size = fitReadLength();
+        expect(HEADER_LEN + readResponse(size).length).toBe(DEFAULT_RING_BYTES);
+        const response = readResponse(
+          size + (scenario === "capacity-over" ? 1 : 0),
         );
-      } finally {
-        await host.dispose();
-      }
-    });
-
-    test("pending Quit after Ready rejects public calls before its reply and emits zero FS CALLs", async () => {
-      const host = await start("pending-quit");
-      try {
-        const quit = await host.next();
-        expect(quit.header.channel).toBe(LIFECYCLE_CHANNEL);
-        // Keep Quit's reply held. A removed admission guard must fail on the
-        // actual forbidden frame immediately, rather than waiting for a call deadline.
-        const unexpected = host.next().then(
-          (frame) => ({
-            outcome: "unexpected-frame",
-            kind: frame.header.kind,
-            channel: frame.header.channel,
-            corr: frame.header.corr,
-          }),
-          (error: unknown) => ({
-            outcome: "unexpected-close",
-            error: String(error),
-          }),
-        );
-        const rejectedBeforeReply = host
-          .reported("rejected-before-quit-reply")
-          .then(() => ({ outcome: "rejected-before-reply" }));
-        expect(await Promise.race([unexpected, rejectedBeforeReply])).toEqual({
-          outcome: "rejected-before-reply",
-        });
+        if (scenario === "capacity-occupied") {
+          await host.reported("parked");
+          // Retain a HEADER_LEN+1 event while main is blocked. The following
+          // exact-full-ring reply must overflow those occupied bytes.
+          await host.send(
+            FrameKind.Event,
+            LIFECYCLE_CHANNEL,
+            0,
+            new Uint8Array([1]),
+          );
+        }
         await host.send(
           FrameKind.Reply,
-          LIFECYCLE_CHANNEL,
-          quit.header.corr,
-          new Uint8Array([0]),
+          FS_CHANNEL,
+          call.header.corr,
+          response,
         );
-        await host.finish();
-        expect(
-          host.receivedChannels().filter((channel) => channel === FS_CHANNEL),
-        ).toEqual([]);
-      } finally {
-        await host.dispose();
-      }
-    });
-
-    test("explicit private lifecycle close retains ordinary closed-error shape and emits no FS", async () => {
-      const host = await start("close");
-      try {
-        expect(await host.finish()).toContain("closed=true");
-        expect(
-          host.receivedChannels().filter((channel) => channel === FS_CHANNEL),
-        ).toEqual([]);
-      } finally {
-        await host.dispose();
-      }
-    });
-
-    test("external link death retains the exact recorded error object", async () => {
-      const host = await start("dead");
-      try {
-        expect((await host.next()).header.channel).toBe(FS_CHANNEL);
-        host.close();
-        expect(await host.finish()).toContain('"code":"KELD-IPC-022"');
-      } finally {
-        await host.dispose();
-      }
-    });
-
-    for (const scenario of [
-      "capacity-fit",
-      "capacity-over",
-      "capacity-occupied",
-    ]) {
-      test(`async read ${scenario} keeps the canonical ring boundary`, async () => {
-        const host = await start(scenario);
-        try {
-          const call = await host.next();
-          expect(call.header.kind).toBe(FrameKind.Call);
-          expect(call.header.channel).toBe(FS_CHANNEL);
-          const size = fitReadLength();
-          expect(HEADER_LEN + readResponse(size).length).toBe(
-            DEFAULT_RING_BYTES,
-          );
-          const response = readResponse(
-            size + (scenario === "capacity-over" ? 1 : 0),
-          );
+        if (scenario === "capacity-fit") {
+          await replyQuit(host);
+          expect(await host.finish()).toContain(`length=${size}`);
+        } else {
           if (scenario === "capacity-occupied") {
-            await host.reported("parked");
-            // Retain a HEADER_LEN+1 event while main is blocked. The following
-            // exact-full-ring reply must overflow those occupied bytes.
-            await host.send(
-              FrameKind.Event,
-              LIFECYCLE_CHANNEL,
-              0,
-              new Uint8Array([1]),
-            );
-          }
-          await host.send(
-            FrameKind.Reply,
-            FS_CHANNEL,
-            call.header.corr,
-            response,
-          );
-          if (scenario === "capacity-fit") {
-            await replyQuit(host);
-            expect(await host.finish()).toContain(`length=${size}`);
-          } else {
-            if (scenario === "capacity-occupied") {
-              // A canonical Ping is answered by the Worker only after processing
-              // preceding frames, without draining the parked realm's ring. If
-              // pressure is removed, its reply directly proves the frame fit.
-              const probeWrite = host
-                .send(FrameKind.Ping, 0, 95, new Uint8Array())
-                .then(
-                  () => undefined,
-                  (error: unknown) => error,
-                );
-              const processed = host.next().then(
-                (frame) => ({
-                  outcome: "worker-processed-without-overflow",
-                  kind: frame.header.kind,
-                  channel: frame.header.channel,
-                  corr: frame.header.corr,
-                }),
-                async () => {
-                  await host.awaitClose();
-                  return { outcome: "socket-closed" };
-                },
+            // A canonical Ping is answered by the Worker only after processing
+            // preceding frames, without draining the parked realm's ring. If
+            // pressure is removed, its reply directly proves the frame fit.
+            const probeWrite = host
+              .send(FrameKind.Ping, 0, 95, new Uint8Array())
+              .then(
+                () => undefined,
+                (error: unknown) => error,
               );
-              const outcome = await Promise.race([
-                processed,
-                host.awaitClose().then(() => ({ outcome: "socket-closed" })),
-              ]);
-              host.releasePark();
-              await probeWrite;
-              expect(outcome).toEqual({ outcome: "socket-closed" });
-            }
-            expect(await host.finish()).toContain('overflow="KELD-IPC-026"');
+            const processed = host.next().then(
+              (frame) => ({
+                outcome: "worker-processed-without-overflow",
+                kind: frame.header.kind,
+                channel: frame.header.channel,
+                corr: frame.header.corr,
+              }),
+              async () => {
+                await host.awaitClose();
+                return { outcome: "socket-closed" };
+              },
+            );
+            const outcome = await Promise.race([
+              processed,
+              host.awaitClose().then(() => ({ outcome: "socket-closed" })),
+            ]);
+            host.releasePark();
+            await probeWrite;
+            expect(outcome).toEqual({ outcome: "socket-closed" });
           }
-        } finally {
-          await host.dispose();
+          expect(await host.finish()).toContain('overflow="KELD-IPC-026"');
         }
-      }, 15_000);
-    }
-  },
-);
+      } finally {
+        await host.dispose();
+      }
+    }, 15_000);
+  }
+});
