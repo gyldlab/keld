@@ -1,7 +1,7 @@
 //! KEL-140 stock producer/public API proof. Native execution belongs to ROOT.
 //! No authority boundary change; no pending native-effect or cancellation claim.
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::wait_child_output;
+use crate::support::control::{wait_child_output, wait_child_output_observing};
 use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::native_window::{
     NativeWindowObserver, await_same_native_windows, native_windows,
@@ -37,6 +37,8 @@ mod preclick;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_phase.rs"]
+mod quit_phase;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -151,6 +153,36 @@ fn run_launch(fixture: &PublicFsProject, launch: usize, exercise: Exercise) -> L
     run_launch_with_descendant_quit(fixture, launch, exercise, None)
 }
 
+fn wait_public_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    observation_succeeded: bool,
+) -> Output {
+    public_host_wait(child, observer).public(observation_succeeded)
+}
+
+fn wait_retirement_host_with_phase(
+    child: std::process::Child,
+    observer: &Observation,
+    after_wait: impl FnOnce(),
+) -> Output {
+    public_host_wait(child, observer).retirement(after_wait)
+}
+
+// The unchanged process wait owns custody, the 20s deadline and live-only callbacks.
+fn public_host_wait(
+    child: std::process::Child,
+    observer: &Observation,
+) -> quit_phase::Wait<'_, impl FnOnce(&mut dyn FnMut()) -> Output, impl FnMut(&str)> {
+    quit_phase::Wait::new(
+        &observer.quit_progress,
+        move |observe: &mut dyn FnMut()| {
+            wait_child_output_observing(child, EVENT_DEADLINE, observe)
+        },
+        |line: &str| eprintln!("{line}"),
+    )
+}
+
 fn run_launch_with_descendant_quit(
     fixture: &PublicFsProject,
     launch: usize,
@@ -235,9 +267,10 @@ fn run_launch_with_descendant_quit(
             descendant.observe_cooperative_exit_and_guardian_reap();
         }
     }));
-    let output = wait_child_output(
+    let output = wait_public_host_with_phase(
         cleanup.cli.take().expect("capture host before unwind"),
-        EVENT_DEADLINE,
+        &observer,
+        observation_result.is_ok(),
     );
     eprintln!(
         "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
