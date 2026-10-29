@@ -153,12 +153,12 @@ def historical_audit_states(
 
 # Dated source review, not a native/security acceptance certificate. Advancing
 # this evidence requires a separately reviewed dated ledger/pin update.
-GUARDIAN_LEDGER = ROOT / "macos-guardian-2026-10-18-ea728589" / "source-delta-2026-10-28.csv"
+GUARDIAN_LEDGER = ROOT / "macos-guardian-2026-10-18-ea728589" / "source-delta-2026-10-29.csv"
 GUARDIAN_PINS = {
     "baseline949": "ea728589d0143df134c0f21fe5cf335240018d6a",
     "historical953": "46b91848db10f81156cebe0c6c34dec90082eaba",
     "current953": "8dd43926297479851c555596aafa012ee992c7e5",
-    "current955": "e0ababf1f07217a44199e7e3c0e69ceba6ea929e",
+    "current955": "066bd64f53e347a55dd98e3e76c1ecc01569ec86",
 }
 GUARDIAN_ROOTS = (
     "crates/keld-runtime/src/macos_guardian.rs",
@@ -206,7 +206,10 @@ def verify_guardian_current_source() -> list[str]:
                     return ["Guardian pinned inventory contains indirect/non-file entry"]
                 pinned[label][name.decode("utf-8")] = blob
         current = pinned["current955"]
-        if not current or set(by_path) != set(current) or pinned["current953"] != current:
+        # current953 remains a historical snapshot. A separately reviewed dated
+        # successor may differ; every ledger column still binds its own pin, and
+        # the live index/checkout below must exactly match current955.
+        if not current or set(by_path) != set(current):
             return ["Guardian current ledger path inventory differs from pinned source"]
         index = subprocess.check_output(
             ["git", "-C", str(REPO), "ls-files", "--stage", "-z", "--", *GUARDIAN_ROOTS],

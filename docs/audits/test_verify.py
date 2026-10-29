@@ -19,7 +19,7 @@ REPO = HERE.parent.parent
 MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
 UTF8 = "utf-8"
-GUARDIAN_SOURCE = "e0ababf1f07217a44199e7e3c0e69ceba6ea929e"
+GUARDIAN_SOURCE = "066bd64f53e347a55dd98e3e76c1ecc01569ec86"
 GUARDIAN_AUDIT = "macos-guardian-2026-10-18-ea728589"
 GUARDIAN_ROOTS = (
     "crates/keld-runtime/src/macos_guardian.rs",
@@ -182,7 +182,25 @@ class AuditVerifyTests(unittest.TestCase):
 
     @property
     def guardian_ledger(self) -> Path:
-        return self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-28.csv"
+        return self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-29.csv"
+
+    def test_guardian_reviewed_successor_can_differ_from_historical_953(self) -> None:
+        historical = subprocess.check_output(
+            ["git", "-C", str(self.repo), "ls-tree", "-r", "-z",
+             "8dd43926297479851c555596aafa012ee992c7e5", "--", *GUARDIAN_ROOTS]
+        )
+        successor = subprocess.check_output(
+            ["git", "-C", str(self.repo), "ls-tree", "-r", "-z",
+             GUARDIAN_SOURCE, "--", *GUARDIAN_ROOTS]
+        )
+        self.assertNotEqual(historical, successor, "fixture must exercise source divergence")
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_guardian_historical_ledger_cannot_replace_successor_evidence(self) -> None:
+        old_ledger = self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-28.csv"
+        self.guardian_ledger.write_bytes(old_ledger.read_bytes())
+        self.assert_rejected("Guardian pinned blob differs: current955")
 
     def mutate_guardian_row(self, field: str, value: str) -> None:
         with self.guardian_ledger.open(encoding=UTF8, newline="") as stream:
