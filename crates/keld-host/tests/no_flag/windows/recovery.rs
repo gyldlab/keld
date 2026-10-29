@@ -12,7 +12,9 @@ use crate::support::control::{
     read_control_line, read_control_line_or_host_failure, try_read_control_line,
 };
 use crate::support::product::ProductFixture;
-use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
+use crate::support::renderer::{
+    HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
+};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
     ui_end_kill_switch, wait_child, wait_for_host_window,
@@ -321,4 +323,112 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
         "pre-Ready child reached the control service"
     );
     assert!(!process_exists(host_pid), "failed host remained live");
+}
+
+/// GH-1182 R1: Bun exits after its authenticated HELLO while the initial window
+/// is live and its first navigation is held open ([`HeldRendererRequest`]), so
+/// the window cannot be `Ready` first. The pre-Ready recovery gate is still
+/// closed, so the host fails startup instead of provisioning a successor
+/// (architecture 06 §1).
+#[test]
+fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind post-HELLO control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking post-HELLO control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let held = HeldRendererRequest::bind();
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
+            held.port
+        ),
+    )
+    .expect("write held renderer");
+    let marker = fixture.project.join("post-hello-attempt");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage post-HELLO host");
+    let mut child = dev_stage_command(stage.root(), stage.host())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T3_PRE_READY_MARKER", &marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch post-HELLO host");
+    let host_pid = child.id();
+    let control = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    let mut reader = BufReader::new(control.try_clone().expect("clone post-HELLO control"));
+    let mut writer = control;
+    let hello = read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO HELLO");
+    assert!(hello.starts_with("HELLO "), "{hello}");
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO DESCENDANT"),
+        "DESCENDANT 0"
+    );
+    // The 15 s initial-navigation deadline (KELD-WV-005) is still armed. The
+    // exit below must reach the owner before it fires; if it ever lost that
+    // race, the stderr assertion fails with KELD-WV-005 rather than passing.
+    held.await_connection(&mut child);
+
+    writer
+        .write_all(b"EXIT_PRE_READY\n")
+        .expect("request post-HELLO exit");
+    writer.flush().expect("flush post-HELLO exit");
+    // The live window makes this a host-fatal Bun exit with a WebView2 UI end.
+    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
+    assert!(
+        !status.success(),
+        "post-HELLO pre-Ready exit became success"
+    );
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured post-HELLO stderr")
+        .read_to_string(&mut stderr)
+        .expect("read post-HELLO stderr");
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    // Corroboration only: this counts the window attempt; the held connection
+    // above is what proves the window was live and navigating.
+    assert!(stderr.contains("window=1]"), "{stderr}");
+    let attempts = fs::read_dir(&fixture.project)
+        .expect("list post-HELLO markers")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("post-hello-attempt.")
+        })
+        .count();
+    assert_eq!(
+        attempts, 1,
+        "a post-HELLO pre-Ready exit provisioned a successor"
+    );
+    assert!(
+        matches!(
+            control_listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service"
+    );
+    assert!(!process_exists(host_pid), "failed host remained live");
+    held.release();
 }
