@@ -3738,15 +3738,8 @@ fn run_direct_app_session(
         .guard_snapshot
         .map(|snapshot| snapshot.verified.verified_sha256());
 
-    // The owner's typed cause outranks the window loop's own failure, which a
-    // terminal owner causes by ending the loop: a recovery-gate refusal
-    // (KELD-CORE-033), or a generation lost before the initial Ready.
     let owner_result = match owner_result {
-        Err(primary)
-            if primary.code == "KELD-CORE-033"
-                || (primary.code == "KELD-CORE-037"
-                    && primary.phase == PRIMARY_PRE_READY_PHASE) =>
-        {
+        Err(primary) if owner_cause_outranks_window(&primary) => {
             return Err(append_app_cleanup(
                 primary,
                 [
@@ -5662,6 +5655,16 @@ fn restart_failed_bound_generation(
 /// The phase of the one typed startup failure for a primary generation lost
 /// before the initial window became `Ready` (GH-1182).
 const PRIMARY_PRE_READY_PHASE: &str = "primary generation before Ready";
+
+/// Whether the primary owner's terminal error outranks the window loop's own
+/// result. A terminal owner ends the loop, so its typed cause is the session's:
+/// a recovery-gate refusal (KELD-CORE-033), or a generation lost before the
+/// initial Ready.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_cause_outranks_window(owner: &HostAppError) -> bool {
+    owner.code == "KELD-CORE-033"
+        || (owner.code == "KELD-CORE-037" && owner.phase == PRIMARY_PRE_READY_PHASE)
+}
 
 /// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
 /// one does. Linux and Windows route it through the direct owner so startup
