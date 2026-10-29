@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { runLayout } from "../../kipc/test/bundle-layout.ts";
 
 const producer = resolve(
@@ -160,7 +160,10 @@ console.log(JSON.stringify({
     // Repack the actual produced API after deleting only its declared edge.
     const mutant = join(scratch, "mutant");
     mkdirSync(mutant);
-    const unpack = Bun.spawnSync(["tar", "-xzf", api, "-C", mutant], {
+    // GNU tar treats a Windows C:-qualified archive as a remote host; open
+    // the same produced file by its name relative to the owned scratch root.
+    const unpack = Bun.spawnSync(["tar", "-xzf", basename(api), "-C", mutant], {
+      cwd: scratch,
       stdout: "pipe",
       stderr: "pipe",
     });
