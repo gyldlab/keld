@@ -33,6 +33,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
         windows: None,
         recovery_armed: Arc::new(AtomicBool::new(false)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+        pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
         shutdown: SessionShutdownState::new(),
         fs: None,
         fs_worker_commands: None,

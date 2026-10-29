@@ -5964,6 +5964,10 @@ struct PrimaryRouterHandle {
     windows: Option<Arc<Mutex<window_router::WindowSession>>>,
     recovery_armed: Arc<AtomicBool>,
     last_revoked_attempt: Arc<AtomicU32>,
+    /// The attempt whose app link ended before the initial `Ready` (0: none).
+    /// Written and read only under the shutdown transition guard that also
+    /// publishes `Ready`, so one order holds (PR #1300 review).
+    pre_ready_link_failed: Arc<AtomicU32>,
     shutdown: SessionShutdownState,
     fs: Option<Weak<FsDispatchSession>>,
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
@@ -6080,6 +6084,12 @@ impl PrimaryRouterHandle {
         let arm_reply = {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
+                return Ok(());
+            }
+            // The reader observed this generation's link end first: publish no
+            // `Ready` and arm no recovery. The owner's `Revoked` then meets the
+            // closed gate and fails startup with its typed pre-Ready cause.
+            if self.pre_ready_link_failed.load(Ordering::Acquire) != 0 {
                 return Ok(());
             }
             if !self.mark_window_registry_ready_guarded()? {
@@ -7482,6 +7492,18 @@ impl PrimaryRouterHandle {
         self.guardian.fail_generation(attempt)
     }
 
+    /// Records that `attempt`'s app link ended before the initial `Ready`,
+    /// under the transition guard [`Self::signal_ready`] publishes `Ready`
+    /// under. A `Ready` already published keeps the after-Ready recovery
+    /// path; otherwise every later `Ready` and its recovery arm are refused,
+    /// whether or not the owner has handled the failure yet.
+    fn latch_pre_ready_link_failure(&self, attempt: u32) {
+        let _transition = self.shutdown.transition_guard();
+        if !self.window_ready.load(Ordering::Acquire) {
+            self.pre_ready_link_failed.store(attempt, Ordering::Release);
+        }
+    }
+
     fn is_current(&self, attempt: u32) -> bool {
         self.current.lock().map_or(true, |current| {
             current
@@ -7652,6 +7674,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(true)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -7762,6 +7785,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicU32::new(0)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -8188,6 +8212,12 @@ fn read_primary_frames(
                     && (PRE_READY_LINK_EOF_DEFERS_TO_OWNER
                         || handle.window_ready.load(Ordering::Acquire))
                 {
+                    // Before the owner hears of it: the owner answers
+                    // asynchronously, and a `Ready` published meanwhile would
+                    // arm recovery for this failed generation.
+                    if PRE_READY_LINK_EOF_DEFERS_TO_OWNER {
+                        handle.latch_pre_ready_link_failure(attempt);
+                    }
                     handle.fail_pending_echo_for_attempt(
                         attempt,
                         "application call ended because the app link disconnected",
@@ -8196,11 +8226,12 @@ fn read_primary_frames(
                     // is recoverable. Its Revoked update retires this writer
                     // before a successor is installed; only its terminal
                     // outcome may close the already-ready window. Before
-                    // Ready (Linux and Windows) the same update meets the
-                    // closed recovery gate, so startup fails with the gate's
-                    // typed cause whether this EOF or the process exit is
-                    // observed first; a late owner acknowledgment can only
-                    // add a cleanup detail (GH-1182).
+                    // Ready (Linux and Windows) the latch above refuses a
+                    // later Ready, so the same update meets the closed
+                    // recovery gate and startup fails with the gate's typed
+                    // cause whether this EOF or the process exit is observed
+                    // first; a late owner acknowledgment can only add a
+                    // cleanup detail (GH-1182).
                     handle.link_failed(attempt)?;
                     return Ok(());
                 }
