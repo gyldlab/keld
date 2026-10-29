@@ -416,6 +416,113 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     held.release();
 }
 
+/// GH-1182 (PR #1300 review): a live Bun ends only its app link after its
+/// authenticated HELLO, with the first navigation held so the window cannot be
+/// `Ready`, while its process and control link stay up. The owner's typed
+/// pre-Ready cause must be the host's primary error, not a cleanup detail of
+/// the `WebView2` loop's own failure, and no successor may be provisioned.
+#[test]
+fn windows_live_pre_ready_link_close_reports_owner_cause_first_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("bind pre-Ready link-close control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking pre-Ready link-close control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let generations = fixture.project.join("pre-ready-link-close-generation");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage pre-Ready link-close host");
+    let mut child = dev_stage_command(stage.root(), stage.host())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T4_GENERATION_MARKER", &generations)
+        .env("KELD_T4_JOB_DESCENDANT", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch pre-Ready link-close host");
+    let host_pid = child.id();
+    let control = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    let mut reader = BufReader::new(control.try_clone().expect("clone link-close control"));
+    let mut writer = control;
+    let (bun_pid, _link) = parse_hello(&read_control_line_or_host_failure(
+        &mut reader,
+        &mut child,
+        "pre-Ready link-close HELLO",
+    ));
+    // Opened while both are live, so each exit is observed on its exact process.
+    let bun = open_process_for_wait(bun_pid, false);
+    let descendant = open_process_for_wait(
+        parse_descendant_pid(&read_control_line_or_host_failure(
+            &mut reader,
+            &mut child,
+            "pre-Ready link-close DESCENDANT",
+        )),
+        false,
+    );
+    // The 15 s initial-navigation deadline (KELD-WV-005) is still armed; the
+    // first-line assertion below rejects a run that lost that race.
+    held.await_connection(&mut child);
+
+    writer
+        .write_all(b"CLOSE_PRE_READY_LINK\n")
+        .expect("request pre-Ready app-link close");
+    writer.flush().expect("flush pre-Ready app-link close");
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "pre-Ready link-close ack"),
+        "PRE_READY_LINK_CLOSED"
+    );
+    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
+    assert!(
+        !status.success(),
+        "a pre-Ready app-link close became success"
+    );
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured pre-Ready link-close stderr")
+        .read_to_string(&mut stderr)
+        .expect("read pre-Ready link-close stderr");
+    assert!(
+        stderr.trim_start().starts_with(
+            "KELD-CORE-037: no-flag host failed during primary generation before Ready"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert_process_signaled_within(&bun, "pre-Ready link-close Bun", PRODUCT_DEADLINE);
+    assert_process_signaled_within(
+        &descendant,
+        "pre-Ready link-close descendant",
+        PRODUCT_DEADLINE,
+    );
+    assert_eq!(
+        fs::read_to_string(&generations).expect("read pre-Ready link-close generation marker"),
+        "1\n",
+        "a pre-Ready app-link close provisioned a successor generation"
+    );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
+    assert!(!process_exists(host_pid), "failed host remained live");
+    held.release();
+}
+
 /// GH-1182 R2: the initial navigation never completes. Its renderer connection
 /// is held ([`HeldRendererRequest`]), so `NavigationCompleted` cannot fire and
 /// the window never becomes `Ready`. The `WebView2` initial-navigation deadline

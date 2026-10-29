@@ -216,6 +216,15 @@ if (process.env.KELD_T3_EXIT_AFTER_HELLO === "1") {
   const marker = process.env.KELD_T3_PRE_READY_MARKER;
   if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
   const command = await receiveCommand();
+  if (command === "CLOSE_PRE_READY_LINK") {
+    // GH-1182: end only the app link while this process and its control link
+    // stay live, so the host observes the link end before any Ready. The
+    // acknowledgment is this command's only control record: no LINK_EOF.
+    closeNotificationStarted = true;
+    appSocket.end();
+    await sendControl("PRE_READY_LINK_CLOSED");
+    await new Promise(() => {});
+  }
   if (command !== "EXIT_PRE_READY") {
     throw new Error(`KEL96 unexpected pre-Ready command ${command}`);
   }
