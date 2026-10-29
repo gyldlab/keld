@@ -501,3 +501,48 @@ fn failed_owner_shutdown_after_accepted_quit_wakes_ui_on_every_os() {
         );
     }
 }
+
+/// GH-1182: before Ready, a link EOF must not fail the session from the reader.
+/// The process owner decides the generation's outcome, so the pre-Ready gate in
+/// `apply_generation_update` reports the one typed startup failure whichever of
+/// the EOF or the process exit is observed first.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn pre_ready_link_eof_defers_to_the_owner_generation_outcome() {
+    let (handle, _g1_client, owner_rx) = initial_ready_router();
+    assert!(!handle.window_ready.load(Ordering::Acquire));
+    let (mut reader, peer) = primary_test_stream_pair();
+    drop(peer);
+    let caller = super::PrimaryCallerContext {
+        attempt: 1,
+        identity: PrimaryLinkIdentity::Fixture,
+        reader_stop: Arc::new(AtomicBool::new(false)),
+    };
+    let reader_handle = handle.clone();
+    let reader_thread =
+        thread::spawn(move || super::read_primary_frames(&mut reader, &reader_handle, &caller));
+    let TestPrimaryOwnerCommand::FailGeneration(attempt, reply) = owner_rx
+        .recv_timeout(APP_LINK_IO_DEADLINE)
+        .expect("pre-Ready EOF asks the owner to fail its generation")
+    else {
+        panic!("pre-Ready EOF sent the wrong owner command");
+    };
+    assert_eq!(attempt, 1);
+    reply.send(Ok(())).expect("owner acknowledges the failure");
+    reader_thread
+        .join()
+        .expect("pre-Ready reader joins")
+        .expect("pre-Ready EOF leaves the outcome to the owner");
+}
+
+/// GH-1182: the first reader starts before the router attaches, so a link
+/// failure in that window must still reach the Supervisor; only a request for a
+/// generation the attached router no longer holds is stale.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn direct_link_failure_restarts_before_router_attach_and_rejects_stale_attempts() {
+    assert!(super::direct_link_failure_restarts(None, 1));
+    let (handle, _g1_client, _owner_rx) = initial_ready_router();
+    assert!(super::direct_link_failure_restarts(Some(&handle), 1));
+    assert!(!super::direct_link_failure_restarts(Some(&handle), 2));
+}

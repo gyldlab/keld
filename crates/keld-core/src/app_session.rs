@@ -5448,15 +5448,7 @@ impl DirectPrimaryOwner {
                             let _ = recovery.deny();
                         }
                         Ok(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
-                            // The Supervisor is the sole process/restart owner.
-                            // Reject a reader's stale request after a natural
-                            // exit installed a successor; the worker also
-                            // matches the attempt before classifying a live
-                            // child as host-requested restart.
-                            if router
-                                .as_ref()
-                                .is_some_and(|router| router.is_current(attempt))
-                            {
+                            if direct_link_failure_restarts(router.as_ref(), attempt) {
                                 supervisor.restart_generation(attempt);
                             }
                             let _ = reply.send(Ok(()));
@@ -5597,6 +5589,17 @@ fn restart_failed_bound_generation(
         restart(attempt);
     }
     owned
+}
+
+/// Whether a reader's link failure for `attempt` asks the Supervisor (the sole
+/// process/restart owner) to restart that generation. A stale request after a
+/// natural exit installed a successor is rejected. Before the router attaches,
+/// the first reader is already running but no successor can exist (a `Bound`
+/// then is fatal), so the request stands; the worker also matches the attempt
+/// before classifying a live child as a host-requested restart (GH-1182).
+#[cfg(any(target_os = "linux", windows))]
+fn direct_link_failure_restarts(router: Option<&PrimaryRouterHandle>, attempt: u32) -> bool {
+    router.is_none_or(|router| router.is_current(attempt))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -8102,7 +8105,7 @@ fn read_primary_frames(
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
-                if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                if handle.shutdown.is_running() {
                     handle.fail_pending_echo_for_attempt(
                         attempt,
                         "application call ended because the app link disconnected",
@@ -8110,7 +8113,12 @@ fn read_primary_frames(
                     // The KEL-75/KEL-78 owner decides whether this generation
                     // is recoverable. Its Revoked update retires this writer
                     // before a successor is installed; only its terminal
-                    // outcome may close the already-ready window.
+                    // outcome may close the already-ready window. Before
+                    // Ready the same update meets the closed recovery gate,
+                    // so startup fails with the gate's typed cause whether
+                    // this EOF or the process exit is observed first; a late
+                    // owner acknowledgment can only add a cleanup detail
+                    // (GH-1182).
                     handle.link_failed(attempt)?;
                     return Ok(());
                 }
