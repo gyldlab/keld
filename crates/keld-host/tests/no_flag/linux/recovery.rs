@@ -168,11 +168,10 @@ fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let trace = fs::read_to_string(&attempt_path).expect("observe supervisor attempts");
-        if trace.lines().count() >= 2 {
-            assert!(
-                trace.starts_with("1\n2\n"),
-                "wrong attempt trace: {trace:?}"
-            );
+        // A concurrent reader may observe a partially written second line.
+        // Wait for the full trace so the only expected panic comes from the
+        // shared no-successor oracle, not from this polling loop.
+        if trace.starts_with("1\n2\n") {
             break;
         }
         assert!(
