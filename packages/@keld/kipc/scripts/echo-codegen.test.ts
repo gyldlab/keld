@@ -34,6 +34,7 @@ const generationOutputs = [
   "packages/@keld/api/src/fs.generated.ts",
   "packages/@keld/api/src/auth.generated.ts",
   "packages/@keld/kipc/src/transport.ts",
+  "packages/@keld/api/src/dialog.generated.ts",
 ];
 
 function withGeneratorCheckout(run: (root: string) => void): void {
@@ -46,6 +47,7 @@ function withGeneratorCheckout(run: (root: string) => void): void {
       "crates/keld-ipc/src/channel_table.rs",
       "crates/keld-native/src/fs.rs",
       "crates/keld-native/src/auth/mod.rs",
+      "crates/keld-native/src/dialog.rs",
     ]) {
       mkdirSync(dirname(resolve(root, path)), { recursive: true });
       cpSync(
