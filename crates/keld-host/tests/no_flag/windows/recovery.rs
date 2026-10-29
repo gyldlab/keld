@@ -11,13 +11,14 @@ use crate::support::control::{
     accept_control_or_host_failure, accept_ready_generation, parse_descendant_pid,
     read_control_line, read_control_line_or_host_failure, try_read_control_line,
 };
+use crate::support::process::wait_process_gone;
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{
     HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
 };
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
-    ui_end_kill_switch, wait_child, wait_for_host_window,
+    startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 #[test]
@@ -422,6 +423,98 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         attempts, 1,
         "a post-HELLO pre-Ready exit provisioned a successor"
     );
+    assert!(
+        matches!(
+            control_listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service"
+    );
+    assert!(!process_exists(host_pid), "failed host remained live");
+    held.release();
+}
+
+/// GH-1182 R2: the initial navigation never completes. Its renderer connection
+/// is held ([`HeldRendererRequest`]), so `NavigationCompleted` cannot fire and
+/// the window never becomes `Ready`. The `WebView2` initial-navigation deadline
+/// (`keld_wv::INITIAL_MILESTONE_DEADLINE`) must then fail startup with
+/// `KELD-WV-005`, take the Bun generation down with the host, and provision no
+/// successor.
+#[test]
+fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
+    let fixture = ProductFixture::new();
+    let control_listener =
+        TcpListener::bind(("127.0.0.1", 0)).expect("bind stalled-navigation control");
+    control_listener
+        .set_nonblocking(true)
+        .expect("nonblocking stalled-navigation control");
+    let control_port = control_listener
+        .local_addr()
+        .expect("control address")
+        .port();
+    let held = HeldRendererRequest::bind();
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
+            held.port
+        ),
+    )
+    .expect("write stalled renderer");
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage stalled-navigation host");
+    let launched = Instant::now();
+    let mut child = dev_stage_command(stage.root(), stage.host())
+        .env("KELD_T1B_CONTROL", control_port.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch stalled-navigation host");
+    let host_pid = child.id();
+    let control = accept_control_or_host_failure(
+        &control_listener,
+        &mut child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    let mut reader = BufReader::new(control.try_clone().expect("clone stalled control"));
+    let hello = read_control_line_or_host_failure(&mut reader, &mut child, "stalled HELLO");
+    let bun_pid: u32 = hello
+        .split_whitespace()
+        .nth(1)
+        .and_then(|pid| pid.parse().ok())
+        .unwrap_or_else(|| panic!("stalled HELLO has no Bun pid: {hello}"));
+    assert_eq!(
+        read_control_line_or_host_failure(&mut reader, &mut child, "stalled DESCENDANT"),
+        "DESCENDANT 0"
+    );
+    held.await_connection(&mut child);
+
+    // A startup (ended here by its navigation deadline) and then the UI end, each
+    // under its own kill switch from launch. Together they can pass the binary's
+    // nextest terminate, which `.config/nextest.toml` accepts for a startup then
+    // an exit: a late switch then ends as nextest's TIMEOUT, never as a pass.
+    let status = wait_child(
+        &mut child,
+        launched + startup_kill_switch() + ui_end_kill_switch(),
+    );
+    assert!(!status.success(), "stalled navigation became success");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("captured stalled-navigation stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stalled-navigation stderr");
+    assert!(stderr.contains("KELD-WV-005"), "{stderr}");
+    assert!(
+        stderr.contains("initial renderer navigation did not finish before the startup deadline"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
     assert!(
         matches!(
             control_listener.accept(),
