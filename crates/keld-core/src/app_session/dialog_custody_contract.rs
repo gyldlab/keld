@@ -114,3 +114,26 @@ fn quiescence_without_outcome_or_retirement_is_not_a_release() {
     assert!(custody.may_present(original));
     assert_eq!(custody.reserve(owner(1, 9, 2)), Err(ReserveError::Busy));
 }
+
+#[test]
+fn expiration_is_not_a_user_cancel_and_retains_capacity_until_native_drains() {
+    let mut custody = DialogCustody::default();
+    let initial = owner(3, 7, 1);
+    custody.reserve(initial).expect("first operation");
+    assert!(custody.expire(initial));
+    assert!(!custody.commit_native_result(initial));
+    assert!(!custody.expire(initial));
+    assert_eq!(
+        custody.cancel(initial.identity, 3, 1),
+        CancelResult::AlreadyCompleted
+    );
+    assert_eq!(
+        custody.take_original_terminal(initial),
+        Some((CorrelationId(7), TerminalKind::Expired))
+    );
+    assert_eq!(custody.reserve(owner(3, 8, 2)), Err(ReserveError::Busy));
+    custody
+        .quiesced(initial)
+        .expect("actual native panel drained");
+    custody.reserve(owner(3, 8, 2)).expect("next operation");
+}

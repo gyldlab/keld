@@ -77,6 +77,8 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]

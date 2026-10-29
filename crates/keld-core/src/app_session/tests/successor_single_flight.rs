@@ -154,6 +154,8 @@ fn successor_drain_test_router(
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },

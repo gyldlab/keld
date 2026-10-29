@@ -41,6 +41,8 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: PlatformPrimaryOwnerHandle {
             command_tx: guardian_tx,
         },

@@ -172,6 +172,8 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },
@@ -311,6 +313,8 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: GuardianOwnerHandle {
             command_tx: guardian_tx,
         },
