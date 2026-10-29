@@ -674,6 +674,140 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 
 class ProductionConsumerTests(unittest.TestCase):
+    def test_gh569_shipping_host_observer_inputs_select_compat_without_fallback(self):
+        source = Path(__file__).resolve().parent.parent
+        host_inputs = [
+            "crates/keld-host/src/main.rs",
+            "crates/keld-host/tests/no_flag_macos.rs",
+            "crates/keld-host/tests/no_flag/macos/module_process.rs",
+            "crates/keld-host/tests/fixtures/module_process_early.ts",
+            "crates/keld-cli/src/boot.rs",
+            "crates/keld-cli/src/config.rs",
+            "crates/keld-cli/src/template.rs",
+        ]
+        with tempfile.TemporaryDirectory(prefix="keld-gh569-host-input-route-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            self.assertEqual(ci_inputs.stale(root), [], "fresh digest binding before path cases")
+            bound_contract = ci_inputs.load(root)
+            readers = set(bound_contract["reader_sets"]["rust-readers"]["patterns"])
+            for reader in (
+                "crates/keld-host/tests/no_flag_macos.rs",
+                "crates/keld-host/tests/no_flag/macos/module_process.rs",
+                "crates/keld-compat/tests/module_process_corpus.rs",
+                "crates/keld-compat/tests/module_process_reference.rs",
+            ):
+                self.assertIn(reader, readers, "new GH569 reader must stay bound to its source bytes")
+
+            def route(path):
+                return subprocess.run(
+                    ["bash", "tools/ci_changes.sh", "classify"],
+                    cwd=root,
+                    input=(path + "\0").encode(),
+                    capture_output=True,
+                )
+
+            for path in host_inputs:
+                with self.subTest(path=path):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertTrue(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    packages = set(selection["packages"].split())
+                    self.assertIn("keld-compat", packages, selection)
+                    self.assertFalse(selection["workspace"] == "true", selection)
+
+            # Core/runtime and their Host dependency closure already reach the
+            # observer through Cargo reverse dependencies; do not duplicate
+            # those paths in rust_package_inputs.
+            for path in (
+                "crates/keld-core/src/app_session.rs",
+                "crates/keld-runtime/src/macos_guardian.rs",
+            ):
+                with self.subTest(cargo_owned_path=path):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertFalse(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    self.assertIn("keld-compat", selection["packages"].split(), selection)
+
+            # The Electron fixture is already a declared keld-compat external
+            # input; changing it must continue to select the same observer.
+            electron_fixture = "packages/@keld/electron/fixtures/module_process_probe.ts"
+            electron_selection = ci_inputs.classify(root, [electron_fixture], paths_only=True)
+            self.assertFalse(electron_selection["input_all"], electron_selection)
+            self.assertTrue(electron_selection["input_package_keld-compat"], electron_selection)
+
+            # Corpus bytes live inside the observing package, so Cargo's direct
+            # package route owns them; no redundant external input edge is needed.
+            corpus = "crates/keld-compat/fixtures/module-process-corpus/corpus.json"
+            corpus_result = route(corpus)
+            self.assertEqual(corpus_result.returncode, 0, corpus_result.stderr.decode(errors="replace"))
+            corpus_selection = dict(
+                line.split("=", 1)
+                for line in corpus_result.stdout.decode().splitlines()
+                if "=" in line
+            )
+            self.assertIn("keld-compat", corpus_selection["packages"].split())
+
+            # An unrelated crate must not enter the compatibility observer's
+            # package selection merely because Host inputs now have an edge.
+            unrelated = "crates/keld-updater-helper/src/lib.rs"
+            unrelated_result = route(unrelated)
+            self.assertEqual(
+                unrelated_result.returncode, 0, unrelated_result.stderr.decode(errors="replace")
+            )
+            unrelated_selection = dict(
+                line.split("=", 1)
+                for line in unrelated_result.stdout.decode().splitlines()
+                if "=" in line
+            )
+            self.assertNotIn("keld-compat", unrelated_selection["packages"].split())
+
+            # One-fault negatives: removing either exact external edge loses
+            # only its observing package while the direct Host/package route stays.
+            current_inputs = bound_contract["rust_package_inputs"]["keld-compat"]
+            for edge, path in (
+                ("crates/keld-host/**", "crates/keld-host/tests/no_flag_macos.rs"),
+                ("crates/keld-cli/src/**", "crates/keld-cli/src/template.rs"),
+            ):
+                # On the intentionally-red baseline the edge is absent; the
+                # first assertion above is the regression's failure-first proof.
+                if edge not in current_inputs:
+                    continue
+                contract = json.loads(json.dumps(bound_contract))
+                contract["rust_package_inputs"]["keld-compat"].remove(edge)
+                (root / "tools/ci-inputs.json").write_text(
+                    json.dumps(contract, indent=2) + "\n", encoding="utf-8"
+                )
+                with self.subTest(removed_edge=edge):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertFalse(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    self.assertNotIn("keld-compat", selection["packages"].split())
+                (root / "tools/ci-inputs.json").write_text(
+                    json.dumps(bound_contract, indent=2) + "\n", encoding="utf-8"
+                )
+
     def test_native_format_configuration_changes_select_both_format_gates(self):
         source = Path(__file__).resolve().parent.parent
         # These are Bun 1.4.4's exact supported config basenames, not a copy of
@@ -841,48 +975,70 @@ class ProductionConsumerTests(unittest.TestCase):
                         path.write_bytes(original_input)
                         contract_path.write_bytes(original_contract)
 
-    def test_future_public_fs_reader_byte_drift_requires_exact_registration(self):
-        source = Path(__file__).resolve().parent.parent
-        with tempfile.TemporaryDirectory(prefix="keld-ci-future-fs-reader-") as temporary:
+    def test_future_macos_host_reader_byte_drift_requires_exact_registration(self):
+        readers = (
+            "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
+            "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
+            "crates/keld-host/tests/no_flag/macos/facade_window.rs",
+        )
+        # Model main before the facade tests land, even after this test is
+        # later run in a tree that already contains those product files.
+        with tempfile.TemporaryDirectory(prefix="keld-ci-absent-facade-readers-") as temporary:
             root = Path(temporary)
-            tracked_snapshot(source, root)
-            self.assertEqual(ci_inputs.stale(root), [], "an absent future pattern keeps existing readers valid")
-            reader = "crates/keld-host/tests/no_flag/macos/public_fs/project.rs"
-            path = root / reader
-            path.parent.mkdir(parents=True, exist_ok=True)
-            original = b"// prospective public API composition reader\n"
-            changed = original + b"// reviewed reader content changed\n"
-            path.write_bytes(original)
-            subprocess.run(["git", "add", "-f", reader], cwd=root, check=True, capture_output=True)
+            tracked_snapshot(source=Path(__file__).resolve().parent.parent, destination=root)
+            patterns = ci_inputs.load(root)["reader_sets"]["rust-readers"]["patterns"]
+            for reader in readers[1:]:
+                self.assertIn(reader, patterns)
+                subprocess.run(["git", "rm", "--cached", "-f", "--ignore-unmatch", "--", reader],
+                               cwd=root, check=True, capture_output=True)
+                (root / reader).unlink(missing_ok=True)
+                self.assertFalse((root / reader).exists())
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(ci_inputs.rebind(root), 0)
             self.assertEqual(ci_inputs.stale(root), [])
-            census_patterns = ci_inputs.load(root)["rust_source_census"]["patterns"]
-            membership = ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns)
 
-            path.write_bytes(changed)
-            error = io.StringIO()
-            with contextlib.redirect_stderr(error):
-                self.assertEqual(ci_inputs.check(root), 1, "registered reader byte drift must reject freshness")
-            self.assertIn("CI-INPUTS-STALE", error.getvalue())
-            self.assertIn("rust-readers", error.getvalue())
-            self.assertEqual(ci_inputs.stale(root), ["rust-readers"])
-            self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
+        for reader in readers:
+            with self.subTest(reader=reader):
+                source = Path(__file__).resolve().parent.parent
+                with tempfile.TemporaryDirectory(prefix="keld-ci-future-fs-reader-") as temporary:
+                    root = Path(temporary)
+                    tracked_snapshot(source, root)
+                    self.assertEqual(ci_inputs.stale(root), [], "the bound snapshot starts fresh")
+                    path = root / reader
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    original = b"// prospective public API composition reader\n"
+                    changed = original + b"// reviewed reader content changed\n"
+                    path.write_bytes(original)
+                    subprocess.run(["git", "add", "-f", reader], cwd=root, check=True, capture_output=True)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ci_inputs.rebind(root), 0)
+                    self.assertEqual(ci_inputs.stale(root), [])
+                    census_patterns = ci_inputs.load(root)["rust_source_census"]["patterns"]
+                    membership = ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns)
 
-            # Removing only the reader declaration falsifies the same direct freshness predicate.
-            # Bind the isolated control first so stale hashes or census cannot supply the rejection.
-            path.write_bytes(original)
-            contract = ci_inputs.load(root)
-            contract["reader_sets"]["rust-readers"]["patterns"].remove(reader)
-            (root / "tools/ci-inputs.json").write_text(json.dumps(contract), encoding="utf-8")
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(ci_inputs.rebind(root), 0)
-            self.assertEqual(ci_inputs.stale(root), [])
-            path.write_bytes(changed)
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(ci_inputs.check(root), 0, "omitting the exact reader hides its byte drift")
-            self.assertEqual(ci_inputs.stale(root), [])
-            self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
+                    path.write_bytes(changed)
+                    error = io.StringIO()
+                    with contextlib.redirect_stderr(error):
+                        self.assertEqual(ci_inputs.check(root), 1, "registered reader byte drift must reject freshness")
+                    self.assertIn("CI-INPUTS-STALE", error.getvalue())
+                    self.assertIn("rust-readers", error.getvalue())
+                    self.assertEqual(ci_inputs.stale(root), ["rust-readers"])
+                    self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
+
+                    # Removing only the reader declaration falsifies the same direct freshness predicate.
+                    # Bind the isolated control first so stale hashes or census cannot supply the rejection.
+                    path.write_bytes(original)
+                    contract = ci_inputs.load(root)
+                    contract["reader_sets"]["rust-readers"]["patterns"].remove(reader)
+                    (root / "tools/ci-inputs.json").write_text(json.dumps(contract), encoding="utf-8")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ci_inputs.rebind(root), 0)
+                    self.assertEqual(ci_inputs.stale(root), [])
+                    path.write_bytes(changed)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(ci_inputs.check(root), 0, "omitting the exact reader hides its byte drift")
+                    self.assertEqual(ci_inputs.stale(root), [])
+                    self.assertEqual(ci_inputs.membership_fingerprint(ci_inputs.files(root), census_patterns), membership)
 
     def test_real_rust_content_edit_and_added_reader_have_distinct_scope(self):
         source = Path(__file__).resolve().parent.parent

@@ -210,6 +210,17 @@ if (process.platform === "win32") {
     await sendControl(`DESCENDANT ${descendant.pid}`);
   }
 }
+if (process.env.KELD_T3_EXIT_AFTER_HELLO === "1") {
+  // The parent holds the renderer's load open, so this authenticated
+  // generation cannot have reached Ready; it exits only on its command.
+  const marker = process.env.KELD_T3_PRE_READY_MARKER;
+  if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
+  const command = await receiveCommand();
+  if (command !== "EXIT_PRE_READY") {
+    throw new Error(`KEL96 unexpected pre-Ready command ${command}`);
+  }
+  process.exit(19);
+}
 if (generationAttempt === 2) {
   // A local flush does not prove the peer observed both control records before
   // this deliberately abrupt exit. The parent acknowledges only after reading
