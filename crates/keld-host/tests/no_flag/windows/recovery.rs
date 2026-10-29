@@ -8,17 +8,18 @@ use std::process::Stdio;
 use std::time::Instant;
 
 use crate::support::control::{
-    accept_control_or_host_failure, accept_ready_generation, parse_descendant_pid,
-    read_control_line, read_control_line_or_host_failure, try_read_control_line,
+    accept_control_or_host_failure, accept_ready_generation, assert_no_control_connection,
+    parse_descendant_pid, parse_hello, read_control_line, read_control_line_or_host_failure,
+    try_read_control_line,
 };
-use crate::support::process::wait_process_gone;
+use crate::support::process::{assert_process_signaled_within, open_process_for_wait};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{
     HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon,
 };
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
-    startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
+    stalled_navigation_end_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 #[test]
@@ -111,13 +112,7 @@ fn windows_fast_revoked_g2_is_never_installed_ahead_of_g3() {
     let mut g2_writer = g2.try_clone().expect("g2 control acknowledgment writer");
     let mut g2_reader = BufReader::new(g2);
     let g2_hello = read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 HELLO");
-    let mut g2_fields = g2_hello.split_whitespace();
-    assert_eq!(g2_fields.next(), Some("HELLO"), "{g2_hello}");
-    let g2_pid = g2_fields
-        .next()
-        .expect("g2 pid")
-        .parse::<u32>()
-        .expect("numeric g2 pid");
+    let (g2_pid, _g2_link) = parse_hello(&g2_hello);
     let g2_descendant =
         read_control_line_or_host_failure(&mut g2_reader, &mut child, "g2 DESCENDANT");
     assert_eq!(parse_descendant_pid(&g2_descendant), 0);
@@ -316,12 +311,9 @@ fn windows_pre_ready_crash_denies_successor_before_provisioning() {
         })
         .count();
     assert_eq!(attempts, 1, "a pre-Ready crash provisioned a successor");
-    assert!(
-        matches!(
-            control_listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ),
-        "pre-Ready child reached the control service"
+    assert_no_control_connection(
+        &control_listener,
+        "pre-Ready child reached the control service",
     );
     assert!(!process_exists(host_pid), "failed host remained live");
 }
@@ -343,14 +335,7 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         .expect("control address")
         .port();
     let held = HeldRendererRequest::bind();
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
-            held.port
-        ),
-    )
-    .expect("write held renderer");
+    held.write_index(&fixture.project);
     let marker = fixture.project.join("post-hello-attempt");
     let stage = keld_cli::boot::stage_dev_boot(
         &fixture.project,
@@ -373,8 +358,11 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
     );
     let mut reader = BufReader::new(control.try_clone().expect("clone post-HELLO control"));
     let mut writer = control;
-    let hello = read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO HELLO");
-    assert!(hello.starts_with("HELLO "), "{hello}");
+    parse_hello(&read_control_line_or_host_failure(
+        &mut reader,
+        &mut child,
+        "post-HELLO HELLO",
+    ));
     assert_eq!(
         read_control_line_or_host_failure(&mut reader, &mut child, "post-HELLO DESCENDANT"),
         "DESCENDANT 0"
@@ -423,13 +411,7 @@ fn windows_post_hello_pre_ready_exit_fails_startup_without_successor() {
         attempts, 1,
         "a post-HELLO pre-Ready exit provisioned a successor"
     );
-    assert!(
-        matches!(
-            control_listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ),
-        "a successor reached the control service"
-    );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
     assert!(!process_exists(host_pid), "failed host remained live");
     held.release();
 }
@@ -453,14 +435,8 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         .expect("control address")
         .port();
     let held = HeldRendererRequest::bind();
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
-            held.port
-        ),
-    )
-    .expect("write stalled renderer");
+    held.write_index(&fixture.project);
+    let generations = fixture.project.join("stalled-generation");
     let stage = keld_cli::boot::stage_dev_boot(
         &fixture.project,
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
@@ -469,6 +445,7 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     let launched = Instant::now();
     let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
+        .env("KELD_T4_GENERATION_MARKER", &generations)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -481,26 +458,24 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     );
     let mut reader = BufReader::new(control.try_clone().expect("clone stalled control"));
     let hello = read_control_line_or_host_failure(&mut reader, &mut child, "stalled HELLO");
-    let bun_pid: u32 = hello
-        .split_whitespace()
-        .nth(1)
-        .and_then(|pid| pid.parse().ok())
-        .unwrap_or_else(|| panic!("stalled HELLO has no Bun pid: {hello}"));
+    let (bun_pid, _link) = parse_hello(&hello);
+    // Opened while Bun is live, so its exit is observed on this exact process.
+    let bun = open_process_for_wait(bun_pid, false);
     assert_eq!(
         read_control_line_or_host_failure(&mut reader, &mut child, "stalled DESCENDANT"),
         "DESCENDANT 0"
     );
     held.await_connection(&mut child);
 
-    // A startup (ended here by its navigation deadline) and then the UI end, each
-    // under its own kill switch from launch. Together they can pass the binary's
-    // nextest terminate, which `.config/nextest.toml` accepts for a startup then
-    // an exit: a late switch then ends as nextest's TIMEOUT, never as a pass.
     let status = wait_child(
         &mut child,
-        launched + startup_kill_switch() + ui_end_kill_switch(),
+        Instant::now() + stalled_navigation_end_kill_switch(),
     );
     assert!(!status.success(), "stalled navigation became success");
+    assert!(
+        launched.elapsed() >= keld_wv::INITIAL_MILESTONE_DEADLINE,
+        "startup failed before its navigation deadline could expire"
+    );
     let mut stderr = String::new();
     child
         .stderr
@@ -514,14 +489,13 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         "{stderr}"
     );
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
-    wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
-    assert!(
-        matches!(
-            control_listener.accept(),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-        ),
-        "a successor reached the control service"
+    assert_process_signaled_within(&bun, "stalled-navigation Bun", PRODUCT_DEADLINE);
+    assert_eq!(
+        fs::read_to_string(&generations).expect("read stalled generation marker"),
+        "1\n",
+        "a stalled navigation provisioned a successor generation"
     );
+    assert_no_control_connection(&control_listener, "a successor reached the control service");
     assert!(!process_exists(host_pid), "failed host remained live");
     held.release();
 }

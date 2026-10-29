@@ -1,7 +1,9 @@
 //! Renderer beacon observation, deadline activation and explicit worker completion.
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::process::Child;
 use std::sync::mpsc;
 use std::thread;
@@ -12,7 +14,7 @@ use crate::windows_renderer_http::{
     PendingRendererRequest, RendererRequestRead, accept_renderer_connection,
     read_renderer_request_line,
 };
-use crate::{PRODUCT_DEADLINE, RENDERER_ACCEPT_POLL, startup_kill_switch};
+use crate::{DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, RENDERER_ACCEPT_POLL, startup_kill_switch};
 
 pub(crate) struct RendererBeacon {
     observed: mpsc::Receiver<Result<(), String>>,
@@ -242,6 +244,20 @@ impl HeldRendererRequest {
             release,
             worker,
         }
+    }
+
+    /// Writes `project`'s renderer: the product page with one image on this
+    /// held listener.
+    pub(crate) fn write_index(&self, project: &Path) {
+        fs::write(
+            project.join("index.html"),
+            format!(
+                "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">
+",
+                self.port
+            ),
+        )
+        .expect("write held renderer");
     }
 
     /// Waits for the renderer's first connection under `startup_kill_switch`,
