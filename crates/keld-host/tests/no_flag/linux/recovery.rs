@@ -1,5 +1,7 @@
 //! Recover Bun authority while retaining the same host and renderer window.
 
+#[cfg(debug_assertions)]
+use crate::support::renderer::HeldRendererRequest;
 use crate::support::{
     PRODUCT_DEADLINE,
     control::{
@@ -10,21 +12,24 @@ use crate::support::{
         StrictGeneration, wait_child, wait_for_strict_generation, wait_process_identity_gone,
     },
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
-    renderer::{HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon},
+    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
 };
+#[cfg(debug_assertions)]
 use keld_runtime::{
     RestartPolicy,
     primary::{PrimaryRoleConfig, PrimaryRoleSupervisor},
 };
 use std::{
     fs,
-    io::{BufReader, Read as _, Write as _},
+    io::{BufReader, Write as _},
     net::TcpListener,
     os::unix::net::UnixListener,
     path::Path,
     process::{Child, Command, Stdio},
-    time::{Duration, Instant},
+    time::Instant,
 };
+#[cfg(debug_assertions)]
+use std::{io::Read as _, time::Duration};
 
 #[test]
 fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
@@ -135,6 +140,20 @@ fn accept_generation(
 
 // Shared with the early-open negative control: the production host test
 // rejects an actual second supervisor preparation, even without a Bun HELLO.
+// The host refuses a witness that is group/other-writable, so create it
+// owner-only rather than under whatever umask the test runs with.
+#[cfg(debug_assertions)]
+fn create_private_witness(path: &Path, context: &str) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .expect(context);
+}
+
+#[cfg(debug_assertions)]
 fn assert_only_initial_supervisor_attempt(path: &Path) {
     let attempts = fs::read_to_string(path).expect("read supervisor attempts");
     assert_eq!(
@@ -146,12 +165,14 @@ fn assert_only_initial_supervisor_attempt(path: &Path) {
 /// The exact no-successor oracle above must reject a real prematurely armed
 /// recovery gate. This controls the test, not the production gate: no GUI,
 /// control socket, HELLO, or Bun process is needed to observe a second prepare.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "an unexpected successor was prepared")]
 fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
     let fixture = ProductFixture::new();
     let attempt_path = fixture.root.path().join("early-gate-attempts.log");
-    fs::write(&attempt_path, b"").expect("create negative-control attempt witness");
+    create_private_witness(&attempt_path, "create negative-control attempt witness");
     let config = PrimaryRoleConfig::primary("/bin/sh")
         .args(["-c", "exit 19"])
         .restart_policy(RestartPolicy {
@@ -194,11 +215,13 @@ fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
 /// The matching real-supervisor positive control: deny recovery after the
 /// original child revokes, then prove no second prepare occurred even when
 /// the failed child could not send HELLO or reach a control service.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
 #[test]
 fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
     let fixture = ProductFixture::new();
     let attempt_path = fixture.root.path().join("closed-gate-attempts.log");
-    fs::write(&attempt_path, b"").expect("create closed-gate attempt witness");
+    create_private_witness(&attempt_path, "create closed-gate attempt witness");
     let config = PrimaryRoleConfig::primary("/bin/sh")
         .args(["-c", "exit 19"])
         .restart_policy(RestartPolicy {
@@ -233,12 +256,14 @@ fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
 /// so the window cannot be `Ready` first. The pre-Ready recovery gate is still
 /// closed, so the host fails startup instead of provisioning a successor
 /// (architecture 06 §1).
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
 #[test]
 fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
     let fixture = ProductFixture::new();
     let control_path = fixture.root.path().join("post-hello-control.sock");
     let attempt_path = fixture.root.path().join("supervisor-attempts.log");
-    fs::write(&attempt_path, b"").expect("create private supervisor attempt witness");
+    create_private_witness(&attempt_path, "create private supervisor attempt witness");
     let listener = UnixListener::bind(&control_path).expect("bind post-HELLO control");
     listener
         .set_nonblocking(true)

@@ -1,15 +1,14 @@
 //! Observe the real renderer HTTP request before signaling readiness.
 
-use super::{
-    PRODUCT_DEADLINE,
-    project::{DARK_BG, PRODUCT_TITLE},
-};
+use super::PRODUCT_DEADLINE;
+// The held request is used only by the debug-only supervisor-attempt tests.
+#[cfg(debug_assertions)]
+use super::project::{DARK_BG, PRODUCT_TITLE};
+#[cfg(debug_assertions)]
+use std::{fs, path::Path, process::Child};
 use std::{
-    fs,
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
-    path::Path,
-    process::Child,
     sync::mpsc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -287,7 +286,8 @@ fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration
 /// is held the document's `load` cannot finish, so the initial navigation (which
 /// drives `Ready`) cannot complete and the window cannot become `Ready`. The
 /// listener lives until release, so a request on a later connection waits
-/// unanswered too.
+/// unanswered too. Only the debug-only supervisor-attempt tests use it.
+#[cfg(debug_assertions)]
 pub(crate) struct HeldRendererRequest {
     pub(crate) port: u16,
     connected: mpsc::Receiver<bool>,
@@ -295,6 +295,7 @@ pub(crate) struct HeldRendererRequest {
     worker: JoinHandle<()>,
 }
 
+#[cfg(debug_assertions)]
 impl HeldRendererRequest {
     pub(crate) fn bind() -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind held renderer");
