@@ -3883,13 +3883,29 @@ fn linux_strict_primary_config_x86(
                 .map_err(|source| app_detail("Linux strict test control", source.to_string()))?;
             config = config.env("KELD_T1B_CONTROL", control);
         }
-        if let Some(value) = std::env::var_os("KELD_T2_EXIT_ON_LINK_EOF") {
-            config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
+        for (key, value) in linux_strict_test_flags(|key| std::env::var_os(key)) {
+            config = config.env(key, value);
         }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
         config
     };
     Ok(config.linux_strict(profile))
+}
+
+/// Value-only harness flags a debug strict sandbox forwards past `--clearenv`.
+/// None names a path, socket or handle, so none adds sandbox authority;
+/// `KELD_T1B_CONTROL` names a socket and keeps its own bind above.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+const LINUX_STRICT_TEST_FLAGS: [&str; 2] = ["KELD_T2_EXIT_ON_LINK_EOF", "KELD_T3_EXIT_AFTER_HELLO"];
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn linux_strict_test_flags(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    LINUX_STRICT_TEST_FLAGS
+        .iter()
+        .filter_map(|key| lookup(key).map(|value| (*key, value)))
+        .collect()
 }
 
 /// Admits the staged hello sidecar before any Linux `--ro-bind`.
