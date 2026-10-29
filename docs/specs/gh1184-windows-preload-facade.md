@@ -129,7 +129,8 @@ the app-link writer, the Bun handler and the Host audit log read 0.
 | AC12 Popups | `window.open` with `_blank`/`target`, `opener` forms | `NewWindowRequested` → `SetHandled(TRUE)` (existing `guarded_navigation.rs:142-152`); no popup exists (E5 f1/f2: handled, 0 windows). | Drop the handler → unaccounted popup → RED. |
 | AC13 Generated grants | `keld migrate` sees `ipcMain.on('a')`, `ipcMain.handle('b')`, `ipcMain.on('c')`, `ipcMain.on(dyn)` and window W's preload exposes a fixed-channel method for `a` only (F-C) | `windows.W.channels == ["el:a"]`, with `"$keldWindowChannelGrants": 1` and `windows.W.preload.digest`; `b`, `c` and `dyn` are reported ungranted. For a pure pass-through preload (F-B) the result is `["el:a","el:b","el:c"]`. | Grant every `ipcMain` literal regardless of the preload's reachable sinks → `el:b` appears for W → RED (over-grant). |
 | AC14 Digest binding | The admitted preload bytes' SHA-256 differs from `windows.W.preload.digest` | The Host treats W as `channels: []` and fails the window with a typed error naming the fix (`re-run keld migrate`); a matching digest loads the grants. | Ignore the digest → grants produced for another preload apply → RED. |
-| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-G (§4.8) | F-A, F-D, F-E, F-F, F-G flagged; F-B, F-C not flagged. | Drop the page-input data-flow edge → F-A passes → RED. Separately, flag any conditional → F-C flagged → RED. |
+| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-G (§4.8) | F-A, F-D, F-E, F-F flagged; F-G flagged (conservative: representation-only but unprovable); F-B, F-C not flagged. | Drop the page-input data-flow edge → F-A passes → RED. Separately, flag any conditional → F-C flagged → RED. Separately, let the analyzer "prove" F-G non-narrowing by pattern → F-G passes silently → RED (conservatism falsifier). |
+| AC19 Attestation binding | Window W's preload digest d₁ carries a flag; the config holds (i) no attestation, (ii) an attestation bound to d₂ ≠ d₁, (iii) an attestation bound to d₁ | (i) and (ii): the Host refuses route D for W (`channels: []`, typed error naming the fix: review and attest digest d₁); (iii): W loads with exactly the P0-1 intersection grants — an attestation listing extra channels adds none. | Accept an attestation by file path or window key instead of digest → case (ii) loads → RED. Separately, let the attestation record carry channels → an extra `el:x` is granted → RED. |
 | AC16 Same-document stability | Hash change, `pushState`, cancelled provisional navigation | Epoch and generation unchanged; a pending granted call completes once. | Rotate on hash change → pending call refused → RED. |
 | AC17 Receipt | A Windows acceptance claim | Runtime `BrowserVersionString`, OS build, head, manifest digest, preload digest, per-AC counters, each RED control's output. | Missing runtime string or mocked `WebMessageReceived` → validator RED. |
 
@@ -293,7 +294,14 @@ the media principal construction accordingly with the KEL-102 owner.
   "windows": {
     "main": {
       "channels": ["el:rendererReq"],              // generated (AC13)
-      "preload": { "digest": "sha256:…" },         // binds verdict + grants (AC14)
+      "preload": {
+        "digest": "sha256:…",                      // binds verdict + grants (AC14)
+        "attestation": {                            // only when the classifier flagged sites (AC19)
+          "digest": "sha256:…",                    // must equal preload.digest
+          "sites": [{ "at": "preload.js:96-100", "why": "removes a function value that cannot cross IPC" }],
+          "reviewedBy": "<permission-model reviewer>"
+        }
+      },
       "web": {
         "csp": "default",
         "navigation": {
@@ -365,38 +373,75 @@ assignment to `window.*`/`globalThis.*`. Outbound sink = `ipcRenderer.send/invok
 postMessage/sendTo/sendToHost`. Inbound sink = the page-facing callback invoked from an
 `ipcRenderer.on/once` listener. Page input = exposure parameters and values derived from them.
 
-> **Gating** = a page-input-dependent branch or transform that changes **whether** an
-> outbound sink fires, **its channel**, or **its bytes**; or **any** branch or transform that
-> changes whether, or with what bytes, an inbound sink delivers a Host→renderer message.
+> **Gating = authority narrowing.** For some page input the preload suppresses or refuses
+> a sink call, restricts which channel is reachable, or restricts/validates argument values
+> that a pass-through would have forwarded; dropping or filtering inbound Host→renderer
+> messages also counts. A transform that only changes **representation** without narrowing
+> what the page can cause — for example removing a value that cannot cross the IPC boundary
+> anyway — is **not** gating by definition.
 
-Pass-through = no such edge. Indeterminate (dynamic `require`, `eval`, computed member
-access on `ipcRenderer`, unresolvable preload path) = flagged. Unconditional additions
-(a counter `reqId`) are not page-input-dependent and are not gating.
+A static analyzer generally **cannot prove** that a transform is representation-only (it
+would have to know the value domain and the boundary's rejection rules on every path).
+That is why rule 2 exists:
 
-| Fixture | Content | Verdict |
-| --- | --- | --- |
-| F-A | `request: (m) => { if (ALLOWED.has(m.action)) send('req', m); }` | gating (fires?) |
-| F-B | `sendMessage: (a, x) => send(a, x)` (page chooses the channel) | pass-through |
-| F-C | `openFile: () => invoke('open-file')` | pass-through |
-| F-D | `save: (p, d) => send('save', path.normalize(p), d)` | gating (bytes) |
-| F-E | `require(name).send(...)` / `eval` | indeterminate → flagged |
-| F-F | `on('evt', (e, v) => { if (v.ok) cb(v); })` | gating (inbound narrowing) |
-| F-G | `request: (m) => { m.reqId = n++; if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m); }` | **gating (bytes):** the `delete` is conditioned on page input and changes the sent bytes |
+> **Rule 2 — the classifier is conservative.** `keld migrate` flags **every**
+> page-input-dependent branch or transform on a path to a sink that it cannot prove
+> non-narrowing, plus every inbound filter. Indeterminate code (dynamic `require`, `eval`,
+> computed member access on `ipcRenderer`, unresolvable preload path) is flagged.
+> Unconditional additions (a counter `reqId`) are not page-input-dependent and are not
+> flagged.
 
-Plainly: the pinned draw.io preload's `request` method (lines 89–103) is F-G, and its
-`registerMsgListener`/`listenOnce` (104–121) forward every inbound payload unchanged
-(pass-through); under this definition **the pinned draw.io preload is flagged** on route D.
-The rule is not tuned to pass it; the consequence for qualification is §10 Q8.
+Classifier falsifiers: a refusing/validating preload MUST be flagged; a pure pass-through
+MUST NOT be; a representation-only transform the analyzer cannot prove MUST be flagged
+(conservative), never silently passed.
+
+| Fixture | Content | Definition | Classifier |
+| --- | --- | --- | --- |
+| F-A | `request: (m) => { if (ALLOWED.has(m.action)) send('req', m); }` | narrowing (suppresses) | flagged |
+| F-B | `sendMessage: (a, x) => send(a, x)` (page chooses the channel) | pass-through | not flagged |
+| F-C | `openFile: () => invoke('open-file')` | pass-through | not flagged |
+| F-D | `save: (p, d) => send('save', path.normalize(p), d)` | narrowing (validates values) | flagged |
+| F-E | `require(name).send(...)` / `eval` | unknown | flagged (indeterminate) |
+| F-F | `on('evt', (e, v) => { if (v.ok) cb(v); })` | narrowing (inbound filter) | flagged |
+| F-G | `request: (m) => { m.reqId = n++; if (m.action == 'watchFile') { L[m.path] = m.listener; delete m.listener; } send('req', m); }` | representation-only (see below) | flagged (cannot prove) |
+
+**Rule 3 — attestation.** A flagged preload runs on route D only with a **reviewed
+attestation**: a record in the application's Keld config, bound to the preload source
+digest (#1155 AC08 SHA-256), that names each flagged site (`file:line`) and states why it
+does not narrow authority. It is reviewed under the permission-model gate. The Host refuses
+route D for a window whose digest carries a flag and has no attestation for **that exact
+digest** (AC19); an attestation bound to another digest is refused. An attestation **never
+widens grants**: `channels(w)` stays exactly the P0-1 intersection below. Without an
+attestation the application is reported unsupported for route D (route B is out of scope).
+
+Qualification evidence, stated plainly: the pinned draw.io preload's `request` method
+(`electron-preload.js` lines 89–103) is F-G. By the definition it is representation-only:
+the branch moves the function-valued `msg.listener` out of the message before
+`ipcRenderer.send`, and a function cannot cross the IPC boundary in either runtime — Electron
+documents that `ipcRenderer.send` arguments are serialized with the Structured Clone
+Algorithm and that "sending Functions, Promises, Symbols, WeakMaps, or WeakSets will throw
+an exception" ([ipcRenderer.send](https://www.electronjs.org/docs/latest/api/ipc-renderer#ipcrenderersendchannel-args),
+current docs; the pinned v44 wording is INFERRED identical), and #1190 V3 refuses a nested
+Function synchronously before any send. Removing it therefore narrows nothing the page could
+cause; the conservative classifier still flags it (it cannot prove the value is always a
+function). Its `registerMsgListener`/`listenOnce` (lines 104–121) forward inbound payloads
+unchanged. **So the pinned draw.io preload qualifies on route D only with an attestation**
+for that digest covering line 96–100 — through the framework mechanism of rule 3, not an
+application exception.
 
 **Grants.** For window `w` with preload `P` (verdict pass-through):
 `channels(w)` = literal channels of `ipcMain.on/handle` in the main process **∩** literal
 channels of outbound sinks reachable from `P`'s exposures; if any reachable sink takes its
 channel from page input (F-B), the intersection is the full `ipcMain` literal set. Dynamic
-`ipcMain` names are reported ungranted. A flagged `P` yields `channels: []` and the report
-line `✘ preload gates authority in JavaScript (<file>:<line>) — unsupported on Windows route
-D; escalation: route B (no approved spec)`. The verdict and grants are written with
-`windows.<w>.preload.digest` = SHA-256 of `P`'s bytes (#1155 AC08 digest); the Host
-compares the admitted bytes' digest and refuses grants on mismatch (AC14). Before release
+`ipcMain` names are reported ungranted. A flagged `P` **without** an attestation for its
+digest yields `channels: []` and the report line `✘ preload has N unproven narrowing sites
+(<file>:<line>, …) — unsupported on Windows route D without a reviewed attestation;
+escalation: route B (no approved spec)`. A flagged `P` **with** a matching attestation
+yields the same intersection as a pass-through `P` — never more. The verdict, flagged sites
+and grants are written with `windows.<w>.preload.digest` = SHA-256 of `P`'s bytes (#1155
+AC08 digest) and, when present, `windows.<w>.preload.attestation` (same digest, sites,
+rationale, reviewer); the Host compares the admitted bytes' digest and refuses grants on
+mismatch (AC14) or on a flag without a same-digest attestation (AC19). Before release
 reliance, run across the compat corpus (#496, #587) and record false positives/negatives.
 
 ### 4.9 Rejected alternatives
@@ -459,11 +504,13 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
   Blocks on #1191 T1–T4 merged and #540 carriage decision (Q1).
 - [ ] **T4 — `@keld/electron` facade on the Windows transport** (owner: #1154 implementer).
   Wrapper execution gated on `ENTRY_URIS`; divergences wired to T1 entries. Blocks on T3.
-- [ ] **T5 — `keld migrate` mapping, classifier, grants, digest** (owner: `keld-cli`/KEL-17
-  owner). AC13, AC15; fixtures F-A..F-G; corpus run. Blocks on KEL-17 admitting the first
-  live `migrate` slice (Q9).
+- [ ] **T5 — `keld migrate` mapping, classifier, grants, digest, attestation** (owner:
+  `keld-cli`/KEL-17 owner; Host-side refusal in T3's forwarder owner). AC13, AC15, AC19;
+  fixtures F-A..F-G; corpus run. Blocks on KEL-17 admitting the first live `migrate` slice
+  (Q9).
 - [ ] **T6 — Windows qualification receipt** (owner: @amishabenramani). One corpus application
-  whose preload classifies pass-through (Q8), full RED matrix, AC17. Blocks on T2–T5.
+  whose preload is pass-through or carries a reviewed same-digest attestation (§4.8 rule 3),
+  full RED matrix, AC17. Blocks on T2–T5 and the attestation review (permission gate).
 
 ## 7. Test plan
 
@@ -494,7 +541,8 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
 
 - **Permission model — mandatory, independent reviewer per `.agents/coordination.md`:**
   eligibility-before-epoch rule, Source rule, navigation matcher reuse, generated grants
-  (intersection + digest binding), no second evaluator, no wildcard.
+  (intersection + digest binding), no second evaluator, no wildcard; **every preload
+  attestation** (§4.8 rule 3) is reviewed under this gate per digest.
 - **Public API — mandatory:** `WebEngine`/`WebviewSpec`; `@keld/electron` facade on Windows;
   `keld migrate` keys and report; KEL-142 §5.1 Windows amendment.
 - **Wire protocol — #540 owner:** WebMessage carriage, `hello`/`epoch` kinds, base64url bytes,
@@ -561,10 +609,13 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
    is safe as identity is B6 (KEL-102 path verification), not a Source question.
 7. **Q7 (`window.keld.invoke` widening):** numeric channels beyond Echo `1` need KEL-142/#508
    grammar; none proposed here.
-8. **Q8 (qualification target):** under §4.8 the pinned draw.io preload is flagged (F-G). Owner
-   decides: (a) qualify T6 with a pass-through corpus application; (b) approve a definition
-   refinement for page-input-conditioned **field removal** that cannot add bytes (would
-   un-flag F-G; must be justified on its own, not for one app); or (c) route B for it.
+8. **Q8 — RESOLVED (owner-delegated decision, 2026-10-29):** gating is defined as authority
+   narrowing; the static classifier is conservative and flags what it cannot prove; a
+   flagged preload runs on route D only with a reviewed, digest-bound attestation that never
+   widens grants (§4.8 rules 1–3, AC19). Applied to the qualification evidence: the pinned
+   draw.io preload's `watchFile` branch is flagged by the classifier, is representation-only
+   by the definition, and therefore qualifies only with an attestation for its digest. This
+   is a framework mechanism; no application exception exists.
 9. **Q9 (`keld migrate`):** verb reserved (`verb.rs:75`, KEL-17); T5 needs KEL-17's owner to
    admit the classifier as the first live slice.
 10. **Q10 (natural late delivery) UNKNOWN:** never observed (E5, 0 of ~110k); the nonce rule
