@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::support::control::{
     accept_control_or_host_failure, accept_ready_generation, assert_no_control_connection,
@@ -442,7 +442,7 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage stalled-navigation host");
-    let launched = Instant::now();
+
     let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_GENERATION_MARKER", &generations)
@@ -472,10 +472,6 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         Instant::now() + stalled_navigation_end_kill_switch(),
     );
     assert!(!status.success(), "stalled navigation became success");
-    assert!(
-        launched.elapsed() >= keld_wv::INITIAL_MILESTONE_DEADLINE,
-        "startup failed before its navigation deadline could expire"
-    );
     let mut stderr = String::new();
     child
         .stderr
@@ -489,6 +485,12 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         "{stderr}"
     );
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    let span = first_navigation_deadline_span(&stderr);
+    assert!(
+        span + DEADLINE_ANCHOR_TOLERANCE >= keld_wv::INITIAL_MILESTONE_DEADLINE,
+        "navigation deadline fired after {span:?}, before {:?}: {stderr}",
+        keld_wv::INITIAL_MILESTONE_DEADLINE
+    );
     assert_process_signaled_within(&bun, "stalled-navigation Bun", PRODUCT_DEADLINE);
     assert_eq!(
         fs::read_to_string(&generations).expect("read stalled generation marker"),
@@ -498,4 +500,46 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     assert_no_control_connection(&control_listener, "a successor reached the control service");
     assert!(!process_exists(host_pid), "failed host remained live");
     held.release();
+}
+
+/// The `WebView2` loop takes its navigation-deadline anchor just before the
+/// diagnostic records `loop_setup_at_ms`, and both stamps are floored to whole
+/// milliseconds. The measured span can therefore fall short of the deadline by
+/// that anchor-to-record gap (one lock acquisition, which a preempted thread can
+/// stretch over a few scheduler quanta) plus 1 ms. A deadline armed shorter or
+/// earlier falls short by far more.
+const DEADLINE_ANCHOR_TOLERANCE: Duration = Duration::from_millis(100);
+
+/// The host's own measurement of its initial-navigation deadline, from the
+/// `first-navigation` diagnostic the `KELD-WV-005` failure carries: the span from
+/// message-loop setup (where the deadline is armed) to the recorded expiry.
+fn first_navigation_deadline_span(stderr: &str) -> Duration {
+    let diagnostic = &stderr[stderr
+        .find("first-navigation ")
+        .unwrap_or_else(|| panic!("no first-navigation diagnostic: {stderr}"))..];
+    let field = |key: &str| -> u64 {
+        let start = diagnostic
+            .find(key)
+            .unwrap_or_else(|| panic!("no {key} in {diagnostic}"))
+            + key.len();
+        let value = diagnostic[start..]
+            .trim_start_matches("Some(")
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or_default();
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("non-numeric {key} in {diagnostic}"))
+    };
+    assert!(
+        diagnostic.starts_with("first-navigation phase=navigation-deadline-elapsed "),
+        "{diagnostic}"
+    );
+    let expired = field(" phase_at_ms=");
+    let armed = field(" loop_setup_at_ms=");
+    Duration::from_millis(
+        expired
+            .checked_sub(armed)
+            .unwrap_or_else(|| panic!("deadline expiry precedes loop setup: {diagnostic}")),
+    )
 }
