@@ -19,12 +19,31 @@ use objc2_uniform_type_identifiers::UTType;
 
 use super::file_filter::MacFileFilterModel;
 use super::{
-    DialogReplyV1, OpenDialogOptions, OpenProperty, SaveDialogOptions, validate_dialog_reply,
-    validate_open_options, validate_save_options,
+    DialogReplyV1, MAX_DIALOG_PATHS, OpenDialogOptions, OpenProperty, SaveDialogOptions,
+    validate_dialog_reply, validate_open_options, validate_save_options,
 };
 
 fn invalid(detail: &'static str) -> IpcError {
     IpcError::Protocol { detail }
+}
+
+fn selected_open_paths(urls: &NSArray<NSURL>) -> Result<Vec<String>, IpcError> {
+    // Count before retaining NSArray members or materializing POSIX strings.
+    // AppKit owns its original selection; Keld only copies bounded replies.
+    if urls.len() > MAX_DIALOG_PATHS {
+        return Err(invalid("native Open selection exceeds path limit"));
+    }
+    urls.to_vec()
+        .into_iter()
+        .map(|url| {
+            if !url.isFileURL() {
+                return Err(invalid("native Open returned a non-file URL"));
+            }
+            url.path()
+                .map(|text| text.to_string())
+                .ok_or_else(|| invalid("native Open URL has no POSIX file path"))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,19 +336,7 @@ impl MacFilePanel {
         } else if response == NSModalResponseOK {
             match &self.panel {
                 FilePanel::Open(open) => {
-                    let file_paths = open
-                        .URLs()
-                        .to_vec()
-                        .into_iter()
-                        .map(|url| {
-                            if !url.isFileURL() {
-                                return Err(invalid("native Open returned a non-file URL"));
-                            }
-                            url.path()
-                                .map(|text| text.to_string())
-                                .ok_or_else(|| invalid("native Open URL has no POSIX file path"))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let file_paths = selected_open_paths(&open.URLs())?;
                     DialogReplyV1::Open {
                         // An OS OK with zero selections is not a user Cancel.
                         // Validation below rejects it as an invalid result.
@@ -379,5 +386,50 @@ impl Drop for MacFilePanel {
                 panel.orderOut(None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_open_selection_preserves_exact_paths() {
+        let empty = NSArray::<NSURL>::new();
+        assert_eq!(
+            selected_open_paths(&empty).expect("empty count is bounded"),
+            Vec::<String>::new()
+        );
+
+        let selected = NSURL::fileURLWithPath_isDirectory(
+            &NSString::from_str("/tmp/gh478-selection.drawio"),
+            false,
+        );
+        let entries = vec![selected; MAX_DIALOG_PATHS];
+        let urls = NSArray::from_retained_slice(&entries);
+        assert_eq!(
+            selected_open_paths(&urls).expect("exactly 32 file URLs are bounded"),
+            vec![String::from("/tmp/gh478-selection.drawio"); MAX_DIALOG_PATHS],
+        );
+    }
+
+    #[test]
+    fn excessive_open_selection_is_rejected_before_url_conversion() {
+        // An invalid URL first ensures that per-entry conversion cannot take
+        // precedence over the independently specified native selection count.
+        let non_file = NSURL::URLWithString(&NSString::from_str("https://example.invalid/file"))
+            .expect("synthetic non-file URL");
+        let entries = vec![non_file; MAX_DIALOG_PATHS + 1];
+        let urls = NSArray::from_retained_slice(&entries);
+        let error = selected_open_paths(&urls).expect_err("32+1 native paths must be refused");
+        assert!(
+            matches!(
+                error,
+                IpcError::Protocol {
+                    detail: "native Open selection exceeds path limit"
+                }
+            ),
+            "native over-limit selection was processed before refusal: {error:?}"
+        );
     }
 }
