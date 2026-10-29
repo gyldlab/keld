@@ -336,6 +336,13 @@ fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
 /// released, so `NavigationReady` races the owner's handling of the EOF the
 /// host has already read. The EOF must win: no `Ready` reaches the surviving
 /// read half, startup fails typed, and no successor is even prepared.
+///
+/// Residual order (PR #1300 review, P2-4): the acknowledgment proves Bun shut
+/// its write half, not that the host's reader has latched the EOF. Should
+/// `NavigationReady` reach `signal_ready` first, `Ready` wins by design and the
+/// after-Ready recovery prepares a successor: a false red, never a false green.
+/// The reader wakes on the EOF before the ack is even sent, while navigation
+/// can finish only after this test reads the ack and releases the request.
 // The supervisor-attempt witness exists only in debug Linux builds.
 #[cfg(debug_assertions)]
 #[test]
@@ -386,6 +393,16 @@ fn linux_pre_ready_write_shutdown_beats_a_released_ready_without_successor() {
         if fs::read_to_string(&attempt_path).is_ok_and(|trace| trace.starts_with("1\n2\n")) {
             let _ = host.kill();
             let _ = host.wait();
+            // Positive control for the surviving read half: the failed
+            // generation was restarted, so its control link ends. Print what
+            // it reported after its write shutdown; a Ready the host still
+            // delivered shows as READY_AFTER_WRITE_SHUTDOWN.
+            let mut late_control = Vec::new();
+            let _ = reader.read_to_end(&mut late_control);
+            eprintln!(
+                "control records after the write shutdown: {:?}",
+                String::from_utf8_lossy(&late_control)
+            );
             assert_only_initial_supervisor_attempt(&attempt_path);
         }
         assert!(Instant::now() < deadline, "host exit timed out");
@@ -421,8 +438,16 @@ fn linux_pre_ready_write_shutdown_beats_a_released_ready_without_successor() {
         ),
         "a successor reached the control service: {stderr}"
     );
+    // The owner's typed pre-Ready cause is the host's primary error: the first
+    // diagnostic line, whatever toolkit output precedes it.
     assert!(
-        stderr.contains("Bun terminated before the initial window became ready"),
+        stderr
+            .lines()
+            .find(|line| line.starts_with("KELD-"))
+            .is_some_and(|line| line.starts_with(concat!(
+                "KELD-CORE-037: no-flag host failed during primary generation before Ready ",
+                "— Bun terminated before the initial window became ready"
+            ))),
         "{stderr}"
     );
     assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
