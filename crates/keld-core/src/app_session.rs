@@ -3606,7 +3606,7 @@ fn run_direct_app_session(
     }
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let primary_owner = DirectPrimaryOwner::start(
+    let mut primary_owner = DirectPrimaryOwner::start(
         supervisor,
         recovery,
         window_commands_tx.clone(),
@@ -3886,15 +3886,51 @@ fn linux_strict_primary_config_x86(
         for (key, value) in linux_strict_test_flags(|key| std::env::var_os(key)) {
             config = config.env(key, value);
         }
-        // Host-side only: never forward this filesystem path through --clearenv
-        // into the strict sandbox. It witnesses even failed supervisor prepares.
-        if let Some(path) = std::env::var_os("KELD_T3_SUPERVISOR_ATTEMPTS") {
-            config = config.with_debug_primary_attempt_witness(PathBuf::from(path));
+        // The inherited knob is value-only: the witness's pathname is
+        // derived exclusively from the validated private dev stage. Its
+        // descriptor is pinned before the supervisor can prepare a child.
+        if let Some(path) = create_stage_debug_attempt_witness(
+            root,
+            std::env::var_os("KELD_T3_SUPERVISOR_ATTEMPTS").as_deref(),
+        )? {
+            config = config
+                .with_debug_primary_attempt_witness(&path)
+                .map_err(|source| app_io("debug primary attempt witness", &source))?;
         }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
         config
     };
     Ok(config.linux_strict(profile))
+}
+
+/// Host-only Linux debug witness bound to the active validated dev-stage root.
+/// A path supplied through the inherited environment is never used as an I/O
+/// destination. An existing file (including a same-UID hardlink or symlink)
+/// fails the exclusive create rather than being opened for append.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn create_stage_debug_attempt_witness(
+    root: &Path,
+    requested: Option<&std::ffi::OsStr>,
+) -> Result<Option<PathBuf>, HostAppError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Some(value) = requested else {
+        return Ok(None);
+    };
+    if value != std::ffi::OsStr::new("1") {
+        return Err(app_detail(
+            "debug primary attempt witness",
+            "only the value 1 enables the stage-local witness",
+        ));
+    }
+    let path = root.join(".keld-debug-primary-attempts");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|source| app_io("debug primary attempt witness", &source))?;
+    drop(created);
+    Ok(Some(path))
 }
 
 /// Value-only harness flags a debug strict sandbox forwards past `--clearenv`.
@@ -5524,15 +5560,35 @@ impl DirectPrimaryOwner {
         }
     }
 
-    fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
+    fn attach_router(&mut self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.command_tx
+        if self
+            .command_tx
             .send(DirectPrimaryOwnerCommand::AttachRouter(
                 Box::new(router),
                 reply_tx,
             ))
-            .map_err(|_| app_detail("primary router attachment", "owner stopped"))?;
-        receive_direct_owner_reply(&reply_rx, "primary router attachment", false)
+            .is_err()
+        {
+            // The owner already exited. Its terminal error is authoritative;
+            // a closed command channel is only a symptom of that failure.
+            return self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner stopped",
+            )));
+        }
+        match reply_rx.recv_timeout(DIRECT_PRIMARY_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("primary router attachment", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "primary router attachment",
+                "owner did not acknowledge before deadline",
+            )),
+            Err(RecvTimeoutError::Disconnected) => self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner ended before acknowledgment",
+            ))),
+        }
     }
 
     fn shutdown(mut self) -> Result<(), HostAppError> {

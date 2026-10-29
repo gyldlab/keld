@@ -587,3 +587,57 @@ fn revoked_before_router_attachment_preserves_pre_ready_error() {
         "pre-attach revocation lost its typed startup cause: {error}"
     );
 }
+
+/// The session caller must receive the terminal owner's typed error after a
+/// pre-attach Revoked, not a replacement attachment-channel disconnect error.
+/// Run the real supervisor/owner and wait for the owner thread to end before
+/// sending `AttachRouter`, making the cross-channel order deterministic.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn caller_sees_pre_ready_owner_cause_when_attachment_loses_the_race() {
+    #[cfg(target_os = "linux")]
+    let config =
+        keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
+    #[cfg(windows)]
+    let config =
+        keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe").args(["/C", "exit 19"]);
+    let (supervisor, recovery) =
+        keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
+            config.admission_timeout(Duration::from_secs(2)),
+        )
+        .expect("start real supervisor");
+    let (window_tx, _window_rx) = mpsc::channel();
+    let mut owner = super::DirectPrimaryOwner::start(
+        supervisor,
+        recovery,
+        window_tx,
+        SessionShutdownState::new(),
+    )
+    .expect("start direct primary owner");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !owner
+        .handle
+        .as_ref()
+        .is_some_and(std::thread::JoinHandle::is_finished)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "pre-Ready owner did not terminate after child exit"
+        );
+        thread::yield_now();
+    }
+    let (router, _client, _test_owner_rx) = initial_ready_router();
+    let error = owner
+        .attach_router(router)
+        .expect_err("failed owner cannot acknowledge router attachment");
+    assert!(
+        error
+            .to_string()
+            .contains("Bun terminated before the initial window became ready"),
+        "caller lost the owner's typed pre-Ready cause: {error}"
+    );
+    assert!(
+        owner.handle.is_none(),
+        "terminal owner result must be joined once"
+    );
+}

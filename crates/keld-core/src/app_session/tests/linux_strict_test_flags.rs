@@ -30,3 +30,50 @@ fn linux_strict_forwards_exactly_the_value_only_test_flags() {
         [] as [(&str, OsString); 0]
     );
 }
+
+/// The inherited opt-in is a value, never a filename. Even an unrelated
+/// same-user 0600 file cannot become the supervisor's append destination.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+#[test]
+fn stage_debug_witness_rejects_external_private_file_and_preexisting_hardlink() {
+    use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("private stage root");
+    let unrelated = root.path().join("unrelated-private.log");
+    std::fs::write(&unrelated, b"keep this data").expect("seed unrelated file");
+    std::fs::set_permissions(&unrelated, std::fs::Permissions::from_mode(0o600))
+        .expect("private unrelated file");
+
+    assert!(
+        super::create_stage_debug_attempt_witness(root.path(), Some(unrelated.as_os_str()))
+            .is_err(),
+        "the inherited value must never select arbitrary same-user files"
+    );
+    assert_eq!(
+        std::fs::read(&unrelated).expect("read unrelated"),
+        b"keep this data"
+    );
+
+    let stage_witness = root.path().join(".keld-debug-primary-attempts");
+    std::fs::hard_link(&unrelated, &stage_witness).expect("preplant same-user hardlink");
+    assert!(
+        super::create_stage_debug_attempt_witness(root.path(), Some(OsStr::new("1"))).is_err(),
+        "exclusive creation must refuse even a same-user private hardlink"
+    );
+    assert_eq!(
+        std::fs::read(&unrelated).expect("read unrelated"),
+        b"keep this data"
+    );
+    std::fs::remove_file(&stage_witness).expect("remove planted link");
+    assert_eq!(
+        super::create_stage_debug_attempt_witness(root.path(), Some(OsStr::new("1")))
+            .expect("create fresh stage-owned witness"),
+        Some(stage_witness.clone())
+    );
+    let metadata = std::fs::metadata(&stage_witness).expect("witness metadata");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    assert!(
+        super::create_stage_debug_attempt_witness(root.path(), Some(OsStr::new("1"))).is_err(),
+        "the same stage path cannot be recreated or overwritten"
+    );
+}

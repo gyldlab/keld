@@ -377,7 +377,7 @@ pub struct RoleConfig {
     linux_strict: Option<LinuxStrictProfile>,
     // Debug-only host observer, never an environment key for a strict child.
     #[cfg(all(target_os = "linux", debug_assertions))]
-    debug_primary_attempt_witness: Option<PathBuf>,
+    debug_primary_attempt_witness: Option<Arc<Mutex<std::fs::File>>>,
     #[cfg(test)]
     #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
@@ -483,14 +483,18 @@ impl RoleConfig {
         self
     }
 
-    /// Records each primary supervisor prepare attempt in a parent-owned,
-    /// already-existing file. Debug Linux host tests only; no path is exposed
-    /// inside the strict Bun sandbox, and witness I/O failures stop preparation.
+    /// Pins an existing private witness file once, before spawning any role.
+    /// The supervisor writes through this descriptor for every prepare, so
+    /// later pathname replacement cannot redirect its output. Debug Linux only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe filesystem objects, symlinked paths, or open failures.
     #[cfg(all(target_os = "linux", debug_assertions))]
-    #[must_use]
-    pub fn with_debug_primary_attempt_witness(mut self, path: PathBuf) -> Self {
-        self.debug_primary_attempt_witness = Some(path);
-        self
+    pub fn with_debug_primary_attempt_witness(mut self, path: &Path) -> std::io::Result<Self> {
+        let file = open_debug_attempt_witness(path)?;
+        self.debug_primary_attempt_witness = Some(Arc::new(Mutex::new(file)));
+        Ok(self)
     }
 
     /// Sets the supervisor restart policy.
@@ -723,17 +727,15 @@ impl ChildPreparer for RolePreparer {
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
         #[cfg(all(target_os = "linux", debug_assertions))]
-        if let Some(path) = &self.config.debug_primary_attempt_witness {
+        if let Some(witness) = &self.config.debug_primary_attempt_witness {
             use std::io::Write as _;
-            // The harness created this file before spawning the host. Record
-            // before provisioning, so even a failed or short-lived successor
-            // is visible, independent of HELLO and of the control socket.
-            let mut file =
-                open_debug_attempt_witness(path).map_err(|source| RuntimeError::Lifecycle {
-                    phase: "debug primary attempt witness",
-                    source,
-                })?;
-            writeln!(file, "{attempt}").map_err(|source| RuntimeError::Lifecycle {
+            // Record before provisioning, including a short-lived or failed
+            // successor. Retain the original verified descriptor across attempts.
+            let mut file = witness.lock().map_err(|_| RuntimeError::Lifecycle {
+                phase: "debug primary attempt witness",
+                source: std::io::Error::other("witness file lock poisoned"),
+            })?;
+            writeln!(*file, "{attempt}").map_err(|source| RuntimeError::Lifecycle {
                 phase: "debug primary attempt witness",
                 source,
             })?;
@@ -1247,6 +1249,31 @@ mod debug_attempt_witness_tests {
         )
         .expect("record");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "1\n");
+    }
+
+    #[test]
+    fn pinned_witness_stays_on_original_inode_after_same_user_replacement() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let path = private_file(&dir, 0o600);
+        let config = super::RoleConfig::primary("/bin/sh")
+            .with_debug_primary_attempt_witness(&path)
+            .expect("pin stage-owned witness");
+        let original = dir.path().join("original-inode");
+        std::fs::rename(&path, &original).expect("rename original file");
+        std::fs::write(&path, b"unrelated data").expect("replace with same-user file");
+
+        let pinned = config
+            .debug_primary_attempt_witness
+            .as_ref()
+            .expect("witness descriptor");
+        writeln!(*pinned.lock().expect("pinned witness lock"), "1")
+            .expect("write through original descriptor");
+        assert_eq!(std::fs::read(&original).expect("read original"), b"1\n");
+        assert_eq!(
+            std::fs::read(&path).expect("read replacement"),
+            b"unrelated data",
+            "a same-user replacement must never receive supervisor output"
+        );
     }
 
     #[test]

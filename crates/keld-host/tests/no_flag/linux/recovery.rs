@@ -179,7 +179,8 @@ fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
             max_crashes: 3,
             window_secs: 30,
         })
-        .with_debug_primary_attempt_witness(attempt_path.clone());
+        .with_debug_primary_attempt_witness(&attempt_path)
+        .expect("pin private attempt witness");
     let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
         .expect("start real primary supervisor");
     assert!(
@@ -228,7 +229,8 @@ fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
             max_crashes: 3,
             window_secs: 30,
         })
-        .with_debug_primary_attempt_witness(attempt_path.clone());
+        .with_debug_primary_attempt_witness(&attempt_path)
+        .expect("pin private attempt witness");
     let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
         .expect("start real initially unready supervisor");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -262,8 +264,6 @@ fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
 fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
     let fixture = ProductFixture::new();
     let control_path = fixture.root.path().join("post-hello-control.sock");
-    let attempt_path = fixture.root.path().join("supervisor-attempts.log");
-    create_private_witness(&attempt_path, "create private supervisor attempt witness");
     let listener = UnixListener::bind(&control_path).expect("bind post-HELLO control");
     listener
         .set_nonblocking(true)
@@ -275,11 +275,14 @@ fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage post-HELLO host");
+    // The debug Host creates this exact file inside the protected stage.
+    // No inherited path names an append destination.
+    let attempt_path = stage.root().join(".keld-debug-primary-attempts");
     let mut host = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", &control_path)
         .env("KELD_T3_EXIT_AFTER_HELLO", "1")
-        .env("KELD_T3_SUPERVISOR_ATTEMPTS", &attempt_path)
+        .env("KELD_T3_SUPERVISOR_ATTEMPTS", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
