@@ -75,6 +75,8 @@ pub struct MacFilePanel {
     completion: Rc<Cell<Option<NSModalResponse>>>,
     callback: RcBlock<dyn Fn(NSModalResponse)>,
     filter: MacFileFilterModel,
+    native_groups: Vec<Vec<Retained<UTType>>>,
+    failed_filter: bool,
     popup: Option<Retained<NSPopUpButton>>,
     state: PanelState,
 }
@@ -127,6 +129,26 @@ impl MacFilePanel {
         filters: &[super::FileDialogFilter],
     ) -> Result<Self, IpcError> {
         let filter = MacFileFilterModel::new(filters)?;
+        // Preflight EVERY group before presentation. A later accessory
+        // selection must not discover an unrepresentable UTType while a
+        // physical sheet owns the effect and its original correlation.
+        let mut candidate = filter.clone();
+        let mut native_groups = Vec::with_capacity(filters.len().max(1));
+        for index in 0..filters.len().max(1) {
+            if !filters.is_empty() {
+                candidate.select(index)?;
+            }
+            let group = candidate
+                .active_suffixes()
+                .unwrap_or(&[])
+                .iter()
+                .map(|suffix| {
+                    UTType::typeWithFilenameExtension(&NSString::from_str(suffix))
+                        .ok_or_else(|| invalid("native file type could not be represented"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            native_groups.push(group);
+        }
         let completion = Rc::new(Cell::new(None));
         let state = Rc::clone(&completion);
         let callback: RcBlock<dyn Fn(NSModalResponse)> = RcBlock::new(move |response| {
@@ -139,6 +161,8 @@ impl MacFilePanel {
             completion,
             callback,
             filter,
+            native_groups,
+            failed_filter: false,
             popup: None,
             state: PanelState::Prepared,
         };
@@ -169,19 +193,13 @@ impl MacFilePanel {
     fn apply_filter(&self) -> Result<(), IpcError> {
         // An empty NSArray is the documented modern 'unrestricted' type set.
         // Never union groups or invoke the deprecated setAllowedFileTypes.
-        let types: Vec<Retained<UTType>> = self
-            .filter
-            .active_suffixes()
-            .unwrap_or(&[])
-            .iter()
-            .map(|suffix| {
-                UTType::typeWithFilenameExtension(&NSString::from_str(suffix))
-                    .ok_or_else(|| invalid("native file type could not be represented"))
-            })
-            .collect::<Result<_, _>>()?;
+        let types = self
+            .native_groups
+            .get(self.filter.selected_index().unwrap_or(0))
+            .ok_or_else(|| invalid("native filter index missing its validated type group"))?;
         self.panel
             .save_panel()
-            .setAllowedContentTypes(&NSArray::from_retained_slice(&types));
+            .setAllowedContentTypes(&NSArray::from_retained_slice(types));
         Ok(())
     }
 
@@ -310,8 +328,11 @@ impl MacFilePanel {
             return Ok(None);
         }
         let Some(response) = self.completion.get() else {
-            if self.state == PanelState::Presented {
-                self.refresh_filter_choice()?;
+            if self.state == PanelState::Presented && self.refresh_filter_choice().is_err() {
+                // Fail the request only after the real sheet is dismissed.
+                // Do not misreport this native failure as user Cancel.
+                self.failed_filter = true;
+                self.request_cancel()?;
             }
             return Ok(None);
         };
@@ -322,6 +343,9 @@ impl MacFilePanel {
         // The native callback and invisibility establish physical completion
         // even when a subsequent result-path validation reports an error.
         self.state = PanelState::Drained;
+        if self.failed_filter {
+            return Err(invalid("native filter selection failed"));
+        }
         let reply = if response == NSModalResponseCancel {
             match self.panel {
                 FilePanel::Open(_) => DialogReplyV1::Open {

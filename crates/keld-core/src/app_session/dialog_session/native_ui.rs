@@ -143,9 +143,26 @@ impl DialogMainOwner {
             } else if stopping || !self.session.may_present(work.owner)? {
                 self.notify(work.owner, MacDialogUiOutcome::Dismissed, None)?;
             } else if let Some(parent) = resolve(work.parent) {
-                let mut panel = NativePanel::prepare(main, work.options)?;
-                panel.begin_sheet(&parent)?;
-                self.active = Some((work.owner, work.parent, panel, work.deadline));
+                match NativePanel::prepare(main, work.options) {
+                    Ok(mut panel) => {
+                        if let Err(error) = panel.begin_sheet(&parent) {
+                            // A failed begin is still in Prepared state, so
+                            // no physical sheet needs draining. Preserve the
+                            // original correlation instead of killing Host.
+                            eprintln!("{error}");
+                            self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
+                        } else {
+                            self.active = Some((work.owner, work.parent, panel, work.deadline));
+                        }
+                    }
+                    Err(error) => {
+                        // take_work already owns this reservation. A failed
+                        // AppKit preparation must complete it through normal
+                        // custody, never leave it retained on a fatal exit.
+                        eprintln!("{error}");
+                        self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
+                    }
+                }
             } else {
                 self.notify(work.owner, MacDialogUiOutcome::Failed, None)?;
             }

@@ -76,6 +76,19 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`OPEN_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "OPEN_INVALID_FILTER" || command === "OPEN_LATE_INVALID_FILTER") {
+    const filters = command === "OPEN_INVALID_FILTER"
+      ? [{ name: "Invalid", extensions: ["a b"] }]
+      : [
+          { name: "Valid", extensions: ["drawio"] },
+          { name: "Late invalid", extensions: ["a b"] },
+        ];
+    const pending = dialog.showOpenDialog(win, {
+      filters, properties: ["openFile"],
+    });
+    void pending.then((value) => report(`UNEXPECTED_OPEN ${value.filePaths.length}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "MESSAGE_NEXT") {
     const pending = dialog.showMessageBox(win, {
       message: "Healthy next", type: "question", buttons: ["Save", "Cancel"],
@@ -350,6 +363,75 @@ fn run_real_host_files(
     assert!(
         output.status.success(),
         "file dialogs failed Host cleanup: {output:?}"
+    );
+    await_process_gone(bun_pid);
+}
+
+#[test]
+fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message() {
+    // Deliberately reuse the actual Host/Guard/Bun launch, not a mocked panel
+    // or fabricated native completion. Each rejected filter must deliver the
+    // original correlation, retain zero sheets, and permit the next Message.
+    let fixture = ProductFixture::new("gh478-invalid-native-filter");
+    let _paths = FilePaths::new(&fixture, false);
+    let staged = stage(&fixture);
+    let socket = fixture.root.path().join("native-file.sock");
+    let listener = UnixListener::bind(&socket).expect("owned control socket");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let child = Command::new(staged.host())
+        .process_group(0)
+        .current_dir(staged.root())
+        .env("KELD_T1B_CONTROL", &socket)
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("actual shipping Host for invalid filter");
+    let mut cleanup = ShippingLaunchCleanup::new(child);
+    let host = cleanup.cli.as_mut().expect("Host owner");
+    let host_pid = host.id();
+    let _lease = host.stdin.take().expect("retained Host lease");
+    let connection = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
+    connection
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .expect("bounded control reads");
+    let mut reader = BufReader::new(connection.try_clone().expect("control reader"));
+    let bound = read_control_line(&mut reader);
+    assert!(bound.starts_with("ROLE_BOUND "), "{bound}");
+    let bun_pid = parse_pid(bound.split_whitespace().nth(1), &bound);
+    cleanup.record_authenticated_groups(process_group(host_pid), process_group(bun_pid));
+    let created = read_control_line(&mut reader);
+    assert!(
+        created.starts_with(&format!("CREATED {bun_pid} 1")),
+        "{created}"
+    );
+    let baseline = visible_windows(host_pid);
+    assert_eq!(baseline.len(), 1);
+    let mut dialog = NativeDialog {
+        host_pid,
+        baseline,
+        reader,
+        writer: connection,
+        button_helper: compile_ax(&fixture, "press"),
+    };
+    for operation in ["OPEN_INVALID_FILTER", "OPEN_LATE_INVALID_FILTER"] {
+        dialog.submit(operation);
+        assert_eq!(
+            read_control_line(&mut dialog.reader),
+            "OPEN_ERROR KELD-NATIVE-016",
+            "{operation} must refuse on original correlation"
+        );
+        dialog.await_detached(operation);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    dialog.writer.write_all(b"FINISH\n").expect("quit Host");
+    assert_eq!(read_control_line(&mut dialog.reader), "QUIT_REPLY");
+    drop(dialog);
+    let output = wait_child_output(cleanup.release(), EVENT_DEADLINE);
+    assert!(
+        output.status.success(),
+        "Host cleanup after refusals: {output:?}"
     );
     await_process_gone(bun_pid);
 }
