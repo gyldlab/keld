@@ -127,6 +127,7 @@ function filtersField(value: readonly FileDialogFilter[]): Uint8Array {
         ext.length === 0 ||
         Buffer.byteLength(ext, "utf8") > 128 ||
         ext.startsWith(".") ||
+        ext.endsWith(".") ||
         (ext !== "*" &&
           [...ext].some(
             (ch) =>

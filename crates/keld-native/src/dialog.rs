@@ -3,6 +3,9 @@
 //! The first implemented variants are Message and Cancel. Later operations must
 //! append variants; neither nonce nor window reference conveys authority.
 
+/// Native-owned file type grouping; this is not a picker or a new authority.
+#[cfg(target_os = "macos")]
+pub mod file_filter;
 /// Actual macOS `NSAlert` construction and sheet custody on the AppKit thread.
 /// The Host owns Guard, parent identity, correlation, and callback retirement.
 #[cfg(target_os = "macos")]
@@ -331,6 +334,7 @@ fn validate_filter_groups(filters: &[FileDialogFilter]) -> Result<(), IpcError> 
             if extension.is_empty()
                 || extension.len() > 128
                 || extension.starts_with('.')
+                || extension.ends_with('.')
                 || (extension != "*"
                     && extension
                         .chars()

@@ -93,6 +93,7 @@ test("Open/Save rejects unsafe filters, bookmark authority and excess vectors be
     ["drawio", "drawio"],
     ["a".repeat(129)],
     ["*", "xml"],
+    ["bad."],
     ["a\u007f"],
   ]) {
     expect(() =>
