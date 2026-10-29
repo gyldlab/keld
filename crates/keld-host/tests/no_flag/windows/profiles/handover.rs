@@ -117,6 +117,10 @@ fn kill_switches_stay_below_the_nextest_terminate() {
     for (name, switch) in [
         ("startup", crate::startup_kill_switch()),
         ("ui_end", ui_end_kill_switch()),
+        (
+            "stalled_navigation_end",
+            crate::stalled_navigation_end_kill_switch(),
+        ),
         ("handover", handover_kill_switch()),
     ] {
         assert!(
