@@ -35,11 +35,13 @@ try { await app.whenReady(); } catch (error) {
 const win = new BrowserWindow({ width: 640, height: 480 });
 report(`CREATED ${process.pid} ${win.id}`);
 for await (const command of createInterface({ input: control })) {
-  if (command === "SHOW") {
+  if (command === "SHOW" || command === "SHOW_CHECKED") {
+    const checkbox = command === "SHOW_CHECKED";
     const pending = dialog.showMessageBox(win, {
       message: "Unsaved changes", type: "question", title: "Confirm",
       buttons: ["Save", "Cancel", "Discard Changes"],
       defaultId: 0, cancelId: 1, noLink: true, normalizeAccessKeys: true,
+      ...(checkbox ? { checkboxLabel: "Remember", checkboxChecked: true } : {}),
     });
     void pending.then(result => report(`SELECTED ${result.response} ${result.checkboxChecked}`),
       error => report(`ERR ${error?.code ?? String(error)}`));
@@ -271,7 +273,7 @@ fn visible_windows(pid: u32) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn run_real_message_cycles(cycles: usize) {
+fn run_real_message_cycles(cycles: usize, checkbox: bool) {
     let fixture = ProductFixture::new("gh478-native-message");
     let staged = stage(&fixture);
     let socket = fixture.root.path().join("message.sock");
@@ -329,7 +331,11 @@ fn run_real_message_cycles(cycles: usize) {
         let selection = index % buttons.len();
         let label = buttons[selection];
         writer
-            .write_all(b"SHOW\n")
+            .write_all(if checkbox && index == 0 {
+                b"SHOW_CHECKED\n"
+            } else {
+                b"SHOW\n"
+            })
             .expect("request actual native Message");
         assert_eq!(read_control_line(&mut reader), "SUBMITTED");
         let click = Command::new(&clicker)
@@ -342,7 +348,11 @@ fn run_real_message_cycles(cycles: usize) {
             "{label} button not pressed: {click:?}"
         );
         let result = read_control_line(&mut reader);
-        assert_eq!(result, format!("SELECTED {selection} false"), "{result}");
+        assert_eq!(
+            result,
+            format!("SELECTED {selection} {}", checkbox && index == 0),
+            "{result}"
+        );
         let until = Instant::now() + EVENT_DEADLINE;
         while visible_windows(host_pid) != baseline {
             assert!(
@@ -368,12 +378,17 @@ fn run_real_message_cycles(cycles: usize) {
 
 #[test]
 fn public_message_uses_authenticated_host_and_real_native_selection() {
-    run_real_message_cycles(3);
+    run_real_message_cycles(3, false);
 }
 
 #[test]
 fn real_host_257_message_cycles_keep_one_link_and_a_healthy_next_request() {
-    run_real_message_cycles(258);
+    run_real_message_cycles(258, false);
+}
+
+#[test]
+fn real_host_message_reads_the_actual_native_checkbox_state() {
+    run_real_message_cycles(1, true);
 }
 
 fn launch_cancel_host(
