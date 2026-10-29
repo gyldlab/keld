@@ -149,14 +149,62 @@ const appSocketHandlers = {
     notifyLinkClosed(new Error("KEL96 app link closed by host"));
   },
 };
-const appSocket =
-  process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
+type AppLinkSocket = { write(data: Uint8Array): number; end(): void };
+type HalfOpenAppLink = AppLinkSocket & { endWrite(): Promise<void> };
+
+// GH-1182: Bun.connect's end() closes both halves of a Linux app link, so only
+// a node:net half-open socket ends its write half while its read half still
+// receives what the host writes next. Every other run keeps Bun.connect. The
+// mode rides on the value of the post-HELLO hold flag, which the debug strict
+// sandbox already forwards as a value-only flag.
+async function connectHalfOpenAppLink(path: string): Promise<HalfOpenAppLink> {
+  const { createConnection } = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ path, allowHalfOpen: true });
+    socket.once("error", reject);
+    socket.once("connect", () => {
+      socket.off("error", reject);
+      socket.on("data", (chunk: Uint8Array) => {
+        reader.push(new Uint8Array(chunk));
+      });
+      socket.on("drain", () => appDrain.fire());
+      socket.on("error", (error: Error) => reader.fail(error));
+      socket.on("close", () =>
+        notifyLinkClosed(new Error("KEL96 app link closed by host")),
+      );
+      resolve({
+        write(data: Uint8Array): number {
+          if (socket.destroyed || !socket.writable) return -1;
+          socket.write(data);
+          return data.length;
+        },
+        end(): void {
+          socket.end();
+        },
+        endWrite(): Promise<void> {
+          return new Promise((finished) => {
+            socket.end(() => finished());
+          });
+        },
+      });
+    });
+  });
+}
+
+const preReadyHold = process.env.KELD_T3_EXIT_AFTER_HELLO;
+const halfOpenAppLink =
+  process.platform !== "win32" && preReadyHold === "half-open"
+    ? await connectHalfOpenAppLink(endpoint)
+    : undefined;
+const appSocket: AppLinkSocket =
+  halfOpenAppLink ??
+  (process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
     ? await Bun.connect({
         hostname: "127.0.0.1",
         port: parseWin32DiagnosticPort(endpoint),
         socket: appSocketHandlers,
       })
-    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers });
+    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers }));
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
 const helloReply = await withIoDeadline(reader.readFrame());
@@ -210,7 +258,7 @@ if (process.platform === "win32") {
     await sendControl(`DESCENDANT ${descendant.pid}`);
   }
 }
-if (process.env.KELD_T3_EXIT_AFTER_HELLO === "1") {
+if (preReadyHold === "1" || preReadyHold === "half-open") {
   // The parent holds the renderer's load open, so this authenticated
   // generation cannot have reached Ready; it exits only on its command.
   const marker = process.env.KELD_T3_PRE_READY_MARKER;
@@ -221,8 +269,30 @@ if (process.env.KELD_T3_EXIT_AFTER_HELLO === "1") {
     // stay live, so the host observes the link end before any Ready. The
     // acknowledgment is this command's only control record: no LINK_EOF.
     closeNotificationStarted = true;
-    appSocket.end();
-    await sendControl("PRE_READY_LINK_CLOSED");
+    if (halfOpenAppLink) {
+      // Acknowledge only once the write half has shut down; the read half
+      // stays open, so a later host Ready would still be delivered here.
+      await halfOpenAppLink.endWrite();
+      await sendControl("PRE_READY_WRITE_SHUTDOWN");
+      // Report a Ready the host still delivers to the surviving read half.
+      void (async (): Promise<void> => {
+        for (;;) {
+          const frame = await reader.readFrame();
+          if (
+            frame.header.kind === FrameKind.Event &&
+            frame.header.channel === LIFECYCLE_CHANNEL &&
+            frame.payload.length === 1 &&
+            frame.payload[0] === 0
+          ) {
+            await sendControl("READY_AFTER_WRITE_SHUTDOWN");
+            return;
+          }
+        }
+      })().catch(() => undefined);
+    } else {
+      appSocket.end();
+      await sendControl("PRE_READY_LINK_CLOSED");
+    }
     await new Promise(() => {});
   }
   if (command !== "EXIT_PRE_READY") {

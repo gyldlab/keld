@@ -535,6 +535,83 @@ fn pre_ready_link_eof_defers_to_the_owner_generation_outcome() {
         .expect("pre-Ready EOF leaves the outcome to the owner");
 }
 
+/// PR #1300 review (P1): a pre-Ready EOF the reader has observed must win over
+/// a later `Ready`. The owner learns of the EOF asynchronously, so without an
+/// ordered failure transition a `NavigationReady` arriving before the owner's
+/// `Revoked` would publish `Ready` and arm recovery, letting the failed
+/// generation's restart provision a successor. The owner here answers every
+/// request, so a premature arm cannot hang this test; it only records them.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn pre_ready_link_eof_refuses_a_later_ready_and_its_recovery_arm() {
+    let (handle, mut g1_client, owner_rx) = initial_ready_router();
+    let owner = thread::spawn(move || {
+        let mut requests = Vec::new();
+        // Ends once every router handle (and its command sender) is dropped.
+        while let Ok(command) = owner_rx.recv() {
+            match command {
+                TestPrimaryOwnerCommand::FailGeneration(attempt, reply) => {
+                    requests.push(format!("FailGeneration({attempt})"));
+                    reply.send(Ok(())).expect("acknowledge the link failure");
+                }
+                TestPrimaryOwnerCommand::ArmRecovery(_, reply) => {
+                    requests.push(String::from("ArmRecovery"));
+                    reply.send(Ok(())).expect("acknowledge the recovery arm");
+                }
+                TestPrimaryOwnerCommand::DenyRecovery => {
+                    requests.push(String::from("DenyRecovery"));
+                }
+                _ => requests.push(String::from("unexpected owner command")),
+            }
+        }
+        requests
+    });
+    let (mut reader, peer) = primary_test_stream_pair();
+    drop(peer);
+    let caller = super::PrimaryCallerContext {
+        attempt: 1,
+        identity: PrimaryLinkIdentity::Fixture,
+        reader_stop: Arc::new(AtomicBool::new(false)),
+    };
+    let reader_handle = handle.clone();
+    thread::spawn(move || super::read_primary_frames(&mut reader, &reader_handle, &caller))
+        .join()
+        .expect("pre-Ready reader joins")
+        .expect("pre-Ready EOF leaves the outcome to the owner");
+
+    handle
+        .signal_ready()
+        .expect("a refused Ready is not itself a session fault");
+    assert!(
+        !handle.window_ready.load(Ordering::Acquire),
+        "Ready was published after the pre-Ready EOF"
+    );
+    assert!(
+        !handle.recovery_armed.load(Ordering::Acquire),
+        "recovery was armed after the pre-Ready EOF"
+    );
+    // The first lifecycle frame the application receives is this probe, so
+    // no Ready was written before it.
+    handle
+        .signal_last_window_closed()
+        .expect("write the ordering probe");
+    let (header, payload) =
+        keld_ipc::link::read_frame(&mut g1_client).expect("first lifecycle frame");
+    assert_eq!(header.kind, FrameKind::Event);
+    assert_eq!(header.channel, LIFECYCLE_CHANNEL);
+    assert_eq!(
+        decode::<LifecycleEvent>(&payload).expect("lifecycle payload"),
+        LifecycleEvent::LastWindowClosed,
+        "Ready reached the application after the pre-Ready EOF"
+    );
+    drop(handle);
+    assert_eq!(
+        owner.join().expect("test owner joins"),
+        ["FailGeneration(1)"],
+        "the pre-Ready EOF must reach the owner and nothing may arm recovery"
+    );
+}
+
 /// GH-1182: the first reader starts before the router attaches, so a link
 /// failure in that window must still reach the Supervisor; only a request for a
 /// generation the attached router no longer holds is stale.

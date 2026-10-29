@@ -328,3 +328,102 @@ fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
     assert_only_initial_supervisor_attempt(&attempt_path);
     held.release();
 }
+
+/// PR #1300 review (P1) on Linux: after its authenticated HELLO, with the first
+/// navigation held, a live Bun shuts down only the write half of its app link
+/// (a `node:net` half-open socket; `Bun.connect` would close both halves) and
+/// acknowledges on its separate control link. Only then is the navigation
+/// released, so `NavigationReady` races the owner's handling of the EOF the
+/// host has already read. The EOF must win: no `Ready` reaches the surviving
+/// read half, startup fails typed, and no successor is even prepared.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
+#[test]
+fn linux_pre_ready_write_shutdown_beats_a_released_ready_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_path = fixture.root.path().join("write-shutdown-control.sock");
+    let listener = UnixListener::bind(&control_path).expect("bind write-shutdown control");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking write-shutdown control");
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage write-shutdown host");
+    // The debug Host creates this exact file inside the protected stage.
+    let attempt_path = stage.root().join(".keld-debug-primary-attempts");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", &control_path)
+        // Hold after HELLO on a half-open app link (see the fixture).
+        .env("KELD_T3_EXIT_AFTER_HELLO", "half-open")
+        .env("KELD_T3_SUPERVISOR_ATTEMPTS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch write-shutdown host");
+    let (mut reader, mut writer, generation, _link) = accept_generation(&listener, &mut host);
+    held.await_connection(&mut host);
+
+    writer
+        .write_all(b"CLOSE_PRE_READY_LINK\n")
+        .expect("request pre-Ready write shutdown");
+    writer.flush().expect("flush pre-Ready write shutdown");
+    assert_eq!(read_control_line(&mut reader), "PRE_READY_WRITE_SHUTDOWN");
+    // Only now may the initial navigation finish and race the owner.
+    held.release();
+
+    // A prepared successor keeps the host running, so stop at that witness
+    // rather than at the exit deadline, and fail on the pinned oracle.
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let status = loop {
+        if let Some(status) = host.try_wait().expect("observe write-shutdown host") {
+            break status;
+        }
+        if fs::read_to_string(&attempt_path).is_ok_and(|trace| trace.starts_with("1\n2\n")) {
+            let _ = host.kill();
+            let _ = host.wait();
+            assert_only_initial_supervisor_attempt(&attempt_path);
+        }
+        assert!(Instant::now() < deadline, "host exit timed out");
+        std::thread::park_timeout(Duration::from_millis(10));
+    };
+    assert!(
+        !status.success(),
+        "a pre-Ready write shutdown became success"
+    );
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
+    let mut stderr = String::new();
+    host.stderr
+        .take()
+        .expect("captured write-shutdown stderr")
+        .read_to_string(&mut stderr)
+        .expect("read write-shutdown stderr");
+    // The parent-owned witness records preparations before spawn or HELLO.
+    assert_only_initial_supervisor_attempt(&attempt_path);
+    // Bun is gone, so its control link ends; any record it sent is complete.
+    let mut late_control = String::new();
+    reader
+        .read_to_string(&mut late_control)
+        .expect("read the remaining control records");
+    assert!(
+        !late_control.contains("READY_AFTER_WRITE_SHUTDOWN"),
+        "Ready reached the app after its write shutdown: {late_control:?}\n{stderr}"
+    );
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service: {stderr}"
+    );
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+}
