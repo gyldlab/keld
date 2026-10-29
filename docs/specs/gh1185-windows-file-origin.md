@@ -266,7 +266,7 @@ lifecycle/revocation and evidence provenance; performance atoms are in §9.
 | A2 Request census and filter scope (coverage, cost) | WebView2 filter normalization + `keld-wv` registration | `file:*` + `CONTEXT_ALL` + `DOCUMENT` per webview, before first `Navigate`; worker kinds once per environment → every `file://` request raises WRR, no other scheme does | late registration; `*` filter puts every remote request on the UI thread | AC02, AC19 | PROBE n2 (under `*`; second document only per note 268); FACT L1307 normalization, `_22` L51/L72 | precondition of A8 · n2 under `file:*`, both documents |
 | A3 Admitted root (identity of the root) | `keld-core` boot (dev DACL; KEL-254 selection) | admission → one retained `Dir` | handle dropped and reopened by path | AC04 | FACT dev handle dropped today; `tree: Dir` retained | → A5 · junction swapped in after admission is followed |
 | A4 URL → components (authentication of the name) | `keld-guard` parser | URI + `AdmittedRootUrl` → components or refusal | double decode; authority; ADS; `~`; Win32 spellings | AC05 | PROBE parser cells; FACT grammar; FACT Chromium pre-canonicalises `%2e%2e` | independent of A5 for `:`/`~`; redundant for `..`/trailing dot · AC05 NC |
-| A5 Open (OS containment) | `keld-update` `open_regular_beneath` over cap-std no-follow walk | `&Dir` + components → regular-file handle + `nlink` | reparse followed; directory; Win32 name layer | AC03 opener cells, AC04 | FACT cap-primitives relative `NtCreateFile` + `FILE_OPEN_REPARSE_POINT`; UNKNOWN mount-point classification → intermediate-junction cell | ← A3 · AC04 NC |
+| A5 Open (OS containment) | `keld-update` `open_regular_beneath` over cap-std no-follow walk | `&Dir` + components → regular-file handle + `nlink` | reparse followed; directory; Win32 name layer | AC03 opener cells, AC04 | FACT cap-primitives relative `NtCreateFile` + `FILE_OPEN_REPARSE_POINT`; PROBE `gh1185-capstd-junction-2026-10-30` (3/3 identical, keld-research note 268): cap-std 4.0.3 refuses an intermediate junction in every form (multi-component path and default `open_dir`: "a path led outside of the filesystem", for out-of-root and in-root targets alike; `open_dir_nofollow`: os error 681), while the ambient `std::fs` negative control reads the out-of-root sentinel through the same junction; directory/file symlinks UNTESTED (creation needs privilege) | ← A3 · AC04 NC |
 | A6 Hardlink authority (authorization) | KEL-254; W3 reads back | `nlink` + DACL → served + receipt | namespace write taken as the only authority | AC17 | FACT owner decision + correction | · role write grant |
 | A7 Response/refusal contract + MIME table | `keld-wv` handler | file or refusal → `200`/`404`/`403`; `Content-Type` from one `keld-wv` table | Chromium fallback; body on refusal; app override vs baseline | AC03, AC09, AC16, AC18 | PROBE 403/empty | → A16 (baseline keyed on context, not type) · AC03 NC |
 | A8 Served-document identity | `keld-wv` per-navigation record for **every** top-level navigation (all schemes) | allowed `NavigationStarting(n)` + DOCUMENT WRR with equal parsed URI → `ServedDocument` | URL text as identity; frame record attached to `n` | AC06 | INFERRED timing; UNKNOWN `IsErrorPage` for Host `404` (Q7) | ← A2; → A12 (gate sees all navigations) · AC06 NC |
@@ -308,7 +308,7 @@ Re-scored (0–10, confidence):
 
 | Option | Correctness vs page-controlled names | One owner / DRY | Boundary shape | Gate cost | Perf | Mean |
 | --- | --- | --- | --- | --- | --- | --- |
-| **(g) cap-std per-component no-follow walk under the existing `tree: Dir` (generalised `open_pinned_leaf`), post-open checks, `nlink` via cap-fs-ext** | 8 (0.7): relative `NtCreateFile` per component with `FILE_OPEN_REPARSE_POINT`; mount-point classification UNVERIFIED → probe cell | 9 (0.9): extends the opener `keld-update` already uses; deletes the Win32 walker; `open_pinned_leaf` becomes a call | 8 (0.8): `keld-wv` holds no policy; `keld-core` already depends on `keld-update` | 9 (0.9): **no new production `unsafe`**; public API only | 7 (0.7): one open per component (depth ≤ 3 in the pinned app; measured in P1) | **8.2** |
+| **(g) cap-std per-component no-follow walk under the existing `tree: Dir` (generalised `open_pinned_leaf`), post-open checks, `nlink` via cap-fs-ext** | 8 (0.85): relative `NtCreateFile` per component with `FILE_OPEN_REPARSE_POINT`; intermediate junctions refused in every walk form, 3/3 with a live-junction negative control (probe `gh1185-capstd-junction-2026-10-30`); symlinks UNTESTED | 9 (0.9): extends the opener `keld-update` already uses; deletes the Win32 walker; `open_pinned_leaf` becomes a call | 8 (0.8): `keld-wv` holds no policy; `keld-core` already depends on `keld-update` | 9 (0.9): **no new production `unsafe`**; public API only | 7 (0.7): one open per component (depth ≤ 3 in the pinned app; measured in P1) | **8.2** |
 | (a) r1: new `NtCreateFile` multi-component read-open in `windows_fs.rs` | 9 (0.9) | 7 (0.8): a second relative opener beside cap-std's in the same crate | 8 (0.8) | 6 (0.9): new `unsafe` + AGENTS sanction | 8 (0.7) | 7.6 |
 | (b) promote into `keld-guard` | 9 | 5 | 5 | 4 | 8 | 6.2 |
 | (c) `keld-wv`-owned opener | 9 | 3 | 4 | 5 | 8 | 5.8 |
@@ -316,8 +316,13 @@ Re-scored (0–10, confidence):
 | (e) extend `open_relative_file_windows` | 2 | 6 | 2 | 8 | 7 | 5.0 |
 | (f) new crate | 9 | 5 | 7 | 3 | 8 | 6.4 |
 
-**Decision: (g).** Reuse before rewrite holds; the named requirement (g) must still prove is
-the intermediate-junction refusal, which is an AC03 cell. Concretely:
+**Decision: (g).** Reuse before rewrite holds. The named requirement (g) had to prove, the
+intermediate-junction refusal, is now probe evidence (`gh1185-capstd-junction-2026-10-30`:
+cells C1–C5 refused, negative control N1 reads the out-of-root sentinel through the same
+junction with `std::fs`, 3/3 identical); it stays an AC03 regression cell. cap-std follows a
+*relative* in-root symlink at an intermediate component without escaping the root; that is
+containment-safe but narrower than "any reparse at any component refuses", so directory and
+file symlinks remain an UNTESTED AC03 cell (creation needs privilege). Concretely:
 
 ```rust
 // crates/keld-update/src/windows_baseline.rs (pub, Windows-only; no new unsafe)
