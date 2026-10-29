@@ -252,8 +252,7 @@ impl HeldRendererRequest {
         fs::write(
             project.join("index.html"),
             format!(
-                "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">
-",
+                "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
                 self.port
             ),
         )

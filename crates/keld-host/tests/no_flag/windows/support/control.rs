@@ -56,9 +56,12 @@ pub(crate) fn parse_hello(record: &str) -> (u32, String) {
     (pid, link)
 }
 
-/// After the host has exited, no further generation connected to this
-/// nonblocking control listener.
+/// After the host has exited, no further generation connected to this control
+/// listener. The check never waits: it switches the listener to nonblocking.
 pub(crate) fn assert_no_control_connection(listener: &TcpListener, context: &str) {
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking control listener");
     assert!(
         matches!(
             listener.accept(),

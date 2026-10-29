@@ -442,7 +442,6 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
     )
     .expect("stage stalled-navigation host");
-
     let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_GENERATION_MARKER", &generations)
