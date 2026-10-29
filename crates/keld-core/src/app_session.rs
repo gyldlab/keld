@@ -5591,6 +5591,13 @@ fn restart_failed_bound_generation(
     owned
 }
 
+/// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
+/// one does. Linux and Windows route it through the direct owner so startup
+/// fails with the recovery gate's typed cause (GH-1182). macOS keeps the
+/// reader-owned pre-Ready failure its guardian tests pin; its owner path for
+/// this case is unverified on a device.
+const PRE_READY_LINK_EOF_DEFERS_TO_OWNER: bool = cfg!(any(target_os = "linux", windows));
+
 /// Whether a reader's link failure for `attempt` asks the Supervisor (the sole
 /// process/restart owner) to restart that generation. A stale request after a
 /// natural exit installed a successor is rejected. Before the router attaches,
@@ -8105,7 +8112,10 @@ fn read_primary_frames(
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
-                if handle.shutdown.is_running() {
+                if handle.shutdown.is_running()
+                    && (PRE_READY_LINK_EOF_DEFERS_TO_OWNER
+                        || handle.window_ready.load(Ordering::Acquire))
+                {
                     handle.fail_pending_echo_for_attempt(
                         attempt,
                         "application call ended because the app link disconnected",
@@ -8114,11 +8124,11 @@ fn read_primary_frames(
                     // is recoverable. Its Revoked update retires this writer
                     // before a successor is installed; only its terminal
                     // outcome may close the already-ready window. Before
-                    // Ready the same update meets the closed recovery gate,
-                    // so startup fails with the gate's typed cause whether
-                    // this EOF or the process exit is observed first; a late
-                    // owner acknowledgment can only add a cleanup detail
-                    // (GH-1182).
+                    // Ready (Linux and Windows) the same update meets the
+                    // closed recovery gate, so startup fails with the gate's
+                    // typed cause whether this EOF or the process exit is
+                    // observed first; a late owner acknowledgment can only
+                    // add a cleanup detail (GH-1182).
                     handle.link_failed(attempt)?;
                     return Ok(());
                 }
