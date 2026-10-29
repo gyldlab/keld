@@ -309,9 +309,12 @@ pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
     )
     .expect("actual KIPC manifest JSON");
     assert_eq!(
-        api["dependencies"]["@keld/kipc"].as_str(),
-        kipc["version"].as_str(),
-        "the staged dependency must be declared by the actual SDK producer"
+        api["dependencies"]["@keld/kipc"], "link:../kipc",
+        "the staged dependency must be the actual local SDK package edge"
+    );
+    assert_eq!(
+        kipc["name"], "@keld/kipc",
+        "the declared package edge must select canonical KIPC"
     );
     // The real package manager supplies this local, declared edge. The late
     // source-copy fixture must do the same rather than silently depend on the
