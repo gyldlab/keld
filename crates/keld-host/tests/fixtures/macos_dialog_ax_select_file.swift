@@ -1,6 +1,6 @@
 // Exact-Host-PID macOS native Open selection acceptance. Nonshipping helper.
-// Deliberately requires accessibility trust and posts keyboard events only to
-// the exact test Host PID, never globally to the user's foreground app.
+// Select the named OS file row through Accessibility, never a guessed mouse
+// coordinate that may point at a directory or another app's window.
 import AppKit
 import ApplicationServices
 import Foundation
@@ -19,8 +19,8 @@ guard filePath.hasPrefix("/"), FileManager.default.fileExists(atPath: filePath) 
     fputs("NO_EXISTING_FIXTURE_FILE\n", stderr)
     exit(4)
 }
-// This helper is allowed to select only a single file in the test-created
-// directory. It must never click a row of a directory containing user files.
+// This helper may select only the single file in the test-created directory,
+// and must not act on any unrelated file row.
 let fileName = (filePath as NSString).lastPathComponent
 let fileParent = (filePath as NSString).deletingLastPathComponent
 guard let entries = try? FileManager.default.contentsOfDirectory(atPath: fileParent),
@@ -34,31 +34,6 @@ guard let application = NSRunningApplication(processIdentifier: pid_t(pid)) else
 }
 fputs("GH478_TARGET_ACTIVATION_POLICY=\(application.activationPolicy.rawValue) FRONTMOST_PID=\(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)\n", stderr)
 
-func press(_ key: CGKeyCode, flags: CGEventFlags = []) {
-    for down in [true, false] {
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down) else {
-            fputs("CG_EVENT_FAILED\n", stderr)
-            exit(9)
-        }
-        event.flags = flags
-        event.postToPid(pid_t(pid))
-        Thread.sleep(forTimeInterval: 0.02)
-    }
-}
-func typeText(_ value: String) {
-    var chars = Array(value.utf16)
-    chars.withUnsafeMutableBufferPointer { buffer in
-        for down in [true, false] {
-            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else {
-                fputs("CG_EVENT_UNICODE_FAILED\n", stderr)
-                exit(11)
-            }
-            event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress!)
-            event.postToPid(pid_t(pid))
-            Thread.sleep(forTimeInterval: 0.03)
-        }
-    }
-}
 func attr(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
     var result: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, key as CFString, &result) == .success ? result : nil
@@ -74,19 +49,16 @@ func findButton(_ element: AXUIElement, _ label: String, _ depth: Int = 0) -> AX
     return nil
 }
 let process = AXUIElementCreateApplication(pid_t(pid))
-// A CLI-launched Host owns a real window, but macOS may leave its native open
-// sheet unfocused while tests run from Terminal. Request focus ONLY for this
-// exact authenticated Host before sending per-PID input. Never target another
-// process or claim an OS click unless the native button becomes enabled.
+// A CLI-launched Host can remain in the background during tests. Request
+// foreground status for this exact Host, but send no global HID input. Every
+// action below uses its own AX tree and must verify the native outcome.
 let frontmostRequest = AXUIElementSetAttributeValue(
     process, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
 fputs("GH478_TARGET_AX_FRONTMOST_REQUEST=\(frontmostRequest.rawValue)\n", stderr)
 if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid_t(pid) {
-    // A frontmost request may be refused by WindowServer; the guarded mouse
-    // path below then fails without sending a global click to another app.
+    // Focus can lag; file discovery and OS action stay PID-scoped regardless.
     fputs("GH478_TARGET_NOT_YET_FRONTMOST\n", stderr)
 }
-Thread.sleep(forTimeInterval: 0.25)
 func dump(_ node: AXUIElement, _ depth: Int, _ remaining: inout Int) {
     if depth > 10 || remaining == 0 { return }
     remaining -= 1
@@ -137,10 +109,10 @@ func usableOpen() -> AXUIElement? {
     return nil
 }
 
-// The native panel starts in the fixture's declared directory. Use its REAL
-// visible Finder-style column view to click the only fixture file. This is a
-// genuine OS mouse action targeted at the exact Host PID, never an injected
-// native result or permission-granting code in Keld.
+// NSOpenPanel's system-owned column browser can expose the file in AXColumns
+// before that column is inside the visible viewport. AXVisibleColumns and a
+// fixed first-row pixel are not a selection oracle. Select only the exact
+// file owned by this test, then require a real enabled Open button.
 func browser(_ node: AXUIElement, _ depth: Int = 0) -> AXUIElement? {
     if depth > 15 { return nil }
     if attr(node, kAXRoleAttribute as String) as? String == "AXBrowser" { return node }
@@ -149,58 +121,61 @@ func browser(_ node: AXUIElement, _ depth: Int = 0) -> AXUIElement? {
     }
     return nil
 }
-func lastColumnPoint() -> CGPoint? {
-    for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
-        guard let list = browser(window) else { continue }
-        let columns = attr(list, "AXVisibleColumns") as? [AXUIElement] ?? []
-        guard let last = columns.last,
-              let positionObject = attr(last, kAXPositionAttribute as String),
-              let sizeObject = attr(last, kAXSizeAttribute as String) else { continue }
-        let position = positionObject as! AXValue
-        let size = sizeObject as! AXValue
-        var point = CGPoint.zero
-        var dimensions = CGSize.zero
-        guard AXValueGetValue(position, .cgPoint, &point),
-              AXValueGetValue(size, .cgSize, &dimensions),
-              dimensions.width > 120, dimensions.height > 80 else { continue }
-        fputs("GH478_NATIVE_BROWSER_COLUMN x=\(point.x) y=\(point.y) w=\(dimensions.width) h=\(dimensions.height)\n", stderr)
-        // In macOS column view, the first item sits below the column header.
-        // This test owns exactly one file in this directory. The *actual*
-        // enabled Open button and returned path verify that selection worked.
-        return CGPoint(x: point.x + 65, y: point.y + 44)
+func currentFolder(_ node: AXUIElement, _ depth: Int = 0) -> String? {
+    if depth > 15 { return nil }
+    if attr(node, kAXRoleAttribute as String) as? String == "AXPopUpButton",
+       attr(node, kAXTitleAttribute as String) as? String == "Where:" {
+        return attr(node, kAXValueAttribute as String) as? String
+    }
+    for child in attr(node, kAXChildrenAttribute as String) as? [AXUIElement] ?? [] {
+        if let folder = currentFolder(child, depth + 1) { return folder }
     }
     return nil
 }
-let readyDeadline = Date().addingTimeInterval(4)
-var location: CGPoint?
-while Date() < readyDeadline && location == nil {
-    location = lastColumnPoint()
-    if location == nil { Thread.sleep(forTimeInterval: 0.05) }
+let expectedFolder = (fileParent as NSString).lastPathComponent
+let fileDeadline = Date().addingTimeInterval(6)
+var matches: [(AXUIElement, AXUIElement, Int)] = []
+while Date() < fileDeadline {
+    matches.removeAll()
+    for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
+        guard currentFolder(window) == expectedFolder, let nativeBrowser = browser(window) else {
+            continue
+        }
+        for (index, column) in (attr(nativeBrowser, "AXColumns") as? [AXUIElement] ?? []).enumerated() {
+            for list in attr(column, "AXContents") as? [AXUIElement] ?? [] {
+                guard attr(list, kAXRoleAttribute as String) as? String == "AXList" else { continue }
+                for row in attr(list, kAXChildrenAttribute as String) as? [AXUIElement] ?? [] {
+                    let cells = attr(row, kAXChildrenAttribute as String) as? [AXUIElement] ?? []
+                    if cells.contains(where: {
+                        attr($0, kAXRoleAttribute as String) as? String == "AXTextField"
+                            && attr($0, kAXValueAttribute as String) as? String == fileName
+                    }) {
+                        matches.append((list, row, index))
+                    }
+                }
+            }
+        }
+    }
+    if !matches.isEmpty { break }
+    Thread.sleep(forTimeInterval: 0.05)
 }
-guard let location else {
-    fputs("NATIVE_FILE_BROWSER_COLUMN_MISSING\n", stderr)
+guard matches.count == 1 else {
+    fputs("EXACT_NATIVE_FILE_ROW_COUNT=\(matches.count) EXPECTED=1\n", stderr)
     exit(14)
 }
-for down in [true, false] {
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid_t(pid) else {
-        fputs("HOST_NOT_FRONTMOST_MOUSE_NOT_SENT\n", stderr)
-        exit(16)
-    }
-    guard let event = CGEvent(
-        mouseEventSource: nil,
-        mouseType: down ? .leftMouseDown : .leftMouseUp,
-        mouseCursorPosition: location,
-        mouseButton: .left) else {
-        fputs("NATIVE_FILE_MOUSE_EVENT_UNAVAILABLE\n", stderr)
-        exit(15)
-    }
-    // On macOS 10.15+, native Open panels render in an AppKit XPC process,
-    // not the Host PID. A postToPid(Host) mouse event cannot select its file
-    // row. The exact Host must be frontmost and own the observed AXSheet
-    // before this one actual HID click is sent to WindowServer.
-    event.post(tap: .cghidEventTap)
-    Thread.sleep(forTimeInterval: 0.03)
+let (fileList, fileRow, column) = matches[0]
+var selectable = DarwinBoolean(false)
+guard AXUIElementIsAttributeSettable(fileList, kAXSelectedChildrenAttribute as CFString, &selectable) == .success,
+      selectable.boolValue else {
+    fputs("NATIVE_FILE_ROW_NOT_ACCESSIBILITY_SELECTABLE\n", stderr)
+    exit(15)
 }
+// This acts on the genuine system file-picker row. The AX setter may report
+// a transient status while selection takes effect; only a newly enabled OS
+// Open button AND the Host's exact returned path count as success.
+let rowAction = AXUIElementSetAttributeValue(
+    fileList, kAXSelectedChildrenAttribute as CFString, NSArray(array: [fileRow]))
+fputs("GH478_EXACT_FILE_ROW_SELECTION column=\(column) ax_status=\(rowAction.rawValue)\n", stderr)
 let selectionDeadline = Date().addingTimeInterval(6)
 var selected: AXUIElement?
 while Date() < selectionDeadline {
@@ -209,7 +184,7 @@ while Date() < selectionDeadline {
     Thread.sleep(forTimeInterval: 0.05)
 }
 guard let button = selected else {
-    fputs("FILE_SELECTION_DID_NOT_ENABLE_OPEN\n", stderr)
+    fputs("NATIVE_OPEN_NOT_ENABLED_AFTER_EXACT_FILE_ROW_SELECTION\n", stderr)
     var remaining = 140
     for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
         dump(window, 0, &remaining)
