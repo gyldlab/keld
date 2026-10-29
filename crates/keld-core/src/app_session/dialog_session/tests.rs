@@ -108,7 +108,7 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     assert!(session.take_work().expect("bounded pending work").is_some());
     assert!(!session.may_present(first).expect("tombstone"));
     session
-        .record_native_outcome(first, MacDialogUiOutcome::Dismissed)
+        .record_native_outcome(first, MacDialogUiOutcome::Dismissed, None)
         .expect("OS callback observed after cancellation");
     let terminal = session
         .complete(1, 9, MacDialogUiOutcome::Dismissed)
@@ -146,6 +146,7 @@ fn dialog_committed_native_result_wins_before_late_cancel_and_role_retirement() 
                 response: 2,
                 checkbox_checked: true,
             },
+            None,
         )
         .expect("real native click committed before event dispatch");
     let reply = session
@@ -199,6 +200,7 @@ fn appkit_observed_native_click_is_terminal_before_event_coordinator_receives_it
                 response: 2,
                 checkbox_checked: false,
             },
+            None,
         )
         .expect("UI callback wins at physical observation");
     assert_eq!(
