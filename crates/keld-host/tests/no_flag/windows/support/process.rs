@@ -344,11 +344,11 @@ pub(crate) fn wait_for_cleanup_sentinel(parent: &mut Child, deadline: Instant) -
 }
 
 /// Fails with `parent`'s exit status and captured output if it has exited before
-/// delegating `delegate`.
+/// `delegate` was observed under it.
 fn assert_delegating_parent_live(parent: &mut Child, delegate: &str) {
     if let Some(status) = parent.try_wait().expect("observe delegating parent") {
         panic!(
-            "parent {} exited before delegating `{delegate}`: {status}\n{}",
+            "parent {} exited before `{delegate}` was observed under it: {status}\n{}",
             parent.id(),
             exited_child_output(parent)
         );
@@ -356,22 +356,16 @@ fn assert_delegating_parent_live(parent: &mut Child, delegate: &str) {
 }
 
 /// The captured stdout and stderr of a test child (a host or a CLI) that has
-/// already exited, for its failure report. Reading to the end cannot block once
-/// the child is gone.
+/// already exited, for its failure report. A descendant can still hold an
+/// inherited write end (a dev CLI's host inherits its stdio), so each pipe is
+/// drained under [`PIPE_DRAIN_KILL_SWITCH`] and reported as still open past it.
 pub(crate) fn exited_child_output(child: &mut Child) -> String {
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    child
-        .stdout
-        .take()
-        .expect("captured exited child stdout")
-        .read_to_string(&mut stdout)
-        .expect("read exited child stdout");
-    child
-        .stderr
-        .take()
-        .expect("captured exited child stderr")
-        .read_to_string(&mut stderr)
-        .expect("read exited child stderr");
-    format!("stdout:\n{stdout}\nstderr:\n{stderr}")
+    let stdout = read_pipe_on_thread(child.stdout.take().expect("captured exited child stdout"));
+    let stderr = read_pipe_on_thread(child.stderr.take().expect("captured exited child stderr"));
+    let drained = Instant::now() + PIPE_DRAIN_KILL_SWITCH;
+    format!(
+        "stdout:\n{}\nstderr:\n{}",
+        pipe_text_by(&stdout, drained),
+        pipe_text_by(&stderr, drained)
+    )
 }
