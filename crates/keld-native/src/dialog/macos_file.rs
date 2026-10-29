@@ -70,7 +70,7 @@ impl std::fmt::Debug for MacFilePanel {
     }
 }
 
-fn default_hint(panel: &NSSavePanel, hint: Option<&String>) {
+fn default_hint(panel: &NSSavePanel, hint: Option<&String>, is_save: bool) {
     let Some(hint) = hint else { return };
     let path = Path::new(hint);
     if path.is_absolute()
@@ -82,7 +82,10 @@ fn default_hint(panel: &NSSavePanel, hint: Option<&String>) {
         );
         panel.setDirectoryURL(Some(&url));
     }
-    if let Some(file) = path.file_name().and_then(|name| name.to_str()) {
+    // `nameFieldStringValue` is a Save-panel destination field, not an Open
+    // file-browser selection. Setting it on NSOpenPanel can change the native
+    // column view without selecting an actual file.
+    if is_save && let Some(file) = path.file_name().and_then(|name| name.to_str()) {
         panel.setNameFieldStringValue(&NSString::from_str(file));
     }
 }
@@ -94,7 +97,6 @@ impl MacFilePanel {
         filters: &[super::FileDialogFilter],
     ) -> Result<Self, IpcError> {
         let filter = MacFileFilterModel::new(filters)?;
-        default_hint(panel.save_panel(), hint);
         let completion = Rc::new(Cell::new(None));
         let state = Rc::clone(&completion);
         let callback: RcBlock<dyn Fn(NSModalResponse)> = RcBlock::new(move |response| {
@@ -123,6 +125,14 @@ impl MacFilePanel {
             owner.popup = Some(popup);
         }
         owner.apply_filter()?;
+        // Configure native content-type admission before selecting the first
+        // directory. The modern panel may rebuild its file browser when the
+        // type set changes; a path hint applied earlier can be lost.
+        default_hint(
+            owner.panel.save_panel(),
+            hint,
+            matches!(owner.panel, FilePanel::Save(_)),
+        );
         Ok(owner)
     }
 
@@ -269,8 +279,10 @@ impl MacFilePanel {
         ) {
             return Ok(None);
         }
-        self.refresh_filter_choice()?;
         let Some(response) = self.completion.get() else {
+            if self.state == PanelState::Presented {
+                self.refresh_filter_choice()?;
+            }
             return Ok(None);
         };
         let panel = self.panel.save_panel();
@@ -299,13 +311,18 @@ impl MacFilePanel {
                         .to_vec()
                         .into_iter()
                         .map(|url| {
+                            if !url.isFileURL() {
+                                return Err(invalid("native Open returned a non-file URL"));
+                            }
                             url.path()
                                 .map(|text| text.to_string())
                                 .ok_or_else(|| invalid("native Open URL has no POSIX file path"))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     DialogReplyV1::Open {
-                        canceled: file_paths.is_empty(),
+                        // An OS OK with zero selections is not a user Cancel.
+                        // Validation below rejects it as an invalid result.
+                        canceled: false,
                         file_paths,
                     }
                 }
@@ -313,6 +330,7 @@ impl MacFilePanel {
                     canceled: false,
                     file_path: save
                         .URL()
+                        .filter(|url| url.isFileURL())
                         .and_then(|url| url.path())
                         .map(|text| text.to_string())
                         .ok_or_else(|| invalid("native Save returned no POSIX location"))?,
@@ -339,7 +357,10 @@ impl Drop for MacFilePanel {
     fn drop(&mut self) {
         // Unexpected owner teardown only: normal custody waits for the real
         // callback and panel invisibility. This does not assert completion.
-        if self.state == PanelState::Presented && self.completion.get().is_none() {
+        if matches!(
+            self.state,
+            PanelState::Presented | PanelState::CancelRequested
+        ) {
             let panel: &NSWindow = self.panel.save_panel();
             if let Some(parent) = panel.sheetParent() {
                 parent.endSheet_returnCode(panel, NSModalResponseCancel);
