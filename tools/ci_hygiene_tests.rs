@@ -68,20 +68,6 @@ fn release_helper_step() -> String {
     lines.join("\n")
 }
 
-fn helper_deny_step() -> String {
-    let mut lines = vec![
-            format!("      - name: {HELPER_DENY_STEP}"),
-            "        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1".to_owned(),
-            "        with:".to_owned(),
-        ];
-    lines.extend(
-        HELPER_DENY_WITH
-            .iter()
-            .map(|(key, value)| format!("          {key}: {value}")),
-    );
-    lines.join("\n")
-}
-
 // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
 fn gitleaks_scan_step() -> String {
     let mut lines = vec!["      - name: Scan".to_owned(), "        env:".to_owned()];
@@ -99,8 +85,28 @@ fn gitleaks_scan_step() -> String {
     lines.join("\n")
 }
 
+/// The live `deny` job, verbatim from `.github/workflows/ci.yml`. Its steps'
+/// contract is parsed by tools/ci_workflow_security.ts (#676), so the fixture
+/// copies no deny step text that could drift from the workflow (#677).
+fn live_deny_job() -> String {
+    let lines: Vec<&str> = include_str!("../.github/workflows/ci.yml")
+        .lines()
+        .collect();
+    let start = lines
+        .iter()
+        .position(|line| *line == "  deny:")
+        .expect("ci.yml declares a top-level `deny` job");
+    // The job ends at the next line indented less than its body (the next job key).
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| !line.trim().is_empty() && !line.starts_with("    "))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    lines[start..end].join("\n").trim_end().to_owned()
+}
+
 fn valid_workflow() -> String {
     let windows_media_step = windows_media_step();
+    let deny_job = live_deny_job();
     [
             "name: CI",
             "jobs:",
@@ -187,14 +193,8 @@ fn valid_workflow() -> String {
             "  msrv:",
             "    runs-on: macos-latest",
             "    steps:",
-            "      - run: cargo +1.97 check -p fixture --all-targets",
-            "  deny:",
-            "    if: needs.changes.outputs.deny == 'true'",
-            "    steps:",
-            "      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1",
-            "        with:",
-            "          command: check",
-            &helper_deny_step(),
+            "      - run: cargo +1.99.1 check -p fixture --all-targets",
+            deny_job.as_str(),
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -202,7 +202,7 @@ fn valid_workflow() -> String {
             "          persist-credentials: false",
             "      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05",
             "        with:",
-            "          toolchain: 1.97.1",
+            "          toolchain: 1.99.1",
             "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
             &gitleaks_scan_step(),
             "  hygiene:",
@@ -2053,6 +2053,18 @@ fn comment_mentioning_github_ignore_is_not_an_ignore_rule() {
 }
 
 #[test]
+fn fixture_deny_job_is_the_live_ci_job() {
+    let job = live_deny_job();
+    assert!(job.starts_with("  deny:\n"), "{job}");
+    assert!(job.contains("\n      - name: cargo-deny check\n"), "{job}");
+    assert!(
+        !job.contains("\n  secrets:"),
+        "the job must stop at the next job: {job}"
+    );
+    assert!(valid_workflow().contains(&format!("{job}\n  secrets:\n")));
+}
+
+#[test]
 fn echoed_mermaid_gate_does_not_satisfy_workflow_contract() {
     let temp = complete_fixture();
     let workflow = valid_workflow().replace(
@@ -2147,10 +2159,10 @@ fn missing_pr_gate_fails() {
 #[test]
 fn missing_toolchain_pin_fails() {
     let temp = complete_fixture();
-    let workflow = valid_workflow().replace("toolchain: 1.97.1", "");
+    let workflow = valid_workflow().replace("toolchain: 1.99.1", "");
     temp.write(WORKFLOW, &workflow);
     let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
-    assert!(error.contains("toolchain: 1.97.1"), "{error}");
+    assert!(error.contains("toolchain: 1.99.1"), "{error}");
 }
 
 #[test]
@@ -2342,40 +2354,6 @@ fn release_updater_helper_step_cannot_be_narrowed_or_made_inert() {
         temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
         let error = check(temp.path()).expect_err("weakened release helper step must fail");
         assert!(error.contains("KEL-53 T4d S9c"), "{needle}: {error}");
-    }
-}
-
-#[test]
-fn updater_helper_deny_step_is_unique_and_exact() {
-    let step = helper_deny_step();
-    let temp = complete_fixture();
-    temp.write(WORKFLOW, &valid_workflow().replacen(&step, "", 1));
-    let error = check(temp.path()).expect_err("missing helper deny step must fail");
-    assert!(error.contains("Updater helper edge set"), "{error}");
-
-    for (needle, replacement) in [
-        ("command-arguments: bans", "command-arguments: licenses"),
-        (
-            "arguments: --all-features --config crates/keld-updater-helper/deny.toml",
-            "arguments: --all-features",
-        ),
-        (
-            "manifest-path: crates/keld-updater-helper/Cargo.toml",
-            "manifest-path: ./Cargo.toml",
-        ),
-        (
-            "uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
-            "uses: example/deny@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
-        ),
-    ] {
-        let workflow = valid_workflow();
-        assert!(workflow.contains(needle), "fixture holds {needle}");
-        temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
-        let error = check(temp.path()).expect_err("weakened helper deny step must fail");
-        assert!(
-            error.contains("Updater helper edge set"),
-            "{needle}: {error}"
-        );
     }
 }
 

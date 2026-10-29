@@ -41,6 +41,7 @@ while (!(await input.read()).done) {}
         worker: None,
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,

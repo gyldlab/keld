@@ -24,6 +24,10 @@ const FACTORY_ERROR_GATE_ENV: &str = "KELD_TEST_GUARDED_FACTORY_ERROR_GATE";
 const BUN_MARKER_ENV: &str = "KELD_TEST_GUARDED_EARLY_BUN_MARKER";
 const VERIFIED_BUN_ENV: &str = "KELD_TEST_GUARDED_VERIFIED_BUN_PATH";
 const POST_S_SPAWN_DENIAL_ENV: &str = "KELD_TEST_GUARDED_POST_S_SPAWN_DENIAL";
+// Negative control values: the host denies recovery WITHOUT writing S, or
+// denies it through an accepted Quit (Q/KQA) instead of an orderly S.
+const POST_DENIAL_WITHOUT_S: &str = "deny-without-s";
+const POST_DENIAL_BY_QUIT: &str = "deny-by-quit";
 const ROLE_TEST: &str =
     "macos_guardian::tests::bootstrap_shutdown_race::immediate_shutdown_guardian_role";
 
@@ -83,7 +87,7 @@ fn immediate_shutdown_guardian_role() {
         .open("/dev/fd/3")
         .expect("original OS shutdown ACK writer");
     let factory_fault = std::env::var_os(FACTORY_ERROR_GATE_ENV).is_some();
-    let post_s_spawn_denial = std::env::var_os(POST_S_SPAWN_DENIAL_ENV).is_some();
+    let post_s_spawn_denial = std::env::var_os(POST_S_SPAWN_DENIAL_ENV);
     let result = run_guarded_primary(
         io::stdin().lock(),
         move |_link| {
@@ -125,13 +129,30 @@ fn immediate_shutdown_guardian_role() {
         } else {
             eprintln!("KELD_TEST_FACTORY_ERROR_SUPPRESSED {result:?}");
         }
-    } else if post_s_spawn_denial {
-        // The host's native registration refusal can make this initial
-        // spawn fail before Supervisor startup. The independent parent
-        // proves no REGISTERED was emitted and the pre-exec group retired.
-        // A missing KSA must not be converted into a false clean result.
-        let refusal = result.expect_err("host-denied SPAWNED must not start Bun cleanly");
-        eprintln!("KELD_TEST_POST_S_SPAWN_TERMINAL {refusal}");
+    } else if let Some(case) = post_s_spawn_denial {
+        // The independent parent proves no REGISTERED was emitted, no Bun
+        // ran and the pre-exec group retired. This role reports only the
+        // Guardian's own result: after an authenticated S the refused,
+        // unexecuted spawn is an orderly cancellation; a host denial with
+        // no S must not be converted into a false clean result.
+        match &result {
+            Ok(_) => eprintln!("KELD_TEST_POST_S_SPAWN_ORDERLY"),
+            Err(error) => eprintln!("KELD_TEST_POST_S_SPAWN_TERMINAL {error}"),
+        }
+        if case == POST_DENIAL_WITHOUT_S || case == POST_DENIAL_BY_QUIT {
+            let error = result.expect_err("a refused spawn without host S is not orderly");
+            assert!(
+                error
+                    .to_string()
+                    .contains("host closed generation control instead of CONTROL_REGISTERED"),
+                "the host-closed registration must stay the Guardian's terminal cause: {error}"
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "an in-flight spawn refused after authenticated S is an orderly cancellation: {result:?}"
+            );
+        }
     } else {
         assert!(
             result.is_ok(),

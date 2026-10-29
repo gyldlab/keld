@@ -7,7 +7,7 @@
 //! path nor rely on the cursor. Header offsets used to damage an image are restated from
 //! the PE Format layout, independent of the reader under test.
 
-use std::io::{Seek as _, SeekFrom, Write as _};
+use std::io::{SeekFrom, Write as _};
 
 use super::*;
 

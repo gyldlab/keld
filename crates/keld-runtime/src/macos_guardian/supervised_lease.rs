@@ -1,7 +1,8 @@
 //! Single-group supervised preparation and resource revocation.
-use super::process_group::{LocalGroupWitness, terminate_attested_group};
+use super::guarded_lease::reap_guarded_child_before_clear;
+use super::process_group::{LocalGroupWitness, retire_own_child_group, terminate_attested_group};
 use super::{
-    ChildPreparer, Command, CommandExt, GenerationLease, PreparedChild, REGISTRATION_ENV,
+    Child, ChildPreparer, Command, CommandExt, GenerationLease, PreparedChild, REGISTRATION_ENV,
     RevocationCause, RuntimeError, SpawnAdmission, Stdio, Write, collapse_failures, io,
     lifecycle_error, write_group_registration,
 };
@@ -134,7 +135,26 @@ where
         })
     }
 
-    fn revoke(mut self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+    fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+        self.revoke_group(None)
+    }
+
+    fn revoke_with_child(
+        self,
+        _cause: RevocationCause,
+        child: &mut Child,
+    ) -> Result<(), RuntimeError> {
+        // The supervisor is the leader's OS parent and still holds it
+        // unreaped: decide the group only after reaping this exact Child.
+        self.revoke_group(Some(child))
+    }
+}
+
+impl<S, F> SupervisedGuardianLease<S, F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    fn revoke_group(mut self, child: Option<&mut Child>) -> Result<(), RuntimeError> {
         if let Some(admission) = self.admission.take() {
             let (group_pid, result) = admission.finish();
             self.group_pid = group_pid;
@@ -152,10 +172,17 @@ where
             ));
         }
         let verified_group = self.group_witness.take();
-        if let Some(group) = verified_group
-            && let Err(error) = terminate_attested_group(group)
-        {
-            failures.push(error);
+        if let Some(group) = verified_group {
+            match child {
+                Some(own) => {
+                    let (retired, reaped) = retire_own_child_group(group, |deadline| {
+                        reap_guarded_child_before_clear(own, deadline)
+                    });
+                    failures.extend(retired.err());
+                    failures.extend(reaped.err());
+                }
+                None => failures.extend(terminate_attested_group(group).err()),
+            }
         }
         if verified_group.is_none() && self.group_pid.is_some() {
             failures.push(lifecycle_error(

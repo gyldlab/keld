@@ -28,6 +28,8 @@ const BOUND: Duration = Duration::from_secs(5);
 
 #[path = "tests/native_activity.rs"]
 mod native_activity;
+#[path = "tests/own_child_reap.rs"]
+mod own_child_reap;
 
 #[test]
 fn native_role() {
@@ -205,10 +207,15 @@ impl NativeGroup {
                                 | io::ErrorKind::ConnectionReset
                                 | io::ErrorKind::UnexpectedEof
                                 | io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::NotConnected
                         ) || error.raw_os_error() == Some(nix::libc::EINVAL) =>
                     {
                         // A Darwin peer disappearing during a connect/read
-                        // can return EINVAL (not solely ConnectionRefused).
+                        // can return EINVAL, not solely ConnectionRefused.
+                        // ENOTCONN (NotConnected) comes only from the nonce
+                        // WRITE after the listener dies mid-send: XNU
+                        // uipc_send checks SS_ISCONNECTED before
+                        // SS_CANTSENDMORE. A read after peer death is EOF.
                         // Accept it ONLY after the independent kernel group
                         // census proves that no original-group member runs.
                         if !self
@@ -306,6 +313,9 @@ fn failed_exchange_keeps_cleanup(reply: Reply) {
         group_pid: None,
         group_witness: LocalGroupWitness::default(),
         admission: None,
+        exec_withheld: false,
+        host_closed_registration: false,
+        refused_registration_retired: Arc::new(AtomicBool::new(false)),
     };
     let admission = lease.child_spawned(pid, 1);
     peer.join().expect("fault peer joins");
@@ -357,6 +367,9 @@ fn locally_enrolled_lease(pid: u32, witness: LocalGroupWitness) -> GuardedPrimar
         group_pid: Some(pid),
         group_witness: witness,
         admission: None,
+        exec_withheld: false,
+        host_closed_registration: false,
+        refused_registration_retired: Arc::new(AtomicBool::new(false)),
     }
 }
 

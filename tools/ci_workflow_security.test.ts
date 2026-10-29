@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { aptStepTimeoutMinutes, webkitgtkAptJobs, webkitgtkDebCachePath, checkPullRequestTargetWorkflow, checkWindowsMediaOracle, checkWorkflowSecurity, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
+import { aptStepTimeoutMinutes, cargoDenyArchiveSha256, cargoDenyChecks, cargoDenyInstallStep, cargoDenyVersion, webkitgtkAptJobs, webkitgtkDebCachePath, checkPullRequestTargetWorkflow, checkWindowsMediaOracle, checkWorkflowSecurity, checkRustToolchainPins, codeqlLanguages, codeqlRoute } from "./ci_workflow_security";
 
 type Step = Record<string, unknown>;
 type FixtureJob = {
@@ -14,10 +14,15 @@ type FixtureJob = {
   if?: unknown;
   "timeout-minutes"?: unknown;
 };
-type Fixture = { jobs: Record<string, FixtureJob> };
+type Fixture = { jobs: Record<string, FixtureJob>; env?: Record<string, unknown> };
 const source = readFileSync(join(import.meta.dir, "../.github/workflows/ci.yml"), "utf8");
 const windowsMediaOracle = readFileSync(join(import.meta.dir, "../crates/keld-wv/tests/windows_media_guard.ps1"));
+const selectedRustToolchain = readFileSync(join(import.meta.dir, "../rust-toolchain.toml"), "utf8");
 const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+const requiredRustInstallerJobs = [
+  "changes", "fmt", "check", "doctest", "linux-gui-smoke",
+  "msrv", "deny", "hygiene", "mermaid", "codeql-rust",
+];
 
 function fixture(): Fixture {
   checkWorkflowSecurity(source);
@@ -34,6 +39,105 @@ function check(f: Fixture): void { checkWorkflowSecurity(Bun.YAML.stringify(f, n
 
 test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
+});
+
+test("every Rust installer agrees with the exact pin and immutable action commit", () => {
+  expect(() => checkRustToolchainPins(source, selectedRustToolchain)).not.toThrow();
+  const workflow = fixture();
+  const installers = Object.values(workflow.jobs).flatMap(job => job.steps)
+    .filter(s => String(s.uses ?? "").startsWith("dtolnay/rust-toolchain@"));
+  expect(installers.length).toBe(requiredRustInstallerJobs.length);
+
+  // A single stale installer may not hide behind nine current copies.
+  (installers[3]!.with as Record<string, unknown>).toolchain = "1.97.1";
+  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+    .toThrow("must select Rust");
+  (installers[3]!.with as Record<string, unknown>).toolchain = "1.99.1";
+
+  // A changed action SHA is independent from the compiler version, but all
+  // jobs must use the same reviewed immutable action implementation.
+  installers[3]!.uses = "dtolnay/rust-toolchain@" + "0".repeat(40);
+  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+    .toThrow("same reviewed immutable");
+  expect(() => checkRustToolchainPins(source, selectedRustToolchain.replace("1.99.1", "1.97.1")))
+    .toThrow("must select Rust");
+});
+
+test("Rust toolchain admission reads the actual TOML toolchain table, never a decoy", () => {
+  const decoy = '[decoy]\nchannel = "1.99.1"\n[toolchain]\nchannel = "1.97.1"\ncomponents = ["rustfmt", "clippy"]\n';
+  expect(() => checkRustToolchainPins(source, decoy)).toThrow("must select Rust");
+  const duplicate = '[toolchain]\nchannel = "1.99.1"\nchannel = "1.97.1"\n';
+  expect(() => checkRustToolchainPins(source, duplicate)).toThrow();
+});
+
+test("dropping any one required Rust installer cannot silently use runner Rust", () => {
+  for (const name of requiredRustInstallerJobs) {
+    const workflow = fixture();
+    workflow.jobs[name]!.steps = workflow.jobs[name]!.steps.filter(
+      step => !String(step.uses ?? "").startsWith("dtolnay/rust-toolchain@"),
+    );
+    expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+      .toThrow("requires a pinned Rust toolchain installer");
+  }
+});
+
+test("a uniformly replaced unknown action SHA is not an approved installer", () => {
+  const workflow = fixture();
+  for (const job of Object.values(workflow.jobs)) {
+    for (const step of job.steps) {
+      if (String(step.uses ?? "").startsWith("dtolnay/rust-toolchain@")) {
+        step.uses = "dtolnay/rust-toolchain@" + "0".repeat(40);
+      }
+    }
+  }
+  expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+    .toThrow("approved immutable action SHA");
+});
+
+test("a pinned Rust installer cannot be conditional or failure-tolerant", () => {
+  for (const name of requiredRustInstallerJobs) {
+    for (const mutation of [
+      (installer: Step) => { installer.if = "${{ false }}"; },
+      (installer: Step) => { installer["continue-on-error"] = true; },
+    ]) {
+      const workflow = fixture();
+      mutation(workflow.jobs[name]!.steps[1]!);
+      expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+        .toThrow("must run unconditionally and refuse installer failures");
+    }
+  }
+});
+
+test("Rust setup must run immediately after checkout, before other steps", () => {
+  for (const name of requiredRustInstallerJobs) {
+    for (const mutation of [
+      (steps: Step[]) => { steps.splice(1, 0, { run: "cargo --version" }); },
+      (steps: Step[]) => { steps.unshift(steps.splice(1, 1)[0]!); },
+    ]) {
+      const workflow = fixture();
+      mutation(workflow.jobs[name]!.steps);
+      expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+        .toThrow("must install Rust immediately after checkout");
+    }
+  }
+});
+
+test("a Rustup environment override cannot shadow the pinned compiler", () => {
+  for (const scope of ["workflow", "job", "step"]) {
+    const workflow = fixture();
+    if (scope === "workflow") {
+      workflow.env = { RUSTUP_TOOLCHAIN: "stable" };
+    } else if (scope === "job") {
+      workflow.jobs.fmt!.env = { RUSTUP_TOOLCHAIN: "stable" };
+    } else {
+      const consumer = workflow.jobs.fmt!.steps.find(candidate =>
+        String(candidate.run ?? "").includes("cargo fmt"));
+      if (!consumer) throw new Error("missing actual Rust consumer");
+      consumer.env = { ...(consumer.env as Record<string, unknown> ?? {}), RUSTUP_TOOLCHAIN: "stable" };
+    }
+    expect(() => checkRustToolchainPins(Bun.YAML.stringify(workflow), selectedRustToolchain))
+      .toThrow("must not override RUSTUP_TOOLCHAIN");
+  }
 });
 
 test("source-budget reporting stays advisory, visible and unprivileged", () => {
@@ -249,6 +353,121 @@ test("no job outside the per-language owners may run CodeQL", () => {
   const f = fixture();
   f.jobs.fmt!.steps.push({ ...step(f, "codeql-rust", "Initialize CodeQL") });
   expect(() => check(f)).toThrow("outside the per-language jobs");
+});
+
+// #676: cargo-deny comes from the checksum-pinned release binary, not a Docker image.
+const [cargoDenyMain, cargoDenyHelper] = cargoDenyChecks.map(([name]) => name) as [string, string];
+
+function editRun(f: Fixture, name: string, from: string, to: string): void {
+  const selected = step(f, "deny", name);
+  const run = String(selected.run);
+  if (!run.includes(from)) throw new Error(`fixture ${name} lacks ${from}`);
+  selected.run = run.replace(from, to);
+}
+
+test("cargo-deny installs the pinned version and verifies its recorded SHA-256", () => {
+  const install = String(step(fixture(), "deny", cargoDenyInstallStep).run);
+  const shaLine = `echo "${cargoDenyArchiveSha256}  \${release}.tar.gz" | sha256sum -c -\n`;
+  expect(install).toContain(`version=${cargoDenyVersion}\n`);
+  expect(install).toContain(shaLine);
+  const mutations: [string, (f: Fixture) => void][] = [
+    ["unpinned version", f => editRun(f, cargoDenyInstallStep, `version=${cargoDenyVersion}`, "version=latest")],
+    ["version taken from the environment", f => editRun(f, cargoDenyInstallStep, `version=${cargoDenyVersion}`, 'version="${CARGO_DENY_VERSION:-0.20.2}"')],
+    ["latest-release URL", f => editRun(f, cargoDenyInstallStep, "releases/download/${version}/", "releases/latest/download/")],
+    ["missing checksum", f => editRun(f, cargoDenyInstallStep, shaLine, "")],
+    ["different checksum", f => editRun(f, cargoDenyInstallStep, cargoDenyArchiveSha256, "0".repeat(64))],
+    ["suppressed checksum", f => editRun(f, cargoDenyInstallStep, "sha256sum -c -", "sha256sum -c - || true")],
+    ["verify after extracting", f => {
+      editRun(f, cargoDenyInstallStep, shaLine, "");
+      editRun(f, cargoDenyInstallStep, "cargo-deny/cargo-deny --version\n", `cargo-deny/cargo-deny --version\n${shaLine}`);
+    }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const f = fixture();
+    mutate(f);
+    expect(() => check(f), label).toThrow(`${cargoDenyInstallStep} must download release ${cargoDenyVersion}`);
+  }
+});
+
+test("cargo-deny steps cannot continue on error, be conditioned, removed, duplicated or reordered", () => {
+  for (const name of [cargoDenyInstallStep, cargoDenyMain, cargoDenyHelper]) {
+    for (const [key, value] of [["continue-on-error", true], ["if", false], ["shell", "bash {0} || true"]] as const) {
+      const f = fixture();
+      step(f, "deny", name)[key] = value;
+      expect(() => check(f), `${name} ${key}`).toThrow(`${name} must contain only name, run`);
+    }
+    const removed = fixture();
+    removed.jobs.deny!.steps = removed.jobs.deny!.steps.filter(candidate => candidate.name !== name);
+    expect(() => check(removed), `${name} removed`).toThrow("jobs.deny must run exactly");
+    const duplicated = fixture();
+    duplicated.jobs.deny!.steps.push({ ...step(duplicated, "deny", name) });
+    expect(() => check(duplicated), `${name} duplicated`).toThrow("jobs.deny must run exactly");
+  }
+  const reordered = fixture();
+  const steps = reordered.jobs.deny!.steps;
+  const install = steps.findIndex(candidate => candidate.name === cargoDenyInstallStep);
+  const [moved] = steps.splice(install, 1);
+  steps.push(moved!);
+  expect(() => check(reordered)).toThrow("jobs.deny must run exactly");
+});
+
+test("cargo-deny runs the verified binary with the reviewed policy arguments", () => {
+  const mutations: [string, string, string, string][] = [
+    ["PATH-resolved binary", cargoDenyMain, '"$RUNNER_TEMP/cargo-deny/cargo-deny"', "cargo deny"],
+    ["default features only", cargoDenyMain, " --all-features check", " check"],
+    ["advisories skipped", cargoDenyMain, "--all-features check", "--all-features check bans licenses sources"],
+    ["swallowed result", cargoDenyMain, "--all-features check", "--all-features check || true"],
+    ["helper licenses instead of bans", cargoDenyHelper, "check bans", "check licenses"],
+    ["helper without its own ban list", cargoDenyHelper, " --config crates/keld-updater-helper/deny.toml", ""],
+    ["helper rooted at the workspace", cargoDenyHelper, "crates/keld-updater-helper/Cargo.toml", "./Cargo.toml"],
+  ];
+  for (const [label, name, from, to] of mutations) {
+    const f = fixture();
+    editRun(f, name, from, to);
+    expect(() => check(f), label).toThrow(`${name} must run exactly`);
+  }
+});
+
+test("the deny job admits no Docker action, including the former cargo-deny-action", () => {
+  for (const uses of [
+    "EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25",
+    "taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29",
+  ]) {
+    const f = fixture();
+    const steps = f.jobs.deny!.steps;
+    steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, { uses, with: { command: "check" } });
+    expect(() => check(f), uses).toThrow("jobs.deny must run exactly");
+  }
+  const missing = fixture();
+  delete missing.jobs.deny;
+  expect(() => check(missing)).toThrow("jobs.deny must exist");
+});
+
+test("nothing in the deny job can replace or redirect the verified binary", () => {
+  // An unnamed or named step between install and check could overwrite the binary.
+  for (const inserted of [
+    { run: `printf '#!/bin/sh\\nexit 0\\n' > "$RUNNER_TEMP/cargo-deny/cargo-deny"\n` },
+    { name: "Refresh cargo-deny", run: "cargo install cargo-deny --locked\n" },
+  ]) {
+    const f = fixture();
+    const steps = f.jobs.deny!.steps;
+    steps.splice(steps.findIndex(candidate => candidate.name === cargoDenyMain), 0, inserted);
+    expect(() => check(f), JSON.stringify(inserted)).toThrow("jobs.deny must run exactly");
+  }
+  for (const [key, value] of [
+    ["env", { BASH_ENV: "./tools/noop.sh" }],
+    ["defaults", { run: { shell: "bash --noprofile --norc {0} || true" } }],
+    ["container", "rust:1.97.1"],
+    ["services", { registry: { image: "registry:2" } }],
+  ] as const) {
+    const f = fixture();
+    (f.jobs.deny as Record<string, unknown>)[key] = value;
+    expect(() => check(f), key).toThrow(`jobs.deny must not set ${key}`);
+  }
+  // The policy must read the event's own tree, not another ref.
+  const ref = fixture();
+  (ref.jobs.deny!.steps[0]!.with as Step).ref = "main";
+  expect(() => check(ref)).toThrow("jobs.deny checkout");
 });
 
 for (const style of ["block", "flow", "alias"] as const) {

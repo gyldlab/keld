@@ -18,7 +18,7 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.99.1"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/gyldlab/keld"
 authors = ["GYLDLAB"]

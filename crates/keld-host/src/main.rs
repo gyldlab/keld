@@ -425,6 +425,9 @@ fn guardian_bun_command(
     // release-grade resistance to a same-user replacement in that
     // residual window; the signed-container successor must close it.
     drop(reopened);
+    // No `pre_exec` hook here: the Guardian's SpawnAdmission gate must be
+    // the only one, so a child refused before its exec permit is its whole
+    // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
     let mut command = Command::new("bun");
     command
         .arg("run")

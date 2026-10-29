@@ -246,6 +246,84 @@ function checkCodeqlJobs(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): voi
   }
 }
 
+/**
+ * cargo-deny runs from the upstream release binary at this exact version, and only
+ * after `sha256sum -c` matches this SHA-256 (#676). The Docker-based
+ * EmbarkStudios/cargo-deny-action built its image from a Docker Hub base, whose
+ * anonymous pull limit failed the lane; a release binary pulls no image. cargo-deny
+ * still fetches the advisory database itself, from its default GitHub URL.
+ */
+export const cargoDenyVersion = "0.20.2";
+export const cargoDenyArchiveSha256 = "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f";
+export const cargoDenyInstallStep = `Install cargo-deny ${cargoDenyVersion}`;
+const cargoDenyInstallCommands = [
+  "set -euo pipefail",
+  `version=${cargoDenyVersion}`,
+  'release="cargo-deny-${version}-x86_64-unknown-linux-musl"',
+  'cd "$RUNNER_TEMP"',
+  'curl -fsSL -o "${release}.tar.gz" \\',
+  '"https://github.com/EmbarkStudios/cargo-deny/releases/download/${version}/${release}.tar.gz"',
+  `echo "${cargoDenyArchiveSha256}  \${release}.tar.gz" | sha256sum -c -`,
+  "mkdir cargo-deny",
+  'tar -xzf "${release}.tar.gz" -C cargo-deny --strip-components=1 "${release}/cargo-deny"',
+  "cargo-deny/cargo-deny --version",
+];
+const cargoDenyBinary = '"$RUNNER_TEMP/cargo-deny/cargo-deny"';
+/**
+ * The two policy runs, by absolute path to the verified binary so a `cargo-deny`
+ * earlier on PATH (a restored `~/.cargo/bin`, say) cannot stand in for it: the
+ * workspace against `deny.toml`, then the updater helper as the sole graph root
+ * against its own ban list (KEL-53 §4). The arguments are the ones the action ran.
+ */
+export const cargoDenyChecks = [
+  ["cargo-deny check", `${cargoDenyBinary} --log-level warn --manifest-path ./Cargo.toml --all-features check`],
+  ["Updater helper edge set (KEL-53 T4d S9c)", `${cargoDenyBinary} --log-level warn --manifest-path crates/keld-updater-helper/Cargo.toml --all-features --config crates/keld-updater-helper/deny.toml check bans`],
+] as const;
+/**
+ * The deny job's exact steps, in order: three setup actions (none of them a Docker
+ * action), the verified install, then both policy runs. No other step may sit between
+ * the install and the runs, where it could replace the verified binary.
+ */
+const cargoDenyJobSequence = [
+  "actions/checkout", "dtolnay/rust-toolchain", "swatinem/rust-cache",
+  cargoDenyInstallStep, ...cargoDenyChecks.map(([name]) => name),
+];
+/** Job keys that can change what the verified binary runs (`BASH_ENV`, a default shell) or pull an image. */
+const cargoDenyForbiddenJobKeys = ["env", "defaults", "container", "services"];
+
+function runLines(step: Mapping): string[] {
+  return typeof step.run === "string" ? step.run.trim().split(/\r?\n/).map(line => line.trim()) : [];
+}
+
+/** The deny job: one verified install, then both policy runs, unconditional and unwrapped. */
+function checkCargoDenyJob(jobs: Mapping, stepsByJob: Map<string, Mapping[]>): void {
+  const steps = stepsByJob.get("deny");
+  if (!steps) fail("jobs.deny must exist; cargo-deny owns the Cargo advisory, ban, license and source policy.");
+  const job = mapping(jobs.deny, "jobs.deny");
+  const forbidden = cargoDenyForbiddenJobKeys.filter(key => Object.hasOwn(job, key));
+  if (forbidden.length) {
+    fail(`jobs.deny must not set ${forbidden.join(", ")}: job environment or defaults (BASH_ENV, a shell) can change what the verified binary runs, and a container or service pulls an image.`);
+  }
+  const sequence = steps.map(step => Object.hasOwn(step, "uses") ? actionName(String(step.uses)) : String(step.name));
+  if (JSON.stringify(sequence) !== JSON.stringify(cargoDenyJobSequence)) {
+    fail(`jobs.deny must run exactly ${cargoDenyJobSequence.join(", ")}, in that order: no Docker action such as EmbarkStudios/cargo-deny-action (#676), and no other step that could replace the verified binary before it runs.`);
+  }
+  inputsMatch(mapping(steps[0]!.with, "jobs.deny checkout.with"), { "persist-credentials": "false" },
+    "jobs.deny checkout (the policy reads the event's own tree)");
+  const [install, ...checks] = steps.slice(3);
+  exactKeys(install!, ["name", "run"], cargoDenyInstallStep);
+  if (JSON.stringify(runLines(install!)) !== JSON.stringify(cargoDenyInstallCommands)) {
+    fail(`${cargoDenyInstallStep} must download release ${cargoDenyVersion} from its GitHub release URL and pass \`sha256sum -c\` against ${cargoDenyArchiveSha256} before extracting it; an unpinned version, a missing or different checksum, or a wrapper is not admitted.`);
+  }
+  for (const [index, [name, command]] of cargoDenyChecks.entries()) {
+    const check = checks[index]!;
+    exactKeys(check, ["name", "run"], name);
+    if (JSON.stringify(runLines(check)) !== JSON.stringify([command])) {
+      fail(`${name} must run exactly \`${command}\`: the verified binary with the reviewed policy arguments, and no wrapper or suppression.`);
+    }
+  }
+}
+
 /** The trigger names of a parsed workflow, whichever `on:` form it uses. */
 function workflowTriggers(workflow: Mapping): string[] {
   const on = workflow.on;
@@ -286,6 +364,89 @@ export function checkPullRequestTargetWorkflow(source: string, label: string): v
         fail(`${label} jobs.${jobName}.steps[${index}] checks out code under pull_request_target; never run pull-request code with the base repository's token and caches.`);
       }
     }
+  }
+}
+
+/**
+ * All CI toolchain installers must select the canonical compiler pin.
+ * The action commit and its `with: toolchain` input are separate identities:
+ * each update to the reviewed immutable action SHA is a separate security
+ * decision, and no job may fall back to runner-installed Rust.
+ */
+const approvedRustToolchainAction =
+  "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8";
+const rustToolchainInstallerJobs = new Set([
+  "changes", "fmt", "check", "doctest", "linux-gui-smoke",
+  "msrv", "deny", "hygiene", "mermaid", "codeql-rust",
+]);
+
+function refuseRustupToolchainOverride(env: unknown, label: string): void {
+  if (env === undefined) return;
+  const values = mapping(env, label);
+  if (Object.keys(values).some(name => name.toUpperCase() === "RUSTUP_TOOLCHAIN")) {
+    fail(`${label} must not override RUSTUP_TOOLCHAIN; environment overrides outrank rust-toolchain.toml.`);
+  }
+}
+
+export function checkRustToolchainPins(source: string, toolchainToml: string): void {
+  let parsedToolchain: unknown;
+  try { parsedToolchain = Bun.TOML.parse(toolchainToml); }
+  catch (error) { fail(`cannot parse rust-toolchain.toml: ${error instanceof Error ? error.message : String(error)}`); }
+  const toolchain = mapping(mapping(parsedToolchain, "rust-toolchain.toml").toolchain, "rust-toolchain.toml [toolchain]");
+  const selected = toolchain.channel;
+  if (typeof selected !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(selected)) {
+    fail("rust-toolchain.toml [toolchain].channel must select an exact stable X.Y.Z release.");
+  }
+  let parsed: unknown;
+  try { parsed = Bun.YAML.parse(source); }
+  catch (error) { fail(`cannot parse workflow YAML: ${error instanceof Error ? error.message : String(error)}`); }
+  finiteGraph(parsed);
+  const workflow = mapping(parsed, "workflow");
+  refuseRustupToolchainOverride(workflow.env, "workflow.env");
+  const jobs = mapping(workflow.jobs, "workflow.jobs");
+  let pinnedAction: string | undefined;
+  const installedJobs = new Set<string>();
+  for (const [jobName, value] of Object.entries(jobs)) {
+    const job = mapping(value, `jobs.${jobName}`);
+    refuseRustupToolchainOverride(job.env, `jobs.${jobName}.env`);
+    if (!Array.isArray(job.steps)) fail(`jobs.${jobName} must contain concrete steps.`);
+    for (const [index, value] of job.steps.entries()) {
+      const step = mapping(value, `jobs.${jobName}.steps[${index}]`);
+      refuseRustupToolchainOverride(step.env, `jobs.${jobName}.steps[${index}].env`);
+      if (!Object.hasOwn(step, "uses")) continue;
+      const label = `jobs.${jobName}.steps[${index}]`;
+      const action = actionRef(step.uses, label);
+      if (actionName(action) !== "dtolnay/rust-toolchain") continue;
+      if (!rustToolchainInstallerJobs.has(jobName) || installedJobs.has(jobName)) {
+        fail(`${label} is not the single approved Rust toolchain installer for its job.`);
+      }
+      // The selected compiler must be installed before any executable work.
+      // A skipped or fail-open setup step silently falls back to runner Rust.
+      const firstStep = mapping(job.steps[0], `jobs.${jobName}.steps[0]`);
+      if (index !== 1 || actionName(actionRef(firstStep.uses, `jobs.${jobName}.steps[0]`)) !== "actions/checkout") {
+        fail(`${label} must install Rust immediately after checkout, before any other step.`);
+      }
+      if (Object.hasOwn(step, "if") || Object.hasOwn(step, "continue-on-error")) {
+        fail(`${label} must run unconditionally and refuse installer failures.`);
+      }
+      if (pinnedAction && action !== pinnedAction) {
+        fail(`${label} must use the same reviewed immutable dtolnay/rust-toolchain action SHA as every other job.`);
+      }
+      pinnedAction = action;
+      installedJobs.add(jobName);
+      const inputs = mapping(step.with, `${label}.with`);
+      if (scalar(inputs.toolchain) !== selected) {
+        fail(`${label}.with.toolchain must select Rust ${selected} from rust-toolchain.toml; a stale compiler pin changes cache and MSRV behavior.`);
+      }
+    }
+  }
+  for (const jobName of rustToolchainInstallerJobs) {
+    if (!installedJobs.has(jobName)) {
+      fail(`jobs.${jobName} requires a pinned Rust toolchain installer; runner-default Rust is not admitted.`);
+    }
+  }
+  if (pinnedAction !== approvedRustToolchainAction) {
+    fail("all Rust toolchain installers must use the approved immutable action SHA.");
   }
 }
 
@@ -331,6 +492,7 @@ export function checkWorkflowSecurity(source: string): void {
   if (checkouts === 0) fail("workflow must contain its audited checkout steps.");
   checkCodeqlJobs(jobs, stepsByJob);
   checkWebkitgtkAptCache(jobs, stepsByJob);
+  checkCargoDenyJob(jobs, stepsByJob);
   const dependencies = stepsByJob.get("dependency-review");
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const changes = stepsByJob.get("changes");
@@ -362,7 +524,9 @@ if (import.meta.main) {
   try {
     const [, , command, root = ".", ...extra] = process.argv;
     if (command !== "check" || extra.length) fail("use ci_workflow_security.ts check [workspace].");
-    checkWorkflowSecurity(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
+    const workflowSource = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
+    checkWorkflowSecurity(workflowSource);
+    checkRustToolchainPins(workflowSource, readFileSync(resolve(root, "rust-toolchain.toml"), "utf8"));
     const workflowsDir = resolve(root, ".github/workflows");
     for (const name of readdirSync(workflowsDir).filter(entry => /\.ya?ml$/.test(entry)).sort()) {
       checkPullRequestTargetWorkflow(readFileSync(resolve(workflowsDir, name), "utf8"), `.github/workflows/${name}`);

@@ -283,6 +283,7 @@ fn poll_fatal_rejects_owned_guardian_zero_even_after_shutdown_attribution() {
         worker: None,
         shutdown_attributed: true,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,
@@ -369,6 +370,7 @@ fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
         })),
         shutdown_attributed: true,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,

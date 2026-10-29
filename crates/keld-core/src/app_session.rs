@@ -7066,7 +7066,16 @@ impl PrimaryRouterHandle {
     }
 
     fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
-        self.guardian.shutdown_and_wait()?;
+        // On every OS the primary owner (Guardian on macOS, `DirectPrimaryOwner` on
+        // Linux and Windows) can fail this shutdown after an accepted lifecycle Quit.
+        // That Quit already removed the primary, so its retired reader cannot send a
+        // current-generation Fatal; wake the UI loop here. CLI lease loss and the
+        // profile handover already have their own terminal paths.
+        self.guardian.shutdown_and_wait().inspect_err(|_| {
+            if self.shutdown.cause() == SESSION_LIFECYCLE_QUIT {
+                let _ = self.window_commands.send(AppWindowCommand::Fatal);
+            }
+        })?;
         #[cfg(target_os = "macos")]
         if let Some(auth) = &self.auth {
             return auth.quit_after_drain(self);

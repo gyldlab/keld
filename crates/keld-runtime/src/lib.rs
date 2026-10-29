@@ -513,8 +513,20 @@ pub enum SupervisorEvent {
     },
     /// The crash-loop breaker tripped; supervision has stopped permanently.
     CrashLoopTripped,
-    /// The child exited zero (or `shutdown()` was called); supervision has
-    /// stopped and will not restart.
+    /// Supervision has stopped and will not restart. This is not proof that
+    /// the child ended cleanly: it is sent when the child exited zero, when
+    /// `shutdown()` was called or the host accepted a primary's shutdown (the
+    /// primary role on Linux and Windows, the Guardian's accepted Quit on
+    /// macOS), or when a successor gate refused a successor at the
+    /// post-revocation boundary. Gates include, for example, the closure given
+    /// to [`Supervisor::start_with_stdout_markers_and_successor_gate`] and a
+    /// primary role's denied recovery ([`primary::PrimaryRecoveryGate::deny`]).
+    /// A gate is consulted only after a non-zero or signal termination the
+    /// supervisor has already recorded in [`Supervisor::crash_ledger`] or, on
+    /// Linux and Windows, after a host-requested primary-role generation
+    /// restart, which kills a live child and records no crash. A caller must
+    /// read [`Supervisor::crash_ledger`] before it treats any `Stopped` as a
+    /// clean stop.
     Stopped,
 }
 
@@ -582,10 +594,12 @@ pub struct CrashLedger {
 /// Terminal outcome of [`Supervisor::wait_for_outcome`].
 #[derive(Debug)]
 pub enum SupervisorOutcome {
-    /// The child exited zero or the host requested shutdown; supervision ended
-    /// without a restart-policy error. A generation may still have terminated
-    /// itself — read [`Supervisor::crash_ledger`] for that fact
-    /// (KEL-105/KEL-116).
+    /// The child exited zero, the host requested shutdown, or a successor gate
+    /// refused a crash successor; supervision ended without a restart-policy
+    /// error. A gate refusal follows a crash the supervisor has already
+    /// recorded, and any other stop can still follow a generation that
+    /// terminated itself, so a caller must read [`Supervisor::crash_ledger`]
+    /// before it treats `Stopped` as a clean exit (KEL-105/KEL-116, GH-674).
     Stopped,
     /// The crash-loop breaker tripped.
     CrashLoop(RuntimeError),
@@ -698,13 +712,17 @@ impl GenerationLease for NoLease {
     }
 }
 
-struct CommandPreparer<F> {
+struct CommandPreparer<F, G> {
     factory: F,
+    /// Answers, at the supervisor's one post-revocation boundary, whether a
+    /// crash successor could still be served (GH-674).
+    successor_gate: G,
 }
 
-impl<F> ChildPreparer for CommandPreparer<F>
+impl<F, G> ChildPreparer for CommandPreparer<F, G>
 where
     F: FnMut() -> Command + Send + 'static,
+    G: FnMut() -> bool + Send + 'static,
 {
     type Lease = NoLease;
 
@@ -713,6 +731,14 @@ where
             command: (self.factory)().into(),
             lease: NoLease,
         })
+    }
+
+    fn allow_restart(
+        &mut self,
+        _shutdown: &AtomicBool,
+        _accepted_shutdown: &AtomicBool,
+    ) -> Result<bool, RuntimeError> {
+        Ok((self.successor_gate)())
     }
 }
 
@@ -881,15 +907,46 @@ impl Supervisor {
     pub fn start_with_stdout_markers<F>(
         policy: RestartPolicy,
         markers: &[&str],
-        mut command_factory: F,
+        command_factory: F,
     ) -> Result<Self, RuntimeError>
     where
         F: FnMut() -> Command + Send + 'static,
+    {
+        Self::start_with_stdout_markers_and_successor_gate(policy, markers, command_factory, || {
+            true
+        })
+    }
+
+    /// Starts supervision whose crash successors are provisioned only while
+    /// `successor_gate` returns `true`.
+    ///
+    /// The gate runs at the supervisor's one post-revocation boundary, after a
+    /// crash is recorded in the [`CrashLedger`] and its backoff has elapsed,
+    /// and before the successor's command is built. `false` ends supervision
+    /// with [`SupervisorOutcome::Stopped`]: the crash stays in the ledger, no
+    /// successor is spawned, and the breaker counts no crash the host could
+    /// never have served. A caller whose endpoint admits one session uses it to
+    /// stop restarting once that session is consumed (GH-674). Restart backoff,
+    /// the crash-loop breaker and shutdown are unchanged; this adds no second
+    /// restart loop.
+    ///
+    /// # Errors
+    /// Same as [`Self::start_with_stdout_markers`].
+    pub fn start_with_stdout_markers_and_successor_gate<F, G>(
+        policy: RestartPolicy,
+        markers: &[&str],
+        mut command_factory: F,
+        successor_gate: G,
+    ) -> Result<Self, RuntimeError>
+    where
+        F: FnMut() -> Command + Send + 'static,
+        G: FnMut() -> bool + Send + 'static,
     {
         Self::start_prepared_with_capture(
             policy,
             CommandPreparer {
                 factory: move || command_factory(),
+                successor_gate,
             },
             CaptureState::new(markers)?,
         )
@@ -1036,9 +1093,13 @@ impl Supervisor {
         self.events_rx.recv_timeout(timeout).ok()
     }
 
-    /// Blocks until supervision reaches a terminal state: the child exited
-    /// zero, or the crash-loop breaker tripped. There is no internal
-    /// timeout — the crash-loop breaker itself bounds the number of
+    /// Blocks until supervision reaches a terminal state:
+    /// [`SupervisorOutcome::Stopped`] (the child exited zero, the host
+    /// requested or accepted shutdown, or a successor gate refused a
+    /// successor; see [`SupervisorEvent::Stopped`]), [`SupervisorOutcome::CrashLoop`], or
+    /// [`SupervisorOutcome::Failed`]. `Stopped` is not proof of a clean exit;
+    /// read [`Self::crash_ledger`] before treating it as one. There is no
+    /// internal timeout — the crash-loop breaker itself bounds the number of
     /// spawn/wait cycles, so this call always terminates.
     #[must_use]
     pub fn wait_for_outcome(&self) -> SupervisorOutcome {
@@ -5513,6 +5574,56 @@ mod tests {
         let out = sup.output();
         assert!(out.stdout.contains("out-marker"), "{out:?}");
         assert!(out.stderr.contains("err-marker"), "{out:?}");
+    }
+
+    /// GH-674: the successor gate is consulted once per crash, after the
+    /// ledger records it and before the successor's command is built, and a
+    /// closed gate ends supervision as `Stopped` instead of restarting.
+    ///
+    /// The gate opens for the first crash and closes for the second, so the
+    /// oracle tells both arms apart: two commands built, two crashes recorded,
+    /// and `Stopped` although the policy would allow a third attempt. A gate
+    /// the supervisor ignored builds a third command and trips the breaker
+    /// (the always-open case is `crash_loop_breaker_trips_after_max_crashes`).
+    #[test]
+    fn a_closed_successor_gate_stops_supervision_after_the_recorded_crash() {
+        let built = Arc::new(AtomicU32::new(0));
+        let consulted = Arc::new(AtomicU32::new(0));
+        let built_by_factory = Arc::clone(&built);
+        let consulted_by_gate = Arc::clone(&consulted);
+        let sup = Supervisor::start_with_stdout_markers_and_successor_gate(
+            RestartPolicy {
+                max_crashes: 3,
+                window_secs: 60,
+            },
+            &[],
+            move || {
+                built_by_factory.fetch_add(1, Ordering::SeqCst);
+                shell_command(&joined_steps(&["echo gated-crash 1>&2", "exit 3"]))
+            },
+            move || consulted_by_gate.fetch_add(1, Ordering::SeqCst) == 0,
+        )
+        .expect("first spawn must succeed");
+
+        match sup.wait_for_outcome() {
+            SupervisorOutcome::Stopped => {}
+            other => panic!("a closed successor gate must stop supervision, got {other:?}"),
+        }
+        assert_eq!(built.load(Ordering::SeqCst), 2, "commands built");
+        assert_eq!(consulted.load(Ordering::SeqCst), 2, "gate consultations");
+        let ledger = sup.crash_ledger();
+        assert_eq!(ledger.count, 2, "both crashes stay recorded");
+        match ledger.last {
+            Some(RuntimeError::ChildCrashed {
+                exit_code,
+                stderr_tail,
+                ..
+            }) => {
+                assert_eq!(exit_code, Some(3));
+                assert!(stderr_tail.contains("gated-crash"), "{stderr_tail}");
+            }
+            other => panic!("expected the recorded crash, got {other:?}"),
+        }
     }
 
     #[test]

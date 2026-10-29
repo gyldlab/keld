@@ -27,6 +27,17 @@ cp "$repo_root/justfile" "$fixture/justfile"
 cp "$repo_root/tools/worktree_cache.rs" "$repo_root/tools/worktree_cache_delete.rs" \
     "$repo_root/tools/worktree_cache_delete_tests.rs" "$fixture/tools/"
 git -C "$fixture" init -q
+# If the isolated HOME cannot see the caller's toolchains (RUSTUP_HOME neither
+# set by the caller nor derived above, or naming the wrong home), rustup would
+# silently install the pinned toolchain (about 1.4 GB) into the throwaway HOME
+# and the test would still pass. Refuse auto-install (rustup's
+# RUSTUP_AUTO_INSTALL=0) and fail loudly up front.
+export RUSTUP_AUTO_INSTALL=0
+(cd "$fixture" && HOME="$home" rustc -V >/dev/null) || {
+    echo "FAIL: the pinned toolchain is not visible from the isolated HOME;" \
+        "RUSTUP_HOME must name the caller's rustup home" >&2
+    exit 1
+}
 
 # The previous recipe's cache key: tool sources plus `rustc -vV`.
 stamp=$(

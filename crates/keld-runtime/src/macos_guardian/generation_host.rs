@@ -479,14 +479,34 @@ fn rejected_recovery() -> RuntimeError {
     )
 }
 
+/// Typed, private evidence that the host refused an in-flight SPAWNED
+/// because its own permanent denial had already won, AFTER it took custody
+/// of the attested child group, signalled it and released custody, and
+/// revoked the prepared role lease. A failed cleanup never carries it.
+#[derive(Debug)]
+struct PostShutdownSpawnRefused;
+
+impl std::fmt::Display for PostShutdownSpawnRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .write_str("SPAWNED refused after host S; no CONTROL_REGISTERED permit was granted")
+    }
+}
+
+impl std::error::Error for PostShutdownSpawnRefused {}
+
 fn refused_post_shutdown_spawn() -> RuntimeError {
     lifecycle_error(
         "macOS guardian post-shutdown registration refusal",
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "SPAWNED refused after host S; no CONTROL_REGISTERED permit was granted",
-        ),
+        io::Error::new(io::ErrorKind::PermissionDenied, PostShutdownSpawnRefused),
     )
+}
+
+pub(super) fn is_post_shutdown_spawn_refused(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Lifecycle { source, .. }
+        if source.get_ref()
+            .and_then(|source| source.downcast_ref::<PostShutdownSpawnRefused>())
+            .is_some())
 }
 
 pub(super) fn is_initial_recovery_denied(error: &RuntimeError) -> bool {

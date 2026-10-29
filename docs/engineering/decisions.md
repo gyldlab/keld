@@ -349,7 +349,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
+Toolchain pin: `rust-toolchain.toml` (`1.99.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
 retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate

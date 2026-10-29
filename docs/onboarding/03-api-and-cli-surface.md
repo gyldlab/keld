@@ -401,7 +401,7 @@ dispatch remains the behavioral owner of reserved-command failures such as
 
 ## 3. Public Rust crate APIs
 
-Workspace version `0.0.1`, edition 2024, MSRV 1.97; pinned toolchain 1.97.1. Every public item is
+Workspace version `0.0.1`, edition 2024, MSRV 1.99.1; pinned toolchain 1.99.1. Every public item is
 documented (`missing_docs` is a workspace lint) and `cargo doc --workspace --no-deps`
 builds clean, so `cargo doc --open` is a legitimate way to browse this.
 

@@ -449,3 +449,54 @@ fn initial_ready_preserves_unaccepted_owner_failures() {
         owner.join().expect("owner probe joins");
     }
 }
+
+/// The `finish_tail` decision on every OS (ported from #1018 into the
+/// decomposed layout): an accepted lifecycle Quit has already removed the
+/// primary generation, so its retired reader cannot send a current-generation
+/// `Fatal`. When the primary owner (Guardian on macOS, `DirectPrimaryOwner` on
+/// Linux and Windows) then fails its shutdown, the tail alone must wake the UI
+/// loop, exactly once, and still return the owner's error. CLI lease loss and
+/// the profile handover have their own terminal paths, so they must not get a
+/// second UI event from the tail.
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn failed_owner_shutdown_after_accepted_quit_wakes_ui_on_every_os() {
+    for (cause, wakes_ui) in [
+        (SESSION_LIFECYCLE_QUIT, true),
+        (SESSION_CLI_LEASE_LOST, false),
+        (SESSION_HANDOVER, false),
+    ] {
+        let (handle, _client, owner_rx, window_rx) = initial_ready_router_with_window_loop();
+        assert!(handle.shutdown.claim(cause), "claim session cause {cause}");
+        let owner = thread::spawn(move || {
+            match owner_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("primary owner terminal shutdown")
+            {
+                TestPrimaryOwnerCommand::Shutdown(reply) => reply
+                    .send(Err(String::from("owned primary shutdown denied")))
+                    .expect("report exact owner failure"),
+                _ => panic!("finish_tail sends only the terminal shutdown"),
+            }
+        });
+        let error = handle
+            .finish_tail("lifecycle Quit")
+            .expect_err("the owner's shutdown failure is returned");
+        owner.join().expect("test primary owner joins");
+        assert!(
+            error.to_string().contains("owned primary shutdown denied"),
+            "cause {cause}: {error}"
+        );
+        if wakes_ui {
+            assert_eq!(
+                window_rx.try_recv(),
+                Ok(AppWindowCommand::Fatal),
+                "a failed owner shutdown after an accepted Quit must wake the UI"
+            );
+        }
+        assert!(
+            window_rx.try_recv().is_err(),
+            "cause {cause}: at most one terminal UI event, and none for other causes"
+        );
+    }
+}

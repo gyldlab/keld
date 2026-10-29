@@ -24,6 +24,10 @@ use super::{
 #[cfg(any(target_os = "macos", windows))]
 use super::{APP_LINK_IO_DEADLINE, PathBuf, WebProfileSelection, startup_resource_snapshot};
 
+// The every-OS `finish_tail` per-cause test also runs on macOS.
+#[cfg(target_os = "macos")]
+use super::SESSION_HANDOVER;
+
 #[cfg(any(target_os = "linux", windows))]
 use super::{
     DirectSessionNext, FsDispatchSession, FsInFlight, HandoverClock, HandoverWait,
