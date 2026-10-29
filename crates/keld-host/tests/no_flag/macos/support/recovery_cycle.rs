@@ -2,7 +2,6 @@ use crate::support::DARK_BG;
 use crate::support::EVENT_DEADLINE;
 use crate::support::MARKER;
 use crate::support::TITLE;
-use crate::support::control::parse_pid;
 use crate::support::control::read_control_line;
 use crate::support::control::wait_child_output_observing;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
@@ -19,6 +18,7 @@ use crate::support::product::ProductFixture;
 use crate::support::renderer::Beacon;
 use std::fs;
 use std::io::BufReader;
+use std::io::Read as _;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
@@ -276,46 +276,39 @@ impl RecoveryGeneration {
 
     pub(crate) fn try_accept(listener: &UnixListener, label: &str) -> Result<Self, String> {
         let deadline = Instant::now() + EVENT_DEADLINE;
-        let stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(format!("{label}: Bun did not connect the fixture control"));
-                    }
-                    thread::yield_now();
-                }
-                Err(error) => return Err(format!("{label}: accept fixture control: {error}")),
-            }
-        };
-        stream
-            .set_nonblocking(false)
-            .map_err(|error| format!("{label}: normalize T3 control stream: {error}"))?;
-        stream
-            .set_read_timeout(Some(EVENT_DEADLINE))
-            .map_err(|error| format!("{label}: T3 control deadline: {error}"))?;
-        let mut reader = BufReader::new(
-            stream
-                .try_clone()
-                .map_err(|error| format!("{label}: T3 control reader: {error}"))?,
-        );
-        let hello = read_control_line(&mut reader);
+        let (stream, hello, descendant) =
+            collect_initial_control_until(listener, label, deadline, &mut |_| {})?;
         let mut hello_fields = hello.split_whitespace();
-        assert_eq!(hello_fields.next(), Some("HELLO"), "{label}: {hello}");
-        let bun_pid = parse_pid(hello_fields.next(), &hello);
+        if hello_fields.next() != Some("HELLO") {
+            return Err(format!("{label}: malformed HELLO control record"));
+        }
+        let bun_pid = numeric_control_field(hello_fields.next(), label, "HELLO")?;
         let app_link = hello_fields
             .next()
-            .unwrap_or_else(|| panic!("{label}: missing app link: {hello}"))
+            .ok_or_else(|| format!("{label}: missing HELLO app-link field"))?
             .to_owned();
         let endpoint = PathBuf::from(
             app_link
                 .rsplit_once('#')
-                .unwrap_or_else(|| panic!("{label}: invalid app link: {app_link}"))
+                .ok_or_else(|| format!("{label}: malformed HELLO app-link field"))?
                 .0,
         );
-        let descendant = read_control_line(&mut reader);
-        let descendant_pid = parse_pid(descendant.split_whitespace().nth(1), &descendant);
+        let mut descendant_fields = descendant.split_whitespace();
+        if descendant_fields.next() != Some("DESCENDANT") {
+            return Err(format!("{label}: malformed DESCENDANT control record"));
+        }
+        let descendant_pid = numeric_control_field(descendant_fields.next(), label, "DESCENDANT")?;
         let guardian_pid = parent_process(bun_pid);
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: recovery handshake exceeded original deadline"
+            ));
+        }
+        let reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(|error| format!("{label}: T3 control reader: {error}"))?,
+        );
         Ok(Self {
             guardian_pid,
             bun_pid,
@@ -355,3 +348,161 @@ impl RecoveryGeneration {
             .1
     }
 }
+
+const MAX_INITIAL_CONTROL_LINE_BYTES: usize = 4096;
+
+#[derive(Clone, Copy, Debug)]
+enum NativeRecoveryStage {
+    BeforeAccept,
+    AfterAccept,
+    BeforeByte { line: u8, received: usize },
+    AfterLf { line: u8 },
+}
+
+fn numeric_control_field(field: Option<&str>, label: &str, kind: &str) -> Result<u32, String> {
+    field
+        .ok_or_else(|| format!("{label}: missing {kind} numeric field"))?
+        .parse()
+        .map_err(|_| format!("{label}: invalid {kind} numeric field"))
+}
+
+fn accept_recovery_until(
+    listener: &UnixListener,
+    label: &str,
+    deadline: Instant,
+    observe: &mut impl FnMut(NativeRecoveryStage),
+) -> Result<UnixStream, String> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: Bun did not connect before original deadline"
+            ));
+        }
+        observe(NativeRecoveryStage::BeforeAccept);
+        match listener.accept() {
+            Ok((stream, _)) => {
+                observe(NativeRecoveryStage::AfterAccept);
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "{label}: native control accept completed after original deadline"
+                    ));
+                }
+                return Ok(stream);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(format!("{label}: Bun did not connect the fixture control"));
+                }
+                thread::yield_now();
+            }
+            Err(error) => return Err(format!("{label}: accept fixture control: {error}")),
+        }
+    }
+}
+
+fn read_initial_line_until(
+    stream: &mut UnixStream,
+    label: &str,
+    deadline: Instant,
+    line: u8,
+    observe: &mut impl FnMut(NativeRecoveryStage),
+) -> Result<String, String> {
+    // This is the same real Unix socket, without BufReader prefetch: a
+    // delivered LF callback follows the actual native one-byte read.
+    let mut bytes = Vec::with_capacity(128);
+    let phase = if line == 0 { "HELLO" } else { "DESCENDANT" };
+    loop {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: {phase} native control read exceeded original deadline"
+            ));
+        }
+        observe(NativeRecoveryStage::BeforeByte {
+            line,
+            received: bytes.len(),
+        });
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Ok(1) if byte[0] == b'\n' => {
+                observe(NativeRecoveryStage::AfterLf { line });
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "{label}: {phase} LF completed after original deadline"
+                    ));
+                }
+                return String::from_utf8(bytes)
+                    .map(|text| text.trim_end().to_owned())
+                    .map_err(|_| format!("{label}: invalid UTF-8 in native control record"));
+            }
+            Ok(1) => {
+                if bytes.len() >= MAX_INITIAL_CONTROL_LINE_BYTES {
+                    return Err(format!("{label}: oversized native control record"));
+                }
+                bytes.push(byte[0]);
+            }
+            Ok(0) => return Err(format!("{label}: native control EOF before LF")),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => {
+                return Err(format!(
+                    "{label}: native control read failed ({:?})",
+                    error.kind()
+                ));
+            }
+            Ok(_) => unreachable!("one byte per native read"),
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{label}: {phase} native byte exceeded original deadline"
+            ));
+        }
+        thread::yield_now();
+    }
+}
+
+fn collect_initial_control_until(
+    listener: &UnixListener,
+    label: &str,
+    deadline: Instant,
+    observe: &mut impl FnMut(NativeRecoveryStage),
+) -> Result<(UnixStream, String, String), String> {
+    let mut stream = accept_recovery_until(listener, label, deadline, observe)?;
+    // Preserve the original socket setup ordering while the accepted peer is
+    // still alive. On Darwin setting SO_RCVTIMEO after an otherwise-complete
+    // peer has closed can fail with EINVAL; that is not a bad HELLO.
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("{label}: normalize T3 control stream: {error}"))?;
+    stream
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .map_err(|error| format!("{label}: T3 control deadline: {error}"))?;
+    // Native HELLO and DESCENDANT use nonblocking one-byte reads checked
+    // against the earlier absolute clock. The socket timeout installed above
+    // remains for the subsequent ordinary READY/ECHO reader.
+    stream
+        .set_nonblocking(true)
+        .map_err(|error| format!("{label}: native control poll setup: {error}"))?;
+    let hello = read_initial_line_until(&mut stream, label, deadline, 0, observe)?;
+    let descendant = read_initial_line_until(&mut stream, label, deadline, 1, observe)?;
+    if Instant::now() >= deadline {
+        return Err(format!(
+            "{label}: recovery control record completion exceeded original deadline"
+        ));
+    }
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| format!("{label}: normalize T3 control stream: {error}"))?;
+    if Instant::now() >= deadline {
+        return Err(format!(
+            "{label}: normalized recovery control exceeded original deadline"
+        ));
+    }
+    Ok((stream, hello, descendant))
+}
+
+#[cfg(test)]
+#[path = "recovery_cycle/deadline_tests.rs"]
+mod deadline_tests;
