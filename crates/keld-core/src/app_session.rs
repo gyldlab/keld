@@ -5396,6 +5396,7 @@ impl DirectPrimaryOwner {
                             &recovery,
                             &supervisor,
                             &window_commands,
+                            &shutdown,
                         ));
                     }
                     while let Some(bound) = supervisor.try_recv_bound_generation() {
@@ -5411,6 +5412,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         }
                         let Some(router) = router.as_ref() else {
@@ -5423,6 +5425,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         };
                         let attempt = bound.attempt();
@@ -5434,19 +5437,18 @@ impl DirectPrimaryOwner {
                             }) {
                                 continue;
                             }
-                            let _ = recovery.deny();
-                            supervisor.shutdown();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error.into());
+                            return Err(terminate_direct_primary_owner(
+                                error.into(),
+                                &recovery,
+                                &supervisor,
+                                &window_commands,
+                                &shutdown,
+                            ));
                         }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
                         let session_running = shutdown.is_running();
-                        if session_running {
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                        }
-                        forward_direct_primary_output(&supervisor)?;
-                        return match outcome {
+                        let result = match outcome {
                             keld_runtime::SupervisorOutcome::Stopped if session_running => {
                                 let ledger = supervisor.crash_ledger();
                                 ledger.last_self_termination.map_or_else(
@@ -5464,7 +5466,14 @@ impl DirectPrimaryOwner {
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
                                 Err(app_runtime_fatal("primary supervisor", &error))
                             }
-                        };
+                        }
+                        // Ranked before the Fatal that ends the window loop.
+                        .map_err(|error| owner_failure_by_causality(error, &shutdown));
+                        if session_running {
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                        }
+                        forward_direct_primary_output(&supervisor)?;
+                        return result;
                     }
                     match command_rx.recv_timeout(DIRECT_PRIMARY_OWNER_POLL) {
                         Ok(DirectPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
@@ -5666,6 +5675,32 @@ fn owner_cause_outranks_window(owner: &HostAppError) -> bool {
         || (owner.code == "KELD-CORE-037" && owner.phase == PRIMARY_PRE_READY_PHASE)
 }
 
+/// The phase of an owner cause first reached after session teardown began.
+#[cfg(any(target_os = "linux", windows))]
+const PRIMARY_AFTER_TEARDOWN_PHASE: &str = "primary generation after teardown began";
+
+/// Ranks the owner's terminal failure by causality (PR #1300 review): only a
+/// cause the owner reached before teardown began can have ended the window
+/// loop. Teardown stops the readers (`reader_stop`) under the transition guard
+/// before it closes the app link, so a cause reached once that is set is that
+/// teardown's consequence: it keeps its text, but under a phase that
+/// [`owner_cause_outranks_window`] does not promote.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_failure_by_causality(
+    error: HostAppError,
+    shutdown: &SessionShutdownState,
+) -> HostAppError {
+    if !owner_cause_outranks_window(&error) {
+        return error;
+    }
+    let _transition = shutdown.transition_guard();
+    if shutdown.reader_stop.load(Ordering::Acquire) {
+        app_detail(PRIMARY_AFTER_TEARDOWN_PHASE, error.to_string())
+    } else {
+        error
+    }
+}
+
 /// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
 /// one does. Linux and Windows route it through the direct owner so startup
 /// fails with the recovery gate's typed cause (GH-1182). macOS keeps the
@@ -5782,7 +5817,10 @@ fn terminate_direct_primary_owner(
     recovery: &PrimaryRecoveryGate,
     supervisor: &PrimaryRoleSupervisor,
     window_commands: &Sender<AppWindowCommand>,
+    shutdown: &SessionShutdownState,
 ) -> HostAppError {
+    // Ranked before the Fatal that ends the window loop.
+    let error = owner_failure_by_causality(error, shutdown);
     let _ = recovery.deny();
     supervisor.shutdown();
     let _ = window_commands.send(AppWindowCommand::Fatal);
