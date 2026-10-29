@@ -134,7 +134,7 @@ fn successor_drain_test_router(
             attempt: 1,
             writer: g1_server,
             reader_stop: Arc::new(AtomicBool::new(false)),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),

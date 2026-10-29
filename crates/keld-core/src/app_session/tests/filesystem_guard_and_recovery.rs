@@ -147,7 +147,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         attempt: 1,
         writer: server,
         reader_stop: Arc::clone(&reader_stop),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
@@ -289,7 +289,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         attempt: 1,
         writer: g1_server,
         reader_stop: Arc::clone(&reader_stop),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         dialog_nonce_high_water: 0,
         pending_quit: None,
     })));
