@@ -153,12 +153,12 @@ def historical_audit_states(
 
 # Dated source review, not a native/security acceptance certificate. Advancing
 # this evidence requires a separately reviewed dated ledger/pin update.
-GUARDIAN_LEDGER = ROOT / "macos-guardian-2026-10-18-ea728589" / "source-delta-2026-10-29.csv"
+GUARDIAN_LEDGER = ROOT / "macos-guardian-2026-10-18-ea728589" / "source-delta-2026-10-29-r2.csv"
 GUARDIAN_PINS = {
     "baseline949": "ea728589d0143df134c0f21fe5cf335240018d6a",
     "historical953": "46b91848db10f81156cebe0c6c34dec90082eaba",
     "current953": "8dd43926297479851c555596aafa012ee992c7e5",
-    "current955": "066bd64f53e347a55dd98e3e76c1ecc01569ec86",
+    "current955": "8679d875146772d638632bf0cfb50efba68d2379",
 }
 GUARDIAN_ROOTS = (
     "crates/keld-runtime/src/macos_guardian.rs",

@@ -19,7 +19,7 @@ REPO = HERE.parent.parent
 MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
 UTF8 = "utf-8"
-GUARDIAN_SOURCE = "066bd64f53e347a55dd98e3e76c1ecc01569ec86"
+GUARDIAN_SOURCE = "8679d875146772d638632bf0cfb50efba68d2379"
 GUARDIAN_AUDIT = "macos-guardian-2026-10-18-ea728589"
 GUARDIAN_ROOTS = (
     "crates/keld-runtime/src/macos_guardian.rs",
@@ -182,7 +182,7 @@ class AuditVerifyTests(unittest.TestCase):
 
     @property
     def guardian_ledger(self) -> Path:
-        return self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-29.csv"
+        return self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-29-r2.csv"
 
     def test_guardian_reviewed_successor_can_differ_from_historical_953(self) -> None:
         historical = subprocess.check_output(
@@ -198,7 +198,7 @@ class AuditVerifyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_guardian_historical_ledger_cannot_replace_successor_evidence(self) -> None:
-        old_ledger = self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-28.csv"
+        old_ledger = self.audits / GUARDIAN_AUDIT / "source-delta-2026-10-29.csv"
         self.guardian_ledger.write_bytes(old_ledger.read_bytes())
         self.assert_rejected("Guardian pinned blob differs: current955")
 
