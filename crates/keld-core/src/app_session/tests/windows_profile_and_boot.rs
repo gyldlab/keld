@@ -251,6 +251,53 @@ fn windows_boot_files_keep_the_strict_descriptor_and_target_rules() {
     assert!(error.to_string().contains("reparse point"), "{error}");
 }
 
+/// GH-1182 (post-#1181 qualification, finding f16): Windows has no facade
+/// window adapter yet (W2 #1188), so a schema-2 boot, which declares no
+/// renderer and expects Host-owned windows, is refused with `KELD-CORE-034`
+/// before its entry is opened: the entry is absent, and the refusal is still
+/// `KELD-CORE-034`, not a missing-target error. Once the entry and a
+/// renderer exist, the same tree with a schema-1 renderer boot validates, so
+/// the refusal is the schema alone. *Negative control:* removing
+/// `ensure_initial_window_supported` from `validate_windows_boot_files`
+/// reports the missing entry instead.
+#[test]
+#[cfg(windows)]
+fn windows_boot_files_refuse_a_schema_2_facade_boot() {
+    let temp = tempfile::tempdir().expect("temp root");
+    let root = temp.path().join("tree");
+    fs::create_dir(&root).expect("tree");
+    fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
+    let facade = serde_json::to_vec(&serde_json::json!({
+        "schema": 2,
+        "name": "Fixture",
+        "entry": "main.ts",
+        "permissions": {
+            "file": PERMISSIONS_FILE,
+            "content_sha256": DIGEST,
+        },
+    }))
+    .expect("facade boot");
+    fs::write(root.join(BOOT_FILE), facade).expect("boot");
+
+    let error = must_err(
+        validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
+        "a schema-2 facade boot must be refused on Windows",
+    );
+    assert_eq!(error.code(), "KELD-CORE-034", "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("schema 2 is supported on macOS only"),
+        "{error}"
+    );
+
+    fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
+    fs::write(root.join("index.html"), "<p>renderer</p>\n").expect("renderer");
+    fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
+    validate_windows_boot_files(root, WindowsBootMode::DevStage)
+        .expect("the same tree with a schema-1 renderer boot validates");
+}
+
 #[test]
 #[cfg(windows)]
 fn windows_trust_image_refusal_is_reported_as_wv009() {

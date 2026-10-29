@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:7ab8f451c26147de76dbe794496aa3b8ae16756311808131e95103326c2df3fe
+// @keld/kipc-transport sha256:11703ad7b5efccc74227e166d225a2628813a1c958391cc77d62547b3c8194a9
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -91,11 +91,11 @@ const IntrinsicMessageChannel = MessageChannel;
 const intrinsicChannelPort1 = intrinsicDescriptor(
   MessageChannel.prototype,
   "port1",
-)!.get!;
+)?.get;
 const intrinsicChannelPort2 = intrinsicDescriptor(
   MessageChannel.prototype,
   "port2",
-)!.get!;
+)?.get;
 const intrinsicPortPost = MessagePort.prototype.postMessage;
 const intrinsicTerminate = Worker.prototype.terminate;
 const IntrinsicTextDecoder = TextDecoder;
@@ -2532,6 +2532,15 @@ export class WorkerLink {
     options: WorkerLinkOptions,
     hooks: WorkerLinkTestHooks | undefined,
   ): Promise<WorkerLink> {
+    if (
+      typeof intrinsicChannelPort1 !== "function" ||
+      typeof intrinsicChannelPort2 !== "function"
+    ) {
+      throw linkError(
+        "KELD-IPC-005",
+        "This runtime has no early-captured MessageChannel accessor pair. Open the app link under the qualified Bun runtime",
+      );
+    }
     const config = validateWorkerLinkOptions(options);
     // The name is not identity: a bundle named transport.js passes every check
     // in requireStagedTransport, so the file's bytes must be the stamped

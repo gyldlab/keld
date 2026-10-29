@@ -677,6 +677,140 @@ class RouterFailureBoundaryTests(unittest.TestCase):
 
 
 class ProductionConsumerTests(unittest.TestCase):
+    def test_gh569_shipping_host_observer_inputs_select_compat_without_fallback(self):
+        source = Path(__file__).resolve().parent.parent
+        host_inputs = [
+            "crates/keld-host/src/main.rs",
+            "crates/keld-host/tests/no_flag_macos.rs",
+            "crates/keld-host/tests/no_flag/macos/module_process.rs",
+            "crates/keld-host/tests/fixtures/module_process_early.ts",
+            "crates/keld-cli/src/boot.rs",
+            "crates/keld-cli/src/config.rs",
+            "crates/keld-cli/src/template.rs",
+        ]
+        with tempfile.TemporaryDirectory(prefix="keld-gh569-host-input-route-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            self.assertEqual(ci_inputs.stale(root), [], "fresh digest binding before path cases")
+            bound_contract = ci_inputs.load(root)
+            readers = set(bound_contract["reader_sets"]["rust-readers"]["patterns"])
+            for reader in (
+                "crates/keld-host/tests/no_flag_macos.rs",
+                "crates/keld-host/tests/no_flag/macos/module_process.rs",
+                "crates/keld-compat/tests/module_process_corpus.rs",
+                "crates/keld-compat/tests/module_process_reference.rs",
+            ):
+                self.assertIn(reader, readers, "new GH569 reader must stay bound to its source bytes")
+
+            def route(path):
+                return subprocess.run(
+                    ["bash", "tools/ci_changes.sh", "classify"],
+                    cwd=root,
+                    input=(path + "\0").encode(),
+                    capture_output=True,
+                )
+
+            for path in host_inputs:
+                with self.subTest(path=path):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertTrue(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    packages = set(selection["packages"].split())
+                    self.assertIn("keld-compat", packages, selection)
+                    self.assertFalse(selection["workspace"] == "true", selection)
+
+            # Core/runtime and their Host dependency closure already reach the
+            # observer through Cargo reverse dependencies; do not duplicate
+            # those paths in rust_package_inputs.
+            for path in (
+                "crates/keld-core/src/app_session.rs",
+                "crates/keld-runtime/src/macos_guardian.rs",
+            ):
+                with self.subTest(cargo_owned_path=path):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertFalse(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    self.assertIn("keld-compat", selection["packages"].split(), selection)
+
+            # The Electron fixture is already a declared keld-compat external
+            # input; changing it must continue to select the same observer.
+            electron_fixture = "packages/@keld/electron/fixtures/module_process_probe.ts"
+            electron_selection = ci_inputs.classify(root, [electron_fixture], paths_only=True)
+            self.assertFalse(electron_selection["input_all"], electron_selection)
+            self.assertTrue(electron_selection["input_package_keld-compat"], electron_selection)
+
+            # Corpus bytes live inside the observing package, so Cargo's direct
+            # package route owns them; no redundant external input edge is needed.
+            corpus = "crates/keld-compat/fixtures/module-process-corpus/corpus.json"
+            corpus_result = route(corpus)
+            self.assertEqual(corpus_result.returncode, 0, corpus_result.stderr.decode(errors="replace"))
+            corpus_selection = dict(
+                line.split("=", 1)
+                for line in corpus_result.stdout.decode().splitlines()
+                if "=" in line
+            )
+            self.assertIn("keld-compat", corpus_selection["packages"].split())
+
+            # An unrelated crate must not enter the compatibility observer's
+            # package selection merely because Host inputs now have an edge.
+            unrelated = "crates/keld-updater-helper/src/lib.rs"
+            unrelated_result = route(unrelated)
+            self.assertEqual(
+                unrelated_result.returncode, 0, unrelated_result.stderr.decode(errors="replace")
+            )
+            unrelated_selection = dict(
+                line.split("=", 1)
+                for line in unrelated_result.stdout.decode().splitlines()
+                if "=" in line
+            )
+            self.assertNotIn("keld-compat", unrelated_selection["packages"].split())
+
+            # One-fault negatives: removing either exact external edge loses
+            # only its observing package while the direct Host/package route stays.
+            current_inputs = bound_contract["rust_package_inputs"]["keld-compat"]
+            for edge, path in (
+                ("crates/keld-host/**", "crates/keld-host/tests/no_flag_macos.rs"),
+                ("crates/keld-cli/src/**", "crates/keld-cli/src/template.rs"),
+            ):
+                # On the intentionally-red baseline the edge is absent; the
+                # first assertion above is the regression's failure-first proof.
+                if edge not in current_inputs:
+                    continue
+                contract = json.loads(json.dumps(bound_contract))
+                contract["rust_package_inputs"]["keld-compat"].remove(edge)
+                (root / "tools/ci-inputs.json").write_text(
+                    json.dumps(contract, indent=2) + "\n", encoding="utf-8"
+                )
+                with self.subTest(removed_edge=edge):
+                    selected = ci_inputs.classify(root, [path], paths_only=True)
+                    self.assertFalse(selected["input_all"], selected)
+                    self.assertFalse(selected["input_package_keld-compat"], selected)
+                    result = route(path)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                    selection = dict(
+                        line.split("=", 1)
+                        for line in result.stdout.decode().splitlines()
+                        if "=" in line
+                    )
+                    self.assertNotIn("keld-compat", selection["packages"].split())
+                (root / "tools/ci-inputs.json").write_text(
+                    json.dumps(bound_contract, indent=2) + "\n", encoding="utf-8"
+                )
+
     def test_native_format_configuration_changes_select_both_format_gates(self):
         source = Path(__file__).resolve().parent.parent
         # These are Bun 1.4.4's exact supported config basenames, not a copy of

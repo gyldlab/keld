@@ -241,6 +241,10 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
             CorrelationId(corr),
             &payload,
         );
+        // The receiver rejects an invalid header before consuming its payload.
+        // A fast peer close can interrupt the client write with any of these
+        // platform-specific disconnects. The server's typed 005 outcome and
+        // absent file below remain mandatory independent rejection evidence.
         if let Err(error) = write {
             assert!(
                 matches!(
@@ -250,6 +254,7 @@ fn hostile_authenticated_calls_close_with_005_and_write_nothing() {
                             source.kind(),
                             std::io::ErrorKind::BrokenPipe
                                 | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::NotConnected
                         )
                 ),
                 "{case}: hostile header write failed unexpectedly: {error}"
