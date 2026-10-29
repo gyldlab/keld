@@ -554,11 +554,11 @@ fn direct_link_failure_restarts_before_router_attach_and_rejects_stale_attempts(
 #[cfg(any(target_os = "linux", windows))]
 fn revoked_before_router_attachment_preserves_pre_ready_error() {
     #[cfg(target_os = "linux")]
-    let config = keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh")
-        .args(["-c", "exit 19"]);
+    let config =
+        keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh").args(["-c", "exit 19"]);
     #[cfg(windows)]
-    let config = keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe")
-        .args(["/C", "exit 19"]);
+    let config =
+        keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe").args(["/C", "exit 19"]);
     let (supervisor, recovery) =
         keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
             config.admission_timeout(Duration::from_secs(2)),
