@@ -159,38 +159,8 @@ pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u
                     .set_nonblocking(true)
                     .expect("bounded record observer");
                 let record_deadline = Instant::now() + Duration::from_secs(5);
-                let mut bytes = Vec::with_capacity(80);
-                loop {
-                    let mut byte = [0_u8; 1];
-                    match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
-                        Ok(1) => {
-                            bytes.push(byte[0]);
-                            assert!(bytes.len() <= 80, "bounded native PID record");
-                        }
-                        Ok(0) => panic!("truncated native pre-exec PID record"),
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                            ) => {}
-                        Err(error) => panic!("read pre-exec PID receipt: {error}"),
-                        Ok(_) => unreachable!("one-byte receipt read"),
-                    }
-                    assert!(
-                        Instant::now() < record_deadline,
-                        "pre-exec PID receipt exceeded its total deadline"
-                    );
-                    thread::yield_now();
-                }
-                let receipt = std::str::from_utf8(&bytes).expect("UTF-8 PID receipt");
-                let mut words = receipt.split_whitespace();
-                assert_eq!(words.next(), Some("SPAWNED"), "{receipt}");
-                let pid: i32 = words.next().expect("process group").parse().expect("PID");
-                let guardian: u32 = words.next().expect("Guardian PID").parse().expect("PID");
-                assert!(words.next().is_none(), "unexpected gate receipt: {receipt}");
-                assert!(pid > 1 && pid != nix::unistd::getpgrp().as_raw());
-                assert!(guardian > 1);
+                let (pid, guardian) =
+                    read_spawned_receipt(&mut stream, record_deadline, Instant::now);
                 return (stream, pid, guardian);
             }
             Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
@@ -202,6 +172,114 @@ pub(super) fn await_spawned_gate(listener: &UnixListener) -> (UnixStream, i32, u
             }
             Err(source) => panic!("accept pre-exec PID: {source}"),
         }
+    }
+}
+
+// The caller still owns the unchanged accept and record budgets. The clock seam
+// exposes the actual final-read boundary, not a replacement receipt parser.
+fn read_spawned_receipt(
+    stream: &mut UnixStream,
+    record_deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+) -> (i32, u32) {
+    let mut bytes = Vec::with_capacity(80);
+    loop {
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Ok(1) if byte[0] == b'\n' => {
+                assert!(
+                    now() < record_deadline,
+                    "pre-exec PID receipt exceeded its total deadline"
+                );
+                break;
+            }
+            Ok(1) => {
+                bytes.push(byte[0]);
+                assert!(bytes.len() <= 80, "bounded native PID record");
+            }
+            Ok(0) => panic!("truncated native pre-exec PID record"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => panic!("read pre-exec PID receipt: {error}"),
+            Ok(_) => unreachable!("one-byte receipt read"),
+        }
+        assert!(
+            now() < record_deadline,
+            "pre-exec PID receipt exceeded its total deadline"
+        );
+        thread::yield_now();
+    }
+    let receipt = std::str::from_utf8(&bytes).expect("UTF-8 PID receipt");
+    let mut words = receipt.split_whitespace();
+    assert_eq!(words.next(), Some("SPAWNED"), "{receipt}");
+    let pid: i32 = words.next().expect("process group").parse().expect("PID");
+    let guardian: u32 = words.next().expect("Guardian PID").parse().expect("PID");
+    assert!(words.next().is_none(), "unexpected gate receipt: {receipt}");
+    assert!(pid > 1 && pid != nix::unistd::getpgrp().as_raw());
+    assert!(guardian > 1);
+    (pid, guardian)
+}
+
+#[test]
+fn spawned_receipt_final_newline_must_precede_original_deadline() {
+    use std::io::Write as _;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let before = deadline
+        .checked_sub(Duration::from_nanos(1))
+        .expect("test deadline has a preceding tick");
+    for completed_at in [before, deadline, deadline + Duration::from_nanos(1)] {
+        let (mut receiver, mut sender) = UnixStream::pair().expect("native spawned receipt pair");
+        receiver
+            .set_nonblocking(true)
+            .expect("bounded spawned receipt test");
+        // Parsed numbers are inert test data; never use the current process group.
+        let pid = if nix::unistd::getpgrp().as_raw() == 2 {
+            3
+        } else {
+            2
+        };
+        let record = format!("SPAWNED {pid} 54321\n");
+        sender
+            .write_all(record.as_bytes())
+            .expect("queue literal native receipt");
+        let mut checks = 0;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_spawned_receipt(&mut receiver, deadline, || {
+                checks += 1;
+                if checks < record.len() {
+                    before
+                } else {
+                    completed_at
+                }
+            })
+        }));
+        if completed_at < deadline {
+            assert_eq!(outcome.expect("on-time complete receipt"), (pid, 54321));
+        } else {
+            let failure = outcome.expect_err("late final LF must not satisfy the receipt");
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied());
+            assert_eq!(
+                message,
+                Some("pre-exec PID receipt exceeded its total deadline")
+            );
+        }
+        // A partial-read timeout cannot pass the final-LF case: independently
+        // prove that the actual socket yielded every literal byte, including LF.
+        let mut unread = [0_u8; 1];
+        assert_eq!(
+            receiver
+                .read(&mut unread)
+                .expect_err("receipt fully consumed")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 }
 

@@ -271,6 +271,23 @@ expect_package_token "runtime-only change still clippy's keld-cli consumers on m
 expect_package_token "runtime-only change clippy's host-owned session consumer" keld-core "$runtime_classification"
 expect_nongtk_excludes "runtime-only Ubuntu clippy does not compile keld-cli without GTK" keld-cli "$runtime_classification"
 
+# The current Guardian audit consumes live Rust source. Its existing hosted
+# step is guarded by docs=true, independently of local mandatory audit-docs.
+# Path-only classification covers an existing modified file and new source
+# membership before a ledger can silently inherit review of either.
+for guardian_input in \
+    crates/keld-runtime/src/macos_guardian.rs \
+    crates/keld-runtime/src/macos_guardian/generation_host.rs \
+    crates/keld-runtime/tests/macos_host_death_guardian.rs \
+    crates/keld-runtime/tests/macos_host_death_guardian/support.rs \
+    crates/keld-runtime/src/macos_guardian/new_unreviewed.rs \
+    crates/keld-runtime/tests/macos_host_death_guardian/new_unreviewed.rs; do
+    guardian_result="$(result_for_paths "$guardian_input")"
+    expect_exact_output "Guardian live audit selects required docs lane: $guardian_input" docs true "$guardian_result"
+    expect_exact_output "Guardian audit remains additive to Rust: $guardian_input" rust true "$guardian_result"
+done
+expect_exact_output "unrelated runtime Rust does not select Guardian audit lane" docs false "$runtime_classification"
+
 docs_classification="$(result_for_paths docs/architecture/01-overview.md)"
 expect_flags "docs corpus change includes its Rust embed consumers" "$docs_reader_rust" "$docs_classification"
 expect_mermaid_flag "path-only Markdown classification fails safe without old/new content" true "$docs_classification"
@@ -627,6 +644,35 @@ if grep -Fxq "crates/keld-compat" <<<"$actual_host_dirs"; then
     exit 1
 fi
 echo "ok: cargo metadata derives current keld-host closure"
+
+# Real Git ranges supplement the path-only cases above. The bound snapshot is
+# disposable and uses the production input contract; only its source changes.
+# Added/deleted membership may widen via existing unknown/census fallback,
+# whereas an existing body edit must select docs without broad hygiene fallback.
+git config user.name ci-guardian-audit-test
+git config user.email ci-guardian-audit@example.invalid
+git add -u
+git commit -qm "Guardian audit range baseline"
+guardian_base="$(git rev-parse HEAD)"
+printf '\n// Guardian audit existing-byte mutation\n' >> crates/keld-runtime/src/macos_guardian.rs
+git add crates/keld-runtime/src/macos_guardian.rs
+git commit -qm "Guardian source-only edit"
+guardian_modified="$(git rev-parse HEAD)"
+guardian_range="$(KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$guardian_base" KELD_CI_HEAD_SHA="$guardian_modified" "$router" github)"
+expect_exact_output "real Guardian source-only range selects audit docs" docs true "$guardian_range"
+expect_exact_output "real Guardian source-only range retains Rust" rust true "$guardian_range"
+expect_exact_output "existing Guardian edit does not rely on broad hygiene fallback" hygiene false "$guardian_range"
+printf '// New Guardian audit membership\n' > crates/keld-runtime/src/macos_guardian/new_unreviewed.rs
+git add crates/keld-runtime/src/macos_guardian/new_unreviewed.rs
+git commit -qm "Add unreviewed Guardian source path"
+guardian_added="$(git rev-parse HEAD)"
+guardian_range="$(KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$guardian_modified" KELD_CI_HEAD_SHA="$guardian_added" "$router" github)"
+expect_exact_output "real added Guardian path cannot skip audit docs" docs true "$guardian_range"
+git rm -q crates/keld-runtime/src/macos_guardian/new_unreviewed.rs
+git commit -qm "Remove Guardian source path"
+guardian_deleted="$(git rev-parse HEAD)"
+guardian_range="$(KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$guardian_added" KELD_CI_HEAD_SHA="$guardian_deleted" "$router" github)"
+expect_exact_output "real deleted Guardian path cannot skip audit docs" docs true "$guardian_range"
 
 cd "$repo_root"
 git -C "$temp_dir" init -q

@@ -194,6 +194,11 @@ apply_consumer_contract() {
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
     fi
+    # Live audit consumers must select the existing hosted docs step too;
+    # local mandatory gates alone do not select a GitHub Actions job.
+    if grep -Fxq 'input_docs=true' <<<"$consumer_contract"; then
+        docs="$TRUE"
+    fi
 }
 
 load_workspace_metadata() {

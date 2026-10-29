@@ -205,6 +205,20 @@
       "reader_set": "policy-readers"
     },
     {
+      "owner": "Live Guardian current-source audit",
+      "outputs": [
+        "input_docs"
+      ],
+      "inputs": [
+        "crates/keld-runtime/src/macos_guardian.rs",
+        "crates/keld-runtime/src/macos_guardian/*",
+        "crates/keld-runtime/tests/macos_host_death_guardian.rs",
+        "crates/keld-runtime/tests/macos_host_death_guardian/*"
+      ],
+      "contract": "The canonical audit verifier reads the current Guardian index and checkout; hosted Public audit registry contracts is guarded by docs=true. Additive to Rust selection, never native acceptance.",
+      "reader_set": "audit-readers"
+    },
+    {
       "owner": "Audit mutation suite",
       "outputs": [
         "local_audit-docs-test"
@@ -384,14 +398,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "e7b2dcbbcb7ffc7e72b223fd2484238e997d177bdf91383dc595eea6638f53c3"
+      "sha256": "da2e0aae05f1200dfc951eb29c499837f8d71caa0354a640f465c0c2e0b6accb"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "63d7f076c979c97ef7dc6f4d220c3c52efeaca648bedbebbcc965e6decc3dfc8"
+      "sha256": "dcca40504ba0d5277495fd38f9e952ad9f2f9b6792eb04d5371689dc3a6eb9b3"
     },
     "rustdoc-readers": {
       "patterns": [
@@ -401,7 +415,7 @@
         "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "d9f8dba8f146432443dcbc74dfab262fdaf8eb4aa33f81354b7c64a21c894f6f"
+      "sha256": "5d3965d175b0e869a991c77fb98823f899d81df5a20f28642b07285d2b50f905"
     },
     "dependency-command": {
       "patterns": [
