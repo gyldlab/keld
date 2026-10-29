@@ -528,7 +528,9 @@ fn windows_live_pre_ready_link_close_reports_owner_cause_first_without_successor
 /// the window never becomes `Ready`. The `WebView2` initial-navigation deadline
 /// (`keld_wv::INITIAL_MILESTONE_DEADLINE`) must then fail startup with
 /// `KELD-WV-005`, take the Bun generation down with the host, and provision no
-/// successor.
+/// successor. Bun exits when teardown closes its app link, so the owner may see
+/// that generation end before its own shutdown: a consequence of teardown,
+/// which must not displace the deadline as the primary error (PR #1300 review).
 #[test]
 fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     let fixture = ProductFixture::new();
@@ -552,6 +554,7 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
     let mut child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .env("KELD_T4_GENERATION_MARKER", &generations)
+        .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -585,7 +588,16 @@ fn windows_stalled_initial_navigation_fails_startup_at_its_deadline() {
         .expect("captured stalled-navigation stderr")
         .read_to_string(&mut stderr)
         .expect("read stalled-navigation stderr");
-    assert!(stderr.contains("KELD-WV-005"), "{stderr}");
+    // The navigation deadline is the primary error: the first one the
+    // session's failure collapse names, ahead of any owner cleanup detail.
+    assert!(
+        stderr.trim_start().starts_with(concat!(
+            "KELD-CORE-037: no-flag host failed during startup cleanup — ",
+            "KELD-CORE-037: no-flag host failed during initial direct navigation — ",
+            "KELD-WV-005"
+        )),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("initial renderer navigation did not finish before the startup deadline"),
         "{stderr}"

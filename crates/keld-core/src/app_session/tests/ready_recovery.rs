@@ -719,3 +719,66 @@ fn caller_sees_pre_ready_owner_cause_when_attachment_loses_the_race() {
         "terminal owner result must be joined once"
     );
 }
+
+/// Runs a real, initially unready supervisor whose only child exits with
+/// `code` before any HELLO, under a direct owner sharing `shutdown`, and
+/// returns the owner's terminal error once its thread has ended.
+#[cfg(any(target_os = "linux", windows))]
+fn pre_ready_owner_terminal_error(shutdown: SessionShutdownState, code: u8) -> HostAppError {
+    #[cfg(target_os = "linux")]
+    let config = keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c".to_owned(), format!("exit {code}")]);
+    #[cfg(windows)]
+    let config = keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe")
+        .args(["/C".to_owned(), format!("exit {code}")]);
+    let (supervisor, recovery) =
+        keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
+            config.admission_timeout(Duration::from_secs(2)),
+        )
+        .expect("start real supervisor");
+    let (window_tx, _window_rx) = mpsc::channel();
+    let mut owner = super::DirectPrimaryOwner::start(supervisor, recovery, window_tx, shutdown)
+        .expect("start direct primary owner");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !owner
+        .handle
+        .as_ref()
+        .is_some_and(std::thread::JoinHandle::is_finished)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "owner did not terminate after its child exited"
+        );
+        thread::yield_now();
+    }
+    let (router, _client, _test_owner_rx) = initial_ready_router();
+    owner
+        .attach_router(router)
+        .expect_err("a terminated owner returns its terminal error")
+}
+
+/// PR #1300 review (P2-1): the owner's typed cause outranks the window loop's
+/// error only when the owner reached it before teardown began. Teardown stops
+/// the readers and closes the app link first, so a Bun that then exits makes
+/// the owner see a pre-Ready `Revoked` (or a self-termination) that is that
+/// teardown's consequence; it must not displace the window's own failure,
+/// such as a navigation deadline. Exit 19 takes the gated crash path, so the
+/// owner sees `Revoked`; exit 0 may reach it as `Revoked` or as `Stopped`.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn owner_failure_outranks_the_window_only_when_it_preceded_teardown() {
+    for code in [19, 0] {
+        let first = pre_ready_owner_terminal_error(SessionShutdownState::new(), code);
+        assert!(
+            super::owner_cause_outranks_window(&first),
+            "exit {code}: an owner failure before teardown lost its precedence: {first}"
+        );
+        let teardown = SessionShutdownState::new();
+        teardown.stop_reader();
+        let after = pre_ready_owner_terminal_error(teardown, code);
+        assert!(
+            !super::owner_cause_outranks_window(&after),
+            "exit {code}: an owner failure seen after teardown began outranked the window: {after}"
+        );
+    }
+}
