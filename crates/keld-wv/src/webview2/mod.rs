@@ -3095,6 +3095,8 @@ impl WebView2Engine {
                 release_in_loop.schedule(control_flow);
             }
         });
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("event-loop-exited");
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -3102,8 +3104,14 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("stop-synchronized");
         self.finish_profile_release(release.observed.get())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-release-complete");
         scavenge_after_release(scavenge_root)?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-scavenge-complete");
         if code == 0 {
             Ok(())
         } else {
@@ -3223,6 +3231,8 @@ impl WebView2Engine {
         )?;
         let fatal = Arc::new(AtomicBool::new(false));
         let fatal_in_loop = Arc::clone(&fatal);
+        let refused_registry_command = Arc::new(AtomicBool::new(false));
+        let refused_in_loop = Arc::clone(&refused_registry_command);
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
@@ -3317,6 +3327,20 @@ impl WebView2Engine {
                     exit_requested = true;
                     release_in_loop.arm();
                 }
+                Event::UserEvent(WindowsLoopEvent::App(
+                    AppWindowCommand::CreateWindow { .. }
+                    | AppWindowCommand::SetMaximized { .. }
+                    | AppWindowCommand::SetFullScreen { .. }
+                    | AppWindowCommand::DestroyWindow { .. },
+                )) => {
+                    // Core refuses these before enqueue under GH-531. Preserve
+                    // the real browser/profile release tail on invariant fault.
+                    refused_in_loop.store(true, Ordering::Release);
+                    commit_profile_stop(stop_in_loop.as_ref());
+                    views.clear();
+                    exit_requested = true;
+                    release_in_loop.arm();
+                }
                 Event::WindowEvent {
                     window_id,
                     event: WindowEvent::Resized(size),
@@ -3361,7 +3385,13 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
-        let app_result = finish_app_run_flags(&self, &navigation_timed_out, &fatal, code);
+        let app_result = if refused_registry_command.load(Ordering::Acquire) {
+            Err(WvError::EventLoop(String::from(
+                "Core queued an unsupported registry-window command on Windows; refuse it before the UI queue",
+            )))
+        } else {
+            finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
+        };
         self.finish_profile_release(release.observed.get())?;
         scavenge_after_release(scavenge_root)?;
         app_result
