@@ -546,3 +546,44 @@ fn direct_link_failure_restarts_before_router_attach_and_rejects_stale_attempts(
     assert!(super::direct_link_failure_restarts(Some(&handle), 1));
     assert!(!super::direct_link_failure_restarts(Some(&handle), 2));
 }
+
+/// The real role supervisor queues a pre-Ready revocation while the direct
+/// owner has no router yet. Its typed startup error must not depend on whether
+/// `AttachRouter` was processed before the revocation channel.
+#[test]
+#[cfg(any(target_os = "linux", windows))]
+fn revoked_before_router_attachment_preserves_pre_ready_error() {
+    #[cfg(target_os = "linux")]
+    let config = keld_runtime::primary::PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c", "exit 19"]);
+    #[cfg(windows)]
+    let config = keld_runtime::primary::PrimaryRoleConfig::primary("cmd.exe")
+        .args(["/C", "exit 19"]);
+    let (supervisor, recovery) =
+        keld_runtime::primary::PrimaryRoleSupervisor::start_with_bound_generations_gated(
+            config.admission_timeout(Duration::from_secs(2)),
+        )
+        .expect("start a real, initially unready supervisor");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let error = loop {
+        match super::drain_direct_primary_role_events(&supervisor, None) {
+            Ok(()) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "real child exit did not deliver a pre-attach revocation"
+                );
+                thread::yield_now();
+            }
+            Err(error) => break error,
+        }
+    };
+    let _ = recovery.deny();
+    supervisor.shutdown();
+    let _ = supervisor.wait_for_outcome();
+    assert!(
+        error
+            .to_string()
+            .contains("Bun terminated before the initial window became ready"),
+        "pre-attach revocation lost its typed startup cause: {error}"
+    );
+}

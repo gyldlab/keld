@@ -14,6 +14,7 @@ fn linux_strict_forwards_exactly_the_value_only_test_flags() {
     for named_object in [
         "KELD_T1B_CONTROL",
         "KELD_T3_PRE_READY_MARKER",
+        "KELD_T3_SUPERVISOR_ATTEMPTS",
         "KELD_T4_GENERATION_MARKER",
     ] {
         assert!(

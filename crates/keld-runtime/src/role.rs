@@ -375,6 +375,9 @@ pub struct RoleConfig {
     admission_timeout: Duration,
     #[cfg(target_os = "linux")]
     linux_strict: Option<LinuxStrictProfile>,
+    // Debug-only host observer, never an environment key for a strict child.
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    debug_primary_attempt_witness: Option<PathBuf>,
     #[cfg(test)]
     #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
@@ -416,6 +419,8 @@ impl RoleConfig {
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             #[cfg(target_os = "linux")]
             linux_strict: None,
+            #[cfg(all(target_os = "linux", debug_assertions))]
+            debug_primary_attempt_witness: None,
             #[cfg(test)]
             #[cfg(unix)]
             probe_tx: None,
@@ -475,6 +480,16 @@ impl RoleConfig {
     #[cfg(target_os = "linux")]
     pub fn linux_strict(mut self, profile: LinuxStrictProfile) -> Self {
         self.linux_strict = Some(profile);
+        self
+    }
+
+    /// Records each primary supervisor prepare attempt in a parent-owned,
+    /// already-existing file. Debug Linux host tests only; no path is exposed
+    /// inside the strict Bun sandbox, and witness I/O failures stop preparation.
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    #[must_use]
+    pub fn with_debug_primary_attempt_witness(mut self, path: PathBuf) -> Self {
+        self.debug_primary_attempt_witness = Some(path);
         self
     }
 
@@ -679,6 +694,24 @@ impl ChildPreparer for RolePreparer {
     type Lease = RoleGenerationLease;
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+        #[cfg(all(target_os = "linux", debug_assertions))]
+        if let Some(path) = &self.config.debug_primary_attempt_witness {
+            use std::io::Write as _;
+            // The harness created this file before spawning the host. Record
+            // before provisioning, so even a failed or short-lived successor
+            // is visible, independent of HELLO and of the control socket.
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .map_err(|source| RuntimeError::Lifecycle {
+                    phase: "debug primary attempt witness",
+                    source,
+                })?;
+            writeln!(file, "{attempt}").map_err(|source| RuntimeError::Lifecycle {
+                phase: "debug primary attempt witness",
+                source,
+            })?;
+        }
         let provisioned = self.generation_owner.provision(attempt)?;
         #[cfg(target_os = "linux")]
         if let Some(profile) = &self.config.linux_strict {

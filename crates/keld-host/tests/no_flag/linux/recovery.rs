@@ -12,6 +12,10 @@ use crate::support::{
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
     renderer::{HeldRendererRequest, expect_renderer_beacon, spawn_renderer_beacon},
 };
+use keld_runtime::{
+    RestartPolicy,
+    primary::{PrimaryRoleConfig, PrimaryRoleSupervisor},
+};
 use std::{
     fs,
     io::{BufReader, Read as _, Write as _},
@@ -19,7 +23,7 @@ use std::{
     os::unix::net::UnixListener,
     path::Path,
     process::{Child, Command, Stdio},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 #[test]
@@ -129,6 +133,102 @@ fn accept_generation(
     (reader, writer, generation, link)
 }
 
+// Shared with the early-open negative control: the production host test
+// rejects an actual second supervisor preparation, even without a Bun HELLO.
+fn assert_only_initial_supervisor_attempt(path: &Path) {
+    let attempts = fs::read_to_string(path).expect("read supervisor attempts");
+    assert_eq!(
+        attempts, "1\n",
+        "an unexpected successor was prepared (even if it never reached control)"
+    );
+}
+
+/// The exact no-successor oracle above must reject a real prematurely armed
+/// recovery gate. This controls the test, not the production gate: no GUI,
+/// control socket, HELLO, or Bun process is needed to observe a second prepare.
+#[test]
+#[should_panic(expected = "an unexpected successor was prepared")]
+fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
+    let fixture = ProductFixture::new();
+    let attempt_path = fixture.root.path().join("early-gate-attempts.log");
+    fs::write(&attempt_path, b"").expect("create negative-control attempt witness");
+    let config = PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c", "exit 19"])
+        .restart_policy(RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        })
+        .with_debug_primary_attempt_witness(attempt_path.clone());
+    let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+        .expect("start real primary supervisor");
+    assert!(
+        gate.arm(),
+        "deliberately open the gate before initial Ready"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let trace = fs::read_to_string(&attempt_path).expect("observe supervisor attempts");
+        if trace.lines().count() >= 2 {
+            assert!(
+                trace.starts_with("1\n2\n"),
+                "wrong attempt trace: {trace:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "early-open gate never produced the expected second prepare: {trace:?}"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        supervisor.try_recv_bound_generation().is_none(),
+        "the negative control must not admit an authenticated generation"
+    );
+    let _ = gate.deny();
+    supervisor.shutdown();
+    let _ = supervisor.wait_for_outcome();
+    // Must panic: same oracle as the real native host test.
+    assert_only_initial_supervisor_attempt(&attempt_path);
+}
+
+/// The matching real-supervisor positive control: deny recovery after the
+/// original child revokes, then prove no second prepare occurred even when
+/// the failed child could not send HELLO or reach a control service.
+#[test]
+fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
+    let fixture = ProductFixture::new();
+    let attempt_path = fixture.root.path().join("closed-gate-attempts.log");
+    fs::write(&attempt_path, b"").expect("create closed-gate attempt witness");
+    let config = PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c", "exit 19"])
+        .restart_policy(RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        })
+        .with_debug_primary_attempt_witness(attempt_path.clone());
+    let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+        .expect("start real initially unready supervisor");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(
+            supervisor.try_recv_event(),
+            Some(keld_runtime::primary::PrimaryRoleEvent::Revoked { attempt: 1, .. })
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "original generation never revoked before Ready"
+        );
+        std::thread::yield_now();
+    }
+    let _ = gate.deny();
+    supervisor.shutdown();
+    let _ = supervisor.wait_for_outcome();
+    assert_only_initial_supervisor_attempt(&attempt_path);
+}
+
 /// GH-1182 R1 on Linux: Bun exits after its authenticated HELLO while the initial
 /// window is live and its first navigation is held open ([`HeldRendererRequest`]),
 /// so the window cannot be `Ready` first. The pre-Ready recovery gate is still
@@ -138,6 +238,8 @@ fn accept_generation(
 fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
     let fixture = ProductFixture::new();
     let control_path = fixture.root.path().join("post-hello-control.sock");
+    let attempt_path = fixture.root.path().join("supervisor-attempts.log");
+    fs::write(&attempt_path, b"").expect("create private supervisor attempt witness");
     let listener = UnixListener::bind(&control_path).expect("bind post-HELLO control");
     listener
         .set_nonblocking(true)
@@ -153,6 +255,7 @@ fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", &control_path)
         .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T3_SUPERVISOR_ATTEMPTS", &attempt_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -193,5 +296,8 @@ fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
         ),
         "a successor reached the control service"
     );
+    // The parent-owned witness records preparations before spawn or HELLO;
+    // the socket check above remains an independent, weaker observable.
+    assert_only_initial_supervisor_attempt(&attempt_path);
     held.release();
 }

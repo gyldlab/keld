@@ -3886,6 +3886,11 @@ fn linux_strict_primary_config_x86(
         for (key, value) in linux_strict_test_flags(|key| std::env::var_os(key)) {
             config = config.env(key, value);
         }
+        // Host-side only: never forward this filesystem path through --clearenv
+        // into the strict sandbox. It witnesses even failed supervisor prepares.
+        if let Some(path) = std::env::var_os("KELD_T3_SUPERVISOR_ATTEMPTS") {
+            config = config.with_debug_primary_attempt_witness(PathBuf::from(path));
+        }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
         config
     };
@@ -5690,8 +5695,8 @@ fn drain_direct_primary_role_events(
         let Some(router) = router else {
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 return Err(app_detail(
-                    "primary generation update",
-                    "generation changed before the primary router attached",
+                    "primary generation before Ready",
+                    "Bun terminated before the initial window became ready",
                 ));
             }
             continue;
