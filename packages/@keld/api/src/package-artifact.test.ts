@@ -294,21 +294,34 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
         'resolve(import.meta.dir, "../node_modules/typescript")',
         JSON.stringify(resolve(apiSource, "../node_modules/typescript")),
       );
-      // The original role is imported from the source package. The installed
-      // API is imported through an emitted package tree; Windows Bun can give
-      // that graph a different specifier key even though it resolves to the
-      // same canonical KIPC transport. Target the installed physical module,
-      // not a second WorkerLink implementation or an ambient source alias.
+      // Installed API source consumers must retain the same WorkerLink class.
+      // Bun's package-key mock did not intercept the compiled module on Windows,
+      // so make the two isolated role processes override the existing class's
+      // `open` method directly. The full installed transport and API remain
+      // unchanged; an unshared class still fails all original assertions.
       if (
         name === "link-quit-release.test-role.ts" ||
         name === "link-last-window.test-role.ts"
       ) {
-        const marker = 'mock.module("@keld/kipc",';
-        expect(sourceText.split(marker)).toHaveLength(2);
+        const moduleMock = [
+          'mock.module("@keld/kipc", () => ({',
+          "  ...transport,",
+          "  WorkerLink: { open: async () => worker },",
+          "}));",
+        ].join("\n");
+        expect(sourceText.split(moduleMock)).toHaveLength(2);
         sourceText = sourceText.replace(
-          marker,
-          'mock.module(Bun.resolveSync("@keld/kipc", import.meta.dir),',
+          moduleMock,
+          [
+            'const workerOpen = Object.getOwnPropertyDescriptor(transport.WorkerLink, "open");',
+            'assert.equal(workerOpen?.writable, true, "canonical WorkerLink.open must remain writable");',
+            "const originalWorkerOpen = transport.WorkerLink.open;",
+            "transport.WorkerLink.open = async () => worker;",
+          ].join("\n"),
         );
+        // Each role has its own process and restores its exact original class
+        // method after its source/terminal checks complete successfully.
+        sourceText += "\ntransport.WorkerLink.open = originalWorkerOpen;\n";
       }
       writeFileSync(join(consumer, name), sourceText);
     }
