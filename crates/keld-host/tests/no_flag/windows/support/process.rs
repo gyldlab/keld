@@ -272,8 +272,13 @@ pub(crate) fn wait_process_gone(pid: u32, deadline: Instant) {
     }
 }
 
-pub(crate) fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Instant) -> u32 {
+/// The pid of `parent`'s child named `name`, once it appears. If `parent` exits
+/// first it can no longer delegate, so this fails at once with its status and
+/// output instead of waiting out `deadline` blind.
+pub(crate) fn wait_for_child_process(parent: &mut Child, name: &str, deadline: Instant) -> u32 {
+    let parent_pid = parent.id();
     loop {
+        assert_delegating_parent_live(parent, name);
         let script = format!(
             "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.Name -eq '{name}' -and $_.CommandLine -notmatch 'keld-windows-dev-stage-cleanup'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
         );
@@ -310,8 +315,12 @@ pub(crate) fn wait_for_child_process(parent_pid: u32, name: &str, deadline: Inst
     }
 }
 
-pub(crate) fn wait_for_cleanup_sentinel(parent_pid: u32, deadline: Instant) -> u32 {
+/// The pid of `parent`'s Windows dev-stage cleanup sentinel, once it appears; fails
+/// at once with `parent`'s status and output if `parent` exits first.
+pub(crate) fn wait_for_cleanup_sentinel(parent: &mut Child, deadline: Instant) -> u32 {
+    let parent_pid = parent.id();
     loop {
+        assert_delegating_parent_live(parent, "cleanup sentinel");
         let script = format!(
             "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId={parent_pid}\" | Where-Object {{$_.CommandLine -match 'keld-windows-dev-stage-cleanup-v1'}} | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) {{$p}}"
         );
@@ -332,4 +341,37 @@ pub(crate) fn wait_for_cleanup_sentinel(parent_pid: u32, deadline: Instant) -> u
         );
         thread::park_timeout(Duration::from_millis(20));
     }
+}
+
+/// Fails with `parent`'s exit status and captured output if it has exited before
+/// delegating `delegate`.
+fn assert_delegating_parent_live(parent: &mut Child, delegate: &str) {
+    if let Some(status) = parent.try_wait().expect("observe delegating parent") {
+        panic!(
+            "parent {} exited before delegating `{delegate}`: {status}\n{}",
+            parent.id(),
+            exited_child_output(parent)
+        );
+    }
+}
+
+/// The captured stdout and stderr of a test child (a host or a CLI) that has
+/// already exited, for its failure report. Reading to the end cannot block once
+/// the child is gone.
+pub(crate) fn exited_child_output(child: &mut Child) -> String {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    child
+        .stdout
+        .take()
+        .expect("captured exited child stdout")
+        .read_to_string(&mut stdout)
+        .expect("read exited child stdout");
+    child
+        .stderr
+        .take()
+        .expect("captured exited child stderr")
+        .read_to_string(&mut stderr)
+        .expect("read exited child stderr");
+    format!("stdout:\n{stdout}\nstderr:\n{stderr}")
 }

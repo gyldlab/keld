@@ -1,11 +1,12 @@
 //! Control handshakes, bounded reads and terminal host diagnostics.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
 use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::support::process::exited_child_output;
 use crate::{CONTROL_LINE_LIMIT, PRODUCT_DEADLINE, startup_kill_switch};
 
 /// The kill switches of one generation's control handshake.
@@ -245,7 +246,7 @@ pub(crate) fn accept_control_until(
         {
             panic!(
                 "host exited before control bind: {status}\n{}",
-                exited_host_output(child)
+                exited_child_output(child)
             );
         }
         assert!(
@@ -354,7 +355,7 @@ fn read_control_line_or_host_failure_after_phase(
                     panic!(
                         "host exited while awaiting {label}: {status}; last valid phase={last_valid_phase}; child pid={}; read={result:?}\n{}",
                         child.id(),
-                        exited_host_output(child),
+                        exited_child_output(child),
                     );
                 }
                 assert!(
@@ -366,24 +367,4 @@ fn read_control_line_or_host_failure_after_phase(
             }
         }
     }
-}
-
-/// The captured stdout and stderr of a host that has already exited, for its
-/// failure report. Reading to the end cannot block once the host is gone.
-pub(crate) fn exited_host_output(child: &mut Child) -> String {
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    child
-        .stdout
-        .take()
-        .expect("captured exited host stdout")
-        .read_to_string(&mut stdout)
-        .expect("read exited host stdout");
-    child
-        .stderr
-        .take()
-        .expect("captured exited host stderr")
-        .read_to_string(&mut stderr)
-        .expect("read exited host stderr");
-    format!("stdout:\n{stdout}\nstderr:\n{stderr}")
 }

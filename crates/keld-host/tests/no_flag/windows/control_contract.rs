@@ -11,6 +11,7 @@ use crate::support::control::{
     accept_ready_generation_with_descendant_within, read_control_line_or_host_failure,
     try_read_control_line,
 };
+use crate::support::process::{wait_for_child_process, wait_for_cleanup_sentinel};
 use crate::{CONTROL_LINE_LIMIT, PRODUCT_DEADLINE, startup_kill_switch, wait_child};
 
 #[test]
@@ -308,4 +309,51 @@ fn startup_ready_after_the_product_deadline_is_accepted_within_the_startup_bound
         elapsed >= late_by,
         "READY was accepted before the injected startup delay: {elapsed:?}"
     );
+}
+
+/// A `keld dev` parent that exits before delegating its host or cleanup sentinel
+/// can never delegate it. Both waits fail at once with the parent's status and
+/// captured output, rather than waiting out their deadline and reporting only
+/// `parent_alive=false` (the unexplained GH-1182 host-death failure under load).
+#[test]
+fn delegation_waits_report_an_exited_parent_with_its_output() {
+    type DelegationWait = fn(&mut std::process::Child, Instant) -> u32;
+    let host: DelegationWait =
+        |parent, deadline| wait_for_child_process(parent, "keld-host.exe", deadline);
+    let sentinel: DelegationWait = wait_for_cleanup_sentinel;
+    for (wait, delegate) in [(host, "keld-host.exe"), (sentinel, "cleanup sentinel")] {
+        let mut parent = Command::new("cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "echo GH1182_PARENT_STDOUT & echo GH1182_PARENT_STDERR 1>&2 & exit /b 29",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("exiting delegation parent");
+        let parent_pid = parent.id();
+        let started = Instant::now();
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait(&mut parent, Instant::now() + PRODUCT_DEADLINE)
+        }))
+        .expect_err("an exited parent cannot delegate");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("panic message");
+        for expected in [
+            format!("parent {parent_pid} exited before delegating `{delegate}`"),
+            "exit code: 29".to_owned(),
+            "stdout:\nGH1182_PARENT_STDOUT".to_owned(),
+            "stderr:\nGH1182_PARENT_STDERR".to_owned(),
+        ] {
+            assert!(message.contains(&expected), "missing {expected}: {message}");
+        }
+        assert!(
+            started.elapsed() < PRODUCT_DEADLINE,
+            "the wait ran out its deadline instead of failing on the parent's exit"
+        );
+    }
 }
