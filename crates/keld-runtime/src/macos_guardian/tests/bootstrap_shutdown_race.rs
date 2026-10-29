@@ -169,32 +169,8 @@ fn receive_held_milestone(listener: &UnixListener, marker: &str) -> (UnixStream,
                 stream
                     .set_nonblocking(true)
                     .expect("bounded test-only receipt");
-                let mut bytes = Vec::with_capacity(36);
-                loop {
-                    let mut byte = [0_u8; 1];
-                    match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
-                        Ok(1) => {
-                            bytes.push(byte[0]);
-                            assert!(bytes.len() <= 64, "bounded native authentication receipt");
-                        }
-                        Ok(0) => panic!("actual Guardian closed partial authentication receipt"),
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                        Err(e) => panic!("read held-authentication notice: {e}"),
-                        Ok(_) => unreachable!("one-byte receipt"),
-                    }
-                    assert!(
-                        Instant::now() < deadline,
-                        "partial authentication notice timed out"
-                    );
-                    thread::yield_now();
-                }
-                let receipt = String::from_utf8(bytes).expect("ASCII authenticated notice");
-                let raw = receipt
-                    .strip_prefix(&format!("{marker} "))
-                    .expect("native authenticated milestone");
-                return (stream, raw.parse().expect("actual Guardian process ID"));
+                let pid = read_held_milestone(&mut stream, marker, deadline, Instant::now);
+                return (stream, pid);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 assert!(
@@ -205,6 +181,87 @@ fn receive_held_milestone(listener: &UnixListener, marker: &str) -> (UnixStream,
             }
             Err(e) => panic!("accept native Guardian-auth milestone: {e}"),
         }
+    }
+}
+
+// Keep the real observer's original deadline while allowing its final-read
+// boundary to be exercised without scheduling sleeps or changing native limits.
+fn read_held_milestone(
+    stream: &mut UnixStream,
+    marker: &str,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+) -> u32 {
+    let mut bytes = Vec::with_capacity(36);
+    loop {
+        let mut byte = [0_u8; 1];
+        match stream.read(&mut byte) {
+            Ok(1) if byte[0] == b'\n' => {
+                assert!(now() < deadline, "partial authentication notice timed out");
+                break;
+            }
+            Ok(1) => {
+                bytes.push(byte[0]);
+                assert!(bytes.len() <= 64, "bounded native authentication receipt");
+            }
+            Ok(0) => panic!("actual Guardian closed partial authentication receipt"),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => panic!("read held-authentication notice: {e}"),
+            Ok(_) => unreachable!("one-byte receipt"),
+        }
+        assert!(now() < deadline, "partial authentication notice timed out");
+        thread::yield_now();
+    }
+    let receipt = String::from_utf8(bytes).expect("ASCII authenticated notice");
+    let raw = receipt
+        .strip_prefix(&format!("{marker} "))
+        .expect("native authenticated milestone");
+    raw.parse().expect("actual Guardian process ID")
+}
+
+#[test]
+fn held_milestone_final_newline_must_precede_original_deadline() {
+    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    let before = deadline - std::time::Duration::from_nanos(1);
+    for completed_at in [before, deadline, deadline + std::time::Duration::from_nanos(1)] {
+        let (mut receiver, mut sender) = UnixStream::pair().expect("native milestone receipt pair");
+        receiver
+            .set_nonblocking(true)
+            .expect("bounded milestone receipt test");
+        let record = b"AUTHENTICATED 12345\n";
+        sender.write_all(record).expect("queue literal native receipt");
+        let mut checks = 0;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            read_held_milestone(&mut receiver, "AUTHENTICATED", deadline, || {
+                checks += 1;
+                if checks < record.len() {
+                    before
+                } else {
+                    completed_at
+                }
+            })
+        }));
+        if completed_at < deadline {
+            assert_eq!(outcome.expect("on-time complete receipt"), 12345);
+        } else {
+            let failure = outcome.expect_err("late final LF must not satisfy the receipt");
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied());
+            assert_eq!(message, Some("partial authentication notice timed out"));
+        }
+        // An earlier partial-read timeout must not masquerade as the final-LF
+        // refusal: every literal byte, including LF, must have been consumed.
+        let mut unread = [0_u8; 1];
+        assert_eq!(
+            receiver
+                .read(&mut unread)
+                .expect_err("receipt fully consumed")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 }
 
