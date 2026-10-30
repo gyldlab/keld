@@ -178,7 +178,10 @@ fn descriptor_limit_does_not_narrow_renderer_size() {
     .expect("boot");
 
     let selection = validate_from_root(&root).expect("large renderer is valid");
-    assert_eq!(selection.app.renderer_html, renderer);
+    assert!(matches!(
+        &selection.app.initial_window,
+        ValidatedInitialWindow::Renderer(bytes) if bytes == &renderer
+    ));
 }
 
 #[test]
