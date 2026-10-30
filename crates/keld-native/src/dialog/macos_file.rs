@@ -27,7 +27,12 @@ fn invalid(detail: &'static str) -> IpcError {
     IpcError::Protocol { detail }
 }
 
-fn selected_open_paths(urls: &NSArray<NSURL>) -> Result<Vec<String>, IpcError> {
+fn selected_open_paths(
+    urls: &NSArray<NSURL>,
+    filter: &MacFileFilterModel,
+    allow_files: bool,
+    allow_directories: bool,
+) -> Result<Vec<String>, IpcError> {
     // Count before retaining NSArray members or materializing POSIX strings.
     // AppKit owns its original selection; Keld only copies bounded replies.
     if urls.len() > MAX_DIALOG_PATHS {
@@ -39,11 +44,35 @@ fn selected_open_paths(urls: &NSArray<NSURL>) -> Result<Vec<String>, IpcError> {
             if !url.isFileURL() {
                 return Err(invalid("native Open returned a non-file URL"));
             }
-            url.path()
+            let path = url
+                .path()
                 .map(|text| text.to_string())
-                .ok_or_else(|| invalid("native Open URL has no POSIX file path"))
+                .ok_or_else(|| invalid("native Open URL has no POSIX file path"))?;
+            if !filter.accepts_selected_path(Path::new(&path), allow_files, allow_directories) {
+                return Err(invalid(
+                    "native Open selected a file outside the active filter",
+                ));
+            }
+            Ok(path)
         })
         .collect()
+}
+
+fn selected_save_path(
+    url: Option<Retained<NSURL>>,
+    filter: &MacFileFilterModel,
+) -> Result<String, IpcError> {
+    let path = url
+        .filter(|url| url.isFileURL())
+        .and_then(|url| url.path())
+        .map(|text| text.to_string())
+        .ok_or_else(|| invalid("native Save returned no POSIX location"))?;
+    if !filter.accepts_selected_path(Path::new(&path), true, false) {
+        return Err(invalid(
+            "native Save selected a file outside the active filter",
+        ));
+    }
+    Ok(path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,17 +282,27 @@ impl MacFilePanel {
     /// # Errors
     ///
     /// Refuses invalid native menu indexes without altering the selected set.
-    pub fn refresh_filter_choice(&mut self) -> Result<bool, IpcError> {
+    fn update_filter_index_from_popup(&mut self) -> Result<bool, IpcError> {
         let Some(popup) = &self.popup else {
             return Ok(false);
         };
         let value = popup.indexOfSelectedItem();
         let index =
             usize::try_from(value).map_err(|_| invalid("no valid native filter selected"))?;
-        if self.filter.selected_index() == Some(index) {
+        self.filter.select(index)
+    }
+
+    /// Keep `AppKit`'s current content types synchronized with the user's
+    /// native accessory choice. This is also re-read at final completion,
+    /// because the last click can outrun the next Tao polling turn.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid native accessory index or missing type group.
+    pub fn refresh_filter_choice(&mut self) -> Result<bool, IpcError> {
+        if !self.update_filter_index_from_popup()? {
             return Ok(false);
         }
-        self.filter.select(index)?;
         self.apply_filter()?;
         self.panel.save_panel().validateVisibleColumns();
         Ok(true)
@@ -358,9 +397,18 @@ impl MacFilePanel {
                 },
             }
         } else if response == NSModalResponseOK {
+            // The last popup change can happen between our service turns.
+            // Capture the real current selection after physical drain before
+            // validating the returned URL, without altering native UI again.
+            self.update_filter_index_from_popup()?;
             match &self.panel {
                 FilePanel::Open(open) => {
-                    let file_paths = selected_open_paths(&open.URLs())?;
+                    let file_paths = selected_open_paths(
+                        &open.URLs(),
+                        &self.filter,
+                        open.canChooseFiles(),
+                        open.canChooseDirectories(),
+                    )?;
                     DialogReplyV1::Open {
                         // An OS OK with zero selections is not a user Cancel.
                         // Validation below rejects it as an invalid result.
@@ -370,12 +418,7 @@ impl MacFilePanel {
                 }
                 FilePanel::Save(save) => DialogReplyV1::Save {
                     canceled: false,
-                    file_path: save
-                        .URL()
-                        .filter(|url| url.isFileURL())
-                        .and_then(|url| url.path())
-                        .map(|text| text.to_string())
-                        .ok_or_else(|| invalid("native Save returned no POSIX location"))?,
+                    file_path: selected_save_path(save.URL(), &self.filter)?,
                 },
             }
         } else {
@@ -414,46 +457,5 @@ impl Drop for MacFilePanel {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_open_selection_preserves_exact_paths() {
-        let empty = NSArray::<NSURL>::new();
-        assert_eq!(
-            selected_open_paths(&empty).expect("empty count is bounded"),
-            Vec::<String>::new()
-        );
-
-        let selected = NSURL::fileURLWithPath_isDirectory(
-            &NSString::from_str("/tmp/gh478-selection.drawio"),
-            false,
-        );
-        let entries = vec![selected; MAX_DIALOG_PATHS];
-        let urls = NSArray::from_retained_slice(&entries);
-        assert_eq!(
-            selected_open_paths(&urls).expect("exactly 32 file URLs are bounded"),
-            vec![String::from("/tmp/gh478-selection.drawio"); MAX_DIALOG_PATHS],
-        );
-    }
-
-    #[test]
-    fn excessive_open_selection_is_rejected_before_url_conversion() {
-        // An invalid URL first ensures that per-entry conversion cannot take
-        // precedence over the independently specified native selection count.
-        let non_file = NSURL::URLWithString(&NSString::from_str("https://example.invalid/file"))
-            .expect("synthetic non-file URL");
-        let entries = vec![non_file; MAX_DIALOG_PATHS + 1];
-        let urls = NSArray::from_retained_slice(&entries);
-        let error = selected_open_paths(&urls).expect_err("32+1 native paths must be refused");
-        assert!(
-            matches!(
-                error,
-                IpcError::Protocol {
-                    detail: "native Open selection exceeds path limit"
-                }
-            ),
-            "native over-limit selection was processed before refusal: {error:?}"
-        );
-    }
-}
+#[path = "macos_file/tests.rs"]
+mod tests;

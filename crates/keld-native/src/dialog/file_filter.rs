@@ -2,6 +2,7 @@
 //! A group switch replaces the one active allowed-type set, never a union.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use keld_ipc::IpcError;
 
@@ -88,6 +89,36 @@ impl MacFileFilterModel {
         self.selected
             .and_then(|index| self.groups.get(index))
             .and_then(|group| group.suffixes.as_deref())
+    }
+
+    /// Do not treat a native `UTType`'s conformance as an exact file-extension
+    /// match. `AppKit` can enable `.svg` for an XML-only `allowedContentTypes`
+    /// group; selected file paths must never inherit that wider admission.
+    #[must_use]
+    pub fn accepts_selected_path(
+        &self,
+        path: &Path,
+        allow_files: bool,
+        allow_directories: bool,
+    ) -> bool {
+        // Directory navigation/selection is an independent Open property.
+        // Files must still match the currently selected filter group.
+        if path.is_dir() {
+            return allow_directories;
+        }
+        if !allow_files {
+            return false;
+        }
+        let Some(suffixes) = self.active_suffixes() else {
+            return true;
+        };
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                suffixes
+                    .iter()
+                    .any(|suffix| ext.eq_ignore_ascii_case(suffix))
+            })
     }
 
     /// Replace the active group only if the requested item actually exists.

@@ -72,6 +72,28 @@ pub(super) fn selected_paths(
     }
 }
 
+/// A real OS selection can exceed Apple's `UTType`-conformance filter.
+/// Keld must reject the filename before sending an Open success to the caller.
+pub(super) fn reject_widened_svg(dialog: &mut NativeDialog, fixture: &ProductFixture, svg: &Path) {
+    let selector = compile_ax(fixture, "select_file");
+    dialog.submit("OPEN_XML_SVG");
+    let activation = run_ax(
+        Command::new(&selector)
+            .arg(dialog.host_pid.to_string())
+            .arg(svg),
+    );
+    assert!(
+        activation.status.success(),
+        "real SVG attempt: {activation:?}"
+    );
+    assert_eq!(
+        read_control_line(&mut dialog.reader),
+        "OPEN_ERROR KELD-NATIVE-016",
+        "an XML-only request must never return SVG success"
+    );
+    dialog.await_detached("OPEN_XML_SVG");
+}
+
 fn capture_open_sheet(dialog: &NativeDialog) {
     let (Ok(helper), Ok(capture_path)) = (
         std::env::var("KELD_TEST_WINDOW_ID_HELPER"),

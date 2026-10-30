@@ -76,6 +76,15 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`OPEN_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "OPEN_XML_SVG") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_XML_SVG_PATH!,
+      filters: [{ name: "XML", extensions: ["xml"] }],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(`UNEXPECTED_SVG ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "OPEN_INVALID_FILTER" || command === "OPEN_LATE_INVALID_FILTER") {
     const filters = command === "OPEN_INVALID_FILTER"
       ? [{ name: "Invalid", extensions: ["a b"] }]
@@ -156,8 +165,10 @@ fn visible_windows(pid: u32) -> Vec<serde_json::Value> {
 
 struct FilePaths {
     _accessible_directory: Option<tempfile::TempDir>,
+    _svg_directory: tempfile::TempDir,
     directory: PathBuf,
     source: PathBuf,
+    svg: PathBuf,
     destination: PathBuf,
 }
 
@@ -185,6 +196,15 @@ impl FilePaths {
             b"<mxfile><diagram>GH478 positive</diagram></mxfile>",
         )
         .expect("one fixture-local real Open source");
+        let svg_parent = std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT")
+            .map_or_else(|| fixture.root.path().to_path_buf(), PathBuf::from);
+        let svg_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(svg_parent)
+            .expect("owned OS-visible SVG negative fixture directory");
+        let svg = svg_directory.path().join("gh478-widened.svg");
+        fs::write(&svg, b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+            .expect("one XML-conforming but extension-mismatched fixture");
         let destination = if directory_hint {
             directory.join("gh478-chosen.drawio")
         } else {
@@ -193,8 +213,10 @@ impl FilePaths {
         assert!(!destination.exists(), "Save is path-only, not a write");
         Self {
             _accessible_directory: accessible_directory,
+            _svg_directory: svg_directory,
             directory,
             source,
+            svg,
             destination,
         }
     }
@@ -273,6 +295,7 @@ fn run_real_host_files(
     include_positive_selection: bool,
     cancel_cycles: usize,
     directory_hint: bool,
+    reject_widened_svg: bool,
 ) {
     assert!(
         cancel_cycles >= 2,
@@ -304,6 +327,7 @@ fn run_real_host_files(
                 &paths.source
             },
         )
+        .env("KELD_T1B_XML_SVG_PATH", &paths.svg)
         .env("KELD_DEV_LEASE", "stdin-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -351,6 +375,10 @@ fn run_real_host_files(
     }
     if include_positive_selection {
         selection::selected_paths(&mut dialog, &fixture, &paths, directory_hint);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    if reject_widened_svg {
+        selection::reject_widened_svg(&mut dialog, &fixture, &paths.svg);
         dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
     }
     dialog
@@ -438,12 +466,12 @@ fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message
 
 #[test]
 fn real_host_open_save_cancel_and_next_message_use_one_authenticated_dialog_link() {
-    run_real_host_files(false, 2, false);
+    run_real_host_files(false, 2, false, false);
 }
 
 #[test]
 fn real_host_open_and_save_positive_paths_are_native_and_save_does_not_write() {
-    run_real_host_files(true, 2, false);
+    run_real_host_files(true, 2, false, false);
 }
 
 #[test]
@@ -451,10 +479,15 @@ fn real_host_directory_default_paths_keep_folder_and_save_filename_distinct() {
     // The independent AX helper must find the fixture's exact directory and
     // file row. Save additionally checks its initial name before editing it;
     // neither helper navigates to repair an incorrectly chosen directory.
-    run_real_host_files(true, 2, true);
+    run_real_host_files(true, 2, true, false);
+}
+
+#[test]
+fn real_host_xml_filter_refuses_svg_and_next_message_survives() {
+    run_real_host_files(false, 2, false, true);
 }
 
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
-    run_real_host_files(false, 257, false);
+    run_real_host_files(false, 257, false, false);
 }
