@@ -140,8 +140,12 @@
   before child creation, prevents the liveness reader from reaching Bun, runs a
   fresh command in an isolated process group, revokes registered resources on
   every post-start failure, signals the group once, and waits its direct child.
-  `HostGuardian` consumes the group identity on every terminal path, so an API
-  retry cannot signal a reused PGID. `GuardedPrimary` instead retains a
+  `HostGuardian` retains the enrolled group birth when a terminal native
+  cleanup fails (custody, not authority) and clears it only after that cleanup
+  succeeds. Every terminal path first drops the liveness writer, and every
+  public entry (`poll_fatal`, `wait_fatal`, `accept_supervised_quit`,
+  `shutdown`) and `Drop` are gated on that writer, so a retained birth never
+  signals again and an API retry cannot signal a reused PGID. `GuardedPrimary` instead retains a
   generation's birth until its group is proven absent, but makes at most
   one host-side native group signal per generation. The first attempt
   (fail-safe, `fail_current_generation`, denied SPAWNED or KGC1 CLEAR)
