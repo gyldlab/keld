@@ -526,12 +526,22 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
     }
     // The installed API's real LifecycleLink, not a WorkerLink mock, reaches a private peer.
     const lifecycleRole = join(consumer, "package-lifecycle.test-role.ts");
+    const lifecycleSource = readFileSync(
+      resolve(apiSource, "../fixtures/package-lifecycle.test-role.ts"),
+      "utf8",
+    );
+    const helperSpecifier = '"../../kipc/test/app-link-host.ts"';
+    expect(lifecycleSource.split(helperSpecifier)).toHaveLength(2);
     writeFileSync(
       lifecycleRole,
-      readFileSync(
-        resolve(apiSource, "../fixtures/package-lifecycle.test-role.ts"),
-      ),
+      lifecycleSource.replace(helperSpecifier, '"./app-link-host.ts"'),
     );
+    const canonicalHelper = readFileSync(
+      resolve(apiSource, "../../kipc/test/app-link-host.ts"),
+    );
+    const lifecycleHelper = join(consumer, "app-link-host.ts");
+    writeFileSync(lifecycleHelper, canonicalHelper);
+    expect(readFileSync(lifecycleHelper)).toEqual(canonicalHelper);
     function lifecycle(generation: "initial" | "recovery") {
       return Bun.spawnSync(["bun", lifecycleRole, generation], {
         cwd: consumer,
