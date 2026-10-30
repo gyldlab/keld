@@ -1864,6 +1864,37 @@ export function checkWorkflowSecurity(source: string): void {
   ) {
     fail(changesContract);
   }
+  // A frozen step inventory does not bind the job that executes it. Keep
+  // the existing Bun lane's OS census, routing and execution context exact;
+  // extra job or strategy controls need their own reviewed contract.
+  const bunJob = mapping(jobs["bun-test"], "jobs.bun-test");
+  const bunContext =
+    "Bun test job must preserve its reviewed execution context";
+  exactKeys(
+    bunJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "strategy", "if", "steps"],
+    bunContext,
+  );
+  if (
+    bunJob.name !== "bun test (TypeScript, ${{ matrix.os }})" ||
+    bunJob["runs-on"] !== "${{ matrix.os }}" ||
+    scalar(bunJob["timeout-minutes"]) !== "10" ||
+    bunJob.needs !== "changes" ||
+    bunJob.if !== "needs.changes.outputs.ts == 'true'"
+  ) {
+    fail(bunContext);
+  }
+  const bunStrategy = mapping(bunJob.strategy, `${bunContext}: strategy`);
+  exactKeys(bunStrategy, ["fail-fast", "matrix"], bunContext);
+  const bunMatrix = mapping(bunStrategy.matrix, `${bunContext}: matrix`);
+  exactKeys(bunMatrix, ["os"], bunContext);
+  if (
+    bunStrategy["fail-fast"] !== false ||
+    JSON.stringify(bunMatrix.os) !==
+      JSON.stringify(["ubuntu-latest", "macos-latest", "windows-latest"])
+  ) {
+    fail(bunContext);
+  }
   // These jobs execute native tests or hold security-events:write. The
   // existing targeted checks remain first for precise diagnostics; freezing
   // the complete parsed steps afterwards also rejects inserted executable
