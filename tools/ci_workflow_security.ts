@@ -1872,7 +1872,15 @@ export function checkWorkflowSecurity(source: string): void {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
       "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
-    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
+    // GH1301: the complete native source-fixture install plus its subsequent
+    // tests are one reviewed order. A step inserted before those tests must
+    // not be able to replace the pinned compiler or canonical SDK sources.
+    check: "3dfddae5aab9157397855dced9d8cb5955328c57ef3b034c9abd3a9acfe3e8e4",
+    // The TypeScript lane installs every selected frozen dependency first;
+    // restoring per-package install-and-test ordering recreates the cold CI
+    // failure. Freeze its complete executable step inventory as well.
+    "bun-test":
+      "8fa00147029c690b731642de20623caf0c442a07607c704ddba5daa8c80e8be0",
     "codeql-rust":
       "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
     "codeql-javascript-typescript":
@@ -1894,7 +1902,9 @@ export function checkWorkflowSecurity(source: string): void {
             ? "Windows media reviewed step inventory/order must not acquire unreviewed executable or environment writers."
             : jobName === "check"
               ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
-              : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
+              : jobName === "bun-test"
+                ? "Bun test reviewed fixture install/order must not acquire unreviewed executable or environment writers."
+                : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
       );
     }
   }

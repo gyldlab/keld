@@ -332,6 +332,93 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+// GH1301: this checks the shipping workflow, not a copied example or fixture.
+// A real cold hosted API suite failed because it ran before KIPC's compiler was
+// installed; a Rust-hosted Bun corpus independently failed to import @keld/kipc.
+test("frozen SDK prerequisites precede both TypeScript and Rust-hosted Bun tests", () => {
+  const workflow = fixture();
+  const run = step(
+    workflow,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  ).run!;
+  const phases = run.split("for package in $KELD_CI_TS_PACKAGES; do");
+  expect(phases).toHaveLength(3);
+  expect(phases[1]).toContain("bun install --frozen-lockfile");
+  expect(phases[1]).not.toContain("bun test");
+  expect(phases[1]).not.toContain("bun run typecheck");
+  expect(phases[2]).toContain("bun run typecheck");
+  expect(phases[2]).toContain("bun test");
+  expect(phases[2]).not.toContain("bun install --frozen-lockfile");
+
+  const nativeSteps = workflow.jobs.check!.steps;
+  const setupIndex = nativeSteps.findIndex((candidate) =>
+    candidate.uses?.startsWith("oven-sh/setup-bun@"),
+  );
+  const dependencyIndex = nativeSteps.findIndex(
+    (candidate) =>
+      candidate.name ===
+      "Prepare frozen SDK fixtures for Rust-hosted Bun corpus",
+  );
+  const clippyIndex = nativeSteps.findIndex(
+    (candidate) => candidate.name === "clippy (warnings deny)",
+  );
+  expect(setupIndex).toBeGreaterThanOrEqual(0);
+  expect(dependencyIndex).toBeGreaterThan(setupIndex);
+  expect(clippyIndex).toBeGreaterThan(dependencyIndex);
+  const dependency = nativeSteps[dependencyIndex]!;
+  expect(dependency.run).toContain("packages/@keld/kipc");
+  expect(dependency.run).toContain("packages/@keld/api");
+  expect(dependency.run).toContain("packages/@keld/electron");
+  expect(dependency.run).toContain("bun install --frozen-lockfile");
+  expect(dependency["continue-on-error"]).toBeUndefined();
+});
+
+test("cold Bun dependency setup cannot be echoed, removed or reordered", () => {
+  const echoOnly = fixture();
+  const bun = step(
+    echoOnly,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  );
+  bun.run = bun.run!.replace(
+    "bun install --frozen-lockfile",
+    "echo bun install --frozen-lockfile",
+  );
+  expect(() => check(echoOnly)).toThrow(
+    "Bun test reviewed fixture install/order",
+  );
+
+  const missingNative = fixture();
+  const nativeSteps = missingNative.jobs.check!.steps;
+  const installIndex = nativeSteps.findIndex(
+    (candidate) =>
+      candidate.name ===
+      "Prepare frozen SDK fixtures for Rust-hosted Bun corpus",
+  );
+  expect(installIndex).toBeGreaterThanOrEqual(0);
+  nativeSteps.splice(installIndex, 1);
+  expect(() => check(missingNative)).toThrow(
+    "native check reviewed step inventory/order",
+  );
+
+  const reordered = fixture();
+  const run = step(
+    reordered,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  );
+  const phaseBoundary = "done\nfor package in $KELD_CI_TS_PACKAGES; do";
+  expect(run.run).toContain(phaseBoundary);
+  run.run = run.run!.replace(
+    phaseBoundary,
+    "bun test\ndone\nfor package in $KELD_CI_TS_PACKAGES; do",
+  );
+  expect(() => check(reordered)).toThrow(
+    "Bun test reviewed fixture install/order",
+  );
+});
+
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
   const f = fixture();
   const bash =
