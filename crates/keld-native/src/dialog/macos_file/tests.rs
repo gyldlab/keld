@@ -1,7 +1,12 @@
 //! Unit tests for the bounded native Open result: real NSURL objects, no mocked path
 //! authority and no inference from `AppKit` filter visibility.
 
-use super::*;
+use super::{selected_open_paths, selected_save_path};
+use crate::dialog::MAX_DIALOG_PATHS;
+use crate::dialog::file_filter::MacFileFilterModel;
+use keld_ipc::IpcError;
+use objc2_foundation::{NSArray, NSString, NSURL};
+use std::path::Path;
 
 #[test]
 fn bounded_open_selection_preserves_exact_paths() {
