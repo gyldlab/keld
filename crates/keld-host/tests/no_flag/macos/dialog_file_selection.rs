@@ -72,26 +72,288 @@ pub(super) fn selected_paths(
     }
 }
 
-/// A real OS selection can exceed Apple's `UTType`-conformance filter.
-/// Keld must reject the filename before sending an Open success to the caller.
+/// The OS's broad XML UTType can admit an SVG row. The same real AX selection
+/// must succeed under All Files, but must never gain a successful Open reply
+/// when the caller declared XML only. AX's selected-child setter can force
+/// the otherwise disabled native row, so Host result rejection is essential.
 pub(super) fn reject_widened_svg(dialog: &mut NativeDialog, fixture: &ProductFixture, svg: &Path) {
     let selector = compile_ax(fixture, "select_file");
-    dialog.submit("OPEN_XML_SVG");
-    let activation = run_ax(
+    dialog.submit("OPEN_XML_SVG_ALLFILES");
+    let positive = run_ax(
         Command::new(&selector)
             .arg(dialog.host_pid.to_string())
             .arg(svg),
     );
     assert!(
-        activation.status.success(),
-        "real SVG attempt: {activation:?}"
+        positive.status.success(),
+        "All Files SVG control: {positive:?}"
     );
+    let actual = read_control_line(&mut dialog.reader);
+    let prefix = "SVG_CONTROL_SELECTED false ";
+    assert!(actual.starts_with(prefix), "real SVG selection: {actual}");
+    let selected = Path::new(actual.trim_start_matches(prefix));
+    assert_eq!(selected.file_name(), svg.file_name());
     assert_eq!(
-        read_control_line(&mut dialog.reader),
-        "OPEN_ERROR KELD-NATIVE-016",
-        "an XML-only request must never return SVG success"
+        selected.parent().and_then(|p| p.canonicalize().ok()),
+        svg.parent().and_then(|p| p.canonicalize().ok()),
+        "All Files returned the actual fixture path"
     );
+    dialog.await_detached("OPEN_XML_SVG_ALLFILES");
+
+    dialog.submit("OPEN_XML_SVG");
+    let forced = run_ax(
+        Command::new(&selector)
+            .arg(dialog.host_pid.to_string())
+            .arg(svg)
+            .arg("--allow-native-denial"),
+    );
+    assert!(forced.status.success(), "native SVG selection: {forced:?}");
+    eprintln!(
+        "GH478_NATIVE_XML_SVG_REFUSAL stdout={} stderr={}",
+        String::from_utf8_lossy(&forced.stdout),
+        String::from_utf8_lossy(&forced.stderr)
+    );
+    let observed = String::from_utf8_lossy(&forced.stdout);
+    if observed.contains("NATIVE_OS_DENIED_FILE_ROW") {
+        // Native exact-filter admission may make an SVG row entirely
+        // unselectable. A healthy physical Cancel proves the original dialog
+        // remains owned and no prohibited path was returned.
+        let canceled = run_ax(
+            Command::new(&dialog.button_helper)
+                .arg(dialog.host_pid.to_string())
+                .arg("Cancel"),
+        );
+        assert!(
+            canceled.status.success(),
+            "dismiss native refusal: {canceled:?}"
+        );
+        assert_eq!(read_control_line(&mut dialog.reader), "OPEN_RESULT true 0");
+    } else {
+        assert!(
+            observed.contains("EXACT_HOST_NATIVE_FILE_SELECTED"),
+            "unexpected native SVG oracle: {forced:?}"
+        );
+        // A programmatic AX selection may force a disabled row far enough
+        // to attempt Open. AppKit's validateURL callback must reject that
+        // action *before* returning a selected URL to Keld. Observe and
+        // dismiss the real native error alert, then Cancel the same sheet.
+        let rejected = run_ax(
+            Command::new(&dialog.button_helper)
+                .arg(dialog.host_pid.to_string())
+                .arg("OK"),
+        );
+        assert_eq!(
+            rejected.status.success(),
+            true,
+            "AppKit must show an OS validation refusal: {rejected:?}"
+        );
+        let canceled = run_ax(
+            Command::new(&dialog.button_helper)
+                .arg(dialog.host_pid.to_string())
+                .arg("Cancel"),
+        );
+        assert!(
+            canceled.status.success(),
+            "Cancel after native validation refusal: {canceled:?}"
+        );
+        assert_eq!(read_control_line(&mut dialog.reader), "OPEN_RESULT true 0");
+    }
     dialog.await_detached("OPEN_XML_SVG");
+}
+
+/// Independently select an actual XML file with the exact same OS AX helper.
+/// The XML-positive and SVG-negative fixture directories each contain one
+/// owned file, so the helper cannot select the wrong row or fabricate a path.
+pub(super) fn verify_native_xml_positive(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    xml: &Path,
+) {
+    let selector = compile_ax(fixture, "select_file");
+    dialog.submit("OPEN_XML_ONLY");
+    let output = run_ax(
+        Command::new(&selector)
+            .arg(dialog.host_pid.to_string())
+            .arg(xml),
+    );
+    assert!(
+        output.status.success(),
+        "native XML-only selection is not available: {output:?}"
+    );
+    let result = read_control_line(&mut dialog.reader);
+    let prefix = "XML_SELECTED false ";
+    assert!(result.starts_with(prefix), "native XML selection: {result}");
+    let selected = Path::new(result.trim_start_matches(prefix));
+    assert_eq!(selected.file_name(), xml.file_name());
+    assert_eq!(
+        selected.parent().and_then(|p| p.canonicalize().ok()),
+        xml.parent().and_then(|p| p.canonicalize().ok()),
+        "the OS must return the exact owned XML path"
+    );
+    dialog.await_detached("OPEN_XML_ONLY");
+}
+
+/// Exercise the true native accessory rather than changing Rust's filter model.
+/// The selected paths are independently returned by the authenticated Host;
+/// the fixture helper cannot synthesize a completion or alter the KIPC frame.
+pub(super) fn verify_native_filter_switching(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    paths: &FilePaths,
+) {
+    let accessory = compile_ax(fixture, "switch_filter");
+    let selector = compile_ax(fixture, "select_file");
+    for (operation, group, expected_prefix, path) in [
+        (
+            "OPEN_SWITCH_VSDX",
+            "VSDX",
+            "VSDX_SELECTED false ",
+            &paths.vsdx,
+        ),
+        (
+            "OPEN_SWITCH_MERMAID",
+            "Mermaid",
+            "MERMAID_SELECTED false ",
+            &paths.mermaid,
+        ),
+        (
+            "OPEN_SWITCH_ALL",
+            "All Files",
+            "ALL_SELECTED false ",
+            &paths.svg,
+        ),
+    ] {
+        dialog.submit(operation);
+        capture_open_sheet(dialog);
+        let switched = run_ax(
+            Command::new(&accessory)
+                .arg(dialog.host_pid.to_string())
+                .arg(path)
+                .arg(group),
+        );
+        assert!(
+            switched.status.success(),
+            "actual native {group} accessory did not select: {switched:?}"
+        );
+        eprintln!(
+            "GH478_NATIVE_ACCESSORY_PROOF {}",
+            String::from_utf8_lossy(&switched.stderr)
+        );
+        let selected = run_ax(
+            Command::new(&selector)
+                .arg(dialog.host_pid.to_string())
+                .arg(path),
+        );
+        assert!(
+            selected.status.success(),
+            "{group} OS row not selected: {selected:?}"
+        );
+        let reply = read_control_line(&mut dialog.reader);
+        assert!(reply.starts_with(expected_prefix), "{group} reply: {reply}");
+        let actual = Path::new(reply.trim_start_matches(expected_prefix));
+        assert_eq!(actual.file_name(), path.file_name());
+        assert_eq!(
+            actual
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok()),
+            path.parent().and_then(|parent| parent.canonicalize().ok()),
+            "switching the true native group must preserve the selected file"
+        );
+        dialog.await_detached(operation);
+    }
+    // Electron accepts duplicate labels with independently ordered groups.
+    // The original source index 2 admits XML, while index 0 (same title)
+    // admits drawio only; selecting the second duplicate must return XML.
+    dialog.submit("OPEN_DUPLICATE_NAMES");
+    let switched = run_ax(
+        Command::new(&accessory)
+            .arg(dialog.host_pid.to_string())
+            .arg(&paths.xml)
+            .arg("Duplicate"),
+    );
+    assert!(
+        switched.status.success(),
+        "same-title native filter index 2 unavailable: {switched:?}"
+    );
+    let selected = run_ax(
+        Command::new(&selector)
+            .arg(dialog.host_pid.to_string())
+            .arg(&paths.xml),
+    );
+    assert!(
+        selected.status.success(),
+        "native menu's second Duplicate group failed to admit exact XML: {selected:?}"
+    );
+    let reply = read_control_line(&mut dialog.reader);
+    assert_eq!(
+        reply,
+        format!("DUPLICATE_SELECTED false {}", paths.xml.display()),
+        "the final OS-selected same-title group must preserve source index 2"
+    );
+    dialog.await_detached("OPEN_DUPLICATE_NAMES");
+}
+
+/// Select a real file, a real directory, and both simultaneously from one
+/// Open panel configured with `openFile`, `openDirectory` and `multiSelections`.
+/// The AX helper acts only on the two fixture-owned native rows.
+pub(super) fn verify_native_mixed_selection(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    paths: &FilePaths,
+) {
+    let selector = compile_ax(fixture, "select_mixed");
+    for (operation, selection, expected) in [
+        ("OPEN_MIXED_FILE", "file", vec![&paths.mixed_file]),
+        (
+            "OPEN_MIXED_DIRECTORY",
+            "directory",
+            vec![&paths.mixed_folder],
+        ),
+        (
+            "OPEN_MIXED_BOTH",
+            "both",
+            vec![&paths.mixed_file, &paths.mixed_folder],
+        ),
+    ] {
+        dialog.submit(operation);
+        let clicked = run_ax(
+            Command::new(&selector)
+                .arg(dialog.host_pid.to_string())
+                .arg(&paths.mixed_file)
+                .arg(&paths.mixed_folder)
+                .arg(selection),
+        );
+        assert!(
+            clicked.status.success(),
+            "native mixed {selection} selection failed: {clicked:?}"
+        );
+        let result = read_control_line(&mut dialog.reader);
+        let prefix = "MIXED_SELECTED false ";
+        assert!(
+            result.starts_with(prefix),
+            "native mixed {selection}: {result}"
+        );
+        let mut actual = result
+            .trim_start_matches(prefix)
+            .split('|')
+            .map(Path::new)
+            .map(|path| path.canonicalize().expect("returned native path exists"))
+            .collect::<Vec<_>>();
+        let mut wanted = expected
+            .into_iter()
+            .map(|path| {
+                path.canonicalize()
+                    .expect("owned expected native path exists")
+            })
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        wanted.sort_unstable();
+        assert_eq!(
+            actual, wanted,
+            "only the exact OS-selected paths may return"
+        );
+        dialog.await_detached(operation);
+    }
 }
 
 fn capture_open_sheet(dialog: &NativeDialog) {

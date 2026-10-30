@@ -76,13 +76,67 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`OPEN_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "OPEN_SWITCH_VSDX" || command === "OPEN_SWITCH_MERMAID" || command === "OPEN_SWITCH_ALL") {
+    const vsdx = command === "OPEN_SWITCH_VSDX";
+    const mermaid = command === "OPEN_SWITCH_MERMAID";
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: vsdx ? process.env.KELD_T1B_VSDX_PATH! :
+        mermaid ? process.env.KELD_T1B_MERMAID_PATH! : process.env.KELD_T1B_XML_SVG_PATH!,
+      filters, properties: ["openFile"],
+    });
+    void pending.then((value) => report(`${vsdx ? "VSDX_SELECTED" : mermaid ? "MERMAID_SELECTED" : "ALL_SELECTED"} ${value.canceled} ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
+  } else if (command === "OPEN_MIXED_FILE" || command === "OPEN_MIXED_DIRECTORY" || command === "OPEN_MIXED_BOTH") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_MIXED_PARENT!,
+      filters: [{ name: "All Files", extensions: ["*"] }],
+      properties: ["openFile", "openDirectory", "multiSelections"],
+    });
+    void pending.then((value) => report(`MIXED_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "OPEN_XML_SVG") {
     const pending = dialog.showOpenDialog(win, {
       defaultPath: process.env.KELD_T1B_XML_SVG_PATH!,
       filters: [{ name: "XML", extensions: ["xml"] }],
       properties: ["openFile"],
     });
-    void pending.then((value) => report(`UNEXPECTED_SVG ${value.filePaths.join("|")}`),
+    void pending.then((value) => report(value.canceled
+      ? `OPEN_RESULT true ${value.filePaths.length}`
+      : `UNEXPECTED_SVG ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
+  } else if (command === "OPEN_XML_ONLY") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_XML_PATH!,
+      filters: [{ name: "XML", extensions: ["xml"] }],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(`XML_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
+  } else if (command === "OPEN_DUPLICATE_NAMES") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_XML_PATH!,
+      filters: [
+        { name: "Duplicate", extensions: ["drawio"] },
+        { name: "Other", extensions: ["vsdx"] },
+        { name: "Duplicate", extensions: ["xml"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(`DUPLICATE_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
+  } else if (command === "OPEN_XML_SVG_ALLFILES") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_XML_SVG_PATH!,
+      filters: [{ name: "All Files", extensions: ["*"] }],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(`SVG_CONTROL_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
   } else if (command === "OPEN_INVALID_FILTER" || command === "OPEN_LATE_INVALID_FILTER") {
@@ -164,47 +218,81 @@ fn visible_windows(pid: u32) -> Vec<serde_json::Value> {
 }
 
 struct FilePaths {
-    _accessible_directory: Option<tempfile::TempDir>,
+    _accessible_directory: tempfile::TempDir,
     _svg_directory: tempfile::TempDir,
+    _xml_directory: tempfile::TempDir,
+    _vsdx_directory: tempfile::TempDir,
+    _mermaid_directory: tempfile::TempDir,
+    _mixed_directory: tempfile::TempDir,
     directory: PathBuf,
     source: PathBuf,
     svg: PathBuf,
+    xml: PathBuf,
+    vsdx: PathBuf,
+    mermaid: PathBuf,
+    mixed_file: PathBuf,
+    mixed_folder: PathBuf,
     destination: PathBuf,
 }
 
 impl FilePaths {
     fn new(fixture: &ProductFixture, directory_hint: bool) -> Self {
-        // The system file-panel process must enumerate this owned directory.
-        // Retain TempDir until the Host exits; never modify a shared directory.
-        let accessible_directory =
-            std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT").map(|parent| {
-                tempfile::Builder::new()
-                    .prefix("keld-gh478-visible-open-")
-                    .tempdir_in(parent)
-                    .expect("create owned OS-visible native file selection fixture")
-            });
-        let directory = accessible_directory.as_ref().map_or_else(
-            || fixture.root.path().join("keld-gh478-visible-open-files"),
-            |dir| dir.path().to_path_buf(),
+        // macOS NSOpenPanel hides entries in process-private /var/folders
+        // temporary locations. Put only fixture-owned directories under a
+        // visible HOME or explicit parent and retain them through Host exit.
+        let visible_parent = std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .expect("real macOS file picker requires HOME or a visible test parent");
+        assert!(
+            visible_parent.is_absolute() && visible_parent.is_dir(),
+            "real macOS picker test parent must be an existing absolute directory"
         );
-        if accessible_directory.is_none() {
-            fs::create_dir(&directory).expect("fixture-owned visible directory");
-        }
+        let accessible_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(&visible_parent)
+            .expect("create owned OS-visible native file selection fixture");
+        let directory = accessible_directory.path().to_path_buf();
         let source = directory.join("gh478-fixture.drawio");
         fs::write(
             &source,
             b"<mxfile><diagram>GH478 positive</diagram></mxfile>",
         )
         .expect("one fixture-local real Open source");
-        let svg_parent = std::env::var_os("KELD_TEST_ACCESSIBLE_OPEN_PARENT")
-            .map_or_else(|| fixture.root.path().to_path_buf(), PathBuf::from);
         let svg_directory = tempfile::Builder::new()
             .prefix("keld-gh478-visible-open-")
-            .tempdir_in(svg_parent)
+            .tempdir_in(&visible_parent)
             .expect("owned OS-visible SVG negative fixture directory");
         let svg = svg_directory.path().join("gh478-widened.svg");
         fs::write(&svg, b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
             .expect("one XML-conforming but extension-mismatched fixture");
+        let xml_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(&visible_parent)
+            .expect("owned OS-visible XML positive fixture directory");
+        let xml = xml_directory.path().join("gh478-allowed.xml");
+        fs::write(&xml, b"<mxfile/>").expect("one exact XML fixture");
+        let vsdx_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(&visible_parent)
+            .expect("owned OS-visible VSDX fixture directory");
+        let vsdx = vsdx_directory.path().join("gh478-format.vsdx");
+        fs::write(&vsdx, b"GH478 format group selection sentinel").expect("one exact VSDX fixture");
+        let mermaid_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(&visible_parent)
+            .expect("owned OS-visible Mermaid fixture directory");
+        let mermaid = mermaid_directory.path().join("gh478-flow.mmd");
+        fs::write(&mermaid, b"flowchart LR; A --> B").expect("one exact Mermaid fixture");
+        let mixed_directory = tempfile::Builder::new()
+            .prefix("keld-gh478-visible-open-")
+            .tempdir_in(&visible_parent)
+            .expect("owned OS-visible mixed selection directory");
+        let mixed_file = mixed_directory.path().join("gh478-mixed.drawio");
+        let mixed_folder = mixed_directory.path().join("gh478-mixed-folder");
+        fs::write(&mixed_file, b"<mxfile>real mixed selection</mxfile>")
+            .expect("owned mixed-selection file");
+        fs::create_dir(&mixed_folder).expect("owned mixed-selection ordinary directory");
         let destination = if directory_hint {
             directory.join("gh478-chosen.drawio")
         } else {
@@ -214,9 +302,18 @@ impl FilePaths {
         Self {
             _accessible_directory: accessible_directory,
             _svg_directory: svg_directory,
+            _xml_directory: xml_directory,
+            _vsdx_directory: vsdx_directory,
+            _mermaid_directory: mermaid_directory,
+            _mixed_directory: mixed_directory,
             directory,
             source,
             svg,
+            xml,
+            vsdx,
+            mermaid,
+            mixed_file,
+            mixed_folder,
             destination,
         }
     }
@@ -296,6 +393,9 @@ fn run_real_host_files(
     cancel_cycles: usize,
     directory_hint: bool,
     reject_widened_svg: bool,
+    verify_xml_rows: bool,
+    verify_filter_switching: bool,
+    verify_mixed_selection: bool,
 ) {
     assert!(
         cancel_cycles >= 2,
@@ -328,6 +428,13 @@ fn run_real_host_files(
             },
         )
         .env("KELD_T1B_XML_SVG_PATH", &paths.svg)
+        .env("KELD_T1B_XML_PATH", &paths.xml)
+        .env("KELD_T1B_VSDX_PATH", &paths.vsdx)
+        .env("KELD_T1B_MERMAID_PATH", &paths.mermaid)
+        .env(
+            "KELD_T1B_MIXED_PARENT",
+            paths.mixed_file.parent().expect("owned mixed parent"),
+        )
         .env("KELD_DEV_LEASE", "stdin-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -379,6 +486,18 @@ fn run_real_host_files(
     }
     if reject_widened_svg {
         selection::reject_widened_svg(&mut dialog, &fixture, &paths.svg);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    if verify_xml_rows {
+        selection::verify_native_xml_positive(&mut dialog, &fixture, &paths.xml);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    if verify_filter_switching {
+        selection::verify_native_filter_switching(&mut dialog, &fixture, &paths);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    if verify_mixed_selection {
+        selection::verify_native_mixed_selection(&mut dialog, &fixture, &paths);
         dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
     }
     dialog
@@ -466,12 +585,12 @@ fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message
 
 #[test]
 fn real_host_open_save_cancel_and_next_message_use_one_authenticated_dialog_link() {
-    run_real_host_files(false, 2, false, false);
+    run_real_host_files(false, 2, false, false, false, false, false);
 }
 
 #[test]
 fn real_host_open_and_save_positive_paths_are_native_and_save_does_not_write() {
-    run_real_host_files(true, 2, false, false);
+    run_real_host_files(true, 2, false, false, false, false, false);
 }
 
 #[test]
@@ -479,15 +598,30 @@ fn real_host_directory_default_paths_keep_folder_and_save_filename_distinct() {
     // The independent AX helper must find the fixture's exact directory and
     // file row. Save additionally checks its initial name before editing it;
     // neither helper navigates to repair an incorrectly chosen directory.
-    run_real_host_files(true, 2, true, false);
+    run_real_host_files(true, 2, true, false, false, false, false);
 }
 
 #[test]
 fn real_host_xml_filter_refuses_svg_and_next_message_survives() {
-    run_real_host_files(false, 2, false, true);
+    run_real_host_files(false, 2, false, true, false, false, false);
+}
+
+#[test]
+fn real_host_xml_only_selects_exact_native_xml_path() {
+    run_real_host_files(false, 2, false, false, true, false, false);
+}
+
+#[test]
+fn real_host_native_filter_accessory_switches_vsdx_and_all_files() {
+    run_real_host_files(false, 2, false, false, false, true, false);
+}
+
+#[test]
+fn real_host_native_open_with_files_and_directories_selects_each_and_both() {
+    run_real_host_files(false, 2, false, false, false, false, true);
 }
 
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
-    run_real_host_files(false, 257, false, false);
+    run_real_host_files(false, 257, false, false, false, false, false);
 }

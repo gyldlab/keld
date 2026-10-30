@@ -102,6 +102,34 @@ impl MacFileFilterModel {
         allow_files: bool,
         allow_directories: bool,
     ) -> bool {
+        self.accepts_selected_path_at(
+            self.selected,
+            path,
+            native_is_directory,
+            allow_files,
+            allow_directories,
+        )
+    }
+
+    /// Validate against the *live* native popup index without mutating the
+    /// canonical selected group. An invalid index cannot mean All Files.
+    #[must_use]
+    pub(crate) fn accepts_selected_path_at(
+        &self,
+        active: Option<usize>,
+        path: &Path,
+        native_is_directory: bool,
+        allow_files: bool,
+        allow_directories: bool,
+    ) -> bool {
+        let suffixes = match active {
+            Some(index) => match self.groups.get(index) {
+                Some(group) => group.suffixes.as_deref(),
+                None => return false,
+            },
+            None if self.groups.is_empty() => None,
+            None => return false,
+        };
         // The native panel owns directory-versus-file classification. macOS
         // packages can be directories on disk but selectable *files* in the
         // panel; this pure group model must not redo that OS decision.
@@ -111,7 +139,7 @@ impl MacFileFilterModel {
         if !allow_files {
             return false;
         }
-        let Some(suffixes) = self.active_suffixes() else {
+        let Some(suffixes) = suffixes else {
             return true;
         };
         path.extension()
@@ -139,5 +167,32 @@ impl MacFileFilterModel {
         }
         self.selected = Some(index);
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::FileDialogFilter, MacFileFilterModel};
+    use std::path::Path;
+
+    #[test]
+    fn live_native_index_is_exact_and_does_not_mutate_cached_group() {
+        let filter = |name: &str, extensions: &[&str]| FileDialogFilter {
+            name: name.to_owned(),
+            extensions: extensions.iter().map(|ext| (*ext).to_owned()).collect(),
+        };
+        let model = MacFileFilterModel::new(&[
+            filter("XML", &["xml"]),
+            filter("SVG", &["svg"]),
+            filter("All Files", &["*"]),
+        ])
+        .expect("three distinct native groups");
+        let svg = Path::new("/tmp/diagram.svg");
+        assert!(!model.accepts_selected_path_at(Some(0), svg, false, true, false));
+        assert!(model.accepts_selected_path_at(Some(1), svg, false, true, false));
+        assert!(model.accepts_selected_path_at(Some(2), svg, false, true, false));
+        assert!(!model.accepts_selected_path_at(None, svg, false, true, false));
+        assert!(!model.accepts_selected_path_at(Some(3), svg, false, true, false));
+        assert_eq!(model.selected_index(), Some(0));
     }
 }

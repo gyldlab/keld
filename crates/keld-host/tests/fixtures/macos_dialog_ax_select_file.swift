@@ -5,7 +5,9 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-guard CommandLine.arguments.count == 3,
+guard (CommandLine.arguments.count == 3 ||
+       (CommandLine.arguments.count == 4 &&
+        CommandLine.arguments[3] == "--allow-native-denial")),
       let pid = Int32(CommandLine.arguments[1]), pid > 0 else {
     fputs("INVALID_PID_OR_PATH\n", stderr)
     exit(2)
@@ -15,6 +17,7 @@ guard AXIsProcessTrusted() else {
     exit(3)
 }
 let filePath = CommandLine.arguments[2]
+let allowNativeDenial = CommandLine.arguments.count == 4
 guard filePath.hasPrefix("/"), FileManager.default.fileExists(atPath: filePath) else {
     fputs("NO_EXISTING_FIXTURE_FILE\n", stderr)
     exit(4)
@@ -116,12 +119,21 @@ let expectedFolder = (fileParent as NSString).lastPathComponent
 observationPhase = "file-row"
 observationDeadline = ProcessInfo.processInfo.systemUptime + 6
 var matches: [(AXUIElement, AXUIElement, Int)] = []
+var witnessedExactFolder = false
+var witnessedNativeBrowser = false
+var witnessedOpenButton = false
+var lastOpenEnabled = false
 while ProcessInfo.processInfo.systemUptime < observationDeadline {
     matches.removeAll()
     for window in attr(process, kAXWindowsAttribute as String) as? [AXUIElement] ?? [] {
-        guard currentFolder(window) == expectedFolder, let nativeBrowser = browser(window) else {
-            continue
+        guard currentFolder(window) == expectedFolder else { continue }
+        witnessedExactFolder = true
+        if let button = findButton(window, "Open") {
+            witnessedOpenButton = true
+            lastOpenEnabled = attr(button, kAXEnabledAttribute as String) as? Bool == true
         }
+        guard let nativeBrowser = browser(window) else { continue }
+        witnessedNativeBrowser = true
         for (index, column) in (attr(nativeBrowser, "AXColumns") as? [AXUIElement] ?? []).enumerated() {
             for list in attr(column, "AXContents") as? [AXUIElement] ?? [] {
                 guard attr(list, kAXRoleAttribute as String) as? String == "AXList" else { continue }
@@ -140,17 +152,39 @@ while ProcessInfo.processInfo.systemUptime < observationDeadline {
     if !matches.isEmpty { break }
     Thread.sleep(forTimeInterval: 0.05)
 }
-requireObservationTime()
 guard matches.count == 1 else {
-    fputs("EXACT_NATIVE_FILE_ROW_COUNT=\(matches.count) EXPECTED=1\n", stderr)
+    // A native picker that hides a wrong-extension row already enforces the
+    // declared restriction. Accept this ONLY for the explicit negative oracle
+    // after independently observing the correct folder and real browser.
+    if allowNativeDenial && matches.isEmpty && witnessedExactFolder &&
+        witnessedNativeBrowser && witnessedOpenButton && !lastOpenEnabled {
+        print("NATIVE_OS_DENIED_FILE_ROW pid=\(pid) basename=\(fileName)")
+        exit(0)
+    }
+    fputs("EXACT_NATIVE_FILE_ROW_COUNT=\(matches.count) EXPECTED=1 FOLDER_MATCH=\(witnessedExactFolder) BROWSER_MATCH=\(witnessedNativeBrowser) OPEN_PRESENT=\(witnessedOpenButton) OPEN_ENABLED=\(lastOpenEnabled)\n", stderr)
     exit(14)
 }
 let (fileList, fileRow, column) = matches[0]
+if allowNativeDenial {
+    let rowEnabled = attr(fileRow, kAXEnabledAttribute as String) as? Bool
+    let cellEnabled = (attr(fileRow, kAXChildrenAttribute as String) as? [AXUIElement] ?? [])
+        .compactMap { attr($0, kAXEnabledAttribute as String) as? Bool }
+    fputs("NATIVE_DENIAL_ROW_ENABLED=\(String(describing: rowEnabled)) CELLS=\(cellEnabled)\n", stderr)
+    if rowEnabled == false {
+        print("NATIVE_OS_DENIED_FILE_ROW pid=\(pid) basename=\(fileName)")
+        exit(0)
+    }
+}
 var selectable = DarwinBoolean(false)
 requireObservationTime()
 let settableStatus = AXUIElementIsAttributeSettable(fileList, kAXSelectedChildrenAttribute as CFString, &selectable)
 requireObservationTime()
 guard settableStatus == .success, selectable.boolValue else {
+    if allowNativeDenial && settableStatus == .success && !selectable.boolValue &&
+        usableOpen() == nil {
+        print("NATIVE_OS_DENIED_FILE_ROW pid=\(pid) basename=\(fileName)")
+        exit(0)
+    }
     fputs("NATIVE_FILE_ROW_NOT_ACCESSIBILITY_SELECTABLE\n", stderr)
     exit(15)
 }
@@ -171,6 +205,10 @@ while ProcessInfo.processInfo.systemUptime < observationDeadline {
     Thread.sleep(forTimeInterval: 0.05)
 }
 guard let button = selected else {
+    if allowNativeDenial {
+        print("NATIVE_OS_DENIED_FILE_ROW pid=\(pid) basename=\(fileName)")
+        exit(0)
+    }
     fputs("NATIVE_OPEN_NOT_ENABLED_AFTER_EXACT_FILE_ROW_SELECTION\n", stderr)
     exit(12)
 }

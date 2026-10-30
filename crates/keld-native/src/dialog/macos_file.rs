@@ -11,13 +11,16 @@ use keld_ipc::IpcError;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSModalResponse, NSModalResponseCancel, NSModalResponseOK, NSOpenPanel, NSPopUpButton,
-    NSSavePanel, NSWindow, NSWorkspace,
+    NSMenu, NSMenuItem, NSModalResponse, NSModalResponseCancel, NSModalResponseOK, NSOpenPanel,
+    NSPopUpButton, NSSavePanel, NSWindow, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSSize, NSString, NSURL};
 use objc2_uniform_type_identifiers::UTType;
 
 use super::file_filter::MacFileFilterModel;
+
+mod delegate;
+use self::delegate::{DelegateMode, ExactFilePanelDelegate};
 use super::{
     DialogReplyV1, MAX_DIALOG_PATHS, OpenDialogOptions, OpenProperty, SaveDialogOptions,
     validate_dialog_reply, validate_open_options, validate_save_options,
@@ -144,6 +147,9 @@ pub struct MacFilePanel {
     native_groups: Vec<Vec<Retained<UTType>>>,
     failed_filter: bool,
     popup: Option<Retained<NSPopUpButton>>,
+    // AppKit's delegate property is weak: this owner retains the exact native
+    // admission callback until the sheet has physically drained.
+    delegate: Option<Retained<ExactFilePanelDelegate>>,
     state: PanelState,
 }
 
@@ -157,7 +163,7 @@ impl std::fmt::Debug for MacFilePanel {
     }
 }
 
-fn default_hint(panel: &NSSavePanel, hint: Option<&String>, is_save: bool) {
+fn default_hint(panel: &NSSavePanel, hint: Option<&String>) {
     let Some(hint) = hint else { return };
     let path = Path::new(hint);
     // Match the pinned Electron distinction between a directory hint and a
@@ -178,12 +184,9 @@ fn default_hint(panel: &NSSavePanel, hint: Option<&String>, is_save: bool) {
         );
         panel.setDirectoryURL(Some(&url));
     }
-    // A directory is never a proposed Save filename. Open filename-field
-    // parity is separate from choosing the correct initial directory.
-    if is_save
-        && !is_directory
-        && let Some(file) = path.file_name().and_then(|name| name.to_str())
-    {
+    // Electron applies a proposed filename to both Open and Save. An
+    // existing directory hint only selects that folder, never its basename.
+    if !is_directory && let Some(file) = path.file_name().and_then(|name| name.to_str()) {
         panel.setNameFieldStringValue(&NSString::from_str(file));
     }
 }
@@ -230,6 +233,7 @@ impl MacFilePanel {
             native_groups,
             failed_filter: false,
             popup: None,
+            delegate: None,
             state: PanelState::Prepared,
         };
         if filters.len() > 1 {
@@ -237,22 +241,64 @@ impl MacFilePanel {
                 .ok_or_else(|| invalid("file panel not on AppKit main thread"))?;
             let popup = NSPopUpButton::new(mtm);
             popup.setFrameSize(NSSize::new(280.0, 28.0));
+            // NSPopUpButton::addItemWithTitle removes an earlier item with the
+            // same title. Electron permits identically named filter groups,
+            // whose *positions* have distinct meaning; allocate real menu
+            // items instead, preserving every original index and label.
+            let menu = NSMenu::new(mtm);
             for label in owner.filter.labels() {
-                popup.addItemWithTitle(&NSString::from_str(label));
+                let item = NSMenuItem::new(mtm);
+                item.setTitle(&NSString::from_str(label));
+                menu.addItem(&item);
             }
+            if usize::try_from(menu.numberOfItems()).ok() != Some(filters.len()) {
+                return Err(invalid("native filter menu lost a declared group"));
+            }
+            popup.setMenu(Some(&menu));
             popup.selectItemAtIndex(0);
             owner.panel.save_panel().setAccessoryView(Some(&popup));
             owner.popup = Some(popup);
         }
+        let mode = match &owner.panel {
+            FilePanel::Open {
+                requested_files,
+                requested_directories,
+                ..
+            } => DelegateMode::Open {
+                files: *requested_files,
+                directories: *requested_directories,
+            },
+            FilePanel::Save(_) => DelegateMode::Save,
+        };
+        let main = MainThreadMarker::new()
+            .ok_or_else(|| invalid("file panel not on AppKit main thread"))?;
+        let native_delegate = ExactFilePanelDelegate::new(
+            main,
+            owner.filter.clone(),
+            owner.popup.clone(),
+            mode,
+            owner.panel.save_panel().treatsFilePackagesAsDirectories(),
+        )
+        .ok_or_else(|| invalid("native file panel delegate initialization failed"))?;
+        native_delegate.attach_to(owner.panel.save_panel());
+        owner.delegate = Some(native_delegate);
         owner.apply_filter()?;
         // Configure native content-type admission before selecting the first
         // directory. The modern panel may rebuild its file browser when the
         // type set changes; a path hint applied earlier can be lost.
-        default_hint(
-            owner.panel.save_panel(),
-            hint,
-            matches!(owner.panel, FilePanel::Save(_)),
-        );
+        default_hint(owner.panel.save_panel(), hint);
+        if let FilePanel::Open {
+            panel,
+            requested_files,
+            requested_directories,
+        } = &owner.panel
+        {
+            // The directory hint may rebuild Open's browser after its type
+            // set was installed. Preserve both admitted selection modes at
+            // the final native setup boundary, including mixed file+folder.
+            panel.setCanChooseFiles(*requested_files);
+            panel.setCanChooseDirectories(*requested_directories);
+        }
         Ok(owner)
     }
 
@@ -503,6 +549,8 @@ impl Drop for MacFilePanel {
     fn drop(&mut self) {
         // Unexpected owner teardown only: normal custody waits for the real
         // callback and panel invisibility. This does not assert completion.
+        // Keep the exact delegate alive during physical dismissal. AppKit can
+        // still consult its weak callback while endSheet/orderOut runs.
         if matches!(
             self.state,
             PanelState::Presented | PanelState::CancelRequested
@@ -513,6 +561,12 @@ impl Drop for MacFilePanel {
             } else if panel.isVisible() {
                 panel.orderOut(None);
             }
+        }
+        if self.delegate.is_some() {
+            // The weak AppKit reference must be cleared before deallocation,
+            // including failed setup and unexpected sheet teardown.
+            ExactFilePanelDelegate::detach_from(self.panel.save_panel());
+            self.delegate.take();
         }
     }
 }
