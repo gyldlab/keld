@@ -7,7 +7,7 @@ import {
   decodeVarint,
   encodePostcardString,
   encodeVarint,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import {
   channels,
   dispatchApplicationCall,
