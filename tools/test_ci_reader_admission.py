@@ -317,6 +317,24 @@ class AdmissionTests(unittest.TestCase):
         self.case.sign()
         self.assertRefused(self.case.run(), "tombstone")
 
+    def test_replace_ref_cannot_hide_missing_retirement_tombstone(self):
+        self.case.write("readers/transient.py", b"open('README.md')\n")
+        self.case.commit("transient reader added")
+        (self.case.root / "readers/transient.py").unlink()
+        self.case.commit("transient reader deleted")
+        self.case.sign()
+        self.assertRefused(self.case.run(), "tombstone")
+        self.case.git("replace", "--graft", "HEAD", self.case.baseline)
+        self.assertRefused(self.case.run(), "tombstone")
+
+    def test_legacy_grafts_cannot_override_reviewed_git_history(self):
+        self.case.update_reader()
+        self.case.commit("signed reader")
+        self.case.sign()
+        grafts = self.case.root / ".git" / "info" / "grafts"
+        grafts.write_text(self.case.git("rev-parse", "HEAD") + " " + self.case.baseline + "\n")
+        self.assertRefused(self.case.run())
+
     def test_transient_post_baseline_reader_signed_tombstone_admits(self):
         self.case.write("readers/transient.py", b"open('docs/input.md')\n")
         self.case.commit("new reviewed reader")
@@ -344,6 +362,14 @@ class AdmissionTests(unittest.TestCase):
         self.case.sign()
         self.case.write("readers/staged.py", b"pass\n")
         self.case.git("add", "readers/staged.py")
+        self.assertRefused(self.case.run(), "staged")
+
+    def test_intent_to_add_reader_outside_exact_head_refuses(self):
+        self.case.update_reader()
+        self.case.commit("reader")
+        self.case.sign()
+        self.case.write("readers/intent.py", b"pass\n")
+        self.case.git("add", "-N", "readers/intent.py")
         self.assertRefused(self.case.run(), "staged")
 
     def test_untracked_proof_not_in_reviewed_head_refuses(self):
@@ -398,6 +424,18 @@ class AdmissionTests(unittest.TestCase):
         self.case.commit("proofs missing owner")
         self.case.sign()
         self.assertRefused(self.case.run(), "CODEOWNERS")
+
+    def test_exact_codeowners_rule_from_1313_accepts_alignment_spaces(self):
+        self.case.update_reader()
+        self.case.write(
+            ".github/CODEOWNERS",
+            b"/.github/ @gyldlab/keld-maintainers\n"
+            b"/.ci-reader-proofs/                     @gyldlab/keld-maintainers\n",
+        )
+        self.case.commit("effective proof owner with standard alignment")
+        self.case.sign()
+        result = self.case.run()
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
 
     def test_later_codeowners_rule_cannot_shadow_proof_owner(self):
         self.case.update_reader()

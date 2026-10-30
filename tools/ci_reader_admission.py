@@ -18,6 +18,8 @@ import subprocess
 import sys
 import unicodedata
 
+from ci_reader_git_integrity import index_or_graft_mismatch
+
 PROOF_PREFIX = ".ci-reader-proofs/readers/"
 PROOF_SCHEMA = "keld.ci-reader-proof/v1"
 REVIEW_SCHEMA = "keld.ci-reader-review/v1"
@@ -76,7 +78,7 @@ def digest_string(value: object, label: str) -> str:
 def git(repo: Path, *args: str, allow_failure=False) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args], cwd=repo, capture_output=True, check=False,
+            ["git", "--no-replace-objects", *args], cwd=repo, capture_output=True, check=False,
         )
     except OSError as error:
         raise AdmissionError(f"git unavailable: {error}") from error
@@ -334,13 +336,11 @@ def admission(root: Path, baseline: str, head: str, receipt_path: Path,
             "unsupported Git object format")
     require(git(root, "rev-parse", "HEAD").decode().strip() == head,
             "stale reviewed head: current HEAD is different")
-    require(not git(root, "diff", "--cached", "--name-only", "-z", "HEAD", "--"),
-            "staged paths are outside the reviewed exact head")
     require(git(root, "cat-file", "-t", baseline, allow_failure=True).strip() == b"commit",
             "missing immutable Git baseline commit")
     require(git(root, "cat-file", "-t", head, allow_failure=True).strip() == b"commit",
             "missing immutable head commit")
-    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", baseline, head],
+    ancestor = subprocess.run(["git", "--no-replace-objects", "merge-base", "--is-ancestor", baseline, head],
                               cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     require(ancestor.returncode == 0, "baseline is not a proven ancestor of exact head")
 
@@ -348,6 +348,8 @@ def admission(root: Path, baseline: str, head: str, receipt_path: Path,
     require(receipt["baseline"] == baseline, "review receipt baseline mismatch")
     require(receipt["head"] == head, "stale review receipt head")
     baseline_tree, current_tree = tree(root, baseline), tree(root, head)
+    integrity_issue = index_or_graft_mismatch(root, current_tree, git)
+    require(integrity_issue is None, integrity_issue or "Git index/history rejected")
     baseline_policy, _ = parsed_policy_at_commit(root, baseline_tree)
     policy, policy_bytes = parsed_policy(root, current_tree)
     require(digest_string(receipt["policy_sha256"], "reviewed policy digest") == sha256(policy_bytes),
@@ -357,13 +359,12 @@ def admission(root: Path, baseline: str, head: str, receipt_path: Path,
     require(type(rust) is list and bool(rust) and all(type(x) is str and x for x in rust),
             "invalid Rust census patterns")
     verify_unknown(root, sets, rust)
-
     owner = ".github/CODEOWNERS"
     require(owner in current_tree, "CODEOWNERS missing")
     owner_bytes = regular_worktree_bytes(root, owner, current_tree[owner], kind="CODEOWNERS")
     owner_rules = [row for row in owner_bytes.decode("utf-8", "strict").splitlines()
                    if row.strip() and not row.lstrip().startswith("#")]
-    require(owner_rules and owner_rules[-1] == CODEOWNER,
+    require(owner_rules and owner_rules[-1].split() == CODEOWNER.split(),
             "CODEOWNERS proof rule must be final so no later rule overrides it")
     require(digest_string(receipt["codeowners_sha256"], "reviewed CODEOWNERS") == sha256(owner_bytes),
             "reviewed CODEOWNERS bytes mismatch")
