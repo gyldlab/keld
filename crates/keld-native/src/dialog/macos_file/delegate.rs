@@ -72,7 +72,10 @@ define_class!(
                 true
             } else {
                 if let Some(out_error) = unsafe { out_error.as_mut() } {
-                    *out_error = Retained::autorelease_return(NSError::new(
+                    // NSError** is an out parameter, not a method's return
+                    // value. Retained::autorelease_ptr is the pinned objc2
+                    // API for passing a +0 error to an Objective-C caller.
+                    *out_error = Retained::autorelease_ptr(NSError::new(
                         16,
                         &NSString::from_str("KELD Native Dialog Filter"),
                     ));

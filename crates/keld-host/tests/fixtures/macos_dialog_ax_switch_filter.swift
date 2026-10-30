@@ -105,46 +105,51 @@ guard attr(popup, kAXValueAttribute as String) as? String ==
         (duplicateLabels ? "Duplicate" : "draw.io") else {
     fputs("FILTER_SWITCH_WRONG_INITIAL_GROUP\n", stderr); exit(8)
 }
-var settable = DarwinBoolean(false)
-let canSet = AXUIElementIsAttributeSettable(popup, kAXValueAttribute as CFString, &settable)
-fputs("FILTER_SWITCH_VALUE_SETTABLE status=\(canSet.rawValue) yes=\(settable.boolValue)\n", stderr)
-if canSet == .success && settable.boolValue {
-    let status = AXUIElementSetAttributeValue(popup, kAXValueAttribute as CFString, group as CFString)
-    fputs("FILTER_SWITCH_AX_VALUE_SET status=\(status.rawValue)\n", stderr)
+// Changing AXValue directly can bypass the real NSPopUpButton menu and let a
+// first-group-only implementation pass. Require two OS actions: press the
+// actual popup, then press the exact native menu item (including duplicates).
+let press = AXUIElementPerformAction(popup, kAXPressAction as CFString)
+fputs("FILTER_SWITCH_POPUP_PRESS status=\(press.rawValue)\n", stderr)
+guard press == .success else {
+    fputs("FILTER_SWITCH_NATIVE_POPUP_PRESS_FAILED\n", stderr)
+    exit(11)
 }
-if duplicateLabels || attr(popup, kAXValueAttribute as String) as? String != group {
-    let press = AXUIElementPerformAction(popup, kAXPressAction as CFString)
-    fputs("FILTER_SWITCH_POPUP_PRESS status=\(press.rawValue)\n", stderr)
-    if press == .success {
-        var item: AXUIElement?
-        var observedMenuTitles: [String] = []
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            let windows = attr(app, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
-            let roots = [popup, window] + windows
-            let elements = roots.flatMap { descendants($0) }
-            let menus = elements.filter {
-                attr($0, kAXRoleAttribute as String) as? String == "AXMenuItem"
-            }
-            observedMenuTitles = menus.compactMap { attr($0, kAXTitleAttribute as String) as? String }
-            let matches = menus.filter {
-                attr($0, kAXRoleAttribute as String) as? String == "AXMenuItem" &&
-                attr($0, kAXTitleAttribute as String) as? String == group
-            }
-            if duplicateLabels ? matches.count >= 2 : !matches.isEmpty {
-                // The second same-named native item is the third original
-                // group, not the first "Duplicate" item at source index 0.
-                item = duplicateLabels ? matches[1] : matches[0]
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.04)
-        }
-        if let menuItem = item {
-            let status = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
-            fputs("FILTER_SWITCH_MENU_PRESS status=\(status.rawValue)\n", stderr)
-        } else {
-            fputs("FILTER_SWITCH_MISSING_MENU_ITEM group=\(group) observed=\(observedMenuTitles.sorted())\n", stderr)
+var item: AXUIElement?
+var observedMenuTitles: [String] = []
+while ProcessInfo.processInfo.systemUptime < deadline {
+    let windows = attr(app, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+    let roots = [popup, window] + windows
+    let elements = roots.flatMap { descendants($0) }
+    // popup/window/app roots overlap. Counting the same AX menu item twice
+    // would make the duplicate-label oracle pass without two real groups.
+    var menus: [AXUIElement] = []
+    for candidate in elements where attr(candidate, kAXRoleAttribute as String) as? String == "AXMenuItem" {
+        if !menus.contains(where: { CFEqual($0, candidate) }) {
+            menus.append(candidate)
         }
     }
+    observedMenuTitles = menus.compactMap { attr($0, kAXTitleAttribute as String) as? String }
+    let matches = menus.filter {
+        attr($0, kAXRoleAttribute as String) as? String == "AXMenuItem" &&
+        attr($0, kAXTitleAttribute as String) as? String == group
+    }
+    if duplicateLabels ? matches.count >= 2 : !matches.isEmpty {
+        // The second same-named native item is the third original
+        // group, not the first "Duplicate" item at source index 0.
+        item = duplicateLabels ? matches[1] : matches[0]
+        break
+    }
+    Thread.sleep(forTimeInterval: 0.04)
+}
+guard let menuItem = item else {
+    fputs("FILTER_SWITCH_MISSING_MENU_ITEM group=\(group) observed=\(observedMenuTitles.sorted())\n", stderr)
+    exit(12)
+}
+let menuPress = AXUIElementPerformAction(menuItem, kAXPressAction as CFString)
+fputs("FILTER_SWITCH_MENU_PRESS status=\(menuPress.rawValue)\n", stderr)
+guard menuPress == .success else {
+    fputs("FILTER_SWITCH_NATIVE_MENU_ITEM_PRESS_FAILED\n", stderr)
+    exit(13)
 }
 while ProcessInfo.processInfo.systemUptime < deadline {
     if attr(popup, kAXValueAttribute as String) as? String == group {
