@@ -80,12 +80,31 @@ jobs:
                 throw new Error("CI provenance refuses malformed Git paths");
               }
               const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
               // Strict first rollout: scripts and config files executed by
               // CI are also authority, not merely the workflow YAML itself.
               // Require a separate trusted-base review for their changes.
               // Root workspace metadata and formatter/test configs can also
               // suppress required test discovery without changing ci.yml.
-              return p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
                 p === "package.json" || p.endsWith("/package.json") ||
                 p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
                 p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||

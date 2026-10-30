@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const workflow = Bun.YAML.parse(
   readFileSync(".github/workflows/ci-provenance.yml", "utf8"),
@@ -201,6 +210,97 @@ test.each([
     );
   },
 );
+
+test.each([
+  ".gitignore",
+  ".GITIGNORE",
+  "crates/keld-cli/templates/hello/.gitignore",
+  ".prettierignore",
+  "packages/demo/.prettierignore",
+  ".prettierrc",
+  "packages/demo/.prettierrc.yaml",
+  "packages/demo/prettier.config.cjs",
+  ".editorconfig",
+  "crates/keld-cli/templates/hello/.editorconfig",
+  ".oxfmtrc.jsonc",
+  "packages/demo/oxfmt.config.ts",
+  "packages/demo/package.yaml",
+  "packages/demo/package.yml",
+  "packages/demo/biome.jsonc",
+] as const)(
+  "formatter policy input %s cannot alter required checks",
+  async (filename) => {
+    const f = fixture([{ filename, status: "modified" }]);
+    await expect(f.run()).rejects.toThrow("protected CI authority");
+  },
+);
+
+test("added, deleted and renamed formatter authority cannot masquerade as documentation", async () => {
+  for (const file of [
+    { filename: "packages/demo/.gitignore", status: "added" },
+    { filename: ".prettierignore", status: "removed" },
+    {
+      filename: "docs/old-format-config.md",
+      previous_filename: "packages/demo/.prettierrc",
+      status: "renamed",
+    },
+  ]) {
+    await expect(fixture([file]).run()).rejects.toThrow(
+      "protected CI authority",
+    );
+  }
+  await expect(
+    fixture([
+      { filename: "docs/gitignore-guide.md", status: "modified" },
+    ]).run(),
+  ).resolves.toBeUndefined();
+});
+
+test("a native formatter false-green from tracked source plus ignore is refused", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keld-ci-provenance-format-"));
+  const source = "packages/demo/example.ts";
+  try {
+    mkdirSync(dirname(join(root, source)), { recursive: true });
+    cpSync(join(import.meta.dir, "../bunfig.toml"), join(root, "bunfig.toml"));
+    expect(
+      Bun.spawnSync(["git", "init", "--quiet"], { cwd: root }).exitCode,
+    ).toBe(0);
+    expect(
+      Bun.spawnSync(["git", "config", "maintenance.auto", "false"], {
+        cwd: root,
+      }).exitCode,
+    ).toBe(0);
+    writeFileSync(join(root, source), "export const answer={value:42};\n");
+    const native = (...flags: string[]) =>
+      Bun.spawnSync(
+        [
+          process.execPath,
+          "fmt",
+          "--no-script",
+          ...flags,
+          "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}",
+        ],
+        { cwd: root },
+      );
+    expect(native().exitCode).toBe(0);
+    expect(Bun.spawnSync(["git", "add", source], { cwd: root }).exitCode).toBe(
+      0,
+    );
+    expect(native("--check").exitCode).toBe(0);
+    writeFileSync(join(root, source), "export const answer={value:42};\n");
+    expect(native("--check").exitCode).toBe(1);
+    writeFileSync(join(root, ".gitignore"), source + "\n");
+    expect(native("--check").exitCode).toBe(0);
+    await expect(
+      fixture([
+        { filename: source, status: "modified" },
+        { filename: ".gitignore", status: "modified" },
+      ]).run(),
+    ).rejects.toThrow("protected CI authority");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test.each([
   "Cargo.toml",
