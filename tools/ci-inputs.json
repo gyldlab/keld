@@ -574,7 +574,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "d877c4d5f520bad47dfedea31807ca69788cd26a1f2635771475723e676f1138",
+    "membership_sha256": "310aa3dbe01fce85c3d1aafcde3137b3f517cca0e6a547b29f86e3dc615a0758",
     "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
   },
   "rust_package_inputs": {
