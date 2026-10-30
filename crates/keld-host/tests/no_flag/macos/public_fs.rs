@@ -25,6 +25,10 @@ mod application_link;
 mod component;
 #[path = "public_fs/descendant_quit.rs"]
 mod descendant_quit;
+#[path = "public_fs/facade_profile_recovery.rs"]
+mod facade_profile_recovery;
+#[path = "public_fs/facade_profile_recovery_fixture.rs"]
+mod facade_profile_recovery_fixture;
 #[path = "public_fs/observer.rs"]
 mod observer;
 #[path = "public_fs/outcomes.rs"]
@@ -638,7 +642,11 @@ fn observe_recovery_actions(
     // Until every independent census above passes, fallback cleanup retains
     // only the already-attributed G1 group. Ordinary HTTP data grants no custody.
     cleanup.bun_group = Some(successor_boot.pid);
-    assert_retired_credentials(&first_boot.app_link, &successor_boot.app_link, prepared);
+    assert_retired_credentials(
+        &first_boot.app_link,
+        &successor_boot.app_link,
+        &prepared.stage,
+    );
     observer.send_recovery_command(RecoveryCommand::Admit(successor_boot.pid));
     let ready = observer
         .reports
@@ -804,7 +812,11 @@ fn assert_bun_cleanup_custody(
     );
 }
 
-fn assert_retired_credentials(old_link: &str, successor_link: &str, prepared: &PreparedLaunch) {
+fn assert_retired_credentials(
+    old_link: &str,
+    successor_link: &str,
+    stage: &keld_cli::boot::DevBootStage,
+) -> Output {
     const PROBE: &str = r#"
 const { parseAppLink, WriteQueue, DrainSignal, FrameKind, HANDSHAKE_CHANNEL, withIoDeadline } =
   await import(process.env.KELD_RECOVERY_PROBE_TRANSPORT);
@@ -844,7 +856,7 @@ try {
         .args(["-e", PROBE])
         .env(
             "KELD_RECOVERY_PROBE_TRANSPORT",
-            prepared.stage.root().join("src/kipc-transport.ts"),
+            stage.root().join("src/kipc-transport.ts"),
         )
         .env("KELD_RECOVERY_PROBE_OLD", old_link)
         .env("KELD_RECOVERY_PROBE_FRESH", successor_link)
@@ -858,6 +870,7 @@ try {
         "server-side stale-token refusal failed: {output:?}"
     );
     assert_eq!(output.stdout, b"RETIRED_TOKEN_SERVER_EOF_NO_REPLY\n");
+    output
 }
 
 fn await_recovery_page(

@@ -8,7 +8,9 @@ fn renderer_profile_boot_uses_schema_three_without_repurposing_facade_schema_two
         "fixture must actually exercise version3"
     );
     let parsed = parse_boot_bytes(version_three.as_bytes()).expect("renderer/profile schema3");
-    assert!(matches!(parsed.initial, InitialWindow::Renderer(path) if path == Path::new("index.html")));
+    assert!(
+        matches!(parsed.initial, InitialWindow::Renderer(path) if path == Path::new("index.html"))
+    );
     for unsupported in [2, 4, 5, 255] {
         let input = bytes.replace("\"schema\":1", &format!("\"schema\":{unsupported}"));
         let error = must_err(
@@ -33,7 +35,9 @@ fn compiled_boot_positional_arrays_cannot_select_a_mode_or_profile_contract() {
 
 #[test]
 fn facade_profile_schema_four_retains_the_closed_rendererless_shape() {
-    let fields = format!(r#""name":"Fixture","entry":"src/main.ts","permissions":{{"file":"keld.permissions.jsonc","content_sha256":"{DIGEST}"}}"#);
+    let fields = format!(
+        r#""name":"Fixture","entry":"src/main.ts","permissions":{{"file":"keld.permissions.jsonc","content_sha256":"{DIGEST}"}}"#
+    );
     let valid = format!(r#"{{"schema":4,{fields}}}"#);
     let parsed = parse_boot_bytes(valid.as_bytes()).expect("closed facade/profile schema4");
     assert_eq!(parsed.schema, 4);
@@ -49,13 +53,27 @@ fn facade_profile_schema_four_retains_the_closed_rendererless_shape() {
         r#","schema":4"#,
     ] {
         let invalid = format!(r#"{{"schema":4,{fields}{injected}}}"#);
-        assert_eq!(must_err(parse_boot_bytes(invalid.as_bytes()), "closed schema4 field").code(), "KELD-CORE-035", "{invalid}");
+        assert_eq!(
+            must_err(parse_boot_bytes(invalid.as_bytes()), "closed schema4 field").code(),
+            "KELD-CORE-035",
+            "{invalid}"
+        );
     }
     for invalid in [
         format!("{valid} {{}}"),
-        format!(r#"{{"schema":4,"name":"Fixture","entry":"src/main.ts","permissions":["keld.permissions.jsonc","{DIGEST}"]}}"#),
+        format!(
+            r#"{{"schema":4,"name":"Fixture","entry":"src/main.ts","permissions":["keld.permissions.jsonc","{DIGEST}"]}}"#
+        ),
     ] {
-        assert_eq!(must_err(parse_boot_bytes(invalid.as_bytes()), "closed schema4 object").code(), "KELD-CORE-035", "{invalid}");
+        assert_eq!(
+            must_err(
+                parse_boot_bytes(invalid.as_bytes()),
+                "closed schema4 object"
+            )
+            .code(),
+            "KELD-CORE-035",
+            "{invalid}"
+        );
     }
 }
 
@@ -103,9 +121,8 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
         .expect("real digest-verified policy");
         for schema in [1, 2, 3, 4, 255] {
             for diagnostic in [false, true] {
-                let result = super::profile_preflight::validate_profile(
-                    schema, &verified, diagnostic,
-                );
+                let result =
+                    super::profile_preflight::validate_profile(schema, &verified, diagnostic);
                 let valid_pair = matches!((schema, explicit), (1 | 2, false) | (3 | 4, true));
                 let facade = matches!(schema, 2 | 4);
                 if !valid_pair || (diagnostic && (explicit || facade)) {
@@ -115,7 +132,12 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                         "{name}/{schema}/{diagnostic}"
                     );
                 } else if !cfg!(target_os = "macos") && (explicit || facade) {
-                    assert_eq!(result.expect_err("unsupported target/mode stays refused").code(), "KELD-CORE-034");
+                    assert_eq!(
+                        result
+                            .expect_err("unsupported target/mode stays refused")
+                            .code(),
+                        "KELD-CORE-034"
+                    );
                 } else if !explicit {
                     assert_eq!(
                         result.expect("existing no-profile behavior"),
@@ -190,14 +212,30 @@ fn facade_profile_preflight_preserves_exact_schema_and_manifest_presence() {
             File::open(&path).expect("retained policy file"),
             path,
             Sha256::digest(bytes).into(),
-        ).expect("actual verified policy");
+        )
+        .expect("actual verified policy");
         let state = super::profile_preflight::validate_profile(expected, &verified, false)
             .expect("supported facade profile pairing");
-        assert_eq!(state, if expected == 4 { ProfileState::Legacy } else { ProfileState::Unverified });
+        assert_eq!(
+            state,
+            if expected == 4 {
+                ProfileState::Legacy
+            } else {
+                ProfileState::Unverified
+            }
+        );
         let mismatched = if expected == 4 { 2 } else { 4 };
-        assert_eq!(super::profile_preflight::validate_profile(mismatched, &verified, false)
-            .expect_err("declaration/version mismatch").code(), "KELD-CORE-035");
-        assert_eq!(super::profile_preflight::validate_profile(expected, &verified, true)
-            .expect_err("renderer-only diagnostic cannot execute facade").code(), "KELD-CORE-035");
+        assert_eq!(
+            super::profile_preflight::validate_profile(mismatched, &verified, false)
+                .expect_err("declaration/version mismatch")
+                .code(),
+            "KELD-CORE-035"
+        );
+        assert_eq!(
+            super::profile_preflight::validate_profile(expected, &verified, true)
+                .expect_err("renderer-only diagnostic cannot execute facade")
+                .code(),
+            "KELD-CORE-035"
+        );
     }
 }

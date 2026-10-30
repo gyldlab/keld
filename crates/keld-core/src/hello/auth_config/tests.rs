@@ -358,8 +358,14 @@ fn root_initial_window_uses_the_existing_facade_owner_after_profile_composition(
         "export default { initialWindow: 'none' };",
         r#"export default { "initialWindow": "none" };"#,
     ] {
-        assert!(super::initial_window_from_config_ts(source).expect("approved literal facade mode"));
-        assert!(auth_configuration_from_config_ts(source).expect("no auth field").is_empty());
+        assert!(
+            super::initial_window_from_config_ts(source).expect("approved literal facade mode")
+        );
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("no auth field")
+                .is_empty()
+        );
     }
     for source in [
         "export default { initialWindow: makeWindow() };",
@@ -368,7 +374,10 @@ fn root_initial_window_uses_the_existing_facade_owner_after_profile_composition(
         "export default { async *initialWindow() {} };",
         "export default { auth: {}, initialWindow: 'none' };",
     ] {
-        assert!(super::initial_window_from_config_ts(source).is_err(), "{source}");
+        assert!(
+            super::initial_window_from_config_ts(source).is_err(),
+            "{source}"
+        );
     }
 }
 

@@ -72,12 +72,18 @@ cannot grant any authority.
 
 One file. Reviewed like a lockfile. Wildcards allowed but linted loudly.
 
-**Approved explicit-profile target (KEL-78 / GH #586, implementation GH #588):**
+**Explicit-profile implementation (KEL-78 / GH #586 and #588):**
 root `profile` in this file is the sole strict/legacy declaration. Omission never
 selects legacy; a declaration is a request, not containment evidence. The
 [profile amendment](../specs/kel78-explicit-legacy-profile.md) owns the exact grammar,
-forfeiture, verified admission, and reporting. The current parser/product launch
-does not yet enforce this property; do not treat adding the key as activation.
+forfeiture, verified admission, and reporting. The parser and guarded macOS primary
+launch enforce the declaration against the same digest-verified permissions bytes:
+renderer/profile boots use schema 3 and facade/profile boots use schema 4. Legacy
+retains authenticated, guarded supervision and prints its forfeiture before entry;
+the known-uncontained macOS path refuses Strict. A matching integrated compiler/host
+pair is required; adding a key to an older installation is not activation. Trusted
+product admission receipts, release/install qualification, other-platform profile
+support and Strict OS containment remain separate acceptance gates.
 
 **v0 parser boundary:** `parse_manifest`, disk `load_manifest`, and MCP permission
 explain accept at most 64 KiB. JSONC block comments must terminate, and decoded object
