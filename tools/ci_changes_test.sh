@@ -1079,3 +1079,5 @@ case "$(uname -s)" in
     *) python_command=python3 ;;
 esac
 "$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests
+# GH-1275: optional proof comparison is never a source of CI routing authority.
+"$python_command" -B "$repo_root/tools/test_ci_proof_integration_w2.py"

@@ -213,7 +213,13 @@ def documentation_only(changed: list[str], other: list[str], documentation: list
             and not any(matches(path, other) for path in changed))
 
 
-def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
+def _classify_with_contract(root: Path, changed: list[str], contract: dict, *,
+                            comparison_unknown=False, paths_only=False) -> dict[str, bool]:
+    """Run the existing selector over an explicit policy, for read-only shadow comparison.
+
+    The public classify() still loads the committed SHA contract. Only the
+    separate admission-controlled diagnostic uses this private entry point.
+    """
     selected = {"local_" + gate: True for gate in MANDATORY}
     selected.update({"input_rust": False, "input_ts": False, "input_all": False,
                      "input_router": False, "local_default": True})
@@ -221,7 +227,6 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
     # only widen a selection, never turn on narrowing.
     narrowing: dict[str, bool] = {}
     try:
-        contract = load(root)
         census = files(root)
         fingerprints = {}
         rust_census = contract.get("rust_source_census")
@@ -303,14 +308,83 @@ def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_
     return selected
 
 
+def classify(root: Path, changed: list[str], *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
+    """Authoritative KEL-81 SHA-bound selection; proofs cannot replace its policy."""
+    try:
+        contract = load(root)
+    except (KeyError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"input contract unavailable: {error}") from error
+    return _classify_with_contract(
+        root, changed, contract, comparison_unknown=comparison_unknown, paths_only=paths_only)
+
+
+def _independently_admitted_contract(root: Path) -> dict:
+    """Load a separately authenticated proof contract only for manual shadow analysis.
+
+    GH-1275's protected source/read-edge admission is a separate concern. PR-owned
+    proof files, SHA matches, status names or GitHub PR reviews do not authorize
+    selection; without the independent admission module the attempt hard fails.
+    """
+    try:
+        from ci_reader_admission import admit_shadow_contract
+    except ImportError as error:
+        raise ValueError("independent CI reader proof admission unavailable") from error
+    candidate = admit_shadow_contract(root)
+    if (not isinstance(candidate, dict) or candidate.get("schema") != SCHEMA
+            or not isinstance(candidate.get("consumers"), list)
+            or not isinstance(candidate.get("reader_sets"), dict)):
+        raise ValueError("independent CI reader proof admission returned invalid contract")
+    return candidate
+
+
+def _compare_shadow_to_sha(root: Path, changed: list[str], sha_selected: dict[str, bool],
+                           *, comparison_unknown=False, paths_only=False) -> dict[str, bool]:
+    """Reject any shadow result that would skip a SHA-selected gate or widen an exclusion.
+
+    Even an eventual admitted candidate remains diagnostic-only here. The
+    authorized v1 SHA result is never modified or replaced by a shadow result.
+    """
+    admitted = _independently_admitted_contract(root)
+    candidate = _classify_with_contract(
+        root, changed, admitted, comparison_unknown=comparison_unknown, paths_only=paths_only)
+    if candidate.keys() != sha_selected.keys():
+        raise ValueError("CI reader proof shadow has a different output inventory")
+    for name, old in sha_selected.items():
+        new = candidate[name]
+        if not isinstance(old, bool) or not isinstance(new, bool):
+            raise ValueError(f"CI reader proof shadow returned nonboolean output: {name}")
+        # A true documentation_only flag authorizes a *smaller* reverse
+        # dependency set; every other true value selects more CI work.
+        unsafe = (not old and new) if name.startswith("documentation_only_") else (old and not new)
+        if unsafe:
+            raise ValueError(f"CI reader proof shadow would narrow authoritative SHA selection: {name}")
+    return candidate
+
+
+def shadow_proof_classify(root: Path, changed: list[str], *, comparison_unknown=False,
+                          paths_only=False) -> dict[str, bool]:
+    """Explicit optional proof comparison, guarded by independent admission.
+
+    This function never schedules work. Production router callers still use
+    classify() alone; release of GH-1275 would require a separate approved change.
+    """
+    sha_selected = classify(root, changed, comparison_unknown=comparison_unknown, paths_only=paths_only)
+    return _compare_shadow_to_sha(
+        root, changed, sha_selected, comparison_unknown=comparison_unknown, paths_only=paths_only)
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] in ("--check", "--rebind"):
         root = Path(sys.argv[2] if len(sys.argv) > 2 else Path(__file__).resolve().parent.parent).resolve()
         return check(root) if sys.argv[1] == "--check" else rebind(root)
     root = Path(sys.argv[1]).resolve()
     changed = [item.decode("utf-8", "strict") for item in sys.stdin.buffer.read().split(b"\0") if item]
-    result = classify(root, changed, comparison_unknown="--unknown" in sys.argv[2:],
-                      paths_only="--paths-only" in sys.argv[2:])
+    unknown = "--unknown" in sys.argv[2:]
+    paths_only = "--paths-only" in sys.argv[2:]
+    result = classify(root, changed, comparison_unknown=unknown, paths_only=paths_only)
+    if "--shadow-reader-proofs" in sys.argv[2:]:
+        _compare_shadow_to_sha(root, changed, result, comparison_unknown=unknown, paths_only=paths_only)
+        print("ci reader proof shadow: compared; SHA router remains authoritative", file=sys.stderr)
     print("local_contract=v1")
     for key, value in sorted(result.items()):
         print(f"{key}={str(value).lower()}")
