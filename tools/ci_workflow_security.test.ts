@@ -1,3 +1,4 @@
+import "./ci_provenance.test";
 import { expect, test } from "bun:test";
 import {
   cpSync,
