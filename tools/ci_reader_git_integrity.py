@@ -1,6 +1,12 @@
 """Reject local Git index/history overlays outside a signed CI reader head."""
 
+import os
 from pathlib import Path
+
+
+def clean_git_environment() -> dict[str, str]:
+    """Ignore caller-provided index, object, worktree and configuration redirects."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
 
 
 def index_or_graft_mismatch(root: Path, head_tree: dict[str, tuple[str, str]], git) -> str | None:

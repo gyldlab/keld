@@ -7,6 +7,7 @@ status; a candidate-written proof is never itself an approval.
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -159,7 +160,7 @@ class AdmissionCase:
         )
 
     def run(self, *, baseline=None, head=None, signer_pin=None, omit_authority=False,
-            repo=None, fixture_only=True):
+            repo=None, fixture_only=True, env=None):
         args = [
             sys.executable, "-B", str(TOOL), "--repo", str(repo or self.root),
             "--baseline", baseline or self.baseline,
@@ -171,7 +172,7 @@ class AdmissionCase:
             args += ["--allowed-signers-sha256", signer_pin or digest(self.signers.read_bytes())]
         if fixture_only:
             args.append("--fixture-verify-only")
-        return subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+        return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", env=env)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -372,6 +373,19 @@ class AdmissionTests(unittest.TestCase):
         self.case.git("add", "-N", "readers/intent.py")
         self.assertRefused(self.case.run(), "staged")
 
+    def test_alternate_git_index_cannot_hide_unreviewed_staged_docs(self):
+        self.case.update_reader()
+        self.case.commit("signed reader and policy")
+        self.case.sign()
+        clean_index = self.case.external / "clean-index"
+        shutil.copyfile(self.case.root / ".git" / "index", clean_index)
+        self.case.write("docs/hidden.md", b"unreviewed staged content\n")
+        self.case.git("add", "docs/hidden.md")
+        self.assertRefused(self.case.run(), "staged")
+        poisoned = os.environ.copy()
+        poisoned["GIT_INDEX_FILE"] = str(clean_index)
+        self.assertRefused(self.case.run(env=poisoned), "staged")
+
     def test_untracked_proof_not_in_reviewed_head_refuses(self):
         self.case.update_reader()
         self.case.commit("reader")
@@ -436,6 +450,24 @@ class AdmissionTests(unittest.TestCase):
         self.case.sign()
         result = self.case.run()
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+
+    def test_codeowners_inline_comment_does_not_change_final_effective_owner(self):
+        self.case.update_reader()
+        self.case.write(
+            ".github/CODEOWNERS",
+            b"/.ci-reader-proofs/ @gyldlab/keld-maintainers # approved owner\n",
+        )
+        self.case.commit("approved owner with GitHub-supported inline comment")
+        self.case.sign()
+        result = self.case.run()
+        self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+        self.case.write(
+            ".github/CODEOWNERS",
+            b"/.ci-reader-proofs/ @gyldlab/keld-maintainers @attacker # unsafe extra owner\n",
+        )
+        self.case.commit("unreviewed extra owner")
+        self.case.sign()
+        self.assertRefused(self.case.run(), "CODEOWNERS")
 
     def test_later_codeowners_rule_cannot_shadow_proof_owner(self):
         self.case.update_reader()

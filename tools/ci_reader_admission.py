@@ -18,7 +18,7 @@ import subprocess
 import sys
 import unicodedata
 
-from ci_reader_git_integrity import index_or_graft_mismatch
+from ci_reader_git_integrity import clean_git_environment, index_or_graft_mismatch
 
 PROOF_PREFIX = ".ci-reader-proofs/readers/"
 PROOF_SCHEMA = "keld.ci-reader-proof/v1"
@@ -78,7 +78,7 @@ def digest_string(value: object, label: str) -> str:
 def git(repo: Path, *args: str, allow_failure=False) -> bytes:
     try:
         result = subprocess.run(
-            ["git", "--no-replace-objects", *args], cwd=repo, capture_output=True, check=False,
+            ["git", "--no-replace-objects", *args], cwd=repo, capture_output=True, check=False, env=clean_git_environment(),
         )
     except OSError as error:
         raise AdmissionError(f"git unavailable: {error}") from error
@@ -341,7 +341,7 @@ def admission(root: Path, baseline: str, head: str, receipt_path: Path,
     require(git(root, "cat-file", "-t", head, allow_failure=True).strip() == b"commit",
             "missing immutable head commit")
     ancestor = subprocess.run(["git", "--no-replace-objects", "merge-base", "--is-ancestor", baseline, head],
-                              cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                              cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=clean_git_environment())
     require(ancestor.returncode == 0, "baseline is not a proven ancestor of exact head")
 
     receipt = verify_signature(root, receipt_path, signature_path, signers_path, signer_pin)
@@ -364,7 +364,7 @@ def admission(root: Path, baseline: str, head: str, receipt_path: Path,
     owner_bytes = regular_worktree_bytes(root, owner, current_tree[owner], kind="CODEOWNERS")
     owner_rules = [row for row in owner_bytes.decode("utf-8", "strict").splitlines()
                    if row.strip() and not row.lstrip().startswith("#")]
-    require(owner_rules and owner_rules[-1].split() == CODEOWNER.split(),
+    require(owner_rules and re.split(r"\s+#", owner_rules[-1], maxsplit=1)[0].split() == CODEOWNER.split(),
             "CODEOWNERS proof rule must be final so no later rule overrides it")
     require(digest_string(receipt["codeowners_sha256"], "reviewed CODEOWNERS") == sha256(owner_bytes),
             "reviewed CODEOWNERS bytes mismatch")
