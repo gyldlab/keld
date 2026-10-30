@@ -511,7 +511,7 @@
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
       ],
-      "sha256": "f522f880d2a0f9e2ad1e56ea2f81216d3fcd1cc2b807bbea1a08ec6a0e48919c"
+      "sha256": "4d2fdb958511e52d0485554aa013a1b2669111d5810a6bec7d37816033b6af5f"
     },
     "bun-readers": {
       "patterns": [
@@ -528,7 +528,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "b54721d9f58ea8314a4dffa0057c747e827166e76ae4129fa7e514cb21c19a50"
+      "sha256": "6ba8a9c2a1e7d254d3f1d7aaf35f81e0c939d8695ab08cee45e0c2892a2e0e40"
     },
     "audit-readers": {
       "patterns": [
