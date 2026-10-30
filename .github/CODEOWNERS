@@ -3,7 +3,6 @@
 /Cargo.toml                            @gyldlab/keld-maintainers
 /Cargo.lock                            @gyldlab/keld-maintainers
 /rust-toolchain.toml                   @gyldlab/keld-maintainers
-/.ci-reader-proofs/                     @gyldlab/keld-maintainers
 /.github/                              @gyldlab/keld-maintainers
 /.githooks/                            @gyldlab/keld-maintainers
 /AGENTS.md                             @gyldlab/keld-maintainers
@@ -19,3 +18,4 @@
 /MAINTAINERS.md                        @gyldlab/keld-maintainers
 /SECURITY.md                           @gyldlab/keld-maintainers
 /CODE_OF_CONDUCT.md                    @gyldlab/keld-maintainers
+/.ci-reader-proofs/                     @gyldlab/keld-maintainers
