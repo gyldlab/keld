@@ -332,6 +332,232 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+// Keep each job-only mutation separate: the executable steps remain byte-for-byte
+// equivalent, so their existing reviewed digest cannot serve as this oracle.
+const bunJobMutations: Array<[string, (job: Step) => void]> = [
+  [
+    "Ubuntu-only matrix",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os = ["ubuntu-latest"];
+    },
+  ],
+  [
+    "Ubuntu-only runner",
+    (job) => {
+      job["runs-on"] = "ubuntu-latest";
+    },
+  ],
+  [
+    "BASH_ENV",
+    (job) => {
+      job.env = { BASH_ENV: "./ci-hook.sh" };
+    },
+  ],
+  [
+    "PATH",
+    (job) => {
+      job.env = { PATH: "/tmp/hijack:$PATH" };
+    },
+  ],
+  [
+    "Bun preload",
+    (job) => {
+      job.env = { BUN_OPTIONS: "--preload=./hijack.ts" };
+    },
+  ],
+  [
+    "false condition string",
+    (job) => {
+      job.if = "false";
+    },
+  ],
+  [
+    "false condition boolean",
+    (job) => {
+      job.if = false;
+    },
+  ],
+  [
+    "changed job name",
+    (job) => {
+      job.name = "unreviewed Bun lane";
+    },
+  ],
+  [
+    "changed dependency",
+    (job) => {
+      job.needs = "fmt";
+    },
+  ],
+  [
+    "changed timeout",
+    (job) => {
+      job["timeout-minutes"] = 5;
+    },
+  ],
+  [
+    "self-hosted runner",
+    (job) => {
+      job["runs-on"] = ["self-hosted"];
+    },
+  ],
+  [
+    "duplicate OS",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os = [
+        "ubuntu-latest",
+        "macos-latest",
+        "macos-latest",
+      ];
+    },
+  ],
+  [
+    "expression OS census",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os =
+        "${{ fromJSON(needs.changes.outputs.check_os) }}";
+    },
+  ],
+  [
+    "matrix include",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.include = [
+        { os: "ubuntu-latest" },
+      ];
+    },
+  ],
+  [
+    "matrix exclude",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.exclude = [
+        { os: "windows-latest" },
+      ];
+    },
+  ],
+  [
+    "extra matrix axis",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.enabled = [false];
+    },
+  ],
+  [
+    "fail-fast enabled",
+    (job) => {
+      (job.strategy as Step)["fail-fast"] = true;
+    },
+  ],
+  [
+    "expression fail-fast",
+    (job) => {
+      (job.strategy as Step)["fail-fast"] = "${{ true }}";
+    },
+  ],
+  [
+    "missing fail-fast",
+    (job) => {
+      delete (job.strategy as Step)["fail-fast"];
+    },
+  ],
+  [
+    "max-parallel control",
+    (job) => {
+      (job.strategy as Step)["max-parallel"] = 1;
+    },
+  ],
+  [
+    "unknown strategy control",
+    (job) => {
+      (job.strategy as Step)["unreviewed-control"] = false;
+    },
+  ],
+  [
+    "working-directory defaults",
+    (job) => {
+      job.defaults = { run: { "working-directory": "./other" } };
+    },
+  ],
+  [
+    "custom shell defaults",
+    (job) => {
+      job.defaults = { run: { shell: "bash -c true {0}" } };
+    },
+  ],
+  [
+    "container",
+    (job) => {
+      job.container = "ubuntu:24.04";
+    },
+  ],
+  [
+    "services",
+    (job) => {
+      job.services = { db: { image: "postgres:16" } };
+    },
+  ],
+  [
+    "continue-on-error true",
+    (job) => {
+      job["continue-on-error"] = true;
+    },
+  ],
+  [
+    "continue-on-error false",
+    (job) => {
+      job["continue-on-error"] = false;
+    },
+  ],
+  [
+    "permission override",
+    (job) => {
+      job.permissions = { contents: "write" };
+    },
+  ],
+  [
+    "unknown job control",
+    (job) => {
+      job["unreviewed-control"] = false;
+    },
+  ],
+];
+for (const key of [
+  "name",
+  "runs-on",
+  "timeout-minutes",
+  "needs",
+  "strategy",
+  "if",
+]) {
+  bunJobMutations.push([
+    `missing ${key}`,
+    (job) => {
+      delete job[key];
+    },
+  ]);
+}
+for (const [label, mutate] of bunJobMutations) {
+  test(`Bun job execution contract rejects ${label}`, () => {
+    const workflow = fixture();
+    const job = workflow.jobs["bun-test"]!;
+    const unchangedSteps = JSON.stringify(job.steps);
+    mutate(job as Step);
+    expect(JSON.stringify(job.steps)).toBe(unchangedSteps);
+    expect(() => check(workflow), label).toThrow();
+  });
+}
+
+test("Bun job execution contract admits reordered mapping keys", () => {
+  const workflow = fixture();
+  const job = workflow.jobs["bun-test"]!;
+  const strategy = job.strategy!;
+  job.strategy = Object.fromEntries(
+    Object.entries(strategy).reverse(),
+  ) as typeof strategy;
+  workflow.jobs["bun-test"] = Object.fromEntries(
+    Object.entries(job).reverse(),
+  ) as FixtureJob;
+  expect(() => check(workflow)).not.toThrow();
+});
+
 // GH1301: this checks the shipping workflow, not a copied example or fixture.
 // A real cold hosted API suite failed because it ran before KIPC's compiler was
 // installed; a Rust-hosted Bun corpus independently failed to import @keld/kipc.
