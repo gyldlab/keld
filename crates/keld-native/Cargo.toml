@@ -34,7 +34,7 @@ objc2-authentication-services = { workspace = true, features = ["std", "ASFounda
 # GH478 uses the already pinned typed AppKit package for a real retained
 # NSAlert sheet, never dynamic selectors/another native framework or crate.
 # The exact new feature set requires independent dependency/native review.
-objc2-app-kit = { workspace = true, features = ["std", "NSWindow", "NSAlert", "NSButton", "NSCell", "NSControl", "NSResponder", "NSView", "NSApplication", "NSPanel", "NSOpenPanel", "NSSavePanel", "NSPopUpButton", "NSMenu", "objc2-uniform-type-identifiers", "block2"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSWindow", "NSAlert", "NSButton", "NSCell", "NSControl", "NSResponder", "NSView", "NSApplication", "NSPanel", "NSOpenPanel", "NSSavePanel", "NSPopUpButton", "NSMenu", "NSWorkspace", "objc2-uniform-type-identifiers", "block2"] }
 # GH478 typed UTType allowedContentTypes, macOS 11+ dependency feature.
 # Exact crate 0.3.2 is locked and must clear independent dependency/OS gates;
 # do not use deprecated setAllowedFileTypes or a production unsafe selector.

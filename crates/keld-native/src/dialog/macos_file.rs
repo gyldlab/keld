@@ -12,7 +12,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSModalResponse, NSModalResponseCancel, NSModalResponseOK, NSOpenPanel, NSPopUpButton,
-    NSSavePanel, NSWindow,
+    NSSavePanel, NSWindow, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSSize, NSString, NSURL};
 use objc2_uniform_type_identifiers::UTType;
@@ -27,17 +27,34 @@ fn invalid(detail: &'static str) -> IpcError {
     IpcError::Protocol { detail }
 }
 
+/// Use `AppKit`'s package classification, not filesystem `is_dir` alone. The
+/// default Open/Save panel treats file packages as selectable files; an
+/// application may separately opt into traversing packages as directories.
+fn is_native_directory_selection(
+    path: &Path,
+    treats_packages_as_directories: bool,
+    workspace: &NSWorkspace,
+) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    treats_packages_as_directories
+        || !workspace.isFilePackageAtPath(&NSString::from_str(&path.to_string_lossy()))
+}
+
 fn selected_open_paths(
     urls: &NSArray<NSURL>,
     filter: &MacFileFilterModel,
     allow_files: bool,
     allow_directories: bool,
+    treats_packages_as_directories: bool,
 ) -> Result<Vec<String>, IpcError> {
     // Count before retaining NSArray members or materializing POSIX strings.
     // AppKit owns its original selection; Keld only copies bounded replies.
     if urls.len() > MAX_DIALOG_PATHS {
         return Err(invalid("native Open selection exceeds path limit"));
     }
+    let workspace = NSWorkspace::sharedWorkspace();
     urls.to_vec()
         .into_iter()
         .map(|url| {
@@ -48,7 +65,17 @@ fn selected_open_paths(
                 .path()
                 .map(|text| text.to_string())
                 .ok_or_else(|| invalid("native Open URL has no POSIX file path"))?;
-            if !filter.accepts_selected_path(Path::new(&path), allow_files, allow_directories) {
+            let native_is_directory = is_native_directory_selection(
+                Path::new(&path),
+                treats_packages_as_directories,
+                &workspace,
+            );
+            if !filter.accepts_selected_path(
+                Path::new(&path),
+                native_is_directory,
+                allow_files,
+                allow_directories,
+            ) {
                 return Err(invalid(
                     "native Open selected a file outside the active filter",
                 ));
@@ -61,13 +88,19 @@ fn selected_open_paths(
 fn selected_save_path(
     url: Option<Retained<NSURL>>,
     filter: &MacFileFilterModel,
+    treats_packages_as_directories: bool,
 ) -> Result<String, IpcError> {
     let path = url
         .filter(|url| url.isFileURL())
         .and_then(|url| url.path())
         .map(|text| text.to_string())
         .ok_or_else(|| invalid("native Save returned no POSIX location"))?;
-    if !filter.accepts_selected_path(Path::new(&path), true, false) {
+    let native_is_directory = is_native_directory_selection(
+        Path::new(&path),
+        treats_packages_as_directories,
+        &NSWorkspace::sharedWorkspace(),
+    );
+    if !filter.accepts_selected_path(Path::new(&path), native_is_directory, true, false) {
         return Err(invalid(
             "native Save selected a file outside the active filter",
         ));
@@ -84,14 +117,18 @@ enum PanelState {
 }
 
 enum FilePanel {
-    Open(Retained<NSOpenPanel>),
+    Open {
+        panel: Retained<NSOpenPanel>,
+        requested_files: bool,
+        requested_directories: bool,
+    },
     Save(Retained<NSSavePanel>),
 }
 
 impl FilePanel {
     fn save_panel(&self) -> &NSSavePanel {
         match self {
-            Self::Open(panel) => panel,
+            Self::Open { panel, .. } => panel,
             Self::Save(panel) => panel,
         }
     }
@@ -229,6 +266,17 @@ impl MacFilePanel {
         self.panel
             .save_panel()
             .setAllowedContentTypes(&NSArray::from_retained_slice(types));
+        if let FilePanel::Open {
+            panel,
+            requested_files,
+            requested_directories,
+        } = &self.panel
+        {
+            // The platform can rewrite these UI flags while updating content
+            // types. Restore the admitted request mode after each group switch.
+            panel.setCanChooseFiles(*requested_files);
+            panel.setCanChooseDirectories(*requested_directories);
+        }
         Ok(())
     }
 
@@ -244,14 +292,18 @@ impl MacFilePanel {
         validate_open_options(options)?;
         let panel = NSOpenPanel::openPanel(main);
         let properties = &options.properties;
-        panel.setCanChooseFiles(
-            !properties.contains(&OpenProperty::OpenDirectory)
-                || properties.contains(&OpenProperty::OpenFile),
-        );
-        panel.setCanChooseDirectories(properties.contains(&OpenProperty::OpenDirectory));
+        let requested_directories = properties.contains(&OpenProperty::OpenDirectory);
+        let requested_files =
+            !requested_directories || properties.contains(&OpenProperty::OpenFile);
+        panel.setCanChooseFiles(requested_files);
+        panel.setCanChooseDirectories(requested_directories);
         panel.setAllowsMultipleSelection(properties.contains(&OpenProperty::MultiSelections));
         Self::finish_setup(
-            FilePanel::Open(panel),
+            FilePanel::Open {
+                panel,
+                requested_files,
+                requested_directories,
+            },
             options.default_path.as_ref(),
             &options.filters,
         )
@@ -387,7 +439,7 @@ impl MacFilePanel {
         }
         let reply = if response == NSModalResponseCancel {
             match self.panel {
-                FilePanel::Open(_) => DialogReplyV1::Open {
+                FilePanel::Open { .. } => DialogReplyV1::Open {
                     canceled: true,
                     file_paths: vec![],
                 },
@@ -402,12 +454,17 @@ impl MacFilePanel {
             // validating the returned URL, without altering native UI again.
             self.update_filter_index_from_popup()?;
             match &self.panel {
-                FilePanel::Open(open) => {
+                FilePanel::Open {
+                    panel: open,
+                    requested_files,
+                    requested_directories,
+                } => {
                     let file_paths = selected_open_paths(
                         &open.URLs(),
                         &self.filter,
-                        open.canChooseFiles(),
-                        open.canChooseDirectories(),
+                        *requested_files,
+                        *requested_directories,
+                        open.treatsFilePackagesAsDirectories(),
                     )?;
                     DialogReplyV1::Open {
                         // An OS OK with zero selections is not a user Cancel.
@@ -418,7 +475,11 @@ impl MacFilePanel {
                 }
                 FilePanel::Save(save) => DialogReplyV1::Save {
                     canceled: false,
-                    file_path: selected_save_path(save.URL(), &self.filter)?,
+                    file_path: selected_save_path(
+                        save.URL(),
+                        &self.filter,
+                        save.treatsFilePackagesAsDirectories(),
+                    )?,
                 },
             }
         } else {

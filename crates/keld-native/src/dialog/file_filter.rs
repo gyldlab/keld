@@ -98,12 +98,14 @@ impl MacFileFilterModel {
     pub fn accepts_selected_path(
         &self,
         path: &Path,
+        native_is_directory: bool,
         allow_files: bool,
         allow_directories: bool,
     ) -> bool {
-        // Directory navigation/selection is an independent Open property.
-        // Files must still match the currently selected filter group.
-        if path.is_dir() {
+        // The native panel owns directory-versus-file classification. macOS
+        // packages can be directories on disk but selectable *files* in the
+        // panel; this pure group model must not redo that OS decision.
+        if native_is_directory {
             return allow_directories;
         }
         if !allow_files {

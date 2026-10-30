@@ -90,27 +90,27 @@ fn selected_open_paths_are_exact_not_uttype_conformance_widened() {
     ])
     .expect("three ordered groups");
 
-    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.xml"), true, false));
-    assert!(model.accepts_selected_path(Path::new("/tmp/DIAGRAM.XML"), true, false));
-    assert!(!model.accepts_selected_path(Path::new("/tmp/diagram.svg"), true, false));
-    assert!(!model.accepts_selected_path(Path::new("/tmp/.xml"), true, false));
+    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.xml"), false, true, false));
+    assert!(model.accepts_selected_path(Path::new("/tmp/DIAGRAM.XML"), false, true, false));
+    assert!(!model.accepts_selected_path(Path::new("/tmp/diagram.svg"), false, true, false));
+    assert!(!model.accepts_selected_path(Path::new("/tmp/.xml"), false, true, false));
 
     model.select(1).expect("select compound extension group");
-    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.draw.io"), true, false));
-    assert!(!model.accepts_selected_path(Path::new("/tmp/diagram.xml"), true, false));
+    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.draw.io"), false, true, false));
+    assert!(!model.accepts_selected_path(Path::new("/tmp/diagram.xml"), false, true, false));
     model
         .select(2)
         .expect("select explicitly unrestricted group");
-    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.svg"), true, false));
+    assert!(model.accepts_selected_path(Path::new("/tmp/diagram.svg"), false, true, false));
 
     let directory = std::env::temp_dir();
     assert!(directory.is_dir(), "OS temp directory exists");
     model.select(0).expect("select XML group");
-    assert!(!model.accepts_selected_path(&directory, false, false));
-    assert!(model.accepts_selected_path(&directory, false, true));
-    assert!(model.accepts_selected_path(&directory, true, true));
+    assert!(!model.accepts_selected_path(&directory, true, false, false));
+    assert!(model.accepts_selected_path(&directory, true, false, true));
+    assert!(model.accepts_selected_path(&directory, true, true, true));
     assert!(
-        !model.accepts_selected_path(Path::new("/tmp/diagram.xml"), false, true),
+        !model.accepts_selected_path(Path::new("/tmp/diagram.xml"), false, false, true),
         "directory-only admission must reject ordinary files despite matching suffix"
     );
 }
@@ -149,7 +149,7 @@ fn arbitrary_filter_groups_use_the_same_exact_extension_rule() {
         for (filename, expected_by_group) in candidates {
             let selected = Path::new("/tmp").join(filename);
             assert_eq!(
-                model.accepts_selected_path(&selected, true, false),
+                model.accepts_selected_path(&selected, false, true, false),
                 expected_by_group[group],
                 "group={group} selected={filename} must not inherit another group's types"
             );
