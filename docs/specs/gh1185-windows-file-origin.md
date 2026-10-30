@@ -1,6 +1,12 @@
 # Spec: Windows WebView2 `file://` navigation, app-code resource containment, honest navigation signals and settled `executeJavaScript` (GH-1185 W3)
 
-Status: draft (revision r12 answers rpipaliya's review of `d60e0a8e` — open intent and
+Status: draft (revision r13 answers 0monish's re-review of `6f245546` — Host attribution only
+by causal proof (header-proven mode, no URI/order exemption; unproven mode refuses, B18), one
+header mechanism for every `file:` attempt including reload, top-level DOCUMENT credit only by
+navigation-specific proof (B19), cross-clock eval binding behind a transition gate and a
+fresh-loader rule with explicit eval phases, one allowed-writer ACL rule for every
+loader-selected runtime (B20, r13e); W3 delivers no Windows `file:` application unless Q22 (a) and
+(b) pass (§1); revision r12 answers rpipaliya's review of `d60e0a8e` — open intent and
 directory-chain ownership in the resource API, eval delivery linearized at the STA; revision
 r11 answers 0monish's review of `d60e0a8e` — resolved AUMID, Host
 attribution that fails closed on ambiguity, CDP context binding inside one clock; revision r10 — **hso** serving; pass-through holds released only at document retirement or webview close, bound 256, `keld dev` Host-serves everything (`hsoz`/`hsa`, E13/E14); loader-policy check (Q21 resolved, B16 widened) adds production `unsafe` registry calls; AC20 probe gates failed and are carried to T2 with an A/A arm; r9 → r10 after E13/E14; r8 → r9 after measured hold cost and release path; r3 followed isolated hostile reviews of `571f6bda` and `5ecd3496`)
@@ -70,7 +76,11 @@ registered (`hsoh`) and registered only while a hold is outstanding (`hsod`). **
 real Vite 8.3.5 application, re-registration correctness, and the Q21 classification of
 loader overrides. **E14** — follow-ups 7 and 8, run `gh1185-p2-hsoz-2026-10-30` (`results.json`
 sha256 `06afcabc…` and `3957116b…`): `hsoz` cost and correctness, `hsa`, and a pre-registered
-four-block replication with an A/A arm. Numbers below are quoted
+four-block replication with an A/A arm. **E15** — the Q24 census, run
+`gh1185-q24-wrr-order-2026-10-30` (sub-bundle `q24/`; note 268 §4.zzzzzzz; published at
+`0monish/keld-research@c1d15a2`, full `c1d15a25f94455dd137b18eefe58553012473afe`, unmerged like
+every run in PR #38, B9): the STA order of subresource WRRs against their document's
+`ContentLoading`, and AC26 (vi)'s forced adverse order. Numbers below are quoted
 with their 95 % CIs from the runs' `results.json` and are not strengthened.
 
 This draft authorizes no production code, no permission and no public API. Implementation
@@ -146,8 +156,8 @@ Non-goals:
   (`crates/keld-runtime/src/role.rs:189`); the value codec is #1190's. §4.7 records a
   recommendation and §10 B3 makes the eval-result domain and bound an owner decision.
 - Any navigation replay by the Host. A page-initiated navigation is allowed or cancelled
-  on its original `NavigationStarting`; the Host never re-issues it (§4.6). The Host re-issues
-  only **its own** attempt after an attribution ambiguity (§4.6 rule 1).
+  on its original `NavigationStarting`; the Host never re-issues it (§4.6), nor, since r13, its
+  own attempt (an attempt that cannot be attributed fails to its caller, §4.6 rule 1).
 - `asar` archives: Keld packages from source; no `asar` reader exists in `crates/`,
   `packages/` or `docs/` (grep 2026-10-29). Not in scope.
 - macOS/Linux loading paths (#542/KEL-142 own macOS; Linux UNKNOWN); `<webview>` tags;
@@ -160,6 +170,13 @@ Non-goals:
   and the environment-level worker filter below is coverage, not evidence. The environment-level worker filter in §4.5 keeps coverage
   for a future runtime; the probe cannot show it (§3 AC22).
 - Conformance score changes (#464/#567 own cells; nothing here flips a row).
+
+**Delivery condition (r13, stated plainly).** W3 delivers **no** Windows `file:` application
+unless Q22 (a) and (b) both pass on the supported runtime (B18, B19): without (a) no Host
+`file:` attempt is admissible — the schema-1 boot `Navigate` included — and without (b) no
+`file:` document is credited Host-served. In-root page-to-page navigation (`in-root:**` and
+literal forms) stays cancelled at +0 until Q27 passes or the owner accepts that divergence
+(B19). `executeJavaScript` additionally waits on B17.
 
 ## 2. Spec refs
 
@@ -235,7 +252,7 @@ Deviations this spec records (all land in **T0**, the PR that approves this spec
 
 | Existing owner (reuse, no duplicate) | Exactly what this spec consumes | Decision / divergence |
 | --- | --- | --- |
-| [#1192 GH-542 checked navigation binding](https://github.com/gyldlab/keld/pull/1192) (**open draft**, `cd30f997`) | §4.2 `NativeDocumentPhase`, checked `u32`, +1 on real replacement commit, +1 **before** a trusted Host load (L110), **+0 on renderer provisional start/cancel** (L107) and same-document changes; §4.4 eligibility = verified resource identity; §4.5 "stale evaluation completion … never delivers to a new document"; N15 Bun recovery keeps the document; N16 one generation; N21 Windows UNKNOWN; L145 four bounded CONTROL records per role. | Reused as the only generation and phase model; W3 is its Windows oracle. Page-initiated navigations stay page-attributed (+0 on cancel, +1 at commit); W3 issues no Host load for them, so no #1192 amendment is needed for navigation (the one re-issue of the Host's own attempt after an attribution ambiguity is a Host load, §4.6 rule 1, advancing G as #1192 L110 already defines). W3 needs #1192 T1 as a platform-neutral module (§10 B2). |
+| [#1192 GH-542 checked navigation binding](https://github.com/gyldlab/keld/pull/1192) (**open draft**, `cd30f997`) | §4.2 `NativeDocumentPhase`, checked `u32`, +1 on real replacement commit, +1 **before** a trusted Host load (L110), **+0 on renderer provisional start/cancel** (L107) and same-document changes; §4.4 eligibility = verified resource identity; §4.5 "stale evaluation completion … never delivers to a new document"; N15 Bun recovery keeps the document; N16 one generation; N21 Windows UNKNOWN; L145 four bounded CONTROL records per role. | Reused as the only generation and phase model; W3 is its Windows oracle. Page-initiated navigations stay page-attributed (+0 on cancel, +1 at commit); W3 issues no Host load for them, so no #1192 amendment is needed for navigation (r13: the Host never re-issues a navigation, its own attempt included; an attempt that cannot be attributed fails to its caller, §4.6 rule 1). W3 needs #1192 T1 as a platform-neutral module (§10 B2). |
 | `RoleGeneration` (`role.rs:189`) and the app-link retirement owner (KEL-75/KEL-143) | Per-role generation; retirement of role-bound correlations on recovery. | Eval and header round-trip correlations are keyed on it. |
 | [#1190 GH-544 codec](https://github.com/gyldlab/keld/pull/1190) (**open draft**, `115af9ac`) | One Host-opaque codec (V7); V3 synchronous refusal of functions; **V4: accessor properties fail typed with getter counter 0** (accessors are never invoked); V6: "Proxy traps can run before returning"; the 4096-byte bound it claims for `executeJavaScript` results (L9–12). | Reused as the only codec for its domain and decoder ownership. The 4096-byte bound is falsified as an eval-result bound (D4). **V4 is not met by the chosen transport (v)**: CDP deep serialization invokes own enumerable getters and drops symbol/non-enumerable keys (§4.7); whether that is accepted for eval results (Electron's structured clone also runs getters) is the codec owner's decision (§10 B3/Q15). |
 | [#1307 W1 preload facade spec](https://github.com/gyldlab/keld/pull/1307) (revised in parallel) | §4.4 Source rule step 3, §4.5 lifecycle (`ContentLoading` mints/revokes; allowed `NavigationId`), §4.6 navigation policy keys (`web.navigation.allow`, `onLoss`), §4.6a loading-path requirement, blocker B6; AC10 (the application document survives a vetoed navigation). | W3 closes B6 with L1. W1's `file:` Source rule and W3 share the one parser (above); r7 added R10 (`.lnk` → the new public variant `FileUrlRefusal::ShellLink`), so W1's Source rule refuses `.lnk` sources too (B7 vi). W1 `043170ca` L390–394 ("the bytes served for it are that verified resource") must adopt W3's identity: name inside the admitted root, bytes as currently present (owner Q2 in 6491936458) — §10 B7. |
@@ -313,21 +330,32 @@ the whole at-risk set; a row whose at-risk set is empty says **rule not exercise
 counts for nothing. At-risk sets are split by the rule that decides the cell, so a cell the
 parser refuses (opener count 0) is never counted as an opener success and vice versa.
 Windows rows are **real-device only**; CI mocks, macOS and Linux are not substitutes.
+**r13 gating:** a cell that needs the Host entry exemption or a Host-served credit for a Host
+attempt runs in header-proven mode only (§4.6 rule 1, B18); a cell that expects a
+page-initiated `file:` navigation to commit and receive an epoch (AC06 for a page-initiated
+`n`, AC08 (b) for a `file:` target, the "proceeds" cells of (i) and (j)) is **blocked on B19**
+— until Q27 passes, rule 2 cancels it at +0 and the cell reads blocked, never pass.
+AC12's hooks 1 and 2, (e)/NC6 and NC7 run on a **page-initiated same-URL `https:`** replacement
+(an allowlisted fixture origin; remote documents are evaluable, §4.7 step 2), because a Host
+attempt clears the pair and the WebView2 slot at its issue-time +1 (#1192 L110) and
+page-initiated `file:` navigations are cancelled under B19. AC08's NCs (c), (d) and (j′) are
+device-level **rule not exercised** until Q27 (B19's cancel decides those links first); the
+same single faults run as unit tests of the `keld-guard` navigation entrypoint (§7).
 
 | ID | Given / when | Pass observable | Negative control (one fault → RED) |
 | --- | --- | --- | --- |
-| AC01 Loading path (L1) | (i) A schema-1 renderer boot whose descriptor entry is `<root>/index.html` (no query); (ii) **[TARGET, B13]** a compat window whose first document is the application's `loadURL(file:///<root>/index.html?x)` through the W3 Host seam | (i) The Host calls `Navigate(file:///<root>/index.html)` from `navigate_initial`; (ii) the Host calls `Navigate` with the application's URL (entry components, query kept) from the `HostLoad` command; in both the first top-level `ContentLoading` carries `IsErrorPage == FALSE`; `location.href` read via CDP parses to the same root-relative components and query (compared with the exported component equality, never as URL text — Chromium may upper-case the drive letter, and the pinned application itself upper-cases it, `electron.js` L1012); W1's `Source` parses the same way. | Load via `NavigateToString` (`app_session.rs:3653` → `mod.rs:3654`) → `Source = about:blank`, `location.origin == "null"` (W1 AC18) → RED. |
+| AC01 Loading path (L1) | (i) A schema-1 renderer boot whose descriptor entry is `<root>/index.html` (no query); (ii) **[TARGET, B13]** a compat window whose first document is the application's `loadURL(file:///<root>/index.html?x)` through the W3 Host seam | (i) The Host calls `Navigate(file:///<root>/index.html)` from `navigate_initial`; (ii) the Host calls `Navigate` with the application's URL (entry components, query kept) from the `HostLoad` command (r13: in header-proven mode both calls are `NavigateWithWebResourceRequest` carrying the attempt nonce, §4.6 rule 1; in unproven mode both are refused typed, B18); in both the first top-level `ContentLoading` carries `IsErrorPage == FALSE`; `location.href` read via CDP parses to the same root-relative components and query (compared with the exported component equality, never as URL text — Chromium may upper-case the drive letter, and the pinned application itself upper-cases it, `electron.js` L1012); W1's `Source` parses the same way. | Load via `NavigateToString` (`app_session.rs:3653` → `mod.rs:3654`) → `Source = about:blank`, `location.origin == "null"` (W1 AC18) → RED. |
 | AC02 `file:*` filter before first navigation (C1) | (i) The schema-1 boot of AC01 (i); (ii) **[TARGET, B13]** a compat window whose first navigation is its first `loadURL`; in both, filter `file:*` + `CONTEXT_ALL` + `DOCUMENT` registered in that webview's controller build before its first `Navigate` | Every `file://` request of the load appears in the WRR log with a Host verdict (**new probe cell**: a `file:*` baseline must reproduce the per-run census of the `*` probe, 68 events per run over its two document loads, 3/3 — the probe used `*`, so its evidence does not transfer until this cell runs; E9 used exactly this filter shape before the first `Navigate` and mediated every corpus request, which is not the census cell; the shared-worker source kinds are registered once per environment, §4.5); the entry's raw inline script that only runs without the Host CSP header did not run (until P4 settles the production baseline, this oracle uses a **test-only** header policy that blocks the fixture's unnonced inline script), checked for **both** documents of the run (note 268: N2's `indexServedByHost` reflected only the second document). | (i) Register the filter after the first `Navigate` under `file:*` (probe N2 re-run) → the first `index.html` escapes to Chromium's file loader, the raw inline script runs → RED (at-risk 1 per document load). (ii) Register the filter only in `navigate_initial` (so a compat window built without it has none) → the compat window's first `loadURL` document escapes to Chromium's file loader → RED. |
 | AC03 Containment matrix (C2 hso, C4) | The page issues `fetch`/XHR/`<img>`/`<script>`/`<script type=module>`/`<link>`/`<iframe>`/top-level/`<object>`/`@font-face` requests for the cells below | **Host-served cells** (contexts 1, 7, 8 and every request carrying `Origin`) answer `200` with the bytes of the verified handle and Host headers; **pass-through cells** (classic `<script>`, `<link rel=stylesheet>`, `<img>`, `@font-face`) are verified, **held**, and read by Chromium. In both the delivered identity equals the Host-verified identity (E9's oracle: byte-exact sha256 for `fetch`/XHR, executed nonce for `<script>`, PNG width for `<img>`, posted nonce for documents; for pass-through also E11's same-object oracle — an exclusive Host hold makes Chromium's open fail, proving it targets the verified object). Allowed spellings: in-root files, mixed-case in-root spellings, drive-letter case, interior `//` (collapsed, §4.4 R6), an in-root **hardlink** to an outside file (owner decision; delivered on both paths; **excluded from every NC's at-risk set**). **Parser-refused** (`403`, empty, opener count 0): **plain outside path**, `%2e%2e`, `%5C`, `%2F`, `%00`, UNC/URL-host forms, `file:////?/C:/…`, `name:stream`, `name.`/`name␠`, `CON`/`COM1`, a `~` spelling, and a **`.lnk`** final component in every context (R10). **Opener-refused** (`403`, empty, opener count 1, bytes read 0): a junction as a **leaf**, a junction as an **intermediate** component (mixed case too), a file symlink, a **directory symlink** (real-device cells; E9's fixture created both symlinks and the check refused them). **Evidence, split by path (r7 check P1-2):** Host-served — E10 `hs` 0 differentials over 345 non-race cells × 2 runs, whose ~153 allowed-with-bytes cells per run are Host-served `fetch`/XHR/frame/top cells; pass-through — E11 `pt` corpus, 99 forms × {script, stylesheet, image, `@font-face`} = 396 cells per run, **48 at-risk per context, 0 differentials** in 3 runs (content oracle: 47 per context opened and matched, `lnk-out` never opened; exclusive-hold oracle, 2 runs: Chromium opened 0 of 48 held objects and the held identity equalled the verified one 48/48 per context). E9 (all-context pass-through, 337 non-race cells × 6 runs) is supporting evidence. Without enforcement Chromium delivered bytes for 42 of the 171 refused cells without the switch and 108 of 174 with it, so those refusals are load-bearing. The mixed-case served cell is **re-run under (g)** (§4.3). Page nonce 0 for every refused cell, with the nonce oracle validated per request kind. Still not exercised: 8.3 spellings (E9's volume had no 8.3 names), `sendBeacon`. At-risk sets reported separately: parser cells × runs, opener cells × runs, Host-served vs pass-through cells per context. Evidence attribution, unchanged: the r1 probe's `url-dotdot`, `url-long` and `url-backslash` rows were Chromium-decided or probe-decided; R3/R4/R6 are proven by the pure goldens (AC05) until re-run against the Host parser with a request that reaches WRR. | One fault each, hardlink cells excluded. **(1a)** no percent-decoding in the check, applied to the **pass-through** contexts (decoys planted at the literal undecoded names) → E11 naive control: 19 differential cells per context (76 with the exclusive-hold oracle), including 2 out-of-root deliveries in the script context → RED. **(1b)** raw string-prefix root match with the correct opener → `…/root-sib/f` strips to `["-sib", "f"]`; the fixture plants an in-root decoy at that stripped name so the mutant serves the decoy instead of `404`, else **rule not exercised** (pre-declared) → RED. **(1c)** Win32 path open that follows reparse points → `junction`, `junction-mixedcase`, `symlink-dir` deliver OUT bytes → RED (= AC04's NC). **(2)** pass every request through **without** verification → the plain-outside classic `<script>` delivers the sentinel nonce → RED; baseline 0 across the parser set. **(3)** drop R10 → `lnk-in`/`lnk-out` `fetch`/XHR and `lnk-out-js` `fetch` answer `200` with raw shell-link bytes (INFERRED from E10, where `hs` served them raw) and `lnk-out-js` `<script>` follows a second hop → the `403`/opener-0 count drops → RED. A weaker mutant (N2) scored 1/1. |
 | AC04 One opener (C3) | Any app-root open in `keld-core` boot, `keld-update` locate/helper or `keld-wv` document serving and subresource verification | Exactly one opener exists (`open_regular_beneath`, §4.3); `open_relative_file_windows` is gone; `open_pinned_leaf` is its single-component call; a source test finds no `OpenOptions::open`/`CreateFileW`/`Dir::open_ambient_dir` on app-root or page-controlled input in `keld-core`/`keld-wv`/`keld-update` serving paths. | Replace the opener with a Win32 path open (`CreateFileW` on `root\<components>`), grammar unchanged → the **intermediate-junction** cell (parser passes `junc/x.txt`; only the opener can refuse it) serves the outside sentinel → RED. Separately replace the per-component walk with one multi-component cap-std `open_with` → an **intermediate directory-symlink** cell (relative, in-root target) or a cloud-placeholder intermediate is followed and served under an alias spelling → RED (needs Developer Mode or a cloud placeholder on the device; absent both, this second mutant is pre-declared **rule not exercised** and the receipt says so). One fault each, one deciding rule. The source test exempts exactly one open by path: root admission in `validate_windows_dev_stage_acl`. |
 | AC05 One parser; refusal table (§4.4) | Pure goldens in `keld-guard` for every table row plus the probe's 31-cell corpus | Each vector yields the table's refusal or components. The `:` and `~` cells are decided **only** by R8 (`:` is removed from R5 so one rule owns it); the W1 Source rule and the W3 handler call this one function (one definition, two call sites). | Drop R8's `:` refusal → `index.html:hidden` opens (NTFS parses the stream at the NT layer) and the planted ADS nonce is served → RED. Separately drop R8's `~` refusal → a planted `LONGNA~1.JS` spelling serves the long-named file under a second identity → RED (volume with 8.3 disabled → **rule not exercised**, receipt says so). Separately decode twice → `%252e%252e` yields `..` → R6 refuses anyway: **non-discriminating**, listed, not counted. |
-| AC06 Served-document correlation (L2) | A top-level navigation `n` to an in-root URL is allowed at `NavigationStarting`; (a) the file exists; (b) the file is absent; (c) an `<iframe>` to a **different** in-root URL loads concurrently with a top-level navigation to an **absent** file | (a) The WRR log holds one `ResourceContext == DOCUMENT` response for `n`'s URI served from `(root, components)`; `ContentLoading(n)` reports `IsErrorPage == FALSE`; the Host reports the document as Host-served with that identity; **page oracle**: `location.href` parses to `n`'s components (component equality) and raw query — never URL-text equality, the drive letter's case may differ — and the body carries the fixture nonce. (b) The Host served `404`/empty for `n`; `ContentLoading(n)` is **not** reported Host-served (W1's epoch holder posts no epoch; page oracle: no fixture nonce); AC09 fires `did-fail-load(-6)`. (c) the frame's served record never attaches to `n`; `n` stays not-Host-served. | Attach by `ResourceContext == DOCUMENT` only, ignoring URI equality → case (c) attaches the frame's record to `n` and an absent top-level document is reported Host-served (W1 would mint an epoch; page oracle shows no nonce) → RED. Pre-declared **rule not exercised** conditions: if W1's eligibility (B7) is not implemented on the device, the epoch-holder counter is absent and only the page oracle counts; if Q7 shows `IsErrorPage == TRUE` for a Host `404`, case (b)'s `IsErrorPage` clause is redundant with the served record and its NC must instead flip the served-record rule. |
+| AC06 Served-document correlation (L2) | A top-level navigation `n` to an in-root URL is allowed at `NavigationStarting`; (a) the file exists; (b) the file is absent; (c) an `<iframe>` to a **different** in-root URL loads concurrently with a top-level navigation to an **absent** file; (d) **(r13)** an `<iframe>` to the **same exact** URI as `n` (components and query) races `n`: the frame's DOCUMENT WRR is served `200` first, then the top-level WRR is refused (`404`, the fixture's owner removes the file between the two opens) or withheld by a declared Host-queue hook; `n` is a Host attempt in header-proven mode (B18) and, separately, page-initiated (blocked on B19 until Q27) | (a) The WRR log holds one `ResourceContext == DOCUMENT` response for `n`'s URI served from `(root, components)`; `ContentLoading(n)` reports `IsErrorPage == FALSE`; the Host reports the document as Host-served with that identity; **page oracle**: `location.href` parses to `n`'s components (component equality) and raw query — never URL-text equality, the drive letter's case may differ — and the body carries the fixture nonce. (b) The Host served `404`/empty for `n`; `ContentLoading(n)` is **not** reported Host-served (W1's epoch holder posts no epoch; page oracle: no fixture nonce); AC09 fires `did-fail-load(-6)`. (c) the frame's served record never attaches to `n`; `n` stays not-Host-served. (d) `n` is credited only by navigation-specific proof (§4.4: the attempt nonce on the DOCUMENT WRR request); the frame's `200` is never credited to `n`; W1's epoch holder posts no epoch for `n`, the Bun effect counter reads 0, and the page oracle shows no top-level nonce. Positive control: without the frame, the nonce-bearing top-level `200` credits `n` and W1 mints its epoch. | Attach by `ResourceContext == DOCUMENT` only, ignoring the nonce (and URI equality) → case (c) attaches the frame's record to `n` and an absent top-level document is reported Host-served (W1 would mint an epoch; page oracle shows no nonce) → RED. Pre-declared **rule not exercised** conditions: if W1's eligibility (B7) is not implemented on the device, the epoch-holder counter is absent and only the page oracle counts; if Q7 shows `IsErrorPage == TRUE` for a Host `404`, case (b)'s `IsErrorPage` clause is redundant with the served record and its NC must instead flip the served-record rule. (d′) Credit the first parsed-equal DOCUMENT WRR (r12's rule) → the frame's `200` is credited to `n` and W1's epoch holder posts an epoch for `n` → RED; in the `404` and withheld variants the epoch counter is the only scored observable (no top-level document commits that could call IPC); at-risk 1 per variant. |
 | AC07 Signal emission and order (§4.6; Electron v45.1.0 oracle) | (i) In-root load; (ii) off-allowlist page-initiated navigation; (iii) hash change and `pushState`; (iv) absent in-root file; (v) Host-initiated load | The signal log is the system under test; every sequence is **compared to the GH-551 Electron v45.1.0 run of the same fixture** (page oracle in both), not asserted from Host records alone. (i) `did-start-loading`, `did-start-navigation`, `did-navigate`, `dom-ready`, `did-finish-load`, `did-stop-loading`, same `NavigationId`, generation stamped. (ii) `did-start-loading`, `did-start-navigation`, `will-navigate` (notification, §4.6), `did-stop-loading`; **no `did-fail-load`** (Electron suppresses `ERR_ABORTED`), no `did-navigate`, no `dom-ready`; the application document survives (W1 AC10). (iii) `did-navigate-in-page` only; no `will-navigate`; generation unchanged. (iv) `did-fail-load(-6)` exactly once, no `did-finish-load`. (v) no `will-navigate`. Nothing is synthesized from a Bun-side timer. | Emit `did-finish-load` from `ContentLoading` → `did-finish-load` before `dom-ready` → RED. Separately emit `did-fail-load(-3)` on a policy cancel → divergence from the oracle (Electron L2932–2933) → RED. |
-| AC08 `will-navigate` (§4.6) | A page-initiated `NEW_DOCUMENT` navigation to (a) an off-allowlist URL, (b) an on-allowlist URL; (c) a `BACK_OR_FORWARD`/`RELOAD` navigation; (d) a redirect hop (`IsRedirected == TRUE`) of a Host attempt; (e) a Host attempt itself; (l) under `allow: none`, a page `location.assign(entry?x)` and a Host `loadURL(entry?x)` queued together, each order forced by a declared Host-queue hook; harness-only oracle `IsUserInitiated` per `NavigationId` (FALSE for the scripted assign, TRUE for the API navigation, Microsoft doc), never fed to attribution; at-risk 1 per order (r11) | (a) cancelled on the original `NavigationStarting` (+0 generation), `will-navigate(url)` emitted when a listener exists (the `shell.openExternal` pattern keeps working); (b) allowed, `will-navigate(url)` emitted when a listener exists, `preventDefault()` has no effect (documented divergence; `keld migrate` derives the allowlist so this case is empty for a veto-all listener); (c) allowlist evaluated, **no** `will-navigate` until P3 settles whether Electron emits it for script history navigations; (d)/(e) never attributed page-initiated (attribution by the attempt's `NavigationId`); no `will-navigate`. (f) **in-root is not enough and the query counts**: a veto-all fixture (`web.navigation.allow` derived to `none`) whose page contains an in-root link (`other.html`), a link to `index.html?attacker=1` and a link to the entry's exact URL — all three cancelled, page nonce unchanged, a granted IPC call still succeeds afterwards. (g) **[TARGET, B13]** a Host attempt (`loadURL`) to an off-allowlist target → typed refusal at +0, document and IPC untouched; (h) **[TARGET, B13]** a Host attempt to `index.html?x` (entry components, any query) and an `onLoss` reload-entry — triggered by W1's rule (a page-initiated allowed navigation that commits an ineligible document) — under the same `none` allowlist → both admitted; (i) **lifted-literal pass cases**: with `index.html` (no-query constraint) a link to `index.html` proceeds and `index.html?attacker=1` is cancelled; with `p.html?mode=a` links to `p.html?mode=b` and `p.html?mode=A` are cancelled, `p.html?mode=a` proceeds; a query needing escaping (`?q=a%20b`, `?q=%C3%A9`, `?q=%41` vs `?q=A`) compares byte-exact on the engine-reported serialization (device cell); (j) **component equality**: under `in-root:**`, links to `INDEX.HTML`, `index%2Ehtml` and a Turkish dotless-i spelling decide identically in W3's allow match and W1's eligibility (Q17); (k) `location.reload()` of the live document under `none`: the Host cancels it (`RELOAD` kind, page-initiated); Electron's behaviour for a veto-all listener on reload is UNKNOWN until P3 — pre-declared, the cell records both. Generation: +0 on cancel, +1 only when an allowed navigation commits. (l): with the header proof (Q22) the page navigation is cancelled at +0 and causes no generation change of its own; the Host attempt commits with an epoch. Without it, in either order, no document of the ambiguous pair keeps an epoch, the epoch goes only to the re-issued attempt's `NavigationId` (the oracle's TRUE id), and W1's recovery count is unchanged. | (a) Attribute "page-initiated iff `IsUserInitiated == TRUE`" → the application's own `loadURL` (API navigations are user-initiated per Microsoft) emits `will-navigate` while a scripted `location.href` (`FALSE`) emits none — against the GH-551 oracle (`loadURL` emits nothing; scripted emits) → mismatch in both directions → RED; at-risk 1 each per run. (b) Advance the generation at `NavigationStarting` → an off-allowlist click revokes the live document → a page-side IPC round trip fails → RED (W1 AC10). (c) Treat every in-root `file:` target as on-allowlist → (f)'s links replace the document → RED. (d) **Cut the query in the `file:` allow match** → in (i) the `index.html?attacker=1` link replaces the document → RED; separately fold the query through the component equality → `p.html?mode=A` proceeds → RED. (e) Check the allowlist after the Host attempt's +1 → (g) leaves the window FailedClosed → IPC fails → RED. (f′) Drop the entry exemption for Host attempts → (h)'s `onLoss` reload is refused and the window never recovers → RED. (j′) Compare components byte-exact in one consumer (W1 or W3) → `INDEX.HTML` is allowed by one and refused by the other → the page lands FailedClosed and `onLoss` fires → RED. (l′) Attribute by URI and order only (r10's rule 1 without the ambiguity check) → in (l)'s page-first order the epoch goes to the oracle's FALSE id → RED. |
+| AC08 `will-navigate` (§4.6) | A page-initiated `NEW_DOCUMENT` navigation to (a) an off-allowlist URL, (b) an on-allowlist URL; (c) a `BACK_OR_FORWARD`/`RELOAD` navigation; (d) a redirect hop (`IsRedirected == TRUE`) of a Host attempt; (e) a Host attempt itself; (l) under `allow: none`, a page `location.assign(entry?x)` and a Host `loadURL(entry?x)` queued together, each order forced by a declared Host-queue hook, in both modes of rule 1; **missing-trigger variants (r13)**: Host issued → page-first same-URI `NavigationStarting` → (if admitted) page WRR + `ContentLoading` → an app-link call from the page, with **no** second `NavigationStarting`, and separately with the Host's `NavigationStarting` released only after that call; harness-only oracle `IsUserInitiated` per `NavigationId` (FALSE for the scripted assign, TRUE for the API navigation, Microsoft doc), never fed to attribution; at-risk 1 per order and variant (r11, r13); (m) **(r13)** header-proven mode, `allow: none`, a live entry document: the app's `webContents.reload()` | (a) cancelled on the original `NavigationStarting` (+0 generation), `will-navigate(url)` emitted when a listener exists (the `shell.openExternal` pattern keeps working); (b) allowed, `will-navigate(url)` emitted when a listener exists, `preventDefault()` has no effect (documented divergence; `keld migrate` derives the allowlist so this case is empty for a veto-all listener); (c) allowlist evaluated, **no** `will-navigate` until P3 settles whether Electron emits it for script history navigations; (d)/(e) never attributed page-initiated (attribution by the attempt's `NavigationId`); no `will-navigate`. (f) **in-root is not enough and the query counts**: a veto-all fixture (`web.navigation.allow` derived to `none`) whose page contains an in-root link (`other.html`), a link to `index.html?attacker=1` and a link to the entry's exact URL — all three cancelled, page nonce unchanged, a granted IPC call still succeeds afterwards. (g) **[TARGET, B13]** a Host attempt (`loadURL`) to an off-allowlist target → typed refusal at +0, document and IPC untouched; (h) **[TARGET, B13]** a Host attempt to `index.html?x` (entry components, any query) and an `onLoss` reload-entry — triggered by W1's rule (a page-initiated allowed navigation that commits an ineligible document) — under the same `none` allowlist → both admitted in header-proven mode (in unproven mode both are typed refusals at +0, B18); (i) **lifted-literal pass cases**: with `index.html` (no-query constraint) a link to `index.html` proceeds and `index.html?attacker=1` is cancelled; with `p.html?mode=a` links to `p.html?mode=b` and `p.html?mode=A` are cancelled, `p.html?mode=a` proceeds; a query needing escaping (`?q=a%20b`, `?q=%C3%A9`, `?q=%41` vs `?q=A`) compares byte-exact on the engine-reported serialization (device cell); (j) **component equality**: under `in-root:**`, links to `INDEX.HTML`, `index%2Ehtml` and a Turkish dotless-i spelling decide identically in W3's allow match and W1's eligibility (Q17); (k) `location.reload()` of the live document under `none`: the Host cancels it (`RELOAD` kind, page-initiated); Electron's behaviour for a veto-all listener on reload is UNKNOWN until P3 — pre-declared, the cell records both. Generation: +0 on cancel, +1 only when an allowed navigation commits. (l) Header-proven mode: the page event (no nonce) is cancelled at +0 in every order and variant — no page WRR, `ContentLoading`, epoch or app-link effect (page grant and effect counters 0); the Host attempt commits with an epoch under the oracle's TRUE id when its event arrives, and fails typed (`KELD-*`, not counted toward W1's cap) when it never arrives; the old document's IPC was revoked by the Host's own +1 at issue (#1192 L110), not by the page. Unproven mode: the Host attempt is refused typed at +0 **before** issue (no +1), the page event is cancelled at +0, and the old document and its IPC survive. (m) The reload is issued as rule 1 (i)'s header navigation; the cell records `NavigationKind`, the nonce in `RequestHeaders`, G before/after, `history.length` and a later `onLoss` recovery; the reload is attributed, admitted and commits +1 — until this cell passes, `reload()` of a `file:` document is a typed refusal (B18). | (a) Attribute "page-initiated iff `IsUserInitiated == TRUE`" → the application's own `loadURL` (API navigations are user-initiated per Microsoft) emits `will-navigate` while a scripted `location.href` (`FALSE`) emits none — against the GH-551 oracle (`loadURL` emits nothing; scripted emits) → mismatch in both directions → RED; at-risk 1 each per run. (b) Advance the generation at `NavigationStarting` → an off-allowlist click revokes the live document → a page-side IPC round trip fails → RED (W1 AC10). (c) Treat every in-root `file:` target as on-allowlist → (f)'s links replace the document → RED. (d) **Cut the query in the `file:` allow match** → in (i) the `index.html?attacker=1` link replaces the document → RED; separately fold the query through the component equality → `p.html?mode=A` proceeds → RED. (e) Check the allowlist after the Host attempt's +1 → (g) leaves the window FailedClosed → IPC fails → RED. (f′) Drop the entry exemption for Host attempts → (h)'s `onLoss` reload is refused and the window never recovers → RED. (j′) Compare components byte-exact in one consumer (W1 or W3) → `INDEX.HTML` is allowed by one and refused by the other → the page lands FailedClosed and `onLoss` fires → RED. **(r13) (c), (d) and (j′) are pre-declared rule not exercised on the device until Q27** (B19's cancel decides those links first); the same single faults run in `guard_navigation_allow_forms` (§7). (l′) r12's fallback (the first parsed-equal event is provisionally the Host's) → in the page-first missing-trigger variant the page's `NavigationId` is not cancelled and reaches `ContentLoading` (page oracle: the page-assigned document's nonce is visible) → RED; the epoch stays absent because §4.4 credits no un-nonced DOCUMENT WRR, which is recorded separately as defence in depth (epoch holder 0, effect counter 0). (l″) In header-proven mode, fall back to URI attribution for an event without the nonce → the same flipping observable → RED. (m′) Issue the Host reload through `Reload()` (no request, so no nonce) → it is classified page-initiated `RELOAD` and cancelled under `none` → the reload never commits → RED. |
 | AC09 `did-fail-load` honesty | (i) Absent in-root entry (Host `404`); (ii) parser-accepted, opener-refused entry (Host `403`: directory, reparse); (iii) policy cancel; (iv) renderer error (`NavigationCompleted` failure, other `WebErrorStatus`) | (i) `-6 ERR_FILE_NOT_FOUND`; (ii) `-10 ERR_ACCESS_DENIED` (documented divergence: Electron would list a directory or follow the link); (iii) **nothing**; (iv) the §4.6 table's code; exactly one `did-fail-load` per failed `NavigationId`; `did-stop-loading` follows. Verified against the GH-551 differential oracle (page oracle + Electron run), not against Host records alone. | Map every failure to `-3` → case (i) reports `-3` while the Host served `404` → RED. |
 | AC10 Settled eval (E1, E4) | After `did-stop-loading`: (a) `new Promise(r => setTimeout(() => r("v"), 500))`; (b) a `try { … } catch (e) { null }` statement with a string completion value; (c) `Promise.reject(new Error("m"))`; (d) `throw new Error("t")`; (e) under page CSP `script-src 'self'`, an expression whose value is an object with a getter that calls `eval` and sets a marker; (f) same, with a `Proxy` whose `get` trap calls `eval` and sets a marker; (g) the page has patched `Object.getOwnPropertyDescriptor` (and `Reflect.ownKeys`) to call `eval` and set a marker, then returns a plain object; (h) under `script-src 'self'`, the **evaluated code itself** calls `eval("1")` | (a) `"v"` after ~500 ms (probe 3/3); (b) the completion value; (c) rejection carrying `m`; (d) the facade's fixed sync-throw message (#1154 shape, §10 Q3); (e) the getter runs **under the page's own CSP** (deep serialization reads own enumerable properties through `Get` inside `evaluate`, V8 L222/L257): its `eval` throws, marker **not** set, and the throw surfaces as CDP `-32000 "exception during deep serialization"` → typed `EvalFailed` rejection to the caller; (f) `{type:"proxy"}` is reported and the trap never runs (V8 deep serializer L339–341): marker not set — matches Electron's `DataCloneError` class; (g) marker **not** set under (v) — no codegen scope exists; (h) the page's `eval` is refused by its CSP (flag false, V8 L400–402): the rejection names the CSP. | Use `ExecuteScript` (probe N4) → (a) yields `{}` → RED. Separately pass `allowUnsafeEvalBlockedByCSP` default → (h) succeeds → RED. Separately transport through (ii) `callFunctionOn` + encoder → (g)'s marker is set (codegen scope open across the encoder's intrinsic calls, V8 L151/L158/L188) → RED. |
 | AC11 Generation-scoped delivery (E2) | (i) Eval dispatched at generation G; replacement before completion; (ii) **real replay control** (#1185's own NC, UNMET by the probe — N6 compared constants): a debug `profile-test-hooks` seam holds the **actual CDP completion payload** of correlation `c` dispatched in document G1, the harness commits G2, then the held payload is delivered to the completion handler as if CDP had just completed; (iii) role G1 awaits an eval, recovers to G2 before completion; (iv) the document enters BFCache or never completes the script; (v) **delayed settle after delivery** (r12): a debug `profile-test-hooks` seam stalls `keld-core`'s forwarder for the window **after** `c`'s settle record (G₁, already `Delivered` on the STA) is enqueued, the harness commits G₂ in the engine, then releases the forwarder | One state machine (`Pending → Retired \| Delivered`, §4.7 step 4), counted in the **Bun facade** (another process): settle frames per correlation ≤ 1, and every payload carries the page-side nonce of the document its eval was dispatched in (§4.7 step 4) — the second assertion is Host-independent: the evaluated script returns a **page-side document nonce** (planted in each fixture document), and the facade compares it with the page oracle's nonce for the document in which the cell dispatched `c` (every cell starts its replacement only after the dispatch), not with any Host stamp. (i) exactly one `DocumentReplaced` frame; CDP `-32000` (probe 3/3) or retirement. (ii) the held G₁ payload produces **no** frame (the entry is `Retired`); the caller observed exactly one frame, the retirement's; at-risk 1 per run. (iii) retired by KEL-75/KEL-143's role retirement (the role axis's existing owner), never delivered to G₂. (iv) one `DocumentReplaced` frame when G changes, in the same STA turn; the entry is freed when its CDP callback fires. (v) The facade receives exactly one frame for `c`, its value carrying G₁'s nonce, after G₂ committed, and no `DocumentReplaced` for `c`; at-risk 1 per run. | Single faults, each on the one machine: (1) the retire step rejects but leaves the entry `Pending` → the held G₁ payload is delivered → facade sees 2 frames for `c`, the second a G₁ value → RED. (2) the completion handler delivers regardless of state → same observable → RED. (3) the retire step posts no rejection → (iv) hangs the caller (no frame within the test bound) → RED. (4) for (iii): skip the role retirement hook → the G₂ role observes a G₁ frame → RED (pre-declared **rule not exercised** until Q16 confirms that KEL-75/KEL-143's retirement covers eval correlations; if it does not, the hook becomes W3's and the NC counts). (5) For (v): `keld-core` re-checks the generation at forward time and turns the G₁ settle into `DocumentReplaced` (the rejected downstream re-check, §4.7 step 4) → the facade receives a rejection instead of the G₁ value → RED. |
-| AC12 Context binding at dispatch (E4) | `executeJavaScript` issued (a) while the main frame's execution context is known; (b) in the gap between `Runtime.executionContextDestroyed` and the next `executionContextCreated` for the main frame | (a) the call carries the `uniqueContextId` **bound to G at `ContentLoading`** (§4.7 step 1); only `InvalidParams` "uniqueContextId not found" and `-32000` "Execution context was destroyed." map to `DocumentReplaced` (§4.7 step 3); (b) typed `NoDocumentContext` returned to the facade, which waits (bounded) for the Host's per-generation `context-bound` event and re-dispatches; the application sees one settled result in the new document, never a rejection, and **no script ran in the gap**. Non-entry and remote documents are evaluable; only generation equality decides delivery. (c) `executionContextDestroyed`/`executionContextsCleared` for the bound context unbinds the pair (§4.7 step 1), so (b)'s gap exists. Two deterministic hooks (at-risk 1 per run each): **hook 1** holds `ContentLoading` and `executionContextDestroyed` in the Host's queue while the engine already shows the new document (Host still holds `(G₁, ctx₁)`); **hook 2** releases `executionContextDestroyed` but holds `executionContextCreated` and `ContentLoading` (Host holds no pair). The harness dispatches during each hold. Side-effect oracle: the evaluated script writes a marker into `document.title`; the harness reads both documents' titles through CDP. Baseline under hook 2: `NoDocumentContext` → facade waits → hook released → `context-bound` → one result in the new document. A back/forward-cache restore that re-creates `ctx₁` under hook 1 is pre-declared **rule not exercised** until Q14's census says whether 156 raises it. | NC1 (hook 1): drop **only** the `uniqueContextId` parameter → the eval runs in the **new** document (its title carries the marker) and is then rejected `DocumentReplaced` → RED (side effect without delivery); with the parameter the same dispatch returns "uniqueContextId not found" → `DocumentReplaced`, no marker. NC2 (hook 2): drop **only** the unbind on `Destroyed`/`Cleared` (parameter kept) → the Host still dispatches with `(G₁, ctx₁)` → "uniqueContextId not found" → `DocumentReplaced` where the baseline delivers a result → RED. NC3 (r11, event-queue fixture): hold A's `executionContextCreated` until after `ContentLoading(n_B)` but before `frameNavigated(L_B)`, then eval; each page's title/nonce is read independently → the baseline stays unbound and refuses `DocumentReplaced`; the r10 "whichever arrives second" mutant binds `(G_B, ctx_A)` → RED. "Runs in A" is pre-declared at-risk 0 unless `ctx_A` is live (back/forward cache only; `file:` documents are INFERRED cache-ineligible); a back/forward-cache variant runs when Q14 shows it reachable. |
+| AC12 Context binding at dispatch (E4) | `executeJavaScript` issued (a) while the main frame's execution context is known; (b) in the gap between `Runtime.executionContextDestroyed` and the next `executionContextCreated` for the main frame; (d) **(r13 phases)** order 1: `ContentLoading(G₂)` → eval → delayed verified `executionContextCreated(ctx₂)`; order 2: a duplicate default context for the same loader, and separately a failed Host attempt, before the eval; (e) **(r13 cross-clock)** Host-queue fixture on a page-initiated same-URL `https:` replacement (§3 r13 gating): live A at G₇ → page-initiated `NavigationStarting(n_B)` to the **same URL** → CDP `frameNavigated(L_B)` + `executionContextCreated(ctx_B)` released → eval dispatched (the harness bypasses the facade's load wait) → `ContentLoading(n_B)` released | (a) the call carries the `uniqueContextId` **bound to G at `ContentLoading`** (§4.7 step 1); only `InvalidParams` "uniqueContextId not found" and `-32000` "Execution context was destroyed." map to `DocumentReplaced` (§4.7 step 3); (b) typed `NoDocumentContext` returned to the facade, which waits (bounded) for the Host's per-generation `context-bound` event and re-dispatches; the application sees one settled result in the new document, never a rejection, and **no script ran in the gap**. Non-entry and remote documents are evaluable; only generation equality decides delivery. (c) `executionContextDestroyed`/`executionContextsCleared` for the bound context unbinds the pair (§4.7 step 1), so (b)'s gap exists. Two deterministic hooks (at-risk 1 per run each): **hook 1** holds `ContentLoading` and `executionContextDestroyed` in the Host's queue while the engine already shows the new document (Host still holds `(G₁, ctx₁)`); **hook 2** releases `executionContextDestroyed` but holds `executionContextCreated` and `ContentLoading` (Host holds no pair). The harness dispatches during each hold. Side-effect oracle: the evaluated script writes a marker into `document.title`; the harness reads both documents' titles through CDP. Baseline under hook 2: `NoDocumentContext` → facade waits → hook released → `context-bound` → one result in the new document. A back/forward-cache restore that re-creates `ctx₁` under hook 1 is pre-declared **rule not exercised** until Q14's census says whether 156 raises it. (d) Order 1: `AwaitingContext(G₂)` → `NoDocumentContext` → the facade waits → `context-bound(G₂)` → one result carrying G₂'s nonce, no marker in G₁; order 2: `TerminalAmbiguous(G₂)` (or the post-failure refusal) → `DocumentReplaced` at once, no wait, no marker anywhere. (e) Nothing binds while the transition is open; neither A's nor B's title carries the marker before `ContentLoading(n_B)` is released; the dispatch reaches A's still-bound context (refused `DocumentReplaced` when A is gone) or returns `NoDocumentContext`; after release `(G₈, ctx_B)` binds and the re-dispatch returns B's nonce (positive bind recorded). | NC1 (hook 1): drop **only** the `uniqueContextId` parameter → the eval runs in the **new** document (its title carries the marker) and is then rejected `DocumentReplaced` → RED (side effect without delivery); with the parameter the same dispatch returns "uniqueContextId not found" → `DocumentReplaced`, no marker. NC2 (hook 2): drop **only** the unbind on `Destroyed`/`Cleared` (parameter kept) → the Host still dispatches with `(G₁, ctx₁)` → "uniqueContextId not found" → `DocumentReplaced` where the baseline delivers a result → RED. NC3 (r11, event-queue fixture): hold A's `executionContextCreated` until after `ContentLoading(n_B)` but before `frameNavigated(L_B)`, then eval; each page's title/nonce is read independently → the baseline does not bind A's context (its loader is not fresh for `n_B`): the eval returns `NoDocumentContext` with nothing sent (`AwaitingContext`), and after `frameNavigated(L_B)` and `ctx_B` bind, the re-dispatch returns B's nonce; the r10 "whichever arrives second" mutant binds `(G_B, ctx_A)` → RED. "Runs in A" is pre-declared at-risk 0 unless `ctx_A` is live (back/forward cache only; `file:` documents are INFERRED cache-ineligible); a back/forward-cache variant runs when Q14 shows it reachable. NC4 (d, order 1): map `AwaitingContext` to `DocumentReplaced` → the caller is rejected where the baseline returns G₂'s value → RED. NC5 (d, order 2): map `TerminalAmbiguous` to `NoDocumentContext` → the facade waits and re-dispatches into the next bound document (a later generation's marker) or settles only at the bound → RED. NC6 (e): r12's URL-only pairing → binds `(G₇, ctx_B)` → B's title carries the marker before release and the settle carries B's nonce under G₇ → RED. NC7: re-dispatch only while G is unchanged → (b), whose G changes during hook 2, is rejected instead of delivered → RED. |
 | AC13 CDP capability self-test (E5) | Webview create, before the first `Navigate` | Event receivers registered **before** `Runtime.enable`; `Runtime.enable` succeeds; `Runtime.evaluate("1+1", returnByValue)` → `2`; `Runtime.evaluate("Promise.resolve(3)", awaitPromise)` → `3`; one `evaluate` with `serializationOptions: {serialization:"deep"}` returns a `deepSerializedValue`; each within `WEBVIEW2_STARTUP_BOUND`; the self-test does **not** wait for the initial `executionContextCreated` (its arrival before the first `Navigate` is UNVERIFIED; the probe registered receivers after enabling, `main.rs` L1090–1119). Failure → the application does not start, typed `KELD-WV-*`. **Not claimed**: that `allowUnsafeEvalBlockedByCSP:false` is honored (crdtp L124–128; per-runtime cell AC10 h; §10 Q11). Enterprise CDP policy: UNKNOWN (Q11). | Skip the self-test with an injected CDP failure → the framework counter **"application started" = 1** although every later eval rejects → RED (the counter is Keld's own `NavigationReady`/app-started milestone, not any application's behaviour). Separately drop the deep-serialization probe → a runtime without the option starts and every object result arrives as a `RemoteObject` stub → RED. |
 | AC14 Eval value domain and bound (E3) | A result inside the codec owner's admitted domain and at the bound; one byte over | Delivered bit-exact / typed `CodecLimit` rejection, never a hang. **Blocked on §10 B3.** | Deliver truncated → RED. |
 | AC15 App-declared response headers (S1: documents and `fetch`/XHR) | (a) A compat application registers `onHeadersReceived` inside `app.whenReady()` and then creates its window and calls `loadURL(entry)` (the Electron-correct order; the window's **first** document is that `loadURL`); (b) no listener; (c) the listener's role is confirmed gone; (d) the role is recovering (between the `RoleGeneration` move and the successor's re-registration) and the predecessor had a listener; (d′) same, predecessor had none; (e) a listener whose `filter.urls` matches the document's `fetch`/XHR, a module script **and** its classic `<script>`/stylesheet/image subresources | (a) **[TARGET, B13: blocked until W2 D2/D3 land on Windows]** one Host→Bun round trip per **Host-served response** (`ResourceContext` 1, 7, 8 and CORS-mode loads) **including the window's first document** — the registration and the `loadURL` are two records on the one FIFO (a requirement T4/T5 test, §4.5), and no Host navigation precedes them (W2's facade boot: no window at boot, `HostInitialized` Ready); the served headers are the listener's (Host-owned fields excepted); (b) zero round trips; (c) Host-served requests `403`/empty; (d) Host-served requests are **held** behind their deferrals until the successor registers, or until its `listeners-settled` record (posted by the facade after its `whenReady` callbacks drained) arrives without a registration, then served; bounded by the recovery deadline and a count, after which `403`/empty; (d′) with no predecessor listener nothing is held and responses carry the baseline only (as before the loss); (e) one round trip per matching `fetch`/XHR and module script with the listener's headers applied; **zero** for the pass-through classic script/stylesheet/image, whose headers are **not** applied — the recorded divergence from Electron, whose listener sees every response (T1 entry; §4.5). At-risk for (a) = the first DOCUMENT response per run (non-empty by construction). | (a) Process the `loadURL` record before the earlier registration record (FIFO broken) → the first document is served with the baseline CSP only and the app's inline-script policy is not applied (probe N5 class) → RED. (c) Serve on role loss with baseline-only headers → RED. (d) Answer `403` instead of holding → a recoverable window shows a blank document after every Bun restart → RED. (d′) Hold although the predecessor had no listener → requests stall until the recovery bound for no reason → the page oracle sees the document blank past the bound → RED. (e) Skip the round trip for `fetch`/XHR → the listener's header is absent from the `fetch` response → RED; separately round-trip pass-through contexts → round-trip count > Host-served count → RED. |
@@ -341,7 +369,7 @@ Windows rows are **real-device only**; CI mocks, macOS and Linux are not substit
 | AC23 Coverage cells with UNKNOWN status | favicon (probe `r-favicon` timed out), `<link rel=prefetch>`, `navigator.sendBeacon`, web app manifest, media `Range` (probe media cells used filler bytes; `mediaError 4` proves nothing), `blob:`/`data:` workers (measured in E11 and moved to AC28), Shared/Service Worker construction attempts, `<embed>`/`<object>` PDF, `<a download>`, `<script type=module crossorigin>` and dynamic `import()` (default Vite/electron-vite output) — measured in E11 and moved to AC24, and the environment worker filter's survival when the first webview closes (the Host re-registers it on the next live webview; cell: close the first window, open a second, attempt a shared worker) | Each is run as its own cell on the real device and reported served/refused/UNKNOWN with the request kind observed; none is claimed from the probe. | Claim any of them from the probe → validator RED. |
 | AC24 Request classification (A7) | One load issuing a top-level document, an `<iframe>`, an `<object>` and an `<embed>` HTML document, classic `<script>`, `<script type=module>` (same and other directory, static `import`), `import()`, `<link rel=modulepreload>`, `<script crossorigin>`, `<img crossorigin>`, `<link rel=stylesheet crossorigin>`, `<link rel=preload as=font crossorigin>`, `@font-face` (inline, external stylesheet, `FontFace` API), plain `<img>`, plain stylesheet, XHR and `fetch()` to in-root `file:` URLs; **dev/release differential (r10)**: the same application under `keld dev` (`hsa`) and as an installed launch, with an `onHeadersReceived` listener, recording response headers on a classic script and an image, `Content-Type` for `.wasm`, `.svg` and `.mjs`, and a media seek (also on a request past the 256-hold bound) | WRR log per request: contexts 1 and 7 (8 if reported) and every request whose WRR headers carry `Origin` (E11: value `null`, no `Sec-Fetch-*` visible) → **Host-served**; classic script, plain image, plain stylesheet, `@font-face` (no `Origin`) and other 16 → **verified, held, no response**. Page oracle (E11 `cm-hso`, 2/2 runs): every module, `import()`, `modulepreload`, `crossorigin` script/image/stylesheet and crossorigin font-preload cell loads and executes, without `Access-Control-Allow-Origin`; classic script, plain image and the three `@font-face` forms load on pass-through. In-root `fetch`/XHR `200` with no switch; out-of-root `403` empty (E10). Dev/release: app headers reach exactly the release classes in both modes and `Content-Type` matches per class; any media-seek difference is recorded as a divergence (Range is UNKNOWN, AC23). | (1) Classify by `RequestedSourceKind == DOCUMENT` (E9: `DOCUMENT` for every request) → every subresource is served → served count = request count (19/19 on the E8 workload) and E8's serving cost returns (+34–36 %) → RED. (2) Drop the `Origin` rule (r7 `hs`) → the module same-/other-directory, static-import, `import()`, `modulepreload`, `crossorigin` script/image/stylesheet and crossorigin font-preload cells fail (E11 `cm-hs`, 2/2) → RED. (3) Pass context 7 through → in-root `fetch`/XHR fail (`TypeError`/status 0, E10 `sx-hyb-off`) → RED. (4) Pass frame `DOCUMENT`s through → the frame carries no Host CSP header and the AC25 `'none'` fixture's scripts run inside it → RED. (5) Under `hsa`, apply app headers to every Host-served request regardless of release class → the dev classic script carries the listener's header and the installed one does not → RED. |
 | AC25 The served document's CSP governs pass-through subresources; CSP is not containment (A16) | Host-served documents carrying, one per cell, `script-src 'none'`; `script-src 'self'`; `script-src 'nonce-…'`; `img-src 'none'; style-src 'none'`; `script-src file:///<root>/csp/ext.js`; no CSP — each loading same-directory `file:` scripts, an inline script, a nonced inline script, a `data:` script, a stylesheet and an image; **cross-directory** `'self'`, `'none'` and no-CSP pages at the root and at a deep path loading `js/a.js`, `lib/x/b.js`, `./js/../lib/x/c.js` (root) and `../../js/a.js`-style paths (deep page), plus an out-of-root script and a junction-reached one; **T2 device cell**: a `'sha256-…'` hash source | As E9 `h-csp` (with the switch) and both E10 `hs` corpus runs (no switch; origin as measured in E10's no-switch matrix rows under the same environment configuration), every cell identical: `'none'` blocks every script; `'self'` runs the same-directory `file:` scripts and blocks inline/`data:`; the nonce policy runs only nonced scripts; `img-src`/`style-src 'none'` block the pass-through image and stylesheet; no CSP runs everything. Cross-directory (E11 `cx`, 12/12 cells over 2 runs): `'self'` runs every in-root script from the root and from the deep page, inline is blocked, `'none'` blocks all. **CSP is not a containment boundary**: under `'self'` the out-of-root and junction-reached script URLs raised **no** CSP violation; only the Host's `403` stopped them (E11). The exact `file:` host-source blocked its own script on this runtime — recorded as a runtime quirk (CSP3 would admit it), not required. Pass-through `Content-Type` is Chromium's extension mapping (E9). Hash sources are UNKNOWN until their cell runs. | (1) Drop the CSP header from the served document → the `'none'` cell runs its `file:` scripts → RED. (2) Run the `'self'` cross-directory page with the Host's refusal disabled (observe) → the out-of-root script runs with no CSP violation (INFERRED from E11, where only the `403` stopped it) — shows that containment rests on the Host, not on CSP. |
-| AC26 Root swap and in-root race (A20, A23) | (i) After admission the root's **parent** mutation owner renames `<root>` → `<root>.swapped` and plants a junction `<root>` → OUT (look-alike names, other nonces), then the page loads Host-served and pass-through requests. The fixture root has **nothing open beneath it** except the Host's own root handle, because an open handle beneath a directory alone makes its rename fail with `ERROR_ACCESS_DENIED` (5, E9 share-mode table; both production roots contain the running `keld-host.exe`, `app_session.rs:1533-1534`, `:3014`); (ii) after verification and before Chromium's open, a pass-through classic `<script>`, `<img>` and stylesheet have their leaf replaced by rename and, separately, their directory replaced by a junction to OUT (deterministic injection); (iii) the leaf is replaced by an **in-root** file right after verification (the instant at which E11's separate hold chain had a gap); (iv) **release cells**: success, cancelled (`src` cleared, `window.stop()`, iframe removed or navigated), removed-from-DOM, CSP-blocked, duplicate and same-URI loads, page and Host navigation, webview close; (v) **T2 device cell**: three documents in sequence, each holding, then a blank document; and one document issuing 300+ distinct pass-through images (the 256-hold bound); and, under `keld dev` (`hsa`), one document loading `a/b/img.png` (r12); (vi) **subresource across the G-change** (r12): a hook holds `ContentLoading` of document G₂ in the Host's queue while G₂'s first pass-through subresource WRR is handled and held, then releases it, and the harness replaces that file by rename-over before Chromium's open | (i) The rename fails with **`ERROR_SHARING_VIOLATION` (32)** — the code is counted, so a 5 from a handle beneath does not pass — and every cell matches its verified identity (E9 hybrid with the no-`DELETE` root: 0/9). (ii) The verified bytes are delivered 24/24 per kind and injection, every swap fails (32), and, under r10's retirement-only release, a held leaf cannot be rewritten (32) or replaced by rename (5) until retirement and both succeed afterwards (E14 rewrite cell, 3 runs; E11 `hsh`, `hsh-post` measured r9's earlier release). (iii) The verified bytes are delivered: E12 gap cell 288/288 (swaps fail 32, rename-over 5); the hold **is** the verification handle (opened share `READ`), so no verify → hold gap exists. (iv) No hold outstanding after retirement or close in any cell (E12, 3 runs each, `hsoh` and `hsod`; E14 `hsoz`, 3 runs); cancelled loads released only by retirement/close; same-URI holds released as a multiset. (v) Each document's holds are all released at its retirement and none earlier; while held, a rename of each document's own directory (the documents use disjoint directories; one that renames is renamed back and the cell fails) fails **32** (the retained chain, AC29) and succeeds after that document's retirement; 0 outstanding after the last retirement and every exclusive open succeeds; at the bound the first 256 are held, the rest Host-served, all images decode (E14 `hsoz`: 3/3 each; peak 768 handles). Under `hsa`, after the load completes and while the document lives, a rename of `a/b` succeeds (no chain is retained for `Serve`). (vi) The verified bytes are delivered and the hold is released only at G₂'s retirement; at-risk 1 per run. | (i) Open the session root handle **with** `FILE_SHARE_DELETE` (E9's probe control; only implementable on the dev stage's std handle — cap-primitives strips `DELETE` from every directory open, `oflags.rs:28-36`) → the rename succeeds and later pass-through reads come from OUT: E9 control 4/9 under all-context pass-through; under `hso` the predicted at-risk set is 2 of 9 (the classic script and the plain image; INFERRED) → RED. If the fixture cannot keep the root free of handles beneath it, the NC is pre-declared **rule not exercised**. (ii) No hold (r7 `hs`) → the replacement 24/24 and OUT 24/24 per kind (E11 `sr-hs`) → RED. (iii) No hold (`hso`) → the gap attack succeeds 144/144 (E12) → RED. (iv) Remove the retirement/close release → 14 (`hsoh`) / 15 (`hsod`) holds outstanding and the exclusive-open detector fails 32 (E12) → RED. (v) Remove the retirement release (E14 `hsozx`) → 18 holds outstanding and 18 exclusive opens fail 32 → RED; remove the bound → more than 256 holds outstanding in the bound cell → RED; release the leaf but keep the chain at retirement → the directory renames still fail 32 → RED; retain the `Serve` chain → under `hsa` the rename of `a/b` fails 32 → RED. (vi) Key the hold by the generation current at the WRR → the released `ContentLoading` frees it, the rename-over lands before Chromium's open and the replacement is delivered → RED. |
+| AC26 Root swap and in-root race (A20, A23) | (i) After admission the root's **parent** mutation owner renames `<root>` → `<root>.swapped` and plants a junction `<root>` → OUT (look-alike names, other nonces), then the page loads Host-served and pass-through requests. The fixture root has **nothing open beneath it** except the Host's own root handle, because an open handle beneath a directory alone makes its rename fail with `ERROR_ACCESS_DENIED` (5, E9 share-mode table; both production roots contain the running `keld-host.exe`, `app_session.rs:1533-1534`, `:3014`); (ii) after verification and before Chromium's open, a pass-through classic `<script>`, `<img>` and stylesheet have their leaf replaced by rename and, separately, their directory replaced by a junction to OUT (deterministic injection); (iii) the leaf is replaced by an **in-root** file right after verification (the instant at which E11's separate hold chain had a gap); (iv) **release cells**: success, cancelled (`src` cleared, `window.stop()`, iframe removed or navigated), removed-from-DOM, CSP-blocked, duplicate and same-URI loads, page and Host navigation, webview close; (v) **T2 device cell**: three documents in sequence, each holding, then a blank document; and one document issuing 300+ distinct pass-through images (the 256-hold bound); and, under `keld dev` (`hsa`), one document loading `a/b/img.png` (r12); (vi) **subresource across the G-change** (r12): a hook holds `ContentLoading` of document G₂ in the Host's queue while G₂'s first pass-through subresource WRR is handled and held, then releases it, and the harness replaces that file by rename-over before Chromium's open; (vii) **hold across a Host attempt's issue** (r13): a hook defers document G₁'s pass-through WRR after its hold is taken, the Host issues a `loadURL` (#1192's +1 at issue, L110), the hook completes the deferral, and the harness replaces the file by rename-over before Chromium's open; run once with the attempt committing and once with it failing | (i) The rename fails with **`ERROR_SHARING_VIOLATION` (32)** — the code is counted, so a 5 from a handle beneath does not pass — and every cell matches its verified identity (E9 hybrid with the no-`DELETE` root: 0/9). (ii) The verified bytes are delivered 24/24 per kind and injection, every swap fails (32), and, under r10's retirement-only release, a held leaf cannot be rewritten (32) or replaced by rename (5) until retirement and both succeed afterwards (E14 rewrite cell, 3 runs; E11 `hsh`, `hsh-post` measured r9's earlier release). (iii) The verified bytes are delivered: E12 gap cell 288/288 (swaps fail 32, rename-over 5); the hold **is** the verification handle (opened share `READ`), so no verify → hold gap exists. (iv) No hold outstanding after retirement or close in any cell (E12, 3 runs each, `hsoh` and `hsod`; E14 `hsoz`, 3 runs); cancelled loads released only by retirement/close; same-URI holds released as a multiset. (v) Each document's holds are all released at its retirement and none earlier; while held, a rename of each document's own directory (the documents use disjoint directories; one that renames is renamed back and the cell fails) fails **32** (the retained chain, AC29) and succeeds after that document's retirement; 0 outstanding after the last retirement and every exclusive open succeeds; at the bound the first 256 are held, the rest Host-served, all images decode (E14 `hsoz`: 3/3 each; peak 768 handles). Under `hsa`, after the load completes and while the document lives, a rename of `a/b` succeeds (no chain is retained for `Serve`). (vi) The verified bytes are delivered and the hold is released only at G₂'s retirement; at-risk 1 per run. (vii) The rename-over fails (32/5) and the verified bytes are delivered; the hold is released at the attempt's commit, or, when the attempt fails, only at a later commit or webview close; at-risk 1 per variant. | (i) Open the session root handle **with** `FILE_SHARE_DELETE` (E9's probe control; only implementable on the dev stage's std handle — cap-primitives strips `DELETE` from every directory open, `oflags.rs:28-36`) → the rename succeeds and later pass-through reads come from OUT: E9 control 4/9 under all-context pass-through; under `hso` the predicted at-risk set is 2 of 9 (the classic script and the plain image; INFERRED) → RED. If the fixture cannot keep the root free of handles beneath it, the NC is pre-declared **rule not exercised**. (ii) No hold (r7 `hs`) → the replacement 24/24 and OUT 24/24 per kind (E11 `sr-hs`) → RED. (iii) No hold (`hso`) → the gap attack succeeds 144/144 (E12) → RED. (iv) Remove the retirement/close release → 14 (`hsoh`) / 15 (`hsod`) holds outstanding and the exclusive-open detector fails 32 (E12) → RED. (v) Remove the retirement release (E14 `hsozx`) → 18 holds outstanding and 18 exclusive opens fail 32 → RED; remove the bound → more than 256 holds outstanding in the bound cell → RED; release the leaf but keep the chain at retirement → the directory renames still fail 32 → RED; retain the `Serve` chain → under `hsa` the rename of `a/b` fails 32 → RED. (vi) Key the hold by the generation current at the WRR → the released `ContentLoading` frees it, the rename-over lands before Chromium's open and the replacement is delivered → RED. (vii) Release holds at the issue-time G-change → the rename-over lands before Chromium's open and the replacement is delivered → RED. |
 | AC27 Drive-letter binding (A21) | The project is reached through a `subst` letter `K:` → `…\A`; a separate same-user process rebinds `K:` → `…\B` (look-alike files) while the page loads | (i) Admission from the `K:` spelling is **refused** typed (`KELD-*`, naming the final path to launch from) because `QueryDosDeviceW("K:")` names a session-defined target (`\??\…`), not a volume device. This is fail-early UX: containment does not depend on it, because the root URL is spelled from the final path and R7 refuses every `K:` URL as `OutsideRoot`. A project reached through a junctioned ancestor, cross-volume included, is **admitted** and re-spelled from its final path. (ii) A root spelled by its final path is unaffected by rebinding a spare letter: E9 0/12 — that run's URLs were spelled with the final path's `D:`, so it does **not** test `K:` URLs. Not exercised (pre-declared UNKNOWN): shadowing the **real** volume letter of the final path. E9 `ddd`: an AppContainer and an LPAC child get `ERROR_ACCESS_DENIED` (5) from `DefineDosDeviceW`; a medium-IL same-user child succeeds and the Host's session sees the mapping. | (i) Remove the admission refusal → no typed `KELD-*` error at admission (the app boots under the `D:` spelling and every `K:` link is `403` `OutsideRoot`) → RED. (ii) With a declared test seam that admits a `K:`-spelled root URL (precondition printed), spell the URL from the requested letter → E9: 5 of 12 cells, exactly the pass-through ones, deliver `B`'s bytes → RED. |
 | AC28 Keld-owned browser arguments (A22) | (i) The environment as Keld creates it; the page constructs `new Worker('wesc.js')` (in-root) and `new Worker('../../out/wout.js')` itself, and `blob:`/`data:` classic, module and shared workers whose `importScripts`, `fetch`, `import()` and nested `Worker` target out-of-root, junction-reached and in-root files; `navigator.serviceWorker.register`; (ii) `self.origin`/`location.origin` and an in-root `file:` frame's DOM; (iii) in-root and out-of-root `fetch`/XHR and a cross-origin `https:`/`http:` URL without CORS; (iv) `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--allow-file-access-from-files` (and, separately, a benign `--user-agent=…`) is set (a) in the environment of `keld dev` and (b) in the environment of a directly launched installed `keld-host`; (v) **T2 device cell** (B16): each loader policy of rule (3) under HKCU, value names the executable's file name, `*` and the process's AUMID (one ending in `.exe`); `AdditionalBrowserArguments`, `UserDataFolder` and `BrowserExecutableFolder` (administrator-only and user-writable targets) under HKLM; (vi) source test over `keld-wv`/`keld-cli` | The oracle counts **out-of-root nonces delivered** (WRR counts are reported, not scored). (i) Page-constructed `file:` workers throw `SecurityError`; `blob:`/`data:` classic and `data:` module/shared workers construct with origin `null`, `blob:` module and `blob:` shared workers fail to start, `serviceWorker.register` rejects; every `file:` load from those workers fails — out-of-root and junction `importScripts` raise WRR and get `403`, in-root `importScripts` is allowed and passed through yet still fails `NetworkError`, and `fetch`/`import()`/nested workers raise no WRR and are blocked by Chromium — identically in an observe run (E11 `b15-hs` ×2, `b15-hs-allk`, `b15-observe`): **0** out-of-root nonces. (ii) `self.origin == "null"`, `location.origin == "file://"`, the frame's `contentDocument` is `null`. (iii) In-root `200` (Host-served), out-of-root `403` empty, cross-origin fails (E10). (iv) (a) the launcher removes the variable from the Host's environment, the environment is created and 0 nonces arrive (INFERRED from E11 `env-af-clearenv`, where it was absent at creation); (b) `keld-wv` refuses environment creation with a typed `KELD-*` error naming the variable and no page loads (E11 `env-af-refuseenv`). (v) Typed `KELD-*` refusal naming the root, key and value name for every refused policy; an HKLM `BrowserExecutableFolder` at an administrator-only folder launches and the boot diagnostics record that runtime's version and image path; at a user-writable folder it is refused (B16). (vi) Options `AdditionalBrowserArguments` empty; the KEL-66 test (`webview2/mod.rs:4851-4875`) is extended to refuse `--allow-file-access-from-files` and `--allow-universal-access-from-files` by name. | (1) Put `--allow-file-access-from-files` in the options → every worker kind and the page-constructed out-of-root worker deliver OUT nonces (3/3 targets) with zero WRR events for those loads (E10 every host mode; E11 2 runs and with source kinds `ALL`) → RED. (2) Drop both the launcher removal and the refusal with the variable set → OUT nonces 3/3 and `self.origin == "file://"` (E11 `env-af`); separately drop only the refusal → case (b) escapes (installed launches have no Keld launcher); options `""` or no options object does not override it, and on a conflicting argument the environment value wins (E11 `env-af-nullopts`, `env-afua-optua`: the page's user agent is the variable's) → RED. |
 | AC29 Resource-source API: open intent and chain ownership (A23, C3) | Windows test of keld-core's `AppResourceSource` through the published trait, over a fixture root `<root>/a/b/f.js` with nothing else open beneath `<root>`: (i) `open([a, b, f.js], Serve)` and, with the result alive, an in-place rewrite of `f.js` and a rename of `f.js`; (ii) on a fresh copy of the fixture ((i) and (ii) each start from one; (iii) continues (ii)), `open([a, b, f.js], Hold)` and, with the result alive, the same rewrite and rename, then a rename of `a/b` and of `a`; (iii) the `OpenedResource` of (ii) dropped (the hold table's retirement step), then the same four mutations | (i) Both succeed (`Served` shares `READ \| WRITE \| DELETE`). (ii) The rewrite fails 32 and the leaf rename fails (5 or 32, counted); the renames of `a/b` and `a` fail with **32** (`ERROR_SHARING_VIOLATION`: the retained chain handle lacks `FILE_SHARE_DELETE`), not 5, which is what a leaf handle beneath produces on its own (E9 share-mode table), so the code separates a retained chain from a leaf-only hold (INFERRED until run: E9 measured 32 for a directory handle without `DELETE` and 5 for a handle beneath, never both at once). (iii) All four succeed. | (1) `Serve` mapped to `Share::Pinned` → (i) the rewrite fails 32 → RED. (2) `Hold` mapped to `Share::Served` → (ii) the rewrite succeeds → RED. (3) The chain dropped inside `open` (a leaf-only hold) → (ii) the directory renames fail 5, not 32 → RED. (4) The source keeps a clone of the chain (a hidden map) → (iii) the directory renames still fail → RED. |
@@ -356,18 +384,18 @@ lifecycle/revocation and evidence provenance; performance atoms are in §9.
 
 | Atom | Owner / boundary | Inputs → outputs | Failure mode | Observable | Evidence | Edges · first falsifier |
 | --- | --- | --- | --- | --- | --- | --- |
-| A1 Loading path | `keld-core` boot → `keld-wv` `navigate` | admitted root + entry components → `Navigate(file URL)` | string load yields `about:blank` identity | AC01 | FACT W1 source probe; code `:3653`/`:3654` | · AC01 NC |
+| A1 Loading path | `keld-core` boot → `keld-wv` `navigate` | admitted root + entry components → `Navigate(file URL)` (a header navigation in header-proven mode, §4.6 rule 1) | string load yields `about:blank` identity | AC01 | FACT W1 source probe; code `:3653`/`:3654` | · AC01 NC |
 | A2 Request census and filter scope (coverage, cost) | WebView2 filter normalization + `keld-wv` registration | `file:*` + `CONTEXT_ALL`; source kind `DOCUMENT` per webview before first `Navigate`, `SHARED_WORKER \| SERVICE_WORKER` once per environment (together: all source kinds) → every `file://` request a page or worker can issue raises WRR, no other scheme does; worker `fetch`/`import()`/nested-worker loads raise none and Chromium blocks them without the switch (E11) | late registration; `*` filter puts every remote request on the UI thread; worker source kinds missing (shared-worker `importScripts` invisible) | AC02, AC19, AC28 | PROBE n2 (under `*`; second document only per note 268); PROBE E11 (`data:` SharedWorker `importScripts`: WRR only with the worker source kinds); FACT L1307 normalization, `_22` L51/L72 | precondition of A8 · n2 under `file:*`, both documents |
 | A3 Admitted root (identity of the root) | `keld-core` boot (dev DACL; KEL-254 selection) | admission → one retained `Dir` | handle dropped and reopened by path | AC04 | FACT dev handle dropped today; `tree: Dir` retained | → A5, A20, A21 · junction swapped in after admission is followed |
 | A4 URL → components (authentication of the name) | `keld-guard` parser | URI + `AdmittedRootUrl` → components or refusal | double decode; authority; ADS; `~`; Win32 spellings | AC05 | PROBE parser cells; FACT grammar; FACT Chromium pre-canonicalises `%2e%2e` | independent of A5 for `:`/`~`; redundant for `..`/trailing dot · AC05 NC |
 | A5 Open (OS containment) | `keld-update` `open_regular_beneath`, **per-component** cap-std no-follow walk (normative) | `&Dir` + components → regular-file handle + `nlink` | reparse followed (multi-component `open_with` follows intermediate relative symlinks); directory; Win32 name layer | AC03 opener cells, AC04 | FACT cap-primitives relative `NtCreateFile` + `FILE_OPEN_REPARSE_POINT`; PROBE `gh1185-capstd-junction-2026-10-30` (3/3 identical, keld-research note 268): cap-std 4.0.3 refuses an intermediate junction in every form (multi-component path and default `open_dir`: "a path led outside of the filesystem", for out-of-root and in-root targets alike; `open_dir_nofollow`: os error 681), while the ambient `std::fs` negative control reads the out-of-root sentinel through the same junction; directory/file symlinks UNTESTED (creation needs privilege) | ← A3 · AC04 NC |
 | A6 Hardlink authority (authorization) | KEL-254; W3 reads back | `nlink` + DACL → served + receipt | namespace write taken as the only authority | AC17 | FACT owner decision + correction | · role write grant |
 | A7 Request classification and response contract (hso) | `keld-wv` handler | WRR `ResourceContext` 1 (documents incl. `<object>`/`<embed>` HTML), 7, 8 (`fetch`/XHR), or any request whose WRR headers carry `Origin` (CORS mode): `200` from the verified handle with Host `Content-Type` (one `keld-wv` table), `Content-Length` and S1 headers, the baseline CSP on 1 only; any other context: verified and held, **no** response (A23); refusal: `403`/`404` empty | classifying by `RequestedSourceKind` (always `DOCUMENT`: every request served, E8 cost); a document passed through (no Host headers); `fetch`/XHR or CORS-mode loads passed through (they fail from an opaque origin) | AC03, AC09, AC16, AC18, AC24 | PROBE E9/E10 census; PROBE E11 `cm` (every CORS-mode cell fails passed through, loads Host-served; `Origin: null` at WRR; no `Sec-Fetch-*` visible) | → A16, A23 · AC24 NCs |
-| A8 Served-document identity | `keld-wv` per-navigation record for **every** top-level navigation (all schemes) | allowed `NavigationStarting(n)` + DOCUMENT WRR with equal parsed URI → `ServedDocument` | URL text as identity; frame record attached to `n` | AC06 | INFERRED timing; UNKNOWN `IsErrorPage` for Host `404` (Q7) | ← A2; → A12 (gate sees all navigations) · AC06 NC |
+| A8 Served-document identity | `keld-wv` per-navigation record for **every** top-level navigation (all schemes) | allowed `NavigationStarting(n)` + DOCUMENT WRR carrying `n`'s attempt nonce (r13; URI equality is not proof) → `ServedDocument` | URL text as identity; a frame record (same URI included) attached to `n` | AC06 | INFERRED timing; UNKNOWN `IsErrorPage` for Host `404` (Q7); FACT no frame or navigation id on WRR (SDK 1.0.3650.58); UNKNOWN nonce on the WRR request (Q22 b) and page-initiated proof (Q27, B19) | ← A2, A10; → A12 (gate sees all navigations) · AC06 NC, (d′) |
 | A9 Navigation events → facade | `keld-wv` → `AppWindowEvent` → facade | WebView2 events → Electron emission rules | fabricated/reordered; `did-fail-load` on cancel | AC07, AC09 | FACT Electron v45.1.0 L2745–2752, L2872, L2932–2933 | ← A8 · AC07 NC |
-| A10 `will-navigate` policy and attribution | `keld-wv` (allowlist on the original event) + facade (notification) + `keld migrate` (allowlist derivation) | `NavigationStarting` → allow/cancel (+0) and notification | allowlist after +1 (revokes live document, W1 AC10); `IsUserInitiated` as initiator; URI equality as proof of Host initiation (r11, AC08 (l)); redirect hop of a Host attempt cancelled | AC08 | FACT: no deferral; FACT #1192 L108 (+0 on cancel); UNKNOWN history-kind emission (P3) | edge to #1192 L108–112 and W1 AC10 made explicit: W3 performs no Host load for page navigations · AC08 NC |
+| A10 `will-navigate` policy and attribution | `keld-wv` (allowlist on the original event) + facade (notification) + `keld migrate` (allowlist derivation) | `NavigationStarting` → allow/cancel (+0) and notification | allowlist after +1 (revokes live document, W1 AC10); `IsUserInitiated` as initiator; URI equality or event order as proof of Host initiation (r11/r13, AC08 (l)); redirect hop of a Host attempt cancelled | AC08 | FACT: no deferral; FACT #1192 L108 (+0 on cancel); UNKNOWN history-kind emission (P3); UNKNOWN header exposure for `file:` (Q22, B18) | edge to #1192 L108–112 and W1 AC10 made explicit: W3 performs no Host load for page navigations · AC08 NC |
 | A11 Eval mechanism | `keld-wv` CDP | script → settled value/rejection/destroyed | `ExecuteScript` targeting; codegen scope | AC10 | PROBE n4; FACT V8 L151, L400–402 | · n4 |
-| A12 Eval lifecycle/revocation | one `keld-wv` state machine (`Pending → Retired \| Delivered`) over #1192's generation (handoff point per #1192 L141, §4.7 step 4) with the main-frame context bound only when the CDP loader and `ContentLoading` pair unambiguously (§4.7 step 1, Q23); role axis = KEL-75/KEL-143's retirement | `(G, ctx)` at dispatch → deliver iff the entry is still `Pending` when CDP completes; retire in the STA turn that advances G | stale delivery; eval in the gap runs in the new document; a delayed context of an older document paired with a newer generation; BFCache never completes | AC11, AC12 | PROBE r1–r3 (`-32000` on replacement); **no probe evidence for the replay rule** (N6 compared constants — note 268); FACT CDP out-of-order (L1333) | ← A8 (all schemes) · AC11 (ii) NC; AC12 NC |
+| A12 Eval lifecycle/revocation | one `keld-wv` state machine (`Pending → Retired \| Delivered`) over #1192's generation (handoff point per #1192 L141, §4.7 step 4) with the main-frame context bound only across a verified transition (§4.7 step 1, r13: transition gate, fresh loader, uniqueness; Q23 and the lag premise, B17); role axis = KEL-75/KEL-143's retirement | `(G, ctx)` at dispatch → deliver iff the entry is still `Pending` when CDP completes; retire in the STA turn that advances G | stale delivery; eval in the gap runs in the new document; a delayed context of an older document paired with a newer generation; a newer same-URL document's context paired with the older generation; BFCache never completes | AC11, AC12 | PROBE r1–r3 (`-32000` on replacement); **no probe evidence for the replay rule** (N6 compared constants — note 268); FACT CDP out-of-order (L1333) | ← A8 (all schemes) · AC11 (ii) NC; AC12 NC |
 | A13 Eval capability (fail loud) | create-time self-test | CDP calls → start / typed refusal | silent per-call rejection; unknown-field acceptance mistaken for honoring | AC13 | FACT crdtp L124–128 | · AC13 NC |
 | A14 Eval value domain | #1190 owner (decoder of the deep-serialized form; domain losses) | `deepSerializedValue` bytes ≤ bound → decoded domain | 4096 bound; getters run and symbol/non-enumerable keys dropped (V4 not met); remote objects leaked without `releaseObjectGroup` | AC14, AC10 (e)–(g) | FACT D4; FACT V8 L222/L257, L339–341; FACT `injected-script.cc` L640–648 | B3/Q15 · AC14 NC |
 | A15 App response headers (S1) | facade listener + `keld-wv` round trip | registered listener → modified headers on **Host-served responses** (1, 7, 8, CORS-mode); pass-through classic script/stylesheet/image carry none (recorded divergence) | pass-through on retirement; second URL matcher; round trip for pass-through contexts | AC15 | FACT D3 (source level); INFERRED from the API surface, untested: a request answered with no response cannot carry Host headers | → A16, A19 · AC15 NC |
@@ -547,15 +575,26 @@ pub struct WebviewSpec { pub title: String, pub size: LogicalSize, pub initial: 
 `ResourceChain` to the caller. The source keeps no per-request handle (it holds only the session
 root, §4.3), no map and no document identity, so it needs no release operation. The one lifecycle owner is keld-wv's STA hold table. For `Hold` it
 stores the whole `OpenedResource` under a generation key and drops it, chain included, when that
-generation retires or the webview closes (A23); the hold is thus the exact verification leaf and
+generation retires (below) or the webview closes (A23); the hold is thus the exact verification leaf and
 directory chain. WRR carries no frame id (§4.5), and the STA order of a new document's first
-subresource WRR against its `ContentLoading` is not documented (Q24), so the key fails safe. A
-hold taken while no allowed main-frame navigation is pending is keyed to the current
-generation. A hold taken between an allowed main-frame `NavigationStarting` and that
-navigation's end is keyed to the **next** generation; if the navigation ends without a G-change
+subresource WRR against its `ContentLoading` is not documented (Q24: measured 0 inversions in 25,440, not guaranteed), so the key fails safe. Both
+the key and §4.7 step 1's transition gate read **one owner state**, the STA's **open-navigation
+record** (§4.4's `PendingTopLevel` in state `Started`: an admitted top-level cross-document
+navigation between its uncancelled `NavigationStarting` and either its `ContentLoading`, which
+moves it to `Committed`, or its `NavigationCompleted`, which drops it). A hold
+taken while that record is empty is keyed to the current generation. A hold taken while it is
+open is keyed to the **next** generation; if the navigation ends without a G-change
 (`NavigationCompleted` without `ContentLoading`: fragment-only, failed or cancelled), it is
-rekeyed to the current one. A late G₁ request is then released one document later (safe), and a
-G₂ request is never released at the G₁→G₂ turn, before Chromium opens it (AC26 vi). For `Serve` the STA drops the
+rekeyed to the current one. **Retirement (r13):** a generation's holds are released at the first
+main-frame commit (`ContentLoading`) after that generation stopped being current — the turn in
+which the engine actually replaces its document — or at webview close; a G-change that commits
+nothing releases nothing. #1192's +1 at a Host attempt's issue (L110) is such a G-change: the G₁
+document stays in the engine, and a G₁ hold taken just before the issue may not yet have been
+opened by Chromium, so releasing it in the issue turn would reopen the verify → open gap (AC26
+vii). A failed or cancelled attempt (L112) commits nothing either; the surviving engine document
+keeps its holds until a later commit replaces it or the webview closes. A late G₁ request is then
+released one document later (safe), and a G₂ request is never released at the G₁→G₂ turn, before
+Chromium opens it (AC26 vi). For `Serve` the STA drops the
 `ResourceChain` as soon as `open` returns and hands only `file` to the worker, so a served request
 pins no directory beyond its read (the root stays pinned, A20); under `keld dev` (`hsa`) every
 request is `Serve`, and so is a request at the 256-hold bound (the count is known before
@@ -641,19 +680,43 @@ policy allowed, whatever its scheme, so the eval gate (A12) sees all of them:
 
 ```rust
 struct PendingTopLevel { navigation: u64, uri: ParsedTarget /* file: parsed; other schemes as text */,
-                         kind: NavigationKind, served: Option<ServedDocument> }
+                         kind: NavigationKind, served: Option<ServedDocument>,
+                         state: NavState /* Started | Committed */ }
 struct ServedDocument { components: RootRelativeComponents, status: u16, bytes: u64 }
 ```
 
-- `NavigationStarting` (top-level, allowed): push.
+- `NavigationStarting` (top-level, allowed): push in state `Started`. A `Started` record is the
+  **open-navigation record** that §4.3's hold key and §4.7 step 1's transition gate read — one
+  owner state (r13e).
 - WRR `ResourceContext == DOCUMENT` whose **parsed** URI equals a pending `file:` record's
-  components and whose `served` is `None`: serve, then attach.
-- `ContentLoading(n)`: Host-served iff `served.status == 200 && !IsErrorPage`; the identity
+  components: serve it (every admitted DOCUMENT request is served, frames included), but
+  **attach** it to `n` only on navigation-specific proof (r13, 0monish 4425916757): in
+  header-proven mode (§4.6 rule 1 (i)) the request's headers carry `n`'s attempt nonce
+  (Q22 (b)) and `served` is `None`. URI equality, response order and file identity are never
+  correlation proof.
+- `ContentLoading(n)`: the record moves to `Committed`; Host-served iff `served.status == 200 && !IsErrorPage`; the identity
   reported to W1/#1192 is `(root, components)` with the bytes as currently present in the
   root (owner Q2; W1 L390–394 to be aligned, §10 B7); the attach compares components with
   the exported component equality. Dropped at `NavigationCompleted(n)`.
-- A frame document with a **different** URI never attaches (AC06 c); a frame with the
-  **same** URI attaching to `n` is the same `(root, components)` by construction.
+- A frame document never attaches without that proof, **whatever its URI**: a same-URI
+  `<iframe>` is a distinct document (AC06 c, d).
+
+**No other association exists on the supported SDK (FACT).** The WRR args expose `Request`,
+`Response`, `GetDeferral` and `ResourceContext` (`ICoreWebView2WebResourceRequestedEventArgs`,
+`webview2-com-sys-0.38.2/src/bindings.rs` L37870–37888) and `RequestedSourceKind` (`…Args2`,
+L38050) — no frame and no navigation identity; Microsoft's reference lists the same members
+(`icorewebview2webresourcerequestedeventargs`, git `38bc5e98`). `RequestedSourceKind` names the
+filter source kind (document vs shared/service worker), not the frame (E9: `DOCUMENT` for every
+request). No `ICoreWebView2Frame` through `ICoreWebView2Frame7` has a `WebResourceRequested`
+event (L18845–20056: name, host objects, destruction, navigation and content events,
+`ExecuteScript`, web messages, permissions, shared buffers, `FrameId`, screen capture,
+`FrameCreated`), and `AddWebResourceRequestedFilterWithRequestSourceKinds` (`ICoreWebView2_22`,
+L41563) filters by source kind only. Whether a newer SDK adds a frame-scoped request event is
+UNKNOWN. **Page-initiated navigations have no proof (B19).** A page navigation carries no Host
+nonce, so its DOCUMENT request cannot be told from a same-URI frame request. Until a mechanism
+passes its device cells (Q27 candidates), §4.6 rule 2 treats every page-initiated `file:`
+target as off-allowlist (cancel, +0): an admitted but uncreditable document would reach W1
+FailedClosed and `onLoss`, which rule 5 forbids W3 to cause.
 
 INFERRED: the top-level DOCUMENT request for `n` arrives between `NavigationStarting(n)`
 and `ContentLoading(n)` on the STA. Probe P2 (§10 Q7) counts DOCUMENT WRRs per pending
@@ -683,7 +746,7 @@ pinned root (A20). Then:
 
 - **Host-served** from the verified handle with Host headers (threading below; baseline CSP on
   documents only): `ResourceContext` 1 (top-level, frame, `<object>`, `<embed>` documents;
-  WRR carries no frame id, and §4.4's correlation makes the top-level distinction), 7/8 (XHR
+  WRR carries no frame id; §4.4 credits a top-level navigation only on navigation-specific proof), 7/8 (XHR
   and `fetch`; 156 reports `fetch` as 7), and **every request whose WRR headers carry
   `Origin`** (CORS mode: on 156 the value is `null`; no `Sec-Fetch-*` header is visible at WRR).
   E11 (`cm`, 2 runs each): passed through, every CORS-mode load fails — module scripts in the
@@ -699,7 +762,8 @@ pinned root (A20). Then:
   (`GENERIC_READ`, share `READ | WRITE`, compatible with the hold — E9 share-mode table) opens
   the pinned object. **Release** (r10, `hsoz`; proposed, replacing r9's dynamic handler after
 E13/E14), on the STA:
-  1. **Document retirement or webview close releases every hold of that document**, and nothing
+  1. **Document retirement or webview close releases every hold of that document** (retirement is
+     the main-frame commit that replaces it, §4.3 — never #1192's issue-time +1, r13), and nothing
      else does: no `WebResourceResponseReceived` handler is registered for holds. Reason: E13
      (follow-up 6) measured r9's dynamic handler (`hsodr`) on a real Vite 8.3.5 application at
      +7.27 / +6.17 / +8.49 % per document vs `hso` (pooled upper bounds 11.71 / 9.02 /
@@ -800,11 +864,62 @@ either root: one injects the switch, the other moves the profile Keld owns. The
 runtime-selection keys are refused under HKCU — per-user configuration that Microsoft treats
 as user-modifiable and ignores for elevated hosts (S3); on the operator device the default
 ACL gives the user read-only access to `HKCU\Software\Policies` (observed 2026-10-30), so
-writing it needs an elevated token, but Keld follows Microsoft's split — and **honoured under
-HKLM** only when every applicable value's runtime folder is not writable by the launching user (checked
-through the existing ACL reader `windows-permissions`; `ChannelSearchKind`/`ReleaseChannels`
-can select a per-user Canary under `%LOCALAPPDATA%`, which this refuses); the boot diagnostics
-record the selected runtime's version and image path. Mechanism: `RegOpenKeyExW`,
+writing it needs an elevated token. Under **HKLM** they are honoured only through the
+**allowed-writer rule (r13e)**, which applies before environment creation to **every** runtime the
+loader selects — the per-machine default, a per-user default and an HKLM-selected one alike. Over
+the runtime folder tree (every directory and every file, recursively) and its ancestors up to the
+volume root, a write-class right (`FILE_WRITE_DATA`/`FILE_ADD_FILE`,
+`FILE_APPEND_DATA`/`FILE_ADD_SUBDIRECTORY`, `FILE_WRITE_ATTRIBUTES`, `FILE_WRITE_EA`, `DELETE`,
+`FILE_DELETE_CHILD`, `WRITE_DAC`, `WRITE_OWNER`, and the generic rights that map to them) may be
+granted by an allow ACE only to SYSTEM, TrustedInstaller, Administrators or the launching user's
+own SID (the same-user residual, kept as in (q0)); every object's owner must be one of them; an
+ACE for CREATOR OWNER is accepted only inherit-only (it then applies to a future object's owner,
+which is checked when that object exists). Any other SID holding a write-class allow ACE —
+another user, `Users`, `Authenticated Users`, `Everyone`, `INTERACTIVE`, an AppContainer or
+capability SID (`S-1-15-2-*`, `S-1-15-3-*`, `ALL APPLICATION PACKAGES` among them) — an ACE form
+other than plain allow/deny, an absent DACL, or a reparse point anywhere in the tree refuses
+environment creation with a typed `KELD-*` naming the object and the SID. **Ancestors (r13g).**
+Inside the runtime product layout, every ancestor up to a stated boundary is checked by the same
+allowed-writer rule, `FILE_ADD_SUBDIRECTORY` included: for an Evergreen runtime up to and
+including the `EdgeWebView` folder, for a fixed-version or policy-selected runtime the selected
+folder's parent. Reason: the existing keld-guard ancestor exception (any trustee may hold
+`FILE_ADD_SUBDIRECTORY`; `validate_windows_machine_ancestor_directory` →
+`validate_anchor_descriptor`, `crates/keld-guard/src/windows_machine.rs` at `457a9c3b`) is safe
+for KEL-254 because Keld's own resolver follows only names it admitted, but here names are
+resolved by Microsoft's loader and runtime; another user who can add a folder next to the
+version folder (for example a higher-version directory) could be picked if the runtime's
+selection or update logic enumerates that parent (INFERRED, undocumented; Q28). Above the
+boundary (for example the volume root, which commonly grants `Authenticated Users` that right,
+INFERRED) the existing exception stays. Planting in an ordinary `PATH` directory is outside
+this rule and is not claimed.
+**Why this rule — the third option.** r12 checked only the folder's DACL against the launching
+user: it proved nothing about the files (NTFS gives each file its own DACL) and checked a
+principal the spec does not defend against. r13's first draft refused every policy-selected
+runtime: it cost availability and left the default runtime unchecked. r13d honoured every
+runtime with a same-user residual: it missed that an HKLM-selected runtime is machine-wide, so a
+file writable by another ordinary user or by `Users` lets that user plant code that runs in every
+other user's Keld launch — what KEL-254's machine modes exclude ("Both machine modes install
+beneath a protected machine root readable/executable, but not writable, by ordinary users",
+`docs/specs/kel254-windows-installed-root-boot.md` L134–135; its standard-user probes, L730).
+The allowed-writer rule closes other users, broad groups and AppContainer/LPAC tokens for every
+runtime alike and keeps only the same-user residual. **TOCTOU (INFERRED):** once only
+admin-class principals and the launching user can write an object in the tree or rename an
+ancestor, a change between the check and the runtime's loads needs one of those principals —
+trusted, or the same-user residual. **Mechanism (reuse):** `keld-guard`'s machine ACL reader
+(`windows_machine.rs`: `GetSecurityInfo` through `windows-permissions` 0.2.4, a workspace
+dependency `keld-wv` already declares, `Cargo.toml` L226, `crates/keld-wv/Cargo.toml` L75) and
+the C3 per-component no-follow walk for enumeration. No new FFI function and no new dependency
+are expected; the allowed-writer entrypoint is a `keld-guard` public-API change (§8), and
+whether the enumeration needs new `unsafe` is decided by the unsafe gate at T2, not claimed here.
+The folder checked must be the folder the loader uses; binding the two (for example passing the
+checked folder as `browserExecutableFolder`, whose precedence against a policy value is UNKNOWN)
+is Q28. **Cost (unmeasured, T2):** Microsoft: "The Fixed Version binaries are over 250 MB"
+(`webview2/concepts/distribution.md`, git `670ae635`); T2 measures a real runtime tree's object
+count and the check's cold-launch cost against architecture 01 §5's 5 % rule. Over budget, the
+fallback checks only the executable, the DLLs the runtime loads and their directory chain — stated
+as **weaker**: a file the runtime opens later stays unchecked. The boot diagnostics record the
+selected runtime's version, image path and class (per-machine; per-user, by the HKCU
+`EdgeUpdate` client key Microsoft documents; or policy-selected). Mechanism: `RegOpenKeyExW`,
 `RegEnumValueW` (names only), `RegCloseKey`, `GetCurrentApplicationUserModelId` and
 `GetCurrentProcessExplicitAppUserModelID` + `CoTaskMemFree` through `keld-wv`'s existing
 `windows` 0.61 dependency with added features `Win32_System_Registry` and
@@ -845,6 +960,14 @@ the parser, the walk, the pin and the hold; CSP limits what in-root code the pag
    `blob:`/`data:` workers cannot load any `file:` script. The owner states this is a
    divergence from Electron, where `file:` workers work (relayed 2026-10-30; not re-measured on
    Electron in this revision — GH-551 oracle cell).
+4. **Runtime file integrity (r13e).** The allowed-writer rule (§4.5 rule (3)) admits a selected
+   runtime only when its tree and ancestors grant write-class rights to admin-class principals
+   and the launching user alone. Residual: the launching user, a same-user medium-IL process and
+   a same-user Legacy role can still write a per-user runtime (or any object the user owns in the
+   tree) — principals that already act on a same-user Host ((q0)). Other ordinary users, broad
+   groups and AppContainer/LPAC tokens cannot, for every runtime alike (B16 (ii) cells 1–5). What
+   the ACL rule cannot express — the loader-folder binding, Strict roles that run under the
+   launching user's SID, and the weaker cost fallback — is Q28 (B20).
 
 **Drive-letter binding (A21), scored (0–10, confidence).** The root URL is spelled from the
 admitted handle's final path; admission refuses a root requested through a session-defined
@@ -1024,57 +1147,67 @@ quote it verbatim:
 > only; `preventDefault()` is not consulted. The Host never replays a page navigation.
 > **Host attempts** (the boot `Navigate`, an `onLoss` reload, the application's
 > `loadURL`/`reload`) to the window's **entry components are always admissible, whatever the
-> query**; any other Host target is checked against the same allowlist **before** its +1 — an
+> query** once rule 1 attributes the event to that attempt by causal proof (never by URI or
+> order); any other Host target is checked against the same allowlist **before** its +1 — an
 > off-allowlist Host attempt is a typed refusal at +0, never a revoked document. Redirect hops
 > of an admitted Host attempt are checked too; a cancelled hop fails that attempt closed
 > (#1192 L112), which is a stated divergence, not an exemption.
 
 Rules, applied on the original `NavigationStarting` in this order:
 
-1. **Attribution.** URI equality and event order alone never grant the Host exemption (r11,
-   0monish 4423613624: a page `location.assign(entry?x)` racing a pending Host
-   `loadURL(entry?x)` presents identical inputs). (i) **Proof, where the device supports it:**
-   the Host issues every **`file:`** attempt (never `http(s)`, so no Keld header reaches a
-   server or a redirect; `reload` keeps `Reload`, so its navigation kind is unchanged) with
-   `NavigateWithWebResourceRequest` carrying a header `X-Keld-Host-Attempt: <128-bit nonce>`
-   that page script cannot set on a top-level navigation, and attributes the `NavigationStarting` whose `RequestHeaders` carry that nonce
-   (single use). Whether `file:` navigations expose such a header at `NavigationStarting` is
-   UNKNOWN (Q22). (ii) **Without proof — ambiguity fails closed:** the event is provisionally
-   Host-initiated iff (a) it is the first
-   `NavigationStarting` after the window's one pending Host attempt was issued and its URI is
-   parsed-equal to the attempt's (for `file:`: equal components under the exported
-   component equality **and a byte-equal raw query**, the Host's own attempt URI having been
-   run through the same serializer as the engine reports — a page `index.html?b` racing the app's
-   `loadURL(index.html?a)` is never attributed to the Host; byte-equal normalized text plus
-   query otherwise) — the Host then records that event's
-   `NavigationId` as the attempt's — or (b) its `NavigationId` equals the recorded attempt id
-   (redirect hops keep the id; "`IsRedirected` while an attempt is pending" is **not** used,
-   because a superseding page navigation could carry it). Everything else is page-initiated.
-   An attempt is **open** from issue until `NavigationCompleted` of its attributed
-   `NavigationId`. It is closed at once, and never attributes anything, if `Navigate` fails
-   synchronously or the target differs from the current `Source` only by fragment (a
-   same-document navigation raises no `NavigationStarting` — WebView2 navigation-events
-   doc). A parsed-equal `NavigationStarting` with a **different** `NavigationId` while the
-   attempt is open proves ambiguity: that event is cancelled at +0 (no `will-navigate`). If
-   the provisional document has not committed, it gets no epoch; if it has, the Host advances
-   `G` (an uncorrelated replacement, #1192 L114), revoking it. The Host then retires the
-   attempt internally (no caller-visible result) and re-issues it once; a second ambiguity
-   fails it to the caller with a typed `KELD-*`. The ambiguous document's `did-navigate` /
-   `did-finish-load` are suppressed and the `loadURL` promise settles only on the re-issued
-   attempt. That the Host's own cross-document `Navigate` raises its own
-   `NavigationStarting` is INFERRED (AC08 (l) tests both orders). **Residual (stated):** a page
-   that keeps calling `location.assign(entry)` can make Host attempts fail; an ambiguity
-   failure therefore **never counts toward W1's three-recovery cap**, so it cannot close the
-   window (rule 5), and the failed `onLoss` reload leaves the document FailedClosed without a
-   further loss. Mode is fixed per runtime, never per event: a create-time self-test (or a
-   pinned T2 result) decides whether (i) applies; under (i) a missing header on one event never
-   drops that event to (ii). A further causal option for the fallback, CDP `Page.navigate`
-   returning `loaderId` (bound at `frameNavigated`), is INFERRED and unverified (Q22).
-   `IsUserInitiated` is never consulted for attribution: Microsoft documents that
-   "navigations initiated via WebView2 APIs are considered as user initiated"
-   (`icorewebview2navigationstartingeventargs.md`, `get_IsUserInitiated` remarks), so it
-   cannot separate a Host `Navigate` from a user click. `javascript:` and `about:` URIs are
-   page-initiated and off-allowlist by construction.
+1. **Attribution (r13).** A `NavigationStarting` is Host-initiated only when it is causally
+   bound to one Host-issued attempt. URI equality and event order never grant the Host
+   exemption, an epoch or, for a `file:` attempt, a settlement (r11 and r13, 0monish 4423613624: a page
+   `location.assign(entry?x)` racing a pending Host `loadURL(entry?x)` presents inputs
+   identical to the Host's, and r12's provisional first-event attribution let such a page
+   document commit and call IPC before any ambiguity was visible). The mode is fixed per
+   runtime by a pinned T2 result (Q22), never per event.
+   (i) **Header-proven mode.** Every Host `file:` attempt — the boot `Navigate`, the app's
+   `loadURL`, an `onLoss` reload-entry (a navigation to the entry URL, never `Reload()`) and the
+   app's `reload()` of a `file:` document — is issued with `NavigateWithWebResourceRequest`
+   (`ICoreWebView2_2`, `bindings.rs` L41075; `GET`, no body) carrying `X-Keld-Host-Attempt:
+   <128-bit nonce>`. Microsoft: "This lets you provide post data or additional request headers
+   during navigation. The headers in the WebResourceRequest override headers added by WebView2
+   runtime except for Cookie headers. Method can only be either "GET" or "POST"."
+   (`icorewebview2_2`, git `38bc5e98`); it says nothing about `file:` (UNKNOWN, Q22). The Host
+   attributes only the `NavigationStarting` whose `RequestHeaders` ("The HTTP request headers
+   for the navigation", `icorewebview2navigationstartingeventargs`) carry that nonce, single
+   use; page script cannot add a header to a top-level navigation (INFERRED: no web API sets
+   request headers on a navigation; Q22 (a) measures the page side). A redirect hop keeps the
+   attributed `NavigationId` ("`IsRedirected` while an attempt is pending" is not used). An
+   event without the nonce is page-initiated even while an attempt is pending — never a
+   fallback to URI attribution. An attempt whose nonce has not appeared when another top-level
+   navigation commits, or within the navigation-start bound T4 sets, fails to its caller with a
+   typed `KELD-*` and is never re-issued. `http(s)` attempts never carry the header (no Keld
+   header reaches a server or a redirect); they never need the exemption, because rule 4 checks
+   every non-entry Host target against the same allowlist and remote documents receive no IPC
+   epoch (W1), so their settlement may keep r12's URI correlation with no authority depending
+   on it. **Reload (r13, 0monish 4425565118).** `ICoreWebView2::Reload` takes no request
+   (`bindings.rs` L1881), so it cannot carry the nonce; header-proven mode issues the app's
+   `reload()` of a `file:` document as the header navigation to the committed URI — one
+   mechanism for every `file:` attempt. Its `NavigationKind` (`NEW_DOCUMENT` or `RELOAD`),
+   `history.length` and scroll/form restoration are UNKNOWN until Q22 (c) records them (`file:`
+   loads have no HTTP cache to revalidate, INFERRED). Until that cell passes, `reload()` of a
+   `file:` document is a typed refusal (a T1 divergence); `loadURL` and `onLoss` reload-entry
+   are navigations, not reloads, and are unaffected.
+   (ii) **Unproven mode** (Q22 has not passed on this runtime): **no** event is attributed to a
+   Host `file:` attempt; every top-level `NavigationStarting` is decided by rule 2 as
+   page-initiated. Because rule 2 treats every page-initiated `file:` target as off-allowlist
+   until B19 resolves, **every** Host `file:` attempt — the schema-1 boot `Navigate`, `loadURL`
+   and `onLoss` reload-entry alike, under any allowlist — is refused to its caller with a typed
+   `KELD-*` at +0, **before** #1192's +1, so a live document and its IPC survive; and even after
+   Q27 this mode credits no epoch (§4.4: no navigation-specific proof exists for an un-nonced
+   request). Unproven mode is a fail-closed state, not a degraded way to run. Candidate causal
+   paths for it — a webview that has never committed a document, and quiesce-then-load through a
+   Host-authored `NavigateToString` document — rest on unmeasured premises and are not adopted
+   (Q26). **Availability (B18):** W3 delivers no Windows `file:` application in this mode (§1).
+   **Residual (stated):** a page whose allowlist admits a navigation can supersede a pending
+   Host attempt, as in Electron; that attempt fails typed. Attribution failures **never count
+   toward W1's three-recovery cap**. `IsUserInitiated` is never consulted for attribution:
+   Microsoft documents that "Navigations initiated via WebView2 APIs are considered as user
+   initiated" (`icorewebview2navigationstartingeventargs.md`, `get_IsUserInitiated` remarks),
+   so it cannot separate a Host `Navigate` from a user gesture. `javascript:` and `about:` URIs
+   are page-initiated and off-allowlist by construction.
 2. **Allowlist, before anything else — for every page-initiated target, in-root `file:`
    included.** `file:` targets: `file_url_root_relative(uri, root)` must succeed **and** the
    returned components plus the raw query must match an allow form (`none` matches nothing;
@@ -1085,7 +1218,9 @@ Rules, applied on the original `NavigationStarting` in this order:
    `INDEX.HTML` and `index%2Ehtml` decide identically everywhere); other schemes:
    `web.navigation.allow` through `path_in_scope`. Off-allowlist → `SetCancel(TRUE)`;
    generation **+0** (#1192 L107); the live document and its IPC survive
-   (W1 AC10). On-allowlist → proceed; generation +1 only at commit. The `file:` allow forms
+   (W1 AC10). On-allowlist → proceed; generation +1 only at commit. Until B19 resolves (Q27),
+   every page-initiated `file:` target is off-allowlist whatever the form (§4.4: its document
+   could not be credited Host-served). The `file:` allow forms
    are a #541 decision (§10 B12): they are matched on parser components, never through
    `path_in_scope`, and exposing a navigation entrypoint of `keld-guard` outside `evaluate`
    (which refuses webview principals) is a `keld-guard` public API change (§8).
@@ -1095,13 +1230,13 @@ Rules, applied on the original `NavigationStarting` in this order:
    changes nothing (documented divergence). `BACK_OR_FORWARD`/`RELOAD`: allowlist applies,
    no notification until P3 (§10 Q10) settles whether Electron treats script history
    navigations as renderer-initiated (UNKNOWN).
-4. **No replay, ever; Host attempts are checked first; the entry is always reachable.** The
-   Host never re-issues a page navigation (it re-issues only the Host's own attempt after an
-   attribution ambiguity, rule 1). A Host attempt (boot `Navigate`, `onLoss`
-   reload-entry, the app's `loadURL`/`reload`, #459) whose target has the window's **entry
-   components is always admissible, whatever its query** (so `onLoss` recovery and an
-   `index.html?x` reload can never be refused by a derived allowlist that contains no entry
-   form); any other Host target is checked against the same allowlist **before** #1192's
+4. **No replay, ever; Host attempts are checked first; the entry is reachable whenever
+   attribution is proven.** The Host never re-issues a navigation, a page's or its own (r13).
+   A Host attempt (boot `Navigate`, `onLoss` reload-entry, the app's `loadURL`/`reload`, #459)
+   whose target has the window's **entry components is always admissible, whatever its
+   query, once rule 1 attributes it causally** (so in header-proven mode `onLoss` recovery and an
+   `index.html?x` load can never be refused by a derived allowlist that contains no entry
+   form; in unproven mode they are typed refusals, B18); any other Host target is checked against the same allowlist **before** #1192's
    "+1 before the engine call": an off-allowlist target is a typed refusal to the caller at
    +0 and the live document is untouched. Redirect hops of an admitted Host attempt are
    checked by rule 2 too; a cancelled hop fails that attempt closed (#1192 L112) — a stated
@@ -1151,39 +1286,82 @@ Flow (Windows): Bun `webContents.executeJavaScript(code, userGesture)` → facad
    Host registers the `executionContextCreated` / `executionContextDestroyed` /
    `executionContextsCleared` receivers **before** calling `Runtime.enable` (the probe
    registered them after, `main.rs` L1090–1119, so the initial event's arrival order is
-   UNVERIFIED and nothing below depends on it). **Binding (r11, 0monish 4423613626:**
-   "whichever arrives second" could pair B's generation with a delayed context of A).
-   CDP events and WebView2 events are two clocks whose relative order is UNKNOWN, so the
-   Host correlates the document **inside the CDP clock** and pairs the clocks only when
-   unambiguous. It also enables `Page` and tracks main-frame `Page.frameNavigated`
-   (`loaderId`, `url`). The **CDP side** keeps one slot, reset only by CDP events (a
-   main-frame `frameNavigated` replaces it; `executionContextsCleared` empties its candidate
-   list): the latest main-frame `frameNavigated(L)` and the default main-frame contexts
-   (`auxData.isDefault`, main `frameId`) created after it. The **WebView2 side** keeps one
-   slot: the `G` and `Source` of the latest `ContentLoading`. A G-change clears the bound pair
-   and the WebView2 slot, never the CDP slot. `(G, ctx)` is bound only when the CDP slot holds
-   exactly one candidate `ctx` and `L.url` (CDP excludes the fragment; `unreachableUrl` for an
-   error page) is parsed-equal to `Source` with its fragment removed. A second candidate for
-   the same `L` unbinds and refuses until the next `frameNavigated`. While unbound, an eval is
-   refused `DocumentReplaced` (B5; never `NoDocumentContext`, which would make the facade wait
-   for a `context-bound` that may not come — a T1 divergence from Electron, which evaluates in
-   whatever document is current); `Runtime.evaluate` is never dispatched to an unverified pair.
-   That a `Created` following `frameNavigated(L)` in the stream belongs to `L` is the Q23
-   ordering fact (one renderer stream; the old renderer's events dropped after a process
-   swap), not something this rule detects; if the T2 census refutes it, binding is withheld
-   and `executeJavaScript` is unavailable on Windows — blocker B17, not a silent fallback. **Unbinding:** `executionContextDestroyed`
+   UNVERIFIED and nothing below depends on it). **Binding (r13, 0monish 4423613626 re-review: URL
+   equality cannot separate two same-URL documents).** No documented datum joins the two
+   clocks: `ContentLoading` carries `IsErrorPage` and `NavigationId` only (`bindings.rs` L7325),
+   `NavigationStarting` no CDP identifier (L23632), and CDP's `Page.frameNavigated` (`loaderId`,
+   `url`) and `Runtime.executionContextCreated` (`uniqueId`, `auxData.isDefault`,
+   `auxData.frameId`) no WebView2 `NavigationId`; whether that id equals any Chromium identifier
+   is undocumented (UNKNOWN). The Host also enables `Page` and keeps a **CDP slot**, reset only
+   by CDP events (a main-frame `frameNavigated(L)` replaces it; `executionContextsCleared` empties
+   its candidates): the latest main-frame loader `L`, the STA turn in which it arrived, and the
+   default main-frame contexts created after it; and a **WebView2 slot**: the `G`, `Source` and
+   `NavigationId` of the latest `ContentLoading`. A G-change clears the bound pair and the
+   WebView2 slot, never the CDP slot. `(G, ctx)` binds only when all of these hold:
+   (a) **transition gate** — the STA's open-navigation record is empty (§4.3: the one owner state
+   the hold key also reads; open from an admitted top-level cross-document
+   `NavigationStarting(n)` until `ContentLoading(n)` or `NavigationCompleted(n)`);
+   while one is open nothing new binds, and an existing pair stays usable for its own document
+   until a member of the G-change set clears it;
+   (b) **fresh loader** — `L`'s `frameNavigated` reached the STA **after** the handler of the
+   `NavigationStarting(n)` whose `ContentLoading(n)` minted `G` returned; a loader seen earlier is
+   never a candidate for `n` (INFERRED causal order: Microsoft documents that a cancelled
+   navigation leaves "the content of the current page … intact", so `n` cannot commit before
+   that handler decides);
+   (c) **uniqueness** — exactly one fresh main-frame loader for `n` and exactly one default
+   main-frame context under it;
+   (d) **URL check** — `L.url` (CDP excludes the fragment; `unreachableUrl` for an error page) is
+   parsed-equal to `Source` without its fragment. URL equality is a consistency check, never
+   the correlation.
+   A failure of (c) or (d) puts `G` in `TerminalAmbiguous(G)` (phases below); a failure of (a)
+   or (b) only delays binding. `Runtime.evaluate` is never dispatched to an unverified pair. Two
+   premises are **not** detected by this rule and gate T3 (B17): Q23 (a default context created
+   after `frameNavigated(L)` belongs to `L`, including after a process swap) and the **lag
+   premise** (no main-frame `frameNavigated` of an earlier commit reaches the STA after a later
+   navigation's `NavigationStarting` handler returned). If either is refuted, or unmeasured when
+   T3 is ready, binding is withheld and `executeJavaScript` is a typed capability refusal on
+   Windows — blocker B17, not a silent fallback. **Unbinding:** `executionContextDestroyed`
    or `executionContextsCleared` for the bound `ctx`, and **every member of the one
    G-change set** — page replacement commit (#1192 L108), the Host load's +1 before the
    engine call (L110), that attempt's commit (L111), an uncorrelated replacement (L114) —
    clear the pair; it is complete again only after the next `ContentLoading`/created
    pairing. The same set drives step 4's retirement, so a back/forward-cache restore that
    re-creates `ctx₁` cannot pair with a stale G (the pair was cleared at the commit that
-   evicted it; Q14 census). At dispatch the Host uses the bound pair `(G, ctx)`; if
-   the pair is incomplete (the gap), the result is a typed `NoDocumentContext` that the
-   **facade** converts into a bounded wait for the Host's per-generation **`context-bound`**
-   event (not a tight re-dispatch: Electron's own wait returns immediately when the frame is
-   not loading, `web-contents.ts:44-45`, which would livelock here), then re-dispatches; the
-   application never sees it unless the bound elapses or the window dies. After a Host
+   evicted it; Q14 census). **Phases (r13, 0monish 4425565080; one owner,
+   the `keld-wv` STA).** At dispatch the Host reads one per-webview phase:
+   - `Bound(G, ctx)`: dispatch with `uniqueContextId: ctx` (steps 2–4).
+   - `AwaitingContext(G)`: entered at every G-change and when the bound `ctx` is destroyed or
+     cleared, unless an ambiguity rule fired. The Host sends **nothing** to CDP and returns a
+     typed `NoDocumentContext(G, s)`, `s` being the phase sequence (below). The **facade**
+     converts it into one bounded wait (not a tight re-dispatch: Electron's own wait returns
+     immediately when the frame is not loading, `web-contents.ts:44-45`, which would livelock
+     here). Settle frames and control records are not ordered against each other (step 4
+     rejects a shared FIFO), so a `context-bound` posted after the reply can arrive first. The
+     facade therefore keeps the `(G, s)` with the highest `s` among the `context-bound` and `context-refused` events it
+     has seen, and the wait ends at once when that `s` is greater than the reply's, otherwise at
+     the first such event with a greater `s`: `context-bound` → one re-dispatch, whose outcome is
+     final (a second `NoDocumentContext` settles; it never waits again); `context-refused` →
+     settle `DocumentReplaced`; the bound → settle `NoDocumentContext`; window death → every
+     waiter settles once. The sequence, not `G`, is compared: an unbind by
+     `executionContextDestroyed` enters `AwaitingContext` without a G-change (AC12 c), and an
+     earlier `context-bound` of the same `G` must not end the wait. Because nothing was sent,
+     the re-dispatch is the script's first and only execution, in the document current when it
+     runs — Electron's semantics for an eval issued during a load, which AC12 (b) requires across
+     a G-change (NC7); it is never a replay. T1 entry: such an eval may run in a later remote
+     document if the page navigates meanwhile, as Electron's would.
+   - `TerminalAmbiguous(G)`: (c) or (d) failed for `G`. `DocumentReplaced` at once, no wait; the
+     Host emits `context-refused(G, s)` on entry and never `context-bound` for `G`; the next G-change
+     moves to `AwaitingContext(G′)`.
+   - `AttemptFailed`: a Host attempt failed or was cancelled (#1192 L112); `DocumentReplaced` at
+     once until the next admitted load's G-change (below); the Host emits `context-refused(G, s)`
+     on entry. (Named apart from #1192's
+     `FailedClosed` document phase, in which step 2 still evaluates a remote or non-entry
+     document.)
+   - `Destroyed`/`Exhausted`: refused (step 2), no wait; every waiter settles once.
+   **Phase sequence:** `s` increments on every phase entry and belongs to the same STA state;
+   it is the only ordering token the facade compares, and `context-bound` carries `(G, s)` too.
+   The application sees `NoDocumentContext` when the bound elapses or when the single
+   re-dispatch meets `AwaitingContext` again; window death settles with step 2's refusal. After a Host
    attempt fails or is cancelled (#1192 L112, FailedClosed), the pair is **not rebound** to
    the surviving engine document: evaluations are refused with the typed `DocumentReplaced`
    outcome (not `NoDocumentContext`, so the facade does not wait) until the next admitted
@@ -1195,7 +1373,8 @@ Flow (Windows): Bun `webContents.executeJavaScript(code, userGesture)` → facad
    application means an irreversible migration mark).
 2. **Generation capture.** `G` is the bound generation, whatever the phase (`Live`,
    `FailedClosed` for a remote/non-entry document): Electron evaluates in the current
-   document regardless of IPC eligibility. Only `Destroyed`/`Exhausted` refuse.
+   document regardless of IPC eligibility. Only `Destroyed`/`Exhausted` and step 1's phases
+   `TerminalAmbiguous` and `AttemptFailed` refuse; `AwaitingContext` returns `NoDocumentContext`.
 3. `CallDevToolsProtocolMethod("Runtime.evaluate", { expression, awaitPromise: true,
    userGesture, allowUnsafeEvalBlockedByCSP: false, uniqueContextId: ctx, objectGroup:
    <correlation id>, serializationOptions: { serialization: "deep", maxDepth: <codec depth
@@ -1366,12 +1545,18 @@ Decision (owner decision relayed 2026-10-30, to be recorded on #1185 with B1): *
 
 | Option | Containment | Availability | Gate cost | Simplicity | Mean |
 | --- | --- | --- | --- | --- | --- |
-| **(p1) value-name enumeration against the resolved AUMID, file name and `*` in `keld-wv`, HKLM runtime keys honoured when the runtime folder is not user-writable** | 9 (0.7): superset of the loader's lookup (S1, S4), fail closed when the AUMID cannot be read; device-unverified (B16) | 8 (0.7): enterprise fixed-runtime deployments keep working | 6 (0.8): new production `unsafe` registry and AUMID calls; two features on the existing `windows` dependency, no new crate (the workspace `windows-sys` enables `Win32_System_Registry` but not `Win32_Storage_Packaging_Appx`) | 8 (0.8) | **7.75** |
-| (p2) the same rule through the `windows-registry` crate | 9 (0.7) | 8 (0.7) | 6 (0.6): dependency-addition gate; its transitive versions against the lockfile unverified | 8 (0.8) | 7.75 |
+| (p1) value-name enumeration against the resolved AUMID, file name and `*` in `keld-wv`, HKLM runtime keys honoured when the runtime folder is not user-writable | 5 (0.7): checks the folder only, against the launching user — misses per-file grants to other users, broad groups or AppContainer SIDs (0monish 4425565098) | 8 (0.7): enterprise fixed-runtime deployments keep working | 6 (0.8): new production `unsafe` registry and AUMID calls; two features on the existing `windows` dependency, no new crate (the workspace `windows-sys` enables `Win32_System_Registry` but not `Win32_Storage_Packaging_Appx`) | 6 (0.8): an ACL reader aimed at the wrong principal | 6.25 |
+| (p2) the same rule through the `windows-registry` crate | 5 (0.7): as (p1) | 8 (0.7) | 6 (0.6): dependency-addition gate; its transitive versions against the lockfile unverified | 6 (0.8): as (p1) | 6.25 |
 | (p3) `reg.exe query` child at boot | 6 (0.7): resolved through `PATH`, parses localized text | 8 (0.7) | 9 (0.8): no `unsafe` | 4 (0.8): a process spawn per launch, unmeasured | 6.75 |
-| (p4) (p1) but every listed key refused under both roots | 10 (0.7) | 5 (0.7): every HKLM-pinned runtime refused | 6 (0.8) | 9 (0.8) | 7.5 |
+| (p4) (p1)'s enumeration, every listed key refused under both roots (r13's first draft) | 7 (0.6): refuses policy-selected runtimes but leaves a default runtime with a broad write ACE unchecked | 5 (0.7): every HKLM-pinned runtime refused | 6 (0.8) | 9 (0.8) | 6.75 |
+| (p5) r13d: (p1)'s enumeration; runtime selection refused under HKCU and honoured under HKLM with no check; every selected runtime a same-user residual | 5 (0.7): misses a machine-wide runtime writable by another ordinary user or `Users` (KEL-254 L135's machine-root promise) | 8 (0.7) | 6 (0.8) | 8 (0.8) | 6.75 |
+| **(p6) r13e: (p1)'s enumeration; `AdditionalBrowserArguments` and `UserDataFolder` refused under both roots; runtime selection refused under HKCU; every selected runtime (default or HKLM) admitted only under the allowed-writer rule** | 9 (0.6): closes other users, broad groups and AppContainer/LPAC writers for every runtime; same-user residual kept ((q0)); loader-folder binding UNKNOWN (Q28) | 8 (0.6): stock runtimes INFERRED to pass (B16 (ii) cell 4) | 6 (0.7): reuses `keld-guard`'s ACL reader and `windows-permissions`; a new public `keld-guard` entrypoint; launch cost unmeasured (T2) | 6 (0.7): a tree walk at every launch | **7.25** |
 
-(p1) and (p2) tie; (p1) is chosen under the root rule that dependencies are std-first and minimal. Rejected outright: checking after launch (reading the
+r13e: (p6) is chosen — the third option after r12's folder-only check (wrong principal, and it
+did not hold per file), r13's refuse-all draft (availability lost, default runtime unchecked) and
+r13d's honour-all (a machine-wide runtime writable by another ordinary user). Between the two
+enumeration mechanisms, (p1)'s is kept over (p2)'s under the root rule that dependencies are
+std-first and minimal. Rejected outright: checking after launch (reading the
 browser process's command line needs `NtQueryInformationProcess` or WMI, and the browser has
 already started with the argument), and ignoring policies (an HKCU value injects the switch
 with no Keld code involved, E13 S1/S3).
@@ -1397,7 +1582,7 @@ with no Keld code involved, E13 S1/S3).
   eval request/settle, headers round trip (own bounded record or FIFO, B11), navigation
   signals, listener registration, the facade's `listeners-settled` record (posted after its
   `whenReady` callbacks drained; recovery hold trigger), the Host's per-generation
-  `context-bound` event, and the Windows `HostLoad` (`loadURL`/`reload`) command. Wire gate.
+  `context-bound` and `context-refused` events carrying `(G, s)` (§4.7 step 1 phases), and the Windows `HostLoad` (`loadURL`/`reload`) command. Wire gate.
 - **Platform:** Windows only; macOS/Linux implement the `eval` signature with native
   completion handlers and no W3 generation semantics (§10 Q4).
 - **Runtime seam:** `create` registers, inside the `GuardInstalled` mint and before
@@ -1450,14 +1635,14 @@ with no Keld code involved, E13 S1/S3).
   drive-letter admission, the extended KEL-66 test, the `WEBVIEW2_*` refusal, the `keld dev`
   launcher's `env_remove`, the policy refusal,
   the `Origin` classifier, the verification-handle hold and its release rules, arm (b) for
-  Host-served responses. Merge blocks on its AC20 receipt (a, b, c) and B8, B16, the
+  Host-served responses. Merge blocks on its AC20 receipt (a, b, c) and B8, B16, B18, B19, B20, the
   issue-scoped `crates/keld-wv/AGENTS.md` sanction for the registry calls with its unsafe gate,
   public API + permission gates, the `keld-guard` unsafe-trigger line, #1192 T1 (B2).
 - [ ] **T3 — settled eval** (same): `WebEngine::eval` destination form, self-test, context
   tracking, the one `Pending → Retired | Delivered` machine, per-correlation object groups, role correlation (AC10–AC13); AC14 after B3. Blocks
-  on B2, B3, B5, the control kinds (wire gate).
+  on B2, B3, B5, B17, the control kinds (wire gate).
 - [ ] **T4 — navigation signals and `will-navigate`** (same, with #539): §4.6 mapping,
-  error-code table, attribution, allowlist-first cancel (AC07–AC09). Blocks on B4 and P3.
+  error-code table, attribution, allowlist-first cancel (AC07–AC09). Blocks on B4, B18 and P3.
 - [ ] **T5 — app headers, baseline CSP, registration ordering** (same, with #1154):
   round trip, facade matcher, FIFO ordering (AC15, AC16). Blocks on P4, P5, B11.
 - [ ] **T6 — `keld migrate` allowlist derivation** (`keld-cli`/KEL-17 owner): §4.6 rule 5,
@@ -1472,12 +1657,13 @@ with no Keld code involved, E13 S1/S3).
 | Test | AC | Shape and anti-flake |
 | --- | --- | --- |
 | `guard_file_url_root_relative` (pure; R7/R8 goldens Windows-only) | AC05 | Table rows + probe corpus; mutants: drop `:`, drop `~`, decode twice (non-discriminating, recorded), case-sensitive R7. Adversarial fixtures permanent. |
+| `guard_navigation_allow_forms` (pure, r13) | AC08 (c), (d), (j′) | The `keld-guard` navigation entrypoint over the allow forms (`none`, literal with its query constraint, `in-root:**`) and `components_equal`; single faults: every in-root target on-allowlist, query cut, query folded through the component equality, byte-exact components in one consumer → RED. Independent of B19's device-level cancel. |
 | `update_open_regular_beneath` (Windows, native) | AC04 | Fixture with leaf junction, **intermediate junction**, file symlink, directory symlink (precondition printed, never silently green), hardlink (`nlink` read-back), ADS, trailing dot; `Share::Pinned` and `Share::Served`; mutant: Win32 `CreateFileW` path open. |
 | `core_app_resource_source_api` (Windows, native) | AC29 | Cells (i)–(iii) through the published `AppResourceSource` trait; the error code of every refused mutation is counted (32 vs 5); mutants (1)–(4). |
 | `update_pinned_leaf_migrated` | AC04 | Existing locate/helper tests pass unchanged through the generalised opener; source test that `open_relative_file_windows` and page-controlled `OpenOptions::open` are absent. |
-| `wv2_file_origin_matrix` (device, ignored-by-default, STA harness as `media_acceptance`) | AC01–AC03, AC06, AC17–AC19, AC22–AC28 | `file:*` baseline + N2; plain-outside and `https` cells; per-rule at-risk counters split Host-served vs pass-through per context; E9's identity oracle per kind and E11's exclusive-hold same-object oracle; the pass-through parser corpus as `<script>`, stylesheet, `<img>` and `@font-face`; naive mutants 1a–1c, unverified pass-through, drop-R10; `ResourceContext`/`Origin` census incl. `<object>`/`<embed>` and every CORS-mode kind; whole-root swap with and without `DELETE` on a handle-free fixture root; injected race with and without the hold and the verify → hold gap cell; hold release on cancel/failure/navigation; `subst` rebind with the test seam; CSP cells incl. cross-directory `'self'` and a hash; worker cells with the switch on (NC) and off; `WEBVIEW2_*` launcher removal and refusal on/off, the policy cells (B16), the retirement-release, multidoc and 256-bound cells; ETW when elevated. |
-| `wv2_navigation_signals` (device) | AC07–AC09 | Loads (i)–(v); page oracle; GH-551 differential against the same fixture in Electron v45.1.0; mutants per row. |
-| `wv2_settled_eval` (device) | AC10–AC13 | Promise/statement/reject/throw/getter/Proxy cells; gap dispatch; replayed G1; delayed settle after delivery (AC11 v); role recovery via the existing `no_flag/windows/recovery.rs` harness; injected CDP failure. |
+| `wv2_file_origin_matrix` (device, ignored-by-default, STA harness as `media_acceptance`) | AC01–AC03, AC06, AC17–AC19, AC22–AC28 | `file:*` baseline + N2; AC06 (d)'s same-exact-URI frame race with its declared Host-queue hook (frame `200` first, top-level WRR refused or withheld); plain-outside and `https` cells; per-rule at-risk counters split Host-served vs pass-through per context; E9's identity oracle per kind and E11's exclusive-hold same-object oracle; the pass-through parser corpus as `<script>`, stylesheet, `<img>` and `@font-face`; naive mutants 1a–1c, unverified pass-through, drop-R10; `ResourceContext`/`Origin` census incl. `<object>`/`<embed>` and every CORS-mode kind; whole-root swap with and without `DELETE` on a handle-free fixture root; injected race with and without the hold and the verify → hold gap cell; hold release on cancel/failure/navigation; `subst` rebind with the test seam; CSP cells incl. cross-directory `'self'` and a hash; worker cells with the switch on (NC) and off; `WEBVIEW2_*` launcher removal and refusal on/off, the policy cells (B16), the retirement-release, multidoc and 256-bound cells; ETW when elevated. |
+| `wv2_navigation_signals` (device) | AC07–AC09 | Loads (i)–(v); AC08 (l) in both modes with the missing-trigger variants and (m) the header reload cell (r13); page oracle; GH-551 differential against the same fixture in Electron v45.1.0; mutants per row. |
+| `wv2_settled_eval` (device) | AC10–AC13 | Promise/statement/reject/throw/getter/Proxy cells; gap dispatch; AC12 (d) phase orders and the (e) same-URL cross-clock Host-queue fixture (r13); replayed G1; delayed settle after delivery (AC11 v); role recovery via the existing `no_flag/windows/recovery.rs` harness; injected CDP failure. |
 | `wv2_headers_received` (device) | AC15, AC16 | Listener before/after `loadURL` (ordering), absent, retired; `fetch`/XHR- and module-matching listener (one round trip each) and classic script/stylesheet/image-matching listener (zero); SVG/XHTML `Content-Type` override; forbidden-remote-script counter. |
 | `migrate_navigation_allowlist` | §4.6 rule 5 | Fixtures: veto-all, literal-conditional, unprovable; golden manifests; mutant lifts a page-input condition. |
 | `codec_eval_domain` (owner's) | AC14 | Lands with B3. |
@@ -1498,13 +1684,17 @@ its own DACL; precondition status printed for symlink/8.3/ETW cells.
   `GetDeferral`/`Complete`, `CreateWebResourceResponse`, stream creation,
   `add_ContentLoading`, `add_DOMContentLoaded`, `add_SourceChanged`, `add_HistoryChanged`,
   `CallDevToolsProtocolMethod`,
-  `GetDevToolsProtocolEventReceiver`, `NavigationKind`) with local proofs and an issue-scoped
+  `GetDevToolsProtocolEventReceiver`, `NavigationKind`, and for rule 1's header proof
+  `CreateWebResourceRequest`, `NavigateWithWebResourceRequest` and the `RequestHeaders` reads) with local proofs and an issue-scoped
   `crates/keld-wv/AGENTS.md` update; independent unsafe gate on the final diff. The opener
   adds **no** unsafe, and the browser-argument defence adds none (r9: `std::env::var_os` and
   `Command::env_remove` are safe; r8's `remove_var` scrub is withdrawn); the loader-policy check
   adds `RegOpenKeyExW`/`RegEnumValueW`/`RegCloseKey`, the two AUMID reads and `CoTaskMemFree` (A22 rule (3), B16). r10 registers no
-  `WebResourceResponseReceived` handler for holds.
-- **public API — mandatory:** `keld-guard` parser **and a navigation entrypoint that
+  `WebResourceResponseReceived` handler for holds. The runtime allowed-writer walk (r13e) reuses
+  `keld-guard`'s `windows-permissions` reader and the C3 walk; any new `unsafe` it needs is decided
+  by this gate at T2.
+- **public API — mandatory:** `keld-guard` parser, the runtime allowed-writer entrypoint (§4.5
+  rule (3), r13e) **and a navigation entrypoint that
   evaluates `web.navigation.allow` for a `Principal::Webview` outside `evaluate`** (today
   `path_in_scope` is private behind `evaluate`, which refuses webview principals; the
   `file:` allow forms of B12 are matched on parser components by this entrypoint, never by
@@ -1518,7 +1708,9 @@ its own DACL; precondition status printed for symlink/8.3/ETW cells.
   pin; drive-letter admission; Keld-owned browser arguments (launcher removal, refusal, policy refusal);
   the hold's retirement-only release, the 256 bound, `keld dev` Host-serving everything and the
   document-lifetime pinning residual;
-  allowlist-first cancel with +0; served-document identity; hardlink read-back; separate
+  allowlist-first cancel with +0; Host attribution only by causal proof (no URI/order exemption,
+  B18); served-document identity credited only by navigation-specific proof (B19);
+  the runtime allowed-writer rule for every loader-selected runtime (B20, Q28); hardlink read-back; separate
   baseline CSP; fail-closed headers; eval context + generation gates; allowlist derivation.
 - **dependency addition:** none (two features, `Win32_System_Registry` and `Win32_Storage_Packaging_Appx`, on `keld-wv`'s existing `windows` 0.61; lockfile unchanged).
 - **wire protocol — #539/#540 owner:** control-plane kinds; the headers round-trip record (B11).
@@ -1606,11 +1798,12 @@ preload, arm (f) and the restrictive-CSP effect remain.
   together with B12 — entry-only eligibility would send every in-root page navigation to
   FailedClosed and `onLoss` (W1 caps reload-entry at 3 then closes the window), which makes
   multi-page `file://` applications unusable; (vi) W1's Source rule inherits R10 (`.lnk` → the
-  new public `FileUrlRefusal::ShellLink`), so a `.lnk` source is refused there too; (vii) r11's
-  attribution ambiguity is a new W1 input: the ambiguous document is FailedClosed without
-  `onLoss` (or revoked by a G advance if already committed), the Host attempt's epoch is
-  suppressed until the re-issue, and an ambiguity failure never counts toward W1's recovery
-  cap; every reused
+  new public `FileUrlRefusal::ShellLink`), so a `.lnk` source is refused there too; (vii) r13's
+  attribution leaves no ambiguous page document for W1 to handle (no page event ever receives
+  the Host exemption); a Host attempt that cannot be attributed fails typed and never counts
+  toward W1's recovery cap; (viii) r13's crediting: a page-initiated `file:` document is never
+  credited Host-served until B19 resolves, and W3 cancels such navigations rather than handing
+  W1 an ineligible commit; every reused
   contract is still an open draft
   (re-checked at approval).
 - **B8 P1 report — reopened (E14)** — @amishabenramani, before T2 merges. E8–E10 resolved it
@@ -1624,7 +1817,8 @@ preload, arm (f) and the restrictive-CSP effect remain.
   0monish/keld-research#38, head `3cd5a68`; runs `gh1185-w3-file-origin-probe-2026-10-28`,
   `gh1185-capstd-junction-2026-10-30`, `gh1185-p1-serving-cost-2026-10-30`,
   `gh1185-p2-diff-hybrid-2026-10-30`, `gh1185-p2-hs-2026-10-30`, `gh1185-p2-cells-2026-10-30`,
-  `gh1185-p2-hold-2026-10-30`, `gh1185-p2-vite-q21-2026-10-30`, `gh1185-p2-hsoz-2026-10-30`) merged, so every citation here resolves to a public path
+  `gh1185-p2-hold-2026-10-30`, `gh1185-p2-vite-q21-2026-10-30`, `gh1185-p2-hsoz-2026-10-30`, and E15's
+  `gh1185-q24-wrr-order-2026-10-30` published at `c1d15a2`) merged, so every citation here resolves to a public path
   on the default branch. Check: PR merged; note path stable.
 - **B10 `keld-wv` threading instruction** — instruction owner through `.agents/instructions.md`:
   `crates/keld-wv/AGENTS.md` L5–6 must state that a worker may read a **file** handle while
@@ -1673,18 +1867,55 @@ preload, arm (f) and the restrictive-CSP effect remain.
   without Keld's check that the value reaches the runtime (worker cells escape; the
   `UserDataFolder` value is the folder used) and with it that every cell is refused typed.
   (ii) HKLM cells (elevated operator, a user UAC action): `AdditionalBrowserArguments` and
-  `UserDataFolder` refused; `BrowserExecutableFolder` at an administrator-only copied runtime
-  launches and the diagnostics name it, and at a user-writable copy is refused; a value named
+  `UserDataFolder` refused; `BrowserExecutableFolder` under the allowed-writer rule (r13e), cells: (1) an HKLM-selected runtime copy
+  whose folder is administrator-only but where one file (separately: a loaded DLL) grants
+  `Users` write → refused typed; (2) a file granting another standard user's SID write →
+  refused; (3) a per-machine default runtime given an `ALL APPLICATION PACKAGES` write ACE on
+  one file → refused; (4) positive control: the stock per-machine runtime → admitted and the
+  diagnostics name it; (5) a per-user default runtime writable only by the launching user →
+  admitted (the stated same-user residual); (6) the version folder's parent inside the product
+  layout grants `Users` `FILE_ADD_SUBDIRECTORY` → refused (mutant: the KEL-254 ancestor exception
+  applied inside the boundary → admitted → RED); a value named
   after another executable is ignored. NC: drop
-  the check → the HKCU switch cell delivers OUT nonces. Check: receipt with (i), (ii) and the NC.
+  the check → the HKCU switch cell delivers OUT nonces; NC (r13): honour runtime selection under
+  HKCU → the HKCU `BrowserExecutableFolder` cell launches a user-chosen runtime → RED; NC (r13e):
+  check only the runtime folder's DACL (r12's rule) → cell (1) launches → RED. Check: receipt with (i), (ii) and the NC.
   The production `unsafe` sanction in `crates/keld-wv/AGENTS.md` lands with T2. If the
   enumeration cannot see a value the loader applies, W3 does not ship until a mitigation is
   designed.
 - **B17 Eval context correlation (Q23)** — W3 implementer, before T3 merges: the T2 CDP
   census with an at-risk count above 0 shows that a default main-frame context created after
   `frameNavigated(L)` in the CDP stream belongs to `L`, including after a cross-process
-  navigation. If refuted, `executeJavaScript` is unavailable on Windows until a correlation
-  the device proves replaces §4.7 step 1. Check: census receipt.
+  navigation, and (r13) the lag premise of §4.7 step 1 (no main-frame `frameNavigated` of an
+  earlier commit reaches the STA after a later navigation's `NavigationStarting` handler
+  returned), with AC12 (e) RED under NC6. If either is refuted or unmeasured,
+  `executeJavaScript` is a typed capability refusal on Windows until a correlation the device
+  proves replaces §4.7 step 1. Check: census receipt.
+- **B18 Host attribution proof (Q22 (a), (c); §4.6 rule 1)** — W3 implementer with
+  @amishabenramani (Windows operator), before T4 merges and before any Host `file:` load ships
+  on Windows: Q22's cells pass on the supported runtime with at-risk counts above 0, AC08 (l)
+  turns RED under (l′)/(l″) and (m) under (m′), and the result is pinned per runtime version.
+  Impact if (a) is refuted: unproven mode refuses **every** Host `file:` attempt under every
+  allowlist — the schema-1 boot `Navigate`, compat `loadURL` and `onLoss` alike (rule 1 (ii)) —
+  so W3 delivers no Windows `file:` application (§1) and the design returns to the owner (Q26).
+  If only (c) fails, `reload()` of a `file:` document stays a typed refusal. Check: Q22 receipt
+  naming the runtime and head.
+- **B19 Top-level served-document credit (§4.4; Q22 (b), Q27)** — W3 implementer, before T2
+  merges: Host attempts are credited by the nonce on their DOCUMENT WRR request (Q22 (b)) with
+  AC06 (d) RED under (d′); page-initiated `file:` navigations stay cancelled at +0 (§4.6 rule 2)
+  until a Q27 mechanism passes its cells. Impact: multi-page `file:` applications whose pages
+  link to each other (`in-root:**` or literal forms) do not navigate on Windows (the click is
+  cancelled, no loss, no `onLoss`). If Q22 (b) is refuted, no `file:` document can be credited
+  on the supported runtime and W3 is not approvable. Check: AC06 (d) receipt; a Q27 receipt or
+  an owner decision on #1185 accepting the cancellation divergence.
+- **B20 Runtime allowed-writer rule (§4.5 rule (3), residual 4; Q28)** — W3 implementer, before T2
+  merges: B16 (ii) cells (1)–(5) pass with the folder-only mutant RED; T2 measures a real runtime
+  tree's object count and the check's cold-launch cost against architecture 01 §5's 5 % rule, and
+  if it is over budget records the weaker executable-and-loaded-DLL fallback as a stated
+  divergence; @amishabenramani accepts the same-user residual (already (q0)). Impact: a runtime
+  whose tree grants write to anyone beyond admin-class principals and the launching user is
+  refused typed, so a machine misconfiguration surfaces as a launch refusal naming the object and
+  the SID. Check: B16 (ii) receipt, the T2 cost record and Q28's receipt.
 
 **Open questions:**
 
@@ -1758,24 +1989,77 @@ preload, arm (f) and the restrictive-CSP effect remain.
     the loader and runtime DLLs finds further names of unknown effect (`WEBVIEW2_USE_EDGE_VIEW`,
     hosting-mode and game-bar names), so the environment refusal and launcher removal keep the
     **whole prefix** (fail closed); the policy rule is rule (3).
-22. **Q22 UNKNOWN (§4.6 rule 1, r11):** whether a `file:` navigation issued with
-    `NavigateWithWebResourceRequest` exposes a Host-set custom header in `NavigationStarting`'s
-    `RequestHeaders` (and none for a page `location.assign` to the same URI), and as a second
-    observation point in the `WebResourceRequested` headers of the Host-served DOCUMENT
-    request; and whether CDP `Page.navigate` (which returns `loaderId`) raises WebView2's
-    `NavigationStarting`. T2 device cell;
-    until it passes, rule 1 (ii) governs.
+22. **Q22 UNKNOWN (§4.6 rule 1, r11; widened r13):** (a) whether a `file:` navigation issued
+    with `NavigateWithWebResourceRequest` exposes a Host-set custom header in
+    `NavigationStarting`'s `RequestHeaders`, and none for a page `location.assign` to the same
+    URI; (b) whether that header reaches the `WebResourceRequested` request headers of the same
+    navigation's DOCUMENT request and never a frame's (§4.4 credit, B19); (c) the
+    `NavigationKind`, `history.length`, generation change and later `onLoss` recovery of a header
+    navigation to the committed URI used as `reload()`, compared with `Reload()` (AC08 m); and
+    whether CDP `Page.navigate` (which returns `loaderId`) raises WebView2's
+    `NavigationStarting`. T2 device cells with at-risk counts; until (a) and (b) pass, rule 1 (ii)
+    governs (B18, B19); until (c) passes, `reload()` of a `file:` document is refused.
 23. **Q23 UNKNOWN (§4.7 step 1, r11):** whether CDP always emits a main-frame document's
     `Page.frameNavigated` before that document's default `executionContextCreated`, including
     under delayed events and back/forward-cache restores. T2 census with an at-risk count above
     0, including old-renderer events after a cross-process navigation; if refuted, eval binding
-    is withheld until a proven correlation replaces it (B17).
-24. **Q24 UNKNOWN (§4.3 ownership, r12):** the STA order of a new document's first subresource
-    `WebResourceRequested` against that document's `ContentLoading`. The hold key does not depend
-    on it (a hold taken while a main-frame navigation is pending is keyed to the next
-    generation); the T2 census records it with an at-risk count, and AC26 (vi) forces the
-    adverse order.
+    is withheld until a proven correlation replaces it (B17). r13 adds the **lag premise**: no
+    main-frame `frameNavigated` of an earlier commit reaches the STA after a later navigation's
+    `NavigationStarting` handler returned (§4.7 step 1 (b)); same census, same consequence.
+24. **Q24 MEASURED, not guaranteed (§4.3 ownership, r12; probe E15, note 268 §4.zzzzzzz at
+    `0monish/keld-research@c1d15a2`, run `gh1185-q24-wrr-order-2026-10-30`, sub-bundle `q24/`;
+    unmerged like every run in PR #38, B9; 2026-10-30):**
+    the STA order of a new document's first subresource `WebResourceRequested` against that
+    document's `ContentLoading`. Microsoft documents only that `ContentLoading` "triggers before
+    any content is loaded" (`ICoreWebView2::add_ContentLoading`), not the WRR order. FACT
+    (WebView2 156.0.4314.50, Windows 10.0.26300.9711, one host; Host-served `file:` documents
+    with classic script, stylesheet, preload and image subresources in a 1 MiB document):
+    0 of 25,440 at-risk subresource WRRs were handled before their own document's
+    `ContentLoading`, across link, `location.assign`, Host `Navigate`, reload, history
+    (0 BFCache restores), interrupted and iframe navigations, and 0 of 12,840 more under a
+    busy STA (8 ms and 50 ms stalls) and a posted-retirement control; the document's own WRR
+    preceded `ContentLoading` in every navigation (the detector's positive control). The first
+    subresource WRR of a fresh webview's first document followed `ContentLoading` by as little
+    as 65 µs (median 116 µs, n = 32), so a retirement deferred to a later STA turn released
+    14 of 14 such holds early under the old "generation at the WRR" key (rename-over
+    succeeded, replacement delivered 9 times) and 0 of 21 under the next-generation key.
+    AC26 (vi) forced the adverse order: old key released 90/90 and delivered the replacement
+    90/90; next-generation key held 90/90 (rename refused, error 5) and delivered the verified
+    bytes 90/90. The design does not depend on the order; zero natural inversions is a sampled
+    observation on one runtime, not an ordering guarantee, and fetch/XHR/module/`@import`
+    subresources were not sampled. T2 repeats the census on the shipped runtime.
 25. **Q25 (#1192 owner, §4.7 step 4, r12):** confirm that L143's "never delivers to a new
     document" holds when a G₁ result produced before the G-change reaches only the Bun caller of
     `c` after G₂ commits (W3's reading, by analogy to L141). Check: a #1192 comment or revision
     stating it, before T3 merges; if refuted, step 4 is revised with that owner.
+26. **Q26 UNKNOWN (§4.6 rule 1 (ii), r13):** causal attribution without the header. Candidates,
+    not adopted: (1) a Host-created webview that has never committed a document has no principal
+    that can raise a top-level `NavigationStarting` (premise INFERRED; windows adopted from
+    `NewWindowRequested` have an opener and are excluded; an external file drop is a user
+    navigation the premise must also exclude); (2) quiesce-then-load: the Host first commits a
+    script-free `NavigateToString` document carrying a nonce and then issues its attempt from it
+    (premises UNKNOWN: that `NavigationStarting.Uri` carries the `NavigateToString` content, that
+    page script cannot navigate the top level to it, and that a script-free document raises no
+    navigation; cost: one extra navigation and history entry per attempt). Adopting either needs
+    a spec revision with device cells and an AC08 (l)-style RED mutant. Owner: W3 implementer.
+27. **Q27 UNKNOWN (§4.4, r13; B19):** navigation-specific credit for page-initiated `file:`
+    navigations. Candidates: (1) child-frame exclusivity — credit `n` only if exactly one
+    parsed-equal DOCUMENT WRR arrived between `NavigationStarting(n)` and `ContentLoading(n)` and
+    no child-frame `NavigationStarting` (`add_FrameNavigationStarting`, `bindings.rs` L1824) with a
+    parsed-equal URI was raised in that window (premises UNKNOWN: every child-frame document,
+    `<object>`/`<embed>` included, raises it, and it reaches the STA before its own DOCUMENT WRR
+    and before `ContentLoading(n)`; a top-level request that raises no WRR defeats the count);
+    (2) a per-response Host nonce header on DOCUMENT responses observed by CDP
+    `Network.responseReceived` for the main frame (UNKNOWN whether CDP sees WRR-substituted
+    `file:` responses; the `Network` domain's cost is unmeasured, cf. B14). Check: device cells
+    with at-risk counts and AC06 (d) RED under the candidate's mutant. Owner: W3 implementer.
+28. **Q28 UNKNOWN (§4.5 rule (3), r13e; B20):** what the allowed-writer rule cannot express. (a)
+    That the folder checked is the folder the loader uses: how the Host learns the selected folder,
+    and whether passing it as `browserExecutableFolder` binds the loader against a policy value
+    (precedence UNKNOWN). (b) Strict roles that are not AppContainer/LPAC (#1187, Q20) and run
+    under the launching user's SID: they fall in the same-user residual unless #1187 gives them a
+    distinct SID. (c) Code the runtime loads from outside its tree (system DLLs are out of scope;
+    anything else UNKNOWN). (d) The files the cost fallback leaves unchecked. (e) Whether the
+    runtime's selection or update logic enumerates a parent folder or probes names that do not yet
+    exist, which sets the ancestor boundary of rule (3) (r13g). Device cells with
+    at-risk counts. Owner: W3 implementer with the KEL-66 and #1187 owners, before T2 merges.
