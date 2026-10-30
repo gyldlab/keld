@@ -481,13 +481,15 @@ def main() -> int:
     parser.add_argument("--signature", type=Path, required=True)
     parser.add_argument("--allowed-signers", type=Path, required=True)
     parser.add_argument("--allowed-signers-sha256")
+    parser.add_argument("--fixture-verify-only", action="store_true")
     args = parser.parse_args()
     try:
+        require(args.fixture_verify_only, "protected-base authority absent; CLI admission disabled")
         approved = admission(
             args.repo, args.baseline, args.head, args.receipt, args.signature,
             args.allowed_signers, args.allowed_signers_sha256,
         )
-        print(f"CI-READER-ADMISSION: admitted {args.head}; {approved} reviewed reader/path changes")
+        print(f"CI-READER-ADMISSION: fixture verified (UNTRUSTED); {approved} reader/path changes")
         return 0
     except (AdmissionError, OSError, UnicodeError, ValueError) as error:
         print(f"CI-READER-ADMISSION: refused: {error}", file=sys.stderr)

@@ -158,7 +158,8 @@ class AdmissionCase:
             check=True, capture_output=True,
         )
 
-    def run(self, *, baseline=None, head=None, signer_pin=None, omit_authority=False, repo=None):
+    def run(self, *, baseline=None, head=None, signer_pin=None, omit_authority=False,
+            repo=None, fixture_only=True):
         args = [
             sys.executable, "-B", str(TOOL), "--repo", str(repo or self.root),
             "--baseline", baseline or self.baseline,
@@ -168,6 +169,8 @@ class AdmissionCase:
         ]
         if not omit_authority:
             args += ["--allowed-signers-sha256", signer_pin or digest(self.signers.read_bytes())]
+        if fixture_only:
+            args.append("--fixture-verify-only")
         return subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
 
 
@@ -192,7 +195,13 @@ class AdmissionTests(unittest.TestCase):
         self.case.sign()
         result = self.case.run()
         self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
-        self.assertIn("CI-READER-ADMISSION: admitted", result.stdout)
+        self.assertIn("CI-READER-ADMISSION: fixture verified (UNTRUSTED)", result.stdout)
+
+    def test_default_cli_requires_protected_invoker_even_with_valid_signature(self):
+        self.case.update_reader()
+        self.case.commit("reviewed reader")
+        self.case.sign()
+        self.assertRefused(self.case.run(fixture_only=False), "protected")
 
     def test_missing_independent_authority_and_wrong_trust_pin_refuse(self):
         self.case.update_reader()
