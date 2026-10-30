@@ -313,6 +313,98 @@ fn mcp_doctor_matches_cli_json_over_stdio() {
 }
 
 #[test]
+fn doctor_profile_text_exit_json_and_mcp_agree_for_actual_cli_processes() {
+    let dir = tempfile::tempdir().expect("owned project root");
+    create_project(dir.path(), "app").expect("stock scaffold");
+    let project = std::fs::canonicalize(dir.path().join("app")).expect("canonical project");
+    let policy = project.join("keld.permissions.jsonc");
+
+    for (case, source, ok, code, detail_fragment) in [
+        ("absent", None, true, None, "no profile selected"),
+        (
+            "legacy",
+            Some(r#"{"profile":"legacy"}"#),
+            true,
+            None,
+            "legacy — zero-authority claim forfeited",
+        ),
+        (
+            "strict",
+            Some(r#"{"profile":"strict"}"#),
+            false,
+            Some("KELD-GUARD011"),
+            "requested strict",
+        ),
+        (
+            "invalid",
+            Some(r#"{"profile":null}"#),
+            false,
+            Some("KELD-GUARD005"),
+            "KELD-GUARD005",
+        ),
+    ] {
+        match source {
+            Some(bytes) => std::fs::write(&policy, bytes).expect("test-owned manifest"),
+            None => assert!(!policy.exists(), "stock scaffold has no profile manifest"),
+        }
+
+        let human = Command::new(keld_bin())
+            .arg("doctor")
+            .current_dir(&project)
+            .output()
+            .expect("spawn real text doctor");
+        let json = Command::new(keld_bin())
+            .args(["doctor", "--json"])
+            .current_dir(&project)
+            .output()
+            .expect("spawn real JSON doctor");
+        let findings: Value =
+            serde_json::from_slice(&json.stdout).expect("CLI returned JSON findings");
+        let array = findings
+            .as_array()
+            .expect("doctor JSON must remain an array");
+        let profile = array
+            .iter()
+            .find(|finding| finding["label"] == "security_profile")
+            .expect("real CLI must include profile finding");
+        assert_eq!(profile["ok"].as_bool(), Some(ok), "{case}: {profile}");
+        let detail = profile["detail"].as_str().expect("string detail");
+        assert!(detail.contains(detail_fragment), "{case}: {detail}");
+        assert_eq!(
+            profile.pointer("/error/code").and_then(Value::as_str),
+            code,
+            "{case}: {profile}"
+        );
+        if case != "invalid" {
+            assert!(detail.contains("runtime admission not performed"), "{case}");
+        }
+        let mark = if ok { "ok" } else { "FAIL" };
+        let expected_line = format!("[{mark}] security_profile — {detail}");
+        let human_text = std::str::from_utf8(&human.stdout).expect("text doctor UTF-8");
+        assert!(
+            human_text
+                .lines()
+                .any(|line| line == expected_line.as_str()),
+            "{case}: {human_text}"
+        );
+        let exit = i32::from(
+            !array
+                .iter()
+                .all(|finding| finding["ok"].as_bool() == Some(true)),
+        );
+        assert_eq!(human.status.code(), Some(exit), "{case}: {human_text}");
+        assert_eq!(json.status.code(), Some(exit), "{case}: {findings}");
+
+        let response = mcp_tools_call(&serde_json::json!({
+            "name": "keld_doctor",
+            "arguments": { "project_root": project.clone() }
+        }));
+        assert_eq!(response["result"]["resultType"], "complete", "{case}");
+        assert_eq!(response["result"]["structuredContent"], findings, "{case}");
+    }
+}
+
+#[test]
 fn mcp_docs_search_returns_real_security_chunk_over_stdio() {
     let response = mcp_tools_call(&serde_json::json!({
         "name": "keld_docs_search",
