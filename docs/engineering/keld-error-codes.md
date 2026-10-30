@@ -856,6 +856,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -909,6 +927,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
 ## KELD-UPDATE-001
 

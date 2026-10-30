@@ -1609,7 +1609,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -1701,10 +1706,13 @@ schema language, ship `@keld/schema` or live `keld gen`, or replace runtime vali
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
-since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3
-and the KEL-89 auth allocation = 4,
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
-region of `transport.ts`, and the wire is unchanged. Handshake-time name resolution and
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry remains a held implementation
+until validated facade boot and native acceptance are complete. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 
@@ -2289,8 +2297,12 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
-preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
+defect. This slice adds an exported `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux and Windows
+currently refuse facade-window subscription; this is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 
@@ -4392,7 +4404,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
-| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3); the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3), and exports a macOS-only host-backed BrowserWindow subset over the Host-owned native window registry: create/adopt, selected geometry and state, close/destroy, and recovery events. Linux/Windows have no facade window session: the Host refuses window subscription as NotSubscribable and direct window calls fail with KELD-CORE-045. Unsafe webPreferences fail closed; preload and selected options remain unapplied. Bun facade/recovery tests use a controlled Host-call seam and do not establish native per-OS acceptance. Other Electron surfaces remain absent. | [code](../../packages/@keld/electron/src/index.ts), [code](../../packages/@keld/electron/src/browser-window.ts), [test](../../packages/@keld/electron/src/app.test.ts), [test](../../packages/@keld/electron/src/browser-window.test.ts), [test](../../packages/@keld/electron/src/browser-window-recovery.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `effb47412c6f8d60b6a8c63aaac939759f7b2948` |
 | `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live. Its GH-527 WorkerLink owns each Bun role's link in a transport Worker, and the hello scaffold and @keld/api use it, with the main-thread client path removed (#528 T1-T3); a release build strips its test hooks, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs. The GRANT credit lane (T4), Linux and Windows qualification (T5), general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 | `package.keld-api` | All | **Partial** — The @keld/api package implements the application lifecycle (whenReady, quit, last-window-closed) and the Echo channel over the role's app-link, which runs on the GH-527 WorkerLink from #528 T3; general typed channels and schema codegen remain absent. | [code](../../packages/@keld/api/src/index.ts), [test](../../packages/@keld/api/src/app.test.ts) | [Specified](../../docs/architecture/01-overview.md) | KEL-142 | `0768d11a6d6b9dc43e1e991be700db8d1ce555a6` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -6238,6 +6250,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -6291,6 +6321,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
 ## KELD-UPDATE-001
 
