@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -42,7 +43,9 @@ assert.equal(declared.WorkerLink, sibling.WorkerLink);
 });
 
 test("real packed SDK installs offline with one API app identity", async () => {
-  const scratch = mkdtempSync(join(tmpdir(), "keld-sdk-package-"));
+  const scratch = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "keld-sdk-package-")),
+  );
   try {
     const source = Object.fromEntries(
       ["api", "kipc"].map((name) => [
