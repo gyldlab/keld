@@ -1,6 +1,6 @@
 # Spec: Windows WebView2 `file://` navigation, app-code resource containment, honest navigation signals and settled `executeJavaScript` (GH-1185 W3)
 
-Status: draft (revision r8 — serving design **hso** with a pass-through hold and Keld-owned browser arguments; r7 `hs` broke module/CORS-mode loads, r6 needed a containment-breaking switch, r1–r5 served every byte; r3 followed isolated hostile reviews of `571f6bda` and `5ecd3496`)
+Status: draft (revision r9 — **hso** serving; pass-through hold released through a dynamically registered `WebResourceResponseReceived` handler; browser-argument defence without new `unsafe`; r8 → r9 after measured hold cost and release path; r3 followed isolated hostile reviews of `571f6bda` and `5ecd3496`)
 Linear: GH-1185 (GitHub tracker under #517; parent program #1182 W3; webContents owner #539) ·
 Owner: @amishabenramani (real Windows operator) · Updated: 2026-10-30
 
@@ -59,7 +59,10 @@ corpus (2 × 349 cells, no switch) and the `hs` cost blocks (n = 60) (PR head `e
 cross-directory `'self'`, the injected pass-through race with and without a hold, CORS-mode
 subresources with the module-serving cost (257 ES modules, 2,930,290 B), browser-argument
 injection through `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, and a pass-through parser corpus
-(99 forms × {script, stylesheet, image, `@font-face`}). Numbers below are quoted
+(99 forms × {script, stylesheet, image, `@font-face`}). **E12** — follow-ups 4 and 5, run
+`gh1185-p2-hold-2026-10-30` (`results.json` sha256 `1d601afe…` and `241c3111…`): the cost and
+release path of the verification-handle hold with `WebResourceResponseReceived` always
+registered (`hsoh`) and registered only while a hold is outstanding (`hsod`). Numbers below are quoted
 with their 95 % CIs from the runs' `results.json` and are not strengthened.
 
 This draft authorizes no production code, no permission and no public API. Implementation
@@ -90,11 +93,11 @@ scripts, `import()`, `modulepreload`, `crossorigin` scripts, images, stylesheets
 preloads). **Verified and held**: every other request (classic script, stylesheet, image,
 font, media, other) — the Host keeps the verification handle open (share `READ` on the leaf,
 no-`DELETE` handles on every directory component), sets no response, lets Chromium's loader
-open the same pinned object, and releases the hold on `WebResourceResponseReceived` or on the
-request's failure, redirect or document-retirement path. Every refusal is `403`/`404` with an
-empty body. Keld is the **sole owner of browser arguments**: it sets none, scrubs
-`WEBVIEW2_*` variables from its own environment before creating the WebView2 environment,
-and refuses to start when the `AdditionalBrowserArguments` policy is set, because
+open the same pinned object, and releases the hold on `WebResourceResponseReceived` when it is
+registered for that request, else at document retirement or webview close. Every refusal is `403`/`404` with an
+empty body. Keld is the **sole owner of browser arguments**: it sets none, its `keld dev`
+launcher removes `WEBVIEW2_*` variables from the Host's environment, `keld-wv` refuses to
+create the WebView2 environment while any such variable is present, and the Host refuses to start when the `AdditionalBrowserArguments` policy is set, because
 `--allow-file-access-from-files` lets workers read outside the root without raising
 `WebResourceRequested` and an inherited `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` injects it
 (E10, E11). For the verified name no object outside the root, no reparse point, no shell link
@@ -191,7 +194,8 @@ Deviations this spec records (all land in **T0**, the PR that approves this spec
   them (#1185 6492237806)", "Windows `file://` classic script, stylesheet, image, font and
   media loads: verified and held by the Host, then read by Chromium from the held object;
   residual: volume-letter shadowing by a principal that can redefine a DOS device (§4.5)" and
-  "browser arguments are Keld-owned: none set, `WEBVIEW2_*` scrubbed, policy refused".
+  "browser arguments are Keld-owned: none set; `WEBVIEW2_*` removed by the launcher or refused;
+  policy refused".
 - Root `AGENTS.md` "Hot kipc/event-loop/guard paths … no steady-state allocation": the
   `WebResourceRequested` handler runs on the engine event loop and allocates the parser's
   components for every `file:` request and one response buffer per **Host-served response**
@@ -318,15 +322,15 @@ Windows rows are **real-device only**; CI mocks, macOS and Linux are not substit
 | AC17 Hardlink authority read-back (C4) | The fixture plants ≥ 1 in-root file with `nlink > 1` whose other name is outside the root | (a) served (AC03); (b) for every delivered file (Host-served or passed through) with `nlink > 1`: a write attempt on the linked object under **each admitted role token** (Strict; the Legacy forfeiture printed instead of claimed) is denied (KEL-254 AC8 class) and the per-file DACL read-back shows no role write grant (AC7 extension); (c) the owner's paired control: the Strict role attempts to **create an entry inside the admitted root** and is refused (KEL-254 app-role isolation on Windows). At-risk = multi-link delivered files; 0 → rule not exercised (fixture MUST plant one). | Grant the Strict role write on the linked object → read-back detects, the control writes → RED. Separately grant it create on the root → (c) succeeds → RED. |
 | AC18 Zero bytes on refusal (C5) | AC03's refused cells, elevated ETW Kernel-File session | No open of the outside sentinel by `msedgewebview2.exe`; for parser cells the Host opener count is 0; for opener cells bytes read is 0 (the opener returns a handle to the reparse point itself and reads nothing). ETW NOT RUN → INFERRED-strength, printed. | AC03's NC → ETW shows the renderer's own open → RED. |
 | AC19 Non-`file:` requests never reach W3 | The page fetches `https://` (policy-allowed) and loads `data:`/`blob:` | **Structural**: the `file:*` filter never raises WRR for them — new probe cell: `https` request with WRR event count 0 and Host response count 0; the policy owner's rules apply unchanged. | Register `*` instead of `file:*` → the `https` request raises WRR and sits behind the UI thread → RED (count ≠ 0). |
-| AC20 P1 performance gate (§9) | Before T2 merges | **Measured so far (E8–E11; B8 resolved by measurement for r7's `hs`):** E8 reports the serving arms with the six atoms separated. `hs` is `navToReady` +3.54 % [+1.16, +4.68] vs arm (e) on the draw.io workload (n = 60; per-block upper bounds +6.51 % and +5.30 %; NC hsn − hs +136.6 ms [129.7, 147.4] in [110, 170]); on the module workload (257 ES modules) `e` and `hs` cannot load the graph, and Host-serving every script (`hsm`, the same served set as `hso` there, INFERRED) is 158.5 ms [155.6, 167.8] vs Chromium's loader with the switch (`eaf`, not shippable) 206.6 ms [195.1, 214.0], paired −40.9 ms [−51.3, −35.8], with 69.0 ms of Host STA work per load (NC hsmn − hsm +2705.6 ms in [2000, 3000]). **The chosen `hso` + pass-through hold is unmeasured on either workload.** **Gate at T2** (on the implementation, production baseline CSP, preload so real `fetch`/XHR demand is in the census): (a) draw.io workload — `hso` + hold vs `e`, pooled ratio-of-medians CI upper bound ≤ +5 %; (b) module workload — `hso` + hold vs `hsm`, CI upper bound ≤ +5 %, STA occupancy and the longest single STA block reported; (c) a pre-registered per-request NC in each block. Either bound exceeded → a written waiver (arch 01 §5) or a design change before merge. Unmeasured as well: arm (f) (S1 round trip, B13) and the product-boot clock. | Single arm, no arm (e), no negative control, or paint measured from `NavigationCompleted` → validator RED. |
+| AC20 P1 performance gate (§9) | Before T2 merges | **Measured (E8–E12):** `hs` +3.54 % [+1.16, +4.68] vs `e` on draw.io (E10); modules: `hsm` 158.5 ms vs `eaf` 206.6 ms, paired −40.9 ms (E11). E12, `hso` + hold: with `WebResourceResponseReceived` always registered (`hsoh`) (a) draw.io +1.65 % [+0.59, +2.82] **PASS**, (b) modules +5.72 % [+1.77, +9.53] vs `hsm` **FAIL** (the handler's registration costs +11.1 ms [+4.7, +18.4]; the hold +0.3 ms); with the handler registered only while holds exist (`hsod`) (a) +0.67 % [−1.65, +2.43] **PASS**, (b) −1.51 % [−5.53, +1.23] **PASS** — but (b) is a **zero-hold** workload, so it never paid for the handler. Per-request NCs passed in every block. **Gates at T2** (implementation, production baseline CSP, preload so real `fetch`/XHR demand is in the census; pooled ratio-of-medians CI upper bound, with a pre-registered per-request NC in each block): (a) draw.io, chosen design vs `e` ≤ +5 %; (b) module workload vs `hsm` ≤ +5 %; **(c) a realistic module application — modules plus pass-through CSS and images, so holds exist and the handler registers on its first and on later documents — chosen design vs `hso` (no hold) ≤ +5 %, with the pinned-file count per document and the `NavigationStarting` re-registration observed**. Any bound exceeded → a written waiver (arch 01 §5) or a design change before merge. STA occupancy and the longest single STA block are reported. Unmeasured as well: arm (f) (S1 round trip, B13) and the product-boot clock. | Single arm, no arm (e), no negative control, or paint measured from `NavigationCompleted` → validator RED. |
 | AC21 Receipt | A Windows acceptance claim | Runtime string, OS build, head, admitted-root mode, per-AC counters, at-risk counts per deciding rule, each RED output, "rule not exercised" rows, UNKNOWN cells (§3 AC23). | Missing fields or a zero-failure row without its at-risk count → validator RED. |
 | AC22 Non-discriminating controls recorded, not counted | Probe N1 (only a dedicated worker was attempted; shared/service workers untested), N3, N6 (compared constants; no CDP result replayed), the exclusive-lock oracle (empty at-risk set); AC05's double-decode mutant | Each reads **rule not exercised** and contributes nothing to scores; N6's claim is replaced by AC11 (ii). | Count any of them → validator RED. |
 | AC23 Coverage cells with UNKNOWN status | favicon (probe `r-favicon` timed out), `<link rel=prefetch>`, `navigator.sendBeacon`, web app manifest, media `Range` (probe media cells used filler bytes; `mediaError 4` proves nothing), `blob:`/`data:` workers (measured in E11 and moved to AC28), Shared/Service Worker construction attempts, `<embed>`/`<object>` PDF, `<a download>`, `<script type=module crossorigin>` and dynamic `import()` (default Vite/electron-vite output) — measured in E11 and moved to AC24, and the environment worker filter's survival when the first webview closes (the Host re-registers it on the next live webview; cell: close the first window, open a second, attempt a shared worker) | Each is run as its own cell on the real device and reported served/refused/UNKNOWN with the request kind observed; none is claimed from the probe. | Claim any of them from the probe → validator RED. |
 | AC24 Request classification (A7) | One load issuing a top-level document, an `<iframe>`, an `<object>` and an `<embed>` HTML document, classic `<script>`, `<script type=module>` (same and other directory, static `import`), `import()`, `<link rel=modulepreload>`, `<script crossorigin>`, `<img crossorigin>`, `<link rel=stylesheet crossorigin>`, `<link rel=preload as=font crossorigin>`, `@font-face` (inline, external stylesheet, `FontFace` API), plain `<img>`, plain stylesheet, XHR and `fetch()` to in-root `file:` URLs | WRR log per request: contexts 1 and 7 (8 if reported) and every request whose WRR headers carry `Origin` (E11: value `null`, no `Sec-Fetch-*` visible) → **Host-served**; classic script, plain image, plain stylesheet, `@font-face` (no `Origin`) and other 16 → **verified, held, no response**. Page oracle (E11 `cm-hso`, 2/2 runs): every module, `import()`, `modulepreload`, `crossorigin` script/image/stylesheet and crossorigin font-preload cell loads and executes, without `Access-Control-Allow-Origin`; classic script, plain image and the three `@font-face` forms load on pass-through. In-root `fetch`/XHR `200` with no switch; out-of-root `403` empty (E10). | (1) Classify by `RequestedSourceKind == DOCUMENT` (E9: `DOCUMENT` for every request) → every subresource is served → served count = request count (19/19 on the E8 workload) and E8's serving cost returns (+34–36 %) → RED. (2) Drop the `Origin` rule (r7 `hs`) → the module same-/other-directory, static-import, `import()`, `modulepreload`, `crossorigin` script/image/stylesheet and crossorigin font-preload cells fail (E11 `cm-hs`, 2/2) → RED. (3) Pass context 7 through → in-root `fetch`/XHR fail (`TypeError`/status 0, E10 `sx-hyb-off`) → RED. (4) Pass frame `DOCUMENT`s through → the frame carries no Host CSP header and the AC25 `'none'` fixture's scripts run inside it → RED. |
 | AC25 The served document's CSP governs pass-through subresources; CSP is not containment (A16) | Host-served documents carrying, one per cell, `script-src 'none'`; `script-src 'self'`; `script-src 'nonce-…'`; `img-src 'none'; style-src 'none'`; `script-src file:///<root>/csp/ext.js`; no CSP — each loading same-directory `file:` scripts, an inline script, a nonced inline script, a `data:` script, a stylesheet and an image; **cross-directory** `'self'`, `'none'` and no-CSP pages at the root and at a deep path loading `js/a.js`, `lib/x/b.js`, `./js/../lib/x/c.js` (root) and `../../js/a.js`-style paths (deep page), plus an out-of-root script and a junction-reached one; **T2 device cell**: a `'sha256-…'` hash source | As E9 `h-csp` (with the switch) and both E10 `hs` corpus runs (no switch; origin as measured in E10's no-switch matrix rows under the same environment configuration), every cell identical: `'none'` blocks every script; `'self'` runs the same-directory `file:` scripts and blocks inline/`data:`; the nonce policy runs only nonced scripts; `img-src`/`style-src 'none'` block the pass-through image and stylesheet; no CSP runs everything. Cross-directory (E11 `cx`, 12/12 cells over 2 runs): `'self'` runs every in-root script from the root and from the deep page, inline is blocked, `'none'` blocks all. **CSP is not a containment boundary**: under `'self'` the out-of-root and junction-reached script URLs raised **no** CSP violation; only the Host's `403` stopped them (E11). The exact `file:` host-source blocked its own script on this runtime — recorded as a runtime quirk (CSP3 would admit it), not required. Pass-through `Content-Type` is Chromium's extension mapping (E9). Hash sources are UNKNOWN until their cell runs. | (1) Drop the CSP header from the served document → the `'none'` cell runs its `file:` scripts → RED. (2) Run the `'self'` cross-directory page with the Host's refusal disabled (observe) → the out-of-root script runs with no CSP violation (INFERRED from E11, where only the `403` stopped it) — shows that containment rests on the Host, not on CSP. |
-| AC26 Root swap and in-root race (A20, A23) | (i) After admission the root's **parent** mutation owner renames `<root>` → `<root>.swapped` and plants a junction `<root>` → OUT (look-alike names, other nonces), then the page loads Host-served and pass-through requests. The fixture root has **nothing open beneath it** except the Host's own root handle, because an open handle beneath a directory alone makes its rename fail with `ERROR_ACCESS_DENIED` (5, E9 share-mode table; both production roots contain the running `keld-host.exe`, `app_session.rs:1533-1534`, `:3014`); (ii) after verification and before Chromium's open, a pass-through classic `<script>`, `<img>` and stylesheet have their leaf replaced by rename and, separately, their directory replaced by a junction to OUT (deterministic injection); (iii) **T2 device cell**: the leaf is replaced by an **in-root** file at the instant between the verification open and the point E11's separate hold chain reopened it | (i) The rename fails with **`ERROR_SHARING_VIOLATION` (32)** — the code is counted, so a 5 from a handle beneath does not pass — and every cell matches its verified identity (E9 hybrid with the no-`DELETE` root: 0/9). (ii) The verified bytes are delivered 24/24 per kind and injection, every swap fails (32), and swaps after release at `WebResourceResponseReceived` succeed while the delivered bytes are still the verified ones (E11 `hsh`, `hsh-post`: release is late enough). (iii) The verified bytes are delivered: the hold **is** the verification handle (opened share `READ`), so no verify → hold gap exists. | (i) Open the session root handle **with** `FILE_SHARE_DELETE` (E9's probe control; only implementable on the dev stage's std handle — cap-primitives strips `DELETE` from every directory open, `oflags.rs:28-36`) → the rename succeeds and later pass-through reads come from OUT: E9 control 4/9 under all-context pass-through; under `hso` the predicted at-risk set is 2 of 9 (the classic script and the plain image; INFERRED) → RED. If the fixture cannot keep the root free of handles beneath it, the NC is pre-declared **rule not exercised**. (ii) No hold (r7 `hs`) → the replacement 24/24 and OUT 24/24 per kind (E11 `sr-hs`) → RED. (iii) Close the verification handle and open a separate hold (E11's chain) → the in-root replacement is delivered (expected; unmeasured until T2) → RED. |
+| AC26 Root swap and in-root race (A20, A23) | (i) After admission the root's **parent** mutation owner renames `<root>` → `<root>.swapped` and plants a junction `<root>` → OUT (look-alike names, other nonces), then the page loads Host-served and pass-through requests. The fixture root has **nothing open beneath it** except the Host's own root handle, because an open handle beneath a directory alone makes its rename fail with `ERROR_ACCESS_DENIED` (5, E9 share-mode table; both production roots contain the running `keld-host.exe`, `app_session.rs:1533-1534`, `:3014`); (ii) after verification and before Chromium's open, a pass-through classic `<script>`, `<img>` and stylesheet have their leaf replaced by rename and, separately, their directory replaced by a junction to OUT (deterministic injection); (iii) the leaf is replaced by an **in-root** file right after verification (the instant at which E11's separate hold chain had a gap); (iv) **release cells**: success, cancelled (`src` cleared, `window.stop()`, iframe removed or navigated), removed-from-DOM, CSP-blocked, duplicate and same-URI loads, page and Host navigation, webview close; (v) **T2 device cell**: a second document of a webview that has already held, after `NavigationStarting` re-registration | (i) The rename fails with **`ERROR_SHARING_VIOLATION` (32)** — the code is counted, so a 5 from a handle beneath does not pass — and every cell matches its verified identity (E9 hybrid with the no-`DELETE` root: 0/9). (ii) The verified bytes are delivered 24/24 per kind and injection, every swap fails (32), and swaps after release at `WebResourceResponseReceived` succeed while the delivered bytes are still the verified ones (E11 `hsh`, `hsh-post`: release is late enough). (iii) The verified bytes are delivered: E12 gap cell 288/288 (swaps fail 32, rename-over 5); the hold **is** the verification handle (opened share `READ`), so no verify → hold gap exists. (iv) No hold outstanding after retirement or close in any cell (E12, 3 runs each, `hsoh` and `hsod`); cancelled loads released only by retirement/close; same-URI holds released as a multiset. (v) Every pass-through hold of the second document is released by `WebResourceResponseReceived` before retirement (unmeasured). | (i) Open the session root handle **with** `FILE_SHARE_DELETE` (E9's probe control; only implementable on the dev stage's std handle — cap-primitives strips `DELETE` from every directory open, `oflags.rs:28-36`) → the rename succeeds and later pass-through reads come from OUT: E9 control 4/9 under all-context pass-through; under `hso` the predicted at-risk set is 2 of 9 (the classic script and the plain image; INFERRED) → RED. If the fixture cannot keep the root free of handles beneath it, the NC is pre-declared **rule not exercised**. (ii) No hold (r7 `hs`) → the replacement 24/24 and OUT 24/24 per kind (E11 `sr-hs`) → RED. (iii) No hold (`hso`) → the gap attack succeeds 144/144 (E12) → RED. (iv) Remove the retirement/close release → 14 (`hsoh`) / 15 (`hsod`) holds outstanding and the exclusive-open detector fails 32 (E12) → RED. (v) Skip the re-registration → the second document's first burst stays pinned until retirement → RED. |
 | AC27 Drive-letter binding (A21) | The project is reached through a `subst` letter `K:` → `…\A`; a separate same-user process rebinds `K:` → `…\B` (look-alike files) while the page loads | (i) Admission from the `K:` spelling is **refused** typed (`KELD-*`, naming the final path to launch from) because `QueryDosDeviceW("K:")` names a session-defined target (`\??\…`), not a volume device. This is fail-early UX: containment does not depend on it, because the root URL is spelled from the final path and R7 refuses every `K:` URL as `OutsideRoot`. A project reached through a junctioned ancestor, cross-volume included, is **admitted** and re-spelled from its final path. (ii) A root spelled by its final path is unaffected by rebinding a spare letter: E9 0/12 — that run's URLs were spelled with the final path's `D:`, so it does **not** test `K:` URLs. Not exercised (pre-declared UNKNOWN): shadowing the **real** volume letter of the final path. E9 `ddd`: an AppContainer and an LPAC child get `ERROR_ACCESS_DENIED` (5) from `DefineDosDeviceW`; a medium-IL same-user child succeeds and the Host's session sees the mapping. | (i) Remove the admission refusal → no typed `KELD-*` error at admission (the app boots under the `D:` spelling and every `K:` link is `403` `OutsideRoot`) → RED. (ii) With a declared test seam that admits a `K:`-spelled root URL (precondition printed), spell the URL from the requested letter → E9: 5 of 12 cells, exactly the pass-through ones, deliver `B`'s bytes → RED. |
-| AC28 Keld-owned browser arguments (A22) | (i) The environment as Keld creates it; the page constructs `new Worker('wesc.js')` (in-root) and `new Worker('../../out/wout.js')` itself, and `blob:`/`data:` classic, module and shared workers whose `importScripts`, `fetch`, `import()` and nested `Worker` target out-of-root, junction-reached and in-root files; `navigator.serviceWorker.register`; (ii) `self.origin`/`location.origin` and an in-root `file:` frame's DOM; (iii) in-root and out-of-root `fetch`/XHR and a cross-origin `https:`/`http:` URL without CORS; (iv) the parent process sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--allow-file-access-from-files` (and, separately, a benign `--user-agent=…`); (v) **T2 device cell**: the `AdditionalBrowserArguments` policy carries the switch (HKCU and HKLM); (vi) source test over `keld-wv`/`keld-host` | The oracle counts **out-of-root nonces delivered** (WRR counts are reported, not scored). (i) Page-constructed `file:` workers throw `SecurityError`; `blob:`/`data:` classic and `data:` module/shared workers construct with origin `null`, `blob:` module and `blob:` shared workers fail to start, `serviceWorker.register` rejects; every `file:` load from those workers fails — out-of-root and junction `importScripts` raise WRR and get `403`, in-root `importScripts` is allowed and passed through yet still fails `NetworkError`, and `fetch`/`import()`/nested workers raise no WRR and are blocked by Chromium — identically in an observe run (E11 `b15-hs` ×2, `b15-hs-allk`, `b15-observe`): **0** out-of-root nonces. (ii) `self.origin == "null"`, `location.origin == "file://"`, the frame's `contentDocument` is `null`. (iii) In-root `200` (Host-served), out-of-root `403` empty, cross-origin fails (E10). (iv) The Host removes every `WEBVIEW2_*` variable from its environment before creating the WebView2 environment and logs the names it removed; the variable is absent at creation and 0 nonces arrive (E11 `env-af-clearenv`). (v) Typed `KELD-*` refusal to start (B16). (vi) Options `AdditionalBrowserArguments` empty; the KEL-66 test (`webview2/mod.rs:4851-4875`) is extended to refuse `--allow-file-access-from-files` and `--allow-universal-access-from-files` by name. | (1) Put `--allow-file-access-from-files` in the options → every worker kind and the page-constructed out-of-root worker deliver OUT nonces (3/3 targets) with zero WRR events for those loads (E10 every host mode; E11 2 runs and with source kinds `ALL`) → RED. (2) Drop the scrub with the variable set → OUT nonces 3/3 and `self.origin == "file://"` (E11 `env-af`); options `""` or no options object does not override it, and on a conflicting argument the environment value wins (E11 `env-af-nullopts`, `env-afua-optua`: the page's user agent is the variable's) → RED. |
+| AC28 Keld-owned browser arguments (A22) | (i) The environment as Keld creates it; the page constructs `new Worker('wesc.js')` (in-root) and `new Worker('../../out/wout.js')` itself, and `blob:`/`data:` classic, module and shared workers whose `importScripts`, `fetch`, `import()` and nested `Worker` target out-of-root, junction-reached and in-root files; `navigator.serviceWorker.register`; (ii) `self.origin`/`location.origin` and an in-root `file:` frame's DOM; (iii) in-root and out-of-root `fetch`/XHR and a cross-origin `https:`/`http:` URL without CORS; (iv) `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--allow-file-access-from-files` (and, separately, a benign `--user-agent=…`) is set (a) in the environment of `keld dev` and (b) in the environment of a directly launched installed `keld-host`; (v) **T2 device cell**: the `AdditionalBrowserArguments` policy carries the switch (HKCU and HKLM); (vi) source test over `keld-wv`/`keld-cli` | The oracle counts **out-of-root nonces delivered** (WRR counts are reported, not scored). (i) Page-constructed `file:` workers throw `SecurityError`; `blob:`/`data:` classic and `data:` module/shared workers construct with origin `null`, `blob:` module and `blob:` shared workers fail to start, `serviceWorker.register` rejects; every `file:` load from those workers fails — out-of-root and junction `importScripts` raise WRR and get `403`, in-root `importScripts` is allowed and passed through yet still fails `NetworkError`, and `fetch`/`import()`/nested workers raise no WRR and are blocked by Chromium — identically in an observe run (E11 `b15-hs` ×2, `b15-hs-allk`, `b15-observe`): **0** out-of-root nonces. (ii) `self.origin == "null"`, `location.origin == "file://"`, the frame's `contentDocument` is `null`. (iii) In-root `200` (Host-served), out-of-root `403` empty, cross-origin fails (E10). (iv) (a) the launcher removes the variable from the Host's environment, the environment is created and 0 nonces arrive (INFERRED from E11 `env-af-clearenv`, where it was absent at creation); (b) `keld-wv` refuses environment creation with a typed `KELD-*` error naming the variable and no page loads (E11 `env-af-refuseenv`). (v) Typed `KELD-*` refusal to start (B16). (vi) Options `AdditionalBrowserArguments` empty; the KEL-66 test (`webview2/mod.rs:4851-4875`) is extended to refuse `--allow-file-access-from-files` and `--allow-universal-access-from-files` by name. | (1) Put `--allow-file-access-from-files` in the options → every worker kind and the page-constructed out-of-root worker deliver OUT nonces (3/3 targets) with zero WRR events for those loads (E10 every host mode; E11 2 runs and with source kinds `ALL`) → RED. (2) Drop both the launcher removal and the refusal with the variable set → OUT nonces 3/3 and `self.origin == "file://"` (E11 `env-af`); separately drop only the refusal → case (b) escapes (installed launches have no Keld launcher); options `""` or no options object does not override it, and on a conflicting argument the environment value wins (E11 `env-af-nullopts`, `env-afua-optua`: the page's user agent is the variable's) → RED. |
 
 ## 4. Design
 
@@ -359,8 +363,8 @@ lifecycle/revocation and evidence provenance; performance atoms are in §9.
 | A19 Registration ordering | `keld-core` control FIFO (**TARGET**: compat windows have no Host-navigated first document once W2 D2/D3 land) + recovery hold | facade registrations sent before `loadURL` apply to that load's first request; during recovery `file:` requests are held until the successor registers or posts `listeners-settled` (bounded; only if the predecessor had a listener) | FIFO broken; a Host-navigated first document before `ready` | AC15 (a), (d), (d′) | FACT: today Windows refuses schema-2 (`app_session.rs:3431-3438` `KELD-CORE-034`; `HostInitialized` is macOS-only); TARGET: W2 gh1188 D2/D3; FACT: Electron apps register after `ready` (draw.io `electron.js` L987–994) | → A15; blocked by B13 · AC15 NC (FIFO order swap) |
 | A20 Session root pin (lifecycle) | `keld-core` boot: the retained root `Dir` shares `READ \| WRITE`, never `DELETE` | admitted root handle → rename/delete of the root fails (32); ancestors cannot be renamed while a handle beneath is open | root shared with `DELETE`: the parent's mutation owner swaps the root and pass-through reads OUT persistently | AC26 (i) | FACT both existing handles already lack `DELETE` (dev `app_session.rs:1495-1498`; installed cap-std `dir_options()`); PROBE E9 hybrid 0/9 vs control 4/9 | → A23 · AC26 NC (i) |
 | A21 Root drive-letter binding (identity of the root's spelling) | `keld-core` admission + `AdmittedRootUrl` | requested root path + handle final path → root URL spelled from the final path; fail-early refusal when the requested letter is session-defined (`QueryDosDeviceW` names a `\??\` target) | a literal `subst` letter spelled into the URL: a rebind redirects pass-through reads | AC27 | PROBE E9: literal `K:` 5/12 (the pass-through cells); final-path spelling 0/12 (spare-letter rebind; `K:` URLs not tested); real-letter shadowing UNKNOWN; AppContainer/LPAC `DefineDosDeviceW` → 5; the `\??\` heuristic misses a `DDD_RAW_TARGET_PATH` definition (UX only; R7 still refuses) | → A23; Strict equivalence #1187 (Q20) · AC27 NCs |
-| A22 Keld-owned browser arguments (invariant) | `keld-host` start (scrub) + `keld-wv` environment creation (KEL-66 owner) | options → **empty** `AdditionalBrowserArguments`; every `WEBVIEW2_*` variable removed from the Host's environment before environment creation (names logged); `AdditionalBrowserArguments` policy present → typed refusal | `--allow-file-access-from-files` from any source: workers run and read out-of-root files with **no** WRR event; `self.origin` becomes `"file://"`; in-root frames' DOM readable | AC28, §1 origin observable | PROBE E10 switch matrix; PROBE E11: `blob:`/`data:` workers escape only with the switch; the environment variable merges with the options and wins on conflict, options `""` does not override it, an in-process scrub before creation closes it, refuse-to-start closes it; policy and other `WEBVIEW2_*` variables UNTESTED | → A16 (origin under which CSP was measured), §1 · AC28 NCs |
-| A23 Pass-through verify-and-hold (OS containment of the object Chromium opens) | `keld-wv` handler + the C3 opener; the verification handle is the hold | classic script/stylesheet/image/font/media/other URI → verified `(root, components)`; the leaf stays open share `READ` and every directory component stays open without `DELETE`; no response → Chromium opens the pinned object → release on `WebResourceResponseReceived` or the failure/redirect/retirement path | parser differential; a mutation between verification and Chromium's open (no hold, or a hold opened separately); a hold that is never released (file pinned for the document's life) | AC03, AC26 (ii)(iii), AC27 | PROBE E11 `pt`: 0 differentials, 48 at-risk per context × 4 contexts × 3 runs; PROBE E11 `sr`: no hold → replacement/OUT 24/24, share-READ hold → verified 24/24, release at `WebResourceResponseReceived` late enough; verify → hold gap of a separate hold UNMEASURED (closed by design) | ← A4, A5, A20, A21 · AC03 NCs, AC26 NCs |
+| A22 Keld-owned browser arguments (invariant) | `keld-wv` environment creation (KEL-66 owner) + every Keld launcher of `keld-host` (today only `keld-cli dev`, `dev.rs:363`) | options → **empty** `AdditionalBrowserArguments`; the launcher removes every `WEBVIEW2_*` variable from the child's environment (`Command::env_remove`, safe); `keld-wv` refuses environment creation with a typed `KELD-*` error naming any `WEBVIEW2_*` variable present (`std::env::var_os`, safe); `AdditionalBrowserArguments` policy present → typed refusal | `--allow-file-access-from-files` from any source: workers run and read out-of-root files with **no** WRR event; `self.origin` becomes `"file://"`; in-root frames' DOM readable | AC28, §1 origin observable | PROBE E10 switch matrix; PROBE E11: the variable merges with the options and wins on conflict, options `""` does not override it, removing it before creation closes it (`env-af-clearenv`, in-process), refusing closes it (`env-af-refuseenv`); a launcher-side removal is INFERRED equivalent (the variable is absent at creation either way); policy and other `WEBVIEW2_*` variables UNTESTED | → A16 (origin under which CSP was measured), §1 · AC28 NCs |
+| A23 Pass-through verify-and-hold (OS containment of the object Chromium opens) | `keld-wv` handler + the C3 opener; the verification handle is the hold | classic script/stylesheet/image/font/media/other URI → verified `(root, components)`; the leaf stays open share `READ` and every directory component stays open without `DELETE`; no response → Chromium opens the pinned object → release by `WebResourceResponseReceived` (multiset by URI, oldest first) for requests issued while the handler is registered, otherwise — and for every cancelled load — **only** at document retirement or webview close (load-bearing) | parser differential; a mutation between verification and Chromium's open; a hold that is never released; the handler's own cost | AC03, AC20, AC26 (ii)(iii), AC27 | PROBE E11 `pt` and `sr`; PROBE E12: gap cell verified 288/288 (swaps fail 32, rename-over 5) vs no-hold NC 144/144 attacked; no hold leaked in any release cell; cancelled loads (`src` cleared, `window.stop()`, iframe removed or navigated) get no `WebResourceResponseReceived`; a request in flight when the handler is added never gets one; the handler, not the hold, costs on module loads (+11.1 ms vs +0.3 ms) | ← A4, A5, A20, A21 · AC03 NCs, AC26 NCs |
 
 ### 4.2 Decisions taken as input (kept; evidence re-checked)
 
@@ -643,24 +647,43 @@ pinned root (A20). Then:
   (`READ` only) and every directory component's handle comes from cap-std without `DELETE`;
   the Host **keeps exactly those handles** as the hold, sets no response, and Chromium's loader
   (`GENERIC_READ`, share `READ | WRITE`, compatible with the hold — E9 share-mode table) opens
-  the pinned object. **Release**, on the STA: (1) `WebResourceResponseReceived` for that URI
-  (holds kept as a per-webview multiset keyed by the parsed URI, one released per event, oldest
-  first); (2) a response that reports a redirect or a failure; (3) retirement of the document
-  generation that issued the request (#1192) and webview close — so a request that is
-  cancelled or never answered stays pinned at most for its document's life; (4) a per-webview
-  hold bound (`MAX_PASS_THROUGH_HOLDS`, value set at T2): a request arriving at the bound is
-  **Host-served** instead of held (correct by construction, costs its bytes). E11 (`sr`,
-  deterministic injection after verification, 24 repetitions per kind): without a hold a leaf
-  rename delivered the replacement and a directory → junction swap delivered OUT 24/24 for
-  script, image and stylesheet; with a share-READ hold chain the verified bytes arrived 24/24,
-  every swap failed (32), and swaps after release at `WebResourceResponseReceived` succeeded
-  while the delivered bytes were already the verified ones — release there is late enough. E11's
-  chain reopened the path after the verification handle closed; that verify → hold gap was not
-  measured and does not exist in this design (AC26 iii). Whether `WebResourceResponseReceived`
-  fires for cancelled and failed pass-through loads is UNKNOWN (rule 3 bounds the cost).
-  **Cost:** while a hold is open the leaf cannot be written, renamed or deleted (32), so an
-  in-place rewrite of that file during the window fails transiently; the hold's navigation
-  cost (E9 `vh` +3.2 % [−0.3, +6.6] on `v`) is unmeasured on `hso` (AC20 gate).
+  the pinned object. **Release**, on the STA (E12; owner decision relayed 2026-10-30, to be recorded on #1185 with B1):
+  1. **`WebResourceResponseReceived`** for that URI releases one hold (per-webview multiset keyed
+     by the parsed URI, oldest first; E12: two holds on one URI released as a multiset; Blink
+     merges duplicate requests; a response reporting a redirect or failure releases too). The
+     handler is **registered dynamically**: a webview adds it in the WRR handler right before its
+     **first** hold is inserted (before that request passes through), and once a webview has ever
+     held it adds it again at each later document's `NavigationStarting`, before that document's
+     first request; it stays registered until that document retires and is never removed while
+     a hold is outstanding. Reason (E12): with the handler **always** registered (`hsoh`) the
+     module workload regressed +5.72 % [+1.77, +9.53] vs `hsm` (AC20 b FAIL), and the cost is
+     the registration itself (`hsor` − `hso` +11.1 ms [+4.7, +18.4]; the hold on top +0.3 ms
+     [−5.7, +4.2]); registered only while holds exist (`hsod`) the module workload is −1.51 %
+     [−5.53, +1.23] because it holds nothing.
+  2. **Document retirement or webview close releases every remaining hold of that document —
+     load-bearing, not a backstop.** E12: `WebResourceResponseReceived` never fires for a
+     request already in flight when the handler is added, including the request whose WRR
+     added it, so with `hsod` the first burst of every document stayed pinned until close
+     (draw.io: `styles/grapheditor.css`, `js/bootstrap.js`, `images/spin.gif`, `js/main.js`,
+     `styles/high-contrast.css` in every measured load; 1 add and 1 remove per document; no
+     lost event for requests started after registration). Truly cancelled pass-through loads
+     (`src` cleared, `window.stop()`, iframe removed or navigated) get **no**
+     `WebResourceResponseReceived` even with the handler always registered; loads whose
+     element left the DOM still complete; CSP-blocked requests are never issued (no hold).
+     No hold leaked in any release cell (3 runs each, `hsoh` and `hsod`); the no-retirement
+     mutant leaves 14 (`hsoh`) / 15 (`hsod`) holds outstanding and the exclusive-open detector
+     fails 32 on each (detector NC).
+  3. A per-webview hold bound (`MAX_PASS_THROUGH_HOLDS`, value set at T2; E12 peak 7
+     concurrent on draw.io, 0 bound hits): a request arriving at the bound is **Host-served**
+     instead of held.
+
+  The re-registration at `NavigationStarting` (so only a webview's **first** document pins its
+  first burst) is a refinement of the measured `hsod` and is **unmeasured** (T2 cell, AC20 c).
+  E11 + E12 race evidence: without a hold an injected leaf rename delivered the replacement and a
+  directory → junction swap delivered OUT 24/24 per kind; with the verification handle held the
+  verified bytes arrived 288/288 in the gap cell (swaps fail 32, rename-over 5) while the no-hold
+  NC was attacked 144/144, and swaps after release succeeded with the delivered bytes already
+  verified. **Cost:** while a hold is open the leaf cannot be written, renamed or deleted (32/5).
 - Evidence for the pass-through parser: E11 `pt` corpus, 0 differentials, 48 at-risk per
   context; E9, 0 over 337 non-race cells × 6 runs of all-context pass-through; without
   enforcement Chromium delivered bytes for 42 of 171 refused cells without the switch and 108
@@ -687,18 +710,19 @@ identically in an observe run), `blob:` module and shared workers fail to start,
 `serviceWorker.register` rejects — B15 resolved: **no escape without the switch**. The switch
 also arrives without Keld's options: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` merges with the
 options' arguments, wins on conflict, and is not overridden by options `""` or a missing
-options object (E11 `env-*`). Therefore: (1) **`keld-host` removes every `WEBVIEW2_*`
-variable** from its own environment as the first action of `main`, before any thread exists,
-and logs the names it removed (E11 `env-af-clearenv`: the escape closes; prefix rule because
-the full list of argument-bearing variables is UNKNOWN, Q21; the Bun roles receive an exact
-environment anyway); (2) `keld-wv` asserts at environment creation that no `WEBVIEW2_*`
-variable is present and refuses typed otherwise (E11 `env-af-refuseenv` closes it the same
-way); (3) the Host **refuses to start** with a typed `KELD-*` error when the
-`AdditionalBrowserArguments` policy is set (B16; untested). Microsoft's `concepts/security.md`
-(local copy in the W1 research bundle, L106–114) states that `WEBVIEW2_*` overrides and HKCU
-policy overrides are ignored when the host runs elevated, so (1)–(3) matter for the normal,
-non-elevated launch. The scrub needs `std::env::remove_var`, which is `unsafe` in edition 2024
-(§8); refuse-to-start alone is the measured, `unsafe`-free fallback if that gate refuses.
+options object (E11 `env-*`). Therefore (owner decision relayed 2026-10-30, to be recorded on #1185 with B1, r9; no new `unsafe`): (1)
+**`keld-wv` refuses to create the WebView2 environment** with a typed `KELD-*` error naming every
+`WEBVIEW2_*` variable present in the Host's environment (read with `std::env::var_os`, which is
+safe; the whole prefix until Q21 classifies the names — fail closed); E11 `env-af-refuseenv`
+closes the escape; (2) **every Keld launcher of `keld-host` removes them** from the child's
+environment with `Command::env_remove` (safe). Today the only such launcher is `keld-cli dev`
+(`dev.rs:363`; `dev.rs:522` starts the cleanup sentinel, which creates no webview); an
+installed application is started by the OS, so (1) alone governs it and a user whose
+environment carries such a variable gets the typed refusal with fix text; (3) the Host
+**refuses to start** with a typed `KELD-*` error when the `AdditionalBrowserArguments` policy is
+set (B16; untested). Microsoft's `concepts/security.md` (local copy in the W1 research bundle,
+L106–114) states that `WEBVIEW2_*` overrides and HKCU policy overrides are ignored when the host
+runs elevated, so (1)–(3) matter for the normal, non-elevated launch.
 
 **CSP is not a containment boundary.** Chromium enforces the served document's policy on its
 subresources, but under `script-src 'self'` an out-of-root or junction-reached `file:` script
@@ -707,10 +731,14 @@ the parser, the walk, the pin and the hold; CSP limits what in-root code the pag
 
 **Residuals, stated plainly:**
 
-1. **Hold release** depends on `WebResourceResponseReceived` and on rule 3 for loads that never
-   report; a missed release pins a file for its document's life (an in-place rewrite of it
-   fails until then), and the hold bound turns overflow into Host serving. Unmeasured beyond
-   E11's injected cells (T2 cells: cancelled load, failed load, navigation away mid-load).
+1. **First-burst pinning.** A webview's first document keeps the holds of every pass-through
+   request in flight when its handler was added — in draw.io five files — until that document
+   retires or the webview closes (E12 `hsod`); cancelled loads stay pinned until retirement in
+   every design (E12). Pinned means share `READ`: in `keld dev` an editor save to such a file
+   fails (32, or 5 for rename-over saves) until the window navigates or reloads — a developer-
+   experience regression, stated here and in T1. Installed trees are not written while the
+   application runs (A20), so they are unaffected. Whether the `NavigationStarting`
+   re-registration really limits pinning to the first document is unmeasured (AC20 c).
 2. **Volume-letter shadowing.** Chromium resolves the drive letter on every open in the
    browser process's logon-session DOS-device map; the hold pins the object the Host verified
    but Chromium's open still resolves the letter. A literal `subst` letter cannot reach a
@@ -1137,24 +1165,7 @@ commits is not Host-served and receives no eligibility from W3; it is still eval
 | Per-request `QueryDosDeviceW` check | Scored in §4.5 (6.5 vs 9.25): racy, unmeasured per-request cost, every request refused after a rebind; required only if Q20 says Strict can redefine a device. |
 | Classify by `RequestedSourceKind` | `DOCUMENT` for every request (E9); serves everything (E8 cost). |
 | Serve `.lnk` raw / let Chromium follow it (L0) | Scored in §4.5 (7.0 vs 8.2): two behaviours for one name and a browser-side shell-link parse. |
-
-**Serving alternatives after E11, scored 0–10 (confidence):**
-
-| Option | Containment | Electron fidelity | Header coverage | Cost | Simplicity / owners | Mean |
-| --- | --- | --- | --- | --- | --- | --- |
-| r6 `h` + switch | 1 (0.9): workers read out-of-root files with zero WRR events (E10/E11) | 7 (0.6): `file:` workers and modules work as in Electron; `self.origin` becomes `"file://"` | 5 (0.8): documents only | 9 (0.7): +2.52 % [+0.52, +4.37] (E10) | 3 (0.9): breaks KEL-66 | 5.0 |
-| r7 `hs` | 6 (0.8): pass-through raced (E11: replacement/OUT 24/24) | 3 (0.8): every module script, `import()`, `modulepreload` and `crossorigin` load fails (E11) — default Vite/electron-vite output does not run; `file:` workers unusable; in-root frame and `<object>` DOM unreadable (E10) | 7 (0.8): documents and `fetch`/XHR | 9 (0.7): +3.54 % [+1.16, +4.68]; modules cost nothing because they never load | 9 (0.9) | 6.8 |
-| serve every script (`hsm` = `hs` + context 6) | 8 (0.7): scripts immune; stylesheet/image still raced | 6 (0.7): modules work; `crossorigin` images/stylesheets/font preloads still fail | 7 (0.8) | 3 (0.6): module workload 158.5 ms (−40.9 ms vs `eaf`), but on the classic draw.io bundle chain serving ~24 MB of scripts brings back E8's ~+34–36 % (INFERRED from E8) | 8 (0.8): context-only rule | 6.4 |
-| **r8 `hso` + verification-handle hold** | 9 (0.7): Host-served loads immune; pass-through pinned to the verified object (E11 24/24 with a hold); residuals: hold release, real-letter shadowing | 6 (0.7): every CORS-mode cell loads (E11); `file:` workers unusable; `.lnk` refused | 8 (0.8): documents, `fetch`/XHR, CORS-mode loads; classic script/stylesheet/image none | 7 (0.4): unmeasured as a whole; its parts: draw.io served set as `hs` (INFERRED: its classic chain carries no `Origin`), modules as `hsm`, hold +3.2 % on `v` — AC20 gate | 7 (0.8): a second classifier input (`Origin` header) and a hold table with release rules | **7.4** |
-
-**Decision (r8, owner decision relayed 2026-10-30, to be recorded on #1185 with B1): `hso` + hold.** E8's per-MB cost for large classic
-scripts does not apply: classic scripts stay on pass-through under `hso`.
-
-| Browser-argument ownership option | Why |
-| --- | --- |
 | Rely on empty options only (r7) | E11: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` merges, wins on conflict and is not overridden by options `""` — an inherited variable silently removes containment. Rejected. |
-| Refuse to start when any `WEBVIEW2_*` variable is set | E11: closes it, needs no `unsafe`, but stops applications launched from shells or tools that export such variables. Kept as the fallback (and as `keld-wv`'s assertion). |
-| **Scrub `WEBVIEW2_*` at `keld-host` start, log, assert at creation; refuse on the policy** | E11: closes it and keeps such launches working; costs a new `unsafe` site (§8). Chosen. |
 | `*` WRR filter (r1) | Every remote request blocks behind the UI thread; environment-wide worker events; perf gate blind to it (review P1-4). |
 | New `NtCreateFile` read-open in `keld-update` (r1 option a) | A second relative opener beside cap-std's; new `unsafe` where a reviewed safe one exists (review P1-8). |
 | Link-count refusal / file-ID allowlist / content hashing | Owner decision 6491936458. |
@@ -1170,6 +1181,31 @@ scripts does not apply: classic scripts stay on pass-through under `hso`.
 | Static CSP extraction / meta CSP only | Falsified by runtime policy; meta limitations (D3). |
 | `url` crate for parsing | Present in `Cargo.lock` (2.5.8, via tao/wry) but not a workspace dependency of `keld-guard`; its job is canonicalisation (resolves `..`), ours is refusal; its `file:` origin is opaque-per-call. Dependency gate otherwise. |
 | Host-side Electron match-pattern matcher for `onHeadersReceived` | A second matcher; the facade owns it once (§4.5). |
+
+**Serving alternatives after E11, scored 0–10 (confidence):**
+
+| Option | Containment | Electron fidelity | Header coverage | Cost | Simplicity / owners | Mean |
+| --- | --- | --- | --- | --- | --- | --- |
+| r6 `h` + switch | 1 (0.9): workers read out-of-root files with zero WRR events (E10/E11) | 7 (0.6): `file:` workers and modules work as in Electron; `self.origin` becomes `"file://"` | 5 (0.8): documents only | 9 (0.7): +2.52 % [+0.52, +4.37] (E10) | 3 (0.9): breaks KEL-66 | 5.0 |
+| r7 `hs` | 6 (0.8): pass-through raced (E11: replacement/OUT 24/24) | 3 (0.8): every module script, `import()`, `modulepreload` and `crossorigin` load fails (E11) — default Vite/electron-vite output does not run; `file:` workers unusable; in-root frame and `<object>` DOM unreadable (E10) | 7 (0.8): documents and `fetch`/XHR | 9 (0.7): +3.54 % [+1.16, +4.68]; modules cost nothing because they never load | 9 (0.9) | 6.8 |
+| serve every script (`hsm` = `hs` + context 6) | 8 (0.7): scripts immune; stylesheet/image still raced | 6 (0.7): modules work; `crossorigin` images/stylesheets/font preloads still fail | 7 (0.8) | 3 (0.6): module workload 158.5 ms (−40.9 ms vs `eaf`), but on the classic draw.io bundle chain serving ~24 MB of scripts brings back E8's ~+34–36 % (INFERRED from E8) | 8 (0.8): context-only rule | 6.4 |
+| **`hso` + verification-handle hold, dynamic handler (r9)** | 9 (0.7): Host-served loads immune; pass-through pinned to the verified object (E11 24/24, E12 gap 288/288); residuals: first-burst and cancelled-load pinning until retirement, real-letter shadowing | 6 (0.7): every CORS-mode cell loads (E11); `file:` workers unusable; `.lnk` refused; `keld dev` saves to pinned files fail until reload | 8 (0.8): documents, `fetch`/XHR, CORS-mode loads; classic script/stylesheet/image none | 7 (0.5): E12 `hsod` draw.io +0.67 % [−1.65, +2.43], module workload −1.51 % [−5.53, +1.23] (zero holds there); a module app that also holds is unmeasured (AC20 c) and may approach `hsoh`'s +5.72 % | 6 (0.8): `Origin` classifier, hold table, handler registered per document | **7.2** |
+
+`hso` + hold with the handler **always** registered (`hsoh`, E12) is rejected: module workload
++5.72 % [+1.77, +9.53] vs `hsm`, over the gate.
+
+**Decision (r8/r9, owner decision relayed 2026-10-30, to be recorded on #1185 with B1): `hso` + hold with the dynamic handler.** E8's per-MB
+cost for large classic scripts does not apply: classic scripts stay on pass-through under `hso`.
+
+**Browser-argument ownership, scored 0–10 (confidence)** (empty options alone — r7 — is rejected
+in the table above):
+
+| Option | Containment | Availability | Gate cost | Simplicity | Mean |
+| --- | --- | --- | --- | --- | --- |
+| (s) r8: in-process `remove_var` scrub at `keld-host` start + assertion | 9 (0.8): E11 `env-af-clearenv` | 9 (0.7): launches from any environment keep working | 4 (0.9): new production `unsafe` (`remove_var` is `unsafe` in edition 2024) with an issue-scoped sanction | 7 (0.8) | 7.25 |
+| **(r) r9: `keld-wv` refuses while any `WEBVIEW2_*` is present + `Command::env_remove` in every Keld launcher** | 9 (0.8): E11 `env-af-refuseenv`; launcher removal INFERRED equivalent to `clearenv` | 7 (0.7): `keld dev` unaffected; an installed launch from an environment carrying such a variable is refused typed | 10 (0.9): no `unsafe` | 8 (0.8) | **8.5** |
+
+Decision (owner decision relayed 2026-10-30, to be recorded on #1185 with B1): **(r)**.
 
 ### 4.10 Types & channels, capabilities, wire, platform, seam, migration
 
@@ -1202,9 +1238,10 @@ scripts does not apply: classic scripts stay on pass-through under `hso`.
   `NavigationCompleted`, `WebResourceResponseReceived`, `Runtime.enable` + context tracking,
   the self-test. Handlers live for the WebView lifetime on the STA; renderer crash ≠ Host
   crash; the admitted root `Dir` (shared without `DELETE`, A20) lives for the session and is
-  dropped after the webview; the environment carries **no** browser argument and `keld-host`
-  scrubbed `WEBVIEW2_*` first (A22); pass-through holds are released on
-  `WebResourceResponseReceived`, redirect/failure, document retirement or webview close (A23);
+  dropped after the webview; the environment carries **no** browser argument and is created
+  only when no `WEBVIEW2_*` variable is present (A22); pass-through holds are released by the
+  dynamically registered `WebResourceResponseReceived` handler, else at document retirement
+  or webview close (A23);
   config captured once at boot; listener registrations applied in control-channel order.
 - **Migration unit:** `app_session.rs` boot and coordinator, `webview2/mod.rs`, `engine.rs`,
   `keld-update` opener + accessor, `keld-guard` parser, `@keld/electron` facade, `keld migrate`
@@ -1238,10 +1275,11 @@ scripts does not apply: classic scripts stay on pass-through under `hso`.
 - [ ] **T2 — one opener, admitted root, loading path, containment** (Windows W3 implementer):
   parser + goldens (AC05), `open_regular_beneath` + `tree()` + `open_pinned_leaf` migration
   (AC04), root retention and boot migration, `file:*` filter/handler and `Navigate` loading
-  (AC01–AC04, AC06, AC17–AC19, AC22–AC28), `hs` classification, R10, session root pin,
-  drive-letter admission, the extended KEL-66 test, the `WEBVIEW2_*` scrub and policy refusal,
+  (AC01–AC04, AC06, AC17–AC19, AC22–AC28), `hso` classification, R10, session root pin,
+  drive-letter admission, the extended KEL-66 test, the `WEBVIEW2_*` refusal, the `keld dev`
+  launcher's `env_remove`, the policy refusal,
   the `Origin` classifier, the verification-handle hold and its release rules, arm (b) for
-  Host-served responses. Merge blocks on its AC20 receipt, B16, the `unsafe` gate for the scrub,
+  Host-served responses. Merge blocks on its AC20 receipt (a, b, c), B16,
   public API + permission gates, the `keld-guard` unsafe-trigger line, #1192 T1 (B2).
 - [ ] **T3 — settled eval** (same): `WebEngine::eval` destination form, self-test, context
   tracking, the one `Pending → Retired | Delivered` machine, per-correlation object groups, role correlation (AC10–AC13); AC14 after B3. Blocks
@@ -1264,7 +1302,7 @@ scripts does not apply: classic scripts stay on pass-through under `hso`.
 | `guard_file_url_root_relative` (pure; R7/R8 goldens Windows-only) | AC05 | Table rows + probe corpus; mutants: drop `:`, drop `~`, decode twice (non-discriminating, recorded), case-sensitive R7. Adversarial fixtures permanent. |
 | `update_open_regular_beneath` (Windows, native) | AC04 | Fixture with leaf junction, **intermediate junction**, file symlink, directory symlink (precondition printed, never silently green), hardlink (`nlink` read-back), ADS, trailing dot; `Share::Pinned` and `Share::Served`; mutant: Win32 `CreateFileW` path open. |
 | `update_pinned_leaf_migrated` | AC04 | Existing locate/helper tests pass unchanged through the generalised opener; source test that `open_relative_file_windows` and page-controlled `OpenOptions::open` are absent. |
-| `wv2_file_origin_matrix` (device, ignored-by-default, STA harness as `media_acceptance`) | AC01–AC03, AC06, AC17–AC19, AC22–AC28 | `file:*` baseline + N2; plain-outside and `https` cells; per-rule at-risk counters split Host-served vs pass-through per context; E9's identity oracle per kind and E11's exclusive-hold same-object oracle; the pass-through parser corpus as `<script>`, stylesheet, `<img>` and `@font-face`; naive mutants 1a–1c, unverified pass-through, drop-R10; `ResourceContext`/`Origin` census incl. `<object>`/`<embed>` and every CORS-mode kind; whole-root swap with and without `DELETE` on a handle-free fixture root; injected race with and without the hold and the verify → hold gap cell; hold release on cancel/failure/navigation; `subst` rebind with the test seam; CSP cells incl. cross-directory `'self'` and a hash; worker cells with the switch on (NC) and off; `WEBVIEW2_*` scrub on/off and the policy cell; ETW when elevated. |
+| `wv2_file_origin_matrix` (device, ignored-by-default, STA harness as `media_acceptance`) | AC01–AC03, AC06, AC17–AC19, AC22–AC28 | `file:*` baseline + N2; plain-outside and `https` cells; per-rule at-risk counters split Host-served vs pass-through per context; E9's identity oracle per kind and E11's exclusive-hold same-object oracle; the pass-through parser corpus as `<script>`, stylesheet, `<img>` and `@font-face`; naive mutants 1a–1c, unverified pass-through, drop-R10; `ResourceContext`/`Origin` census incl. `<object>`/`<embed>` and every CORS-mode kind; whole-root swap with and without `DELETE` on a handle-free fixture root; injected race with and without the hold and the verify → hold gap cell; hold release on cancel/failure/navigation; `subst` rebind with the test seam; CSP cells incl. cross-directory `'self'` and a hash; worker cells with the switch on (NC) and off; `WEBVIEW2_*` launcher removal and refusal on/off, the policy cell, hold-release cells and the second-document re-registration cell; ETW when elevated. |
 | `wv2_navigation_signals` (device) | AC07–AC09 | Loads (i)–(v); page oracle; GH-551 differential against the same fixture in Electron v45.1.0; mutants per row. |
 | `wv2_settled_eval` (device) | AC10–AC13 | Promise/statement/reject/throw/getter/Proxy cells; gap dispatch; replayed G1; role recovery via the existing `no_flag/windows/recovery.rs` harness; injected CDP failure. |
 | `wv2_headers_received` (device) | AC15, AC16 | Listener before/after `loadURL` (ordering), absent, retired; `fetch`/XHR- and module-matching listener (one round trip each) and classic script/stylesheet/image-matching listener (zero); SVG/XHTML `Content-Type` override; forbidden-remote-script counter. |
@@ -1289,11 +1327,9 @@ its own DACL; precondition status printed for symlink/8.3/ETW cells.
   `add_WebResourceResponseReceived`, `CallDevToolsProtocolMethod`,
   `GetDevToolsProtocolEventReceiver`, `NavigationKind`) with local proofs and an issue-scoped
   `crates/keld-wv/AGENTS.md` update; independent unsafe gate on the final diff. The opener
-  adds **no** unsafe. (3) `keld-host`: the `WEBVIEW2_*` scrub calls `std::env::remove_var`,
-  which is `unsafe` in edition 2024 (workspace `edition = "2024"`); SAFETY proof: it is the
-  first action of `main`, before any thread exists or any code reads the environment; needs an
-  issue-scoped sanction in `crates/keld-host/AGENTS.md` and the independent gate. If the gate
-  refuses, refuse-to-start (E11, `unsafe`-free) replaces the scrub.
+  adds **no** unsafe, and the browser-argument defence adds none (r9: `std::env::var_os` and
+  `Command::env_remove` are safe; r8's `remove_var` scrub is withdrawn). `add_WebResourceResponseReceived`
+  / its `remove_` counterpart are now called per document (dynamic registration).
 - **public API — mandatory:** `keld-guard` parser **and a navigation entrypoint that
   evaluates `web.navigation.allow` for a `Principal::Webview` outside `evaluate`** (today
   `path_in_scope` is private behind `evaluate`, which refuses webview principals; the
@@ -1302,9 +1338,10 @@ its own DACL; precondition status printed for symlink/8.3/ETW cells.
   `WebEngine::eval`, `WebviewSpec.app_resources`, `AppResourceSource`, `AppWindowEvent`
   (drops `Copy`)/`AppWindowCommand` variants; `@keld/electron` events, `executeJavaScript`,
   `onHeadersReceived`; `keld migrate` output key.
-- **permission model — mandatory, independent reviewer:** two name owners; refusal table; `hs` classification and verify-then-pass-through with its
+- **permission model — mandatory, independent reviewer:** two name owners; refusal table; `hso` classification and verify-then-pass-through with its
   stated residuals; the `Origin` classifier; the verification-handle hold; R10; session root
-  pin; drive-letter admission; Keld-owned browser arguments (scrub, assertion, policy refusal);
+  pin; drive-letter admission; Keld-owned browser arguments (launcher removal, refusal, policy refusal);
+  the hold's release rules and the first-burst pinning residual;
   allowlist-first cancel with +0; served-document identity; hardlink read-back; separate
   baseline CSP; fail-closed headers; eval context + generation gates; allowlist derivation.
 - **dependency addition:** none.
@@ -1338,7 +1375,10 @@ decision-grade.
 | hs (r7: documents and `fetch`/XHR served, no switch, no-`DELETE` root, final-path root) | +3.54 % [+1.16, +4.68] pooled; blocks +2.12 % [−0.40, +6.51] and +4.11 % [+1.31, +5.30]; `hs` − `h` paired −1.8 ms [−11.8, +11.0] | rejected after E11 (CORS-mode loads fail; pass-through raced) |
 | hsm = hs + Host serves every script, module workload (E11: `index.html` + 257 ES modules, 2,930,290 B; metric `navToReadyHost` to the module graph's `load`) | 158.5 ms [155.6, 167.8] vs `eaf` (Chromium's loader **with** the switch, not shippable) 206.6 ms [195.1, 214.0]: ratio −23.3 %, paired −40.9 ms [−51.3, −35.8]; Host STA 69.0 ms per load, per-request median 238.8 µs; `e` and `hs` cannot load the graph | `hso` serves the same 258 requests on this workload (every module request carries `Origin`; INFERRED) |
 | hsmn NC = hsm + 10 ms STA sleep per request | hsmn − hsm +2705.6 ms [2700.8, 2713.5], predicted [2000, 3000]; per-request +10.33 ms in [9.5, 12] | passed |
-| **hso + verification-handle hold (chosen)** | **unmeasured** on either workload | AC20 gate at T2 |
+| hso (no hold), E12 | draw.io +2.93 % [+0.65, +3.95] vs e (E12 f4; e 427.0 ms) and +2.03 % [−0.54, +3.57] (f5; e 420.1 ms); modules −2.00 % [−4.82, +2.04] and −2.77 % [−6.64, +0.05] vs `hsm` | reference |
+| hsoh = hso + hold, `WebResourceResponseReceived` always registered | draw.io +1.65 % [+0.59, +2.82] (pooled upper bound 2.82; blocks 5.19, 3.12) **PASS**; modules +5.72 % [+1.77, +9.53] vs `hsm` (blocks 9.09, 15.36) **FAIL**; attribution on modules: `hsor` − `hso` (handler, no hold) +11.1 ms [+4.7, +18.4], `hsoh` − `hsor` (the hold) +0.3 ms [−5.7, +4.2] | rejected |
+| **hsod = hso + hold, handler registered only while a hold exists** (chosen basis) | draw.io +0.67 % [−1.65, +2.43] (blocks 4.47, 1.55) **PASS**; modules −1.51 % [−5.53, +1.23] (blocks 1.91, 3.67) **PASS** — with **0** holds on that workload, so the handler never registered; STA on draw.io 7.7 ms per load, longest block 2.9 ms | chosen, with the per-document re-registration refinement (unmeasured, AC20 c) |
+| E12 NCs (+10 ms STA per request) | draw.io blocks +140.4, +140.9 (f4), +134.6, +145.5 ms (f5) in [110, 170]; modules +2716.1, +2712.6 (f4), +2720.0, +2721.8 ms (f5) in [2000, 3000] | all passed |
 | hsn NC = hs + 10 ms STA sleep per request | hsn − hs +136.6 ms [129.7, 147.4], pre-registered [110, 170] | passed (E9's hn − h: +134.2 ms [129.7, 143.7]) |
 | g `Runtime.enable` from create (E1) | additive and serving-independent: +164 to +178 ms (gb − b, ge − e); ge vs e +39.9 % [+34.9, +43.8] | **over budget: B14** |
 
@@ -1503,6 +1543,7 @@ for `hs`; the T2 re-measurement with a preload, arm (f) and the restrictive-CSP 
     (names recalled from Microsoft's loader reference, not re-read: `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`,
     `WEBVIEW2_USER_DATA_FOLDER`, `WEBVIEW2_RELEASE_CHANNEL_PREFERENCE`,
     `WEBVIEW2_CHANNEL_SEARCH_KIND`, `WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER`,
-    `WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER`). The scrub removes the whole prefix, so the list is not
-    load-bearing for removal; T2 checks the pinned reference and records which ones a launch
-    environment carried.
+    `WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER`). Until classified, the refusal and the launcher removal
+    cover the whole prefix (fail closed), so the list is not load-bearing for containment; T2
+    checks the pinned reference, narrows the refusal to the argument-bearing names if the owner
+    wants fewer refused launches, and records which ones a launch environment carried.
