@@ -18,6 +18,10 @@ use crate::echo_link::EchoServer;
 /// Errors starting or observing a host-owned hello app-link session.
 #[derive(Debug)]
 pub enum HelloSessionError {
+    /// The bounded project permissions manifest is malformed or unreadable.
+    Manifest(Box<keld_guard::ManifestError>),
+    /// A declared profile cannot be enforced by this diagnostic entry.
+    Profile(Box<crate::app_session::HostAppError>),
     /// Listener bind or worker failure.
     Io(io::Error),
     /// Supervisor spawn / crash-loop / wait failure.
@@ -53,6 +57,8 @@ pub enum HelloSessionError {
 impl std::fmt::Display for HelloSessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Manifest(source) => std::fmt::Display::fmt(source, f),
+            Self::Profile(source) => std::fmt::Display::fmt(source, f),
             Self::Io(e) => write!(
                 f,
                 "KELD-CORE-030: host-owned app-link I/O error — {e}. \
@@ -91,7 +97,16 @@ impl std::fmt::Display for HelloSessionError {
     }
 }
 
-impl std::error::Error for HelloSessionError {}
+impl std::error::Error for HelloSessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Manifest(source) => Some(source.as_ref()),
+            Self::Profile(source) => Some(source.as_ref()),
+            Self::Io(source) => Some(source),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for HelloSessionError {
     fn from(value: io::Error) -> Self {
@@ -167,6 +182,19 @@ impl HostOwnedHelloSession {
         policy: RestartPolicy,
         markers: &[&str],
     ) -> Result<Self, HelloSessionError> {
+        // This direct diagnostic has no compiled digest. Reuse the bounded
+        // loader without claiming verified provenance. Only actual NotFound
+        // retains its existing missing-manifest behavior.
+        let manifest = match keld_guard::load_manifest(&project_root.join("keld.permissions.jsonc"))
+        {
+            Ok(manifest) => manifest,
+            Err(keld_guard::ManifestError::NotFound { .. }) => {
+                keld_guard::PermissionsManifest::default()
+            }
+            Err(source) => return Err(HelloSessionError::Manifest(Box::new(source))),
+        };
+        crate::app_session::reject_diagnostic_profile(&manifest)
+            .map_err(|source| HelloSessionError::Profile(Box::new(source)))?;
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let server = EchoServer::start(&ready_tx)?;
         ready_rx

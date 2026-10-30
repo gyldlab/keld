@@ -108,6 +108,7 @@ fn guard_snapshot_drops_only_after_ordered_cleanup() {
     fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
     fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
     let ValidatedBootSelection {
+        schema: _,
         app,
         permissions_file,
         permissions_digest,

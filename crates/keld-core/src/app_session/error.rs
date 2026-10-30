@@ -22,6 +22,8 @@ pub struct HostAppError {
     pub(super) resources: StartupResourceSnapshot,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     pub(super) manifest_source: Option<Box<ManifestError>>,
+    #[cfg(target_os = "macos")]
+    admission_source: Option<Box<keld_guard::AdmissionError>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -46,6 +48,8 @@ impl HostAppError {
             resources: startup_resource_snapshot(),
             #[cfg(any(target_os = "macos", target_os = "linux", windows))]
             manifest_source: None,
+            #[cfg(target_os = "macos")]
+            admission_source: None,
         }
     }
 
@@ -60,7 +64,21 @@ impl HostAppError {
             fix: "Apply the keld-guard correction above, rebuild the staged boot artifact, and relaunch.",
             resources: startup_resource_snapshot(),
             manifest_source: Some(Box::new(source)),
+            #[cfg(target_os = "macos")]
+            admission_source: None,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn admission(source: keld_guard::AdmissionError) -> Self {
+        let mut error = Self::new(
+            source.code(),
+            "security profile admission",
+            source.to_string(),
+            "Keep the requested policy and satisfy the existing strict admission contract; do not launch an unconfined replacement.",
+        );
+        error.admission_source = Some(Box::new(source));
+        error
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -132,9 +150,17 @@ impl std::error::Error for HostAppError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         {
-            self.manifest_source
+            let source = self
+                .manifest_source
                 .as_ref()
-                .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+                .map(|source| source.as_ref() as &(dyn std::error::Error + 'static));
+            #[cfg(target_os = "macos")]
+            let source = source.or_else(|| {
+                self.admission_source
+                    .as_ref()
+                    .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+            });
+            source
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
