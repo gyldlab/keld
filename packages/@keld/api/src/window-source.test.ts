@@ -1,6 +1,7 @@
 /** Pure source/alias contracts, not link attachment, heap bytes or native proof. */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 import {
@@ -67,6 +68,8 @@ function rejected(action: () => void): KeldCallError {
 async function sourceRole(
   file: string,
   args: readonly string[] = [],
+  diagnosticArgs: readonly string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
   const runtime = {
     version: Bun.version,
@@ -88,6 +91,14 @@ async function sourceRole(
   const child = Bun.spawn(
     [
       process.execPath,
+      // The one-shot observer has no independently scheduled JIT compiler root.
+      // It still imports the real role/artifacts and performs one collection.
+      ...(file === "window-source-release.test-role.ts"
+        ? [
+            "--eval",
+            'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]).href);',
+          ]
+        : []),
       join(import.meta.dir, file),
       ...args,
       ...(semantic
@@ -101,11 +112,13 @@ async function sourceRole(
       runtime.revision,
       runtime.platform,
       runtime.arch,
+      ...diagnosticArgs,
     ],
     {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      env,
     },
   );
   try {
@@ -129,6 +142,48 @@ async function sourceRole(
     if (observed) rmSync(observed, { force: true });
   }
 }
+
+test("Source collection diagnostics are explicit and preserve the zero oracle", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "keld-source-gc-diagnostic-"));
+  try {
+    for (const mode of [
+      "history:0:retire",
+      "history:1:retire",
+      "history:1:retain",
+    ]) {
+      const path = join(scratch, `${mode.replaceAll(":", "-")}.json`);
+      const result = (await sourceRole(
+        "window-source-release.test-role.ts",
+        [mode],
+        [`--heap-snapshot=${path}`],
+      )) as { settled: { objectsLive: number } };
+      expect(result.settled.objectsLive).toBe(mode.endsWith(":retain") ? 4 : 0);
+      expect(existsSync(path)).toBe(true);
+      const heap = JSON.parse(readFileSync(path, "utf8"));
+      expect(heap.version).toBe(3);
+      expect(heap.type).toBe("GCDebugging");
+      expect(heap.nodes.length).toBeGreaterThan(0);
+    }
+    await expect(
+      sourceRole(
+        "window-source-release.test-role.ts",
+        ["history:0:retire"],
+        ["--unknown-gc-option"],
+      ),
+    ).rejects.toThrow();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Source collection realm refuses unqualified compiler overrides", async () => {
+  await expect(
+    sourceRole("window-source-release.test-role.ts", ["history:0:retire"], [], {
+      ...process.env,
+      BUN_JSC_useConcurrentJIT: "true",
+    }),
+  ).rejects.toThrow("unqualified JSC override");
+});
 
 test("Created literal supplies the complete host snapshot on the generated channel", () => {
   const source = new WindowSource(() => {
@@ -774,6 +829,7 @@ for (const history of [0, 1, 1024]) {
       ])) as {
         history: number;
         retaining: boolean;
+        collectionRealm: string;
         settled: {
           objectsLive: number;
           snapshotsVisible: number;
@@ -784,6 +840,7 @@ for (const history of [0, 1, 1024]) {
       };
       expect(result.history).toBe(history);
       expect(result.retaining).toBe(mode === "retain");
+      expect(result.collectionRealm).toBe("one-shot");
       expect(result.settled.objectsLive).toBe(
         mode === "retain" ? 4 * history : 0,
       );

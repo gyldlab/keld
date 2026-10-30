@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runLayout } from "../../kipc/test/bundle-layout.ts";
 
 const producer = resolve(
@@ -129,10 +130,13 @@ test("real packed SDK installs offline with one API app identity", async () => {
 import {createRequire} from "node:module";
 import * as api from "@keld/api";
 import {app} from "@keld/api/internal/app";
-import "@keld/api/internal/link";
+import * as installedLink from "@keld/api/internal/link";
+import * as kipc from "@keld/kipc";
 import "@keld/api/internal/window-codec";
 assert.equal(api.app, app);
 assert.equal(api.app, createRequire(import.meta.url)("@keld/api").app);
+for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"])
+  assert.equal(installedLink[name], kipc[name], "canonical transport identity: " + name);
 assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChannel", "fs", "isCallError"].sort());
 console.log(JSON.stringify({
   sdkConsumer: true,
@@ -156,6 +160,38 @@ console.log(JSON.stringify({
       expect(result.runtime).toBe(runtime);
       expect(typeof result.version).toBe("string");
       runtimes[runtime] = result.version;
+    }
+    // A distinct real transport must not pass the installed identity oracle.
+    const identityLink = join(consumer, "node_modules/@keld/api/link.js");
+    const identityLinkBytes = readFileSync(identityLink, "utf8");
+    const duplicateTransport = join(consumer, "identity-negative-transport.js");
+    writeFileSync(
+      duplicateTransport,
+      readFileSync(join(consumer, "node_modules/@keld/kipc/transport.js")),
+    );
+    expect(identityLinkBytes).toContain('"@keld/kipc"');
+    try {
+      writeFileSync(
+        identityLink,
+        identityLinkBytes.replaceAll(
+          '"@keld/kipc"',
+          JSON.stringify(pathToFileURL(duplicateTransport).href),
+        ),
+      );
+      for (const runtime of ["bun", "node"]) {
+        const splitIdentity = Bun.spawnSync([runtime, probe], {
+          cwd: consumer,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        expect(splitIdentity.exitCode).not.toBe(0);
+        expect(new TextDecoder().decode(splitIdentity.stderr)).toContain(
+          "canonical transport identity",
+        );
+      }
+    } finally {
+      writeFileSync(identityLink, identityLinkBytes);
+      rmSync(duplicateTransport, { force: true });
     }
     // Repack the actual produced API after deleting only its declared edge.
     const mutant = join(scratch, "mutant");
@@ -315,13 +351,40 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
           [
             'const workerOpen = Object.getOwnPropertyDescriptor(transport.WorkerLink, "open");',
             'assert.equal(workerOpen?.writable, true, "canonical WorkerLink.open must remain writable");',
+            "const originalWorkerLink = transport.WorkerLink;",
             "const originalWorkerOpen = transport.WorkerLink.open;",
-            "transport.WorkerLink.open = async () => worker;",
+            "let canonicalOpenCalls = 0;",
+            "const controlledWorkerOpen = async function(this: typeof originalWorkerLink, options: Parameters<typeof originalWorkerOpen>[0]) {",
+            '  assert.equal(this, originalWorkerLink, "canonical WorkerLink receiver");',
+            '  assert.equal(options.link, "controlled-link");',
+            "  canonicalOpenCalls += 1;",
+            "  return worker;",
+            "};",
+            "transport.WorkerLink.open = controlledWorkerOpen;",
+          ].join("\n"),
+        );
+        const linkImport = `const { LifecycleLink } = await import(${JSON.stringify(join(emitted, "link.js"))});`;
+        expect(sourceText.split(linkImport)).toHaveLength(2);
+        sourceText = sourceText.replace(
+          linkImport,
+          [
+            `const installedLink = await import(${JSON.stringify(join(emitted, "link.js"))});`,
+            'for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"] as const)',
+            '  assert.equal(installedLink[name], transport[name], "canonical transport identity: " + name);',
+            'assert.equal(transport.WorkerLink, originalWorkerLink, "canonical WorkerLink class after import");',
+            'assert.equal(Object.getOwnPropertyDescriptor(transport.WorkerLink, "open")?.value, controlledWorkerOpen, "canonical open override after import");',
+            "const { LifecycleLink } = installedLink;",
           ].join("\n"),
         );
         // Each role has its own process and restores its exact original class
         // method after its source/terminal checks complete successfully.
-        sourceText += "\ntransport.WorkerLink.open = originalWorkerOpen;\n";
+        sourceText += [
+          "",
+          'assert.equal(canonicalOpenCalls, 1, "canonical WorkerLink.open invocation count");',
+          'assert.equal(transport.WorkerLink.open, controlledWorkerOpen, "canonical open override after connect");',
+          'Object.defineProperty(transport.WorkerLink, "open", workerOpen!);',
+          "",
+        ].join("\n");
       }
       writeFileSync(join(consumer, name), sourceText);
     }

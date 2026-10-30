@@ -2,7 +2,9 @@
 import { WindowSource, type WindowSnapshot } from "./window-source.ts";
 import { encodeWindowEvent } from "./window-codec.ts";
 import { linkError } from "@keld/kipc";
-import { heapStats } from "bun:jsc";
+import { heapStats, releaseWeakRefs } from "bun:jsc";
+import * as jscDiagnostics from "bun:jsc";
+import { writeFileSync } from "node:fs";
 
 function requireFact(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -56,6 +58,20 @@ const historyMode = /^history:(0|1|1024):(retire|retain)$/.exec(
   process.argv[2]!,
 );
 if (historyMode) {
+  const oneShot = process.execArgv.includes("--eval");
+  if (oneShot)
+    requireFact(
+      Object.keys(process.env).every((name) => !name.startsWith("BUN_JSC_")),
+      "Source collection realm has an unqualified JSC override",
+    );
+  const diagnostic = process.argv[7];
+  requireFact(
+    process.argv.length <= 8 &&
+      (diagnostic === undefined ||
+        (diagnostic.startsWith("--heap-snapshot=") &&
+          diagnostic.length > "--heap-snapshot=".length)),
+    "unrecognized Source GC diagnostic option",
+  );
   const count = Number(historyMode[1]);
   const retaining = historyMode[2] === "retain";
   const roots = (() => {
@@ -93,10 +109,33 @@ if (historyMode) {
       tracked.push(track(value));
       if (retaining) held.push(value);
       roots.source.dispatch(terminal);
+      requireFact(
+        roots.source.get(window) === undefined,
+        "Destroyed must sever its Source snapshot synchronously before collection",
+      );
     }
+    requireFact(roots.source.all().length === 0, "live Source snapshot census");
   });
   const settled = await nextJob(() => {
-    Bun.gc(true);
+    if (diagnostic) {
+      // Opt-in diagnosis replaces this one collection; it never retries the
+      // zero oracle. Capture native roots before deref() itself keeps them alive.
+      releaseWeakRefs();
+      // This pinned-runtime diagnostic is not declared by bun-types 1.4.0.
+      const capture: unknown = Reflect.get(
+        jscDiagnostics,
+        "generateHeapSnapshotForDebugging",
+      );
+      requireFact(typeof capture === "function", "heap diagnostic unavailable");
+      const heap: unknown = Reflect.apply(capture, undefined, []);
+      writeFileSync(
+        diagnostic.slice("--heap-snapshot=".length),
+        JSON.stringify(heap),
+        { flag: "wx", mode: 0o600 },
+      );
+    } else {
+      Bun.gc(true);
+    }
     const stats = heapStats();
     return {
       objectsLive: tracked.reduce((sum, refs) => sum + live(refs), 0),
@@ -111,6 +150,7 @@ if (historyMode) {
       runtime,
       history: count,
       retaining,
+      collectionRealm: oneShot ? "one-shot" : "file",
       live: 0,
       pending: 0,
       facts: 0,
