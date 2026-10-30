@@ -18,11 +18,12 @@ other engineering playbooks still apply.
 
 | Task or path | Read |
 |---|---|
-| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; query only relevant-area entries in `docs/agents/learnings.md` |
+| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; [learning query](../docs/agents/learnings.md) |
 | Starting, resuming, or closing non-trivial repository work | [`docs/agents/workflow.md`](../docs/agents/workflow.md) (external: § Public contributions only) |
 | Maintainer tracker, branch/worktree, OS acceptance or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
-| Opening/updating/rebasing/pushing/reviewing a PR or resolving review feedback | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
+| PR open/update/rebase/push/review or feedback resolution | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
+| Learning record edits/migration | [format](../docs/agents/learnings/AGENTS.md) |
 | Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
 | Editing generated docs, Mermaid, public documentation, or publishing/correcting a public technical audit | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
 | Writing or changing a feature/architecture specification | [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
@@ -32,10 +33,10 @@ other engineering playbooks still apply.
 | Add/change Mermaid under private research or synthesize external evidence | [`docs.md`](docs.md), [`testing.md`](testing.md), and [`research.md`](research.md) |
 | Needs a paste prompt or external-research pack; or would otherwise invent a new prompt taxonomy | [`research.md`](research.md) and Prompt Tracker (`0monish/prompt-tracker` / local `keld-agent-prompts`) |
 | Material decision depends on current external OS/platform command, SDK/API, runtime, or external-tool semantics | [`research.md`](research.md) § Current-documentation receipt; [`testing.md`](testing.md) when behavior is exercised |
-| Material decision needs current external facts, sentiment, unpublished changes, or cross-source synthesis and local/primary evidence is insufficient | [`research.md`](research.md) |
+| Material current external facts/sentiment/unpublished changes or cross-source synthesis; local/primary evidence insufficient | [`research.md`](research.md) |
 | Local docs, code, tests, and Prompt Tracker still cannot answer a material question | [`memory.md`](memory.md) for MemPalace and untrusted-lead rules |
 | Add, bump, remove, migrate, or make a current-version claim about a Cargo or Bun dependency | [`dependencies.md`](dependencies.md) |
-| Configure, use, review, upgrade, or remove an approved external contributor-memory service; or encounter recalled material or a memory result unexpectedly | [`memory.md`](memory.md) |
+| Approved external contributor-memory service configuration/use/review/upgrade/removal, or unexpected recall | [`memory.md`](memory.md) |
 
 Load only matched rows. When touched paths or scope expand, route again before editing
 the newly reached domain.
