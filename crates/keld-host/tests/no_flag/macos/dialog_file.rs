@@ -139,6 +139,23 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`SVG_CONTROL_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "OPEN_USER_SVG_ALLFILES" || command === "OPEN_USER_SVG_XML_ONLY") {
+    // A directory-only defaultPath prevents the target file from being
+    // preselected. The physical-click oracle must prove a disabled-to-enabled
+    // Open transition under All Files, and no such transition under XML-only.
+    const allFiles = command === "OPEN_USER_SVG_ALLFILES";
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_XML_SVG_DIR!,
+      filters: [{ name: allFiles ? "All Files" : "XML",
+                  extensions: [allFiles ? "*" : "xml"] }],
+      properties: ["openFile"],
+    });
+    void pending.then((value) => report(allFiles
+      ? `SVG_USER_SELECTED ${value.canceled} ${value.filePaths.join("|")}`
+      : value.canceled ? `SVG_USER_DENIED_CANCEL ${value.filePaths.length}`
+        : `SVG_USER_UNEXPECTED ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "OPEN_INVALID_FILTER" || command === "OPEN_LATE_INVALID_FILTER") {
     const filters = command === "OPEN_INVALID_FILTER"
       ? [{ name: "Invalid", extensions: ["a b"] }]
@@ -396,6 +413,7 @@ fn run_real_host_files(
     verify_xml_rows: bool,
     verify_filter_switching: bool,
     verify_mixed_selection: bool,
+    verify_physical_svg_denial: bool,
 ) {
     assert!(
         cancel_cycles >= 2,
@@ -428,6 +446,10 @@ fn run_real_host_files(
             },
         )
         .env("KELD_T1B_XML_SVG_PATH", &paths.svg)
+        .env(
+            "KELD_T1B_XML_SVG_DIR",
+            paths.svg.parent().expect("owned SVG fixture parent"),
+        )
         .env("KELD_T1B_XML_PATH", &paths.xml)
         .env("KELD_T1B_VSDX_PATH", &paths.vsdx)
         .env("KELD_T1B_MERMAID_PATH", &paths.mermaid)
@@ -498,6 +520,10 @@ fn run_real_host_files(
     }
     if verify_mixed_selection {
         selection::verify_native_mixed_selection(&mut dialog, &fixture, &paths);
+        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    }
+    if verify_physical_svg_denial {
+        selection::verify_physical_svg_denial(&mut dialog, &fixture, &paths.svg);
         dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
     }
     dialog
@@ -585,12 +611,12 @@ fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message
 
 #[test]
 fn real_host_open_save_cancel_and_next_message_use_one_authenticated_dialog_link() {
-    run_real_host_files(false, 2, false, false, false, false, false);
+    run_real_host_files(false, 2, false, false, false, false, false, false);
 }
 
 #[test]
 fn real_host_open_and_save_positive_paths_are_native_and_save_does_not_write() {
-    run_real_host_files(true, 2, false, false, false, false, false);
+    run_real_host_files(true, 2, false, false, false, false, false, false);
 }
 
 #[test]
@@ -598,30 +624,41 @@ fn real_host_directory_default_paths_keep_folder_and_save_filename_distinct() {
     // The independent AX helper must find the fixture's exact directory and
     // file row. Save additionally checks its initial name before editing it;
     // neither helper navigates to repair an incorrectly chosen directory.
-    run_real_host_files(true, 2, true, false, false, false, false);
+    run_real_host_files(true, 2, true, false, false, false, false, false);
 }
 
 #[test]
 fn real_host_xml_filter_refuses_svg_and_next_message_survives() {
-    run_real_host_files(false, 2, false, true, false, false, false);
+    run_real_host_files(false, 2, false, true, false, false, false, false);
+}
+
+#[test]
+#[ignore = "posts real mouse events; requires an exclusively owned macOS GUI session"]
+fn real_host_physical_svg_row_click_fails_open_under_xml_only() {
+    assert_eq!(
+        std::env::var("KELD_GH478_EXCLUSIVE_GUI").ok().as_deref(),
+        Some("1"),
+        "explicit KELD_GH478_EXCLUSIVE_GUI=1 is required before any Host is started"
+    );
+    run_real_host_files(false, 2, false, false, false, false, false, true);
 }
 
 #[test]
 fn real_host_xml_only_selects_exact_native_xml_path() {
-    run_real_host_files(false, 2, false, false, true, false, false);
+    run_real_host_files(false, 2, false, false, true, false, false, false);
 }
 
 #[test]
 fn real_host_native_filter_accessory_switches_vsdx_and_all_files() {
-    run_real_host_files(false, 2, false, false, false, true, false);
+    run_real_host_files(false, 2, false, false, false, true, false, false);
 }
 
 #[test]
 fn real_host_native_open_with_files_and_directories_selects_each_and_both() {
-    run_real_host_files(false, 2, false, false, false, false, true);
+    run_real_host_files(false, 2, false, false, false, false, true, false);
 }
 
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
-    run_real_host_files(false, 257, false, false, false, false, false);
+    run_real_host_files(false, 257, false, false, false, false, false, false);
 }

@@ -83,5 +83,5 @@ fn facade_engine_failure_with_dialog_owner_finishes_startup_cleanup() {
     );
     // Cleanup must leave the machine able to launch a fresh shipping Host.
     // This observes real Open/Save cancellation, a healthy Message and clean Quit.
-    super::run_real_host_files(false, 2, false, false, false, false, false);
+    super::run_real_host_files(false, 2, false, false, false, false, false, false);
 }

@@ -161,6 +161,101 @@ pub(super) fn reject_widened_svg(dialog: &mut NativeDialog, fixture: &ProductFix
     dialog.await_detached("OPEN_XML_SVG");
 }
 
+/// An independent, user-equivalent native-row oracle. Its helper posts real
+/// mouse down/up only after binding one visible SVG row to the exact Host
+/// process, current folder and screen hit target. A failed Accessibility read,
+/// unsupported operation or timeout must fail this test, never imply denial.
+///
+/// The same mouse path must first Open the fixture under All Files. Under an
+/// XML-only request it must leave native Open disabled *before* any OS commit.
+/// Removing/forcing true the production shouldEnableURL delegate must make the
+/// second phase fail; without that mutation run, this is a candidate oracle,
+/// not complete negative-control evidence.
+pub(super) fn verify_physical_svg_denial(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    svg: &Path,
+) {
+    let clicker = compile_ax(fixture, "user_click_file");
+    let host_pid = dialog.host_pid;
+    let run_click = |mode: &str| {
+        run_ax(
+            Command::new(&clicker)
+                .arg(host_pid.to_string())
+                .arg(svg)
+                .arg(mode)
+                .env("KELD_GH478_EXCLUSIVE_GUI", "1"),
+        )
+    };
+
+    dialog.submit("OPEN_USER_SVG_ALLFILES");
+    let permitted = run_click("allowed");
+    assert!(
+        permitted.status.success(),
+        "physical All Files SVG control did not select: {permitted:?}"
+    );
+    eprintln!(
+        "GH478_USER_CLICK_ALL_FILES stdout={} stderr={}",
+        String::from_utf8_lossy(&permitted.stdout).trim(),
+        String::from_utf8_lossy(&permitted.stderr).trim()
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&permitted.stdout).trim(),
+        format!(
+            "GH478_USER_CLICK_ALLOWED pid={} basename=gh478-widened.svg",
+            dialog.host_pid
+        ),
+        "All Files must be selected by a real mouse event"
+    );
+    let reply = read_control_line(&mut dialog.reader);
+    let prefix = "SVG_USER_SELECTED false ";
+    assert!(reply.starts_with(prefix), "All Files result: {reply}");
+    let returned = Path::new(reply.trim_start_matches(prefix));
+    assert_eq!(returned.file_name(), svg.file_name());
+    assert_eq!(
+        returned.parent().and_then(|path| path.canonicalize().ok()),
+        svg.parent().and_then(|path| path.canonicalize().ok()),
+        "physical All Files click must return the exact owned SVG"
+    );
+    dialog.await_detached("OPEN_USER_SVG_ALLFILES");
+    dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+
+    dialog.submit("OPEN_USER_SVG_XML_ONLY");
+    let denied = run_click("denied");
+    assert!(
+        denied.status.success(),
+        "native XML-only SVG click not independently proven disabled: {denied:?}"
+    );
+    eprintln!(
+        "GH478_USER_CLICK_XML_DENY stdout={} stderr={}",
+        String::from_utf8_lossy(&denied.stdout).trim(),
+        String::from_utf8_lossy(&denied.stderr).trim()
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&denied.stdout).trim(),
+        format!(
+            "GH478_USER_CLICK_DENIED pid={} basename=gh478-widened.svg open_enabled=false",
+            dialog.host_pid
+        ),
+        "a missing AX attribute or failed HID action is never a native denial"
+    );
+    let canceled = run_ax(
+        Command::new(&dialog.button_helper)
+            .arg(dialog.host_pid.to_string())
+            .arg("Cancel"),
+    );
+    assert!(
+        canceled.status.success(),
+        "dismiss denied native panel: {canceled:?}"
+    );
+    assert_eq!(
+        read_control_line(&mut dialog.reader),
+        "SVG_USER_DENIED_CANCEL 0",
+        "a physically denied SVG must not commit a file path"
+    );
+    dialog.await_detached("OPEN_USER_SVG_XML_ONLY");
+}
+
 /// Independently select an actual XML file with the exact same OS AX helper.
 /// The XML-positive and SVG-negative fixture directories each contain one
 /// owned file, so the helper cannot select the wrong row or fabricate a path.
