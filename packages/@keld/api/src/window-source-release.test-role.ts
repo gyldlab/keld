@@ -1,8 +1,10 @@
 /** Standalone lifetime regression; no link attachment or heap-byte/native claim. */
 import { WindowSource, type WindowSnapshot } from "./window-source.ts";
 import { encodeWindowEvent } from "./window-codec.ts";
-import { isCallError, linkError } from "../../kipc/src/transport.ts";
-import { heapStats } from "bun:jsc";
+import { linkError } from "@keld/kipc";
+import { heapStats, releaseWeakRefs } from "bun:jsc";
+import * as jscDiagnostics from "bun:jsc";
+import { writeFileSync } from "node:fs";
 
 function requireFact(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -56,6 +58,20 @@ const historyMode = /^history:(0|1|1024):(retire|retain)$/.exec(
   process.argv[2]!,
 );
 if (historyMode) {
+  const oneShot = process.execArgv.includes("--eval");
+  if (oneShot)
+    requireFact(
+      Object.keys(process.env).every((name) => !name.startsWith("BUN_JSC_")),
+      "Source collection realm has an unqualified JSC override",
+    );
+  const diagnostic = process.argv[7];
+  requireFact(
+    process.argv.length <= 8 &&
+      (diagnostic === undefined ||
+        (diagnostic.startsWith("--heap-snapshot=") &&
+          diagnostic.length > "--heap-snapshot=".length)),
+    "unrecognized Source GC diagnostic option",
+  );
   const count = Number(historyMode[1]);
   const retaining = historyMode[2] === "retain";
   const roots = (() => {
@@ -93,10 +109,33 @@ if (historyMode) {
       tracked.push(track(value));
       if (retaining) held.push(value);
       roots.source.dispatch(terminal);
+      requireFact(
+        roots.source.get(window) === undefined,
+        "Destroyed must sever its Source snapshot synchronously before collection",
+      );
     }
+    requireFact(roots.source.all().length === 0, "live Source snapshot census");
   });
   const settled = await nextJob(() => {
-    Bun.gc(true);
+    if (diagnostic) {
+      // Opt-in diagnosis replaces this one collection; it never retries the
+      // zero oracle. Capture native roots before deref() itself keeps them alive.
+      releaseWeakRefs();
+      // This pinned-runtime diagnostic is not declared by bun-types 1.4.0.
+      const capture: unknown = Reflect.get(
+        jscDiagnostics,
+        "generateHeapSnapshotForDebugging",
+      );
+      requireFact(typeof capture === "function", "heap diagnostic unavailable");
+      const heap: unknown = Reflect.apply(capture, undefined, []);
+      writeFileSync(
+        diagnostic.slice("--heap-snapshot=".length),
+        JSON.stringify(heap),
+        { flag: "wx", mode: 0o600 },
+      );
+    } else {
+      Bun.gc(true);
+    }
     const stats = heapStats();
     return {
       objectsLive: tracked.reduce((sum, refs) => sum + live(refs), 0),
@@ -111,6 +150,7 @@ if (historyMode) {
       runtime,
       history: count,
       retaining,
+      collectionRealm: oneShot ? "one-shot" : "file",
       live: 0,
       pending: 0,
       facts: 0,
@@ -153,140 +193,4 @@ if (historyMode) {
   process.exit(0);
 }
 
-// The Source owns one application callback that captures an external object.
-// A live Source must retain it, but a terminated Source still held by the
-// LifecycleLink must sever this capture after all prior records drain.
-const captured = (() => {
-  const witness = { reason: "source callback owns this independent object" };
-  return {
-    weak: new WeakRef(witness),
-    source: new WindowSource((fact) => {
-      if (fact.variant === "Created" && witness.reason.length === 0)
-        throw new Error("callback capture is missing");
-    }),
-  };
-})();
-const source = captured.source;
-const anchors: {
-  source: WindowSource;
-  externalSnapshot: WindowSnapshot | undefined;
-} = { source, externalSnapshot: undefined };
-const window = { id: 7, incarnation: 300n };
-const refs: Array<readonly WeakRef<object>[]> = [];
-await nextJob(() => {
-  // The parent supplies the Rust-owned event-created vector, without a second
-  // window decoder or a replacement for the actual source implementation.
-  const fact = source.decode(
-    Uint8Array.from(Buffer.from(process.argv[2]!, "hex")),
-  );
-  requireFact(
-    fact.variant === "Created" &&
-      fact.window.id === 7 &&
-      fact.window.incarnation === 300n,
-    "wrong Rust Created fixture",
-  );
-  source.apply(fact);
-  source.dispatch(fact); // Prove the callback actually reads its captured object.
-  refs.push(track(source.get(window)!));
-  for (let index = 0; index < 32; index += 1) {
-    source.apply(
-      source.decode(
-        encodeWindowEvent({
-          variant: "Focus",
-          window,
-          focused: index % 2 !== 0,
-        }),
-      ),
-    );
-    refs.push(track(source.get(window)!));
-  }
-  source.apply(
-    source.decode(
-      encodeWindowEvent({
-        variant: "Created",
-        window: { id: 3, incarnation: 900n },
-        state: fact.state,
-        pending_close: null,
-      }),
-    ),
-  );
-  anchors.externalSnapshot = source.get({ id: 3, incarnation: 900n });
-  requireFact(
-    refs.reduce((count, graph) => count + live(graph), 0) === 132,
-    "same-job WeakRef pre-collection control failed",
-  );
-});
-
-const replacement = await nextJob(() => {
-  Bun.gc(true);
-  const observation = {
-    trackedGraphs: refs.length,
-    oldObjectsLive: refs
-      .slice(0, -1)
-      .reduce((count, graph) => count + live(graph), 0),
-    currentObjectsLive: live(refs[refs.length - 1]!),
-    sourceAlive: anchors.source === source,
-    callbackCaptureAlive: captured.weak.deref() !== undefined,
-    externalSnapshotAlive:
-      anchors.externalSnapshot?.window.id === 3 &&
-      anchors.externalSnapshot.state.bounds.width === 640,
-    census: source.all().length,
-  };
-  requireFact(
-    observation.oldObjectsLive === 0,
-    "source retained replaced snapshot objects after one later-job GC",
-  );
-  requireFact(
-    observation.currentObjectsLive === 4 &&
-      observation.sourceAlive &&
-      observation.callbackCaptureAlive &&
-      observation.externalSnapshotAlive &&
-      observation.census === 2,
-    "replacement strong current/source/external controls failed",
-  );
-  return observation;
-});
-
-const terminal = linkError(
-  "KELD-IPC-022",
-  "standalone source release regression ended",
-);
-await nextJob(() => source.end(terminal));
-const end = await nextJob(() => {
-  Bun.gc(true);
-  let readsDenied = false;
-  try {
-    source.all();
-  } catch (error) {
-    readsDenied =
-      isCallError(error) &&
-      error.code === terminal.code &&
-      error.message === terminal.message;
-  }
-  const observation = {
-    oldObjectsLive: refs
-      .slice(0, -1)
-      .reduce((count, graph) => count + live(graph), 0),
-    currentObjectsLive: live(refs[refs.length - 1]!),
-    sourceAlive: anchors.source === source,
-    callbackCaptureAlive: captured.weak.deref() !== undefined,
-    externalSnapshotAlive:
-      anchors.externalSnapshot?.window.id === 3 &&
-      anchors.externalSnapshot.state.bounds.width === 640,
-    readsDenied,
-  };
-  requireFact(
-    observation.oldObjectsLive === 0 &&
-      observation.currentObjectsLive === 0 &&
-      !observation.callbackCaptureAlive,
-    "source retained current snapshot objects after end and one later-job GC",
-  );
-  requireFact(
-    observation.sourceAlive &&
-      observation.externalSnapshotAlive &&
-      observation.readsDenied,
-    "end strong source/external/invalidation controls failed",
-  );
-  return observation;
-});
-console.log(JSON.stringify({ runtime, replacement, end }));
+throw new Error("unknown Source history mode");

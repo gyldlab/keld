@@ -8,7 +8,7 @@ const result = await Bun.build({
       name: "kipc-transport-sidecar",
       setup(build) {
         build.onResolve(
-          { filter: /[\\/]kipc[\\/]src[\\/]transport\.ts$/ },
+          { filter: /^(?:@keld\/kipc)$|[\\/]kipc[\\/]src[\\/]transport\.ts$/ },
           () => ({
             path: "./kipc-transport.ts",
             external: true,
