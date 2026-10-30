@@ -153,7 +153,7 @@ counters on the app-link writer, the Bun handler and the Host audit log read 0.
 | AC07 Not-ready refusal | A page calls an exposed method or `window.keld.invoke` before the document's epoch arrived | Void APIs return `undefined`, `invoke` rejects with the typed not-ready error, **nothing is queued or replayed**; a call after the epoch succeeds. | Buffer and flush on epoch → the early call produces a late Bun entry → RED. |
 | AC08 Renderer-side epoch check (**correctness guard, not a security control**) | The Host posts a reply/event stamped with epoch e₁ after document B (e₂) committed (host-replayed, as in E5 variant harness) | The bridge drops it (and drops anything received before its own epoch); B's facade listeners never fire. This keeps stale replies away from B's facade callbacks; it protects nothing from a hostile page, whose own raw `chrome.webview` `message` listener sees every post (AC21 is the security control). | Remove the bridge's stamp check → the stale post is delivered to B's facade listener → RED. |
 | AC09 Literal grant | Current document, matching epoch, channel `c` without `el:c` in `windows.<w>.channels` | Exactly #1191 AC5: `KELD-GUARD003`, zero effects; a granted neighbour produces one Bun entry. For a route-D window the fix text says to re-run `keld migrate`; it does not say to add `el:c` by hand (§4.8 rule 3). | Prefix/case-fold match → `el:cX`/`EL:c` admitted → RED (#1191 `G552-P04-literal`). |
-| AC10 Navigation policy (rule A″) | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; with an `entry`-only allowlist, a page navigation to another in-root `file:` document and a page link to the entry with an added query (`index.html?x=1`); and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case | Every page-initiated top-level `NavigationStarting` whose target is off the window's allowlist under rule A″ (for `file:`, decided on the parser's components with keld-guard's one component equality, and on the query: a parser failure, or a target that matches no `file:` allow form, is off-allowlist) has `Cancel` set at generation +0, and the application document and its IPC survive (E5: 5/5 veto per arm, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). On-allowlist navigations proceed (+1 only at commit). For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. | Replace the allowlist with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. Separately, treat in-root membership as sufficient (proceed whenever `file_url_root_relative` succeeds) → the in-root non-entry navigation proceeds under the `entry`-only allowlist → RED. Separately, cut the query before page-initiated matching → the entry-with-query link replaces the document → RED. |
+| AC10 Navigation policy (rule A″) | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; with an allowlist whose only `file:` form is the literal `index.html` with no query, a page navigation to another in-root `file:` document and a page link to `index.html?x=1`; and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case | Every page-initiated top-level `NavigationStarting` whose target is off the window's allowlist under rule A″ (for `file:`, decided on the parser's components with keld-guard's one component equality, and on the query: a parser failure, or a target that matches no `file:` allow form, is off-allowlist) has `Cancel` set at generation +0, and the application document and its IPC survive (E5: 5/5 veto per arm, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). On-allowlist navigations proceed (+1 only at commit). For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. | Replace the allowlist with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. Separately, treat in-root membership as sufficient (proceed whenever `file_url_root_relative` succeeds) → the in-root non-entry navigation proceeds under that literal-only allowlist → RED. Separately, cut the query before page-initiated matching → the entry-with-query link replaces the document → RED. |
 | AC11 Runtime flag untouched | Any build | `AdditionalBrowserArguments` stays empty; no `--disable-features` naming `msWebView2CancellableAboutNavigations`; cancellable `about:` navigation is never disabled. | Add the flag → AC10's `about:blank` control replaces the document → RED. |
 | AC12 Popups | `window.open` with `_blank`/`target`, `opener` forms | `NewWindowRequested` → `SetHandled(TRUE)` (existing `guarded_navigation.rs:142-152`); no popup exists (E5 f1/f2: handled, 0 windows). | Drop the handler → unaccounted popup → RED. |
 | AC13 Generated grants | `keld migrate` sees `ipcMain.on('a')`, `ipcMain.handle('b')`, `ipcMain.once('c')`, `ipcMain.handleOnce('d')`, `ipcMain.on(dyn)` and window W's preload exposes only the fixed-channel, fully forwarding method F-B1 (`doA: (...xs) => send('a', ...xs)`) | `windows.W.channels == ["el:a"]`, with `"$keldWindowChannelGrants": 1` and `windows.W.preload.digest`; `b`, `c`, `d` and `dyn` are reported ungranted. For the page-chosen-channel pass-through F-B the result is `["el:a","el:b","el:c","el:d"]`. A flagged method on the same channel that omits arguments (`doA: () => send('a')`) with a matching attestation yields the same `["el:a"]`, never more. With `ipcMain.on('app:x')` added, an attested F-P (`prefixed: (c, ...xs) => send('app:' + c, ...xs)`) yields exactly `["el:app:x"]`. | Grant every `ipcMain` literal regardless of the preload's reachable sinks → `el:b` appears for W → RED (over-grant). Separately, collect only `on`/`handle` registrations → F-B's result lacks `el:c`/`el:d` and those handlers are unreachable → RED (under-grant; draw.io registers ten channels with `ipcMain.once`). Separately, treat F-P's computed channel as page-chosen (`*`) → its window is granted every literal, `el:a` included → RED (over-grant past the recorded prefix). |
@@ -175,7 +175,7 @@ counters on the app-link writer, the Bun handler and the Host audit log read 0.
 
 | Atom | Owner / boundary | Inputs → outputs | Failure mode | Observable | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| A1 Script registration | `keld-wv` Windows backend, before `navigate_initial` | bridge + wrapped preload text → one document-created script id | Script absent from first document | AC01 | FACT: registration async (Microsoft). UNKNOWN: whether awaiting completion before `Navigate` is needed on 156 (P1 N3b did not falsify) — §10 Q5. |
+| A1 Script registration | `keld-wv` Windows backend, before the window's first navigation (for a compat window, the application's own `loadURL`, #459; `navigate_initial` only for schema-1 boots) | bridge + wrapped preload text → one document-created script id | Script absent from first document | AC01 | FACT: registration async (Microsoft). UNKNOWN: whether awaiting completion before `Navigate` is needed on 156 (P1 N3b did not falsify) — §10 Q5. |
 | A2 Realm identity | WebView2; not controllable | document-created script runs in the main world of every top-level document and same-process frame | Page poisons built-ins; bridge text in frames and in error pages | AC02, AC03 | FACT (E1/E2; E5 `p1-exec-b`: bridge ran in the `about:srcdoc` error page). |
 | A3 Event identity (frame) | WebView2 routing | frame post → `Frame2.WebMessageReceived` only | Host registers the frame event | AC03 | FACT: frames guide; E5 trigger q: same-origin srcdoc posts via `parent` arrive with the parent's `Source`. |
 | A4 Document eligibility | #1192 §4.4 (KEL-102 verified resource identity); W3's served record `(root, components)` | committed main-frame document + `IsErrorPage` + allowed `NavigationId` + resource identity (§4.5) → qualified / FailedClosed | URL-text spoof; error page at an app URL; an equivalent spelling decided differently from W3 (two component equalities) | AC04, AC25 | FACT: E5 qualified by URL only (probe), so resource-identity qualification is UNTESTED on Windows; FACT: `about:srcdoc` error page committed 5/5 with `Source=about:srcdoc`. |
@@ -538,7 +538,7 @@ the media principal construction accordingly with the KEL-102 owner.
       "web": {
         "csp": "default",
         "navigation": {
-          "allow": ["entry", "https://app.example/**"], // rule A″ file: forms (#541, W3 B12); others: arch 03 §2 scopes
+          "allow": ["in-root:**", "https://app.example/**"], // rule A″ file: forms (#541, W3 B12); others: arch 03 §2 scopes
           "onLoss": "reload-entry"                  // or "close"
         }
       }
@@ -547,28 +547,35 @@ the media principal construction accordingly with the KEL-102 owner.
 }
 ```
 
-- **Navigation rule: W3 #1185 rule A″.** The verbatim rule is owned by #1185 (W3 spec r3, local
-  commit `5c84385f`, §4.6, unpublished) and is being revised in W3 r4 with the three deltas
-  marked (Δ) below, from W3's r3 pre-PR verification (local, not public: P1-A, P1-B,
-  P1-C). W1 binds to its substance:
-  1. The allowlist governs **every** page-initiated top-level target, in-root `file:`
-     included; in-root membership is **necessary, not sufficient**. A parser failure is
-     off-allowlist.
-  2. (Δ P1-A) The query is part of page-initiated matching: a veto-all or unreadable
-     `will-navigate` listener derives the new form `none`, a lifted literal keeps its
-     predicate's query constraint (an exact query or none), and `in-root:**` accepts any
-     query; the fragment is ignored.
-  3. (Δ P1-C) `file:` allow forms are matched on the parser's components with keld-guard's
-     one component equality (§2), never by spelling.
+- **Navigation rule: W3 #1185 rule A″.** The verbatim rule is owned by #1185 (W3 spec r4,
+  local commit `f96d8791`, §4.6, unpublished; r4 applies W3's r3 pre-PR verification, local
+  and not public: P1-A, P1-B, P1-C). W1 binds to its substance; targets are split by **who
+  chose them**:
+  1. **Page-initiated** top-level navigation proceeds iff the target matches the window's
+     `web.navigation.allow`. The allowlist governs **every** page-initiated target, in-root
+     `file:` included; in-root membership is **necessary, not sufficient**, and a parser
+     failure is off-allowlist.
+  2. The query is part of page-initiated matching; the fragment is ignored. The `file:` allow
+     forms are `none` (no page-initiated `file:` navigation; what a veto-all or unreadable
+     `will-navigate` listener derives), a literal in-root component path carrying the query
+     constraint of the predicate it was lifted from (an exact query, or no query), and
+     `in-root:**` (every in-root regular file, any query; what the absence of a listener
+     derives — conditional on W1's eligibility proposal, §4.5 and §10 B3).
+  3. Components and queries are compared with keld-guard's **one component equality** (§2),
+     which W3's allow forms, attribution and W1's eligibility all use; never by spelling.
   4. The decision is taken on the original `NavigationStarting`, before any generation
      change: off-allowlist → `Cancel`, generation +0, the live document and its IPC survive;
      on-allowlist → proceed, generation +1 only at commit.
   5. `will-navigate` is a notification only; `preventDefault()` is not consulted. The Host
      never replays a page navigation.
-  6. (Δ P1-B) Host attempts (boot, `onLoss`, an app's `loadURL`/reload) are checked against
-     the same allowlist **before** their +1, except that the window's entry is always
-     admissible for Host attempts, whatever its query; any other off-allowlist Host target
-     is a typed refusal at +0, never a revoked document.
+  6. **Host attempts** — the first document of a compat window (the application's own
+     `loadURL`, #459; W3 r4 withdrew the boot seal, and `navigate_initial` remains only for
+     schema-1 renderer boots), an `onLoss` reload, and the application's `loadURL`/`reload` —
+     to the window's entry components are always admissible, whatever the query; any other
+     Host target is checked against the same allowlist **before** its +1, and an
+     off-allowlist Host attempt is a typed refusal at +0, never a revoked document. Redirect
+     hops of an admitted Host attempt are checked too; a cancelled hop fails that attempt
+     closed (#1192), a stated divergence, not an exemption.
 
   W1 applies it as follows. The raw `NavigationStarting` `Uri` is dispatched on its scheme
   prefix by `keld_guard::url_scheme_is` (the parser's own R1 test; §4.4 URL owner): a `file:`
@@ -580,14 +587,14 @@ the media principal construction accordingly with the KEL-102 owner.
   letter case: no allowlist entry can name those authorities, so they never match, and no
   scheme list is hand-maintained. `IsUserInitiated` does not relax it. E5 ran the `about:`
   forms (including `ABOUT:BLANK`); `data:`, `blob:` and `javascript:` are not yet run on
-  device (AC10). For a window whose entry is not the boot entry, W1 reads the `entry` form
-  as that window's generated entry components (§4.8 window mapping); W3 B12 confirms it.
+  device (AC10). Each window's entry components are its generated window entry (§4.8 window
+  mapping).
 - **W1 adds nothing to rule A″ and relaxes nothing in it.** A page-initiated navigation is +0
   until its `ContentLoading` (+1 at commit). W1 adds no "+1 before the engine call" load
   other than the bounded `onLoss: reload-entry` recovery (§4.5), a Host attempt to the
   window's entry, which is always admissible and therefore never refused. An app-issued
-  `loadURL` is a #459 Host attempt under #1192's trusted-load row, pre-checked by item 6,
-  never a replay. This answers W3's B4 and B7 (iv) for W1.
+  `loadURL` is a #459 Host attempt under #1192's trusted-load row, admitted or pre-checked
+  by item 6, never a replay. This answers W3's B4 and B7 (iv) for W1.
 - **Navigation membership is not eligibility.** Rule A″ decides whether a navigation
   proceeds; §4.5 decides whether its document gets an epoch, and §4.3 whether it gets the
   app preload. Equivalent spellings of one in-root file are one identity under the one
@@ -1038,10 +1045,12 @@ harness; loopback servers bind port 0; completion observed through callbacks pum
   paths are admitted. This spec cannot be approved as implementable before those it
   consumes are at least approved; list re-checked at approval time.
 - **B6 Loading-path decision and `file:` allow forms (W3 #1185 + #1192/KEL-102 + #541).** W1
-  binds to the substance of W3's rule A″ and its r4 deltas (§4.6); the `file:` allow forms
-  (`none`, `entry`, a literal in-root component path with its query constraint,
-  `in-root:**`) and keld-guard's navigation entrypoint are W3 B12 (#541 owner) and a
-  dependency until approved. If B6 chooses the Keld-owned virtual host, its path identity at
+  binds to the substance of W3 r4's rule A″ (`f96d8791`, §4.6); the `file:` allow forms
+  (`none`, a literal in-root component path with its query constraint, `in-root:**`) and
+  keld-guard's navigation entrypoint are W3 B12 (#541 owner) and a dependency until
+  approved. Under W3 r4 a compat window's first document is the application's own `loadURL`
+  (#459), a Host attempt to the entry components, so T2's loading-path change applies to
+  that load; `navigate_initial` remains only for schema-1 renderer boots. If B6 chooses the Keld-owned virtual host, its path identity at
   commit needs a named keld-guard function that this spec does not yet specify. Today's `NavigateToString` path
   yields `Source = about:blank` (source probe 3/3) and can never qualify (§4.6a). The owners
   must record which Host-identifiable URL compat windows load — exact `file://` under the
