@@ -233,11 +233,14 @@ console.log(JSON.stringify({
     mkdirSync(mutant);
     // GNU tar treats a Windows C:-qualified archive as a remote host; open
     // the same produced file by its name relative to the owned scratch root.
-    const unpack = Bun.spawnSync(["tar", "-xzf", basename(api), "-C", mutant], {
-      cwd: scratch,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    const unpack = Bun.spawnSync(
+      ["tar", "-xzf", basename(api), "-C", basename(mutant)],
+      {
+        cwd: scratch,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
     expect(unpack.exitCode, new TextDecoder().decode(unpack.stderr)).toBe(0);
     const mutantPackage = join(mutant, "package");
     const mutantManifestPath = join(mutantPackage, "package.json");
