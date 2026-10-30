@@ -128,6 +128,9 @@ test("real packed SDK installs offline with one API app identity", async () => {
       probe,
       `import {strict as assert} from "node:assert";
 import {createRequire} from "node:module";
+import {createHash} from "node:crypto";
+import {readFileSync, realpathSync, statSync} from "node:fs";
+import {fileURLToPath, pathToFileURL} from "node:url";
 import * as api from "@keld/api";
 import {app} from "@keld/api/internal/app";
 import * as installedLink from "@keld/api/internal/link";
@@ -138,13 +141,28 @@ assert.equal(api.app, createRequire(import.meta.url)("@keld/api").app);
 for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"])
   assert.equal(installedLink[name], kipc[name], "canonical transport identity: " + name);
 assert.deepEqual(Object.keys(api).sort(), ["app", "auth", "channels", "echoChannel", "fs", "isCallError"].sort());
+function identityFile(specifier) {
+  const path = specifier.startsWith("file:") ? fileURLToPath(specifier) : specifier;
+  const native = realpathSync.native(path);
+  const stat = statSync(path, {bigint: true});
+  return {path, url: pathToFileURL(path).href, native, nativeUrl: pathToFileURL(native).href,
+    dev: String(stat.dev), ino: String(stat.ino), fileIdUsable: stat.dev !== 0n && stat.ino !== 0n,
+    sha256: createHash("sha256").update(readFileSync(path)).digest("hex")};
+}
 console.log(JSON.stringify({
   sdkConsumer: true,
   runtime: typeof Bun === "undefined" ? "node" : "bun",
   version: typeof Bun === "undefined" ? process.version : Bun.version,
+  identityFiles: [
+    identityFile(${JSON.stringify(join(consumer, "node_modules/@keld/api/link.js"))}),
+    identityFile(import.meta.resolve("@keld/api/internal/link")),
+    identityFile(${JSON.stringify(join(consumer, "node_modules/@keld/kipc/transport.js"))}),
+    identityFile(import.meta.resolve("@keld/kipc")),
+  ],
 }));`,
     );
     const runtimes: Record<string, string> = {};
+    const runtimeIdentityFiles: Record<string, unknown> = {};
     for (const runtime of ["bun", "node"]) {
       const run = Bun.spawnSync([runtime, probe], {
         cwd: consumer,
@@ -160,7 +178,21 @@ console.log(JSON.stringify({
       expect(result.runtime).toBe(runtime);
       expect(typeof result.version).toBe("string");
       runtimes[runtime] = result.version;
+      runtimeIdentityFiles[runtime] = result.identityFiles;
     }
+    // Emit real artifact/runtime custody before a later installed role can fail.
+    console.log(
+      "SDK_INSTALLED_PRE_CASES " +
+        JSON.stringify({
+          sdkPackageArtifacts: packageHashes,
+          producerCwd: process.cwd(),
+          runtimes,
+          bunRevision: Bun.revision,
+          platform: process.platform,
+          arch: process.arch,
+          identityFiles: runtimeIdentityFiles,
+        }),
+    );
     // A distinct real transport must not pass the installed identity oracle.
     const identityLink = join(consumer, "node_modules/@keld/api/link.js");
     const identityLinkBytes = readFileSync(identityLink, "utf8");
@@ -369,8 +401,43 @@ void [app, internalApp, isCallError]; let link: LifecycleLink; let ref: WindowRe
           linkImport,
           [
             `const installedLink = await import(${JSON.stringify(join(emitted, "link.js"))});`,
-            'for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"] as const)',
-            '  assert.equal(installedLink[name], transport[name], "canonical transport identity: " + name);',
+            // Freeze original references before diagnostics can warm another cache key.
+            'const originalIdentities = Object.freeze(["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"].map(name => Object.freeze({ name, actual: installedLink[name], expected: transport[name] })));',
+            'const originalWorkerState = Object.freeze({ sameClass: transport.WorkerLink === originalWorkerLink, sameOpen: Object.getOwnPropertyDescriptor(transport.WorkerLink, "open")?.value === controlledWorkerOpen, calls: canonicalOpenCalls });',
+            "try {",
+            "  for (const { name, actual, expected } of originalIdentities)",
+            '    assert.equal(actual, expected, "canonical transport identity: " + name);',
+            "} catch (originalError) {",
+            "  try {",
+            '    const fs = await import("node:fs");',
+            '    const path = await import("node:path");',
+            '    const url = await import("node:url");',
+            '    const crypto = await import("node:crypto");',
+            `    const explicit = ${JSON.stringify(join(emitted, "link.js"))};`,
+            "    const canonical = fs.realpathSync.native(explicit);",
+            "    function identityFile(specifier: string) {",
+            '      const file = specifier.startsWith("file:") ? url.fileURLToPath(specifier) : specifier;',
+            "      const native = fs.realpathSync.native(file);",
+            "      const stat = fs.statSync(file, { bigint: true });",
+            '      return { path: file, url: url.pathToFileURL(file).href, native, nativeUrl: url.pathToFileURL(native).href, dev: String(stat.dev), ino: String(stat.ino), fileIdUsable: stat.dev !== 0n && stat.ino !== 0n, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") };',
+            "    }",
+            '    const bare = import.meta.resolve("@keld/api/internal/link");',
+            '    const roleKipc = import.meta.resolve("@keld/kipc");',
+            '    const explicitKipc = Bun.resolveSync("@keld/kipc", path.dirname(explicit));',
+            '    const canonicalKipc = Bun.resolveSync("@keld/kipc", path.dirname(canonical));',
+            '    console.error("SDK_INSTALLED_IDENTITY_ORIGINAL " + JSON.stringify({ role: import.meta.url, runtime: { bun: Bun.version, revision: Bun.revision, platform: process.platform, arch: process.arch }, identities: originalIdentities.map(({ name, actual, expected }) => ({ name, equal: actual === expected })), worker: originalWorkerState, files: { explicit: identityFile(explicit), bare: identityFile(bare), roleKipc: identityFile(roleKipc), explicitKipc: identityFile(explicitKipc), canonicalKipc: identityFile(canonicalKipc) } }));',
+            "    const providers = [];",
+            '    for (const [name, specifier] of [["explicit", explicit], ["bare", "@keld/api/internal/link"], ["native-file-url", url.pathToFileURL(canonical).href]]) {',
+            "      const provider = await import(specifier);",
+            "      providers.push({ name, specifier, equalsOriginalActual: provider.FrameReader === originalIdentities[0]!.actual, equalsOriginalExpected: provider.FrameReader === originalIdentities[0]!.expected });",
+            "    }",
+            '    console.error("SDK_INSTALLED_IDENTITY_PROVIDERS " + JSON.stringify({ providers, originalEqualStill: originalIdentities[0]!.actual === originalIdentities[0]!.expected }));',
+            "  } catch (diagnosticError) {",
+            '    console.error("SDK_INSTALLED_IDENTITY_DIAGNOSTIC_UNAVAILABLE " + String(diagnosticError));',
+            "  }",
+            // Later convergence cannot replace the exact original failed assertion.
+            "  throw originalError;",
+            "}",
             'assert.equal(transport.WorkerLink, originalWorkerLink, "canonical WorkerLink class after import");',
             'assert.equal(Object.getOwnPropertyDescriptor(transport.WorkerLink, "open")?.value, controlledWorkerOpen, "canonical open override after import");',
             "const { LifecycleLink } = installedLink;",
