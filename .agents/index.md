@@ -18,7 +18,7 @@ other engineering playbooks still apply.
 
 | Task or path | Read |
 |---|---|
-| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; query learning names/metadata and relevant facts via [`learnings.md`](../docs/agents/learnings.md) |
+| Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; [learning query](../docs/agents/learnings.md) |
 | Starting, resuming, or closing non-trivial repository work | [`docs/agents/workflow.md`](../docs/agents/workflow.md) (external: § Public contributions only) |
 | Maintainer tracker, branch/worktree, OS acceptance or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
 | PR open/update/rebase/push/review or feedback resolution | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
