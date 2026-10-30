@@ -112,6 +112,8 @@ class ProofShadowIntegrationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, b"", "no routing output after admission failure")
         self.assertIn(b"admission", result.stderr.lower())
+        self.assertIn(b"ci router:", result.stderr, "refusal must use the typed router error")
+        self.assertNotIn(b"Traceback", result.stderr, "refusal must not expose a Python traceback")
 
     def test_shadow_refuses_reader_widening_from_earlier_commit(self):
         self.widen_reader_in_prior_commit()

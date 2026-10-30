@@ -326,10 +326,13 @@ def _independently_admitted_contract(root: Path) -> dict:
     selection; without the independent admission module the attempt hard fails.
     """
     try:
-        from ci_reader_admission import admit_shadow_contract
+        from ci_reader_admission import AdmissionError, admit_shadow_contract
     except ImportError as error:
         raise ValueError("independent CI reader proof admission unavailable") from error
-    candidate = admit_shadow_contract(root)
+    try:
+        candidate = admit_shadow_contract(root)
+    except AdmissionError as error:
+        raise ValueError(f"independent CI reader proof admission refused: {error}") from error
     if (not isinstance(candidate, dict) or candidate.get("schema") != SCHEMA
             or not isinstance(candidate.get("consumers"), list)
             or not isinstance(candidate.get("reader_sets"), dict)):
