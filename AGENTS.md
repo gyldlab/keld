@@ -24,8 +24,8 @@ in agent-facing files. Architecture specs remain prose.
 - `.agents/index.md` is the only task router. Load only matching playbooks.
 - Load classes are `always` (root/nested AGENTS), `routed` (exact task trigger), and
   `evidence` (search/slice only; never mandatory full-read).
-- Before implementation or review, query only relevant areas in
-  `docs/agents/learnings.md`; use bounded query/slices only.
+- Before implementation/review, query filenames/metadata, then relevant facts.
+  Owner: `docs/agents/learnings/AGENTS.md`.
 - Any new or changed agent instruction MUST follow `.agents/instructions.md`: one owner,
   load class, exact trigger, byte/token delta, representative eval, and rollback.
 - `just agent-context` is required for agent-instruction changes. Agents MUST refuse an
