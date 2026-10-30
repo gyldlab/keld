@@ -294,6 +294,18 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # The Rust compatibility corpus executes actual Bun package sources. A
+      # fresh hosted checkout has no package-local node_modules, even when
+      # another matrix job installs them in its own isolated checkout.
+      - name: Prepare frozen SDK fixtures for Rust-hosted Bun corpus
+        shell: bash
+        run: |
+          for package in packages/@keld/kipc packages/@keld/api packages/@keld/electron; do
+            (
+              cd "$package"
+              bun install --frozen-lockfile
+            )
+          done
       - name: clippy (warnings deny)
         shell: bash
         env:
@@ -691,10 +703,18 @@ jobs:
             echo "::error::TypeScript lane ran with no Bun suite; check the router's ts_packages output"
             exit 1
           fi
+          # Complete every pinned package's dependency setup before the API
+          # suite consumes the KIPC compiler and package graph. These are
+          # separate GitHub jobs; no node_modules survives between them.
           for package in $KELD_CI_TS_PACKAGES; do
             (
               cd "$package"
               bun install --frozen-lockfile
+            )
+          done
+          for package in $KELD_CI_TS_PACKAGES; do
+            (
+              cd "$package"
               bun run typecheck
               bun test
             )

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
 import { LifecycleLink } from "@keld/api/internal/link";
 import { encodeWindowEvent } from "@keld/api/internal/window-codec";
 import {
@@ -18,7 +19,10 @@ import {
 
 const root = mkdtempSync(join(tmpdir(), "keld-package-host-"));
 chmodSync(root, 0o700);
-const path = join(root, "host.sock");
+const path =
+  process.platform === "win32"
+    ? freshWin32AppLinkPipe()
+    : join(root, "host.sock");
 const generation = process.argv[2];
 assert.ok(generation === "initial" || generation === "recovery");
 const tokenByte = generation === "initial" ? 0x72 : 0x73;
