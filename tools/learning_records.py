@@ -7,7 +7,6 @@ formal dictionary certification or infer whether a paragraph contains one fact.
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import hashlib
 import json
 import os
@@ -15,6 +14,9 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 from typing import BinaryIO
+
+import learning_lifecycle as lifecycle
+from learning_lifecycle import LearningError, concise_line, iso_date, require, source_url
 
 LEARNING_ROOT = "docs/agents/learnings"
 SOURCE_COMMIT = "244fb285125c2ee9e14c81a1c7b02cd357c7f5b1"
@@ -25,21 +27,11 @@ DEFAULT_CAP = 2048
 FRONTMATTER_CAP = 2048
 AREAS = frozenset("bench bridge build ci cli compat core docs git guard host ipc native pack process runtime shell test tooling ts update wv".split())
 REQUIRED = frozenset("name description area tags platform recorded status verified source related".split())
-OPTIONAL = frozenset("detail supersedes size_exception".split())
+OPTIONAL = frozenset("detail supersedes size_exception".split()) | lifecycle.FIELDS
 SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 FILENAME = re.compile(r"(\d{4}-\d{2}-\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md\Z")
-SOURCE_URL = re.compile(r"https://github\.com/gyldlab/keld/blob/([0-9a-f]{40})/([^?#]+)#L([1-9][0-9]*)\Z")
 OLD_ENTRY = re.compile(r"- \d{4}-\d{2}-\d{2} \[[^]\n]+\] .+\Z")
 HISTORICAL_PREFIX = f"https://github.com/gyldlab/keld/blob/{SOURCE_COMMIT}/{SOURCE_PATH}#L"
-
-
-class LearningError(ValueError):
-    """One deterministic contract failure."""
-
-
-def require(condition: bool, message: str) -> None:
-    if not condition:
-        raise LearningError(message)
 
 
 def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -116,14 +108,6 @@ def record_path(root: Path, value: str) -> Path:
     return path
 
 
-def iso_date(value: object, field: str) -> None:
-    require(isinstance(value, str) and bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)), f"{field} must be an ISO date")
-    try:
-        dt.date.fromisoformat(value)
-    except ValueError as error:
-        raise LearningError(f"{field} must be a real ISO date") from error
-
-
 def metadata(root: Path, relative: str) -> dict[str, object]:
     path = record_path(root, relative)
     with open_record(path) as stream:
@@ -132,9 +116,7 @@ def metadata(root: Path, relative: str) -> dict[str, object]:
     require(data.keys() <= REQUIRED | OPTIONAL, f"{relative}: unknown fields: {', '.join(sorted(data.keys() - REQUIRED - OPTIONAL))}")
     require(data["name"] == path.stem, f"{relative}: name must equal filename stem")
     require(data["area"] == path.parent.name, f"{relative}: area must equal parent directory")
-    description = data["description"]
-    require(isinstance(description, str) and bool(description.strip()) and description.splitlines() == [description]
-            and len(description.split()) <= 25, f"{relative}: description must be one line of at most 25 words")
+    concise_line(data["description"], f"{relative}: description")
     tags = data["tags"]
     require(isinstance(tags, list) and bool(tags) and all(isinstance(tag, str) and SLUG.fullmatch(tag) for tag in tags)
             and len(tags) == len(set(tags)), f"{relative}: tags must be unique slug keywords")
@@ -144,13 +126,8 @@ def metadata(root: Path, relative: str) -> dict[str, object]:
     require(data["recorded"] == path.name[:10], f"{relative}: recorded date must match filename")
     if data["verified"] != "unknown":
         iso_date(data["verified"], "verified")
-    source = data["source"]
-    match = SOURCE_URL.fullmatch(source) if isinstance(source, str) else None
-    require(bool(match), f"{relative}: source must be an immutable Keld GitHub blob URL with #L<n>")
-    source_path = PurePosixPath(match[2])
-    require(not source_path.is_absolute() and str(source_path) == match[2] and "\\" not in match[2] and "%" not in match[2]
-            and all(part not in {".", ".."} for part in match[2].split("/")), f"{relative}: unsafe source path")
-    for field in ["related", "detail", "supersedes"]:
+    source_url(data["source"], f"{relative}: source")
+    for field in ["related", "detail", "supersedes", "superseded_by"]:
         links = data.get(field, [])
         require(isinstance(links, list) and all(isinstance(link, str) for link in links)
                 and len(links) == len(set(links)), f"{relative}: {field} must be a unique path list")
@@ -159,13 +136,14 @@ def metadata(root: Path, relative: str) -> dict[str, object]:
             require(target.name != "AGENTS.md", f"{relative}: links must not load the instruction owner")
             if field != "detail":
                 record_path(root, link)
-            if field == "related":
-                require(link != relative, f"{relative}: self related link")
+            if field != "detail":
+                require(link != relative, f"{relative}: self {field} link")
     if "size_exception" in data:
         exception = data["size_exception"]
         require(isinstance(exception, dict) and set(exception) == {"tracker", "reason"}
                 and all(isinstance(value, str) and value.strip() and value.splitlines() == [value]
                         for value in exception.values()), f"{relative}: size_exception requires tracker and reason")
+    lifecycle.validate_metadata(data, relative, HISTORICAL_PREFIX)
     return data
 
 
@@ -266,13 +244,15 @@ def check(root: Path) -> int:
         cap = caps.get(relative, DEFAULT_CAP)
         require((cap > DEFAULT_CAP) == ("size_exception" in record), f"{relative}: larger cap requires exact inventory allowance and size_exception")
         require((root / relative).stat().st_size <= cap, f"{relative}: record exceeds {cap} bytes")
+    lifecycle.validate_graph(records, HISTORICAL_PREFIX)
     migration(root, records)
     return len(records)
 
 
 def describe(root: Path, paths: list[str]) -> list[dict[str, object]]:
     require(bool(paths), "describe requires explicit record paths")
-    return [{"filename": path, **{key: data[key] for key in ["name", "description", "tags"]}}
+    return [{"filename": path, **{key: data[key] for key in ["name", "description", "tags"]},
+             **lifecycle.describe_fields(data)}
             for path in sorted(set(paths)) for data in [metadata(root, path)]]
 
 
