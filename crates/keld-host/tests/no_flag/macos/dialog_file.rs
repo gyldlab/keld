@@ -76,6 +76,16 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`OPEN_SELECTED ${value.canceled} ${value.filePaths.join("|")}`),
       (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "OPEN_INITIAL_VSDX_DENIED") {
+    const pending = dialog.showOpenDialog(win, {
+      defaultPath: process.env.KELD_T1B_VSDX_DIR!,
+      filters, properties: ["openFile"],
+    });
+    void pending.then((value) => report(value.canceled
+      ? `VSDX_DENIED_CANCEL ${value.filePaths.length}`
+      : `VSDX_UNEXPECTED ${value.filePaths.join("|")}`),
+      (error) => report(`OPEN_ERROR ${error?.code ?? String(error)}`));
+    report("SUBMITTED");
   } else if (command === "OPEN_SWITCH_VSDX" || command === "OPEN_SWITCH_MERMAID" || command === "OPEN_SWITCH_ALL") {
     const vsdx = command === "OPEN_SWITCH_VSDX";
     const mermaid = command === "OPEN_SWITCH_MERMAID";
@@ -452,6 +462,10 @@ fn run_real_host_files(
         )
         .env("KELD_T1B_XML_PATH", &paths.xml)
         .env("KELD_T1B_VSDX_PATH", &paths.vsdx)
+        .env(
+            "KELD_T1B_VSDX_DIR",
+            paths.vsdx.parent().expect("owned VSDX parent"),
+        )
         .env("KELD_T1B_MERMAID_PATH", &paths.mermaid)
         .env(
             "KELD_T1B_MIXED_PARENT",
@@ -650,6 +664,17 @@ fn real_host_xml_only_selects_exact_native_xml_path() {
 
 #[test]
 fn real_host_native_filter_accessory_switches_vsdx_and_all_files() {
+    run_real_host_files(false, 2, false, false, false, true, false, false);
+}
+
+#[test]
+#[ignore = "posts real mouse events; requires an exclusively owned macOS GUI session"]
+fn real_host_initial_drawio_filter_physically_denies_vsdx_before_switch() {
+    assert_eq!(
+        std::env::var("KELD_GH478_EXCLUSIVE_GUI").ok().as_deref(),
+        Some("1"),
+        "explicit KELD_GH478_EXCLUSIVE_GUI=1 is required before Host launch"
+    );
     run_real_host_files(false, 2, false, false, false, true, false, false);
 }
 

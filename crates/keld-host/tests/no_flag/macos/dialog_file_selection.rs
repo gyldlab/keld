@@ -298,6 +298,48 @@ pub(super) fn verify_native_filter_switching(
 ) {
     let accessory = compile_ax(fixture, "switch_filter");
     let selector = compile_ax(fixture, "select_file");
+    if std::env::var("KELD_GH478_EXCLUSIVE_GUI").ok().as_deref() == Some("1") {
+        // AXSelectedChildren can force disabled rows; use the physical mouse
+        // oracle only in an explicitly exclusive macOS GUI session.
+        let clicker = compile_ax(fixture, "user_click_file");
+        dialog.submit("OPEN_INITIAL_VSDX_DENIED");
+        capture_open_sheet(dialog);
+        let denied = run_ax(
+            Command::new(&clicker)
+                .arg(dialog.host_pid.to_string())
+                .arg(&paths.vsdx)
+                .arg("denied"),
+        );
+        eprintln!(
+            "GH478_PHYSICAL_INITIAL_VSDX_DENIAL {}",
+            String::from_utf8_lossy(&denied.stderr)
+        );
+        assert!(
+            denied.status.success(),
+            "native VSDX mouse denial: {denied:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&denied.stdout).trim(),
+            format!(
+                "GH478_USER_CLICK_DENIED pid={} basename=gh478-format.vsdx open_enabled=false",
+                dialog.host_pid
+            ),
+        );
+        let canceled = run_ax(
+            Command::new(&dialog.button_helper)
+                .arg(dialog.host_pid.to_string())
+                .arg("Cancel"),
+        );
+        assert!(
+            canceled.status.success(),
+            "initial VSDX denial dismiss: {canceled:?}"
+        );
+        assert_eq!(
+            read_control_line(&mut dialog.reader),
+            "VSDX_DENIED_CANCEL 0"
+        );
+        dialog.await_detached("OPEN_INITIAL_VSDX_DENIED");
+    }
     for (operation, group, expected_prefix, path) in [
         (
             "OPEN_SWITCH_VSDX",
@@ -428,12 +470,39 @@ pub(super) fn verify_native_mixed_selection(
             result.starts_with(prefix),
             "native mixed {selection}: {result}"
         );
-        let mut actual = result
+        let actual = result
             .trim_start_matches(prefix)
             .split('|')
             .map(Path::new)
             .map(|path| path.canonicalize().expect("returned native path exists"))
             .collect::<Vec<_>>();
+        let observer = String::from_utf8_lossy(&clicked.stdout);
+        let native_order = observer
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix("order="))
+            .expect("independent OS-selected row order must be observed");
+        let wanted_order = native_order
+            .split(',')
+            .map(|name| {
+                let candidate = if paths.mixed_file.file_name().and_then(|s| s.to_str())
+                    == Some(name)
+                {
+                    &paths.mixed_file
+                } else if paths.mixed_folder.file_name().and_then(|s| s.to_str()) == Some(name) {
+                    &paths.mixed_folder
+                } else {
+                    panic!("AX returned an unowned selected row: {name}");
+                };
+                candidate
+                    .canonicalize()
+                    .expect("observed native path exists")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual, wanted_order,
+            "Host must preserve the exact native OS selection order"
+        );
+        let mut actual = actual;
         let mut wanted = expected
             .into_iter()
             .map(|path| {

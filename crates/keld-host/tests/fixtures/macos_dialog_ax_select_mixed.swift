@@ -105,6 +105,10 @@ let observedNames = (attr(list, kAXSelectedChildrenAttribute as String) as? [AXU
     .flatMap { find($0, "AXTextField", nil) }
     .compactMap { attr($0, kAXValueAttribute as String) as? String }
 fputs("MIXED_AX_SELECTED_CHILD_NAMES=\(observedNames.sorted())\n", stderr)
+guard observedNames.count == names.count, Set(observedNames) == Set(names) else {
+    fputs("MIXED_AX_ORDER_INCOMPLETE=\(observedNames) expected=\(names)\n", stderr)
+    exit(9)
+}
 if choice == "directory", let row = matched[folderName] {
     let press = AXUIElementPerformAction(row, kAXPressAction as CFString)
     fputs("MIXED_DIRECTORY_NATIVE_AX_PRESS=\(press.rawValue)\n", stderr)
@@ -133,4 +137,4 @@ guard let button = enabledButton else {
 guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
     fputs("MIXED_NATIVE_OPEN_PRESS_FAILED\n", stderr); exit(11)
 }
-print("MIXED_EXACT_NATIVE_SELECTION pid=\(pid) choice=\(choice) rows=\(selected.count)")
+print("MIXED_EXACT_NATIVE_SELECTION pid=\(pid) choice=\(choice) rows=\(selected.count) order=\(observedNames.joined(separator: ","))")

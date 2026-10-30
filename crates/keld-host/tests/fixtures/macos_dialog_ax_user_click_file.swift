@@ -30,7 +30,7 @@ let filename = (path as NSString).lastPathComponent
 let directory = (path as NSString).deletingLastPathComponent
 let folderName = (directory as NSString).lastPathComponent
 let expectAllowed = CommandLine.arguments[3] == "allowed"
-guard path.hasPrefix("/"), filename == "gh478-widened.svg",
+guard path.hasPrefix("/"), ["gh478-widened.svg", "gh478-format.vsdx"].contains(filename),
       folderName.hasPrefix("keld-gh478-visible-open-"),
       let files = try? FileManager.default.contentsOfDirectory(atPath: directory),
       files == [filename], FileManager.default.fileExists(atPath: path),
@@ -148,6 +148,11 @@ var targetPid: pid_t = 0
 guard AXUIElementGetPid(target.row, &targetPid) == .success, targetPid == pid_t(pid) else {
     fail(12, "AX file row belongs to another process")
 }
+// The native column browser can expose offscreen rows in AXColumns. A failed
+// scroll action is not evidence of denial; the exact screen hit below remains
+// mandatory before any global mouse event is posted.
+let scrollStatus = AXUIElementPerformAction(target.row, "AXScrollToVisible" as CFString)
+fputs("GH478_USER_CLICK_SCROLL status=\(scrollStatus.rawValue)\n", stderr)
 
 func rect(_ element: AXUIElement) -> CGRect? {
     let (positionError, positionValue) = attribute(element, kAXPositionAttribute as String)
@@ -168,6 +173,18 @@ func rect(_ element: AXUIElement) -> CGRect? {
     return CGRect(origin: position, size: size)
 }
 
+// In macOS column view the selected parent directory can be visible while the
+// file row's next column exists only in AXColumns offscreen to the right. Move
+// the native horizontal browser scrollbar, never the file selection, before
+// requiring an independently verified physical hit on the exact file row.
+let horizontal = descendants(target.window).filter {
+    hasRole($0, "AXScrollBar") && string($0, "AXOrientation") == "AXHorizontalOrientation"
+}
+fputs("GH478_USER_CLICK_HORIZONTAL_BARS count=\(horizontal.count)\n", stderr)
+for bar in horizontal {
+    let status = AXUIElementSetAttributeValue(bar, kAXValueAttribute as CFString, NSNumber(value: 1.0))
+    fputs("GH478_USER_CLICK_HORIZONTAL_SCROLL status=\(status.rawValue) position=\(String(describing: rect(bar)))\n", stderr)
+}
 guard let fieldRect = rect(target.field) ?? rect(target.row) else {
     fail(13, "native file row has no verified on-screen rectangle")
 }
@@ -188,7 +205,10 @@ func hitIsExactRow(_ point: CGPoint) -> Bool {
 }
 
 guard hitIsExactRow(point) else {
-    fail(14, "screen hit test did not resolve to the exact visible SVG row")
+    var hit: AXUIElement?
+    let hitStatus = AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit)
+    let hitRole = hit.flatMap { string($0, kAXRoleAttribute as String) } ?? "unknown"
+    fail(14, "screen hit test did not resolve to the exact visible file row; point=\(point), hitStatus=\(hitStatus.rawValue), hitRole=\(hitRole)")
 }
 let before = enabled(target.button)
 if before {
