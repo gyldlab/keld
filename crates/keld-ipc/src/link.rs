@@ -1863,3 +1863,6 @@ mod validated_read_tests;
 
 #[cfg(test)]
 mod deadline_contract_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_shutdown_tests;
