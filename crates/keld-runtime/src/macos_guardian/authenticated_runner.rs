@@ -4,12 +4,13 @@ use super::process_group::{
     GroupIdentity, LocalGroupWitness, retire_own_child_group, terminate_attested_group,
 };
 use super::{
-    AwaitHostGroupRetention, Command, CommandExt, GuardianReport, Read, RuntimeError,
-    SpawnAdmission, Stdio, await_host_death, collapse_failures, fail_before_child, io,
-    lifecycle_error, validate_group_pid, validate_liveness_bootstrap, write_group_registration,
+    AwaitHostGroupRetention, Command, CommandExt, GUARDIAN_SHUTDOWN_DEADLINE, GuardianReport,
+    Instant, Read, RuntimeError, SpawnAdmission, Stdio, await_host_death, collapse_failures,
+    fail_before_child, io, lifecycle_error, validate_group_pid, validate_liveness_bootstrap,
+    write_group_registration,
 };
 use std::os::fd::AsFd;
-use std::process::Child;
+use std::process::{Child, ExitStatus};
 
 pub(super) fn run_with_authenticated_registration<R, F>(
     mut command: Command,
@@ -159,6 +160,9 @@ fn run_live_group<R: Read + AsFd>(
     revoke: impl FnOnce() -> io::Result<()>,
 ) -> Result<GuardianReport, RuntimeError> {
     let liveness_result = await_host_death(&mut liveness);
+    // Bound the native error-path fallback from the original host-death
+    // observation, never add a fresh budget after resource revocation.
+    let original_cleanup_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     let mut failures = Vec::new();
     if let Err(error) = liveness_result {
         failures.push(error);
@@ -169,14 +173,24 @@ fn run_live_group<R: Read + AsFd>(
             source,
         ));
     }
-    // This Guardian is the leader's OS parent: the group is decided only
-    // after it reaps its exact unreaped Child.
+    // This Guardian is the leader's OS parent, so the group is decided (at
+    // most one signal, no in-call wait) before it reaps its exact Child, and
+    // proven absent only after that reap. The reap never blocks without
+    // bound (#952): when no signal was delivered (denied, refused, changed
+    // birth) the Child may still execute, so only this exact retained Child
+    // is killed and reaped, inside the ORIGINAL host-death budget. A direct
+    // Child kill never claims group absence on its own.
     let mut leader_status = None;
-    let (retired, reaped) = retire_own_child_group(group, |_| {
+    // `original_cleanup_deadline` is taken before revocation and the owner's
+    // post-decision deadline after it, so `min` keeps the original bound; it
+    // only makes that ordering explicit.
+    let (retired, reaped) = retire_own_child_group(group, |reap_deadline| {
         leader_status = Some(
-            child
-                .wait()
-                .map_err(|source| lifecycle_error("macOS guardian direct-child wait", source))?,
+            reap_owned_child_within_deadline(
+                &mut child,
+                reap_deadline.min(original_cleanup_deadline),
+            )
+            .map_err(|source| lifecycle_error("macOS guardian direct-child wait", source))?,
         );
         Ok(())
     });
@@ -201,3 +215,42 @@ fn run_live_group<R: Read + AsFd>(
         Err(collapse_failures(failures))
     }
 }
+
+// The direct Child is still our unreaped OS child whatever the group
+// decision was (delivered, denied, refused or changed birth). try_wait()
+// establishes that live ownership before Child::kill; it is never a raw-PID
+// fallback from the untrusted authenticated registration, and it is not a
+// second GROUP signal. A direct-child kill cannot establish whole-group
+// absence, so `retire_own_child_group` alone decides the group and its typed
+// failure is always kept even after this reap succeeds.
+//
+// Cost: the bounded reap polls `try_wait` with `yield_now`. After a delivered
+// or host SIGKILL the Child is already exiting, so this lasts milliseconds;
+// only a Child that never reaps keeps one core spinning until `deadline`
+// (at most the rest of the 5 s Guardian shutdown budget) before `TimedOut`,
+// the same shape as `reap_pending_guardian`.
+fn reap_owned_child_within_deadline(
+    child: &mut Child,
+    deadline: Instant,
+) -> Result<ExitStatus, io::Error> {
+    if let Some(status) = child.try_wait()? {
+        return Ok(status);
+    }
+    child.kill()?;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(status),
+            None if Instant::now() < deadline => std::thread::yield_now(),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "original direct child did not reap within the existing Guardian shutdown budget",
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "authenticated_runner/tests.rs"]
+mod tests;

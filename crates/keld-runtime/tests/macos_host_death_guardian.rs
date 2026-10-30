@@ -46,7 +46,9 @@ mod support;
 mod witness;
 use self::readiness::{ReadyState, await_ready};
 use self::roles::{run_descendant, run_guardian, run_host, run_link_peer, spawn_host};
-use self::support::{CycleCleanup, Fixture, accept_line_before, await_process_gone, kill_pid};
+use self::support::{
+    CycleCleanup, Fixture, accept_line_before, await_process_gone, kill_attested_process,
+};
 use self::witness::EofWitness;
 
 #[test]
@@ -112,7 +114,8 @@ fn guardian_death_is_fatal_to_the_live_host_and_leaves_no_group() {
         false,
     );
 
-    kill_pid(ready.guardian_pid);
+    kill_attested_process(ready.guardian_birth)
+        .expect("kill only the original kernel-attested private Guardian");
     let deadline = Instant::now() + EVENT_DEADLINE;
     let mut fatal = false;
     let mut link_eof = false;
@@ -240,10 +243,18 @@ fn await_cleanup(
         eof_witness.assert_no_eof_observed();
         let leaker = cleanup
             .leaker
-            .take()
+            .as_ref()
+            .copied()
             .expect("live app-link descriptor leaker");
-        kill_pid(leaker);
+        let leaker_birth = cleanup
+            .leaker_birth
+            .expect("original live leaker kernel birth retained before host death");
+        assert_eq!(leaker_birth.pid, leaker);
+        kill_attested_process(leaker_birth)
+            .expect("kill only the original kernel-attested descriptor leaker");
         await_process_gone(leaker);
+        cleanup.leaker = None;
+        cleanup.leaker_birth = None;
     }
     // Actual socket EOF is proved on this persistent channel. The separate
     // LINK_EOF controller connection is deliberately released only after
