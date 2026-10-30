@@ -2,6 +2,7 @@
 // Source: crates/keld-native/src/dialog.rs. Do not edit by hand.
 import {
   decodeVarint,
+  decodePostcardStringAt,
   encodeVarint,
   encodeU64Varint,
   encodePostcardString,
@@ -23,6 +24,21 @@ export interface MessageOptions {
   checkbox_label: string | null;
   checkbox_checked: boolean | null;
 }
+export type OpenProperty = "OpenFile" | "OpenDirectory" | "MultiSelections";
+export interface FileDialogFilter {
+  name: string;
+  extensions: readonly string[];
+}
+export interface OpenDialogOptions {
+  default_path: string | null;
+  filters: readonly FileDialogFilter[];
+  properties: readonly OpenProperty[];
+}
+export interface SaveDialogOptions {
+  default_path: string | null;
+  filters: readonly FileDialogFilter[];
+  security_scoped_bookmarks: boolean;
+}
 export type DialogRequestV1 =
   | {
       variant: "Message";
@@ -30,10 +46,24 @@ export type DialogRequestV1 =
       parent: WindowRef | null;
       options: MessageOptions;
     }
-  | { variant: "Cancel"; nonce: bigint };
+  | { variant: "Cancel"; nonce: bigint }
+  | {
+      variant: "Open";
+      nonce: bigint;
+      parent: WindowRef | null;
+      options: OpenDialogOptions;
+    }
+  | {
+      variant: "Save";
+      nonce: bigint;
+      parent: WindowRef | null;
+      options: SaveDialogOptions;
+    };
 export type DialogReplyV1 =
   | { variant: "Message"; response: number; checkbox_checked: boolean }
-  | { variant: "Cancel"; disposition: "Requested" | "AlreadyCompleted" };
+  | { variant: "Cancel"; disposition: "Requested" | "AlreadyCompleted" }
+  | { variant: "Open"; canceled: boolean; file_paths: string[] }
+  | { variant: "Save"; canceled: boolean; file_path: string };
 
 function invalid(detail: string): never {
   throw kipcError("KELD-IPC-003", detail);
@@ -59,6 +89,113 @@ function index(value: number): Uint8Array {
     return invalid("dialog button index is invalid");
   return encodeVarint(value);
 }
+/** Encode only pinned legacy path-only options; no filesystem authority is minted. */
+function fileText(value: unknown, limit: number, field: string): Uint8Array {
+  if (
+    typeof value !== "string" ||
+    Buffer.byteLength(value, "utf8") > limit ||
+    value.includes("\0")
+  )
+    return invalid(field + " exceeds its bounded UTF-8 grammar");
+  return encodePostcardString(value, field);
+}
+function filtersField(value: readonly FileDialogFilter[]): Uint8Array {
+  if (!Array.isArray(value) || value.length > 32)
+    return invalid("too many file filter groups");
+  const parts: Uint8Array[] = [encodeVarint(value.length)];
+  for (const filter of value) {
+    if (
+      !filter ||
+      typeof filter !== "object" ||
+      typeof filter.name !== "string" ||
+      filter.name.length === 0 ||
+      filter.name.includes("\0") ||
+      Buffer.byteLength(filter.name, "utf8") > 256 ||
+      !Array.isArray(filter.extensions) ||
+      filter.extensions.length === 0 ||
+      filter.extensions.length > 32
+    )
+      return invalid("invalid file filter group");
+    parts.push(
+      fileText(filter.name, 256, "file filter name"),
+      encodeVarint(filter.extensions.length),
+    );
+    const seen = new Set<string>();
+    for (const ext of filter.extensions) {
+      if (
+        typeof ext !== "string" ||
+        ext.length === 0 ||
+        Buffer.byteLength(ext, "utf8") > 128 ||
+        ext.startsWith(".") ||
+        ext.endsWith(".") ||
+        (ext !== "*" &&
+          [...ext].some(
+            (ch) =>
+              ch === "*" ||
+              ch === "/" ||
+              ch === "\\" ||
+              ch.charCodeAt(0) < 32 ||
+              (ch.charCodeAt(0) >= 0x7f && ch.charCodeAt(0) <= 0x9f),
+          )) ||
+        seen.has(ext)
+      )
+        return invalid("invalid or repeated file filter extension");
+      seen.add(ext);
+      parts.push(fileText(ext, 128, "file extension"));
+    }
+    if (seen.has("*") && seen.size !== 1)
+      return invalid("all-file extension group must stand alone");
+  }
+  return Buffer.concat(parts);
+}
+function fileOptions(
+  kind: "Open" | "Save",
+  value: OpenDialogOptions | SaveDialogOptions,
+): Uint8Array {
+  if (!value || typeof value !== "object")
+    return invalid("file dialog options object missing");
+  const parts: Uint8Array[] = [
+    optional(value.default_path, (path) =>
+      fileText(path, 4096, "default path"),
+    ),
+    filtersField(value.filters),
+  ];
+  if (kind === "Open") {
+    const props = (value as OpenDialogOptions).properties;
+    if (
+      !Array.isArray(props) ||
+      props.length > 3 ||
+      new Set(props).size !== props.length
+    )
+      return invalid("invalid Open properties");
+    const ids = ["OpenFile", "OpenDirectory", "MultiSelections"];
+    parts.push(encodeVarint(props.length));
+    for (const prop of props) {
+      const id = ids.indexOf(prop);
+      if (id < 0) return invalid("unknown Open property");
+      parts.push(encodeVarint(id));
+    }
+  } else {
+    const bookmark = (value as SaveDialogOptions).security_scoped_bookmarks;
+    if (bookmark !== false)
+      return invalid("security scoped bookmark cannot mint a capability");
+    parts.push(booleanByte(bookmark));
+  }
+  const bytes = Buffer.concat(parts);
+  if (bytes.byteLength > 16 * 1024)
+    return invalid("file dialog options exceed bounded envelope");
+  return bytes;
+}
+function selectedFilePath(value: string): boolean {
+  return (
+    Buffer.byteLength(value, "utf8") <= 4096 &&
+    value.startsWith("/") &&
+    !value.includes("\0") &&
+    !value.includes("\\") &&
+    !value.split("/").includes("..")
+  );
+}
+
 /** Snapshot one bounded request in Native's postcard declaration order. */
 export function encodeDialogRequest(value: DialogRequestV1): Uint8Array {
   if (
@@ -71,6 +208,18 @@ export function encodeDialogRequest(value: DialogRequestV1): Uint8Array {
   const nonce = encodeU64Varint(value.nonce);
   if (value.variant === "Cancel")
     return Buffer.concat([new Uint8Array([1]), nonce]);
+  if (value.variant === "Open" || value.variant === "Save") {
+    const options = fileOptions(value.variant, value.options);
+    const parent = optional(value.parent, (ref) =>
+      Buffer.concat([index(ref.id), encodeU64Varint(ref.incarnation)]),
+    );
+    return Buffer.concat([
+      new Uint8Array([value.variant === "Open" ? 2 : 3]),
+      nonce,
+      parent,
+      options,
+    ]);
+  }
   if (value.variant !== "Message")
     return invalid("unknown dialog request variant");
   const o = value.options;
@@ -143,5 +292,38 @@ export function decodeDialogReply(payload: Uint8Array): DialogReplyV1 {
       variant: "Cancel",
       disposition: first === 0 ? "Requested" : "AlreadyCompleted",
     };
+  if (variant === 2) {
+    if (payload.byteLength > 256 * 1024 || first > 1)
+      return invalid("invalid native Open Cancel value");
+    const [length, afterCount] = decodeVarint(payload, end);
+    if (length > 32) return invalid("native Open selected too many paths");
+    let offset = afterCount;
+    const file_paths: string[] = [];
+    for (let i = 0; i < length; i++) {
+      const [path, next] = decodePostcardStringAt(payload, offset);
+      if (!selectedFilePath(path))
+        return invalid("native Open selected an invalid path");
+      file_paths.push(path);
+      offset = next;
+    }
+    if (
+      offset !== payload.length ||
+      (first === 1 && file_paths.length !== 0) ||
+      (first === 0 && file_paths.length === 0)
+    )
+      return invalid("native Open canceled/selected path mismatch");
+    return { variant: "Open", canceled: first === 1, file_paths };
+  }
+  if (variant === 3) {
+    if (payload.byteLength > 256 * 1024 || first > 1)
+      return invalid("invalid native Save Cancel value");
+    const [file_path, after] = decodePostcardStringAt(payload, end);
+    if (
+      after !== payload.length ||
+      (first === 1 ? file_path !== "" : !selectedFilePath(file_path))
+    )
+      return invalid("native Save canceled/selected path mismatch");
+    return { variant: "Save", canceled: first === 1, file_path };
+  }
   return invalid("invalid dialog reply variant or disposition");
 }

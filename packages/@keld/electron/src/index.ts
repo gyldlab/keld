@@ -28,7 +28,14 @@ Object.defineProperty(proc, "type", {
 });
 
 export { app, BrowserWindow, dialog };
-export type { MessageBoxOptions, MessageBoxResult } from "./dialog";
+export type {
+  MessageBoxOptions,
+  MessageBoxResult,
+  OpenDialogOptions,
+  OpenDialogResult,
+  SaveDialogOptions,
+  SaveDialogResult,
+} from "./dialog";
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,

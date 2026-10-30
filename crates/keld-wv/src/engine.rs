@@ -155,6 +155,10 @@ pub enum MacDialogUiOutcome {
         /// Checkbox state after the real native callback.
         checkbox_checked: bool,
     },
+    /// A native Open/Save result was captured in the existing Core custody
+    /// before this lightweight event marker was queued. The actual selected
+    /// paths are never stored in this copyable OS/event type.
+    FileResult,
     /// A native dismissal, never a fabricated selected button.
     Dismissed,
     /// The native presentation or callback did not meet its owner contract.
