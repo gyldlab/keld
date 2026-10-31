@@ -152,20 +152,37 @@ async function pack(destination: string | undefined): Promise<void> {
         }),
       );
     }
-    const apiDist = {
-      ...apiManifest,
-      exports: distExports(apiExports),
-      dependencies: {
-        ...apiManifest.dependencies,
-        "@keld/kipc": kipcManifest.version,
-      },
-      files: ["*.js", "*.d.ts"],
-    };
-    const kipcDist = {
-      ...kipcManifest,
-      exports: distExports(kipcManifest.exports),
-      files: ["*.js", "*.d.ts"],
-    };
+    // Ship an allowlist, never the whole source manifest: source scripts name
+    // files the tarball omits, and an install script would run on consumers'
+    // machines. Development dependencies stay as declared (criterion 5).
+    function distManifest(
+      source: SourceManifest,
+      exports: Record<string, string>,
+      dependencies: Record<string, string> | undefined,
+    ) {
+      return {
+        name: source.name,
+        version: source.version,
+        description: source.description,
+        license: source.license,
+        type: source.type,
+        engines: source.engines,
+        exports: distExports(exports),
+        dependencies,
+        peerDependencies: source.peerDependencies,
+        devDependencies: source.devDependencies,
+        files: ["*.js", "*.d.ts"],
+      };
+    }
+    const apiDist = distManifest(apiManifest, apiExports, {
+      ...apiManifest.dependencies,
+      "@keld/kipc": kipcManifest.version,
+    });
+    const kipcDist = distManifest(
+      kipcManifest,
+      kipcManifest.exports,
+      kipcManifest.dependencies,
+    );
     for (const [path, source] of [
       [apiOut, apiDist],
       [kipcOut, kipcDist],

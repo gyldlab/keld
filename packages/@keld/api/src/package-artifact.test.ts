@@ -128,6 +128,10 @@ test("real packed SDK installs offline with one API app identity", async () => {
         ),
       );
       expect(installed.devDependencies).toEqual(source[name].devDependencies);
+      expect(
+        ["scripts", "packageManager"].filter((key) => key in installed),
+        `packed @keld/${name} manifest ships source-only fields; the producer must allowlist manifest keys`,
+      ).toEqual([]);
     }
     // The shipped Worker is KIPC's release build: packing keeps no test hook.
     const packedTransport = readFileSync(
