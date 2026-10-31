@@ -1,0 +1,192 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-main-bindings-v1",
+  "scope": "@keld/electron link-time named bindings of the Electron 44.4.5 main-process modules draw.io imports (Menu, shell, dialog, session, screen, ClipboardItem, clipboard, nativeImage, nativeTheme; ipcMain is the GH-466 registration slice's, PR #1365): the ESM binding links and evaluates in a Bun child with no Host traffic; member behaviour, product compatibility and native acceptance are not scored here",
+  "panel": "showcase",
+  "kind": "activation",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "headless-lifecycle-conformance",
+    "linux": "headless-lifecycle-conformance",
+    "windows": "headless-lifecycle-conformance"
+  },
+  "doc_snapshots": {
+    "docs/api/menu.md": "sha256:be20d946e45a53773caa8edd18e26e8ce013a9bb4a8d8491a27906bdac7d5a47",
+    "docs/api/shell.md": "sha256:a304af3ec66c30cbce5f93b7f13ae54741c2fe9a57fc7df70bf1a72fc49b93aa",
+    "docs/api/dialog.md": "sha256:bc0b63b7775fcaff5fd74b1649d8b9e6247f8cc2cfd26fc7a7b080ffb0cffeba",
+    "docs/api/session.md": "sha256:8bd99f63ff2e21dafd27d846c59816d47f34ba3f10c4b5f25056dca7c408e892",
+    "docs/api/screen.md": "sha256:6e50825cb7de15e94886afda2aa1e75871cfe3d3ada236b7816827f0f563a496",
+    "docs/api/clipboard-item.md": "sha256:64176b01949dd7df6a12e198c297d9f04c919ee4a97d251287136bad951fc126",
+    "docs/api/clipboard.md": "sha256:33216c63516128abc0bee0f05e25eac7f34721b418c54aaebc3b1c26be425b63",
+    "docs/api/native-image.md": "sha256:d5f9d50d06dc61b4dcef86c6d7d4cbb0cd2bc74bca9630d5ade60e54ae94ae1f",
+    "docs/api/native-theme.md": "sha256:5da32f0af52f3edaa35f00ea6258e59f38f770451fc17d561b04194e38f2e1cd"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "menu.binding.named-import",
+      "oracle_id": "electron-v44.4.5.menu.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/menu.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "menu.binding.named-import: a Bun child importing { Menu } by name from the facade links and evaluates to a function, and the default export carries the same binding",
+      "negative_control": "Removing the `Menu` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'Menu' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "shell.binding.named-import",
+      "oracle_id": "electron-v44.4.5.shell.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/shell.md",
+        "quote": "Process: [Main](../glossary.md#main-process), [Renderer](../glossary.md#renderer-process) (non-sandboxed only)",
+        "quote_sha256": "sha256:566aa68930afde307c90cfec887811f1cfabb31c8ad55874c6c4a41d0a9f0825"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "shell.binding.named-import: a Bun child importing { shell } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `shell` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'shell' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "dialog.binding.named-import",
+      "oracle_id": "electron-v44.4.5.dialog.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "dialog.binding.named-import: a Bun child importing { dialog } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `dialog` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'dialog' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "session.binding.named-import",
+      "oracle_id": "electron-v44.4.5.session.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/session.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "session.binding.named-import: a Bun child importing { session } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `session` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'session' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "screen.binding.named-import",
+      "oracle_id": "electron-v44.4.5.screen.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/screen.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "screen.binding.named-import: a Bun child importing { screen } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `screen` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'screen' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "clipboard-item.binding.named-import",
+      "oracle_id": "electron-v44.4.5.clipboard-item.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/clipboard-item.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "clipboard-item.binding.named-import: a Bun child importing { ClipboardItem } by name from the facade links and evaluates to a function, and the default export carries the same binding",
+      "negative_control": "Removing the `ClipboardItem` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'ClipboardItem' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "clipboard.binding.named-import",
+      "oracle_id": "electron-v44.4.5.clipboard.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/clipboard.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "clipboard.binding.named-import: a Bun child importing { clipboard } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `clipboard` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'clipboard' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "native-image.binding.named-import",
+      "oracle_id": "electron-v44.4.5.native-image.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/native-image.md",
+        "quote": "Process: [Main](../glossary.md#main-process), [Renderer](../glossary.md#renderer-process)",
+        "quote_sha256": "sha256:bc823a2ec182769b445bb1d6cab1639f31ecd4387a30f27afa86e577ab2707b4"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "native-image.binding.named-import: a Bun child importing { nativeImage } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `nativeImage` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'nativeImage' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    },
+    {
+      "operation_id": "native-theme.binding.named-import",
+      "oracle_id": "electron-v44.4.5.native-theme.process-main",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/native-theme.md",
+        "quote": "Process: [Main](../glossary.md#main-process)",
+        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
+      },
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
+      "test_name": "native-theme.binding.named-import: a Bun child importing { nativeTheme } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `nativeTheme` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'nativeTheme' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
+    }
+  ]
+}
