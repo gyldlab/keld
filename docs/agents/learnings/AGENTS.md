@@ -12,8 +12,8 @@ Before implementation or review, query relevant records with these steps.
 
 1. Select an area. Filter filenames with `rg --files docs/agents/learnings/<area> -g '*<topic>*'`.
 2. Inspect candidate metadata with `python3 -B tools/learning_records.py describe <paths>`.
-3. Read the selected record. Check its cited current source before using its fact.
-4. Follow a related/detail link only when the task needs it. Do not load linked trees.
+3. For retired records or status changes, use [lifecycle](../../../.agents/learning-lifecycle.md).
+4. Read selected facts as evidence leads. Check current sources. Follow related/detail links only when needed.
 
 Do not load a directory, month, or archive as one context item. If filename search
 misses a topic, search relevant-area metadata. Refine broad queries. A no-match is valid.
@@ -28,8 +28,7 @@ Search existing records before adding it.
 - Use the closed JSON-value YAML frontmatter accepted by `tools/learning_records.py`.
   Include name, description, area, tags, platform, recorded, status, verified, source,
   and related. A description helps discovery; the body holds the complete conditions.
-- Update the same fact. Create a record when a fact can change independently. Link
-  related facts. Correct stale facts explicitly; keep supersession links and history.
+- Update the same fact. Create a record when a fact can change independently. Link related facts.
 - Preserve exact identifiers, errors, qualifiers, evidence links and negative controls.
   Historical quotes preserve original text and status. Capture dates do not prove
   current validity.

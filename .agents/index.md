@@ -23,7 +23,7 @@ other engineering playbooks still apply.
 | Maintainer tracker, branch/worktree, OS acceptance or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
 | PR open/update/rebase/push/review or feedback resolution | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
-| Learning record edits/migration | [format](../docs/agents/learnings/AGENTS.md) |
+| Learning lifecycle / record edits | [format](../docs/agents/learnings/AGENTS.md), [lifecycle](learning-lifecycle.md) |
 | Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
 | Editing generated docs, Mermaid, public documentation, or publishing/correcting a public technical audit | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
 | Writing or changing a feature/architecture specification | [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
