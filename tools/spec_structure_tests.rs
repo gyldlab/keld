@@ -4021,3 +4021,35 @@ fn a_character_reference_cannot_hide_the_spec_heading() {
         "a bAc d \u{fffd} \u{fffd} &#; &#xZZ; AT&T &#12345678;"
     );
 }
+
+/// The review's control: a fence a reader cannot see is not the copy source.
+#[test]
+fn a_hidden_template_fence_is_not_the_copy_source() {
+    let fence = format!("```markdown\n{}```\n", single_spec());
+    let indented: String = fence.lines().map(|line| format!("    {line}\n")).collect();
+    let quoted: String = fence.lines().map(|line| format!("> {line}\n")).collect();
+    for (label, text) in [
+        ("html comment", format!("# Template\n\n<!--\n{fence}-->\n")),
+        ("raw html", format!("# Template\n\n<pre>\n{fence}</pre>\n")),
+        ("indented code", format!("# Template\n\n{indented}")),
+        ("block quote", format!("# Template\n\n{quoted}")),
+        (
+            "never closed",
+            format!("# Template\n\n```markdown\n{}", single_spec()),
+        ),
+        (
+            "outer fence",
+            format!("# Template\n\n````text\n{fence}````\n"),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(TEMPLATE, &text);
+        assert_only(&fixture, Rule::Sections, label);
+    }
+    let fixture = Fixture::new();
+    fixture.write(
+        TEMPLATE,
+        &format!("# Template\n\n{fence}\n```text\nnot a spec\n```\n"),
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}

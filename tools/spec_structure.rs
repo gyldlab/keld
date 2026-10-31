@@ -547,6 +547,8 @@ struct Doc {
     visible: Vec<Option<String>>,
     /// `fenced[i]` marks a line of a fence, or a fence marker.
     fenced: Vec<bool>,
+    /// Each fence's opening line and, when a closing run ends it, that line.
+    fences: Vec<(usize, Option<usize>)>,
     headings: Vec<Heading>,
     bytes: usize,
     /// A fence that never closes hides the rest of the file from every other rule.
@@ -581,6 +583,7 @@ impl Doc {
             lines,
             visible,
             fenced,
+            fences: lexer.fences,
             headings: lexer.headings,
             bytes: text.len(),
             unclosed_fence: lexer.fence.map(|fence| fence.line),
@@ -653,6 +656,8 @@ struct Lexer {
     raw: Option<RawBlock>,
     /// Column of the list item holding an open HTML block, which a blank line ends.
     html: Option<usize>,
+    /// Each fence's opening line and, when a closing run ends it, that line.
+    fences: Vec<(usize, Option<usize>)>,
     headings: Vec<Heading>,
     /// First and last line of each paragraph, the only blocks an inline comment can span.
     paragraphs: Vec<(usize, usize)>,
@@ -678,6 +683,9 @@ impl Lexer {
                     marker == fence.marker && width >= fence.width && closing
                 }) {
                     self.fence = None;
+                    if let Some((_, close)) = self.fences.last_mut() {
+                        *close = Some(index);
+                    }
                 }
                 return Lexed::Fenced;
             }
@@ -775,6 +783,7 @@ impl Lexer {
                     line: index,
                     base,
                 });
+                self.fences.push((index, None));
                 return Lexed::Fenced;
             }
             let Some(marker) = list_marker(body, self.paragraph.is_some())
@@ -3097,28 +3106,31 @@ fn check_directory(
     Ok(())
 }
 
-/// The template's first `markdown` fence, which must itself pass the standard.
+/// The template's one rendered `markdown` fence, which must itself pass the standard. A
+/// fence inside a comment, raw HTML, indented code, a block quote or another fence is not
+/// what a reader copies, so the lexer's fences decide, never the raw lines. A fence that no
+/// closing run ends has no body a reader can copy.
 fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
     let doc = read_doc(root, TEMPLATE)?;
-    let mut body = String::new();
-    let mut inside = false;
-    for line in &doc.lines {
-        if inside && line.trim() == "```" {
-            break;
-        }
-        if inside {
-            body.push_str(line);
-            body.push('\n');
-        }
-        inside = inside || line.trim() == "```markdown";
-    }
-    let fences = doc.lines.iter().filter(|line| line.trim() == "```markdown");
-    if body.is_empty() || fences.count() != 1 {
+    let openers: Vec<(usize, Option<usize>)> = doc
+        .fences
+        .iter()
+        .copied()
+        .filter(|(open, _)| doc.lines[*open].trim() == "```markdown")
+        .collect();
+    let body: String = match openers.as_slice() {
+        [(open, Some(close))] => doc.lines[open + 1..*close]
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect(),
+        _ => String::new(),
+    };
+    if body.is_empty() {
         report.add(
             Rule::Sections,
             TEMPLATE,
             1,
-            "the template needs exactly one ```markdown fence".to_owned(),
+            "the template needs exactly one rendered ```markdown fence".to_owned(),
         );
         return Ok(());
     }
