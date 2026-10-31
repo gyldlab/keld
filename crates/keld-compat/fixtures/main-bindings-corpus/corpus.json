@@ -35,16 +35,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "menu.binding.named-import today: importing { Menu } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `Menu` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `Menu` export (named or default) fails the case with Bun's `Export named 'Menu' not found` SyntaxError or the default-export parity check."
+      "test_name": "menu.binding.named-import: a Bun child importing { Menu } by name from the facade links and evaluates to a function, and the default export carries the same binding",
+      "negative_control": "Removing the `Menu` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'Menu' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "shell.binding.named-import",
@@ -54,16 +53,15 @@
         "quote": "Process: [Main](../glossary.md#main-process), [Renderer](../glossary.md#renderer-process) (non-sandboxed only)",
         "quote_sha256": "sha256:566aa68930afde307c90cfec887811f1cfabb31c8ad55874c6c4a41d0a9f0825"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "shell.binding.named-import today: importing { shell } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `shell` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `shell` export (named or default) fails the case with Bun's `Export named 'shell' not found` SyntaxError or the default-export parity check."
+      "test_name": "shell.binding.named-import: a Bun child importing { shell } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `shell` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'shell' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "dialog.binding.named-import",
@@ -73,16 +71,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "dialog.binding.named-import today: importing { dialog } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `dialog` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `dialog` export (named or default) fails the case with Bun's `Export named 'dialog' not found` SyntaxError or the default-export parity check."
+      "test_name": "dialog.binding.named-import: a Bun child importing { dialog } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `dialog` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'dialog' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "session.binding.named-import",
@@ -92,16 +89,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "session.binding.named-import today: importing { session } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `session` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `session` export (named or default) fails the case with Bun's `Export named 'session' not found` SyntaxError or the default-export parity check."
+      "test_name": "session.binding.named-import: a Bun child importing { session } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `session` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'session' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "screen.binding.named-import",
@@ -111,16 +107,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "screen.binding.named-import today: importing { screen } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `screen` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `screen` export (named or default) fails the case with Bun's `Export named 'screen' not found` SyntaxError or the default-export parity check."
+      "test_name": "screen.binding.named-import: a Bun child importing { screen } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `screen` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'screen' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "clipboard-item.binding.named-import",
@@ -130,16 +125,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "clipboard-item.binding.named-import today: importing { ClipboardItem } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `ClipboardItem` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `ClipboardItem` export (named or default) fails the case with Bun's `Export named 'ClipboardItem' not found` SyntaxError or the default-export parity check."
+      "test_name": "clipboard-item.binding.named-import: a Bun child importing { ClipboardItem } by name from the facade links and evaluates to a function, and the default export carries the same binding",
+      "negative_control": "Removing the `ClipboardItem` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'ClipboardItem' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "clipboard.binding.named-import",
@@ -149,16 +143,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "clipboard.binding.named-import today: importing { clipboard } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `clipboard` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `clipboard` export (named or default) fails the case with Bun's `Export named 'clipboard' not found` SyntaxError or the default-export parity check."
+      "test_name": "clipboard.binding.named-import: a Bun child importing { clipboard } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `clipboard` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'clipboard' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "native-image.binding.named-import",
@@ -168,16 +161,15 @@
         "quote": "Process: [Main](../glossary.md#main-process), [Renderer](../glossary.md#renderer-process)",
         "quote_sha256": "sha256:bc823a2ec182769b445bb1d6cab1639f31ecd4387a30f27afa86e577ab2707b4"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "native-image.binding.named-import today: importing { nativeImage } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `nativeImage` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `nativeImage` export (named or default) fails the case with Bun's `Export named 'nativeImage' not found` SyntaxError or the default-export parity check."
+      "test_name": "native-image.binding.named-import: a Bun child importing { nativeImage } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `nativeImage` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'nativeImage' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "native-theme.binding.named-import",
@@ -187,16 +179,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "native-theme.binding.named-import today: importing { nativeTheme } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `nativeTheme` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `nativeTheme` export (named or default) fails the case with Bun's `Export named 'nativeTheme' not found` SyntaxError or the default-export parity check."
+      "test_name": "native-theme.binding.named-import: a Bun child importing { nativeTheme } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `nativeTheme` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'nativeTheme' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     },
     {
       "operation_id": "ipc-main.binding.named-import",
@@ -206,16 +197,15 @@
         "quote": "Process: [Main](../glossary.md#main-process)",
         "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
       },
-      "expected_verdict": "fail",
-      "implementing_ticket": "GH-565",
+      "expected_verdict": "pass",
       "platforms": [
         "macos",
         "linux",
         "windows"
       ],
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "ipc-main.binding.named-import today: importing { ipcMain } by name from the facade fails to link with Bun's Export-named-not-found SyntaxError",
-      "negative_control": "While pending: adding a `ipcMain` named export to packages/@keld/electron/src/index.ts makes the Bun child import link (exit 0) and fails this mapped absence case; GH-565 inverts the case and flips the cell in the same change. After inversion: removing the `ipcMain` export (named or default) fails the case with Bun's `Export named 'ipcMain' not found` SyntaxError or the default-export parity check."
+      "test_name": "ipc-main.binding.named-import: a Bun child importing { ipcMain } by name from the facade links and evaluates to an object, and the default export carries the same binding",
+      "negative_control": "Removing the `ipcMain` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'ipcMain' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     }
   ]
 }
