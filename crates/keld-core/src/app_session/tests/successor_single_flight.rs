@@ -146,6 +146,7 @@ fn successor_drain_test_router(
         windows: None,
         recovery_armed: Arc::new(AtomicBool::new(true)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+        pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
         shutdown: SessionShutdownState::new(),
         fs: Some(snapshot.fs_weak()),
         fs_worker_commands: None,
