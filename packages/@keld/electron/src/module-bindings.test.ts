@@ -8,6 +8,8 @@
  * (an isolated temp file, `file://` specifier), so the oracle is Bun's own ESM linker: a
  * missing export is `SyntaxError: Export named '<name>' not found in module '…'.`, exit 1
  * (Bun 1.4.4, measured 2026-10-31); the deliberately unexported `MenuItem` proves it live.
+ * `ipcMain`, the twelfth name of that statement, is the GH-466 registration slice's export
+ * (PR #1365, spec D5) and has no case here.
  *
  * The remaining cases hold the spec's other criteria
  * (`docs/specs/gh565-link-time-electron-bindings.md` §3): default-export parity, zero
@@ -49,6 +51,13 @@ const DRAWIO_IMPORT = [
   "app",
   "BrowserWindow",
 ] as const;
+
+/**
+ * The eleven names of that statement this facade exports. `ipcMain` is the GH-466
+ * registration slice's (PR #1365; decision recorded on gyldlab/keld#466, 2026-10-31); the
+ * PR that lands second restores the full twelve-name case.
+ */
+const LINKED_HERE = DRAWIO_IMPORT.filter((name) => name !== "ipcMain");
 
 type MemberKind = "method" | "promise" | "property" | "writableProperty";
 
@@ -230,24 +239,6 @@ const ORACLE: readonly BindingOracle[] = [
       removeAllListeners: ["method", "GH-558"],
     },
   },
-  {
-    // ipc-main.md l.37-158: six listener methods (GH-466) and the handle family (GH-547).
-    prefix: "ipc-main",
-    name: "ipcMain",
-    typeof: "object",
-    target: "own",
-    members: {
-      on: ["method", "GH-466"],
-      off: ["method", "GH-466"],
-      once: ["method", "GH-466"],
-      addListener: ["method", "GH-466"],
-      removeListener: ["method", "GH-466"],
-      removeAllListeners: ["method", "GH-466"],
-      handle: ["method", "GH-547"],
-      handleOnce: ["method", "GH-547"],
-      removeHandler: ["method", "GH-547"],
-    },
-  },
 ];
 
 interface ProbeResult {
@@ -387,8 +378,8 @@ describe("link (electron-main-bindings-v1 cells)", () => {
     });
   }
 
-  test("draw.io's twelve-name import statement (electron.js:5-6) links in one module graph", () => {
-    const result = linkProbe(DRAWIO_IMPORT);
+  test("the eleven names of draw.io's import statement (electron.js:5-6) that this facade exports link in one module graph; ipcMain is PR #1365's", () => {
+    const result = linkProbe(LINKED_HERE);
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([
@@ -398,7 +389,6 @@ describe("link (electron-main-bindings-v1 cells)", () => {
       "object",
       "object",
       "function",
-      "object",
       "object",
       "object",
       "object",
@@ -416,8 +406,8 @@ describe("link (electron-main-bindings-v1 cells)", () => {
     expect(member(electron.default, "MenuItem")).toBeUndefined();
   });
 
-  test("the default export carries every binding draw.io imports, including app and BrowserWindow", () => {
-    for (const name of DRAWIO_IMPORT) {
+  test("the default export carries every binding draw.io imports that this facade exports, including app and BrowserWindow", () => {
+    for (const name of LINKED_HERE) {
       const named = member(electron, name);
       expect(named).toBeDefined();
       expect(member(electron.default, name)).toBe(named);
@@ -426,7 +416,7 @@ describe("link (electron-main-bindings-v1 cells)", () => {
 });
 
 describe("module evaluation and refusals open no app link", () => {
-  test("touching every member of the ten bindings calls LifecycleLink.connect zero times", () => {
+  test("touching every member of the nine bindings calls LifecycleLink.connect zero times", () => {
     let touched = 0;
     let threw = 0;
     let rejected = 0;
@@ -587,9 +577,7 @@ describe("constructors", () => {
 
 describe("UnsupportedMemberError classification", () => {
   test("isUnsupportedMemberError accepts only a KELD-COMPAT-013 refusal", () => {
-    const refusal = thrownBy(() =>
-      electron.ipcMain.on("rendererReq", () => {}),
-    );
+    const refusal = thrownBy(() => electron.shell.beep());
     expect(isUnsupportedMemberError(refusal)).toBe(true);
     expect(
       isUnsupportedMemberError(new Error("KELD-COMPAT-013: not typed")),

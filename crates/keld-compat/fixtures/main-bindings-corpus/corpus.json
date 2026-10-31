@@ -1,7 +1,7 @@
 {
   "schema": "keld.compat.corpus/v1",
   "corpus_id": "electron-main-bindings-v1",
-  "scope": "@keld/electron link-time named bindings of the Electron 44.4.5 main-process modules draw.io imports (Menu, shell, dialog, session, screen, ClipboardItem, clipboard, nativeImage, nativeTheme, ipcMain): the ESM binding links and evaluates in a Bun child with no Host traffic; member behaviour, product compatibility and native acceptance are not scored here",
+  "scope": "@keld/electron link-time named bindings of the Electron 44.4.5 main-process modules draw.io imports (Menu, shell, dialog, session, screen, ClipboardItem, clipboard, nativeImage, nativeTheme; ipcMain is the GH-466 registration slice's, PR #1365): the ESM binding links and evaluates in a Bun child with no Host traffic; member behaviour, product compatibility and native acceptance are not scored here",
   "panel": "showcase",
   "kind": "activation",
   "artifact_digest": "manifest_bytes",
@@ -19,8 +19,7 @@
     "docs/api/clipboard-item.md": "sha256:64176b01949dd7df6a12e198c297d9f04c919ee4a97d251287136bad951fc126",
     "docs/api/clipboard.md": "sha256:33216c63516128abc0bee0f05e25eac7f34721b418c54aaebc3b1c26be425b63",
     "docs/api/native-image.md": "sha256:d5f9d50d06dc61b4dcef86c6d7d4cbb0cd2bc74bca9630d5ade60e54ae94ae1f",
-    "docs/api/native-theme.md": "sha256:5da32f0af52f3edaa35f00ea6258e59f38f770451fc17d561b04194e38f2e1cd",
-    "docs/api/ipc-main.md": "sha256:50eb49eae6b3d7785e6fc70772bf9bda7b9993c29b89c01dd684030198401f51"
+    "docs/api/native-theme.md": "sha256:5da32f0af52f3edaa35f00ea6258e59f38f770451fc17d561b04194e38f2e1cd"
   },
   "upstream": {
     "electron_version": "44.4.5",
@@ -188,24 +187,6 @@
       "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
       "test_name": "native-theme.binding.named-import: a Bun child importing { nativeTheme } by name from the facade links and evaluates to an object, and the default export carries the same binding",
       "negative_control": "Removing the `nativeTheme` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'nativeTheme' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
-    },
-    {
-      "operation_id": "ipc-main.binding.named-import",
-      "oracle_id": "electron-v44.4.5.ipc-main.process-main",
-      "doc_citation": {
-        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-main.md",
-        "quote": "Process: [Main](../glossary.md#main-process)",
-        "quote_sha256": "sha256:204b757da077b971112d417a9c31e35429502038d7a67727868fda413112b634"
-      },
-      "expected_verdict": "pass",
-      "platforms": [
-        "macos",
-        "linux",
-        "windows"
-      ],
-      "test_path": "packages/@keld/electron/src/module-bindings.test.ts",
-      "test_name": "ipc-main.binding.named-import: a Bun child importing { ipcMain } by name from the facade links and evaluates to an object, and the default export carries the same binding",
-      "negative_control": "Removing the `ipcMain` export from packages/@keld/electron/src/index.ts (named or default) fails this case with Bun's `Export named 'ipcMain' not found` SyntaxError or the default-export parity check; the deliberately unexported `MenuItem` control in the same file proves the oracle detects a missing export. Every member of the binding is a typed KELD-COMPAT-013 refusal, so no member behaviour is scored by this cell."
     }
   ]
 }

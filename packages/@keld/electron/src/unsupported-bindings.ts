@@ -4,11 +4,12 @@
  *
  * Each binding exists so draw.io's `import { Menu, shell, dialog, session, screen,
  * ClipboardItem, clipboard, nativeImage, nativeTheme, ipcMain, app, BrowserWindow } from
- * "electron"` (`src/main/electron.js:5-6` at 2edf9fb9) links. Every member the pinned
- * Electron v44.4.5 page (694f45852a0f1726cd23bfd379854de489cccb65) documents at module or
- * static level refuses with `KELD-COMPAT-013` naming the issue that owns it; the `Returns
- * Promise<…>` lines of those pages decide which members reject instead of throwing.
- * Members no ticket covers yet name the F06 epic #476 (§ Not yet specified).
+ * "electron"` (`src/main/electron.js:5-6` at 2edf9fb9) links. `ipcMain` is not declared
+ * here: the GH-466 registration slice (PR #1365) exports it (spec D5). Every member the
+ * pinned Electron v44.4.5 page (694f45852a0f1726cd23bfd379854de489cccb65) documents at
+ * module or static level refuses with `KELD-COMPAT-013` naming the issue that owns it; the
+ * `Returns Promise<…>` lines of those pages decide which members reject instead of
+ * throwing. Members no ticket covers yet name the F06 epic #476 (§ Not yet specified).
  *
  * An implementing ticket moves its module out of this file into its own module and
  * deletes the rows it implements in the same change that flips its corpus cells. Instance
@@ -167,17 +168,4 @@ export const session = unsupportedSurface("session", {
   fromPartition: method("GH-474"),
   fromPath: method("GH-474"),
   defaultSession: property("GH-553"),
-});
-
-/** Pinned `ipc-main.md`: the listener family is GH-466's registry; the `handle` family is GH-547's. */
-export const ipcMain = unsupportedSurface("ipcMain", {
-  on: method("GH-466"),
-  off: method("GH-466"),
-  once: method("GH-466"),
-  addListener: method("GH-466"),
-  removeListener: method("GH-466"),
-  removeAllListeners: method("GH-466"),
-  handle: method("GH-547"),
-  handleOnce: method("GH-547"),
-  removeHandler: method("GH-547"),
 });
