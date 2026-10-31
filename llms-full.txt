@@ -6031,12 +6031,6 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Mermaid documentation policy or pinned SVG rendering failed
 - fix: Add the required accessibility metadata and canonical palette, then run `just mermaid-test`, `just mermaid-check`, and `just mermaid-render-check` with Docker available.
 
-## KELD-ROUTER-001
-
-- crate: CI change router (`tools/ci_inputs.py`)
-- message: `tools/ci-inputs.json` still records retired reader digests or declares schema v1
-- fix: Set `"schema"` to `keld.ci-inputs/v2` and delete every `sha256` and `membership_sha256` entry; routing is stateless since GH-1275, so nothing is rebound.
-
 ## KELD-DOCS007
 
 - crate: product-status
