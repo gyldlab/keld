@@ -1,6 +1,7 @@
 //! Signed Windows profile acceptance scenarios.
 
 mod cross_user;
+mod facade_lifecycle;
 mod handover;
 mod installed;
 mod lifecycle;

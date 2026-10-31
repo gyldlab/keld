@@ -5,6 +5,8 @@ use crate::support::control::{
     accept_ready_generation_with_lease, read_control_line,
 };
 use crate::support::handles::assert_dev_lease_handle_isolation;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+use crate::support::process::{PIPE_DRAIN_KILL_SWITCH, pipe_text_by, read_pipe_on_thread};
 use crate::support::process::{
     assert_process_signaled, open_process_for_wait, process_exists, terminate_test_process,
     wait_child, wait_for_child_process, wait_for_cleanup_sentinel, wait_process_gone,
@@ -93,6 +95,129 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         "delegated Bun survived orderly exit"
     );
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
+}
+
+/// AC3/AC23: `keld dev` stages a schema-2 project and the host's own refusal answers
+/// it, in every build, with the stage cleaned by the same sentinel (GH-1188 D2, D15).
+#[test]
+fn shipping_windows_keld_dev_reports_the_host_refusal_of_a_facade_stage() {
+    let fixture = ProductFixture::schema_two();
+    let helper = prepare_keld_dev_helper(&fixture);
+    let mut cli = Command::new(&helper)
+        .arg("keld_dev_windows_helper")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch facade keld dev helper");
+    let status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+    let output = crate::support::process::exited_child_output(&mut cli);
+    assert!(!status.success(), "a refused boot became success: {output}");
+    assert!(output.contains("KELD-CORE-034"), "{output}");
+    assert!(!output.contains("KELD-CLI-047"), "{output}");
+    wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+}
+
+/// AC19: on Windows only the `keld dev` cleanup process deletes the stage, once the
+/// attempt Job reports zero processes. The Quit and the AC2 terminal are this facade
+/// boot's two exits; the gate itself is existing code, so this is a positive control
+/// of the boot kind, with no fixture to leave a member alive at it (AC19 *NC*).
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[test]
+fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties() {
+    for stalled in [false, true] {
+        let fixture = ProductFixture::schema_two();
+        let control_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind facade control");
+        let control_port = control_listener
+            .local_addr()
+            .expect("facade control address")
+            .port();
+        let helper = prepare_keld_dev_helper(&fixture);
+        let mut command = Command::new(&helper);
+        command
+            .arg("keld_dev_windows_helper")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+            .env("KELD_T1B_CONTROL", control_port.to_string())
+            .env("KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if stalled {
+            command.env("KELD_T1B_STALL_BEFORE_INIT", "1");
+        }
+        let mut cli = command.spawn().expect("launch facade keld dev helper");
+        let stdout = read_pipe_on_thread(cli.stdout.take().expect("captured CLI stdout"));
+        let stderr = read_pipe_on_thread(cli.stderr.take().expect("captured CLI stderr"));
+        let host_pid =
+            wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+        let bun_pid = if stalled {
+            let (mut reader, pid) = accept_hello(&control_listener, &mut cli);
+            assert_eq!(read_control_line(&mut reader), "DESCENDANT 0");
+            pid
+        } else {
+            let (mut reader, mut writer, pid, _) =
+                accept_ready_generation(&control_listener, &mut cli);
+            assert_eq!(dev_stage_count(&fixture.project), 1, "the live stage");
+            writer.write_all(b"QUIT\n").expect("facade Quit");
+            writer.flush().expect("flush facade Quit");
+            assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+            assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+            pid
+        };
+        let status = wait_child(
+            &mut cli,
+            Instant::now() + keld_wv::INITIAL_MILESTONE_DEADLINE + ui_end_kill_switch(),
+        );
+        let drained = Instant::now() + PIPE_DRAIN_KILL_SWITCH;
+        let output = format!(
+            "stdout:\n{}\nstderr:\n{}",
+            pipe_text_by(&stdout, drained),
+            pipe_text_by(&stderr, drained)
+        );
+        assert_eq!(
+            status.success(),
+            !stalled,
+            "stalled={stalled} {status}\n{output}"
+        );
+        if stalled {
+            assert_eq!(
+                output.matches("KELD_T1B_TERMINAL_ENTERED").count(),
+                1,
+                "{output}"
+            );
+        }
+        wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
+        // The zero count was observed first, so a stage deleted under a live family fails.
+        assert!(!process_exists(host_pid), "stage deleted under the host");
+        assert!(!process_exists(bun_pid), "stage deleted under Bun");
+        wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
+        println!(
+            "KELD_GH1188_AC19 stalled={stalled} host_pid={host_pid} bun_pid={bun_pid} sentinel_pid={cleanup_pid} stage_count=0"
+        );
+    }
+}
+
+/// The next generation's `HELLO`, before any `READY`.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+fn accept_hello(
+    listener: &TcpListener,
+    child: &mut std::process::Child,
+) -> (std::io::BufReader<std::net::TcpStream>, u32) {
+    let control = crate::support::control::accept_control_or_host_failure(
+        listener,
+        child,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    control
+        .set_read_timeout(Some(crate::startup_kill_switch()))
+        .expect("facade control read deadline");
+    let mut reader = std::io::BufReader::new(control);
+    let (pid, _) = crate::support::control::parse_hello(&read_control_line(&mut reader));
+    (reader, pid)
 }
 
 #[test]
