@@ -1,0 +1,21 @@
+{
+  "base_class_counts": {
+    "ci-tooling": 26,
+    "production-or-fixture": 117,
+    "support": 36,
+    "test": 166
+  },
+  "candidates": 345,
+  "evidence_sha256": "6b449fdcd9e0b69f8e0c50b0284359ea781f9996200df3e3496f37df409e96be",
+  "manifest_sha256": "5390f1dadb610ddfe5e34b8d6ca66aec18164c70efc68aea2c7707ff311fc5d1",
+  "not_closed": 340,
+  "pending_independent_review": 339,
+  "pinned_ref": "b9b3c10ac9054e4c4baba1b28c6026c65b38944c",
+  "review_provenance": "exact per-file Git blob and public independent-review citation",
+  "review_scope": "Windows-related tracked candidate paths only, not whole #824",
+  "reviewed_conditional_risk": 1,
+  "reviewed_no_change": 5,
+  "reviewed_total": 6,
+  "schema": "keld.windows-architecture-closeout/v2",
+  "triage_queue_sha256": "63cc445c53cf3d069b44aac6081bb27439444adc1de19a46b2556e469eb569a5"
+}
