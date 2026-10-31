@@ -8,8 +8,8 @@
 //! review duty; `.agents/specs.md` says why.
 //!
 //! Rules read the rendered page, through `mod rendered`, because a rule on source text can
-//! always be passed by a spelling that renders the same. That module owns the source, so a
-//! rule cannot reach it: the only raw facts are the sizes the caps measure.
+//! always be passed by a spelling that renders the same. That module owns the source. What
+//! a rule still gets from it is named there.
 //!
 //! Landed files that predate the standard pass only through a ratchet: the baseline
 //! records each one's over-cap values, a row must equal the measured value, must not
@@ -40,8 +40,8 @@ use std::process::{Command, Output};
 
 use git_base_contract::{BASE_ENV, BaseError, base_ref, merge_base};
 use rendered::{
-    Doc, Heading, Inline, atx_heading, folded, is_delimiter_cell, list_marker, render_text,
-    without_references,
+    Doc, Heading, Inline, MAX_INLINE_BYTES, MAX_LIST_DEPTH, atx_heading, folded, is_delimiter_cell,
+    list_marker, render_text, without_references,
 };
 
 const SPEC_ROOT: &str = "docs/specs";
@@ -104,6 +104,8 @@ const HEADER_ONLY_FIELDS: [&str; 3] = ["Tracker", "Updated", "Pin"];
 const PART_FIELDS: [&str; 2] = ["Part of", "Owns"];
 /// Marks around a field label or an ID. They change how it looks, not which one it is.
 const LABEL_MARKS: [char; 3] = ['*', '_', '`'];
+/// What GFM renders as a checkbox at the start of a list item.
+const TASK_BOXES: [&str; 3] = ["[ ]", "[x]", "[X]"];
 /// AC fields where a bare `none` states nothing. `Given: none` is a real statement.
 const CONTROL_FIELDS: [&str; 5] = [
     "Then",
@@ -126,9 +128,22 @@ const ALL_LABELS: [&[&str]; 6] = [
 ];
 /// A heading with this text marks a spec, wherever the file sits.
 const SPEC_SIGNATURE: &str = "acceptance criteria";
-/// File extensions GitHub renders as Markdown, so a spec can land under any of them.
-const MARKDOWN_EXTENSIONS: [&str; 8] = [
-    "md", "markdown", "mdown", "mdwn", "mdx", "mkd", "mkdn", "mkdown",
+/// File extensions GitHub renders as Markdown, so a spec can land under any of them: every
+/// name of the Markdown family in `github/markup` and Linguist.
+const MARKDOWN_EXTENSIONS: [&str; 13] = [
+    "litcoffee",
+    "livemd",
+    "markdown",
+    "md",
+    "mdown",
+    "mdwn",
+    "mdx",
+    "mkd",
+    "mkdn",
+    "mkdown",
+    "ronn",
+    "scd",
+    "workbook",
 ];
 /// The one header field that can stay `UNKNOWN`, as a `migrated:` slot.
 const HEADER_OWNER_SLOT: &str = "header.Owner";
@@ -483,15 +498,20 @@ const PRODUCTION: Config<'static> = Config {
 /// orders them, then each paragraph and heading renders through one inline parser, which
 /// decodes references and escapes and drops the markup that shows no text. A link
 /// definition renders nothing. Struck text is not binding, so a `Line` loses it and only
-/// `Heading::shown` keeps it. Three facts about the source stay, by name: `source_bytes`,
-/// `source_line_widths`, and `Line::column`, which sets how fields nest.
+/// `Heading::shown` keeps it.
+///
+/// Three facts about the source stay for structure: `source_bytes`, `source_line_widths`,
+/// and `Line::column`, which sets how fields nest. Markup that shows no text also stays, for
+/// the rules that check it: link targets, definition and footnote labels, fence languages,
+/// and inline tags, which a slot such as `<state>` reads as.
 mod rendered {
     use super::markdown_contract::{code_span_at, fence_marker};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::ops::Range;
 
-    /// CommonMark block-level tag names: an HTML block of these ends at a blank line.
-    const HTML_BLOCK_TAGS: [&str; 62] = [
+    /// cmark-gfm's block-level tag names, which GitHub uses: an HTML block of these ends at a
+    /// blank line. CommonMark 0.31 adds `search` and drops `source`; GitHub does neither.
+    const HTML_BLOCK_TAGS: [&str; 63] = [
         "address",
         "article",
         "aside",
@@ -542,8 +562,8 @@ mod rendered {
         "option",
         "p",
         "param",
-        "search",
         "section",
+        "source",
         "summary",
         "table",
         "tbody",
@@ -554,14 +574,24 @@ mod rendered {
         "title",
         "tr",
         "track",
+        "ul",
     ];
+    /// Nested parentheses cmark accepts in a link destination.
+    const MAX_DESTINATION_PARENS: usize = 32;
+    /// Columns that keep a line in a footnote body.
+    const FOOTNOTE_INDENT: usize = 4;
     /// HTML elements whose raw content runs across blank lines.
     const RAW_HTML_ELEMENTS: [&str; 4] = ["pre", "script", "style", "textarea"];
     /// Any of these ends such a block, whichever element opened it.
     const RAW_HTML_ENDS: [&str; 4] = ["</pre>", "</script>", "</style>", "</textarea>"];
 
-    /// List and quote nesting past this reads as text, so a line of markers stays linear.
+    /// List and quote nesting past this reads as text, so a line of markers stays linear, and
+    /// the file is refused, since a heading past it is on the page.
     pub(super) const MAX_LIST_DEPTH: usize = 32;
+    /// Inline text one block may hold. The inline parser scans ahead from each construct, so
+    /// a block past this is not parsed and its file is refused. It exceeds the byte cap, so a
+    /// spec within its caps never meets it.
+    pub(super) const MAX_INLINE_BYTES: usize = 64 * 1024;
 
     /// Every HTML5 entity whose text is ASCII, a space or a character no reader can see. A
     /// name outside this table renders as some other visible character, so it can spell no
@@ -885,6 +915,11 @@ mod rendered {
         pub(super) unclosed_fence: Option<usize>,
         /// So does a comment or raw HTML block.
         pub(super) unclosed_raw: Option<usize>,
+        /// The first line past a bound, which no rule read.
+        pub(super) unread: Option<usize>,
+        /// The first tag that continues a quote or list here and opens an HTML block on
+        /// GitHub. CommonMark and cmark-gfm disagree, so the text after it has no one reading.
+        pub(super) lazy_tag: Option<usize>,
     }
 
     impl Doc {
@@ -909,12 +944,16 @@ mod rendered {
             let unclosed_fence = lexer.fence.as_ref().map(|fence| fence.line);
             let unclosed_raw = lexer.raw.map(|raw| raw.line);
             let mut blocks = lexer.finish();
-            let (definitions, footnotes) = take_definitions(&mut blocks.paragraphs);
-            let refs: BTreeMap<&str, &str> = definitions
+            let unread = blocks.bound_inline();
+            let definitions = take_definitions(&mut blocks.paragraphs);
+            let footnotes = std::mem::take(&mut blocks.notes);
+            let links = definitions
                 .iter()
                 .rev()
                 .map(|definition| (definition.label.as_str(), definition.target.as_str()))
                 .collect();
+            let notes = footnotes.iter().map(|(_, label)| label.as_str()).collect();
+            let refs = Refs { links, notes };
             let mut headings = blocks.headings;
             for paragraph in blocks.paragraphs {
                 match paragraph.setext {
@@ -955,6 +994,8 @@ mod rendered {
                 widths,
                 unclosed_fence,
                 unclosed_raw,
+                unread,
+                lazy_tag: blocks.lazy_tag,
             }
         }
 
@@ -1084,20 +1125,24 @@ mod rendered {
     #[derive(Default)]
     struct Paragraph {
         lines: Vec<SourceLine>,
-        /// In a block quote: lazy text continues it, and it states no field.
+        /// A block quote or a footnote holds it: lazy text continues it, and it states no field.
         quoted: bool,
         setext: Option<usize>,
+        /// Its last lines opened a GFM table, which is a block of its own from there on: no
+        /// lazy line, no list that only a paragraph refuses, and code after four columns.
+        table: bool,
     }
 
     impl Paragraph {
-        /// True when an underline has text to underline: no definitions only, and no table,
-        /// which is no paragraph any more. Each such line continues the block instead.
+        /// True when an underline has text to underline: no definitions only, and no table.
+        /// Each such line continues the block instead.
         fn takes_underline(&self) -> bool {
-            let mut text = joined_lines(&self.lines);
-            while let Some((_, _, end)) = definition_at(&text) {
-                text.drain(..end);
+            let text = joined_lines(&self.lines);
+            let mut rest = text.as_str();
+            while let Some((_, _, end)) = definition_at(rest) {
+                rest = &rest[end..];
             }
-            !text.is_empty() && table_start(&self.lines).is_none()
+            !rest.is_empty() && !self.table
         }
 
         /// True when definitions took the whole paragraph: cmark keeps an underline as text
@@ -1105,7 +1150,18 @@ mod rendered {
         fn definitions_only(&self) -> bool {
             let text = joined_lines(&self.lines);
             let opens = definition_at(&text).is_some();
-            opens && !self.takes_underline() && table_start(&self.lines).is_none()
+            opens && !self.takes_underline() && !self.table
+        }
+
+        /// The most inline text one render of this block reads: a table renders each row
+        /// alone.
+        fn inline_bytes(&self) -> usize {
+            let start = table_start(&self.lines).unwrap_or(self.lines.len());
+            let (text, rows) = self.lines.split_at(start);
+            let widest = rows.iter().map(|row| row.text.len()).max();
+            let breaks = text.len().saturating_sub(1);
+            let joined: usize = text.iter().map(|line| line.text.len()).sum();
+            (joined + breaks).max(widest.unwrap_or(0))
         }
     }
 
@@ -1121,6 +1177,48 @@ mod rendered {
         paragraphs: Vec<Paragraph>,
         headings: Vec<HeadingBlock>,
         fences: Vec<CodeFence>,
+        /// Each `[^label]:` that opens a footnote, with its line.
+        notes: Vec<(usize, String)>,
+        unread: Option<usize>,
+        lazy_tag: Option<usize>,
+    }
+
+    impl Blocks {
+        /// Takes over what a block quote held.
+        fn absorb(&mut self, mut quote: Blocks) {
+            self.paragraphs.append(&mut quote.paragraphs);
+            self.headings.append(&mut quote.headings);
+            self.fences.append(&mut quote.fences);
+            self.notes.append(&mut quote.notes);
+            self.unread = earliest(self.unread, quote.unread);
+            self.lazy_tag = earliest(self.lazy_tag, quote.lazy_tag);
+        }
+
+        /// Drops each block past `MAX_INLINE_BYTES`, and returns the first line no rule reads.
+        fn bound_inline(&mut self) -> Option<usize> {
+            let mut unread = self.unread;
+            self.paragraphs.retain(|paragraph| {
+                let over = paragraph.inline_bytes() > MAX_INLINE_BYTES;
+                let line = paragraph.lines.first().map(|line| line.index);
+                unread = earliest(unread, line.filter(|_| over));
+                !over
+            });
+            self.headings.retain(|heading| {
+                let over = joined_lines(&heading.lines).len() > MAX_INLINE_BYTES;
+                let line = heading.lines.first().map(|line| line.index);
+                unread = earliest(unread, line.filter(|_| over));
+                !over
+            });
+            unread
+        }
+    }
+
+    /// The first of two lines.
+    fn earliest(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+        match (left, right) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            _ => left.or(right),
+        }
     }
 
     /// The CommonMark block structure, one line at a time: list items for their columns,
@@ -1140,6 +1238,8 @@ mod rendered {
         empty_item: bool,
         /// Block quotes around this lexer.
         depth: usize,
+        /// The entry of `items` that is the outermost open footnote.
+        note: Option<usize>,
         blocks: Blocks,
     }
 
@@ -1201,8 +1301,9 @@ mod rendered {
                     depth == self.items.len() && indent(&text) < 4 && body.starts_with('>');
                 if !inside {
                     if self.quote.as_ref().is_some_and(|quote| quote.lazy_open())
-                        && !starts_block(&text, false)
+                        && !starts_block(&text)
                     {
+                        self.note_lazy_tag(index, &text);
                         self.lazy_line(index, trim_spaces(&text));
                         return Kind::Hidden;
                     }
@@ -1210,10 +1311,12 @@ mod rendered {
                 }
             }
             if depth < self.items.len() {
-                if self.paragraph.is_some() && !starts_block(&text, false) {
+                if self.lazy_open() && !starts_block(&text) {
+                    self.note_lazy_tag(index, &text);
                     return self.paragraph_line(index, trim_spaces(&text), Origin::Lazy);
                 }
                 self.items.truncate(depth);
+                self.note = self.note.filter(|at| *at < depth);
                 self.close_paragraph();
             }
             self.leaf(index, text, base)
@@ -1224,12 +1327,14 @@ mod rendered {
             loop {
                 let column = indent(&text);
                 let body = text.trim_start_matches([' ', '\t']);
+                // A table is no paragraph: what only a paragraph refuses opens here.
+                let in_text = self.in_text();
                 if column >= 4 {
-                    return if self.paragraph.is_some() {
-                        self.paragraph_line(index, trim_spaces(body), Origin::Deep)
-                    } else {
-                        Kind::Hidden
-                    };
+                    if in_text {
+                        return self.paragraph_line(index, trim_spaces(body), Origin::Deep);
+                    }
+                    self.close_paragraph();
+                    return Kind::Hidden;
                 }
                 if let Some(level) = setext_level(body)
                     && let Some(paragraph) = &mut self.paragraph
@@ -1248,8 +1353,11 @@ mod rendered {
                     self.close_paragraph();
                     return Kind::Hidden;
                 }
-                if body.starts_with('>') && self.depth < MAX_LIST_DEPTH {
-                    return self.quote_line(index, body, base + column);
+                if body.starts_with('>') {
+                    if self.depth < MAX_LIST_DEPTH {
+                        return self.quote_line(index, body, base + column);
+                    }
+                    self.blocks.unread = earliest(self.blocks.unread, Some(index));
                 }
                 // A comment opening the line is a block, so what follows it is no heading.
                 if let Some(ends) = raw_block_ends(body) {
@@ -1267,12 +1375,12 @@ mod rendered {
                     self.close_paragraph();
                     self.blocks.headings.push(HeadingBlock {
                         level,
-                        quoted: self.depth > 0,
+                        quoted: self.quoted(),
                         lines: vec![SourceLine::plain(index, &title)],
                     });
                     return Kind::Hidden;
                 }
-                if html_block_start(body, self.paragraph.is_some()) {
+                if html_block_start(body, in_text) {
                     self.close_paragraph();
                     self.html = Some(base);
                     return Kind::Hidden;
@@ -1292,9 +1400,24 @@ mod rendered {
                     });
                     return Kind::Hidden;
                 }
-                let Some(marker) = list_marker(body, self.paragraph.is_some())
-                    .filter(|_| self.items.len() < MAX_LIST_DEPTH)
-                else {
+                let opens = footnote_at(body).is_some() || list_marker(body, in_text).is_some();
+                if opens && self.items.len() >= MAX_LIST_DEPTH {
+                    self.blocks.unread = earliest(self.blocks.unread, Some(index));
+                    return self.paragraph_line(index, trim_spaces(body), origin);
+                }
+                if let Some((label, end)) = footnote_at(body) {
+                    self.close_paragraph();
+                    self.blocks.notes.push((index, folded(label)));
+                    self.note.get_or_insert(self.items.len());
+                    base += FOOTNOTE_INDENT;
+                    self.items.push(base);
+                    text = trim_spaces(&body[end..]).to_owned();
+                    if text.is_empty() {
+                        return Kind::Hidden;
+                    }
+                    continue;
+                }
+                let Some(marker) = list_marker(body, in_text) else {
                     return self.paragraph_line(index, trim_spaces(body), origin);
                 };
                 let after = &body[marker..];
@@ -1337,8 +1460,26 @@ mod rendered {
             Kind::Hidden
         }
 
+        /// True inside a block quote or a footnote, which define nothing and state no field.
+        fn quoted(&self) -> bool {
+            self.depth > 0 || self.note.is_some()
+        }
+
+        /// True while the open block is a paragraph, and no table it became.
+        fn in_text(&self) -> bool {
+            self.paragraph.as_ref().is_some_and(|open| !open.table)
+        }
+
         fn lazy_open(&self) -> bool {
-            self.paragraph.is_some() || self.quote.as_ref().is_some_and(|quote| quote.lazy_open())
+            self.in_text() || self.quote.as_ref().is_some_and(|quote| quote.lazy_open())
+        }
+
+        /// Records a tag that is lazy text here and opens an HTML block on GitHub.
+        fn note_lazy_tag(&mut self, index: usize, text: &str) {
+            let body = text.trim_start_matches([' ', '\t']);
+            if indent(text) < 4 && html_block_start(body, false) {
+                self.blocks.lazy_tag = earliest(self.blocks.lazy_tag, Some(index));
+            }
         }
 
         fn lazy_line(&mut self, index: usize, text: &str) {
@@ -1350,7 +1491,7 @@ mod rendered {
         }
 
         fn paragraph_line(&mut self, index: usize, text: &str, origin: Origin) -> Kind {
-            let quoted = self.depth > 0;
+            let quoted = self.quoted();
             let paragraph = self.paragraph.get_or_insert_with(|| Paragraph {
                 quoted,
                 ..Paragraph::default()
@@ -1360,6 +1501,9 @@ mod rendered {
                 text: text.to_owned(),
                 origin,
             });
+            if let [.., header, delimiter] = &paragraph.lines[..] {
+                paragraph.table |= opens_table(header, delimiter);
+            }
             Kind::Hidden
         }
 
@@ -1371,10 +1515,7 @@ mod rendered {
 
         fn close_quote(&mut self) {
             if let Some(quote) = self.quote.take() {
-                let mut blocks = quote.finish();
-                self.blocks.paragraphs.append(&mut blocks.paragraphs);
-                self.blocks.headings.append(&mut blocks.headings);
-                self.blocks.fences.append(&mut blocks.fences);
+                self.blocks.absorb(quote.finish());
             }
         }
 
@@ -1385,7 +1526,7 @@ mod rendered {
                     language: fence.language,
                     body: fence.body,
                     closed,
-                    quoted: self.depth > 0,
+                    quoted: self.quoted(),
                 });
             }
         }
@@ -1448,8 +1589,9 @@ mod rendered {
         " ".repeat(column.saturating_sub(columns))
     }
 
-    /// True for a line that ends a paragraph instead of continuing it.
-    fn starts_block(text: &str, interrupts: bool) -> bool {
+    /// True for a line outside a paragraph's containers that ends the paragraph. No container
+    /// holds that paragraph here, so the rule that a list cannot interrupt one does not bind.
+    fn starts_block(text: &str) -> bool {
         let body = text.trim_start_matches([' ', '\t']);
         indent(text) < 4
             && (is_thematic(body)
@@ -1458,7 +1600,8 @@ mod rendered {
                 || raw_block_ends(body).is_some()
                 || html_block_start(body, true)
                 || fence_marker(text).is_some()
-                || list_marker(body, interrupts).is_some())
+                || footnote_at(body).is_some()
+                || list_marker(body, false).is_some())
     }
 
     /// CommonMark ATX heading: up to three spaces, one to six `#`, then a space, a tab or the
@@ -1523,6 +1666,14 @@ mod rendered {
         (spaced && can_open).then_some(width)
     }
 
+    /// The label, with its `^`, of the footnote definition opening `body`, and the offset past
+    /// its colon. A footnote body is a block container, as a list item is.
+    fn footnote_at(body: &str) -> Option<(&str, usize)> {
+        let inner = body.strip_prefix("[^")?;
+        let width = inner.find([']', ' ', '\t', '\0'])?;
+        (width > 0 && inner[width..].starts_with("]:")).then(|| (&body[1..2 + width], width + 4))
+    }
+
     /// The terminators of a block that runs to one of them, whatever lies between.
     fn raw_block_ends(body: &str) -> Option<&'static [&'static str]> {
         if body.starts_with("<!--") {
@@ -1535,7 +1686,8 @@ mod rendered {
             return Some(&["]]>"]);
         }
         let declaration = body.strip_prefix("<!");
-        if declaration.is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic())) {
+        // cmark-gfm, as GitHub: an upper-case letter opens a declaration, and `<!x` is text.
+        if declaration.is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_uppercase())) {
             return Some(&[">"]);
         }
         let tag = body.strip_prefix('<')?.to_ascii_lowercase();
@@ -1649,6 +1801,9 @@ mod rendered {
                 escaped = is_escapable(&text[offset + 1..]);
             } else if ch == '(' {
                 depth += 1;
+                if depth > MAX_DESTINATION_PARENS {
+                    return None;
+                }
             } else if ch == ')' && depth > 0 {
                 depth -= 1;
             } else if ch == ')' || ch.is_ascii_whitespace() || ch.is_ascii_control() {
@@ -1706,36 +1861,27 @@ mod rendered {
     }
 
     /// Moves each definition out of the paragraphs that open with it, as CommonMark does: it
-    /// shows nothing. A footnote line stays text, and stays a label.
-    fn take_definitions(paragraphs: &mut [Paragraph]) -> (Vec<Definition>, Vec<(usize, String)>) {
+    /// shows nothing. GitHub keeps the text of a paragraph that a table ends.
+    fn take_definitions(paragraphs: &mut [Paragraph]) -> Vec<Definition> {
         let mut definitions = Vec::new();
-        let mut footnotes = Vec::new();
-        for paragraph in paragraphs {
-            let mut text = joined_lines(&paragraph.lines);
-            loop {
-                let Some((label, target, end)) = definition_at(&text) else {
-                    break;
-                };
-                let label = folded(label);
-                let target = unescaped(target);
-                let used =
-                    text[..end].matches('\n').count() + usize::from(!text[..end].ends_with('\n'));
-                let lines: Vec<SourceLine> = paragraph.lines.drain(..used).collect();
+        for paragraph in paragraphs.iter_mut().filter(|open| !open.table) {
+            let text = joined_lines(&paragraph.lines);
+            let mut rest = text.as_str();
+            let mut used = 0;
+            while let Some((label, target, end)) = definition_at(rest) {
+                let lines = rest[..end].matches('\n').count();
+                let lines = lines + usize::from(!rest[..end].ends_with('\n'));
                 definitions.push(Definition {
-                    line: lines.first().map_or(0, |line| line.index),
-                    label,
-                    target,
+                    line: paragraph.lines[used].index,
+                    label: folded(label),
+                    target: unescaped(target),
                 });
-                text = joined_lines(&paragraph.lines);
+                used += lines;
+                rest = &rest[end..];
             }
-            for line in &paragraph.lines {
-                let note = link_label(&line.text).filter(|(label, end)| {
-                    label.starts_with('^') && line.text[*end..].starts_with(':')
-                });
-                footnotes.extend(note.map(|(label, _)| (line.index, folded(label))));
-            }
+            paragraph.lines.drain(..used);
         }
-        (definitions, footnotes)
+        definitions
     }
 
     fn joined_lines(lines: &[SourceLine]) -> String {
@@ -1786,16 +1932,21 @@ mod rendered {
     /// The first row of a table, which GFM lets end a paragraph: a row, then a delimiter row
     /// of the same width. GitHub needs no pipe in either: `a` over `:--` renders a table.
     fn table_start(lines: &[SourceLine]) -> Option<usize> {
-        lines.windows(2).position(|pair| {
-            let delimiter = split_cells(&pair[1].text);
-            !matches!(pair[1].origin, Origin::Deep | Origin::Lazy)
-                && delimiter.iter().all(|cell| is_delimiter_cell(cell))
-                && split_cells(&pair[0].text).len() == delimiter.len()
-        })
+        lines
+            .windows(2)
+            .position(|pair| opens_table(&pair[0], &pair[1]))
     }
 
-    /// Renders the lines of one paragraph, which GFM may end with a table. A deep line ends
-    /// that table as code, a lazy line ends it too, and text after either opens a paragraph.
+    /// cmark tries an underline before a table, so a lone `---` never opens one.
+    fn opens_table(header: &SourceLine, delimiter: &SourceLine) -> bool {
+        let cells = split_cells(&delimiter.text);
+        !matches!(delimiter.origin, Origin::Deep | Origin::Lazy)
+            && setext_level(&delimiter.text).is_none()
+            && cells.iter().all(|cell| is_delimiter_cell(cell))
+            && split_cells(&header.text).len() == cells.len()
+    }
+
+    /// Renders the lines of one paragraph, which GFM may end with a table.
     fn render_lines(source: &[SourceLine], quoted: bool, refs: &Refs, lines: &mut [Line]) {
         let table = table_start(source);
         let (text, rows) = source.split_at(table.unwrap_or(source.len()));
@@ -1817,9 +1968,6 @@ mod rendered {
                     .then(|| rendered_cells(&line.text, refs)),
             };
         }
-        let ends = |row: &SourceLine| matches!(row.origin, Origin::Deep | Origin::Lazy);
-        let last = rows.iter().skip(2).position(ends);
-        let (rows, rest) = rows.split_at(last.map_or(rows.len(), |at| at + 2));
         for (at, row) in rows.iter().enumerate() {
             let cells = rendered_cells(&row.text, refs);
             let mut inline = Inline::default();
@@ -1837,13 +1985,6 @@ mod rendered {
                 inline,
                 cells: Some(cells),
             };
-        }
-        let code = rest
-            .iter()
-            .take_while(|line| line.origin == Origin::Deep)
-            .count();
-        if code < rest.len() {
-            render_lines(&rest[code..], quoted, refs, lines);
         }
     }
 
@@ -1879,11 +2020,16 @@ mod rendered {
         }
     }
 
-    type Refs<'a> = BTreeMap<&'a str, &'a str>;
+    /// What the file defines, which decides whether brackets are a link or a footnote mark.
+    #[derive(Default)]
+    struct Refs<'a> {
+        links: BTreeMap<&'a str, &'a str>,
+        notes: BTreeSet<&'a str>,
+    }
 
     /// Renders one piece of text that has no line break and no link definition around it.
     pub(super) fn render_text(source: &str) -> Inline {
-        render_line(source, &Refs::new()).binding
+        render_line(source, &Refs::default()).binding
     }
 
     fn render_line(source: &str, refs: &Refs) -> Rendered {
@@ -2009,7 +2155,7 @@ mod rendered {
         }
         if text
             .strip_prefix("<!")
-            .is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic()))
+            .is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_uppercase()))
         {
             return found(2, ">");
         }
@@ -2157,6 +2303,8 @@ mod rendered {
         line: usize,
         refs: &'a Refs<'a>,
         nodes: Vec<Node>,
+        /// Index in `nodes` of each open bracket, innermost last.
+        brackets: Vec<usize>,
     }
 
     impl InlineParser<'_> {
@@ -2310,17 +2458,14 @@ mod rendered {
         }
 
         fn open_bracket(&mut self, image: bool) {
-            if let Some(NodeKind::Open { nested, .. }) = self
-                .nodes
-                .iter_mut()
-                .rev()
-                .map(|node| &mut node.kind)
-                .find(|kind| matches!(kind, NodeKind::Open { .. }))
+            if let Some(last) = self.brackets.last().copied()
+                && let NodeKind::Open { nested, .. } = &mut self.nodes[last].kind
             {
                 *nested = true;
             }
             let width = if image { 2 } else { 1 };
             let start = self.at + width;
+            self.brackets.push(self.nodes.len());
             self.push(NodeKind::Open {
                 image,
                 active: true,
@@ -2337,7 +2482,7 @@ mod rendered {
             if let Some((target, end)) = inline_tail(tail) {
                 return Some((unescaped(&target), after + end));
             }
-            let lookup = |label: &str| self.refs.get(folded(label).as_str()).copied();
+            let lookup = |label: &str| self.refs.links.get(folded(label).as_str()).copied();
             if let Some((label, end)) = tail
                 .starts_with('[')
                 .then(|| link_label(tail))
@@ -2358,11 +2503,7 @@ mod rendered {
         }
 
         fn close_bracket(&mut self) {
-            let open = self
-                .nodes
-                .iter()
-                .rposition(|node| matches!(node.kind, NodeKind::Open { .. }));
-            let Some(at) = open else {
+            let Some(at) = self.brackets.pop() else {
                 self.push(NodeKind::Text("]".to_owned()));
                 self.advance(self.at + 1);
                 return;
@@ -2380,6 +2521,13 @@ mod rendered {
                 .then(|| self.link_after(&self.source[start..self.at], nested))
                 .flatten();
             let Some((target, end)) = found else {
+                // A footnote mark shows only a number, which is no text of the line.
+                let inner = &self.source[start..self.at];
+                if !image && active && self.refs.notes.contains(folded(inner).as_str()) {
+                    self.nodes.truncate(at);
+                    self.advance(self.at + 1);
+                    return;
+                }
                 let bracket = if image { "![" } else { "[" };
                 self.nodes[at].kind = NodeKind::Text(bracket.to_owned());
                 self.push(NodeKind::Text("]".to_owned()));
@@ -2389,12 +2537,12 @@ mod rendered {
             match_runs(&mut self.nodes, at + 1);
             self.nodes[at].kind = NodeKind::Target(target);
             if !image {
-                for node in &mut self.nodes[..at] {
+                for open in &self.brackets {
                     if let NodeKind::Open {
                         image: false,
                         active,
                         ..
-                    } = &mut node.kind
+                    } = &mut self.nodes[*open].kind
                     {
                         *active = false;
                     }
@@ -2436,6 +2584,17 @@ mod rendered {
     /// CommonMark's emphasis pass over `nodes[from..]`, with GFM's strikethrough: `~` pairs
     /// only with a run of its own width. Every run left over reads as literal text.
     fn match_runs(nodes: &mut [Node], from: usize) {
+        // The node below which no opener can match a closer of each kind, so a run with no
+        // partner is searched for once.
+        let mut floors = [from; 18];
+        let kind = |run: &Run| {
+            let mark = match run.mark {
+                b'*' => 0,
+                b'_' => 1,
+                _ => 2,
+            };
+            mark * 6 + usize::from(run.can_open) * 3 + run.original % 3
+        };
         let mut closer = from;
         while closer < nodes.len() {
             let NodeKind::Run(end) = nodes[closer].kind else {
@@ -2446,7 +2605,8 @@ mod rendered {
                 closer += 1;
                 continue;
             }
-            let opener = (from..closer).rev().find(|at| {
+            let floor = kind(&end);
+            let opener = (floors[floor]..closer).rev().find(|at| {
                 let NodeKind::Run(open) = nodes[*at].kind else {
                     return false;
                 };
@@ -2463,6 +2623,7 @@ mod rendered {
                     }
             });
             let Some(opener) = opener else {
+                floors[floor] = closer;
                 if !end.can_open
                     && let NodeKind::Run(run) = &mut nodes[closer].kind
                 {
@@ -2510,6 +2671,7 @@ mod rendered {
             line: 0,
             refs,
             nodes: Vec::new(),
+            brackets: Vec::new(),
         };
         parser.parse();
         let mut lines = vec![Rendered::default(); source.matches('\n').count() + 1];
@@ -2606,7 +2768,7 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
     if lower == "unknown" || label_tail.is_some_and(|tail| !tail.starts_with(char::is_alphanumeric))
     {
         Some(NonValue::Unknown)
-    } else if (wrapped.starts_with('<') && wrapped.ends_with('>') && !wrapped.contains("://"))
+    } else if (wrapped.starts_with('<') && wrapped.ends_with('>') && !is_autolink(wrapped))
         || !bare.contains(char::is_alphanumeric)
         || labelled
         || (control && lower == "none")
@@ -2615,6 +2777,11 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
     } else {
         None
     }
+}
+
+/// `<scheme://x>`. A tag such as `<a href="https://x">` shows no text, and holds a space.
+fn is_autolink(text: &str) -> bool {
+    text.contains("://") && !text.contains(char::is_whitespace)
 }
 
 /// How far a line may differ from a label in case. Marks and spacing never make a second
@@ -2641,13 +2808,18 @@ impl Spelling {
     }
 }
 
-/// `text` from its first word, past every list marker, so `- - x` reads as `- x` does.
+/// `text` from its first word, past every list marker, so `- - x` reads as `- x` does, and
+/// past a task box, which shows a checkbox.
 fn without_list_markers(text: &str) -> &str {
     let mut text = text.trim_start();
     while let Some(marker) = list_marker(text, false) {
         text = text[marker..].trim_start();
     }
-    text
+    TASK_BOXES
+        .iter()
+        .find_map(|task_box| text.strip_prefix(task_box))
+        .filter(|rest| rest.starts_with([' ', '\t']))
+        .map_or(text, str::trim_start)
 }
 
 /// A label as a reader compares it. Marks and spacing never make a second label.
@@ -2825,7 +2997,8 @@ fn parse_id(text: &str) -> Option<(&'static str, u32, usize)> {
     KINDS.iter().find_map(|(kind, _)| {
         let digits = text.strip_prefix(kind)?.strip_prefix('-')?;
         let width = digits.bytes().take_while(u8::is_ascii_digit).count();
-        let number = digits.get(..width)?.parse().ok()?;
+        // Too long to be a number is still an ID, so its fields are read.
+        let number = digits.get(..width)?.parse().unwrap_or(u32::MAX);
         let end = kind.len() + 1 + width;
         let next = text.as_bytes().get(end).copied();
         (width > 0 && !next.is_some_and(|byte| is_word_byte(byte) || byte == b'-'))
@@ -3693,6 +3866,31 @@ fn check_definitions(
     defined
 }
 
+/// Text the rendered view could not read as GitHub does: a lazy tag, or a block past a bound.
+fn check_unread(doc: &Doc, report: &mut Report) {
+    if let Some(index) = doc.lazy_tag {
+        report.add(
+            Rule::Comment,
+            &doc.rel,
+            index + 1,
+            "this tag right after a quote or list opens an HTML block on GitHub, which hides \
+             the lines after it. Put a blank line before it"
+                .to_owned(),
+        );
+    }
+    if let Some(index) = doc.unread {
+        report.add(Rule::Unreadable, &doc.rel, index + 1, past_bound());
+    }
+}
+
+/// Why a rule cannot read a block past a bound of the rendered view.
+fn past_bound() -> String {
+    format!(
+        "this block nests past {MAX_LIST_DEPTH} levels or holds over {MAX_INLINE_BYTES} bytes of \
+         text, so no rule reads it. Split it"
+    )
+}
+
 /// A definition inside a fence, or a block that never closes, escapes every ID rule.
 fn check_fences(docs: &[&Doc], report: &mut Report) {
     for doc in docs {
@@ -3714,6 +3912,7 @@ fn check_fences(docs: &[&Doc], report: &mut Report) {
                     .to_owned(),
             );
         }
+        check_unread(doc, report);
         for (index, line) in doc.lines().iter().enumerate() {
             let defines = line
                 .code()
@@ -4598,6 +4797,8 @@ fn check_directory(
 /// standard. A comment, an HTML block, a quote or indented code shows no copy source.
 fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
     let doc = read_doc(root, TEMPLATE)?;
+    // GitHub may hide a fence this view reads, so the template has no such text.
+    check_unread(&doc, report);
     let copies: Vec<_> = doc
         .fences()
         .iter()
@@ -4731,7 +4932,11 @@ fn check_outside(root: &Path, sealed: &BTreeSet<String>, tracked: &[Tracked], re
             );
             continue;
         };
-        if let Some((index, title)) = spec_mark(&Doc::parse(rel, &raw)) {
+        let doc = Doc::parse(rel, &raw);
+        if let Some(index) = doc.unread {
+            report.add(Rule::Unreadable, rel, index + 1, past_bound());
+        }
+        if let Some((index, title)) = spec_mark(&doc) {
             report.add(
                 Rule::Outside,
                 rel,

@@ -4,7 +4,7 @@
 //! mutant must trip exactly the rule it names: if a second rule also fired, deleting
 //! the first rule could leave the fixture red and hide that deletion.
 
-use super::rendered::{MAX_LIST_DEPTH, is_thematic, split_cells};
+use super::rendered::{MAX_INLINE_BYTES, MAX_LIST_DEPTH, is_thematic, split_cells};
 use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1327,9 +1327,90 @@ fn mutants() -> Vec<Mutant> {
             apply: |f| f.replace(SINGLE, "none\n\n## 5.", "- <!--\nAC-99\n-->\n\n## 5."),
         },
         Mutant {
-            rule: Rule::IdDangling,
-            label: "a lazy line after a quote opens no HTML block",
-            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "> a\n<span>\nAC-99\n\n## 5."),
+            rule: Rule::Comment,
+            label: "a lazy tag after a quote opens an HTML block on GitHub",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "> a\n<span>\nx\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::Comment,
+            label: "a lazy tag after a list item opens an HTML block on GitHub",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "- a\n<img src=\"x.png\">\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::Unreadable,
+            label: "a quote nested past the depth cap",
+            apply: |f| {
+                let deep = format!("{} x\n\n## 5.", ">".repeat(MAX_LIST_DEPTH + 1));
+                f.replace(SINGLE, "none\n\n## 5.", &deep);
+            },
+        },
+        Mutant {
+            rule: Rule::Unreadable,
+            label: "a list nested past the depth cap",
+            apply: |f| {
+                let deep = format!("{}x\n\n## 5.", "- ".repeat(MAX_LIST_DEPTH + 1));
+                f.replace(SINGLE, "none\n\n## 5.", &deep);
+            },
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a footnote body holds the spec heading",
+            apply: |f| f.track("notes/x.md", b"x[^1]\n\n[^1]: ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an indented footnote paragraph holds the spec heading",
+            apply: |f| {
+                let text = b"x[^1]\n\n[^1]: a\n\n    ## Acceptance criteria\n";
+                f.track("notes/x.md", text);
+            },
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a list after a table holds the spec heading",
+            apply: |f| f.track("notes/x.md", b"a|b\n-|-\n2) ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a Literate CoffeeScript file is Markdown",
+            apply: |f| f.track("notes/x.litcoffee", b"## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a Linguist Markdown extension is Markdown",
+            apply: |f| f.track("notes/x.scd", b"## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a task box restates the pin",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "- [ ] Pin: x\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a footnote mark restates the pin",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "none\n\n## 5.",
+                    "[^1] Pin: x\n\n[^1]: a note\n\n## 5.",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a link tag with a URL shows no value",
+            apply: |f| {
+                let value = "- **Then:** <a href=\"https://x.example\"></a>\n";
+                f.replace(SINGLE, "- **Then:** a result\n", value);
+            },
+        },
+        Mutant {
+            rule: Rule::TaskFields,
+            label: "an ID too long for a number still needs its fields",
+            apply: |f| {
+                let more = "- **Blocked by:** none\n\n### T-99999999999: more\n\n";
+                f.replace(SINGLE, "- **Blocked by:** none\n\n", more);
+            },
         },
         Mutant {
             rule: Rule::AcFields,
@@ -3437,6 +3518,35 @@ fn the_lexer_follows_commonmark_blocks() {
         "no underline reaches a quote"
     );
     assert_eq!(heading_levels("> - a\n<span>\n## b\n"), one(2, "b"));
+    assert_eq!(
+        doc("> a\n<span>\nAC-99\n").lazy_tag,
+        Some(1),
+        "GitHub opens a block"
+    );
+    assert_eq!(
+        shown_lines("> a\n<span>\nAC-99\n")[2].as_deref(),
+        Some("AC-99")
+    );
+    assert_eq!(
+        doc("- a\n<b>x</b>\n").lazy_tag,
+        None,
+        "a tag with text is no block"
+    );
+    assert_eq!(
+        doc("a\n<span>\n").lazy_tag,
+        None,
+        "inside its paragraph it is inline"
+    );
+    assert_eq!(
+        doc("> a\n\n<span>\n").lazy_tag,
+        None,
+        "a blank line ends the quote"
+    );
+    assert_eq!(
+        doc("> > a\n> <span>\n").lazy_tag,
+        Some(1),
+        "a nested quote's lazy tag"
+    );
     assert_eq!(heading_levels("## a"), one(2, "a"));
     assert_eq!(heading_levels(" ## a"), one(2, "a"));
     assert_eq!(heading_levels("  ## a"), one(2, "a"));
@@ -5001,4 +5111,249 @@ fn a_citation_is_read_from_every_rendered_span() {
         let report = fixture.run();
         assert!(report.findings.is_empty(), "{span}: {:?}", report.findings);
     }
+}
+
+/// GitHub's renderer, by `POST /markdown` on 2026-10-31: a table is a block of its own, so
+/// what only a paragraph refuses opens after it.
+#[test]
+fn a_table_ends_where_github_ends_it() {
+    let titles = |text: &str| -> Vec<String> {
+        let doc = Doc::parse("x.md", text);
+        doc.headings().iter().map(|h| h.text().to_owned()).collect()
+    };
+    assert_eq!(titles("a|b\n-|-\n2) ## c\n"), ["c"], "a list opens");
+    assert!(
+        titles("a|b\n-|-\n<x>\n## c\n").is_empty(),
+        "an HTML block opens"
+    );
+    assert_eq!(
+        shown_lines("- |a|\n  |-|\nb\n2) c\n")[2..],
+        [Some("b".to_owned()), Some("2) c".to_owned())],
+        "no lazy row: a paragraph opens, which `2)` continues"
+    );
+    assert_eq!(
+        shown_lines("| a |\n|-|\n    b\nThen: x\n")[2..],
+        [None, Some("Then: x".to_owned())],
+        "four columns are code, and a paragraph follows"
+    );
+    assert_eq!(
+        shown_lines("[a]: b\n| x |\n|---|\n")[0].as_deref(),
+        Some("[a]: b"),
+        "a paragraph a table ends keeps its text"
+    );
+    assert_eq!(label_of("[a]: b\n| x |\n|---|\n"), None);
+    assert_eq!(
+        titles("[a]: b\n---\n---\n"),
+        ["---"],
+        "a lone `---` opens no table"
+    );
+    // Each table here ended a paragraph by recursion, which overflowed the stack.
+    let doc = Doc::parse("x.md", &"|a|\n|-|\n    b\n".repeat(20_000));
+    assert_eq!(doc.unread, None);
+}
+
+/// A footnote body is a container on GitHub, and its mark shows only a number.
+#[test]
+fn a_footnote_body_is_a_container() {
+    let quoted = |text: &str| -> Vec<String> {
+        let doc = Doc::parse("x.md", text);
+        assert!(doc.headings().is_empty(), "{text}");
+        doc.quoted_headings()
+            .iter()
+            .map(|h| h.text().to_owned())
+            .collect()
+    };
+    assert_eq!(quoted("x[^1]\n\n[^1]: ## a\n"), ["a"]);
+    assert_eq!(quoted("x[^1]\n\n[^1]: b\n\n    ## a\n"), ["a"]);
+    assert_eq!(quoted("x[^1]\n\n[^1]:\n    ## a\n"), ["a"]);
+    assert_eq!(quoted("> [^1]: ## a\n"), ["a"]);
+    assert_eq!(
+        quoted("> b\n[^1]: ## a\n"),
+        ["a"],
+        "a footnote is no lazy line"
+    );
+    let doc = Doc::parse("x.md", "[^1]: Then: x\n");
+    assert!(doc.line(0).field().is_none(), "a footnote states no field");
+    let after = Doc::parse("x.md", "[^1]: a\n\nThen: x\n");
+    assert!(
+        after.line(2).field().is_some(),
+        "text after the footnote states one"
+    );
+    assert_eq!(shown(&doc, 0).as_deref(), Some("Then: x"));
+    assert_eq!(label_of("[^1]: x\n"), Some("^1".to_owned()));
+    let fenced = Doc::parse("x.md", "[^1]: x\n\n    ```markdown\n    a\n    ```\n");
+    assert!(fenced.fences()[0].quoted, "no copy source");
+    assert_eq!(
+        shown_lines("Then[^1]: x\n\n[^1]: a\n")[0].as_deref(),
+        Some("Then: x"),
+        "a defined mark shows no text"
+    );
+    assert_eq!(
+        shown_lines("Then[^1]: x\n")[0].as_deref(),
+        Some("Then[^1]: x"),
+        "an undefined mark is literal"
+    );
+    assert_eq!(
+        shown_lines("b\n[^1]: a\nc\n"),
+        [
+            Some("b".to_owned()),
+            Some("a".to_owned()),
+            Some("c".to_owned())
+        ],
+        "a footnote interrupts a paragraph, and lazy text continues its own"
+    );
+}
+
+/// A task box shows a checkbox, so the label after it is still the label.
+#[test]
+fn a_task_box_keeps_its_label() {
+    for line in [
+        "- [ ] Then: x",
+        "- [x] Then: x",
+        "1. [X] Then: x",
+        "- [ ]\tThen: x",
+    ] {
+        assert_eq!(
+            value_of(line, "Then", Spelling::Exact).as_deref(),
+            Some("x"),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        value_of("- [ ]Then: x", "Then", Spelling::Exact),
+        None,
+        "no box"
+    );
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "- **Then:** a result", "- [ ] **Then:** a result");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// A bound of the rendered view refuses the file, so nothing past it passes unread.
+#[test]
+fn past_a_bound_nothing_passes_unread() {
+    let unread = |text: &str| Doc::parse("x.md", text).unread;
+    assert_eq!(
+        unread(&format!("a\n\n{}\n", "]".repeat(MAX_INLINE_BYTES + 1))),
+        Some(2)
+    );
+    assert_eq!(unread(&format!("{}\n", "]".repeat(MAX_INLINE_BYTES))), None);
+    assert_eq!(
+        unread(&format!("# {}\n", "]".repeat(MAX_INLINE_BYTES + 1))),
+        Some(0)
+    );
+    assert_eq!(
+        unread(&format!("{} x\n", ">".repeat(MAX_LIST_DEPTH + 1))),
+        Some(0)
+    );
+    assert_eq!(unread(&format!("{} x\n", ">".repeat(MAX_LIST_DEPTH))), None);
+    assert_eq!(
+        unread(&format!("{}x\n", "- ".repeat(MAX_LIST_DEPTH + 1))),
+        Some(0)
+    );
+    assert_eq!(unread(&format!("{}x\n", "- ".repeat(MAX_LIST_DEPTH))), None);
+    assert!(
+        MAX_INLINE_BYTES > MAX_BYTES,
+        "a spec within its caps never meets the bound"
+    );
+    let mut fixture = Fixture::new();
+    let deep = format!(
+        "{} ## Acceptance criteria\n",
+        ">".repeat(MAX_LIST_DEPTH + 1)
+    );
+    fixture.track("notes/x.md", deep.as_bytes());
+    assert_only(
+        &fixture,
+        Rule::Unreadable,
+        "an off-root file past the bound",
+    );
+    for note in ["- a\n<img src=\"x.png\">\n", "> a\n<br>\n"] {
+        let mut fixture = Fixture::new();
+        fixture.track("notes/x.md", note.as_bytes());
+        assert!(
+            fixture.rules().is_empty(),
+            "a lazy tag is fine off-root: {note}"
+        );
+    }
+    // These ran in time quadratic in the block; each now ends well inside the test timeout.
+    for unit in ["]", "[] ", "a* ", "[a](("] {
+        let text = unit.repeat(MAX_INLINE_BYTES / unit.len());
+        assert_eq!(unread(&text), None, "{unit}");
+    }
+}
+
+/// cmark reads at most 32 nested parentheses in a link destination.
+#[test]
+fn a_destination_nests_as_deep_as_cmark_reads() {
+    let link = |depth: usize| format!("[a]({}b{})\n", "(".repeat(depth), ")".repeat(depth));
+    let inner = |depth: usize| format!("{}b{}", "(".repeat(depth), ")".repeat(depth));
+    assert_eq!(targets_of(&link(32)), [inner(32)]);
+    assert!(targets_of(&link(33)).is_empty());
+}
+
+/// GitHub's block tags, by `POST /markdown` on 2026-10-31: `ul` and `source` end a paragraph
+/// and hide the heading after them, and `search` does neither.
+#[test]
+fn block_tags_are_github_tags() {
+    let titles = |text: &str| -> Vec<String> {
+        let doc = Doc::parse("x.md", text);
+        doc.headings().iter().map(|h| h.text().to_owned()).collect()
+    };
+    assert!(titles("a\n<ul>\n## b\n").is_empty());
+    assert!(titles("a\n<source>\n## b\n").is_empty());
+    assert_eq!(titles("a\n<search>\n## b\n"), ["b"]);
+    assert_eq!(
+        titles("<!x\n\n## b\n\n>\n"),
+        ["b"],
+        "a lower-case declaration is text"
+    );
+    assert!(titles("<!X\n\n## b\n\n>\n").is_empty());
+    assert_eq!(render_text("a <!x y> b").text, "a <!x y> b");
+    assert_eq!(render_text("a <!X y> b").text, "a  b");
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "## 9. Perf impact", "x\n<ul>\n## 9. Perf impact");
+    assert_only(&fixture, Rule::Sections, "a section a block tag hides");
+    let mut fixture = Fixture::new();
+    fixture.track("notes/x.md", b"<!x\n\n## Acceptance criteria\n\n>\n");
+    assert_only(
+        &fixture,
+        Rule::Outside,
+        "a lower-case declaration hides nothing",
+    );
+}
+
+/// GitHub opens an HTML block at the lazy tag and hides the copy source after it.
+#[test]
+fn a_lazy_tag_hides_the_copy_source() {
+    let copy = single_spec();
+    for (template, rule) in [
+        (
+            format!("- a\n<span>\n```markdown\n{copy}```\n"),
+            Rule::Comment,
+        ),
+        (
+            format!("> a\n<span>\n```markdown\n{copy}```\n"),
+            Rule::Comment,
+        ),
+        (
+            format!(
+                "{} x\n\n```markdown\n{copy}```\n",
+                ">".repeat(MAX_LIST_DEPTH + 1)
+            ),
+            Rule::Unreadable,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(TEMPLATE, &format!("# Template\n\n{template}"));
+        assert_only(&fixture, rule, &template);
+    }
+}
+
+/// A tag with an attribute holds a space, and an autolink never does.
+#[test]
+fn only_an_autolink_is_a_value_in_angle_brackets() {
+    for tag in ["<a href=\"https://x\">", "<img src=\"https://x/a.png\">"] {
+        assert_eq!(non_value(tag, false), Some(NonValue::Placeholder), "{tag}");
+    }
+    assert_eq!(non_value("<https://x/y>", false), None);
 }
