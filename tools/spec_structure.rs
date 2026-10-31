@@ -1840,11 +1840,12 @@ mod rendered {
         is_blank(&text[at..end]).then(|| (end + 1).min(text.len()))
     }
 
-    /// One `[label]: target` opening `text`: label, raw target, and the offset past it. A
-    /// footnote and prose make none.
+    /// One `[label]: target` opening `text`: label, raw target, and the offset past it. Prose
+    /// makes none. A footnote opened its block before any paragraph, so a `[^a b]:` here,
+    /// which opens no footnote, is a definition on GitHub.
     fn definition_at(text: &str) -> Option<(&str, &str, usize)> {
         let (label, end) = link_label(text)?;
-        if label.starts_with('^') || label.trim().is_empty() || !text[end..].starts_with(':') {
+        if label.trim().is_empty() || !text[end..].starts_with(':') {
             return None;
         }
         let start = after_gap(text, end + 1);
