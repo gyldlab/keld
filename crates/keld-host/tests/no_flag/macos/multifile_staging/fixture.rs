@@ -25,14 +25,20 @@ pub(super) fn project(name: &str) -> ProductFixture {
     fixture
 }
 
-pub(super) fn renderer(fixture: &ProductFixture, port: u16) {
+pub(super) fn renderer(fixture: &ProductFixture, ports: [u16; 4]) {
     let source = include_str!("../../../fixtures/multifile_staging/renderer.html");
-    assert_eq!(source.matches("__GH1037_PORT__").count(), 1);
-    fs::write(
-        fixture.project.join("index.html"),
-        source.replace("__GH1037_PORT__", &port.to_string()),
-    )
-    .expect("renderer with relative assets and independent inline controls");
+    let mut source = source.to_owned();
+    for (placeholder, port) in [
+        ("__GH1037_PARSE_PORT__", ports[0]),
+        ("__GH1037_SCRIPT_PORT__", ports[1]),
+        ("__GH1037_LOAD_PORT__", ports[2]),
+        ("__GH1037_ERROR_PORT__", ports[3]),
+    ] {
+        assert_eq!(source.matches(placeholder).count(), 1);
+        source = source.replace(placeholder, &port.to_string());
+    }
+    fs::write(fixture.project.join("index.html"), source)
+        .expect("renderer with relative assets and independent inline controls");
 }
 
 pub(super) fn assert_original_inputs_exist(fixture: &ProductFixture) {

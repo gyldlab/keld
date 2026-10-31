@@ -12,46 +12,48 @@
 <body>
   <p id="relative-probe">Relative stylesheet observation</p>
   <p id="inline-control">Inline stylesheet control</p>
+  <img alt="HTML parse calibration" src="http://127.0.0.1:__GH1037_PARSE_PORT__/GH1037_PARSE">
   <script>
     "use strict";
-    function loaded(element, assign) {
-      return new Promise((resolve) => {
-        element.addEventListener("load", () => resolve("load"), { once: true });
-        element.addEventListener("error", () => resolve("error"), { once: true });
-        assign();
-      });
+    const state = { css: "pending", image: "pending", control: "pending" };
+    const sheet = document.createElement("link");
+    const relative = document.createElement("img");
+    const control = document.createElement("img");
+    function report(port, path) {
+      const image = document.createElement("img");
+      image.alt = path;
+      image.src = "http://127.0.0.1:" + port + "/" + path;
+      document.body.append(image);
     }
-    async function observe() {
-      const sheet = document.createElement("link");
-      sheet.rel = "stylesheet";
-      const css = loaded(sheet, () => {
-        sheet.href = "./relative.css";
-        document.head.append(sheet);
-      });
-      const relative = document.createElement("img");
-      const image = loaded(relative, () => {
-        relative.src = "./relative.svg";
-        document.body.append(relative);
-      });
-      const control = document.createElement("img");
-      const positive = loaded(control, () => {
-        control.src = "data:image/svg+xml," + encodeURIComponent(
-          '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="5"></svg>');
-        document.body.append(control);
-      });
-      const [cssState, imageState, controlState] = await Promise.all([css, image, positive]);
-      const color = (id) => getComputedStyle(document.getElementById(id)).color.match(/\d+/g).join("-");
-      const values = [
-        cssState, imageState, relative.naturalWidth, color("relative-probe"),
-        controlState, control.naturalWidth, color("inline-control"),
+    const color = (id) => getComputedStyle(document.getElementById(id)).color.match(/\d+/g).join("-");
+    function snapshot() {
+      return [
+        state.css, state.image, relative.naturalWidth, color("relative-probe"),
+        state.control, control.naturalWidth, color("inline-control"),
         encodeURIComponent(document.baseURI)
-      ];
-      const report = document.createElement("img");
-      report.alt = "GH1037 observed asset values: " + values.join("/");
-      report.src = "http://127.0.0.1:__GH1037_PORT__/GH1037_ASSETS/" + values.join("/");
-      document.body.append(report);
+      ].join("/");
     }
-    void observe();
+    sheet.addEventListener("load", () => { state.css = "load"; }, { once: true });
+    sheet.addEventListener("error", () => { state.css = "error"; }, { once: true });
+    relative.addEventListener("load", () => { state.image = "load"; }, { once: true });
+    relative.addEventListener("error", () => { state.image = "error"; }, { once: true });
+    control.addEventListener("load", () => { state.control = "load"; }, { once: true });
+    control.addEventListener("error", () => { state.control = "error"; }, { once: true });
+    window.addEventListener("load", () => {
+      report(__GH1037_LOAD_PORT__, "GH1037_ASSETS/" + snapshot());
+    }, { once: true });
+    window.addEventListener("error", (event) => {
+      report(__GH1037_ERROR_PORT__, "GH1037_SCRIPT_ERROR/" + encodeURIComponent(event.message));
+    }, { once: true });
+    report(__GH1037_SCRIPT_PORT__, "GH1037_SCRIPT");
+    sheet.rel = "stylesheet";
+    sheet.href = "./relative.css";
+    document.head.append(sheet);
+    relative.src = "./relative.svg";
+    document.body.append(relative);
+    control.src = "data:image/svg+xml," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="5"></svg>');
+    document.body.append(control);
   </script>
 </body>
 </html>
