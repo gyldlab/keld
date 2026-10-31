@@ -972,6 +972,8 @@ flowchart LR
         let root = create_fixture_root("keld-mermaid-route", nonce, &NEXT_FIXTURE)
             .expect("create route fixture");
         git_fixture(&root, &["init", "--quiet"]);
+        // No detached `git maintenance` child may race fixture cleanup (#670).
+        git_fixture(&root, &["config", "maintenance.auto", "false"]);
         git_fixture(&root, &["config", "user.name", "Mermaid route test"]);
         git_fixture(
             &root,
@@ -1148,12 +1150,9 @@ flowchart LR
             "```mermaid\narchitecture-beta\n```\n",
         )
         .expect("write ignored skill Markdown");
-        let init = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .expect("run git init");
-        assert!(init.success(), "git init must succeed");
+        git_fixture(&root, &["init", "--quiet"]);
+        // No detached `git maintenance` child may race fixture cleanup (#670).
+        git_fixture(&root, &["config", "maintenance.auto", "false"]);
         let add = Command::new("git")
             .args(["add", "README.md", "docs/architecture.md"])
             .current_dir(&root)

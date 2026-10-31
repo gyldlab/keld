@@ -18,15 +18,64 @@ and `bun --revision` for Bun-dependent behavior. Remove secrets and private path
 anything you publish. Report security vulnerabilities through
 [SECURITY.md](SECURITY.md).
 
-Comment on the public issue before a substantial change so a maintainer can confirm
-scope and avoid overlapping work. For a feature or architecture change, agree on its
-contract and acceptance criteria before implementation. Maintainers publish the
-relevant decision on GitHub and handle internal planning links.
+For a feature or architecture change, agree on its contract and acceptance criteria
+before implementation. Maintainers publish the relevant decision on GitHub and
+handle internal planning links.
 
 Documentation corrections, independent demo reports, and small regression fixes are
 valuable. The [product-status ledger](docs/engineering/product-status.md) distinguishes
 working slices from planned work; [public project planning](https://github.com/gyldlab/keld/issues/167)
 records the current foundation priorities.
+
+## Claim an issue before editing
+
+Before editing for an existing public issue, post a **Public work claim** on that
+issue, including for a small fix or when using a coding agent. Read the issue,
+comments, assignee and linked PRs first. Reading, investigating and discussing do
+not need a claim. After posting, refresh the issue, comments, assignee and linked
+PRs before editing; if another claim or overlapping work appeared, use the
+coordination outcomes below. A direct typo or similarly small documentation PR without an
+existing issue may proceed without creating an issue or claim; explain its scope
+in the PR. Do not create retrospective claims for work already submitted.
+
+Post through your GitHub account. An agent may post only through its contributor's
+authorized account; without posting authorization or access, it must give the
+contributor the comment to post and wait before editing. Agent assistance may be
+disclosed but is optional. Use this example, replacing the example issue, scope
+and paths; omit the branch/PR line until one exists:
+
+```text
+## Public work claim
+- Contributor: @your-github-handle
+- Issue: #123
+- Scope: clarify the quick-start prerequisites
+- Expected files: docs/onboarding/README.md
+- Branch/PR: https://github.com/your-github-handle/keld/tree/docs-prerequisites
+```
+
+Include only public information: no device hostname, credentials, private Linear
+records or security-sensitive paths. A claim records intent, not an exclusive lock,
+assignment, repository/CI permission or maintainer authorization. Maintainer-authorized
+agents still follow the [internal claim process](docs/agents/workflow.md#agent-claim-mandatory-before-any-edit).
+
+Use these outcomes to coordinate work:
+
+| Issue state | Next action |
+| --- | --- |
+| Open, unassigned, no active claim or overlapping PR | Post your claim, then start within the published scope. A feature or architecture change still needs the agreement described above. |
+| Another active public claim or overlapping PR | Comment with your proposed scope and ask the contributor and a maintainer to split the work or choose a lead. Wait before overlapping edits; a second claim cannot displace the first. |
+| Assigned or explicitly reserved by a maintainer, including an internal agent claim | Ask a maintainer on the public issue for a separate scope or handoff before editing. A public claim cannot override that decision. |
+| Multiple interested contributors | A maintainer acknowledges a lead or distinct scopes in a public comment and may assign the issue. Comment order alone does not select a winner. Until that decision, pause overlapping edits. |
+| At least 14 calendar days since the claimant's latest public progress/blocker update (or initial claim) | The public intent claim is inactive. Post a fresh claim; if the issue is unassigned with no overlapping open PR, work may start. An assignment, maintainer reservation or open PR still needs a maintainer handoff. |
+| Withdrawn claim or closed, unmerged PR | Post that you are stopping and link useful work; this ends your intent claim. A new contributor may claim an open issue, subject to any remaining assignment, reservation or overlapping PR. Ask a maintainer to clear an obsolete assignment. |
+| Completed work | Link the merged PR and say whether scope remains. A closed issue needs a maintainer to reopen it or identify a follow-up before new implementation. Remaining work on an open issue may be claimed under the rules above. |
+
+While working, post a public progress/blocker update before the inactivity
+threshold above; link your PR when available. For a handoff, name the remaining
+scope and link the branch/PR, then have the next contributor post their own claim.
+Maintainers record changed assignments or scope decisions publicly. If coordination
+stalls, choose another unclaimed issue or ask a [maintainer](MAINTAINERS.md) to resolve
+it; silence is not approval to overlap reserved work.
 
 ## Build, change, and submit
 

@@ -85,6 +85,43 @@ const PRODUCT_TITLE: &str = "KEL96 T4 Windows Fixture";
 const PRODUCT_DEADLINE: Duration = Duration::from_secs(20);
 const RENDERER_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const CONTROL_LINE_LIMIT: usize = 4096;
+
+/// Kill switch over a host exit that includes a `WebView2` UI end (after `Quit` or a
+/// host-fatal Bun exit), never a synchronization wait. The `WebView2` teardown is
+/// bounded by its one owner, `keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND`: the UI end
+/// plus, on a dev host, the post-release scavenge probe of a stale ephemeral leaf
+/// that an earlier (for example killed) dev host left in the shared `LocalAppData`.
+/// `PRODUCT_DEADLINE` covers the rest of the exit. A healthy UI end is not bounded by
+/// `PRODUCT_DEADLINE`; the owner's documentation records the measured healthy
+/// releases that exceed it.
+/// `profiles::handover::kill_switches_stay_below_the_nextest_terminate` pins this
+/// switch below the binary's nextest per-test terminate.
+fn ui_end_kill_switch() -> Duration {
+    keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND + PRODUCT_DEADLINE
+}
+
+/// Kill switch over a wait that includes a `WebView2` startup (a session's `Ready`
+/// after its Bun generation is bound, or a renderer request made by the initial
+/// navigation), never a synchronization wait. The host builds its engine only after
+/// Bun binds, so the startup is bounded by its one owner,
+/// `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND`; `PRODUCT_DEADLINE` covers the rest
+/// of the wait (the Ready event's delivery and Bun's control record). A healthy
+/// startup is not bounded by `PRODUCT_DEADLINE`: its launch and navigation deadlines
+/// alone sum past it.
+fn startup_kill_switch() -> Duration {
+    keld_wv::webview2::WEBVIEW2_STARTUP_BOUND + PRODUCT_DEADLINE
+}
+
+/// Kill switch over a host exit after a held initial navigation, measured from the
+/// renderer's first connection. That connection proves the launch phases of
+/// `WEBVIEW2_STARTUP_BOUND` are done, so what remains is the initial-navigation
+/// deadline (`keld_wv::INITIAL_MILESTONE_DEADLINE`) and then the UI end
+/// ([`ui_end_kill_switch`]); the latter's `PRODUCT_DEADLINE` also covers the
+/// untimed tail before that deadline is armed, as in [`startup_kill_switch`].
+fn stalled_navigation_end_kill_switch() -> Duration {
+    keld_wv::INITIAL_MILESTONE_DEADLINE + ui_end_kill_switch()
+}
+
 #[test]
 fn keld_dev_windows_helper() {
     let Some(project) = std::env::var_os("KELD_T4_HELPER_PROJECT") else {

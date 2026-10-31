@@ -375,3 +375,83 @@ fn platforms_admission_lists_undeclared_cells_as_unknown() {
         Err(CorpusError::CaseNotAdmitted { .. })
     ));
 }
+
+/// GH-1158: a skipped mapped test must not borrow a different describe group's pass.
+/// These are the real Bun 1.4.2 status prefixes and hierarchy separators.
+#[test]
+fn bun_admission_refuses_skipped_leaf_with_passing_decoy() {
+    let corpus = accepted(&manifest());
+    let corpora = [&corpus];
+    let skip_and_decoy = concat!(
+        "(skip) intended > app.exit_case\n",
+        "(pass) decoy > app.exit_case [1.00ms]\n",
+        "(pass) app > app.name_case [1.00ms]\n",
+    );
+    let result = check_admission(
+        &corpora,
+        Platform::Windows,
+        RunnerKind::Bun,
+        &[output(BUN_PATH, skip_and_decoy.to_owned())],
+    );
+    assert!(
+        matches!(&result, Err(CorpusError::CaseNotAdmitted { test_name, .. }) if test_name == "app.exit_case"),
+        "the intended skipped case must not be admitted by a passing decoy: {result:?}"
+    );
+}
+
+/// GH-1158: one actual mapped pass is accepted despite an unrelated skip; a
+/// failed mapped record or a second pass for that leaf makes admission ambiguous.
+#[test]
+fn bun_admission_requires_one_unambiguous_pass_record() {
+    let corpus = accepted(&manifest());
+    let corpora = [&corpus];
+    let accepted_output = concat!(
+        "(pass) app > app.exit_case [1.00ms]\n",
+        "(pass) app > app.name_case [1.00ms]\n",
+        "(skip) unrelated > unmapped_case\n",
+    );
+    let accepted_result = check_admission(
+        &corpora,
+        Platform::Windows,
+        RunnerKind::Bun,
+        &[output(BUN_PATH, accepted_output.to_owned())],
+    );
+    assert!(
+        matches!(&accepted_result, Ok(report) if report.unknown.is_empty()),
+        "unrelated skipped cases cannot invalidate an admitted mapped pass: {accepted_result:?}"
+    );
+
+    for ambiguous_output in [
+        concat!(
+            "(fail) intended > app.exit_case\n",
+            "(pass) decoy > app.exit_case [1.00ms]\n",
+            "(pass) app > app.name_case [1.00ms]\n",
+        ),
+        concat!(
+            "(pass) decoy > app.exit_case [1.00ms]\n",
+            "(skip) intended > app.exit_case\n",
+            "(pass) app > app.name_case [1.00ms]\n",
+        ),
+        concat!(
+            "(pass) intended > app.exit_case [1.00ms]\n",
+            "(pass) decoy > app.exit_case [1.00ms]\n",
+            "(pass) app > app.name_case [1.00ms]\n",
+        ),
+        concat!(
+            "(todo) intended > app.exit_case\n",
+            "(pass) decoy > app.exit_case [1.00ms]\n",
+            "(pass) app > app.name_case [1.00ms]\n",
+        ),
+    ] {
+        let result = check_admission(
+            &corpora,
+            Platform::Windows,
+            RunnerKind::Bun,
+            &[output(BUN_PATH, ambiguous_output.to_owned())],
+        );
+        assert!(
+            matches!(&result, Err(CorpusError::CaseNotAdmitted { test_name, .. }) if test_name == "app.exit_case"),
+            "one mapped leaf cannot have multiple result statuses: {result:?}"
+        );
+    }
+}
