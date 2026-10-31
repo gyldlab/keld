@@ -4,20 +4,24 @@ Planning record for the Electron-compat map [#391](https://github.com/gyldlab/ke
 published 2026-10-31 by an AI agent (Claude Code, Fable 5.1) on behalf of @0monish under the user's
 standing delegation. **Planning and research only**: no implementation, no worktree, no PR merge.
 Statements are FACT (with a receipt), INFERENCE, UNKNOWN or BLOCKER. Nothing here is normative;
-Keld code, approved specs and live GitHub/Linear state outrank it. Companion file:
-[`zettlr-corpus-facts.md`](zettlr-corpus-facts.md) (verified source facts). Tracker for this milestone:
+Keld code, approved specs and live GitHub/Linear state outrank it. Companion files:
+[`zettlr-corpus-facts.md`](zettlr-corpus-facts.md) (verified source facts) and
+[`zettlr-cross-os-lanes.md`](zettlr-cross-os-lanes.md) (per-engine primitives for macOS, Linux and
+Windows with primary-source receipts). Revision v2 (2026-10-31): decisions taken under the user's
+delegation after two independent refutations; see §8. Tracker for this milestone:
 [#1358](https://github.com/gyldlab/keld/issues/1358) `program(zettlr)` (sub-issue of #391).
 
 Pins: Keld `origin/main` `231a212` (2026-10-31) · research branch `research/electron-compat-map`
-`46e59078` · Zettlr `e6c7fd8` (Electron 43.6.0 resolved) and `origin/develop` `3a8e4b99`
-(44.9.1 resolved) · Electron oracle v44.4.5 (`694f4585`) · WebKit `main` retrieved 2026-10-31 ·
+`46e59078` · Zettlr demand pin **`v4.9.0` = `04128af4`** (Electron 44.9.1 resolved; D-Z1 v2), with
+`e6c7fd8` (43.6.0) as the superseded pin and `origin/develop` `3a8e4b99` (44.9.1) · Electron oracle v44.4.5 (`694f4585`) · WebKit `main` retrieved 2026-10-31 ·
 mattpocock skills `4ae2317d` (wayfinder / to-tickets / triage formats).
 
 ## 1. Destination and claim limits
 
-Destination of this milestone: Zettlr (pinned source, unmodified or with a **scored** edit count)
-launches, opens a Markdown document, edits it, saves it and handles an unsaved close under
-`keld dev` on macOS with the **explicit `legacy` profile** (`LegacySandboxOff` in every record),
+Destination of this milestone (v2, owner ruling D-Z14): Zettlr (pinned source `v4.9.0`, unmodified
+or with a **scored** edit count) launches, opens a Markdown document, edits it, saves it and handles
+an unsaved close under `keld dev` on **macOS first, then Linux, then Windows**, with the **explicit
+`legacy` profile** (`LegacySandboxOff` in every record),
 with every cell red-until-implemented in a gh566-shaped `zettlr` v1 manifest and flipped only
 on a real Mac ([#1354](https://github.com/gyldlab/keld/issues/1354)).
 
@@ -189,26 +193,40 @@ Proof: #589 (draw.io) → #1354 (Zettlr). Migrate: #592 reports the Zettlr block
 | Channel grants | #541, #552 | — | n/a (Keld invariant) | ungranted → KELD-GUARD003 | `el:*` emitted → migrate refuses | CI + macOS |
 | Product proof | #1354 | all above | gh532 rules | five cells + activation on a real Mac | mocked host → provenance fails | macOS only |
 
-## 8. Unresolved decision register
+## 8. Decision register — v2, decided under delegation after two independent refutations
 
-Each row carries the recommendation taken under delegation; reopen with contrary evidence.
+Every decision below was attacked by two isolated refuters (lens A: Keld invariants, ownership,
+workflow; lens B: engine/Electron semantics, primary sources, corpus facts) whose default position
+was "wrong". What survived is recorded as **DECIDED**; corrections the refuters forced are shown.
+The user (@0monish, repository owner) delegated these technical decisions on 2026-10-31; items marked
+*owner ruling* are taken under that delegation and can be reopened by comment with contrary evidence.
+Receipts: `zettlr-cross-os-lanes.md` and the refutation reports (research branch handoff).
 
-| Id | Decision | Options | Recommendation | Falsifier / first check | Owner |
-|---|---|---|---|---|---|
-| D-Z1 | Zettlr corpus pin vs oracle version (gh532 parks it) | (a) keep `e6c7fd8` (Electron 43.6.0) as demand pin; (b) re-pin to `origin/develop` (44.9.1); (c) wait for a tag resolving 44.4.x | **(a)** — every cited file is byte-identical at HEAD; run the Electron-arm recorder with Electron forced to 44.4.5 and record the resolved-version delta exactly as #589 records draw.io's 44.5.1 | a cited Zettlr file differs at HEAD, or the recorder refuses an override | @0monish (gh532 owner) |
-| D-Z2 | renderer `sendSync` mechanism | A: sync XHR lane (same envelope, nonce-bound, host deadline); B: typed throw + "config + 6 edits" (#548) | **A if #401 arms 1–4 and 6 pass**; else B with the six sites scored as edits | #401 transcript | #401 then #484/#540 owners |
-| D-Z3 | contextBridge sync/function returns | A: shared-DOM relay (result written to shared DOM state); B: async-only ▲ | **A** (dispatch synchronous and `detail` cloned across worlds are source FACTs); cost diagnostic only | #399 arm 1 readback fails | #399 then #549 |
-| D-Z4 | `sandbox:false` splash/onboarding windows | refuse at construction (#455 six-value rule) vs accept + ▲ under legacy | **accept + declared ▲ under legacy, refuse under strict** — Keld never grants Node to a renderer, both preloads use only contextBridge/ipcRenderer | a `sandbox:false` window gains any authority a `sandbox:true` window lacks | #455 (F02-T4) |
-| D-Z5 | grant list source for Zettlr's unfiltered preload | main-side literal registrations (25 `handle` + 6 `on`) vs recorder | **literals**; the generic `application` channel multiplexes ~51 commands and is one grant (same class as draw.io's `rendererReq`); no `el:*` | analyzer finds a non-literal registration | #541 / #1354 spec |
-| D-Z6 | invoke-result payload bound | 4096 B inline (today) / 64 KiB envelope / bulk lane | measure Zettlr document sizes on the tutorial workspace; **bound chosen by measurement in #546/#547's spec**, bulk lane for larger documents, never truncate | a tutorial document exceeds the chosen bound | #545 successor inside #546/#547 |
-| D-Z7 | `BrowserWindow.setDocumentEdited` / `setRepresentedFilename` ownership | add to #534 vs new ticket | **add to #534** (two members, macOS registry mirror) | #534 owner refuses scope | #534 |
-| D-Z8 | `session.clearStorageData` on close | #474 host-side clear vs no-op ▲ | **#474 host-side clear of the three named storages**; anything else typed ▲; never a throw in the close listener | window stays open after close | #474 |
-| D-Z9 | Zettlr launch cell on a fresh profile | onboarding window first (sandbox:false) vs pre-seeded config | **fresh profile, onboarding window counted in the launch cell** (D-Z4 makes it admissible) | onboarding window refused | #1354 spec |
-| D-Z10 | Boot-path `child_process.spawn` probes under legacy | ambient Bun spawn vs declared `app.shell.spawn` rows | **ambient under legacy, disclosed in the record**; strict parked (#413) | spawn fails under Bun legacy | #1354 / KEL-78 |
-| D-Z11 | Electron-arm recorder for observed-only cells | wait for #494/#495 vs source-string oracle | **source strings now (§9) with `expected status unknown` where no doc sentence exists; recorder flips them** | recorder shows a different string | #551 / #494 |
+| Id | Decision (DECIDED) | Refutation outcome and correction applied | Gates / owner |
+|---|---|---|---|
+| D-Z1 | **Re-pin the Zettlr demand corpus to tag `v4.9.0`** (`04128af4`, 2026-10-25, lock-resolved Electron 44.9.1). Oracle stays Electron **44.4.5** docs/source. *Owner ruling* (consumes the pending #1183 W0 oracle question): the corpus `upstream` pin is the oracle docs commit; the app's own lock-resolved Electron version is a separately declared field; no oracle re-pin. | Facts survived (e6c7fd8 uses the Electron-43 `clipboard.writeImage`/sync `readText`, removed in 44.0; v4.9.0 uses the W3C API; all other 43→44/43.7 backport changes: 0 Zettlr hits). Lens A refuted the mechanism: `UpstreamV1` is `deny_unknown_fields` (`crates/keld-compat/tests/support/corpus_manifest.rs:421-426`) and gh532 AC1 rejects a second pin → the app-lock field needs a **gh532 + gh566 amendment** before the manifest can carry it; this also covers draw.io's 44.5.1 under one rule. Lens B corrected my falsifier: `windows/index.ts` is byte-identical e6c7fd8→v4.9.0; only the two clipboard files differ on the workflow paths (plus type-only `pinia/window-state-store.ts` and renderer files with no IPC lines). | Spec amendment PR on gh532/gh566 (docs/test schema; review gate none) before #1354's manifest; #1354/#1358 bodies edited to v4.9.0 |
+| D-Z2 | **sendSync: one engine-neutral contract; live state = typed throw (#548) on every engine.** macOS/Linux candidate lane A (sync XHR to the host scheme handler, same wv-link envelope, nonce-bound, host-enforced deadline, rate-limited, dev-warned) has four ordered gates: (1) the app document is served from the host resource origin (GH473 scheme, #1195) and the sync endpoint lives on that same origin; (2) #401 arms 1–8 pass on a real device (Linux arm under #1127); (3) KEL-142 revision on #484 + #540 amendment; (4) a new lane ticket with wire-protocol, public-API and permission-model gates. **Windows: typed throw only.** | Lens B found the load-bearing precondition I missed: XHR is CORS-mode and WebKit's `checkURLSchemeAsCORSEnabled` refuses non-HTTP cross-origin schemes; a handler-backed scheme has a tuple origin, so a `file:` page is never same-origin with it and WKWebView has no public CORS-enable API (WebKitGTK has `register_uri_scheme_as_cors_enabled`). Lens A refuted Windows: #1307 names `sendSync` a non-goal and admits only top-level `WebMessageReceived`; `hostObjects.sync` makes the Host UI thread wait on Bun (#425) and hands the page a host object (#1184 AC ii) → withdrawn. | #401 (prototype), #484 (KEL-142 rev), #540, new lane ticket; Windows: #548 until a #1307 revision |
+| D-Z3 | **contextBridge sync/function returns on WebKit engines via the shared-DOM relay** (dispatch synchronous; `detail` structured-cloned; `JSEventListener`/`EventTarget` have no cross-world filter). Windows: native JS in the shared main world (route D), divergence = isolation only (#1307 AC23). | Survived both lenses. Linux note: wry 0.56.1 injects a page-world `window.ipc` script unconditionally; #1127 must disable/replace it before a Linux world lane exists. | #399 (prototype) → #549; #1127 for Linux |
+| D-Z4 | **`sandbox:false` windows: one profile-independent rule — accept at construction with a declared ▲ (inert: Keld never grants Node to a renderer) on every profile.** Owner: #526 row + a spec under window epic #447. | Lens A refuted my first shape (accept under legacy, refuse under strict): the owner is #526 (F02-T10), not #455, and KEL-78 forbids reading the Electron `sandbox` option as profile state; #455's negative control "no authority profile changes the outcome" is the rule. Lens B confirmed the preloads are inert: all 14 renderer entries share one bundled preload importing only `electron`. | Spec under #447/#526; review gates: permission model, public API |
+| D-Z5 | **Grant list = main-side registered literals: 24 `ipcMain.handle` + 1 lazy `handleOnce` (`paste-image-retrieve-data`) + 6 `ipcMain.on` + 1 lazy `once` (`paste-image-ready`) = 32; `application` is one channel; no `el:*`.** The renderer-only `message` channel (sent at `dir-item-context.ts:128-137`, never registered by main) is **not** granted: Electron drops it silently, Keld refuses it with a typed error → recorded ▲ divergence cell under #465 and reported by `keld migrate` as an orphan channel. **Windows:** route D flags Zettlr's preload (reads `process.argv`, copies `process.env`, constant-argument wrappers) → attestation required, and `invoke` is not a route-D sink until #1154/#547 (#1307 AC13) → Windows grants are ∅ until then. | Lens B corrected the counts (25 was a doc-comment hit) and found the orphan channel; lens A refuted "no attestation needed". | #541/#552; migrate #592; Windows #1307/#1154 |
+| D-Z6 | **Invoke-result bound measured on the bundled tutorial workspace in #546/#547's spec; bulk lane above it; never truncate.** | Undecidable on the number until measured; no counter-evidence. | #546/#547 spec |
+| D-Z7 | **`setDocumentEdited` added to #534 (macOS, demanded: Zettlr calls it only under darwin); `setRepresentedFilename` is a #534 row only (zero Zettlr demand).** Windows/Linux rows cite the `_macOS_` tag and stay `unknown` (no doc sentence says "no-op"). | Both lenses: label correction (tag ≠ behaviour sentence). | #534; public API gate |
+| D-Z8 | **`clearStorageData` on close: host-side clear of `cookies` + `localstorage`; `shadercache` recorded ▲ (#474 AC); never a throw in the close listener; Keld's close adapter runs both of Zettlr's per-window `close` handlers.** | Lens A: shadercache is ▲ in #474, and the engine primitives are receipts for future KEL-135 amendments, not #474 decisions. Lens B verified the storage names against `session.md:739-742`. | #474; Windows/Linux via KEL-135 T2/T4 |
+| D-Z9 | **Launch cell on a fresh profile; the onboarding window is counted** (admissible under D-Z4 v2). | Depended on D-Z4; resolved by its v2 shape. | #1354 spec |
+| D-Z10 | **Boot `child_process` probes run ambient under `legacy`, disclosed in every record; strict parked (#413).** | Survived (KEL-78 "forfeit is printed"). | #1354 / KEL-78 |
+| D-Z11 | **Observed-only cells whose oracle is Electron source (not `docs/`) are `expected_verdict: unknown`**, never red-until-implemented; flipping them needs a gh532 amendment admitting recorder goldens as citations, which the #494 spec carries. | Lens A refuted "red cells": gh532 AC3/AC6 and #494/#495 require `docs/` citations. | gh532 amendment in #494 |
+| D-Z12 | **Unsaved-close cell is OS-specific.** macOS: veto → async dialog → close. Windows/Linux (`nWindows === 1 && !leaveAppRunning`): Zettlr calls `app.quit()` without `preventDefault`; Electron source shows the native close proceeds and `window-all-closed` fires while `before-quit` is vetoed; a second dialog is the **predicted** (INFERENCE) observable. Cells stay `unknown` until the Electron arm records, per OS: `closed` vs first-dialog order, `before-quit` count, message-box count and parent, `will-quit` count. | Survived; lens B added the source chain and observables; lens A added the `nWindows === 1` qualifier. | lane tickets; X01-T5 recorder |
+| D-Z13 | **`skipTaskbar` on Linux: row cites the `_macOS_ _Windows_` tag, status `unknown` until recorded. Tray parked (default `leaveAppRunning: false`).** | Label correction (tag ≠ "ignored"). | #456/#557 rows |
+| D-Z14 | ***Owner ruling:* #1358's destination is Zettlr on all three OSes, ordered macOS → Linux → Windows.** Two lane tickets are minted under #1358 (Zettlr-Linux, Zettlr-Windows) that consume the draw.io programs' children (#1125–#1129, #1183–#1189) as blockers; #1124/#1182 keep their draw.io non-goals; #1354 stays macOS-only, per-OS cells live on the lane tickets. | Lens A refuted ownership (both OS programs name Zettlr a non-goal; #391 non-goals exclude Windows/Linux proofs) → resolved by the owner ruling and lane tickets. Lens B corrected the engine basis: Keld's Linux seam is wry (page-world bridge injected), so "primitives exist" is true of WebKitGTK, not of the seam. Order falsifier unchanged (#1307 approved and W1–W6 landed before #1125–#1129). | #1358 + two lane tickets |
+| D-Z15 | **Plan files stay on `claude/zealous-volta-7qx541`; the orchestrator cherry-picks the commits onto `research/electron-compat-map`; #1358's file links are provisional until then.** | Survived; corrected commit count (the lanes file is a second commit). | orchestrator |
+| D-Z16 | **`safe-file` on WebView2: environment-time `CoreWebView2CustomSchemeRegistration` in the static scheme table, `HasAuthorityComponent=false`, `AllowedOrigins` empty** (all 11 consumers are no-origin subresources). Sync carriers withdrawn (see D-Z2). | Scheme registration survived both lenses. | #471 + #1185 |
+| D-Z17 | **No macOS observation stands in for another OS (KEL-79, gh532 AC9).** The Windows/Linux Electron-arm recorder is parked in X01-T5; Linux/Windows observed-only cells stay `unknown` until the lane tickets unpark X01-T5. | Survived; lens A named the parked recorder. | lane tickets ← X01-T5 |
+| D-Z18 | **Engine receipt pins:** before any engine receipt cited at branch tip backs a cell it is re-fetched at WebKitGTK 2.52.6 / wry 0.56.1 (arch 05 §148), WebView2 runtime 156.0.4314.50 / SDK 1.0.4314.35 (#1307), and the recorded macOS build. Lanes vocabulary is `present/emulated/absent/unknown`, never scoreboard ✔/▲/✘. | New, from lens A's missed-decisions list. | lane tickets |
+| D-Z19 | **Single-writer files:** #1354's claim line edits `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` and `docs/engineering/compat-scoreboard.md`; a human-designated writer is required (`docs/agents/workflow.md` § Parallelism); #1354 lists this as a review condition instead of "none". | New, from lens A. | #1354 |
 
 Closed by existing decisions (no new ruling): `process.env` stays `{}` (#407, F07-E1 A); `el:*`
-never written (#398/#433); legacy never auto-selected (#586, KEL-78); no second kipc link (#424).
+never written (#398/#433); legacy never auto-selected (#586, KEL-78); no second kipc link (#424);
+no host UI thread blocks on Bun (#425).
 
 ## 9. Concrete test gates
 

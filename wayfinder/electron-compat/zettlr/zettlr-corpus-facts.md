@@ -7,9 +7,11 @@ Keld code, approved specs and live GitHub state outrank it. Every count is a fix
 
 ## Pins
 
+**Decision D-Z1 (v2, 2026-10-31):** the demand corpus pin is tag **`v4.9.0`** (`04128af42b58f7fea3f39f7b1efd597f5021f48a`, 2026-10-25, Electron `^44.9.1` → 44.9.1). `e6c7fd8` is superseded because it still uses the Electron-43 clipboard API (`clipboard.writeImage`, sync `readText`) that Electron 44.0 removed; v4.9.0 uses `await clipboard.write([...])` / `await clipboard.readText()`. Every count and workflow path below was re-verified at v4.9.0: identical (`git diff --stat e6c7fd8 v4.9.0` touches 62 files; on the five workflow paths only the two clipboard files differ; `windows/index.ts` is byte-identical). Corrected grant literals at v4.9.0: 24 `ipcMain.handle` (the 25th grep hit is a doc comment in `provider-contract.ts:34`) + 1 lazy `handleOnce` + 6 `ipcMain.on` + 1 lazy `once`; the renderer sends on an unregistered `message` channel (`dir-item-context.ts:128-137`).
+
 | What | Value |
 |---|---|
-| Corpus pin (demand) | `zettlr@e6c7fd8` = `e6c7fd8ffebfddb6fa091521b5a9dea673719887`, 2026-09-28, `v4.7.0-66-ge6c7fd8f`, package.json `version 4.8.0` |
+| Corpus pin (demand, superseded) | `zettlr@e6c7fd8` = `e6c7fd8ffebfddb6fa091521b5a9dea673719887`, 2026-09-28, `v4.7.0-66-ge6c7fd8f`, package.json `version 4.8.0` |
 | Electron at the pin | devDependency `^43.6.0`; **yarn.lock resolves `43.6.0`** (no package-lock.json) |
 | Default branch HEAD | `origin/develop` `3a8e4b9994821d256a909360185e008310b2d51d`, 2026-10-31, `v4.9.0-14`; devDependency `^44.9.1`, resolved `44.9.1`; `got` removed (→ `ky`); forge `^8.0.1`; `main` = `.webpack/main/index.cjs` |
 | Pin → HEAD drift on the files cited below | `git diff --stat e6c7fd8 origin/develop -- preload/index.ts pinia/config.ts custom-protocols.ts create-main-window.ts main.ts documents/index.ts` is **empty** |
