@@ -4809,11 +4809,21 @@ composition test exceeded its fixed five-second deadline under the policy batch'
 load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
 recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
 
-`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
-Each consumer binds its reader/helper source inventory and contents by digest. A new,
-removed or changed reader invalidates its exclusions until the input scope is reviewed
-and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
-This fallback intentionally costs more work. `ci_inputs.py --check`, run by the router contract tests, fails on a stale digest so the fallback cannot persist unnoticed; `just ci-inputs-rebind` renews digests after the readers are reviewed. It avoids guessing dependencies from
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`
+(schema `keld.ci-inputs/v2`, GH-1275). Each consumer names its input edges and the
+reader-source patterns that implement it. Routing is stateless: a change that touches a
+reader source runs every consumer behind it, and a Rust reader change selects all lanes;
+a `crates/*` path that the comparison base did not track, or that the change removes,
+selects all lanes; unknown, deleted, untracked or unavailable comparison inputs select
+all. A reader that gains a new cross-tree read registers its input edge in the same
+change; the router prints that review prompt whenever a reader changes. Nothing is
+recorded between changes. Rejected alternative: schema v1 recorded a SHA-256 of every
+reader set and of `crates/*` membership and failed `--check` until a `just
+ci-inputs-rebind` commit renewed it. On a protected base the digest was therefore
+always fresh at merge time and never widened a later change, while October 2026 saw 346
+commits touch the file, 318 of them digest-only, plus repeated merge conflicts on the
+digest lines and every such diff forced all lanes. The v1 cross-change widening test is
+replaced by the explicit stateless contract test. It avoids guessing dependencies from
 filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive
