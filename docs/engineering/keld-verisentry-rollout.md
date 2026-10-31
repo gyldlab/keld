@@ -53,12 +53,17 @@ false PASS. The key is never stored in Git, a candidate PR, caches or logs.
 
 The source-only `pull_request_target` workflow runs when the PR changes, not
 necessarily when the base `main` branch advances. GitHub required checks can
-also become too old after seven days. A **daily, protected-default-main-only**
-`.github/workflows/ci-verisentry-refresh.yml` (cron **02:17 UTC**) is used to
-re-evaluate open PRs without creating another server or private repository.
+also become too old after seven days. A protected-default-main-only
+`.github/workflows/ci-verisentry-refresh.yml` runs on **every protected main
+push** (to refresh changed test-merge SHAs promptly) and also **daily at
+02:17 UTC** (to renew aging checks). No server or private repository is needed.
 Authorized Monish/Amisha may also use `workflow_dispatch` on `main` for an
-urgent refresh; other actors and non-main refs are refused **before the App key
-is minted**. It reads GitHub API metadata only, without `actions/checkout`,
+urgent refresh. Other actors, non-main refs, rerun attempts, and a workflow
+SHA that no longer matches the **current protected main HEAD** are refused.
+The source/main SHA is checked at run start and immediately before **every**
+App check creation to stop stale scheduled runs from signing with a superseded
+security policy. The job checks principal and ref at job admission before
+minting the App key. It reads GitHub API metadata only, without `actions/checkout`,
 PR file execution, caches, shell steps or candidate-controlled workflows.
 
 The refresh holds a repository-scoped App token with Checks write,
@@ -73,8 +78,11 @@ API-failing PRs never get a fabricated PASS. Any duplicated synthetic merge
 SHA is a security-review error, not a shared PASS across PR identities.
 
 Existing same-source App checks younger than four days are reused. Older
-checks are renewed from fresh evidence, before GitHub's seven-day validity
-boundary. A prior App FAIL is **not silently upgraded** to PASS by a periodic
+checks are renewed from fresh evidence before GitHub's seven-day validity
+boundary. As GitHub may return transient `mergeable: null`, the workflow
+re-fetches the same PR up to six times without inventing a source-head PASS.
+Unresolved mergeability or missing Compare Commits evidence remains an error
+for retry, never a sticky App FAIL against a benign PR. A prior App FAIL is **not silently upgraded** to PASS by a periodic
 refresh; a fresh PR event or authorized review is required. Every new check
 is verified as App ID 5550363 on the current test-merge SHA.
 
@@ -83,8 +91,19 @@ The rollout's first dry-run over **56 open `main`-targeting PRs** on 31 Oct
 and 21 DENY**, using the exact trusted production verifier source, with no App
 key loaded and no writes. After this refresh workflow is reviewed/merged,
 run it once manually and verify signed-check coverage on open mergeable PRs
-**before** activating the production ruleset. The scheduled run keeps them
-refreshed and handles later main-base changes without bulk PR-body edits.
+**before** activating the production ruleset. The main-branch push trigger handles base SHA changes promptly; the daily
+schedule renews older results without bulk PR-body edits. For large public
+repositories, each trusted run processes a bounded **120 PRs**, ordered by PR
+number, and rotates batches each UTC day. If there are 501 open main PRs,
+the five batches cover them within five daily cycles, not a global failure.
+An authorized Monish/Amisha can manually dispatch each `batch_index` from
+0 through `ceil(open_main_PRs/120)-1` for initial full backfill. Six-monthly
+capacity review is appropriate if main-targeting PRs approach 840, where
+120 daily per-batch throughput would exceed a seven-day refresh window. The
+workflow has a 30-minute timeout and limits GitHub's asynchronous mergeability
+polling to three attempts (at most 1.5 seconds of explicit waits per PR). The GitHub scheduled
+job may occasionally be delayed, so maintainers can dispatch a trusted refresh
+on `main` if a PR's required check has gone stale.
 
 ## Real hosted proof receipts
 
@@ -152,7 +171,9 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
    verifier bytes, not PR code. Re-fetch head/base/test merge before the App
    check; reject unknown/300+ file lists, protected authority and failed APIs.
    Exclude closed/moved PRs; leave unmergeable PRs blocked, never fake PASS.
-   Confirm the next daily schedule and the four-day renewal threshold.
+   Confirm the protected-main `push` trigger, next daily schedule, first-run
+   protection and four-day renewal threshold; test stale-workflow rerun
+   rejection against a newer main commit.
 3. Qualify distinct-fork isolation when a write-enabled fork is available.
    Reconfirm default-main source, restricted environment, stale PR handling,
    duplicate PR head/merge identity, the forged-same-name scenario and a
@@ -190,6 +211,7 @@ gh secret set VERISENTRY_APP_PRIVATE_KEY --repo gyldlab/keld \
 - [GitHub Check Runs REST API and required App scopes](https://docs.github.com/en/rest/checks/runs)
 - [GitHub seven-day required-check freshness and test-merge precedence](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 - [GitHub scheduled default-branch workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+- [GitHub protected-main push workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)
 - [Trusted `pull_request_target` source semantics](https://docs.github.com/en/actions/reference/security/securely-using_pull_request_target)
 - [App installation token inputs](https://github.com/actions/create-github-app-token/blob/main/README.md)
 - [GitHub Actions concurrency behavior and cancellation risks](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)

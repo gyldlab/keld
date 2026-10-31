@@ -6,9 +6,17 @@
 name: KELD VeriSentry trusted refresh
 
 on:
+  push:
+    branches: [main] # reconcile newly changed synthetic test-merge SHAs promptly
   schedule:
-    - cron: "17 2 * * *"
+    - cron: "17 2 * * *" # backup/renew checks before seven-day expiry
   workflow_dispatch:
+    inputs:
+      batch_index:
+        description: Zero-based stable PR batch to refresh (auto chooses a daily rotating batch)
+        required: false
+        default: auto
+        type: string
 
 permissions:
   contents: read
@@ -17,9 +25,9 @@ permissions:
 jobs:
   refresh:
     name: Refresh VeriSentry App checks for open main PRs
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.actor == '0monish' || github.actor == 'amishabenramani'))) }}
+    if: ${{ github.ref == 'refs/heads/main' && github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.triggering_actor && (github.actor == '0monish' || github.actor == 'amishabenramani'))) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     environment: verisentry-publisher
     permissions:
       contents: read
@@ -38,32 +46,72 @@ jobs:
           permission-contents: read # immutable Compare Commits API requires this read scope
       - name: Reconcile exact-base/head App checks without checking out PR code
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        env:
+          VERISENTRY_BATCH_INDEX: ${{ inputs.batch_index || 'auto' }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const {owner, repo} = context.repo;
             const maintainers = new Map([['0monish', '155816356'], ['amishabenramani', '130687844']]);
-            if (owner !== 'gyldlab' || repo !== 'keld' || context.ref !== 'refs/heads/main' ||
-                !['schedule','workflow_dispatch'].includes(context.eventName) ||
-                (context.eventName === 'workflow_dispatch' &&
-                  process.env.GITHUB_ACTOR_ID !== maintainers.get(context.actor))) {
-              throw Error('VeriSentry refresh refuses non-main/non-maintainer events');
-            }
             const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+            if (owner !== 'gyldlab' || repo !== 'keld' || context.ref !== 'refs/heads/main' ||
+                !isSha(context.sha) || context.sha !== process.env.GITHUB_SHA ||
+                process.env.GITHUB_RUN_ATTEMPT !== '1' ||
+                !process.env.GITHUB_WORKFLOW_REF?.endsWith('/.github/workflows/ci-verisentry-refresh.yml@refs/heads/main') ||
+                !['push','schedule','workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'workflow_dispatch' &&
+                  (process.env.GITHUB_ACTOR_ID !== maintainers.get(context.actor) ||
+                   process.env.GITHUB_TRIGGERING_ACTOR !== context.actor))) {
+              throw Error('VeriSentry refresh refuses non-main/non-maintainer or rerun events');
+            }
+            // An old scheduled workflow may be rerun after main tightens the
+            // protectedPath policy. Such an older workflow would otherwise
+            // mint a genuine App PASS using stale authority. Pin the executing
+            // workflow commit to the CURRENT protected main ref at startup and
+            // immediately before each signed App write (not PR source bytes).
+            const currentMain = async () =>
+              (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            if (await currentMain() !== context.sha)
+              throw Error('VeriSentry refresh refuses a stale protected-main workflow SHA');
             const list = await github.paginate(github.rest.pulls.list, {
               owner, repo, state: 'open', base: 'main', per_page: 100,
             });
-            if (!Array.isArray(list) || list.length > 500 ||
+            if (!Array.isArray(list) || list.length > 20000 ||
                 new Set(list.map(pr => pr.number)).size !== list.length) {
               throw Error('VeriSentry refresh refuses incomplete/duplicated PR enumeration');
             }
-            const snapshots = list.map(pr => ({number:pr.number, head:pr.head?.sha,
-              base:pr.base?.sha, repo:pr.base?.repo?.full_name, ref:pr.base?.ref}));
-            if (snapshots.some(pr => !Number.isSafeInteger(pr.number) || pr.number < 1 ||
+            const allSnapshots = list.map(pr => ({number:pr.number, head:pr.head?.sha,
+              base:pr.base?.sha, repo:pr.base?.repo?.full_name, ref:pr.base?.ref,
+              testMergeHint:pr.merge_commit_sha}));
+            if (allSnapshots.some(pr => !Number.isSafeInteger(pr.number) || pr.number < 1 ||
                 !isSha(pr.head) || !isSha(pr.base) || pr.repo !== 'gyldlab/keld' ||
                 pr.ref !== 'main')) {
               throw Error('VeriSentry refresh refuses malformed PR listing metadata');
             }
+            // A public repo can exceed 500 open PRs: do NOT abort every
+            // honest PR's renewal when that happens. Rotate deterministic,
+            // bounded numeric-PR-order batches daily. Trusted maintainer
+            // workflow_dispatch accepts a specific zero-based batch_index for
+            // pre-activation full backfill without waiting for several days.
+            const allSorted = allSnapshots.slice().sort((a,b)=>a.number-b.number);
+            const batchSize = 120;
+            const batchCount = Math.max(1,Math.ceil(allSorted.length/batchSize));
+            const requestedBatch = process.env.VERISENTRY_BATCH_INDEX || 'auto';
+            if (!/^(auto|0|[1-9][0-9]*)$/.test(requestedBatch))
+              throw Error('VeriSentry refuses malformed batch index');
+            const batchIndex = requestedBatch === 'auto'
+              ? Math.floor(Date.now()/86400000) % batchCount
+              : Number(requestedBatch);
+            if (!Number.isSafeInteger(batchIndex) || batchIndex < 0 || batchIndex >= batchCount)
+              throw Error('VeriSentry batch index is out of range');
+            const snapshots = allSorted.slice(batchIndex*batchSize,(batchIndex+1)*batchSize);
+            core.info(`VeriSentry current-main PR batch ${batchIndex+1}/${batchCount}; `+
+              `${snapshots.length} selected of ${allSorted.length} open main PRs`);
+            // Preflight any synthetic test-merge SHA collisions even when the
+            // two colliding PRs fall into different daily batches.
+            const hintCounts = new Map();
+            for (const item of allSnapshots) if (isSha(item.testMergeHint))
+              hintCounts.set(item.testMergeHint,(hintCounts.get(item.testMergeHint)||0)+1);
             // This policy block MUST remain byte-identical to the automatic
             // protected-main ci-provenance.yml verifier; Bun tests enforce it.
             // __PROTECTED_PATH_POLICY_BEGIN__
@@ -131,6 +179,7 @@ jobs:
             const verdicts = [];
             for (const event of snapshots) {
               let admitted = false;
+              let verifiedDenied = false;
               let reason = 'missing trusted proof';
               let current;
               const fetchPR = async () =>
@@ -142,8 +191,13 @@ jobs:
                 const before = await fetchPR();
                 if (!matches(before)) throw Error('PR moved before immutable comparison');
                 if (!Number.isSafeInteger(before.changed_files) ||
-                    before.changed_files < 0 || before.changed_files >= 300) {
-                  throw Error('Incomplete changed-file census (300+ denied)');
+                    before.changed_files < 0)
+                  throw Error('Invalid GitHub changed-file count');
+                if (before.changed_files >= 300) {
+                  // 300+ is a *verified policy DENY*, not an API outage.
+                  // It cannot be safely enumerated within Compare Commits.
+                  verifiedDenied = true;
+                  throw Error('Changed-file census >=300: trusted policy DENY');
                 }
                 const compare = (await github.rest.repos.compareCommits({
                   owner,repo,base:event.base,head:event.head,page:1,per_page:100,
@@ -166,7 +220,10 @@ jobs:
                       (file.previous_filename && protectedPath(file.previous_filename)))
                     protectedChanges.push(file.filename);
                 }
-                if (protectedChanges.length) throw Error('Protected CI authority changed');
+                if (protectedChanges.length) {
+                  verifiedDenied = true; // concrete immutable protected path evidence
+                  throw Error('Protected CI authority changed');
+                }
                 if (!matches(await fetchPR())) throw Error('PR moved after immutable comparison');
                 admitted = true;
                 reason = 'protected-main immutable CI admission passed';
@@ -174,15 +231,47 @@ jobs:
                 admitted = false;
                 reason = error instanceof Error ? error.message.slice(0,160) : 'unknown verifier failure';
               }
-              try {
-                current = await fetchPR();
-              } catch {
-                verdicts.push({...event,admitted:false,skip:'PR API unavailable'});
+              // A transient 403/5xx, a malformed/incomplete compare response,
+              // a stale PR or any other *unproven* error must never be turned
+              // into a durable App FAILURE for an otherwise valid PR. Missing
+              // required App check already blocks merging; surface the error
+              // for retry instead of poisoning future renewal attempts.
+              if (!admitted && !verifiedDenied) {
+                verdicts.push({...event,admitted:false,skip:'admission proof unavailable',
+                  reason,retry:true});
                 continue;
               }
-              if (!matches(current) || current.mergeable !== true ||
-                  !isSha(current.merge_commit_sha)) {
-                verdicts.push({...event,admitted:false,skip:'moved/unmergeable/test merge unavailable'});
+              // GitHub calculates PR mergeability asynchronously. A fresh
+              // main/base push often returns mergeable:null on the first GET.
+              // Refetch within a bounded window before recording a permanent
+              // missing-check condition. Never fall back to the source SHA.
+              let mergeReady = false;
+              let skip = 'mergeability computation timed out';
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                  current = await fetchPR();
+                } catch {
+                  skip = 'PR API unavailable';
+                  break;
+                }
+                if (!matches(current)) {
+                  skip = 'moved or closed PR';
+                  break;
+                }
+                if (current.mergeable === false) {
+                  skip = 'unmergeable PR';
+                  break;
+                }
+                if (current.mergeable === true && isSha(current.merge_commit_sha)) {
+                  mergeReady = true;
+                  break;
+                }
+                if (attempt < 2)
+                  await new Promise(resolve => setTimeout(resolve, 500*(attempt+1)));
+              }
+              if (!mergeReady) {
+                verdicts.push({...event,admitted:false,skip,
+                  retry:skip !== 'unmergeable PR' && skip !== 'moved or closed PR'});
                 continue;
               }
               verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason});
@@ -194,10 +283,14 @@ jobs:
             for (const verdict of verdicts) {
               try {
                 if (!verdict.merge) {
-                  counts.skipped++; // closed, moved or unmergeable PR; never mint PASS
+                  if (verdict.retry) {
+                    counts.errors++; // incomplete mergeability must not be silently green
+                    core.warning('VeriSentry mergeability pending on PR #'+verdict.number);
+                  } else counts.skipped++; // moved or genuinely unmergeable
                   continue;
                 }
-                if (mergeCounts.get(verdict.merge) !== 1) {
+                if (mergeCounts.get(verdict.merge) !== 1 ||
+                    (hintCounts.get(verdict.merge) || 0) > 1) {
                   counts.errors++;
                   core.warning('Two PRs share the same synthetic merge SHA; requires manual containment');
                   continue;
@@ -209,9 +302,12 @@ jobs:
                 if (pr?.state !== 'open' || pr.number !== verdict.number ||
                     pr.base?.ref !== 'main' || pr.base?.sha !== verdict.base ||
                     pr.base?.repo?.full_name !== 'gyldlab/keld' ||
-                    pr.head?.sha !== verdict.head ||
-                    pr.mergeable !== true || pr.merge_commit_sha !== verdict.merge) {
+                    pr.head?.sha !== verdict.head || pr.merge_commit_sha !== verdict.merge) {
                   counts.skipped++;
+                  continue;
+                }
+                if (pr.mergeable !== true) {
+                  counts.errors++; // later mergeability recalculation: fail-closed
                   continue;
                 }
                 const checks = await github.paginate(github.rest.checks.listForRef, {
@@ -224,6 +320,15 @@ jobs:
                 const expected = verdict.admitted ? 'success' : 'failure';
                 const latest = checks.slice().sort((a,b) =>
                   Date.parse(b.completed_at || '') - Date.parse(a.completed_at || ''))[0];
+                // The abandoned mutable manual-maintenance workflow was never
+                // installed. If an older signed manual receipt is encountered,
+                // stop for human review instead of overwriting an authorization
+                // or revocation the scheduler cannot independently evaluate.
+                if (checks.some(c => (c.output?.summary || '').includes('maintenance-run='))) {
+                  counts.errors++;
+                  core.warning('VeriSentry found an exceptional manual check; refusing scheduled rewrite on PR #'+verdict.number);
+                  continue;
+                }
                 const ageMs = Date.now() - Date.parse(latest?.completed_at || '');
                 if (latest && latest.status === 'completed' && latest.conclusion === expected &&
                     Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 4*86400*1000) {
@@ -238,6 +343,8 @@ jobs:
                   core.warning('VeriSentry refresh refuses to overwrite prior App FAIL on PR #'+verdict.number);
                   continue;
                 }
+                if (await currentMain() !== context.sha)
+                  throw Error('VeriSentry refresh refuses changed main before App check creation');
                 const created = (await github.rest.checks.create({
                   owner,repo,name:'KELD VeriSentry',head_sha:verdict.merge,
                   status:'completed',conclusion:expected,
