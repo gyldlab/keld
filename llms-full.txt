@@ -19,7 +19,7 @@ wrapper or packaged application release to install yet.
 - Git and Rust installed through rustup. The checked-in
   [rust-toolchain.toml](../../rust-toolchain.toml) selects the compiler and components;
   Cargo uses the committed lockfile in the commands below.
-- Bun on `PATH`. **Use CI-pinned Bun 1.4.2 for `just ci` and the full workspace test
+- Bun on `PATH`. **Use CI-pinned Bun 1.4.4 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
   run. Some earlier demo observations used Bun 1.4.2; the newer
@@ -200,14 +200,25 @@ the same output directory. A successful `doctor` alone is not a desktop acceptan
 Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install the verification tools
 listed in the [development guide](05-development-guide.md#1-prerequisites), including
 Python and a running Docker-compatible engine. The exact gate inventory belongs to the
-[justfile](../../justfile). Put the CI-pinned Bun 1.4.2 binary on this shell's `PATH`
+[justfile](../../justfile). Put the CI-pinned Bun 1.4.4 binary on this shell's `PATH`
 without replacing another project's global runtime, then verify the selected version:
 
 ```bash
-bun --version   # must report 1.4.2 for the full gate
+bun --version   # must report 1.4.4 for the full gate
 bun --revision
 just ci
 ```
+
+`just js-fmt` formats JavaScript/TypeScript (including nonignored untracked files),
+using root `bunfig.toml` and Bun's native ignore rules, and refreshes generated bindings
+and transport stamps through their generator. `just js-fmt-check` checks without
+writing; it is included in `just ci` and the hosted hygiene check. `just fmt` also
+normalizes Rust first, then runs JS/TS generation, native formatting and restamping.
+
+New `keld create` applications include `bun run format` and `bun run format:check`
+for their JavaScript/TypeScript, with no formatter package to install. Use native
+`bun fmt` directly for other supported file kinds. Native lint remains tracked on
+[issue 1091](https://github.com/gyldlab/keld/issues/1091) until Bun ships it in stable.
 
 On Windows, run the shell-based full gate from Git Bash or another environment with
 the required GNU tools. Keep the interactive PowerShell session for the separate
@@ -1597,7 +1608,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -1689,10 +1705,13 @@ schema language, ship `@keld/schema` or live `keld gen`, or replace runtime vali
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
-since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3
-and the KEL-89 auth allocation = 4,
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
-region of `transport.ts`, and the wire is unchanged. Handshake-time name resolution and
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry remains a held implementation
+until validated facade boot and native acceptance are complete. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 
@@ -2277,8 +2296,12 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
-preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
+defect. This slice adds an exported `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux and Windows
+currently refuse facade-window subscription; this is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 
@@ -2441,7 +2464,17 @@ while the expected browser process handle, opened before `Close`, is unsignaled,
 there only by a measured shutdown hang guard (240 s) that fails closed while the browser
 stays alive; a measured 85 s post-exit grace bounds the event once the process is gone,
 because WebView2 raises it after the collection has released the user-data folder. A launch
-deadline bounds environment and controller creation only. A predecessor dev-ephemeral
+deadline bounds environment and controller creation only. Three `keld-wv` constants own the
+sums of these bounds: `keld_wv::webview2::WEBVIEW2_UI_END_BOUND` (the hang guard plus the
+grace) bounds a healthy UI end; `keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND` bounds a
+healthy teardown after a terminal command, which is that UI end and then, on a dev-ephemeral
+profile, one exclusive-UDF probe (launch deadline and release barrier) for each predecessor
+leaf that the post-release scavenge may try; and `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND`
+bounds a healthy startup to `Ready` as its sequential phases (a quarantined profile's
+recovery probe launch and release barrier, environment and controller creation, and the
+initial-navigation deadline of `KELD-WV-005`). A caller that must outlast one of these
+phases, such as a test harness kill switch, reads the constant rather than restating its
+parts. A predecessor dev-ephemeral
 leaf whose exclusive-UDF probe is busy or cannot prove release is retained for a later
 pass and never fails the current host's own release.
 
@@ -4370,7 +4403,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
-| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3); the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3), and exports a macOS-only host-backed BrowserWindow subset over the Host-owned native window registry: create/adopt, selected geometry and state, close/destroy, and recovery events. Linux/Windows have no facade window session: the Host refuses window subscription as NotSubscribable and direct window calls fail with KELD-CORE-045. Unsafe webPreferences fail closed; preload and selected options remain unapplied. Bun facade/recovery tests use a controlled Host-call seam and do not establish native per-OS acceptance. Other Electron surfaces remain absent. | [code](../../packages/@keld/electron/src/index.ts), [code](../../packages/@keld/electron/src/browser-window.ts), [test](../../packages/@keld/electron/src/app.test.ts), [test](../../packages/@keld/electron/src/browser-window.test.ts), [test](../../packages/@keld/electron/src/browser-window-recovery.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `effb47412c6f8d60b6a8c63aaac939759f7b2948` |
 | `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live. Its GH-527 WorkerLink owns each Bun role's link in a transport Worker, and the hello scaffold and @keld/api use it, with the main-thread client path removed (#528 T1-T3); a release build strips its test hooks, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs. The GRANT credit lane (T4), Linux and Windows qualification (T5), general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 | `package.keld-api` | All | **Partial** — The @keld/api package implements the application lifecycle (whenReady, quit, last-window-closed) and the Echo channel over the role's app-link, which runs on the GH-527 WorkerLink from #528 T3; general typed channels and schema codegen remain absent. | [code](../../packages/@keld/api/src/index.ts), [test](../../packages/@keld/api/src/app.test.ts) | [Specified](../../docs/architecture/01-overview.md) | KEL-142 | `0768d11a6d6b9dc43e1e991be700db8d1ce555a6` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -4768,11 +4801,21 @@ composition test exceeded its fixed five-second deadline under the policy batch'
 load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
 recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
 
-`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
-Each consumer binds its reader/helper source inventory and contents by digest. A new,
-removed or changed reader invalidates its exclusions until the input scope is reviewed
-and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
-This fallback intentionally costs more work. `ci_inputs.py --check`, run by the router contract tests, fails on a stale digest so the fallback cannot persist unnoticed; `just ci-inputs-rebind` renews digests after the readers are reviewed. It avoids guessing dependencies from
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`
+(schema `keld.ci-inputs/v2`, GH-1275). Each consumer names its input edges and the
+reader-source patterns that implement it. Routing is stateless: a change that touches a
+reader source runs every consumer behind it, and a Rust reader change selects all lanes;
+a `crates/*` path that the comparison base did not track, or that the change removes,
+selects all lanes; unknown, deleted, untracked or unavailable comparison inputs select
+all. A reader that gains a new cross-tree read registers its input edge in the same
+change; the router prints that review prompt whenever a reader changes. Nothing is
+recorded between changes. Rejected alternative: schema v1 recorded a SHA-256 of every
+reader set and of `crates/*` membership and failed `--check` until a `just
+ci-inputs-rebind` commit renewed it. On a protected base the digest was therefore
+always fresh at merge time and never widened a later change, while October 2026 saw 346
+commits touch the file, 318 of them digest-only, plus repeated merge conflicts on the
+digest lines and every such diff forced all lanes. The v1 cross-change widening test is
+replaced by the explicit stateless contract test. It avoids guessing dependencies from
 filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive
@@ -5625,8 +5668,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-WV-011
 
 - crate: keld-wv
-- message: Renderer bridge request rejected before application dispatch
-- fix: Reload the current main-frame document and invoke only the declared Keld renderer API; do not supply stale document state, undeclared channels, oversized payloads, or page-selected authority.
+- message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
+- fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
 
 ## KELD-CLI-010
 
@@ -6216,6 +6259,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -6269,6 +6330,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
 ## KELD-UPDATE-001
 

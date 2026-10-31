@@ -327,7 +327,9 @@ fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
     );
 }
 
-struct ReapOnDrop(Child);
+/// Owns a spawned child so every exit path, including unwinding, kills and
+/// reaps it.
+pub(crate) struct ReapOnDrop(pub(crate) Child);
 
 impl Drop for ReapOnDrop {
     fn drop(&mut self) {

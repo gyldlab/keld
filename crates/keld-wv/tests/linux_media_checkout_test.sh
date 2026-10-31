@@ -15,7 +15,9 @@ trap cleanup EXIT
 
 repo="$test_root/repo"
 mkdir -- "$repo"
+# No detached `git maintenance` child may outlive a command and race cleanup (#670).
 git -C "$repo" init -q
+git -C "$repo" config maintenance.auto false
 git -C "$repo" config user.email keld-test@example.invalid
 git -C "$repo" config user.name "Keld Test"
 printf 'tracked\n' >"$repo/tracked"
@@ -118,11 +120,13 @@ cp -- "$script_dir/linux_media_guard.sh" \
 cp -- "$script_dir/linux_media_checkout.sh" \
   "$source_repo/crates/keld-wv/tests/linux_media_checkout.sh"
 git -C "$source_repo" init -q
+git -C "$source_repo" config maintenance.auto false
 git -C "$source_repo" config user.email keld-test@example.invalid
 git -C "$source_repo" config user.name "Keld Test"
 git -C "$source_repo" add crates/keld-wv/tests
 git -C "$source_repo" commit -q -m baseline
 git -C "$ambient_repo" init -q
+git -C "$ambient_repo" config maintenance.auto false
 git -C "$ambient_repo" config user.email keld-test@example.invalid
 git -C "$ambient_repo" config user.name "Keld Test"
 printf 'ambient\n' >"$ambient_repo/tracked"

@@ -20,7 +20,10 @@ function marker(line: string): void {
   writeSync(1, `${line}\n`);
 }
 
-const proc = process as typeof process & { type?: string; versions: { electron?: string } };
+const proc = process as typeof process & {
+  type?: string;
+  versions: { electron?: string };
+};
 marker(`KEL72_TYPE=${proc.type ?? ""}`);
 marker(`KEL72_ELECTRON=${proc.versions.electron ?? ""}`);
 

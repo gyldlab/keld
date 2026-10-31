@@ -7,8 +7,11 @@
 /// read, so the result does not depend on a timeout. *Negative control:*
 /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
 /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
+/// Unix only (#528 T5), an OS fact: a Windows named pipe has no
+/// half-close, because closing a pipe handle ends both directions, so a
+/// half-closed role cannot exist there.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
     use std::io::Read as _;
 
@@ -69,7 +72,7 @@ fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
 /// control:* a failed answer that propagates as a session error sends the
 /// UI `Fatal` instead of `Quit`.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
     let (t, mut client) = guarded_test_router();
     let (stalled_tx, stalled) = mpsc::sync_channel(1);
@@ -137,8 +140,11 @@ fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
 /// bytes queued before retirement, then the close, and no `ERR` byte.
 /// *Negative control:* leaving the writer's deadline in place fails the
 /// deadline assertion (and holds the lock for `APP_LINK_IO_DEADLINE`).
+/// This oracle counts the exact bytes a nonblocking Unix send buffer
+/// accepted and reads the socket-wide deadline through a clone; the
+/// Windows case below proves the same contract over a named pipe.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn retire_answers_are_bounded_when_the_peer_stops_reading() {
     use std::io::{ErrorKind, Read as _, Write as _};
 
@@ -191,6 +197,80 @@ fn retire_answers_are_bounded_when_the_peer_stops_reading() {
     t.router.shutdown().expect("router shutdown after retire");
 }
 
+/// GH-528 T2 on Windows (#1073, gh527 §10): the same contract over the
+/// authenticated named-pipe pair. The standard library has no nonblocking
+/// named pipe, so the host-to-role direction is filled by writes under a
+/// short deadline until one cannot complete, while nothing reads it. A
+/// Windows write deadline is per handle, so no clone can read the writer's;
+/// the router records the deadline on the writer itself before each
+/// answer. The one 023 ran under `HOST_ANSWER_BUDGET`, retirement still
+/// succeeds and closes the link, and the role reads exactly the pattern
+/// bytes accepted before retirement, then the close: no `ERR` byte, and
+/// no byte of a timed-out write. *Negative controls:* leaving the writer's
+/// deadline in place records `APP_LINK_IO_DEADLINE`; closing with
+/// `DisconnectNamedPipe` (W2) loses the queued bytes; stopping the fill one
+/// chunk early lets the 023 fit, and the role reads it after the pattern.
+#[test]
+#[cfg(windows)]
+fn retire_answers_are_bounded_when_the_peer_stops_reading() {
+    use std::io::{ErrorKind, Read as _, Write as _};
+
+    use keld_ipc::link::AppLinkDeadlines as _;
+
+    let (server, mut client) = primary_test_stream_pair();
+    let pattern = |offset: usize| u8::try_from(offset % 251).expect("pattern byte");
+    let mut filler = server.try_clone().expect("fill handle");
+    filler
+        .set_app_link_write_deadline(Some(Duration::from_millis(100)))
+        .expect("fill deadline");
+    let mut queued = 0_usize;
+    for size in [4096_usize, 1] {
+        loop {
+            let chunk: Vec<u8> = (queued..queued + size).map(pattern).collect();
+            match filler.write(&chunk) {
+                Ok(written) => queued += written,
+                Err(error) if error.kind() == ErrorKind::TimedOut => break,
+                Err(error) => panic!("fill the host-to-role direction: {error}"),
+            }
+        }
+    }
+    drop(filler);
+    let t = guarded_router(server);
+    write_fs_call(&mut client, 70, &t.allowed.join("held.txt"));
+    t.taken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker took the FS job");
+
+    ANSWER_WRITE_DEADLINES.with_borrow_mut(|seen| *seen = Some(Vec::new()));
+    t.router
+        .handle()
+        .retire_generation(1)
+        .expect("retirement succeeds although its ERR cannot be written");
+    assert_eq!(
+        ANSWER_WRITE_DEADLINES.with_borrow_mut(Option::take),
+        Some(vec![Some(HOST_ANSWER_BUDGET)]),
+        "the one 023 write ran under the answer budget, not the writer's deadline"
+    );
+    let mut received = Vec::new();
+    client
+        .read_to_end(&mut received)
+        .expect("the role reads to the close");
+    let expected: Vec<u8> = (0..queued).map(pattern).collect();
+    assert!(
+        received == expected,
+        "the role reads the {queued} bytes queued before retirement, then the close: \
+         read {} bytes, first difference at {:?}",
+        received.len(),
+        received
+            .iter()
+            .zip(&expected)
+            .position(|(got, want)| got != want),
+    );
+
+    t.release.send(()).expect("release FS worker");
+    t.router.shutdown().expect("router shutdown after retire");
+}
+
 /// GH-528 T2 (gate review of #636, L4): a real reply written first wins.
 /// The FS worker writes its real REPLY and is held after it releases the
 /// generation lock, with its lease still alive; a retirement then runs and
@@ -199,7 +279,7 @@ fn retire_answers_are_bounded_when_the_peer_stops_reading() {
 /// alone clears the pending call) makes this retirement send a 023 after
 /// the REPLY.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn retire_after_a_real_reply_sends_no_023() {
     let (t, mut client) = guarded_test_router();
     let target = t.allowed.join("replied.txt");

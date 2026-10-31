@@ -4,15 +4,16 @@ use crate::support::control::{
     accept_control_until, accept_ready_generation_with_descendant, try_read_control_line,
 };
 use crate::support::process::{
-    assert_process_signaled, open_process_for_wait, wait_child, wait_for_child_process,
-    wait_for_cleanup_sentinel, wait_for_process_signal,
+    assert_process_signaled, assert_process_signaled_within, open_process_for_wait, wait_child,
+    wait_for_child_process, wait_for_cleanup_sentinel, wait_for_process_signal,
 };
 use crate::support::product::ProductFixture;
 use crate::support::product_cycle::run_product_cycle;
 use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
 use crate::support::window::wait_for_host_window;
 use crate::{
-    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, prepare_keld_dev_helper, wait_for_dev_stage_count,
+    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, prepare_keld_dev_helper, ui_end_kill_switch,
+    wait_for_dev_stage_count,
 };
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -245,8 +246,8 @@ pub(crate) fn run_console_ctrl_c_case() {
         .expect("console CLI");
     let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let host_pid =
-            wait_for_child_process(cli.id(), "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-        let sentinel_pid = wait_for_cleanup_sentinel(cli.id(), Instant::now() + PRODUCT_DEADLINE);
+            wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        let sentinel_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
         let (reader, _writer, bun_pid, _, descendant_pid) =
             accept_ready_generation_with_descendant(&control, &mut cli);
         expect_renderer_beacon(beacon, "console rendered state");
@@ -265,7 +266,9 @@ pub(crate) fn run_console_ctrl_c_case() {
         // The parent test runner is attached to a different console.
         assert_ne!(unsafe { GenerateConsoleCtrlEvent(0, 0) }, 0);
         let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
-        assert_process_signaled(&host, "Ctrl+C host");
+        // The closed CLI lease starts the host's ordered shutdown, which includes
+        // its WebView2 UI end; the CLI itself ends at once on Ctrl+C.
+        assert_process_signaled_within(&host, "Ctrl+C host", ui_end_kill_switch());
         assert_process_signaled(&bun, "Ctrl+C Bun");
         assert_process_signaled(&descendant, "Ctrl+C descendant");
         assert_process_signaled(&sentinel, "Ctrl+C sentinel");

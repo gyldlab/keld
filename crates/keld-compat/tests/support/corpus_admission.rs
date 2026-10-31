@@ -23,23 +23,21 @@ pub fn rust_case_passed(stdout: &str, name: &str) -> bool {
     stdout.lines().filter(|line| *line == expected).count() == 1
 }
 
-/// Require one successful Bun no-color console record for an exact leaf name.
+/// Require one successful Bun no-color console record for an exact leaf name,
+/// with no skipped, failed or other status record for the same leaf (GH-1158).
 /// Strip only the optional timing suffix and the runner's describe hierarchy.
 /// A reporter-format change fails closed; source text is never a fallback.
 pub fn bun_case_passed(stderr: &str, name: &str) -> bool {
-    stderr
-        .lines()
-        .filter_map(|line| line.strip_prefix("(pass) "))
-        .map(|line| {
-            let full_name = match line.rsplit_once(" [") {
-                Some((label, timing)) if timing.ends_with(']') => label,
-                _ => line,
-            };
-            full_name.rsplit(" > ").next().unwrap_or(full_name)
-        })
-        .filter(|found| *found == name)
-        .count()
-        == 1
+    let mut matching_statuses = stderr.lines().filter_map(|line| {
+        let (status, label) = line.strip_prefix('(')?.split_once(") ")?;
+        let full_name = match label.rsplit_once(" [") {
+            Some((label, timing)) if timing.ends_with(']') => label,
+            _ => label,
+        };
+        let leaf = full_name.rsplit(" > ").next().unwrap_or(full_name);
+        (leaf == name).then_some(status == "pass")
+    });
+    matching_statuses.next() == Some(true) && matching_statuses.next().is_none()
 }
 
 /// A receipt-named case is live when libtest `--list` prints exactly one `<name>: test`

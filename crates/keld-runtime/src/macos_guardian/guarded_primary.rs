@@ -528,14 +528,16 @@ impl GuardedPrimary {
         // PREPARE after the Guardian's idle probe, or an in-flight SPAWNED
         // refused after S. Each needs zero registered group and its private
         // typed result; the refusal type exists only after the attested group
-        // was signalled and the lease revoked, and only an orderly S (KSA, not
-        // an accepted Quit's KQA) may retire it. The Guardian's own exit
-        // status still proves its local retirement. Never downgrade another
-        // worker failure.
+        // was signalled and the lease revoked. Only an orderly S (KSA, not an
+        // accepted Quit's KQA) may retire either one (architecture 06: the
+        // first-PREPARE denial is accepted only after verified KSA). The
+        // Guardian's own exit status still proves its local retirement.
+        // Never downgrade another worker failure.
         let reconciled = |error: &RuntimeError| {
             shutdown_won
+                && orderly_acknowledged
                 && ((denied_before_initial_ready && is_initial_recovery_denied(error))
-                    || (orderly_acknowledged && denied && is_post_shutdown_spawn_refused(error)))
+                    || (denied && is_post_shutdown_spawn_refused(error)))
         };
         if let Err(error) = worker_result
             && !reconciled(&error)

@@ -1,7 +1,6 @@
 //! Signed-profile concurrency and running-crash lifecycle acceptance on an installed
 //! package (KEL-254 T3 Part B restores these rows on installed provenance).
 
-use crate::PRODUCT_DEADLINE;
 use crate::support::control::{accept_ready_generation, read_control_line};
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
@@ -17,6 +16,7 @@ use crate::support::profile_server::ProfileStateServer;
 use crate::support::signed_identity::signed_fixture_profile_namespace;
 use crate::support::signed_process::SignedStateProcessGuard;
 use crate::support::window::wait_for_host_window;
+use crate::{PRODUCT_DEADLINE, startup_kill_switch, ui_end_kill_switch};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -99,7 +99,7 @@ fn kel135_signed_host_profile_concurrency() {
     writer.flush().expect("flush first signed host Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = first.wait(Instant::now() + PRODUCT_DEADLINE);
+    let status = first.wait(Instant::now() + ui_end_kill_switch());
     assert!(status.success(), "first signed host exited with {status}");
 }
 
@@ -156,7 +156,7 @@ fn kel135_signed_host_running_crash_releases_profile() {
     writer.flush().expect("flush recovered signed host Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = second.wait(Instant::now() + PRODUCT_DEADLINE);
+    let status = second.wait(Instant::now() + ui_end_kill_switch());
     assert!(
         status.success(),
         "recovered signed host exited with {status}"
@@ -224,7 +224,7 @@ fn kel135_signed_profiles_run_concurrently_and_survive_other_app_close() {
     );
 
     // A remains live through B's independent setup and the real browser release wait.
-    run_a.finish_after_retention();
+    run_a.finish();
     assert_process_signaled(&first_webview_process, "App A WebView2");
     assert!(
         process_exists(run_b.process.host_pid()),
@@ -245,7 +245,7 @@ fn kel135_signed_profiles_run_concurrently_and_survive_other_app_close() {
         "KELD_KEL135_PROFILE_SURVIVOR {}",
         serde_json::json!({"closed_host": "A", "host_alive": true, "webview2_alive": true, "process": survivor})
     );
-    run_b.finish_after_retention();
+    run_b.finish();
     assert_process_signaled(&second_webview_process, "App B WebView2");
 
     start_case(&context, &context.fixture_b, &context.restart_case()).finish();
@@ -358,7 +358,8 @@ fn start_case(
     fixture: &ProductFixture,
     case: &SignedProfileStateCase<'_>,
 ) -> SignedProfileStateRun {
-    let deadline = deadline();
+    // Launch through the renderer's state report spans the host's WebView2 startup.
+    let deadline = Instant::now() + startup_kill_switch();
     context.server.expect_case(case.name, deadline);
     let run = SignedProfileStateRun::start_with_profile_root(
         fixture,
