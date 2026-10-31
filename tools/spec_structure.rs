@@ -94,6 +94,12 @@ const AC_FIELDS: [&str; 7] = [
 const BLOCKER_FIELDS: [&str; 4] = ["Status", "Owner", "Impact", "Check"];
 const EVIDENCE_FIELDS: [&str; 4] = ["Run", "n", "Environment", "Limits"];
 const TASK_BLOCKERS_FIELD: &str = "Blocked by";
+const HEADER_FIELDS: [&str; 5] = ["Status", "Tracker", "Owner", "Updated", "Pin"];
+/// Header fields nothing else may state. `Status` and `Owner` also label a blocker.
+const HEADER_ONLY_FIELDS: [&str; 3] = ["Tracker", "Updated", "Pin"];
+const PART_FIELDS: [&str; 2] = ["Part of", "Owns"];
+/// Marks around a field label or an ID. They change how it looks, not which one it is.
+const LABEL_MARKS: [char; 3] = ['*', '_', '`'];
 /// AC fields where a bare `none` states nothing. `Given: none` is a real statement.
 const CONTROL_FIELDS: [&str; 5] = [
     "Then",
@@ -240,6 +246,7 @@ enum Rule {
     EvidenceFields,
     FieldUnknown,
     FieldPlaceholder,
+    FieldDuplicate,
     OpenBlockers,
     PinMissing,
     CitePath,
@@ -288,6 +295,7 @@ impl Rule {
             Rule::EvidenceFields => "EVIDENCE-FIELDS",
             Rule::FieldUnknown => "FIELD-UNKNOWN",
             Rule::FieldPlaceholder => "FIELD-PLACEHOLDER",
+            Rule::FieldDuplicate => "FIELD-DUPLICATE",
             Rule::OpenBlockers => "OPEN-BLOCKERS",
             Rule::PinMissing => "PIN-MISSING",
             Rule::CitePath => "CITE-PATH",
@@ -1085,43 +1093,113 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
     }
 }
 
-/// Value of `label` on a `- **Label:** value` or `Label: value` line.
+/// Value of `label` on a `- **Label:** value` or `Label: value` line. Case, marks and a
+/// space before the colon spell one label, so no spelling can hide a second statement.
 fn field_value(line: &str, label: &str) -> Option<String> {
     let mut text = line.trim_start();
     if let Some(marker) = list_marker(text, false) {
         text = text[marker..].trim_start();
     }
-    text = text.strip_prefix("**").unwrap_or(text);
-    let text = text.strip_prefix(label)?;
-    let text = text.strip_prefix("**").unwrap_or(text).strip_prefix(':')?;
-    Some(text.strip_prefix("**").unwrap_or(text).trim().to_owned())
+    let text = text.trim_start_matches(LABEL_MARKS);
+    let tail = text.get(label.len()..)?;
+    if !text[..label.len()].eq_ignore_ascii_case(label) {
+        return None;
+    }
+    let tail = tail.trim_start_matches(|ch| LABEL_MARKS.contains(&ch) || " \t".contains(ch));
+    let value = tail.strip_prefix(':')?.trim_start_matches(LABEL_MARKS);
+    Some(value.trim().to_owned())
 }
 
-/// Each `label` in a line range. A field may hold its value on nested lines.
-fn fields<'a>(
-    doc: &'a Doc,
+/// Each line of a range that states `label`.
+fn field_lines(doc: &Doc, start: usize, end: usize, label: &str) -> Vec<usize> {
+    (start..end)
+        .filter(|index| {
+            doc.visible[*index]
+                .as_deref()
+                .is_some_and(|line| field_value(line, label).is_some())
+        })
+        .collect()
+}
+
+/// A field stated once.
+struct Stated {
+    line: usize,
+    /// The value on its line, then each statement nested under it.
+    statements: Vec<String>,
+}
+
+impl Stated {
+    fn read(doc: &Doc, line: usize, end: usize, label: &str) -> Stated {
+        let inline = doc.visible[line]
+            .as_deref()
+            .and_then(|text| field_value(text, label))
+            .filter(|value| !value.is_empty());
+        let mut statements: Vec<String> = inline.into_iter().collect();
+        statements.extend(nested_statements(doc, line, end));
+        Stated { line, statements }
+    }
+
+    /// The whole value, so a format rule reads every statement.
+    fn value(&self) -> String {
+        self.statements.join(" ")
+    }
+}
+
+/// What a line range states for one field.
+enum Field {
+    Absent,
+    Once(Stated),
+    /// Two statements are two authorities, so no rule reads a value, in either order.
+    Repeated,
+}
+
+fn add_duplicate(
+    doc: &Doc,
+    line: usize,
+    detail: String,
+    slot: Option<String>,
+    report: &mut Report,
+) {
+    report.findings.push(Finding {
+        rule: Rule::FieldDuplicate,
+        file: doc.rel.clone(),
+        line,
+        detail,
+        slot,
+    });
+}
+
+/// The one reader of a single-valued field. `slot` is the `id.field` a `migrated:` row may
+/// name, so a repeat does not read as a filled slot.
+fn read_field(
+    doc: &Doc,
     start: usize,
     end: usize,
-    label: &'a str,
-) -> impl Iterator<Item = (usize, String)> + 'a {
-    (start..end).filter_map(move |index| {
-        let line = doc.visible[index].as_deref()?;
-        let value = field_value(line, label)?;
-        if !value.is_empty() {
-            return Some((index, value));
+    label: &str,
+    slot: Option<String>,
+    report: &mut Report,
+) -> Field {
+    match field_lines(doc, start, end, label)[..] {
+        [] => Field::Absent,
+        [line] => Field::Once(Stated::read(doc, line, end, label)),
+        [first, second, ..] => {
+            let detail = format!(
+                "`{label}:` is already stated at line {}, so neither value has authority. Keep \
+                 one",
+                first + 1
+            );
+            add_duplicate(doc, second + 1, detail, slot, report);
+            Field::Repeated
         }
-        Some((index, nested_value(doc, index, end)))
-    })
+    }
 }
 
-fn find_field(doc: &Doc, start: usize, end: usize, label: &str) -> Option<(usize, String)> {
-    fields(doc, start, end, label).next()
-}
-
-/// The first statement nested under an empty field, without its list markers, so the
-/// non-value rules examine what a reader sees. Empty when nothing is nested.
-fn nested_value(doc: &Doc, field: usize, end: usize) -> String {
+/// Each statement nested under a field, without its list markers, so the non-value rules
+/// examine what a reader sees. A fence is one statement: its lines are code, not values.
+fn nested_statements(doc: &Doc, field: usize, end: usize) -> Vec<String> {
     let own = indent(&doc.lines[field]);
+    let mut statements: Vec<String> = Vec::new();
+    let mut in_fence = false;
     for index in field + 1..end {
         let line = &doc.lines[index];
         if line.trim().is_empty() {
@@ -1130,22 +1208,32 @@ fn nested_value(doc: &Doc, field: usize, end: usize) -> String {
         if indent(line) <= own {
             break;
         }
-        let text = if doc.fenced[index] {
-            let marker = line.trim_start().starts_with(['`', '~']);
-            (!marker).then(|| line.trim().to_owned())
+        let fenced = doc.fenced[index];
+        let text = if fenced {
+            Some(line.as_str())
         } else {
-            doc.visible[index].clone()
+            doc.visible[index].as_deref()
         };
         let Some(text) = text else { continue };
         let mut value = text.trim();
         while let Some(marker) = list_marker(value, false) {
             value = value[marker..].trim_start();
         }
-        if !value.is_empty() {
-            return value.to_owned();
+        if fenced && fence_marker(value).is_some() {
+            in_fence = false;
+            continue;
         }
+        match statements.last_mut().filter(|_| fenced && in_fence) {
+            Some(statement) => {
+                statement.push(' ');
+                statement.push_str(value);
+            }
+            None if !value.is_empty() => statements.push(value.to_owned()),
+            None => {}
+        }
+        in_fence = fenced;
     }
-    String::new()
+    statements
 }
 
 fn is_word_byte(byte: u8) -> bool {
@@ -1270,16 +1358,36 @@ fn link_destination(text: &str) -> (String, &str) {
     (text.to_owned(), "")
 }
 
+/// The label and the tail of a `[label]: tail` line.
+fn definition_parts(line: &str) -> Option<(&str, &str)> {
+    line.trim_start().strip_prefix('[')?.split_once("]:")
+}
+
 /// The target of a `[label]: target` reference definition. `[^1]:` is a footnote.
 fn reference_target(line: &str) -> Option<String> {
-    let text = line.trim_start().strip_prefix('[')?;
-    let (label, tail) = text.split_once("]:")?;
+    let (label, tail) = definition_parts(line)?;
     let (target, title) = link_destination(tail);
     let title = title.trim();
     // `[FACT]: the host owns it` is prose: CommonMark allows only a title after the target.
     let definition = title.is_empty() || title.starts_with(['"', '\'', '(']);
     (definition && !label.is_empty() && !label.starts_with('^') && !label.contains(']'))
         .then_some(target)
+}
+
+/// The target of a `[label]:` line that leaves its target to the next line, as CommonMark
+/// allows. Prose on that line makes no definition.
+fn continued_target(line: &str, next: &str) -> Option<String> {
+    reference_target(line).filter(String::is_empty)?;
+    reference_target(&format!("{line} {next}")).filter(|target| !target.is_empty())
+}
+
+/// The label a definition or footnote claims, folded as CommonMark matches labels.
+fn defined_label(line: &str) -> Option<String> {
+    let (label, _) = definition_parts(line)?;
+    (label.starts_with('^') || reference_target(line).is_some()).then(|| {
+        let words: Vec<&str> = label.split_whitespace().collect();
+        words.join(" ").to_uppercase().to_lowercase()
+    })
 }
 
 /// Link targets on a visible line: inline links, images and reference definitions.
@@ -1307,10 +1415,9 @@ fn is_external(target: &str) -> bool {
         })
 }
 
-/// GitHub's heading anchors, including the `-1` suffix of a repeated heading.
+/// GitHub's heading anchors. A repeated heading takes the first `-n` no heading holds.
 fn heading_slugs(doc: &Doc) -> BTreeSet<String> {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-    let mut slugs = BTreeSet::new();
     for heading in doc.headings() {
         let mut text = heading.text.clone();
         while let (Some(open), Some(middle)) = (text.find('['), text.find("](")) {
@@ -1337,15 +1444,15 @@ fn heading_slugs(doc: &Doc) -> BTreeSet<String> {
                 _ => None,
             })
             .collect();
-        let count = seen.entry(slug.clone()).or_insert(0);
-        slugs.insert(if *count == 0 {
-            slug.clone()
-        } else {
-            format!("{slug}-{count}")
-        });
-        *count += 1;
+        let mut unique = slug.clone();
+        while seen.contains_key(&unique) {
+            let count = seen.entry(slug.clone()).or_insert(0);
+            *count += 1;
+            unique = format!("{slug}-{count}");
+        }
+        seen.insert(unique, 0);
     }
-    slugs
+    seen.into_keys().collect()
 }
 
 /// Resolves a repository-relative link; `None` when it climbs out of the repository.
@@ -1402,9 +1509,26 @@ fn symlink_on_path(root: &Path, resolved: &str, symlinks: &BTreeSet<String>) -> 
 fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut Report) {
     // A spec can link one target many times. Each parse of it costs the whole target.
     let mut anchors: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    let mut labels: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in doc.visible.iter().enumerate() {
         let Some(line) = line else { continue };
-        for target in link_targets(line) {
+        if let Some(label) = defined_label(line) {
+            if let Some(first) = labels.get(&label) {
+                report.add(
+                    Rule::Link,
+                    &doc.rel,
+                    index + 1,
+                    format!(
+                        "`[{label}]` is already defined at line {first}. CommonMark keeps the \
+                         first and renders this one nowhere. Remove one"
+                    ),
+                );
+            }
+            labels.entry(label).or_insert(index + 1);
+        }
+        let next = doc.visible.get(index + 1).and_then(Option::as_deref);
+        let continued = next.and_then(|next| continued_target(line, next));
+        for target in link_targets(line).into_iter().chain(continued) {
             if is_external(&target) || target.is_empty() {
                 continue;
             }
@@ -1499,11 +1623,7 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
 
 /// What the header block of an index or single-file spec must state.
 fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
-    let headings = doc.headings();
-    let end = headings
-        .iter()
-        .find(|heading| heading.level == 2)
-        .map_or(doc.lines.len(), |heading| heading.index);
+    let end = header_end(doc);
     if !doc.lines.first().is_some_and(|line| line.starts_with("# ")) {
         report.add(
             Rule::Fields,
@@ -1513,19 +1633,19 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
         );
     }
     let mut value = |label: &str, valid: &dyn Fn(&str) -> bool, expected: &str| {
-        let found = find_field(doc, 0, end, label);
-        match found {
-            Some((_, value)) if valid(&value) => Some(value),
-            Some((index, value)) => {
+        let slot = format!("header.{label}");
+        match read_field(doc, 0, end, label, Some(slot), report) {
+            Field::Once(field) if valid(&field.value()) => Some(field),
+            Field::Once(field) => {
                 report.add(
                     Rule::Fields,
                     &doc.rel,
-                    index + 1,
-                    format!("`{label}: {value}` must be {expected}"),
+                    field.line + 1,
+                    format!("`{label}: {}` must be {expected}", field.value()),
                 );
                 None
             }
-            None => {
+            Field::Absent => {
                 report.add(
                     Rule::Fields,
                     &doc.rel,
@@ -1534,6 +1654,7 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
                 );
                 None
             }
+            Field::Repeated => None,
         }
     };
     value(
@@ -1568,17 +1689,54 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
         "YYYY-MM-DD",
     );
     let pin = value("Pin", &is_full_sha, "a full 40-hex commit SHA");
-    if let Some(owner) = owner {
+    for statement in owner.iter().flat_map(|field| &field.statements) {
         add_non_value(
             doc,
             1,
             HEADER_OWNER_SLOT,
-            &owner,
-            non_value(&owner, true),
+            statement,
+            non_value(statement, true),
             report,
         );
     }
-    pin
+    pin.map(|field| field.value())
+}
+
+/// The line of the first `##`. What stands above it is the file's header.
+fn header_end(doc: &Doc) -> usize {
+    doc.headings()
+        .iter()
+        .find(|heading| heading.level == 2)
+        .map_or(doc.lines.len(), |heading| heading.index)
+}
+
+/// The header owns the facts of a spec. The same field in a part or a section would be a
+/// second authority that no rule reads, however well it matches.
+fn check_restated_header(index: &Doc, parts: &[Doc], report: &mut Report) {
+    let mut scopes = Vec::new();
+    for label in HEADER_ONLY_FIELDS {
+        scopes.push((index, header_end(index), index.lines.len(), label));
+    }
+    for part in parts {
+        for label in HEADER_FIELDS {
+            let everywhere = HEADER_ONLY_FIELDS.contains(&label);
+            let end = if everywhere {
+                part.lines.len()
+            } else {
+                header_end(part)
+            };
+            scopes.push((part, 0, end, label));
+        }
+    }
+    for (doc, start, end, label) in scopes {
+        if let Some(line) = field_lines(doc, start, end, label).first() {
+            let detail = format!(
+                "`{label}:` belongs to the header of `{}` alone. Remove it here",
+                index.rel
+            );
+            add_duplicate(doc, line + 1, detail, None, report);
+        }
+    }
 }
 
 fn add_non_value(
@@ -1611,15 +1769,18 @@ fn check_tracker(doc: &Doc, stem: &str, report: &mut Report) {
     let id = stem.split('-').next().unwrap_or("");
     let digits = id.trim_start_matches(|ch: char| ch.is_ascii_alphabetic());
     let expected = format!("{}-{digits}", id[..id.len() - digits.len()].to_uppercase());
-    if let Some((index, value)) = find_field(doc, 0, doc.lines.len(), "Tracker")
-        && value != expected
-    {
-        report.add(
-            Rule::Fields,
-            &doc.rel,
-            index + 1,
-            format!("`Tracker: {value}` must be `{expected}`, the ID in the spec name"),
-        );
+    let end = header_end(doc);
+    // `check_header` refuses a repeat, which has no single value to compare.
+    if let [line] = field_lines(doc, 0, end, "Tracker")[..] {
+        let value = Stated::read(doc, line, end, "Tracker").value();
+        if value != expected {
+            report.add(
+                Rule::Fields,
+                &doc.rel,
+                line + 1,
+                format!("`Tracker: {value}` must be `{expected}`, the ID in the spec name"),
+            );
+        }
     }
 }
 
@@ -1684,8 +1845,19 @@ fn check_index_sections(doc: &Doc, report: &mut Report) {
 fn check_part_sections(parts: &[Doc], report: &mut Report) {
     let mut last = 0;
     let mut seen = BTreeSet::new();
+    let mut titles = BTreeSet::new();
     for doc in parts {
         for (index, text) in section_headings(doc) {
+            // Parts may split a section under subtitles, never restate one.
+            if !titles.insert(text.clone()) {
+                report.add(
+                    Rule::Sections,
+                    &doc.rel,
+                    index + 1,
+                    format!("`## {text}` repeats. A split section gives each part a subtitle"),
+                );
+                continue;
+            }
             match canonical_section(&text) {
                 Some(number) if INDEX_SECTIONS.contains(&number) => report.add(
                     Rule::Sections,
@@ -1727,7 +1899,25 @@ fn check_part_sections(parts: &[Doc], report: &mut Report) {
     }
 }
 
+/// A file has one title, or a reader cannot tell which one names it.
+fn check_titles(docs: &[&Doc], report: &mut Report) {
+    for doc in docs {
+        let mut titles = doc.headings().iter().filter(|heading| heading.level == 1);
+        if let (Some(_), Some(second)) = (titles.next(), titles.next()) {
+            report.add(
+                Rule::Sections,
+                &doc.rel,
+                second.index + 1,
+                format!("a file has one `# ` title; `# {}` is a second", second.text),
+            );
+        }
+    }
+}
+
 fn check_part_header(doc: &Doc, report: &mut Report) {
+    for label in PART_FIELDS {
+        read_field(doc, 0, header_end(doc), label, None, report);
+    }
     let mut lines = doc.lines.iter().filter(|line| !line.trim().is_empty());
     let title = lines.next().is_some_and(|line| line.starts_with("# "));
     let backlink = lines
@@ -1833,11 +2023,11 @@ fn part_table(index: &Doc, report: &mut Report) -> Vec<String> {
     parts
 }
 
-/// The ID a heading defines: it opens the heading, alone or before `: `.
+/// The ID a heading defines: it opens the heading, whatever follows, so a differently
+/// worded restatement is still a second definition.
 fn defined_id(text: &str) -> Option<(&'static str, u32)> {
-    let (kind, number, end) = parse_id(text)?;
-    let tail = &text[end..];
-    (tail.is_empty() || tail.starts_with(": ")).then_some((kind, number))
+    let (kind, number, _) = parse_id(text.trim_start_matches(LABEL_MARKS))?;
+    Some((kind, number))
 }
 
 /// Only a blocker's owner stays legal as `UNKNOWN`: root AGENTS.md tells an agent to say
@@ -1849,7 +2039,8 @@ fn allows_unknown(kind: &str, label: &str) -> bool {
 struct Definition {
     file: String,
     line: usize,
-    open: bool,
+    /// `None` for a blocker with no single `Status:`, which a field rule already refused.
+    open: Option<bool>,
 }
 
 /// Definitions and field checks across every document of one spec.
@@ -1898,27 +2089,39 @@ fn check_definitions(
                     format!("{kind}-{number} must be defined in section {owner}"),
                 );
             }
-            let mut required = |labels: &[&str], rule: Rule| {
-                for label in labels {
-                    // A second statement of a field obeys the rule the first one does.
-                    let values: Vec<_> = fields(doc, heading.index + 1, body, label).collect();
-                    if values.is_empty() || values.iter().any(|(_, value)| value.is_empty()) {
-                        report.add(
-                            rule,
-                            &doc.rel,
-                            line,
-                            format!("{kind}-{number} needs a non-empty `{label}:` field"),
-                        );
-                        continue;
-                    }
-                    for (index, value) in values {
+            let mut stated: BTreeMap<&str, Stated> = BTreeMap::new();
+            let mut required = |labels: &[&'static str], rule: Rule| {
+                for label in labels.iter().copied() {
+                    let slot = format!("{kind}-{number}.{label}");
+                    let read = read_field(
+                        doc,
+                        heading.index + 1,
+                        body,
+                        label,
+                        Some(slot.clone()),
+                        report,
+                    );
+                    let field = match read {
+                        Field::Once(field) if !field.statements.is_empty() => field,
+                        Field::Repeated => continue,
+                        Field::Absent | Field::Once(_) => {
+                            report.add(
+                                rule,
+                                &doc.rel,
+                                line,
+                                format!("{kind}-{number} needs a non-empty `{label}:` field"),
+                            );
+                            continue;
+                        }
+                    };
+                    for statement in &field.statements {
                         let found =
-                            non_value(&value, CONTROL_FIELDS.contains(label)).filter(|found| {
+                            non_value(statement, CONTROL_FIELDS.contains(&label)).filter(|found| {
                                 *found != NonValue::Unknown || !allows_unknown(kind, label)
                             });
-                        let slot = format!("{kind}-{number}.{label}");
-                        add_non_value(doc, index + 1, &slot, &value, found, report);
+                        add_non_value(doc, field.line + 1, &slot, statement, found, report);
                     }
+                    stated.insert(label, field);
                 }
             };
             match kind {
@@ -1928,38 +2131,47 @@ fn check_definitions(
                 "T" => required(&[TASK_BLOCKERS_FIELD], Rule::TaskFields),
                 _ => {}
             }
-            let status = (kind == "B")
-                .then(|| find_field(doc, heading.index + 1, body, "Status"))
-                .flatten();
-            if let Some((index, value)) = &status
-                && !matches!(value.as_str(), "open" | "closed")
+            let status = stated.get("Status");
+            if let Some(field) = status
+                && !matches!(field.value().as_str(), "open" | "closed")
             {
                 report.add(
                     Rule::BlockerFields,
                     &doc.rel,
-                    index + 1,
+                    field.line + 1,
                     format!("B-{number} `Status:` must be open or closed"),
                 );
             }
-            if kind == "T"
-                && let Some((index, value)) =
-                    find_field(doc, heading.index + 1, body, TASK_BLOCKERS_FIELD)
-                && value != "none"
-                && id_tokens(&value).is_empty()
-            {
-                report.add(
-                    Rule::TaskFields,
-                    &doc.rel,
-                    index + 1,
-                    format!("T-{number} `{TASK_BLOCKERS_FIELD}:` must be none or stable IDs"),
-                );
+            if let Some(field) = stated.get(TASK_BLOCKERS_FIELD) {
+                let none = field.statements.iter().any(|text| text == "none");
+                let prose = field
+                    .statements
+                    .iter()
+                    .any(|text| id_tokens(text).is_empty());
+                let settled = if none {
+                    field.statements.len() == 1
+                } else {
+                    !prose
+                };
+                if !settled {
+                    report.add(
+                        Rule::TaskFields,
+                        &doc.rel,
+                        field.line + 1,
+                        format!("T-{number} `{TASK_BLOCKERS_FIELD}:` must be none or stable IDs"),
+                    );
+                }
             }
             defined.insert(
                 (kind, number),
                 Definition {
                     file: doc.rel.clone(),
                     line,
-                    open: status.is_some_and(|(_, value)| value == "open"),
+                    open: status.and_then(|field| match field.value().as_str() {
+                        "open" => Some(true),
+                        "closed" => Some(false),
+                        _ => None,
+                    }),
                 },
             );
         }
@@ -2057,16 +2269,21 @@ fn check_open_blockers(
     else {
         return;
     };
+    let blockers = |wanted: Option<bool>| -> BTreeSet<u32> {
+        defined
+            .iter()
+            .filter(|((kind, _), definition)| *kind == "B" && definition.open == wanted)
+            .map(|((_, number), _)| *number)
+            .collect()
+    };
+    let open = blockers(Some(true));
+    let unsettled = blockers(None);
     let listed: BTreeSet<u32> = (headings[at].index + 1..index.body_end(headings, at))
         .filter_map(|line| index.visible[line].as_deref())
         .flat_map(id_tokens)
         .filter(|token| token.kind == "B" && !token.foreign)
         .map(|token| token.number)
-        .collect();
-    let open: BTreeSet<u32> = defined
-        .iter()
-        .filter(|((kind, _), definition)| *kind == "B" && definition.open)
-        .map(|((_, number), _)| *number)
+        .filter(|number| !unsettled.contains(number))
         .collect();
     if listed != open {
         report.add(
@@ -2101,10 +2318,12 @@ fn is_line_part(text: &str) -> bool {
 /// Reads one inline-code span. A citation names a repository file, so an image tag, a
 /// domain or an absolute path is not one.
 fn parse_citation(span: &str) -> Option<Citation<'_>> {
-    // A package path holds `@`, and a commit holds neither `/` nor `:`.
-    let (location, sha) = match span.rsplit_once('@') {
-        Some((location, sha)) if !sha.contains(['/', ':']) => (location, Some(sha)),
-        _ => (span, None),
+    // A package path holds `@` before the line part. The first `@` after it opens the
+    // commit, so a second pin stays in the commit text for `CITE-SHA` to refuse.
+    let colon = span.rfind(':')?;
+    let (location, sha) = match span[colon..].split_once('@') {
+        Some((lines, sha)) => (&span[..colon + lines.len()], Some(sha)),
+        None => (span, None),
     };
     let (path, last) = location.rsplit_once(':')?;
     let (path, lines) = match path.rsplit_once(':') {
@@ -2208,6 +2427,8 @@ fn check_structure(
     }
     let mut docs: Vec<&Doc> = vec![index];
     docs.extend(parts);
+    check_titles(&docs, report);
+    check_restated_header(index, parts, report);
     let defined = check_definitions(&docs, report);
     check_references(&docs, &defined, report);
     check_fences(&docs, report);
@@ -2631,7 +2852,14 @@ fn settle_unknowns(
     let Structure::Migrated(allowed) = &row.structure else {
         return;
     };
-    let found = take_unknowns(structure);
+    let mut found = take_unknowns(structure);
+    // A repeated slot holds no single value yet. The repeat is the finding, not the row.
+    let repeated = structure
+        .findings
+        .iter()
+        .filter(|finding| finding.rule == Rule::FieldDuplicate)
+        .filter_map(|finding| finding.slot.clone());
+    found.extend(repeated.filter(|slot| allowed.contains(slot)));
     if let Some(slot) = found.difference(allowed).next() {
         report.add(
             Rule::BaselineGrew,
@@ -2812,12 +3040,13 @@ fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
         }
         inside = inside || line.trim() == "```markdown";
     }
-    if body.is_empty() {
+    let fences = doc.lines.iter().filter(|line| line.trim() == "```markdown");
+    if body.is_empty() || fences.count() != 1 {
         report.add(
             Rule::Sections,
             TEMPLATE,
             1,
-            "the template needs one ```markdown fence".to_owned(),
+            "the template needs exactly one ```markdown fence".to_owned(),
         );
         return Ok(());
     }
