@@ -1,0 +1,56 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-session-v1",
+  "scope": "@keld/electron session.webRequest cells for draw.io's two listener registrations on macOS at Electron 44.4.5 (onBeforeRequest with the file://* filter and onHeadersReceived, both installed in app.whenReady at drawio-desktop@2edf9fb src/main/electron.js:987-1010); red until GH-553, then an intentional divergence; not the F05-T1 probe list a-g, not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "headless-lifecycle-conformance",
+    "linux": "headless-lifecycle-conformance",
+    "windows": "headless-lifecycle-conformance"
+  },
+  "doc_snapshots": {
+    "docs/api/web-request.md": "sha256:ea683f5e45607e75da85aeeddfd335e3552bde228ec1b3afc5cc303fdd3c8800"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "web-request.on-before-request.file-url-filter",
+      "oracle_id": "electron-v44.4.5.web-request.on-before-request",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-request.md#webrequestonbeforerequestfilter-listener",
+        "quote": "The `listener` will be called with `listener(details, callback)` when a request\nis about to occur.",
+        "quote_sha256": "sha256:1c9c3cbb1ba18bee2cfb02f50fd0ee85e9162928fde0050514eba8658cda235d"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-553",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/session_web_request.rs",
+      "test_name": "web_request_on_before_request_file_url_filter_today_no_session_export_registration_throws_type_error",
+      "negative_control": "Today: exporting a session whose defaultSession.webRequest.onBeforeRequest accepts draw.io's ({urls: ['file://*']}, listener) registration (drawio-desktop@2edf9fb src/main/electron.js:1010) without inverting this case fails it: the fixture records returned:undefined instead of threw:TypeError. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; file:// read policy is host-owned (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+    },
+    {
+      "operation_id": "web-request.on-headers-received.response-headers",
+      "oracle_id": "electron-v44.4.5.web-request.on-headers-received",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-request.md#webrequestonheadersreceivedfilter-listener",
+        "quote": "The `listener` will be called with `listener(details, callback)` when HTTP\nresponse headers of a request have been received.",
+        "quote_sha256": "sha256:6065527754ee504f66e2cd6cce7b758726d2b0bcb76cb4a6eea405b1c70cc16f"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-553",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/session_web_request.rs",
+      "test_name": "web_request_on_headers_received_today_no_session_export_registration_throws_type_error",
+      "negative_control": "Today: exporting a session whose defaultSession.webRequest.onHeadersReceived accepts draw.io's unfiltered (listener) registration (drawio-desktop@2edf9fb src/main/electron.js:994) without inverting this case fails it: the fixture records returned:undefined instead of threw:TypeError. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; response headers (CSP) are host-injected (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+    }
+  ]
+}
