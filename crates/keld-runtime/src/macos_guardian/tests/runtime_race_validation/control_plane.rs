@@ -83,6 +83,10 @@ impl Drop for ControlPlane {
     fn drop(&mut self) {
         lock_recovery(&self.recovery).deny();
         self.consumption_probe.take();
+        // Disconnect the relay command channel before joining, so a relay
+        // parked in `recv_timeout(COLLECTION)` returns now, not after the
+        // full collection window. Already-queued commands are still received.
+        drop(std::mem::replace(&mut self.commands, mpsc::channel().0));
         if let Some(stream) = self.guardian_control.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }

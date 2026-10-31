@@ -13,7 +13,7 @@ use core::fmt::Write as _;
 use std::fs;
 use std::io;
 #[cfg(windows)]
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 #[cfg(unix)]
@@ -1485,177 +1485,13 @@ impl<P: WindowsLifecyclePeerPin> WindowsLifecycleRendezvousClient<P> {
 }
 
 #[cfg(windows)]
-const LIFECYCLE_BINDING_RECORD_LEN: usize = 8 + 1 + (32 * 3) + (32 * 2) + (4 * 2);
-
+mod lifecycle_binding_transcript;
 #[cfg(windows)]
-fn lifecycle_binding_record(
-    magic: [u8; 8],
-    binding: WindowsLifecycleBinding,
-    client_nonce: SessionToken,
-    server_nonce: SessionToken,
-    client_pid: u32,
-    server_pid: u32,
-) -> [u8; LIFECYCLE_BINDING_RECORD_LEN] {
-    let mut record = [0; LIFECYCLE_BINDING_RECORD_LEN];
-    let mut cursor = 0;
-    record[cursor..cursor + magic.len()].copy_from_slice(&magic);
-    cursor += magic.len();
-    record[cursor] = binding.purpose as u8;
-    cursor += 1;
-    for identity in [
-        binding.installation_id,
-        binding.attempt_id,
-        binding.lifecycle_channel_id,
-        *client_nonce.as_bytes(),
-        *server_nonce.as_bytes(),
-    ] {
-        record[cursor..cursor + identity.len()].copy_from_slice(&identity);
-        cursor += identity.len();
-    }
-    for pid in [client_pid, server_pid] {
-        record[cursor..cursor + 4].copy_from_slice(&pid.to_le_bytes());
-        cursor += 4;
-    }
-    debug_assert_eq!(cursor, record.len());
-    record
-}
-
-#[cfg(windows)]
-fn authenticate_lifecycle_binding_server(
-    stream: &mut WindowsNamedPipeBootstrapStream,
-    binding: WindowsLifecycleBinding,
-    client_nonce: SessionToken,
-    server_nonce: SessionToken,
-    client_pid: u32,
-    server_pid: u32,
-) -> io::Result<[u8; LIFECYCLE_BINDING_RECORD_LEN]> {
-    let challenge = lifecycle_binding_record(
-        *b"KELD-LC1",
-        binding,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    );
-    stream.write_all(&challenge)?;
-    let mut acknowledgement = [0; LIFECYCLE_BINDING_RECORD_LEN];
-    stream.read_exact(&mut acknowledgement)?;
-    let expected_acknowledgement = lifecycle_binding_record(
-        *b"KELD-LA1",
-        binding,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    );
-    if acknowledgement != expected_acknowledgement {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "lifecycle acknowledgement does not match the authenticated install/attempt/peer",
-        ));
-    }
-    Ok(lifecycle_binding_record(
-        *b"KELD-LR1",
-        binding,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    ))
-}
-
-#[cfg(windows)]
-fn authenticate_lifecycle_binding_client(
-    stream: &mut WindowsNamedPipeBootstrapStream,
-    expectation: WindowsLifecycleExpectation,
-    client_nonce: SessionToken,
-    server_nonce: SessionToken,
-    client_pid: u32,
-    server_pid: u32,
-) -> io::Result<(WindowsLifecycleBinding, WindowsLifecycleBindingKnowledge)> {
-    let mut received = [0; LIFECYCLE_BINDING_RECORD_LEN];
-    stream.read_exact(&mut received)?;
-    let binding = decode_lifecycle_challenge(
-        &received,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    )?;
-    let knowledge = expectation.accepts(binding).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "keeper lifecycle challenge changed install, attempt, channel or purpose",
-        )
-    })?;
-    let acknowledgement = lifecycle_binding_record(
-        *b"KELD-LA1",
-        binding,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    );
-    stream.write_all(&acknowledgement)?;
-    let expected_receipt = lifecycle_binding_record(
-        *b"KELD-LR1",
-        binding,
-        client_nonce,
-        server_nonce,
-        client_pid,
-        server_pid,
-    );
-    let mut receipt = [0; LIFECYCLE_BINDING_RECORD_LEN];
-    stream.read_exact(&mut receipt)?;
-    if receipt != expected_receipt {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "lifecycle listener did not confirm one-use context consumption",
-        ));
-    }
-    Ok((binding, knowledge))
-}
-
-#[cfg(windows)]
-fn decode_lifecycle_challenge(
-    record: &[u8; LIFECYCLE_BINDING_RECORD_LEN],
-    client_nonce: SessionToken,
-    server_nonce: SessionToken,
-    client_pid: u32,
-    server_pid: u32,
-) -> io::Result<WindowsLifecycleBinding> {
-    if record[..8] != *b"KELD-LC1"
-        || record[105..137] != *client_nonce.as_bytes()
-        || record[137..169] != *server_nonce.as_bytes()
-        || record[169..173] != client_pid.to_le_bytes()
-        || record[173..177] != server_pid.to_le_bytes()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "keeper challenge has wrong protocol, nonce or connected-process transcript",
-        ));
-    }
-    let purpose = match record[8] {
-        1 => WindowsLifecyclePurpose::CoordinatorToKeeper,
-        2 => WindowsLifecyclePurpose::KeeperToSuccessor,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "keeper challenge has an unknown lifecycle purpose",
-            ));
-        }
-    };
-    let installation_id = record[9..41]
-        .try_into()
-        .map_err(|_| io::Error::other("installation ID record range changed"))?;
-    let attempt_id = record[41..73]
-        .try_into()
-        .map_err(|_| io::Error::other("attempt ID record range changed"))?;
-    let lifecycle_channel_id = record[73..105]
-        .try_into()
-        .map_err(|_| io::Error::other("lifecycle channel record range changed"))?;
-    WindowsLifecycleBinding::new(installation_id, attempt_id, lifecycle_channel_id, purpose)
-}
+use lifecycle_binding_transcript::{
+    authenticate_lifecycle_binding_client, authenticate_lifecycle_binding_server,
+};
+#[cfg(all(test, windows))]
+use lifecycle_binding_transcript::{decode_lifecycle_challenge, lifecycle_binding_record};
 
 #[cfg(windows)]
 impl WindowsNamedPipeBootstrapListener {
@@ -2785,7 +2621,7 @@ mod named_pipe_tests {
         assert_ne!(peer.process_id(), rejected_id);
         assert_eq!(peer.session_id(), server_session);
         assert_eq!(peer.token_facts().session_id, server_session);
-        assert!(!peer.token_facts().user_sid.is_empty());
+        assert_ne!(peer.token_facts().user_sid.len(), 0);
         assert!(
             !peer
                 .process_pin()
@@ -3391,6 +3227,85 @@ mod named_pipe_tests {
                 0x5566_7788,
             ),
             "role-direction mismatch differs"
+        );
+    }
+
+    #[test]
+    fn lifecycle_challenge_rejects_swapped_nonces_and_connected_process_identity() {
+        let binding = test_lifecycle_binding();
+        let client_nonce = SessionToken::from_bytes([0x44; 32]);
+        let server_nonce = SessionToken::from_bytes([0x55; 32]);
+        let client_pid = 0x1122_3344;
+        let server_pid = 0x5566_7788;
+        let challenge = super::lifecycle_binding_record(
+            *b"KELD-LC1",
+            binding,
+            client_nonce,
+            server_nonce,
+            client_pid,
+            server_pid,
+        );
+
+        assert_eq!(
+            super::decode_lifecycle_challenge(
+                &challenge,
+                client_nonce,
+                server_nonce,
+                client_pid,
+                server_pid,
+            )
+            .expect("the exact independently bound lifecycle challenge"),
+            binding
+        );
+
+        // Every changed field is independently an invalid connected-peer
+        // transcript, even when the other fields retain their correct bytes.
+        for (label, offset) in [
+            ("challenge magic", 0),
+            ("client nonce", 105),
+            ("server nonce", 137),
+            ("connected client PID", 169),
+            ("connected server PID", 173),
+        ] {
+            let mut damaged = challenge;
+            damaged[offset] ^= 1;
+            let error = super::decode_lifecycle_challenge(
+                &damaged,
+                client_nonce,
+                server_nonce,
+                client_pid,
+                server_pid,
+            )
+            .expect_err("one forged transcript field cannot authenticate a peer");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{label}: {error}"
+            );
+            assert!(
+                error.to_string().contains(
+                    "keeper challenge has wrong protocol, nonce or connected-process transcript"
+                ),
+                "{label}: {error}"
+            );
+        }
+
+        let mut unknown_purpose = challenge;
+        unknown_purpose[8] = 0xff;
+        let error = super::decode_lifecycle_challenge(
+            &unknown_purpose,
+            client_nonce,
+            server_nonce,
+            client_pid,
+            server_pid,
+        )
+        .expect_err("unknown lifecycle purpose must never admit handoff");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("keeper challenge has an unknown lifecycle purpose"),
+            "{error}"
         );
     }
 

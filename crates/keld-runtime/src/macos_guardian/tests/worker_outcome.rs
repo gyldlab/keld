@@ -159,6 +159,7 @@ fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
         worker: Some(thread::spawn(|| Ok(()))),
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,
@@ -259,6 +260,7 @@ fn zero_guardian_exit_with_successful_worker_reaps_registered_group() {
         worker: Some(thread::spawn(|| Ok(()))),
         shutdown_attributed: true,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,
@@ -343,6 +345,7 @@ fn poll_fatal_inspection_error_reaps_registered_group() {
         worker: None,
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,

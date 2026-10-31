@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::delivery_assertions::{assert_cleanup_route, assert_cut_outcome};
 use super::delivery_fixture::{CutFixture, CutObservation};
 use super::records_and_cut_types::{COLLECTION, DeliveryCut, RelayCommand, RelayReceipt};
-use super::{GuardedPrimaryUpdate, RoleEvent, assert_gone};
+use super::{GUARDIAN_SHUTDOWN_DEADLINE, GuardedPrimaryUpdate, RoleEvent, assert_gone};
 
 #[test]
 fn prepared_delivery_zero_bytes_retires_exact_unclaimed_host_lease() {
@@ -31,6 +31,7 @@ fn run_delivery_cut(cut: DeliveryCut) {
     let mut fixture = CutFixture::start(cut);
     let response = fixture.release_after_clear();
     let mut began = None;
+    let mut released = None;
     match cut {
         DeliveryCut::Zero => {
             fixture.accept_actual_q();
@@ -94,6 +95,7 @@ fn run_delivery_cut(cut: DeliveryCut) {
                 .recv_timeout(COLLECTION)
                 .expect("exact factory/returned-lease boundary");
             fixture.accept_actual_q();
+            released = Some(Instant::now());
             fixture
                 .phase_release
                 .send(())
@@ -102,6 +104,16 @@ fn run_delivery_cut(cut: DeliveryCut) {
     }
     let observation = fixture.collect(&response);
     assert_observation(cut, &observation, began);
+    if let Some(released) = released {
+        // The never-spawned successor has no child to report a PID. Its
+        // revoke must not wait out the pre-exec PID receipt deadline, or an
+        // orderly host shutdown exceeds its own Guardian exit deadline.
+        let revoke = observation.terminal_at.duration_since(released);
+        assert!(
+            revoke < GUARDIAN_SHUTDOWN_DEADLINE / 4,
+            "unspawned successor revoke stalled {revoke:?} on the PID receipt deadline"
+        );
+    }
 }
 
 fn assert_observation(cut: DeliveryCut, observed: &CutObservation, began: Option<Instant>) {

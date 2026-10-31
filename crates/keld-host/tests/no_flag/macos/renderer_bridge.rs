@@ -10,9 +10,15 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 const TITLE: &str = "KEL142 Renderer Bridge Acceptance";
 const RESPONSE_PATH: &str = "/KEL142_RENDERED_renderer-click_42";
+/// Requested by the page right after its click listener is installed (GH-652).
+const ARMED_PATH: &str = "/KEL142_ARMED";
+/// Backoff of the beacon's nonblocking accept poll; the test's receive
+/// deadlines, not this interval, bound each request.
+const BEACON_ACCEPT_POLL: Duration = Duration::from_millis(10);
 const BEACON_GIF: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;";
 // Reuse GH-652's notification drain and fresh front-to-back window census.
 // The geometric candidate is a posting prerequisite, not delivery proof.
@@ -200,6 +206,10 @@ go.addEventListener("click", async () => {{
     encodeURIComponent(response.message) + "_" + response.count;
   result.append(pixel);
 }}, {{ once: true }});
+// GH-652: an on-screen window does not mean this document has run. The
+// harness posts its OS click only after this request reports the listener.
+const armed = new Image();
+armed.src = "http://127.0.0.1:{port}{ARMED_PATH}";
 </script>
 </body>
 </html>
@@ -267,61 +277,129 @@ pub(crate) fn bundle_public_api_entry(
     fs::remove_file(build).expect("remove bundle-only script");
 }
 
+/// Copies the ordinary package layout without bundling or transport aliases.
+/// Every source file keeps its bytes; the late import therefore owns a distinct
+/// stamped transport namespace from the optional Host-preloaded sidecar.
+pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
+    fn copy_directory(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("package source destination");
+        for entry in fs::read_dir(source).expect("canonical package source directory") {
+            let entry = entry.expect("canonical source entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("canonical source type").is_dir() {
+                copy_directory(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("byte-identical package source");
+            }
+        }
+    }
+    for package in ["api", "electron", "kipc"] {
+        copy_directory(
+            &repo.join(format!("packages/@keld/{package}/src")),
+            &destination.join(format!("@keld/{package}/src")),
+        );
+    }
+}
+
 /// Bundles an `@keld/api` entry with the kipc transport left external as
 /// `./kipc-transport.ts` (GH-527 §4.2: the Worker's entry is that file).
-const KIPC_SIDECAR_BUILD: &str = r#"const [entry, out] = process.argv.slice(2);
-const result = await Bun.build({
-  entrypoints: [entry],
-  target: "bun",
-  format: "esm",
-  plugins: [{
-    name: "kipc-transport-sidecar",
-    setup(build) {
-      build.onResolve({ filter: /[\\/]kipc[\\/]src[\\/]transport\.ts$/ }, () => ({
-        path: "./kipc-transport.ts",
-        external: true,
-      }));
-    },
-  }],
-});
-if (!result.success) {
-  console.error(result.logs);
-  process.exit(1);
-}
-await Bun.write(out, result.outputs[0]);
-"#;
+const KIPC_SIDECAR_BUILD: &str =
+    include_str!("../../../../../packages/@keld/api/fixtures/staged-api-bundle.ts");
 
-fn spawn_render_beacon() -> (u16, mpsc::Receiver<Vec<u8>>, thread::JoinHandle<()>) {
+/// The page's beacon server and the handles the test keeps for it.
+struct RenderBeacon {
+    port: u16,
+    requests: mpsc::Receiver<Vec<u8>>,
+    /// Dropping this ends the server thread at its next accept poll.
+    stop: mpsc::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
+
+/// Serves exactly the page's two requests, in arrival order: the armed listener
+/// report, then the rendered Echo response. Accept is nonblocking, so the thread
+/// never parks past the test: it ends once `stop` is dropped, and the test's
+/// `recv_timeout(EVENT_DEADLINE)` bounds each request. A connection that closes
+/// before sending a byte (a `WebKit` speculative preconnect) is ignored.
+fn spawn_render_beacon() -> RenderBeacon {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind KEL-142 render beacon");
     let port = listener.local_addr().expect("render beacon address").port();
-    let (tx, rx) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept KEL-142 render beacon");
-        stream
-            .set_read_timeout(Some(EVENT_DEADLINE))
-            .expect("render beacon deadline");
-        let mut request = Vec::new();
-        let mut chunk = [0_u8; 512];
-        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-            let read = stream.read(&mut chunk).expect("read render beacon");
-            assert_ne!(read, 0, "renderer beacon closed before headers");
-            request.extend_from_slice(&chunk[..read]);
-            assert!(
-                request.len() <= 8192,
-                "renderer beacon headers are unbounded"
-            );
+    listener
+        .set_nonblocking(true)
+        .expect("render beacon nonblocking accept");
+    let (tx, requests) = mpsc::channel();
+    let (stop, stopped) = mpsc::channel::<()>();
+    let thread = thread::spawn(move || {
+        let mut served = 0;
+        while served < 2 {
+            if let Err(mpsc::TryRecvError::Disconnected) = stopped.try_recv() {
+                return;
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if let Some(request) = serve_beacon_request(stream) {
+                        tx.send(request).expect("report render beacon");
+                        served += 1;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::park_timeout(BEACON_ACCEPT_POLL);
+                }
+                Err(error) => panic!("accept KEL-142 render beacon: {error}"),
+            }
         }
-        let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            BEACON_GIF.len()
-        );
-        stream
-            .write_all(header.as_bytes())
-            .expect("beacon response header");
-        stream.write_all(BEACON_GIF).expect("beacon response gif");
-        tx.send(request).expect("report render beacon");
     });
-    (port, rx, handle)
+    RenderBeacon {
+        port,
+        requests,
+        stop,
+        thread,
+    }
+}
+
+/// Reads one request's headers and answers with the beacon GIF. Returns `None`
+/// for a connection that closed before sending any byte.
+fn serve_beacon_request(mut stream: std::net::TcpStream) -> Option<Vec<u8>> {
+    stream
+        .set_nonblocking(false)
+        .expect("render beacon blocking stream");
+    stream
+        .set_read_timeout(Some(EVENT_DEADLINE))
+        .expect("render beacon deadline");
+    let mut request = Vec::new();
+    let mut chunk = [0_u8; 512];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = stream.read(&mut chunk).expect("read render beacon");
+        if read == 0 && request.is_empty() {
+            return None;
+        }
+        assert_ne!(read, 0, "renderer beacon closed before headers");
+        request.extend_from_slice(&chunk[..read]);
+        assert!(
+            request.len() <= 8192,
+            "renderer beacon headers are unbounded"
+        );
+    }
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        BEACON_GIF.len()
+    );
+    stream
+        .write_all(header.as_bytes())
+        .expect("beacon response header");
+    stream.write_all(BEACON_GIF).expect("beacon response gif");
+    Some(request)
+}
+
+/// Waits for the page's armed report; the window can be on screen before it.
+fn expect_armed(requests: &mpsc::Receiver<Vec<u8>>) {
+    let armed = requests
+        .recv_timeout(EVENT_DEADLINE)
+        .expect("renderer never reported its click listener armed");
+    let armed = String::from_utf8_lossy(&armed);
+    assert!(
+        armed.starts_with(&format!("GET {ARMED_PATH} ")),
+        "unexpected armed beacon: {armed}"
+    );
 }
 
 #[test]
@@ -331,7 +409,12 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
         .parent()
         .and_then(Path::parent)
         .expect("workspace root");
-    let (port, beacon_rx, beacon_thread) = spawn_render_beacon();
+    let RenderBeacon {
+        port,
+        requests: beacon_rx,
+        stop: beacon_stop,
+        thread: beacon_thread,
+    } = spawn_render_beacon();
 
     bundle_api_entry(&fixture.project, repo);
     fs::write(fixture.project.join("index.html"), renderer_html(port)).expect("renderer HTML");
@@ -368,6 +451,8 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
     let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let windows = observer.expect_initial(host_pid, "kel142-renderer-bridge");
         assert_eq!(windows.len(), 1, "one host-owned WKWebView window");
+        // GH-652: click only once the page reports its listener installed.
+        expect_armed(&beacon_rx);
         click_output = Some(
             Command::new("/usr/bin/xcrun")
                 .args(["swift", "-e", CLICK_SCRIPT, &host_pid.to_string(), TITLE])
@@ -387,6 +472,8 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
         beacon_thread.join().expect("render beacon joins");
         windows
     }));
+    // Ends the beacon thread if the observation failed before both requests.
+    drop(beacon_stop);
     let (windows, output) =
         finish_renderer_observation(cleanup, host_pid, click_output.as_ref(), observation);
     let click = click_output.expect("successful observation retained click output");
@@ -395,6 +482,18 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
         "unexpected KEL-142 acceptance cleanup status: {output:?}"
     );
     let stderr = String::from_utf8(output.stderr).expect("KEL-142 stderr UTF-8");
+    assert_single_admitted_roundtrip(&stderr);
+    let click_evidence = String::from_utf8_lossy(&click.stdout);
+    eprintln!(
+        "KELD_KEL142_REAL_ACCEPTANCE host={host_pid} window={} path={RESPONSE_PATH} input={}",
+        windows[0],
+        click_evidence.trim()
+    );
+}
+
+// The host's acceptance report must show exactly one bound, admitted renderer
+// call reaching exactly one @keld/api handler invocation with the typed payload.
+fn assert_single_admitted_roundtrip(stderr: &str) {
     assert!(stderr.contains("KELD_KEL142_BIND webview="), "{stderr}");
     assert_eq!(
         stderr
@@ -416,12 +515,6 @@ fn real_pointer_roundtrip_uses_isolated_bridge_and_keld_api_handler() {
     assert!(
         stderr.contains("KELD_KEL142_BUN_HANDLER call=1 message=\"renderer-click\" count=42"),
         "{stderr}"
-    );
-    let click_evidence = String::from_utf8_lossy(&click.stdout);
-    eprintln!(
-        "KELD_KEL142_REAL_ACCEPTANCE host={host_pid} window={} path={RESPONSE_PATH} input={}",
-        windows[0],
-        click_evidence.trim()
     );
 }
 

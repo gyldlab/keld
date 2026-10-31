@@ -3,26 +3,42 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use crate::macos_guardian::generation_host::{
+    check_initial_recovery_decision, is_initial_recovery_denied,
+};
+
 use super::super::{
     CONTROL_CLEAR, CONTROL_PREPARE, CONTROL_PREPARED, GENERATION_CONTROL_POLL,
     GUARDIAN_SHUTDOWN_DEADLINE, GenerationControlPeer, GenerationControlReader,
     GenerationControlRecord, GuardedPrimary, HostGenerationState, RecoveryState,
-    SUPERVISED_QUIT_ACK_DEADLINE, control_exchange, finish_generation_control_eof, lock_recovery,
-    read_generation_control, runtime_io_kind, write_generation_control,
+    SUPERVISED_ORDERLY_ACK, SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_QUIT_ACCEPTED,
+    SUPERVISED_QUIT_ACK, SUPERVISED_QUIT_ACK_DEADLINE, control_exchange,
+    finish_generation_control_eof, lock_recovery, read_generation_control, runtime_io_kind,
+    write_generation_control,
 };
 
 fn owned_acknowledgment_primary() -> GuardedPrimary {
+    acknowledging_primary(SUPERVISED_QUIT_ACCEPTED, SUPERVISED_QUIT_ACK)
+}
+
+/// A real Bun peer on the host's own liveness/acknowledgment pipes that
+/// requires exactly `control` as its first byte, answers with `ack`, and then
+/// exits zero at the host's liveness EOF.
+fn acknowledging_primary(control: u8, ack: [u8; 3]) -> GuardedPrimary {
     // This owns a real ACK pipe peer, not a guardian/native mock claim.
     // The staged-Host case above separately proves the actual guardian.
-    let script = r#"
+    let ack = std::str::from_utf8(&ack).expect("ASCII acknowledgment");
+    let script = format!(
+        r#"
 const input = Bun.stdin.stream().getReader();
 const first = await input.read();
-if (first.done || first.value.byteLength !== 1 || first.value[0] !== 81) process.exit(2);
-process.stdout.write("KQA");
-while (!(await input.read()).done) {}
-"#;
-    let mut child = Command::new("bun")
-        .args(["-e", script])
+if (first.done || first.value.byteLength !== 1 || first.value[0] !== {control}) process.exit(2);
+process.stdout.write("{ack}");
+while (!(await input.read()).done) {{}}
+"#
+    );
+    let mut child = Command::new(super::test_support::verified_real_bun())
+        .args(["-e", &script])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -41,6 +57,7 @@ while (!(await input.read()).done) {}
         worker: None,
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,
@@ -95,6 +112,76 @@ fn control_eof_acknowledgment_is_order_independent_and_attributed() {
         assert!(status.success());
         assert!(repeat_status.success());
     }
+}
+
+/// The host's acknowledgment for a startup denied before its first PREPARE.
+#[derive(Clone, Copy)]
+enum DenialAcknowledgment {
+    /// The host's orderly S, answered by the peer's genuine KSA.
+    OrderlyS,
+    /// An accepted Quit (Q), answered by the peer's genuine KQA.
+    AcceptedQuit,
+}
+
+/// Runs one host shutdown whose generation worker ends with the product's
+/// own typed first-PREPARE recovery denial, with no registered group.
+fn denied_first_prepare_shutdown(
+    acknowledgment: DenialAcknowledgment,
+) -> Result<std::process::ExitStatus, crate::RuntimeError> {
+    let mut primary = match acknowledgment {
+        DenialAcknowledgment::OrderlyS => {
+            acknowledging_primary(SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_ORDERLY_ACK)
+        }
+        DenialAcknowledgment::AcceptedQuit => {
+            acknowledging_primary(SUPERVISED_QUIT_ACCEPTED, SUPERVISED_QUIT_ACK)
+        }
+    };
+    let recovery = Arc::clone(&primary.recovery_decision);
+    primary.worker = Some(std::thread::spawn(move || {
+        // The worker's real first-PREPARE decision, taken once the host has
+        // denied recovery (an observed state, bounded by the shutdown budget).
+        let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+        loop {
+            let state = lock_recovery(&recovery);
+            if state.denied {
+                return check_initial_recovery_decision(&state, Some(deadline));
+            }
+            drop(state);
+            if Instant::now() >= deadline {
+                return Err(crate::macos_guardian::lifecycle_error(
+                    "test first-PREPARE decision",
+                    io::Error::other("host never denied recovery"),
+                ));
+            }
+            std::thread::yield_now();
+        }
+    }));
+    if matches!(acknowledgment, DenialAcknowledgment::AcceptedQuit) {
+        primary.accept_shutdown()?;
+    }
+    primary.shutdown()
+}
+
+#[test]
+fn verified_ksa_reconciles_the_first_prepare_recovery_denial() {
+    // Architecture 06: the host accepts its privately typed first-PREPARE
+    // recovery-denial result after verified KSA, permanent initial denial,
+    // and no registered group.
+    let status = denied_first_prepare_shutdown(DenialAcknowledgment::OrderlyS)
+        .expect("an S acknowledged by KSA retires the denied first PREPARE");
+    assert!(status.success(), "{status:?}");
+}
+
+#[test]
+fn accepted_quit_cannot_reconcile_the_first_prepare_recovery_denial() {
+    // A KQA sets the same acknowledged flag as KSA but is not the verified
+    // KSA the specification requires, so the typed denial stays fatal.
+    let error = denied_first_prepare_shutdown(DenialAcknowledgment::AcceptedQuit)
+        .expect_err("a Quit acknowledgment cannot make a denied first PREPARE orderly");
+    assert!(
+        is_initial_recovery_denied(&error),
+        "the worker's typed denial must survive the Quit shutdown: {error}"
+    );
 }
 
 #[test]

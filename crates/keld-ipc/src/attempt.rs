@@ -658,8 +658,10 @@ fn sid_text(binary: &[u8]) -> Result<String, WindowsAttemptEndpointError> {
         .iter()
         .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
     let sub_authorities: Vec<u32> = sub_bytes
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect();
     let mut text = String::from("S-1-");
     let rendered = if authority >> 32 == 0 {

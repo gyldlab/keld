@@ -51,6 +51,7 @@ impl PersistentPrimaryFixture {
             .arg(entry)
             .arg(identity.dev().to_string())
             .arg(identity.ino().to_string())
+            .arg("0") // existing staged public-FS fixture is renderer-declared
             .env_remove("KELD_DEV_LEASE")
             .process_group(0)
             .stderr(Stdio::from(
@@ -283,6 +284,7 @@ fn poll_fatal_rejects_owned_guardian_zero_even_after_shutdown_attribution() {
         worker: None,
         shutdown_attributed: true,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,
@@ -369,6 +371,7 @@ fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
         })),
         shutdown_attributed: true,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,

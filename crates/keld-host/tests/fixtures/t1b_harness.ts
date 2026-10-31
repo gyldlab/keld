@@ -1,4 +1,3 @@
-
 const KEL96_ECHO_CHANNEL = 1;
 const KEL96_CONTROL = process.env.KELD_T1B_CONTROL;
 const KEL96_LINK = process.env.KELD_APP_LINK;
@@ -18,10 +17,14 @@ if (process.env.KELD_T3_CRASH_BEFORE_HELLO === "1") {
   process.exit(17);
 }
 if (process.env.KELD_DEV_LEASE !== undefined) {
-  throw new Error("KEL96 fixture inherited the host-only dev lease classification");
+  throw new Error(
+    "KEL96 fixture inherited the host-only dev lease classification",
+  );
 }
 if (process.env.KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION !== undefined) {
-  throw new Error("KEL96 fixture inherited the guardian registration authority");
+  throw new Error(
+    "KEL96 fixture inherited the guardian registration authority",
+  );
 }
 if (!KEL96_CONTROL || !KEL96_LINK) {
   throw new Error("KEL96 fixture requires KELD_T1B_CONTROL and KELD_APP_LINK");
@@ -73,7 +76,11 @@ const controlSocket = {
 };
 const control =
   process.platform === "win32"
-    ? await Bun.connect({ hostname: "127.0.0.1", port: Number(KEL96_CONTROL), socket: controlSocket })
+    ? await Bun.connect({
+        hostname: "127.0.0.1",
+        port: Number(KEL96_CONTROL),
+        socket: controlSocket,
+      })
     : await Bun.connect({ unix: KEL96_CONTROL, socket: controlSocket });
 
 let controlWriteChain: Promise<void> = Promise.resolve();
@@ -142,18 +149,69 @@ const appSocketHandlers = {
     notifyLinkClosed(new Error("KEL96 app link closed by host"));
   },
 };
-const appSocket =
-  process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
+type AppLinkSocket = { write(data: Uint8Array): number; end(): void };
+type HalfOpenAppLink = AppLinkSocket & { endWrite(): Promise<void> };
+
+// GH-1182: Bun.connect's end() closes both halves of a Linux app link, so only
+// a node:net half-open socket ends its write half while its read half still
+// receives what the host writes next. Every other run keeps Bun.connect. The
+// mode rides on the value of the post-HELLO hold flag, which the debug strict
+// sandbox already forwards as a value-only flag.
+async function connectHalfOpenAppLink(path: string): Promise<HalfOpenAppLink> {
+  const { createConnection } = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ path, allowHalfOpen: true });
+    socket.once("error", reject);
+    socket.once("connect", () => {
+      socket.off("error", reject);
+      socket.on("data", (chunk: Uint8Array) => {
+        reader.push(new Uint8Array(chunk));
+      });
+      socket.on("drain", () => appDrain.fire());
+      socket.on("error", (error: Error) => reader.fail(error));
+      socket.on("close", () =>
+        notifyLinkClosed(new Error("KEL96 app link closed by host")),
+      );
+      resolve({
+        write(data: Uint8Array): number {
+          if (socket.destroyed || !socket.writable) return -1;
+          socket.write(data);
+          return data.length;
+        },
+        end(): void {
+          socket.end();
+        },
+        endWrite(): Promise<void> {
+          return new Promise((finished) => {
+            socket.end(() => finished());
+          });
+        },
+      });
+    });
+  });
+}
+
+const preReadyHold = process.env.KELD_T3_EXIT_AFTER_HELLO;
+const halfOpenAppLink =
+  process.platform !== "win32" && preReadyHold === "half-open"
+    ? await connectHalfOpenAppLink(endpoint)
+    : undefined;
+const appSocket: AppLinkSocket =
+  halfOpenAppLink ??
+  (process.platform === "win32" && !isWin32PipeEndpoint(endpoint)
     ? await Bun.connect({
         hostname: "127.0.0.1",
         port: parseWin32DiagnosticPort(endpoint),
         socket: appSocketHandlers,
       })
-    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers });
+    : await Bun.connect({ unix: endpoint, socket: appSocketHandlers }));
 const writes = new WriteQueue(appSocket, appDrain);
 await withIoDeadline(writes.writeFrame(FrameKind.Hello, 0, 0, 0, token));
 const helloReply = await withIoDeadline(reader.readFrame());
-if (helloReply.header.kind !== FrameKind.Hello || helloReply.payload.length !== token.length) {
+if (
+  helloReply.header.kind !== FrameKind.Hello ||
+  helloReply.payload.length !== token.length
+) {
   throw new Error("KEL96 host did not complete the one authenticated HELLO");
 }
 for (let index = 0; index < token.length; index += 1) {
@@ -165,7 +223,13 @@ await sendControl(`HELLO ${process.pid} ${KEL96_LINK}`);
 if (process.platform === "win32") {
   if (process.env.KELD_T4_JOB_DESCENDANT === "1") {
     const descendant = Bun.spawn(
-      ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Sleep -Seconds 60",
+      ],
       { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
     );
     await sendControl(`DESCENDANT ${descendant.pid}`);
@@ -183,10 +247,9 @@ if (process.platform === "win32") {
     const strictProgram =
       process.env.KELD_T4_LINUX_STRICT === "1" &&
       (await Bun.file("/runtime/program").exists());
-    const descendantCommand =
-      strictProgram
-        ? ["/runtime/program", "-e", "await new Promise(() => {})"]
-        : ["/usr/bin/tail", "-f", "/dev/null"];
+    const descendantCommand = strictProgram
+      ? ["/runtime/program", "-e", "await new Promise(() => {})"]
+      : ["/usr/bin/tail", "-f", "/dev/null"];
     const descendant = Bun.spawn(descendantCommand, {
       stdin: "ignore",
       stdout: "ignore",
@@ -194,6 +257,48 @@ if (process.platform === "win32") {
     });
     await sendControl(`DESCENDANT ${descendant.pid}`);
   }
+}
+if (preReadyHold === "1" || preReadyHold === "half-open") {
+  // The parent holds the renderer's load open, so this authenticated
+  // generation cannot have reached Ready; it exits only on its command.
+  const marker = process.env.KELD_T3_PRE_READY_MARKER;
+  if (marker) await Bun.write(`${marker}.${process.pid}`, "attempt\n");
+  const command = await receiveCommand();
+  if (command === "CLOSE_PRE_READY_LINK") {
+    // GH-1182: end only the app link while this process and its control link
+    // stay live, so the host observes the link end before any Ready. The
+    // acknowledgment is this command's only control record: no LINK_EOF.
+    closeNotificationStarted = true;
+    if (halfOpenAppLink) {
+      // Acknowledge only once the write half has shut down; the read half
+      // stays open, so a later host Ready would still be delivered here.
+      await halfOpenAppLink.endWrite();
+      await sendControl("PRE_READY_WRITE_SHUTDOWN");
+      // Report a Ready the host still delivers to the surviving read half.
+      void (async (): Promise<void> => {
+        for (;;) {
+          const frame = await reader.readFrame();
+          if (
+            frame.header.kind === FrameKind.Event &&
+            frame.header.channel === LIFECYCLE_CHANNEL &&
+            frame.payload.length === 1 &&
+            frame.payload[0] === 0
+          ) {
+            await sendControl("READY_AFTER_WRITE_SHUTDOWN");
+            return;
+          }
+        }
+      })().catch(() => undefined);
+    } else {
+      appSocket.end();
+      await sendControl("PRE_READY_LINK_CLOSED");
+    }
+    await new Promise(() => {});
+  }
+  if (command !== "EXIT_PRE_READY") {
+    throw new Error(`KEL96 unexpected pre-Ready command ${command}`);
+  }
+  process.exit(19);
 }
 if (generationAttempt === 2) {
   // A local flush does not prove the peer observed both control records before
@@ -224,8 +329,12 @@ const lastWindowClosed = new Promise<void>((resolve) => {
 const readLoop = (async (): Promise<void> => {
   for (;;) {
     const frame = await reader.readFrame();
-    if (frame.header.kind === FrameKind.Event && frame.header.channel === LIFECYCLE_CHANNEL) {
-      if (frame.payload.length !== 1) throw new Error("KEL96 lifecycle Event is malformed");
+    if (
+      frame.header.kind === FrameKind.Event &&
+      frame.header.channel === LIFECYCLE_CHANNEL
+    ) {
+      if (frame.payload.length !== 1)
+        throw new Error("KEL96 lifecycle Event is malformed");
       if (frame.payload[0] === 0) {
         resolveReady?.();
         resolveReady = undefined;
@@ -240,7 +349,8 @@ const readLoop = (async (): Promise<void> => {
     }
     if (frame.header.kind === FrameKind.Reply) {
       const waiter = pending.get(frame.header.corr);
-      if (!waiter) throw new Error(`KEL96 unexpected Reply ${frame.header.corr}`);
+      if (!waiter)
+        throw new Error(`KEL96 unexpected Reply ${frame.header.corr}`);
       pending.delete(frame.header.corr);
       waiter.resolve(frame.payload);
       continue;
@@ -267,7 +377,10 @@ const readLoop = (async (): Promise<void> => {
 });
 void readLoop;
 
-async function invoke(channel: number, payload: Uint8Array): Promise<Uint8Array> {
+async function invoke(
+  channel: number,
+  payload: Uint8Array,
+): Promise<Uint8Array> {
   const correlation = nextCorrelation;
   nextCorrelation += 1;
   const reply = new Promise<Uint8Array>((resolve, reject) => {
@@ -294,7 +407,9 @@ function echoPayload(message: string, count: number): Uint8Array {
   const text = textEncoder.encode(message);
   const length = postcardVarint(text.length);
   const encodedCount = postcardVarint(count);
-  const payload = new Uint8Array(length.length + text.length + encodedCount.length);
+  const payload = new Uint8Array(
+    length.length + text.length + encodedCount.length,
+  );
   payload.set(length, 0);
   payload.set(text, length.length);
   payload.set(encodedCount, length.length + text.length);
@@ -315,7 +430,8 @@ await sendControl("READY");
 for (const [index, message] of ["first", "second"].entries()) {
   const request = echoPayload(`KEL96-${message}`, index + 1);
   const response = await invoke(KEL96_ECHO_CHANNEL, request);
-  if (!sameBytes(request, response)) throw new Error(`KEL96 ${message} echo mismatch`);
+  if (!sameBytes(request, response))
+    throw new Error(`KEL96 ${message} echo mismatch`);
   await sendControl(`ECHO${index + 1}`);
 }
 
@@ -334,7 +450,8 @@ let requested = await Promise.race([
 if (requested === "ECHO3") {
   const third = echoPayload("KEL96-third", 3);
   const thirdResponse = await invoke(KEL96_ECHO_CHANNEL, third);
-  if (!sameBytes(third, thirdResponse)) throw new Error("KEL96 third echo mismatch");
+  if (!sameBytes(third, thirdResponse))
+    throw new Error("KEL96 third echo mismatch");
   await sendControl("ECHO3");
   requested = await receiveCommand();
 }

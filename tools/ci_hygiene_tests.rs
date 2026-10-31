@@ -43,7 +43,7 @@ fn windows_media_step() -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
+        "      - name: Windows media guard acceptance (KEL-132)\n        shell: pwsh\n        run: |\n{commands}"
     )
 }
 
@@ -68,20 +68,6 @@ fn release_helper_step() -> String {
     lines.join("\n")
 }
 
-fn helper_deny_step() -> String {
-    let mut lines = vec![
-            format!("      - name: {HELPER_DENY_STEP}"),
-            "        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1".to_owned(),
-            "        with:".to_owned(),
-        ];
-    lines.extend(
-        HELPER_DENY_WITH
-            .iter()
-            .map(|(key, value)| format!("          {key}: {value}")),
-    );
-    lines.join("\n")
-}
-
 // Fixture for Rust-owned contracts; parsed security cases use the real workflow in Bun.
 fn gitleaks_scan_step() -> String {
     let mut lines = vec!["      - name: Scan".to_owned(), "        env:".to_owned()];
@@ -99,10 +85,34 @@ fn gitleaks_scan_step() -> String {
     lines.join("\n")
 }
 
+/// The live `deny` job, verbatim from `.github/workflows/ci.yml`. Its steps'
+/// contract is parsed by tools/ci_workflow_security.ts (#676), so the fixture
+/// copies no deny step text that could drift from the workflow (#677).
+fn live_deny_job() -> String {
+    let lines: Vec<&str> = include_str!("../.github/workflows/ci.yml")
+        .lines()
+        .collect();
+    let start = lines
+        .iter()
+        .position(|line| *line == "  deny:")
+        .expect("ci.yml declares a top-level `deny` job");
+    // The job ends at the next line indented less than its body (the next job key).
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| !line.trim().is_empty() && !line.starts_with("    "))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    lines[start..end].join("\n").trim_end().to_owned()
+}
+
 fn valid_workflow() -> String {
     let windows_media_step = windows_media_step();
+    let deny_job = live_deny_job();
     [
             "name: CI",
+            "env:",
+            "  CARGO_TERM_COLOR: always",
+            "  RUST_BACKTRACE: 1",
+            "  CARGO_INCREMENTAL: \"0\"",
             "jobs:",
             "  changes:",
             "    name: change router",
@@ -113,8 +123,6 @@ fn valid_workflow() -> String {
             "        with:",
             "          fetch-depth: 0",
             "          persist-credentials: false",
-            "      - name: Router contract tests",
-            "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
             "        run: tools/ci_changes.sh github",
             "      - name: Agent instruction inventory (agents-md)",
@@ -126,6 +134,16 @@ fn valid_workflow() -> String {
             "          target/product-status/product-status-test",
             "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
             "          target/product-status/product-status check .",
+            "  router-contracts:",
+            "    name: Router contract tests",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          fetch-depth: 0",
+            "          persist-credentials: false",
+            "      - name: Router contract tests",
+            "        run: tools/ci_changes_test.sh",
             "  check:",
             "    strategy:",
             "      matrix:",
@@ -133,7 +151,7 @@ fn valid_workflow() -> String {
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
             "        with:",
-            "          bun-version: '1.4.2'",
+            "          bun-version: '1.4.4'",
             "      - name: Check keld-ipc fuzz workspace",
             "        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'",
             "        run: |",
@@ -163,14 +181,24 @@ fn valid_workflow() -> String {
             "          mkdir -p target/product-status",
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
             "          target/product-status/product-status-test",
-            windows_media_step.as_str(),
             &release_helper_step(),
+            "  windows-media:",
+            "    runs-on: windows-latest",
+            "    needs: changes",
+            "    if: needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')",
+            "    steps:",
+            windows_media_step.as_str(),
             "  bun-test:",
+            "    runs-on: ${{ matrix.os }}",
             "    if: needs.changes.outputs.ts == 'true'",
+            "    strategy:",
+            "      fail-fast: false",
+            "      matrix:",
+            "        os: [ubuntu-latest, macos-latest, windows-latest]",
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
-            "          bun-version: \"1.4.2\"",
+            "          bun-version: \"1.4.4\"",
             "      - name: bun test",
             "        shell: bash",
             "        env:",
@@ -187,14 +215,8 @@ fn valid_workflow() -> String {
             "  msrv:",
             "    runs-on: macos-latest",
             "    steps:",
-            "      - run: cargo +1.97 check -p fixture --all-targets",
-            "  deny:",
-            "    if: needs.changes.outputs.deny == 'true'",
-            "    steps:",
-            "      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1",
-            "        with:",
-            "          command: check",
-            &helper_deny_step(),
+            "      - run: cargo +1.99.1 check -p fixture --all-targets",
+            deny_job.as_str(),
             "  secrets:",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
@@ -202,7 +224,7 @@ fn valid_workflow() -> String {
             "          persist-credentials: false",
             "      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master 2026-08-05",
             "        with:",
-            "          toolchain: 1.97.1",
+            "          toolchain: 1.99.1",
             "      - run: echo 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb | sha256sum -c -",
             &gitleaks_scan_step(),
             "  hygiene:",
@@ -214,7 +236,11 @@ fn valid_workflow() -> String {
             "          persist-credentials: false",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
-            "          bun-version: \"1.4.2\"",
+            "          bun-version: \"1.4.4\"",
+            "      - name: Native JavaScript formatting",
+            "        run: |",
+            "          bun packages/@keld/kipc/scripts/echo-codegen.ts check",
+            "          bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"",
             "      - name: Documentation placeholder contracts",
             "        run: |",
             "          mkdir -p target/doc-placeholders",
@@ -316,6 +342,7 @@ fn valid_workflow() -> String {
             "    if: ${{ always() }}",
             "    needs:",
             "      - changes",
+            "      - router-contracts",
             "      - fmt",
             "      - check",
             "      - bun-test",
@@ -331,6 +358,7 @@ fn valid_workflow() -> String {
             "      - dependency-review",
             "      - workspace-contracts",
             "      - doctest",
+            "      - windows-media",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -338,6 +366,7 @@ fn valid_workflow() -> String {
             "      - name: Verify required CI results",
             "        env:",
             "          KELD_RESULT_CHANGES: ${{ needs.changes.result }}",
+            "          KELD_RESULT_ROUTER_CONTRACTS: ${{ needs['router-contracts'].result }}",
             "          KELD_RESULT_FMT: ${{ needs.fmt.result }}",
             "          KELD_RESULT_CHECK: ${{ needs.check.result }}",
             "          KELD_RESULT_BUN: ${{ needs['bun-test'].result }}",
@@ -369,6 +398,8 @@ fn valid_workflow() -> String {
             "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
             "          KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}",
             "          KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}",
+            "          KELD_RESULT_MEDIA: ${{ needs['windows-media'].result }}",
+            "          KELD_ROUTE_MEDIA: ${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -387,7 +418,9 @@ fn valid_workflow() -> String {
             "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
             "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
             "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
-            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\"",
+            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" \\",
+            "            \"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" \\",
+            "            \"$KELD_RESULT_ROUTER_CONTRACTS\"",
             "",
         ]
         .join("\n")
@@ -458,11 +491,12 @@ fn complete_fixture() -> TempDir {
     temp.write(
             JUSTFILE,
             concat!(
-                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
+                "ci: audit-docs mermaid-ci js-fmt-check fmt-check clippy test doc deny\n",
                 "audit-docs:\n",
                 "    {{python_command}} -B docs/audits/verify.py\n",
                 "    {{python_command}} -B docs/audits/test_verify.py\n",
-                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
+                "ci-full: audit-docs mermaid-full js-fmt-check fmt-check clippy test doc deny\n",
+                "js-fmt-check:\n    bun packages/@keld/kipc/scripts/echo-codegen.ts check\n    bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"\n",
                 "mermaid-full: mermaid-test mermaid-check mermaid-render-check\n",
                 "mermaid-ci:\n",
                 "    #!/usr/bin/env bash\n",
@@ -505,13 +539,13 @@ fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
     let grouped = read(temp.path(), JUSTFILE)
             .expect("just fixture")
             .replacen(
-                "ci: audit-docs mermaid-ci fmt-check clippy test doc deny\n",
-                "ci: policy fmt-check clippy test doc deny\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
+                "ci: audit-docs mermaid-ci js-fmt-check fmt-check clippy test doc deny\n",
+                "ci: policy js-fmt-check fmt-check clippy test doc deny\n\n[parallel]\npolicy: audit-docs mermaid-ci\n",
                 1,
             )
             .replacen(
-                "ci-full: audit-docs mermaid-full fmt-check clippy test doc deny\n",
-                "ci-full: policy-full fmt-check clippy test doc deny\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
+                "ci-full: audit-docs mermaid-full js-fmt-check fmt-check clippy test doc deny\n",
+                "ci-full: policy-full js-fmt-check fmt-check clippy test doc deny\n\n[parallel]\npolicy-full: audit-docs mermaid-full\n",
                 1,
             );
     temp.write(JUSTFILE, &grouped);
@@ -544,18 +578,18 @@ fn gates_inside_parallel_groups_count_for_ci_and_ci_full() {
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny",
             "ci: policy fmt-check clippy doc deny",
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny\n",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny\n",
             "ci: policy rust deny\n\n[parallel]\nrust: fmt-check clippy test doc\n",
             "one at a time",
         ),
         (
-            "ci: policy fmt-check clippy test doc deny\n",
-            "[parallel]\nci: policy fmt-check clippy test doc deny\n",
+            "ci: policy js-fmt-check fmt-check clippy test doc deny\n",
+            "[parallel]\nci: policy js-fmt-check fmt-check clippy test doc deny\n",
             "one at a time",
         ),
         (
@@ -647,14 +681,14 @@ fn typescript_cannot_run_inside_the_parallel_policy_batch() {
 fn rust_suffix_order_and_policy_before_rust_are_enforced() {
     for replacement in [
         "clippy fmt-check test doc deny",
-        "fmt-check clippy test doc deny audit-docs",
+        "js-fmt-check fmt-check clippy test doc deny audit-docs",
     ] {
         let temp = complete_fixture();
         let original = read(temp.path(), JUSTFILE).expect("just fixture");
         check_serial_rust_gates(temp.path()).expect("original suffix is valid");
         temp.write(
             JUSTFILE,
-            &original.replace("fmt-check clippy test doc deny", replacement),
+            &original.replace("js-fmt-check fmt-check clippy test doc deny", replacement),
         );
         let error = check_serial_rust_gates(temp.path())
             .expect_err("the Rust gates must be the ordered serial suffix");
@@ -1097,7 +1131,7 @@ fn required_result_must_receive_router_applicability() {
         &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
     );
     let error = check(temp.path()).expect_err("unused router output must fail");
-    assert!(error.contains("32-argument"), "{error}");
+    assert!(error.contains("35-argument"), "{error}");
 }
 
 #[test]
@@ -1109,6 +1143,7 @@ fn required_result_must_observe_security_jobs() {
         "dependency-review",
         "workspace-contracts",
         "doctest",
+        "windows-media",
     ] {
         let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
         let error = check_required_job(&workflow).expect_err("missing security job must fail");
@@ -1153,7 +1188,7 @@ fn required_result_must_receive_security_results_without_spoofing() {
         assert!(error.contains(key), "{error}");
         let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
         let error = check_required_job(&workflow).expect_err("unused security result must fail");
-        assert!(error.contains("32-argument"), "{error}");
+        assert!(error.contains("35-argument"), "{error}");
     }
 }
 
@@ -1449,6 +1484,89 @@ fn required_evaluator_rejects_false_green_shell_shapes() {
 }
 
 #[test]
+fn required_evaluator_refuses_unreviewed_step_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed required result baseline");
+    let needle = "      - name: Verify required CI results\n        env:\n";
+    assert!(baseline.contains(needle));
+    for (label, injection) in [
+        (
+            "shell startup override",
+            "          BASH_ENV: ./tools/ignored.sh",
+        ),
+        ("path shadow", "          PATH: ./untrusted/bin"),
+        (
+            "GitHub environment file",
+            "          GITHUB_ENV: ./untrusted/out",
+        ),
+        ("ordinary unreviewed binding", "          UNREVIEWED: value"),
+    ] {
+        let mutated = baseline.replacen(needle, &format!("{needle}{injection}\n"), 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn required_job_refuses_inherited_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed required job baseline");
+    let needle = "  required:\n    name: CI required\n";
+    assert!(baseline.contains(needle));
+    for (label, injection) in [
+        (
+            "shell startup override",
+            "    env:\n      BASH_ENV: ./tools/ignored.sh\n",
+        ),
+        ("path shadow", "    env:\n      PATH: ./untrusted/bin\n"),
+        ("flow mapping", "    env: {BASH_ENV: ./tools/ignored.sh}\n"),
+    ] {
+        let mutated = baseline.replacen(needle, &format!("{needle}{injection}"), 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn required_job_preserves_only_reviewed_workflow_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed workflow environment baseline");
+    for (label, old, replacement) in [
+        (
+            "additional Bash startup authority",
+            "env:\n",
+            "env:\n  BASH_ENV: ./tools/ignored.sh\n",
+        ),
+        (
+            "additional GitHub environment writer",
+            "env:\n",
+            "env:\n  GITHUB_ENV: ./untrusted/out\n",
+        ),
+        ("mutable PATH", "env:\n", "env:\n  PATH: ./untrusted/bin\n"),
+        (
+            "missing reviewed compiler environment",
+            "  CARGO_INCREMENTAL: \"0\"\n",
+            "",
+        ),
+        (
+            "changed reviewed compiler environment",
+            "  CARGO_INCREMENTAL: \"0\"\n",
+            "  CARGO_INCREMENTAL: \"1\"\n",
+        ),
+        (
+            "duplicate workflow environment overrides the reviewed map",
+            "jobs:\n",
+            "env:\n  BASH_ENV: ./tools/ignored.sh\njobs:\n",
+        ),
+    ] {
+        assert!(baseline.contains(old), "{label}: mutation input must exist");
+        let mutated = baseline.replacen(old, replacement, 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
 fn keldbot_required_jobs_revalidate_synchronized_heads() {
     let temp = complete_fixture();
     temp.write(
@@ -1639,7 +1757,7 @@ fn commented_out_retries_is_not_a_retry() {
 }
 
 #[test]
-fn router_test_in_another_job_does_not_satisfy_changes_contract() {
+fn router_test_in_another_job_does_not_satisfy_independent_contract() {
     let temp = complete_fixture();
     let workflow = valid_workflow()
         .replacen("        run: tools/ci_changes_test.sh\n", "", 1)
@@ -1648,8 +1766,8 @@ fn router_test_in_another_job_does_not_satisfy_changes_contract() {
             "  unrelated:\n    steps:\n      - run: tools/ci_changes_test.sh\n  secrets:\n",
         );
     temp.write(WORKFLOW, &workflow);
-    let error = check(temp.path()).expect_err("router test must run in changes job");
-    assert!(error.contains("changes` job"), "{error}");
+    let error = check(temp.path()).expect_err("router contract test must run in its dedicated job");
+    assert!(error.contains("router-contracts`"), "{error}");
     assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
 }
 
@@ -1876,16 +1994,183 @@ fn deleting_the_bun_lane_fails() {
 }
 
 #[test]
-fn bun_ci_accepts_requested_142_and_rejects_other_versions() {
+fn bun_lane_runs_on_every_os() {
+    let workflow = valid_workflow();
+    check_bun_test_job(&workflow).expect("the three-OS Bun lane passes");
+    let lane = "    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n";
+    for (old, new, label) in [
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest]\n"),
+            "Ubuntu only",
+        ),
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest, macos-latest]\n"),
+            "no Windows",
+        ),
+        (
+            String::from("  bun-test:\n    runs-on: ${{ matrix.os }}\n"),
+            String::from("  bun-test:\n    runs-on: ubuntu-latest\n"),
+            "fixed runner",
+        ),
+    ] {
+        assert!(
+            workflow.contains(&old),
+            "fixture lacks the {label} mutation target"
+        );
+        let changed = workflow.replace(&old, &new);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_rejects_matrix_exclusions_and_includes() {
+    let workflow = valid_workflow();
+    let lane = "  bun-test:\n    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n";
+    assert!(workflow.contains(lane), "fixture lacks the Bun matrix");
+    for (extra, label) in [
+        (
+            "        exclude:\n          - os: windows-latest\n",
+            "exclude Windows",
+        ),
+        (
+            "        exclude:\n          - os: macos-latest\n",
+            "exclude macOS",
+        ),
+        (
+            "        exclude:\n          - os: ubuntu-latest\n",
+            "exclude Ubuntu",
+        ),
+        (
+            "        include:\n          - os: windows-latest\n",
+            "matrix include",
+        ),
+        (
+            "        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+            "duplicate os key",
+        ),
+    ] {
+        let changed = workflow.replacen(lane, &format!("{lane}{extra}"), 1);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_requires_the_actual_job_level_routing_condition() {
+    let workflow = valid_workflow();
+    let route = "    if: needs.changes.outputs.ts == 'true'\n    strategy:";
+    let step = "      - name: bun test\n";
+    assert!(workflow.contains(route), "fixture lacks the Bun route");
+    assert!(workflow.contains(step), "fixture lacks the Bun test step");
+
+    // A step-level condition cannot substitute for the job-level router gate.
+    for (job_if, label) in [
+        (
+            "    if: needs.changes.outputs.rust == 'true'\n",
+            "wrong job route",
+        ),
+        ("", "missing job route"),
+    ] {
+        let changed = workflow
+            .replacen(route, &format!("{job_if}    strategy:"), 1)
+            .replacen(
+                step,
+                "      - name: bun test\n        if: needs.changes.outputs.ts == 'true'\n",
+                1,
+            );
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+
+    // Duplicate mapping keys are ambiguous: never trust a matching first key.
+    let duplicated = workflow.replacen(
+        route,
+        "    if: needs.changes.outputs.ts == 'true'\n    if: needs.changes.outputs.rust == 'true'\n    strategy:",
+        1,
+    );
+    let error = check_bun_test_job(&duplicated).expect_err("duplicate job route");
+    assert!(error.contains("bun-test"), "{error}");
+}
+
+#[test]
+fn bun_ci_accepts_requested_144_and_rejects_other_versions() {
     let requested = valid_workflow();
-    assert!(requested.contains("bun-version: \"1.4.2\""));
+    assert!(requested.contains("bun-version: \"1.4.4\""));
     check_bun_test_job(&requested).expect("the requested stable CI pin must pass");
-    for version in ["1.4.0", "latest", "1.4.2-canary.1", "1.4.20"] {
-        let changed = requested.replace("\"1.4.2\"", &format!("\"{version}\""));
+    for version in ["1.4.0", "1.4.2", "latest", "1.4.4-canary.1", "1.4.40"] {
+        let changed = requested.replace("\"1.4.4\"", &format!("\"{version}\""));
         assert!(
             check_bun_test_job(&changed).is_err(),
             "unexpected runtime {version} must not satisfy the CI pin"
         );
+    }
+}
+
+#[test]
+fn native_js_formatting_cannot_be_removed_or_skipped() {
+    let step = concat!(
+        "      - name: Native JavaScript formatting\n        run: |\n",
+        "          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+        "          bun fmt --no-script --check \"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}\"\n",
+    );
+    for replacement in [
+        String::new(),
+        step.replace("bun fmt", "echo bun fmt"),
+        step.replace("        run:", "        if: false\n        run:"),
+        step.replace(
+            "        run:",
+            "        continue-on-error: true\n        run:",
+        ),
+        step.replace(
+            "          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+            "",
+        ),
+        step.lines()
+            .filter(|line| !line.contains("bun fmt"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    ] {
+        let temp = complete_fixture();
+        let workflow = valid_workflow();
+        assert!(workflow.contains(step));
+        temp.write(WORKFLOW, &workflow.replace(step, &replacement));
+        assert!(
+            check(temp.path()).is_err(),
+            "missing/skipped formatter passed"
+        );
+    }
+}
+
+#[test]
+fn native_js_formatting_allows_explanatory_comments() {
+    let temp = complete_fixture();
+    temp.write(
+        WORKFLOW,
+        &valid_workflow().replace(
+            "        run: |\n          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+            "        run: |\n          # Freshness before format.\n          bun packages/@keld/kipc/scripts/echo-codegen.ts check\n",
+        ),
+    );
+    check(temp.path()).expect("comments do not disable a native check");
+}
+
+#[test]
+fn local_native_js_formatting_cannot_leave_the_ci_inventory() {
+    for recipe in ["ci", "ci-full"] {
+        let temp = complete_fixture();
+        let justfile = read(temp.path(), JUSTFILE).expect("justfile");
+        let header = justfile
+            .lines()
+            .find(|line| line.starts_with(&format!("{recipe}:")))
+            .expect("CI header");
+        let altered = justfile.replacen(header, &header.replace(" js-fmt-check", ""), 1);
+        assert_ne!(altered, justfile);
+        temp.write(JUSTFILE, &altered);
+        assert!(check(temp.path()).is_err());
     }
 }
 
@@ -1901,21 +2186,21 @@ fn bun_step_pins_accept_named_actions_and_ignore_job_strategy() {
 
 #[test]
 fn bun_pin_is_bound_to_the_action_input_not_job_text() {
-    let correct = "          bun-version: \"1.4.2\"\n";
+    let correct = "          bun-version: \"1.4.4\"\n";
     for replacement in [
         "          bun-version: latest\n",
         "          # missing bun-version\n",
-        "        env:\n          bun-version: \"1.4.2\"\n",
+        "        env:\n          bun-version: \"1.4.4\"\n",
     ] {
         let workflow = valid_workflow().replace(correct, replacement).replace(
             "      - name: bun test\n",
-            "      - run: |\n          echo 'bun-version: \"1.4.2\"'\n      - name: bun test\n",
+            "      - run: |\n          echo 'bun-version: \"1.4.4\"'\n      - name: bun test\n",
         );
         let temp = complete_fixture();
         temp.write(WORKFLOW, &workflow);
         let error = check(temp.path()).expect_err("unrelated text cannot pin an action");
         assert!(error.contains("bun-test"), "{error}");
-        assert!(error.contains("1.4.2"), "{error}");
+        assert!(error.contains("1.4.4"), "{error}");
     }
 }
 
@@ -1929,7 +2214,7 @@ fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
             "      - name: another Bun setup\n        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
             "      - name: folded Bun action\n        'uses': >-\n          oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
             "      - uses: \"oven-sh/setup-b\\u0075n@0c5077e51419868618aeaa5fe8019c62421857d6\"\n        with:\n          bun-version: latest\n",
-            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.2'\n          \"bun-\\u0076ersion\": latest\n",
+            "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: '1.4.4'\n          \"bun-\\u0076ersion\": latest\n",
             "      - ? uses\n        : oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n        with:\n          bun-version: latest\n",
         ] {
             let temp = complete_fixture();
@@ -1939,7 +2224,7 @@ fn every_bun_setup_in_each_bun_consumer_requires_its_own_pin() {
             );
             let error = check(temp.path()).expect_err("every actual setup must be pinned");
             assert!(error.contains(job), "{error}");
-            assert!(error.contains("1.4.2"), "{error}");
+            assert!(error.contains("1.4.4"), "{error}");
         }
     }
 }
@@ -1962,11 +2247,11 @@ fn floating_bun_version_in_bun_lane_fails() {
     let temp = complete_fixture();
     temp.write(
         WORKFLOW,
-        &valid_workflow().replacen("bun-version: \"1.4.2\"", "bun-version: latest", 1),
+        &valid_workflow().replacen("bun-version: \"1.4.4\"", "bun-version: latest", 1),
     );
     let error = check(temp.path()).expect_err("an unpinned Bun runtime must fail");
     assert!(error.contains("bun-test"), "{error}");
-    assert!(error.contains("1.4.2"), "{error}");
+    assert!(error.contains("1.4.4"), "{error}");
 }
 
 #[test]
@@ -2050,6 +2335,18 @@ fn comment_mentioning_github_ignore_is_not_an_ignore_rule() {
         "# formerly /.github/ — CI is tracked (KEL-39)\n/target\n",
     );
     check(temp.path()).expect("comment must not count as an ignore rule");
+}
+
+#[test]
+fn fixture_deny_job_is_the_live_ci_job() {
+    let job = live_deny_job();
+    assert!(job.starts_with("  deny:\n"), "{job}");
+    assert!(job.contains("\n      - name: cargo-deny check\n"), "{job}");
+    assert!(
+        !job.contains("\n  secrets:"),
+        "the job must stop at the next job: {job}"
+    );
+    assert!(valid_workflow().contains(&format!("{job}\n  secrets:\n")));
 }
 
 #[test]
@@ -2142,15 +2439,6 @@ fn missing_pr_gate_fails() {
         error.contains("verification-gate") || error.contains("required PR headings"),
         "{error}"
     );
-}
-
-#[test]
-fn missing_toolchain_pin_fails() {
-    let temp = complete_fixture();
-    let workflow = valid_workflow().replace("toolchain: 1.97.1", "");
-    temp.write(WORKFLOW, &workflow);
-    let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
-    assert!(error.contains("toolchain: 1.97.1"), "{error}");
 }
 
 #[test]
@@ -2346,34 +2634,53 @@ fn release_updater_helper_step_cannot_be_narrowed_or_made_inert() {
 }
 
 #[test]
-fn updater_helper_deny_step_is_unique_and_exact() {
-    let step = helper_deny_step();
-    let temp = complete_fixture();
-    temp.write(WORKFLOW, &valid_workflow().replacen(&step, "", 1));
-    let error = check(temp.path()).expect_err("missing helper deny step must fail");
-    assert!(error.contains("Updater helper edge set"), "{error}");
-
+fn parallel_windows_media_job_preserves_required_admission() {
+    let base = valid_workflow();
     for (needle, replacement) in [
-        ("command-arguments: bans", "command-arguments: licenses"),
         (
-            "arguments: --all-features --config crates/keld-updater-helper/deny.toml",
-            "arguments: --all-features",
+            "  windows-media:\n    runs-on: windows-latest\n",
+            "  windows-media:\n    runs-on: ubuntu-latest\n",
         ),
         (
-            "manifest-path: crates/keld-updater-helper/Cargo.toml",
-            "manifest-path: ./Cargo.toml",
+            "  windows-media:\n    runs-on: windows-latest\n    needs: changes\n",
+            "  windows-media:\n    runs-on: windows-latest\n",
         ),
         (
-            "uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
-            "uses: example/deny@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1\n        with:\n          manifest-path",
+            "  windows-media:\n    runs-on: windows-latest\n",
+            "  windows-media:\n    continue-on-error: true\n    runs-on: windows-latest\n",
         ),
     ] {
-        let workflow = valid_workflow();
-        assert!(workflow.contains(needle), "fixture holds {needle}");
-        temp.write(WORKFLOW, &workflow.replacen(needle, replacement, 1));
-        let error = check(temp.path()).expect_err("weakened helper deny step must fail");
+        assert!(base.contains(needle));
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &base.replacen(needle, replacement, 1));
+        let error = check(temp.path()).expect_err("media job must reject weakened scope");
         assert!(
-            error.contains("Updater helper edge set"),
+            error.contains("KEL-132") || error.contains("continue-on-error"),
+            "{error}"
+        );
+    }
+    for (needle, replacement) in [
+        ("      - windows-media\n", ""),
+        (
+            "KELD_RESULT_MEDIA: ${{ needs['windows-media'].result }}",
+            "KELD_RESULT_MEDIA: success",
+        ),
+        (
+            "KELD_ROUTE_MEDIA: ${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
+            "KELD_ROUTE_MEDIA: false",
+        ),
+        (
+            "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\"",
+            "\"$KELD_RESULT_MEDIA\" false",
+        ),
+    ] {
+        assert!(base.contains(needle), "fixture holds {needle}");
+        let error = check_required_job(&base.replacen(needle, replacement, 1))
+            .expect_err("media gate must reject dropped/spoofed status or applicability");
+        assert!(
+            error.contains("windows-media")
+                || error.contains("MEDIA")
+                || error.contains("35-argument"),
             "{needle}: {error}"
         );
     }
@@ -2383,8 +2690,8 @@ fn updater_helper_deny_step_is_unique_and_exact() {
 fn windows_media_acceptance_condition_and_shell_are_exact() {
     for (needle, replacement) in [
         (
-            "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')",
-            "matrix.os == 'windows-latest'",
+            "needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')",
+            "needs.changes.outputs.rust == 'true'",
         ),
         ("        shell: pwsh", "        shell: bash"),
     ] {
@@ -2599,14 +2906,7 @@ fn empty_mermaid_manifest_skips_docker_and_render_output() {
     let temp = TempDir::new();
     let checkout = temp.path().join("checkout with spaces");
     fs::create_dir_all(checkout.join("tools")).expect("fixture checkout");
-    assert!(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&checkout)
-            .status()
-            .expect("initialize fixture")
-            .success()
-    );
+    init_fixture_repository(&checkout);
     fs::write(
         checkout.join("README.md"),
         "The word Mermaid is not a diagram.\n",
@@ -2675,14 +2975,7 @@ fn mermaid_renderer_rejects_target_symlink_before_creating_output() {
     fs::create_dir(&checkout).expect("checkout directory");
     fs::create_dir(&external).expect("external directory");
     symlink(&external, checkout.join("target")).expect("escaping target symlink");
-    assert!(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&checkout)
-            .status()
-            .expect("initialize fixture")
-            .success()
-    );
+    init_fixture_repository(&checkout);
     fs::write(
             checkout.join("diagram.md"),
             "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
@@ -2804,14 +3097,7 @@ fn write_msys_renderer_fixture(
 
     let checkout = temp.path().join("checkout");
     fs::create_dir(&checkout).expect("checkout directory");
-    assert!(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&checkout)
-            .status()
-            .expect("initialize fixture")
-            .success()
-    );
+    init_fixture_repository(&checkout);
     fs::write(
             checkout.join("diagram.md"),
             "```mermaid\nflowchart LR\naccTitle: Renderer test\naccDescr: A fixture diagram for renderer cleanup tests.\nA --> B\n```\n",
@@ -3595,11 +3881,18 @@ fn git_fixture(root: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
+/// `git init` for a throwaway fixture with automatic maintenance off, so no
+/// detached `git maintenance` repack outlives a command and races cleanup (#670).
+fn init_fixture_repository(root: &Path) {
+    git_fixture(root, &["init", "--quiet"]);
+    git_fixture(root, &["config", "maintenance.auto", "false"]);
+}
+
 #[test]
 fn channel_allocations_rule_reads_the_merge_base_and_fails_closed() {
     let temp = TempDir::new();
     let root = temp.path();
-    git_fixture(root, &["init", "--quiet"]);
+    init_fixture_repository(root);
     temp.write("README.md", "fixture\n");
     git_fixture(root, &["add", "README.md"]);
     git_fixture(root, &["commit", "--quiet", "-m", "before the baseline"]);
@@ -3648,4 +3941,19 @@ fn deleting_codeowners_file_fails() {
     let error = check(temp.path()).expect_err("missing CODEOWNERS must fail");
     assert!(error.contains("CODEOWNERS"), "{error}");
     assert!(error.contains("Restore"), "{error}");
+}
+
+#[test]
+fn job_level_keys_after_steps_are_found_and_nested_if_is_ignored() {
+    let block = "  job:\n    runs-on: ubuntu-latest\n    steps:\n      - name: one\n        if: ${{ nested }}\n        run: echo\n    if: ${{ always() }}\n    continue-on-error: true\n";
+    assert_eq!(
+        workflow_job_level_if(block).as_deref(),
+        Some("${{ always() }}")
+    );
+    assert_eq!(
+        workflow_job_level_property(block, "continue-on-error").as_deref(),
+        Some("true")
+    );
+    let nested_only = "  job:\n    steps:\n      - name: one\n        if: ${{ nested }}\n";
+    assert_eq!(workflow_job_level_if(nested_only), None);
 }

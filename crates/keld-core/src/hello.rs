@@ -198,8 +198,8 @@ where
 mod tests {
     use super::{
         DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, entry_from_config_ts,
-        hello_title_from_args, host_hello_unknown_arg, read_config_entry, renderer_from_config_ts,
-        resolve_hello_title, title_from_config_ts,
+        hello_title_from_args, host_hello_unknown_arg, initial_window_from_config_ts,
+        read_config_entry, renderer_from_config_ts, resolve_hello_title, title_from_config_ts,
     };
 
     #[test]
@@ -305,6 +305,284 @@ mod tests {
     }
 
     #[test]
+    fn facade_declaration_is_a_closed_root_literal() {
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { name: \"Demo\", renderer: \"index.html\" } as const;"
+            )
+            .expect("absent declaration preserves renderer mode")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: \"none\", entry: \"src/main.ts\" } as const;"
+            )
+            .expect("literal facade declaration")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "// initialWindow: 'renderer'\nexport default { 'initialWindow': 'none' } as const;"
+            )
+            .expect("comments cannot select a different mode")
+        );
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { nested: { initialWindow: 'none' } } as const;"
+            )
+            .expect("nested declaration must not select facade mode")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { ['unrelated']: 1, nested: { ...options, ['renderer']: 'nested' }, initialWindow: 'none' } as const;"
+            )
+            .expect("unambiguous unrelated keys and nested spreads are harmless")
+        );
+        for source in [
+            "export default { initialWindow: 'renderer' } as const;",
+            "export default { initialWindow: false } as const;",
+            "export default { initialWindow: 'none', initialWindow: 'none' } as const;",
+            "export default { ['initialWindow']: 'none' } as const;",
+            "export default { initialWindow: 'none', renderer: 'index.html' } as const;",
+            "export default { initialWindow: 'none', auth: {} } as const;",
+            "export default { ['initial' + 'Window']: 'none' } as const;",
+            "export default { ...{ initialWindow: 'none' } } as const;",
+            "export default { ...options, initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', ...{ renderer: 'index.html' } } as const;",
+            "export default { initialWindow: 'none', ...options } as const;",
+            "export default { initialWindow: 'none', [dynamicKey]: true } as const;",
+            "export default { initialWindow: 'none', get ['ren' + 'derer']() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', async ['renderer']() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', [`renderer`]: 'index.html' } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "unsupported or conflicting facade declaration must refuse: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_rejects_hidden_reserved_root_keys() {
+        let mut accepted = Vec::new();
+        for source in [
+            "export default { initialWindow: 'none', async renderer() {} } as const;",
+            "export default { initialWindow: 'none', *auth() {} } as const;",
+            "export default { initialWindow: 'none', async *renderer() {} } as const;",
+            "export default { initialWindow: 'none', async initialWindow() {} } as const;",
+            "export default { initialWindow: 'none', async /*comment*/ renderer() {} } as const;",
+            "export default { initialWindow: 'none', * /*comment*/ auth() {} } as const;",
+            "export default { initialWindow: 'none', get renderer() { return 'index.html' } } as const;",
+            "export default { initialWindow: 'none', set auth(value) {} } as const;",
+            r"export default { initialWindow: 'none', rend\u0065rer: 'index.html' } as const;",
+            r"export default { initia\u006cWindow: 'none' } as const;",
+            r"export default { initialWindow: 'none', render\u0065r() {} } as const;",
+            r"export default { initialWindow: 'none', 'ren\x64erer': 'index.html' } as const;",
+            r"export default { initialWindow: 'none', ['ren\x64erer']: 'index.html' } as const;",
+            r"export default { initialWindow: 'none', ['rend\u0065rer']: 'index.html' } as const;",
+            r#"export default { initialWindow: 'none', "rend\u{65}rer": 'index.html' } as const;"#,
+        ] {
+            if initial_window_from_config_ts(source).is_ok() {
+                accepted.push(source);
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "obscured reserved root members accepted:\n{}",
+            accepted.join("\n")
+        );
+    }
+
+    #[test]
+    fn facade_allows_unrelated_root_methods_and_nested_keys() {
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', async unrelated() { return 1 }, *other() { yield 2 }, get safe() { return { renderer: 1 } }, set safe(value) { this.x = value } } as const;"
+            )
+            .expect("unrelated methods are not reserved boot fields")
+        );
+        assert!(
+            initial_window_from_config_ts(
+                r"export default { initialWindow: 'none', async: 'data', 'unrel\u0061ted': 1, ['unrel\u0061ted']: 2, name: 'A\x61', nested: { 'ren\x64erer': 3 } } as const;"
+            )
+            .expect("static unrelated keys, value escapes, and nested data remain allowed")
+        );
+    }
+
+    #[test]
+    fn facade_root_accepts_numeric_keys_and_unrelated_generic_methods() {
+        for source in [
+            "export default { 1.5: 'unrelated', initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', helper<T extends typeof Math.PI>() { return 1 } } as const;",
+            "export default { .25: 'unrelated', initialWindow: 'none' } as const;",
+            "export default { initialWindow: 'none', helper<T extends Foo['renderer']>() { return 1 } } as const;",
+            "export default { initialWindow: 'none', helper<T extends number, renderer extends string>() { return 1 } } as const;",
+            r"export default { initialWindow: 'none', helper<T extends rend\u0065rer>() { return 1 } } as const;",
+            "export default { initialWindow: 'none', helper<T extends () => typeof Math.PI, renderer extends string>() { return 1 } } as const;",
+            "type renderer = string; export default { initialWindow: 'none', helper(): Map<string, renderer> { return new Map() } } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("valid unrelated syntax"),
+                "literal facade selection must survive unrelated members: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { 1.5: 'unrelated', renderer: 'index.html' } as const;"
+            )
+            .expect("valid renderer configuration"),
+            "unrelated numeric keys must not invalidate schema one"
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', ...extra } as const;"
+            )
+            .is_err(),
+            "genuine root spread must remain rejected"
+        );
+    }
+
+    #[test]
+    fn parenthesized_literal_root_preserves_facade_identity() {
+        for source in [
+            "export default ({ initialWindow: 'none' }) as const;",
+            "export default (({ initialWindow: 'none' })) as const;",
+            "export default ({ initialWindow: 'none' } as const);",
+            "export default ({ initialWindow: 'none' } satisfies App.Config);",
+            "export default ({ initialWindow: 'none' } as const satisfies App.Config);",
+            "export default ({ initialWindow: 'none' }) satisfies DynamicConfig;",
+            "export default { initialWindow: 'none' } satisfies App.Config;",
+            "export default { initialWindow: 'none' } as const satisfies App.Config;",
+            "export default { initialWindow: 'none' }\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } as const\nexport type Helper = string;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("parenthesized literal root"),
+                "parentheses must not silently downgrade facade to renderer: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts("export default ({ renderer: 'index.html' }) as const;")
+                .expect("parenthesized renderer root"),
+            "truly absent facade declaration stays renderer mode"
+        );
+        for source in [
+            "export default ({ initialWindow: 'none' }).renderer;",
+            "export default ({ initialWindow: 'none' }) as any && { renderer: 'index.html' };",
+            "export default ({ initialWindow: 'none' }) as const && other;",
+            "export default ({ initialWindow: 'none' }) satisfies DynamicConfig && other;",
+            "export default { initialWindow: 'none' } && { renderer: 'index.html' };",
+            "export default { initialWindow: 'none' }['missing'] ?? { renderer: 'index.html' };",
+            "export default { initialWindow: 'none' } as any && { renderer: 'index.html' };",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "unsupported wrapper expression must fail closed: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_literal_root_preserves_javascript_automatic_semicolon_insertion() {
+        for source in [
+            "export default { initialWindow: 'none' }\nexport const helper = 1;",
+            "export default ({ initialWindow: 'none' }) as const\nexport type Helper = string;",
+            "export default { initialWindow: 'none' } satisfies App.Config\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } // an independent export follows\nexport const helper = 1;",
+            "export default { initialWindow: 'none' } as const /* comment with\n newline */ export type Helper = string;",
+            "export default { initialWindow: 'none' }\nconst helper = 1;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("independent next declaration"),
+                "valid next-line declaration must not invalidate facade selection: {source}"
+            );
+        }
+        for source in [
+            "export default ({ initialWindow: 'none' })\n.renderer;",
+            "export default { initialWindow: 'none' }\n['renderer'];",
+            "export default ({ initialWindow: 'none' })\n&& other;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).is_err(),
+                "line break must not hide a continuing expression: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn facade_root_keeps_generic_arrow_value_parameters_out_of_root_keys() {
+        for source in [
+            "export default { initialWindow: 'none', helper: <T, renderer>(x: T): T => x } as const;",
+            "export default { initialWindow: 'none', helper: async <T, auth>(x: T): Promise<T> => x } as const;",
+        ] {
+            assert!(
+                initial_window_from_config_ts(source).expect("unrelated generic arrow value"),
+                "type parameters in an unrelated value must not be root declarations: {source}"
+            );
+        }
+        assert!(
+            !initial_window_from_config_ts(
+                "export default { renderer: 'index.html', helper: <T, auth>(x: T): T => x } as const;"
+            )
+            .expect("renderer boot with unrelated generic arrow value"),
+            "type parameters must not select facade mode"
+        );
+        assert!(
+            initial_window_from_config_ts(
+                "export default { initialWindow: 'none', helper: <T, auth>(x: T): T => x, ...extra } as const;"
+            )
+            .is_err(),
+            "a genuine root spread must still fail after a generic arrow value"
+        );
+    }
+
+    #[test]
+    fn static_type_annotations_preserve_boot_mode() {
+        for suffix in [
+            "satisfies Record<string, string>;",
+            "satisfies App.Config<Record<string, string>>;",
+            "satisfies { initialWindow: 'none' };",
+            "satisfies { values: Record<string, { nested: string[] }> };",
+        ] {
+            let facade = format!("export default {{ initialWindow: 'none' }} {suffix}");
+            assert!(initial_window_from_config_ts(&facade).expect("static facade type"));
+            let renderer = format!("export default {{ renderer: 'index.html' }} {suffix}");
+            assert!(!initial_window_from_config_ts(&renderer).expect("static renderer type"));
+        }
+        for suffix in [
+            "satisfies Record<string, string> && other;",
+            "satisfies { initialWindow: 'none' } && other;",
+            "satisfies Record<string, string;",
+        ] {
+            let source = format!("export default {{ initialWindow: 'none' }} {suffix}");
+            assert!(initial_window_from_config_ts(&source).is_err());
+        }
+    }
+
+    #[test]
+    fn next_line_expression_statements_preserve_boot_mode() {
+        for statement in ["console.log('after');", "runAfter();"] {
+            for suffix in ["", "as const", "satisfies App.Config"] {
+                let facade =
+                    format!("export default {{ initialWindow: 'none' }} {suffix}\n{statement}");
+                assert!(initial_window_from_config_ts(&facade).expect("independent statement"));
+                let renderer =
+                    format!("export default {{ renderer: 'index.html' }} {suffix}\n{statement}");
+                assert!(!initial_window_from_config_ts(&renderer).expect("independent statement"));
+            }
+        }
+        for continuation in [
+            "in other",
+            "instanceof Other",
+            "(other)",
+            "['renderer']",
+            ".renderer",
+            "&& other",
+        ] {
+            let source = format!("export default {{ initialWindow: 'none' }}\n{continuation}");
+            assert!(initial_window_from_config_ts(&source).is_err());
+        }
+    }
+
+    #[test]
     fn default_renderer_is_index_html() {
         assert_eq!(DEFAULT_RENDERER, "index.html");
         assert_eq!(DEFAULT_ENTRY, "src/main.ts");
@@ -338,1003 +616,13 @@ mod tests {
     }
 }
 
-/// Static-auth configuration syntax error; no configuration code was executed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthConfigError {
-    detail: &'static str,
-}
-
-impl std::fmt::Display for AuthConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-CORE-035: invalid static auth configuration: {}. Use export default {{ auth: {{ \"entra-common\": {{ clientId: \"...\" }} }} }} as const with literal strings; remove expressions, computed keys and spreads.",
-            self.detail
-        )
-    }
-}
-
-impl std::error::Error for AuthConfigError {}
-
-fn auth_config_error(detail: &'static str) -> AuthConfigError {
-    AuthConfigError { detail }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ConfigToken {
-    Word(String),
-    Text(String),
-    Symbol(char),
-}
-
-/// Extracts a literal root `auth` property without evaluating configuration code.
-///
-/// An absent root property returns an empty map without restricting legacy
-/// imports, other values, duplicates, source size or nesting. Comments, strings,
-/// templates, regular expressions and nested properties are not root properties.
-/// Once found, `auth` must be an object of literal profile objects and strings,
-/// with quoted/identifier keys, comments and trailing commas. Provider policy
-/// and missing-client/redirect validation remain with the Native owner.
-/// Existing name/entry/renderer readers retain their previous behavior.
-///
-/// # Errors
-/// Returns [`AuthConfigError`] for unsupported/malformed or duplicate root auth,
-/// or an auth slice over 64 KiB. Only an inline `export default { ... }` root is
-/// a source of auth configuration; computed exports are not evaluated.
-pub fn auth_configuration_from_config_ts(
-    source: &str,
-) -> Result<keld_native::auth::AuthConfiguration, AuthConfigError> {
-    let Some(auth) = root_auth_slice(source)? else {
-        return Ok(keld_native::auth::AuthConfiguration::new());
-    };
-    if auth.len() > 64 * 1024 {
-        return Err(auth_config_error("auth value exceeds 64 KiB"));
-    }
-    let tokens = config_tokens(auth)?;
-    let mut parser = ConfigReader {
-        tokens: &tokens,
-        position: 0,
-    };
-    let configuration = parser.auth()?;
-    if parser.position != tokens.len() {
-        return Err(auth_config_error(
-            "auth must be a literal object without expressions",
-        ));
-    }
-    Ok(configuration)
-}
-
-fn config_line_terminator(ch: char) -> bool {
-    matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}')
-}
-
-fn config_tokens(source: &str) -> Result<Vec<ConfigToken>, AuthConfigError> {
-    let mut chars = source.chars().peekable();
-    let mut tokens = Vec::new();
-    while let Some(ch) = chars.next() {
-        if ch.is_whitespace() {
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'/') {
-            chars.next();
-            for next in chars.by_ref() {
-                if config_line_terminator(next) {
-                    break;
-                }
-            }
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            let mut closed = false;
-            while let Some(next) = chars.next() {
-                if next == '*' && chars.peek() == Some(&'/') {
-                    chars.next();
-                    closed = true;
-                    break;
-                }
-            }
-            if !closed {
-                return Err(auth_config_error("unterminated block comment"));
-            }
-            continue;
-        }
-        if ch == '\'' || ch == '"' {
-            tokens.push(ConfigToken::Text(config_string(&mut chars, ch)?));
-        } else if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' {
-            let mut word = String::from(ch);
-            while chars
-                .peek()
-                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
-            {
-                if let Some(next) = chars.next() {
-                    word.push(next);
-                }
-            }
-            tokens.push(ConfigToken::Word(word));
-        } else {
-            // Backtick expressions cannot be skipped safely as quoted literals.
-            if ch == '`' {
-                return Err(auth_config_error("template literals are unsupported"));
-            }
-            tokens.push(ConfigToken::Symbol(ch));
-        }
-    }
-    Ok(tokens)
-}
-
-fn config_string(
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-    quote: char,
-) -> Result<String, AuthConfigError> {
-    let mut json = String::from("\"");
-    while let Some(ch) = chars.next() {
-        if ch == quote {
-            json.push('"');
-            return serde_json::from_str(&json)
-                .map_err(|_| auth_config_error("invalid string escape"));
-        }
-        if ch == '\\' {
-            let escaped = chars
-                .next()
-                .ok_or_else(|| auth_config_error("unfinished string escape"))?;
-            if escaped == '\'' && quote == '\'' {
-                json.push('\'');
-            } else if matches!(
-                escaped,
-                '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u'
-            ) {
-                json.push('\\');
-                json.push(escaped);
-                if escaped == 'u' {
-                    for _ in 0..4 {
-                        let hex =
-                            chars
-                                .next()
-                                .filter(char::is_ascii_hexdigit)
-                                .ok_or_else(|| {
-                                    auth_config_error("Unicode escape requires four hex digits")
-                                })?;
-                        json.push(hex);
-                    }
-                }
-            } else {
-                return Err(auth_config_error("unsupported string escape"));
-            }
-        } else if ch == '"' {
-            json.push_str("\\\"");
-        } else if ch.is_control() {
-            return Err(auth_config_error("literal control character in string"));
-        } else {
-            json.push(ch);
-        }
-    }
-    Err(auth_config_error("unterminated quoted string"))
-}
-
-struct ConfigReader<'a> {
-    tokens: &'a [ConfigToken],
-    position: usize,
-}
-
-impl ConfigReader<'_> {
-    fn take_symbol(&mut self, symbol: char) -> bool {
-        if self.tokens.get(self.position) == Some(&ConfigToken::Symbol(symbol)) {
-            self.position += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn symbol(&mut self, symbol: char) -> Result<(), AuthConfigError> {
-        if self.take_symbol(symbol) {
-            Ok(())
-        } else {
-            Err(auth_config_error("expected literal object punctuation"))
-        }
-    }
-
-    fn key(&mut self) -> Result<String, AuthConfigError> {
-        let key = match self.tokens.get(self.position) {
-            Some(ConfigToken::Text(key) | ConfigToken::Word(key)) => key.clone(),
-            _ => {
-                return Err(auth_config_error(
-                    "property keys must be literal; no computed key or spread",
-                ));
-            }
-        };
-        self.position += 1;
-        Ok(key)
-    }
-
-    fn text(&mut self) -> Result<String, AuthConfigError> {
-        let Some(ConfigToken::Text(value)) = self.tokens.get(self.position) else {
-            return Err(auth_config_error(
-                "auth values must be quoted strings or objects",
-            ));
-        };
-        self.position += 1;
-        Ok(value.clone())
-    }
-
-    fn object_separator(&mut self) -> Result<(), AuthConfigError> {
-        if self.take_symbol(',')
-            || self.tokens.get(self.position) == Some(&ConfigToken::Symbol('}'))
-        {
-            Ok(())
-        } else {
-            Err(auth_config_error("expected comma or closing object brace"))
-        }
-    }
-
-    fn auth(&mut self) -> Result<keld_native::auth::AuthConfiguration, AuthConfigError> {
-        self.symbol('{')?;
-        let mut auth = keld_native::auth::AuthConfiguration::new();
-        while !self.take_symbol('}') {
-            let key = self.key()?;
-            self.symbol(':')?;
-            let profile = self.profile()?;
-            if auth.insert(key, profile).is_some() {
-                return Err(auth_config_error("duplicate auth profile"));
-            }
-            self.object_separator()?;
-        }
-        Ok(auth)
-    }
-
-    fn profile(&mut self) -> Result<keld_native::auth::AuthProfileConfiguration, AuthConfigError> {
-        self.symbol('{')?;
-        let mut fields = serde_json::Map::new();
-        while !self.take_symbol('}') {
-            let key = self.key()?;
-            self.symbol(':')?;
-            let value = self.text()?;
-            if fields
-                .insert(key, serde_json::Value::String(value))
-                .is_some()
-            {
-                return Err(auth_config_error("duplicate auth configuration field"));
-            }
-            self.object_separator()?;
-        }
-        serde_json::from_value(serde_json::Value::Object(fields))
-            .map_err(|_| auth_config_error("invalid auth configuration fields"))
-    }
-}
-
-// This scanner locates a static exported object's root property; it does not
-// validate/evaluate unrelated TypeScript or derive provider policy. Strict
-// syntax/size checks apply only after a literal root auth property is found.
-#[derive(Debug)]
-struct SourceToken {
-    kind: ConfigToken,
-    start: usize,
-    end: usize,
-}
-
-struct SourceScan<'a> {
-    source: &'a str,
-    position: usize,
-    regex_allowed: bool,
-    last_word: Option<String>,
-    last_symbol: Option<char>,
-    control_parens: Vec<bool>,
-    block_braces: Vec<bool>,
-}
-
-impl<'a> SourceScan<'a> {
-    fn new(source: &'a str) -> Self {
-        Self {
-            source,
-            position: 0,
-            regex_allowed: true,
-            last_word: None,
-            last_symbol: None,
-            control_parens: Vec::new(),
-            block_braces: Vec::new(),
-        }
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.source.get(self.position..)?.chars().next()
-    }
-
-    fn advance(&mut self) -> Option<char> {
-        let ch = self.peek()?;
-        self.position += ch.len_utf8();
-        Some(ch)
-    }
-
-    fn raw_string(&mut self, quote: char) {
-        while let Some(ch) = self.advance() {
-            if ch == '\\' {
-                self.advance();
-            } else if ch == quote {
-                break;
-            }
-        }
-    }
-
-    fn regex(&mut self) {
-        let mut class = false;
-        while let Some(ch) = self.advance() {
-            match ch {
-                '\\' => {
-                    self.advance();
-                }
-                '[' => class = true,
-                ']' => class = false,
-                '/' if !class => break,
-                ch if config_line_terminator(ch) => break,
-                _ => {}
-            }
-        }
-        while self.peek().is_some_and(char::is_alphabetic) {
-            self.advance();
-        }
-    }
-
-    fn comment(&mut self) -> bool {
-        if self.peek() == Some('/') {
-            self.advance();
-            while self.advance().is_some_and(|ch| !config_line_terminator(ch)) {}
-            true
-        } else if self.peek() == Some('*') {
-            self.advance();
-            while let Some(ch) = self.advance() {
-                if ch == '*' && self.peek() == Some('/') {
-                    self.advance();
-                    break;
-                }
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    fn template(&mut self) {
-        // Iterative modes, so unrelated template interpolation depth cannot
-        // create a new call-stack/depth restriction for absent-auth configs.
-        let mut modes = vec![(0_usize, true)];
-        while let Some((depth, _)) = modes.last().copied() {
-            let Some(ch) = self.advance() else {
-                break;
-            };
-            if depth == 0 {
-                match ch {
-                    '\\' => {
-                        self.advance();
-                    }
-                    '`' => {
-                        modes.pop();
-                    }
-                    '$' if self.peek() == Some('{') => {
-                        self.advance();
-                        modes.push((1, true));
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-            match ch {
-                '\'' | '"' => {
-                    self.raw_string(ch);
-                    if let Some(mode) = modes.last_mut() {
-                        mode.1 = false;
-                    }
-                }
-                '`' => modes.push((0, true)),
-                '{' => {
-                    if let Some(mode) = modes.last_mut() {
-                        mode.0 += 1;
-                        mode.1 = true;
-                    }
-                }
-                '}' => {
-                    if let Some(mode) = modes.last_mut() {
-                        mode.0 -= 1;
-                    }
-                    if modes.last().is_some_and(|mode| mode.0 == 0) {
-                        modes.pop();
-                    }
-                }
-                '/' => {
-                    if !self.comment() {
-                        if modes.last().is_some_and(|mode| mode.1) {
-                            self.regex();
-                        }
-                        if let Some(mode) = modes.last_mut() {
-                            mode.1 = true;
-                        }
-                    }
-                }
-                ch if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' => {
-                    let start = self.position - ch.len_utf8();
-                    while self.peek().is_some_and(|next| {
-                        next.is_ascii_alphanumeric() || next == '_' || next == '$'
-                    }) {
-                        self.advance();
-                    }
-                    let word = self.source.get(start..self.position).unwrap_or_default();
-                    if let Some(mode) = modes.last_mut() {
-                        mode.1 = matches!(
-                            word,
-                            "return"
-                                | "throw"
-                                | "case"
-                                | "delete"
-                                | "typeof"
-                                | "void"
-                                | "new"
-                                | "yield"
-                                | "await"
-                                | "in"
-                                | "instanceof"
-                        );
-                    }
-                }
-                ch if ch.is_whitespace() => {}
-                ch => {
-                    if let Some(mode) = modes.last_mut() {
-                        mode.1 = matches!(
-                            ch,
-                            '=' | ':' | ',' | '(' | '[' | '?' | '!' | '+' | '-' | '*' | ';'
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn next(&mut self) -> Option<SourceToken> {
-        loop {
-            let start = self.position;
-            let ch = self.advance()?;
-            if ch.is_whitespace() {
-                continue;
-            }
-            if ch == '/' && self.comment() {
-                continue;
-            }
-            let kind = if ch == '\'' || ch == '"' {
-                self.raw_string(ch);
-                let raw = self.source.get(start + ch.len_utf8()..self.position)?;
-                let decoded = config_string(&mut raw.chars().peekable(), ch);
-                self.regex_allowed = false;
-                self.last_word = None;
-                self.last_symbol = None;
-                // An unrelated malformed legacy string is opaque, not a new
-                // config error. A malformed auth slice is rejected later.
-                ConfigToken::Text(decoded.unwrap_or_default())
-            } else if ch == '`' {
-                self.template();
-                self.regex_allowed = false;
-                self.last_word = None;
-                self.last_symbol = None;
-                ConfigToken::Symbol('\0')
-            } else if ch == '/' && self.regex_allowed {
-                self.regex();
-                self.regex_allowed = false;
-                self.last_word = None;
-                self.last_symbol = None;
-                ConfigToken::Symbol('\0')
-            } else if ch.is_ascii_alphabetic() || ch == '_' || ch == '$' {
-                while self
-                    .peek()
-                    .is_some_and(|next| next.is_ascii_alphanumeric() || next == '_' || next == '$')
-                {
-                    self.advance();
-                }
-                let word = self.source.get(start..self.position)?.to_owned();
-                self.regex_allowed = matches!(
-                    word.as_str(),
-                    "return"
-                        | "throw"
-                        | "case"
-                        | "delete"
-                        | "typeof"
-                        | "void"
-                        | "new"
-                        | "yield"
-                        | "await"
-                        | "in"
-                        | "instanceof"
-                        | "else"
-                        | "do"
-                        | "default"
-                );
-                self.last_word = Some(word.clone());
-                self.last_symbol = None;
-                ConfigToken::Word(word)
-            } else {
-                self.regex_allowed = match ch {
-                    '(' => {
-                        self.control_parens
-                            .push(self.last_word.as_deref().is_some_and(|word| {
-                                matches!(word, "if" | "while" | "for" | "with" | "switch" | "catch")
-                            }));
-                        true
-                    }
-                    ')' => self.control_parens.pop().unwrap_or(false),
-                    '{' => {
-                        let block = self.last_symbol == Some(')')
-                            || self.last_symbol == Some(';')
-                            || (self.last_word.is_none() && self.last_symbol.is_none())
-                            || self.last_word.as_deref().is_some_and(|word| {
-                                !matches!(word, "default" | "return" | "yield")
-                            });
-                        self.block_braces.push(block);
-                        true
-                    }
-                    '}' => self.block_braces.pop().unwrap_or(false),
-                    ']' => false,
-                    '+' | '-' if self.last_symbol == Some(ch) => false,
-                    ch => !ch.is_ascii_digit() && ch != '.',
-                };
-                self.last_word = None;
-                self.last_symbol = Some(ch);
-                ConfigToken::Symbol(ch)
-            };
-            return Some(SourceToken {
-                kind,
-                start,
-                end: self.position,
-            });
-        }
-    }
-}
-
-fn is_word(token: &SourceToken, word: &str) -> bool {
-    matches!(&token.kind, ConfigToken::Word(found) if found == word)
-}
-
-fn root_auth_slice(source: &str) -> Result<Option<&str>, AuthConfigError> {
-    let mut scan = SourceScan::new(source);
-    let mut nesting = Vec::new();
-    while let Some(token) = scan.next() {
-        if nesting.is_empty() && is_word(&token, "export") {
-            let Some(default) = scan.next() else {
-                return Ok(None);
-            };
-            if !is_word(&default, "default") {
-                continue;
-            }
-            let Some(open) = scan.next() else {
-                return Ok(None);
-            };
-            if open.kind == ConfigToken::Symbol('{') {
-                return exported_auth_slice(source, &mut scan);
-            }
-        }
-        match token.kind {
-            ConfigToken::Symbol(opener @ ('{' | '(' | '[')) => nesting.push(opener),
-            ConfigToken::Symbol('}' | ')' | ']') => {
-                nesting.pop();
-            }
-            _ => {}
-        }
-    }
-    Ok(None)
-}
-
-fn auth_accessor_prefix(source: &str) -> bool {
-    let mut preview = SourceScan::new(source);
-    let Some(name) = preview.next() else {
-        return false;
-    };
-    let auth = if name.kind == ConfigToken::Symbol('[') {
-        preview
-            .next()
-            .is_some_and(|key| matches!(&key.kind, ConfigToken::Text(name) if name == "auth"))
-            && preview
-                .next()
-                .is_some_and(|end| end.kind == ConfigToken::Symbol(']'))
-    } else {
-        matches!(&name.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == "auth")
-    };
-    auth && preview
-        .next()
-        .is_some_and(|open| open.kind == ConfigToken::Symbol('('))
-}
-
-fn exported_auth_slice<'a>(
-    source: &'a str,
-    scan: &mut SourceScan<'a>,
-) -> Result<Option<&'a str>, AuthConfigError> {
-    let mut nesting = Vec::new();
-    let mut at_key = true;
-    let mut found = None;
-    let mut pending_start = None;
-    while let Some(token) = scan.next() {
-        if nesting.is_empty() {
-            if matches!(token.kind, ConfigToken::Symbol(',' | '}')) {
-                if let Some(start) = pending_start.take() {
-                    found = source.get(start..token.start);
-                }
-                if token.kind == ConfigToken::Symbol('}') {
-                    return Ok(found);
-                }
-                at_key = true;
-                continue;
-            }
-            if at_key {
-                at_key = false;
-                let auth = matches!(&token.kind, ConfigToken::Word(key) | ConfigToken::Text(key) if key == "auth");
-                if token.kind == ConfigToken::Symbol('[') {
-                    let mut preview = SourceScan::new(source.get(token.end..).unwrap_or_default());
-                    if let Some(key) = preview.next()
-                        && matches!(&key.kind, ConfigToken::Text(name) if name == "auth")
-                        && preview
-                            .next()
-                            .is_some_and(|end| end.kind == ConfigToken::Symbol(']'))
-                    {
-                        return Err(auth_config_error("computed root auth keys are unsupported"));
-                    }
-                }
-                if matches!(&token.kind, ConfigToken::Word(word) if word == "get" || word == "set")
-                    && auth_accessor_prefix(source.get(token.end..).unwrap_or_default())
-                {
-                    let detail = if found.is_some() || pending_start.is_some() {
-                        "duplicate root auth property/accessor"
-                    } else {
-                        "root auth accessor is unsupported; use a literal property"
-                    };
-                    return Err(auth_config_error(detail));
-                }
-                if auth {
-                    if found.is_some() || pending_start.is_some() {
-                        return Err(auth_config_error("duplicate root auth property"));
-                    }
-                    let colon = scan
-                        .next()
-                        .ok_or_else(|| auth_config_error("unfinished root auth property"))?;
-                    if colon.kind != ConfigToken::Symbol(':') {
-                        return Err(auth_config_error(
-                            "root auth requires a literal value, not shorthand or a method",
-                        ));
-                    }
-                    pending_start = Some(colon.end);
-                    continue;
-                }
-            }
-        }
-        match token.kind {
-            ConfigToken::Symbol(opener @ ('{' | '(' | '[')) => nesting.push(match opener {
-                '{' => '}',
-                '(' => ')',
-                _ => ']',
-            }),
-            ConfigToken::Symbol(closer @ ('}' | ')' | ']'))
-                if nesting.pop() != Some(closer)
-                    && (found.is_some() || pending_start.is_some()) =>
-            {
-                return Err(auth_config_error("unbalanced exported auth object"));
-            }
-            _ => {}
-        }
-    }
-    if found.is_some() || pending_start.is_some() {
-        Err(auth_config_error("unclosed exported auth object"))
-    } else {
-        Ok(None)
-    }
-}
+mod auth_config;
+pub use self::auth_config::{
+    AuthConfigError, InitialWindowConfigError, auth_configuration_from_config_ts,
+    initial_window_from_config_ts,
+};
 
 #[cfg(test)]
 mod auth_config_tests {
-    use super::auth_configuration_from_config_ts;
-
-    #[test]
-    fn static_auth_literal_preserves_credentials_and_redirect() {
-        let config = auth_configuration_from_config_ts(
-            r#"
-            export default {
-                name: "Legacy Title",
-                /* not the key: auth: { injected: {} } */
-                auth: { 'entra-common': {
-                    clientId: 'operator-\u0063lient',
-                    fixedRedirect: "http://localhost:4321/callback?note={auth}",
-                }, },
-            } as const;
-        "#,
-        )
-        .expect("static configuration");
-        let profile = config.get("entra-common").expect("profile carried");
-        assert_eq!(profile.client_id.as_deref(), Some("operator-client"));
-        assert_eq!(
-            profile.fixed_redirect.as_deref(),
-            Some("http://localhost:4321/callback?note={auth}")
-        );
-    }
-
-    #[test]
-    fn static_auth_carries_as_return_without_registration_validation() {
-        let config = auth_configuration_from_config_ts(
-            "export default { auth: { 'entra-common': { asRedirect: 'not-a-valid-registration' } } };",
-        )
-        .expect("AS registration semantics remain post-Allow");
-        let profile = config.get("entra-common").expect("closed profile");
-        assert!(profile.client_id.is_none());
-        assert!(profile.fixed_redirect.is_none());
-        assert_eq!(
-            profile.as_redirect.as_deref(),
-            Some("not-a-valid-registration")
-        );
-    }
-
-    #[test]
-    fn static_auth_ignores_comment_string_and_nested_mentions() {
-        let config = auth_configuration_from_config_ts(
-            r#"
-            // auth: { "entra-common": { clientId: "not-config" } }
-            export default {
-                name: "auth: { pretend: {} }",
-                other: { auth: { "entra-common": { clientId: "nested" } } },
-            };
-        "#,
-        )
-        .expect("no root auth");
-        assert!(config.is_empty());
-    }
-
-    #[test]
-    fn static_auth_rejects_unknown_profile_fields_at_owning_dto() {
-        for source in [
-            "export default { auth: { 'entra-common': { clientID: 'operator-client' } } };",
-            "export default { auth: { 'future-provider': { clientID: 'unused' } } };",
-            "export default { auth: { 'entra-common': { clientId: 'operator-client', fixedRedirct: 'http://localhost:53161/callback' } } };",
-        ] {
-            let error = auth_configuration_from_config_ts(source)
-                .expect_err("unknown inner auth field must refuse");
-            assert!(error.to_string().starts_with("KELD-CORE-035"));
-            assert!(
-                error
-                    .to_string()
-                    .contains("invalid auth configuration fields")
-            );
-        }
-    }
-
-    #[test]
-    fn static_auth_keeps_unknown_profile_and_missing_client_for_native_owner() {
-        let config = auth_configuration_from_config_ts(
-            "export default { auth: { 'unknown-provider': { clientId: 'operator' }, 'entra-common': {} } };"
-        ).expect("carrier does not filter provider policy");
-        assert_eq!(config.len(), 2);
-        assert_eq!(
-            config
-                .get("unknown-provider")
-                .expect("unknown carried")
-                .client_id
-                .as_deref(),
-            Some("operator")
-        );
-        assert!(
-            config
-                .get("entra-common")
-                .expect("missing client preserved")
-                .client_id
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn static_auth_decodes_quotes_unicode_and_surrogate_pair() {
-        let config = auth_configuration_from_config_ts(
-            r#"
-            export default { "auth": { "entra-common": {
-                "clientId": 'a\'b"c\\d\uD83D\uDE00',
-            } } }
-        "#,
-        )
-        .expect("actual string decoding");
-        assert_eq!(
-            config
-                .get("entra-common")
-                .expect("profile")
-                .client_id
-                .as_deref(),
-            Some("a'b\"c\\d😀")
-        );
-    }
-
-    #[test]
-    fn static_auth_rejects_computed_spread_dynamic_and_malformed_input() {
-        for source in [
-            "export default { auth: buildAuth() };",
-            "export default { auth: { ...settings } };",
-            "export default { auth: { ['entra-common']: {} } };",
-            "export default { ['auth']: {} };",
-            "export default { auth: { 'entra-common': { clientId } } };",
-            "export default { auth: { 'entra-common': { clientId: computed } } };",
-            "export default { auth: { 'entra-common': { clientId: `template` } } };",
-            "export default { auth: {} satisfies AuthConfiguration };",
-            "export default { auth: { 'entra-common': { clientId: 'broken } } };",
-            "export default { auth: { 'entra-common': { clientId: '\\u12XX' } } };",
-            "export default { auth: {}",
-            "export default { auth: {} ] };",
-        ] {
-            let error = auth_configuration_from_config_ts(source)
-                .expect_err("unsupported input must refuse");
-            let rendered = error.to_string();
-            assert!(rendered.starts_with("KELD-CORE-035:"), "{rendered}");
-            assert!(rendered.contains("literal strings"), "{rendered}");
-        }
-    }
-
-    #[test]
-    fn static_auth_rejects_duplicate_keys_before_canonicalization() {
-        for source in [
-            "export default { auth: {}, auth: {} };",
-            "export default { auth: { 'entra-common': {}, 'entra-common': {} } };",
-            "export default { auth: { 'entra-common': { clientId: 'a', clientId: 'b' } } };",
-            "export default { auth: { 'entra-common': { clientId: 'a', 'clientId': 'b' } } };",
-        ] {
-            let error =
-                auth_configuration_from_config_ts(source).expect_err("duplicate must refuse");
-            assert!(error.to_string().contains("duplicate"));
-        }
-    }
-
-    #[test]
-    fn static_auth_legacy_templates_and_structural_limits() {
-        for source in [
-            "export default {}",
-            "export default {\nname: \"hello\",\nentry: \"src/main.ts\",\nrenderer: \"index.html\",\n} as const;",
-        ] {
-            assert!(
-                auth_configuration_from_config_ts(source)
-                    .expect("existing template")
-                    .is_empty()
-            );
-        }
-        let oversized = format!(
-            "export default {{ auth: {{ 'entra-common': {{ clientId: '{}' }} }} }};",
-            "x".repeat(64 * 1024)
-        );
-        assert!(auth_configuration_from_config_ts(&oversized).is_err());
-        let deep = format!(
-            "export default {{ other: {}0{} }};",
-            "[".repeat(200),
-            "]".repeat(200)
-        );
-        assert!(
-            auth_configuration_from_config_ts(&deep)
-                .expect("unrelated depth remains compatible")
-                .is_empty()
-        );
-    }
-    #[test]
-    fn absent_auth_preserves_legacy_nonliteral_configurations() {
-        for source in [
-            "export default {\n name: \"legacy\",\n other: `template ${1 + 2}`,\n};",
-            "import settings from './settings';\nconst x = 3;\nexport default {\n name: \"legacy\",\n other: settings,\n};",
-            "const x = 6 / 2;\nexport default {\n name: \"legacy\",\n other: /auth: { pretend: {} }/,\n};",
-            "export default {\n name: \"legacy\",\n other: 1, other: 2,\n};",
-            "if (true) /export default { auth: {} }/.test('x');\nexport default {\n name: \"legacy\",\n};",
-            "function helper() { return { auth: {} }; }\nexport default {\n name: \"legacy\",\n};",
-        ] {
-            assert_eq!(
-                super::title_from_config_ts(source).as_deref(),
-                Some("legacy")
-            );
-            assert!(
-                auth_configuration_from_config_ts(source)
-                    .expect("no auth cannot restrict old config")
-                    .is_empty()
-            );
-        }
-        let large = format!("/*{}*/ export default {{}}", "x".repeat(64 * 1024));
-        assert!(
-            auth_configuration_from_config_ts(&large)
-                .expect("unrelated size")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn auth_location_skips_templates_regex_division_and_unrelated_duplicate_keys() {
-        let source = r"
-            import settings from './settings';
-            const ratio = {} / 2;
-            const pattern = /export default { auth: { fake: {} } }/;
-            export default {
-                name: `auth: ${ { nested: `auth: ${1}` } }`,
-                regex: /auth: { \/ }/,
-                ratio: 8 / 2,
-                other: 1, other: 2,
-                nested: { auth: { fake: {} } },
-                auth: { 'entra-common': { clientId: 'real-client' } },
-            } as const;
-        ";
-        let config = auth_configuration_from_config_ts(source).expect("strict slice only");
-        assert_eq!(config.len(), 1);
-        assert_eq!(
-            config
-                .get("entra-common")
-                .expect("actual root")
-                .client_id
-                .as_deref(),
-            Some("real-client")
-        );
-    }
-
-    #[test]
-    fn computed_auth_prefix_does_not_create_auth_property() {
-        let source = "export default {\n name: \"legacy\",\n ['auth' + 'orship']: 'value',\n};";
-        assert_eq!(
-            super::title_from_config_ts(source).as_deref(),
-            Some("legacy")
-        );
-        assert!(
-            auth_configuration_from_config_ts(source)
-                .expect("not literal root auth")
-                .is_empty()
-        );
-        let actual = "export default { ['auth' /* key end */]: {} };";
-        assert!(auth_configuration_from_config_ts(actual).is_err());
-    }
-
-    #[test]
-    fn named_auth_accessors_are_unsupported_not_silently_absent() {
-        for source in [
-            "export default { get auth() { return {}; } };",
-            "export default { set auth(value) {} };",
-            "export default { get 'auth'() { return {}; } };",
-            "export default { get ['auth']() { return {}; } };",
-            "export default { auth: {}, get auth() { return {}; } };",
-            "export default { get auth() { return {}; }, auth: {} };",
-        ] {
-            let error = auth_configuration_from_config_ts(source)
-                .expect_err("actual root accessor must refuse");
-            assert!(error.to_string().starts_with("KELD-CORE-035:"));
-        }
-        for source in [
-            "export default { get: { auth: {} } };",
-            "export default { get authorship() { return { auth: {} }; } };",
-            "export default { get ['auth' + 'orship']() { return {}; } };",
-        ] {
-            assert!(
-                auth_configuration_from_config_ts(source)
-                    .expect("unrelated getter/key")
-                    .is_empty()
-            );
-        }
-    }
-
-    #[test]
-    fn config_line_comments_end_at_cr_or_unicode_line_terminator() {
-        for end in ["\r", "\r\n", "\u{2028}", "\u{2029}"] {
-            let source = format!(
-                "export default {{ // root comment{end}auth: {{ // auth comment{end}'entra-common': {{ clientId: 'visible' }} }} }};"
-            );
-            let config =
-                auth_configuration_from_config_ts(&source).expect("line comment cannot hide auth");
-            assert_eq!(
-                config
-                    .get("entra-common")
-                    .expect("profile")
-                    .client_id
-                    .as_deref(),
-                Some("visible")
-            );
-        }
-    }
-
-    #[test]
-    fn trailing_statements_do_not_restrict_static_auth_extraction() {
-        let source = "export default { auth: { 'entra-common': { clientId: 'kept' } } }; doSomething(); throw new Error('not executed');";
-        let config = auth_configuration_from_config_ts(source)
-            .expect("same literal extraction with opaque tail");
-        assert_eq!(
-            config
-                .get("entra-common")
-                .expect("profile")
-                .client_id
-                .as_deref(),
-            Some("kept")
-        );
-    }
+    include!("hello/auth_config/tests.rs");
 }

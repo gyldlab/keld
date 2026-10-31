@@ -20,6 +20,7 @@ use crate::support::process::signal_process_group;
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
 use crate::support::renderer::Beacon;
+use crate::support::signal_wait::signal_group_and_await_exit;
 use crate::support::unix_descriptors::unix_sockets_not_inherited_from_harness;
 use std::fs;
 use std::io::BufRead;
@@ -331,14 +332,12 @@ impl ShippingDevCycle {
         number: i32,
     ) {
         self.trace_phase("signal-cli-group", Some(signal_name));
-        signal_process_group(&format!("-{signal_name}"), self.cli_pid)
-            .unwrap_or_else(|error| panic!("group {signal_name} failed: {error}"));
-        let status = self
-            .cli
-            .as_mut()
-            .expect("live shipping CLI")
-            .wait()
-            .expect("wait signaled shipping CLI");
+        let status = signal_group_and_await_exit(
+            self.cli.as_mut().expect("live shipping CLI"),
+            self.cli_pid,
+            signal_name,
+            Instant::now() + EVENT_DEADLINE,
+        );
         assert_eq!(status.signal(), Some(number));
         assert!(
             process_exists(self.host_pid),

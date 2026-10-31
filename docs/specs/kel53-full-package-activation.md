@@ -143,7 +143,7 @@ paragraph:
   open handles, or whose replacement target has open handles, cannot be renamed
   ([FILE_RENAME_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information),
   `ms.date` 2021-11-22), so a pre-authentication reader could fail the writer's
-  `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`. Rejected: a POSIX-semantics rename through
+  the writer's then-current `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`. Rejected in that historical decision: a POSIX-semantics rename through
   `SetFileInformationByHandle`, which would change the landed durable primitive in
   every mode and need an `unsafe` amendment; and documenting the blocked-replace
   residual.
@@ -447,14 +447,18 @@ semantic change requires a new schema/version and wire review. The contract reus
 existing strict semantic-version floor. There is no release-sequence, expiry, or
 security-epoch field to validate. Adding one also requires a new manifest version.
 
-Current durability inputs are Microsoft `FlushFileBuffers` and
-`MoveFileExW(MOVEFILE_WRITE_THROUGH)`, POSIX synchronized I/O and directory
-cache requirements, and Apple's `F_FULLFSYNC`. They define adapter order;
-implementation still needs real-OS crash-cut evidence for each admitted filesystem.
-Windows lease sharing and lock lifetime follow the documented [`CreateFileW` share
-compatibility and handle-close rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
-record replacement uses only the documented same-volume [`MoveFileExW` replace-existing/
-write-through flags](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw). Explicit UAC owner
+Current durability inputs are Microsoft's `FlushFileBuffers`,
+[`NtCreateFile` `FILE_WRITE_THROUGH` metadata barrier](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilea)
+and [`NtSetInformationFile(FileRenameInformation)`](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile)
+handle-relative rename, POSIX synchronized I/O and directory-cache requirements,
+and Apple's `F_FULLFSYNC`. They define adapter order; real-OS crash-cut evidence
+remains necessary for each admitted filesystem. Process-crash cuts alone do not
+establish sudden power-loss equivalence of the new Windows rename adapter; a separate
+physical durability proof remains pending. Windows lease sharing and lock
+lifetime follow the documented [`CreateFileW` sharing and handle-close
+rules](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew);
+record replacement uses only the fixed typed slot set with replace-existing under
+the same retained same-volume parent after protected sibling flush/readback. Explicit UAC owner
 assignment follows Microsoft's [`TOKEN_OWNER` valid-owner-group rule](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_token_owner)
 and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object); the candidate still runs in the initiating user's ordinary session under
 [UAC](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/how-it-works).
@@ -578,13 +582,16 @@ and [owner rights](https://learn.microsoft.com/en-us/windows/win32/secauthz/owne
     journal binds the verified helper image and health-channel identities; replay,
     endpoint substitution/reuse, helper substitution, mixed artifact set or path
     substitution fails.
-11. Windows stages each complete version in a unique sibling directory, flushes every
-    file handle, closes stage handles, then publishes the absent final directory with
-    same-volume `MoveFileExW(MOVEFILE_WRITE_THROUGH)`. Journal/pointer records use
-    same-directory temporary files, file flush and replace/write-through. Neither path
-    uses copy-across-volume or claims a directory-handle flush. The implementation
-    reopens and reads back every tree digest, journal, pointer and policy before
-    advancing, and real crash cuts qualify the filesystem. Linux later uses file
+11. Windows stages each complete version in a unique sibling directory, flushes
+    writable files and closes stage handles. The absent final version and typed
+    journal/pointer replacement use `NtCreateFile` on the exact nofollow source with
+    `FILE_WRITE_THROUGH`, then `NtSetInformationFile(FileRenameInformation)` with
+    one checked destination component under the same retained parent handle.
+    Publication refuses an existing destination; only fixed mutable slots can be
+    replaced under the writer lease after pending-sibling flush/readback. Neither
+    path copies across volumes, re-resolves ambient paths, or claims a directory
+    handle flush. Reopen and verify every tree digest, journal, pointer and policy
+    before advancing; real crash cuts qualify the filesystem. Linux later uses file
     `fsync`, same-filesystem rename and parent-directory
     `fsync`; macOS later adds `F_FULLFSYNC` before rename plus
     directory synchronization. An unsupported barrier, remote filesystem or failed
@@ -1269,10 +1276,12 @@ owner was lost resolves only when two independent facts hold. An unlaunched
    `ms.date` 2018-12-05). It treats the family as exited only when that query reports
    that no such logon session exists (`STATUS_NO_SUCH_LOGON_SESSION`, the one accepted
    status; the name is inferred and T4d confirms it on real Windows), or when the
-   session now holding that ID has a different logon time,
+   session now holding that ID has a different positive logon time,
    because a locally unique ID is unique only until restart
    ([AllocateLocallyUniqueId](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-allocatelocallyuniqueid),
-   `ms.date` 2018-12-05). A live session, access denial or any other status halts.
+   `ms.date` 2018-12-05). A present session whose logon time is zero or negative is
+   malformed data that cannot prove a different logon generation, so it halts as
+   `KELD-GUARD022`, as do a live session, access denial and any other status.
 
 Fact 2 holds only if every process that runs an image from the candidate version tree,
 or runs code or a command that the family supplies (for example a COM server or a
@@ -1457,15 +1466,16 @@ artifact-identity encoding of the candidate and `n` its byte length. The receipt
 the attempt, its private health channel and the exact candidate; recovery recomputes
 the digest from the journal's own fields and halts on a mismatch.
 
-Windows replaces fixed mutable record slots through a narrow same-parent
-`MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)` adapter; the existing
-absent-target version-directory publication remains separate. A transition writes a
-new protected sibling with the mode's exact DACL, flushes and reads it back, closes
-conflicting record pins, performs the fixed replacement under the stable lease, then
-reopens/reads back the exact bytes and descriptor before the next step. It does not
-truncate in place, copy across volumes, schedule work after reboot, or accept caller
-paths/flags. A replacement error is effect-aware; it does not claim the old bytes stayed
-unchanged after a possible publication.
+Windows replaces only fixed mutable record slots through a narrow retained-parent
+`NtCreateFile` (nofollow, `FILE_WRITE_THROUGH`) source and synchronous
+`NtSetInformationFile(FileRenameInformation)` destination with the typed
+replace-existing flag; absent-target version publication remains separate. A
+transition writes a protected pending sibling with the mode's exact DACL, flushes
+and reads back its bytes, closes conflicting record pins, performs the fixed
+replacement under the writer lease, then reopens and verifies bytes and descriptor.
+It never truncates in place, copies across volumes, resolves ambient paths, schedules
+work after reboot or accepts caller paths/flags. A replacement fault is effect-aware
+and cannot presume that the old bytes remained unchanged.
 
 Startup without a journal validates current, both known-good slots, their complete
 markers/policies and the floor. A valid current must equal last-known-good or
@@ -2803,10 +2813,12 @@ The only successful initialization order is:
    writable handle's final flush and protected readback. Create `.complete` with its
    final MachineSystem descriptor, write and flush it, then verify its exact bytes and
    descriptor.
-4. Close rename-blocking stage handles while retaining protected ancestors. Publish to
-   the absent final version name using same-volume `MoveFileExW` with only
-   `MOVEFILE_WRITE_THROUGH`; no replacement or cross-volume-copy flags. Reopen and
-   validate all content, policy, marker, descriptors and exact extracted-tree bytes.
+4. Close rename-blocking stage handles while retaining protected ancestors.
+   Publish the absent final version with `NtCreateFile` on the nofollow source using
+   `FILE_WRITE_THROUGH` and synchronous `NtSetInformationFile(FileRenameInformation)`
+   with one checked destination name under the same retained versions-directory
+   handle. Replacement and cross-volume copy are forbidden. Reopen and validate
+   all content, policy, marker, descriptors and exact extracted-tree bytes.
 5. Seed floor, current and LKG in order: each uses a fresh same-parent temporary file,
    final protection, writable-handle flush, close, absent-target write-through rename
    and protected readback. Any conflicting target or incomplete prior state refuses.
@@ -3794,7 +3806,7 @@ Must not touch in Slice A:
 | 17 (argument shape) | the helper's single argument and the candidate's rendezvous argument are each refused before any open or write when they are a UNC or remote path, a `\\?\` path, another `keld-*` namespace, uppercase hex, a wrong length, or come with any extra argument; only the exact local `\\.\pipe\keld-attempt-<64 lowercase hex>` shape, or the helper's fixed recovery-role selector, is accepted |
 | 17 (owner loss in `publish-pending`) | the owner is killed after the `publish-pending` journal is durable and before launch, at each persisted step (before publication, after publication, after the floor, after `current`): no candidate family exists and no logon-session proof is needed; in `MachineUacDirect` an ordinary launch returns `MachineRecoveryRequired` with `RecoverNow` once S10 is enabled, and the recovery role resolves the attempt with the abandon intent of D1 (refined): with the floor at its prior value the published candidate is retired, the journal is removed as `Abandoned`, the floor never moves and the same signed version is retryable; with the floor at the candidate, `current` is restored and the candidate retired before journal removal, and the version is consumed; in `PerUserDirect` the landed lease-only resume is unchanged |
 | 17 (abandon-intent crash cuts) | the recovery role is killed at every step of the abandon intent: after its re-mint record, after the candidate's retirement and before journal removal, and, at the candidate floor, after `current` is restored and after the retirement; at each of these cuts the journal is still `PublishPending`, the next ordinary launch returns `MachineRecoveryRequired` with `RecoverNow`, and the next recovery-role run resumes it on the writer lease alone, re-mints again, never needs the logon-session proof and never writes `AwaitingHealth` or `RollbackPending`. A cut after the journal's write-through rename to its `pending-*` leaf leaves no journal: the next ordinary launch selects the rollback target normally, and the next writer removes the `pending-*` leftover. Under the ordinary intent every step mapping and `retirement_due` result is unchanged, including the `CandidateUnpublished` refusal at the candidate floor |
-| 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different logon time (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the `keld-runtime` process-ID lister (S6b3, §5) and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture, seam-injected: an unsignaled handle stands for a not-yet-exited member of the attempt Job, which the S6b3 lister then reports; the same device as r5 of the "8, 9 (candidate release)" row). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
+| 17 (owner-loss retirement) | helper terminated and crashed mid-health; helper crash after `health-accepted` both before the limit is cleared (the application ends) and after it (the healthy application keeps running); a `rollback-pending` crash; a live owner still holding the lease; sign-out, a real full restart and a Fast Startup shutdown mid-health, each binary: afterwards the session query returns no such logon session or a session with a different positive logon time, otherwise the row fails and recovery halts; logon-session LUID reuse with a different positive logon time (seam-injected); a present session whose logon time is zero or negative halts as malformed rather than retiring (seam-injected); a denied or unknown session-query status (seam-injected), with the single accepted "no such logon session" status confirmed on real Windows; a reference to a token of that session kept alive after sign-out, such as a duplicated token handle in an unrelated process, which keeps recovery halted until it closes; the census at Ready, at health acceptance and before the limit clear, through the `keld-runtime` process-ID lister (S6b3, §5) and per-process `TokenStatistics`; the static scan of the host and WebView crates; negative controls showing that no admitted family member starts a candidate-tree image or family-supplied code outside the attempt Job or under another logon session, and that sandboxed roles cannot (netonly `CreateProcessWithLogonW`, `runas` elevation, and a COM server or scheduled task registered to a candidate-tree image as falsifiers); Job membership before the first instruction under `CreateProcessWithTokenW` with `CREATE_SUSPENDED`; a descendant breakaway attempt; nested KEL-96 host Jobs; and a family still terminating with pending I/O (the `pending_io_family` fixture, seam-injected: an unsignaled handle stands for a not-yet-exited member of the attempt Job, which the S6b3 lister then reports; the same device as r5 of the "8, 9 (candidate release)" row). Each row either proves both facts or halts fail-closed, and no family member runs or has pending I/O after a passed proof |
 | 17 (helper crash after `health-accepted`) | after the limit is cleared and with the application still running, a helper crash leaves `health-accepted` durable: the next ordinary launch, including a second launch of the application, refuses with `MachineRecoveryRequired` and `RestartFirst` guidance (`RecoveryDisabled` before S12); nothing is written; the recovery role halts while the initiating session is live and finishes the commit only after the session query proves that it ended |
 | 17 (Machine-UAC Job inheritance) | (S11 start condition; "Machine-UAC owner-loss retirement") under the UAC operator evidence protocol, S11 records `IsProcessInJob` of the elevated helper and of its candidate against the initiating host's host-death Job and against the helper's attempt Job, and whether the candidate is alive after the initiating host exits following `health-accepted`; a candidate inside the initiating host's host-death Job stops S11 for an owner decision, because the defect that "Candidate release after commit" removes for `PerUserDirect` would recur in `MachineUacDirect` and the helper cannot classify the host's family; a candidate outside it passes; this amendment specifies no probe, and the row is evidence, not a mechanism |
 | 17 (recovery-required state) | in `MachineUacDirect`, an ordinary startup that takes the snapshot lease and finds any pending journal phase, or no journal with an absent or undecodable `current` and valid last-known-good, returns `UpdateError::Activation` with `MachineRecoveryRequired` (not `JournalBoundRecoveryRequired`, an `UpdateError::Baseline` refusal or merely no selection) and writes nothing; each `MachineRecoveryGuidance` variant's fix-guidance text matches its pinned bytes; the same states in `PerUserDirect` keep their landed recovery and repair; `MachineSeamlessDirect` keeps its landed `UpdateError::Baseline` refusal; while S10's rows have not passed, the helper refuses the recovery role and the guidance is `RecoveryDisabled`; once enabled, the recovery role repairs `current` only from a last-known-good helper tree and resolves each journal phase by its rule |
