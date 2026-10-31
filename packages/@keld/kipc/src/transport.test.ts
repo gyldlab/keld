@@ -574,7 +574,7 @@ describe("FrameReader chunk queue", () => {
     expect(reader.pendingChunkCount()).toBe(n);
   });
 
-  test("an incomplete max-size frame keeps a chunk queue, not a 16 MiB prefix", async () => {
+  test("an incomplete max-size frame reports exact byte and fragment counts without prefix concatenation", async () => {
     const header = encodeHeader({
       kind: FrameKind.Reply,
       flags: 0,
@@ -647,6 +647,139 @@ describe("FrameReader chunk queue", () => {
     expect(reader.bufferedBytes()).toBe(0);
     expect(reader.pendingChunkCount()).toBe(0);
     await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-004");
+  });
+});
+
+describe("FrameReader direct payload fill", () => {
+  test("a fragmented payload is copied once with no per-fragment allocation", async () => {
+    const payloadBytes = 64 * 1024;
+    const chunkBytes = 256;
+    const expected = new Uint8Array(payloadBytes);
+    for (let i = 0; i < payloadBytes; i += 1) expected[i] = (i * 7) & 0xff;
+    // Views are built before the census so the producer's own `subarray`
+    // calls are not attributed to the reader.
+    const fragments: Uint8Array[] = [];
+    for (let offset = 0; offset < payloadBytes; offset += chunkBytes) {
+      fragments.push(expected.subarray(offset, offset + chunkBytes));
+    }
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.push(
+      encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, payloadBytes),
+    );
+    const constructorDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "Uint8Array",
+    );
+    if (constructorDescriptor === undefined)
+      throw new Error("global Uint8Array missing");
+    const originalConstructor = globalThis.Uint8Array;
+    const originalSet = Uint8Array.prototype.set;
+    let constructions = 0;
+    let copiedBytes = 0;
+    Object.defineProperty(globalThis, "Uint8Array", {
+      ...constructorDescriptor,
+      value: new Proxy(originalConstructor, {
+        construct(target, args, newTarget) {
+          constructions += 1;
+          return Reflect.construct(target, args, newTarget);
+        },
+      }),
+    });
+    Object.defineProperty(Uint8Array.prototype, "set", {
+      configurable: true,
+      writable: true,
+      value(this: Uint8Array, source: ArrayLike<number>, offset?: number) {
+        copiedBytes += source.length;
+        originalSet.call(this, source, offset);
+      },
+    });
+    try {
+      for (const fragment of fragments) reader.push(fragment);
+    } finally {
+      Object.defineProperty(globalThis, "Uint8Array", constructorDescriptor);
+      Object.defineProperty(Uint8Array.prototype, "set", {
+        configurable: true,
+        writable: true,
+        value: originalSet,
+      });
+    }
+    expect(Uint8Array.prototype.set).toBe(originalSet);
+    const frame = await pending;
+    expect(frame.payload).toEqual(expected);
+    // Every payload byte moved exactly once, from the callback buffer into the
+    // payload, and no fragment allocated anything.
+    expect(copiedBytes).toBe(payloadBytes);
+    expect(constructions).toBe(0);
+    expect(reader.bufferedBytes()).toBe(0);
+    expect(reader.pendingChunkCount()).toBe(0);
+  });
+
+  test("a fragment that completes one frame and starts the next keeps both exact", async () => {
+    const reader = new FrameReader();
+    const first = reader.readFrame();
+    const opening = new Uint8Array(HEADER_LEN + 2);
+    opening.set(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 4), 0);
+    opening.set([0xa0, 0xa1], HEADER_LEN);
+    reader.push(opening);
+    expect(reader.bufferedBytes()).toBe(HEADER_LEN + 2);
+    expect(reader.pendingChunkCount()).toBe(1);
+    const straddle = new Uint8Array(2 + HEADER_LEN + 1);
+    straddle.set([0xa2, 0xa3], 0);
+    straddle.set(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 2, 2), 2);
+    straddle[2 + HEADER_LEN] = 0xb0;
+    reader.push(straddle);
+    const a = await first;
+    expect(a.header.corr).toBe(1);
+    expect(a.payload).toEqual(new Uint8Array([0xa0, 0xa1, 0xa2, 0xa3]));
+    expect(reader.bufferedBytes()).toBe(HEADER_LEN + 1);
+    expect(reader.pendingChunkCount()).toBe(1);
+    const second = reader.readFrame();
+    reader.push(new Uint8Array([0xb1]));
+    const b = await second;
+    expect(b.header.corr).toBe(2);
+    expect(b.payload).toEqual(new Uint8Array([0xb0, 0xb1]));
+    expect(reader.bufferedBytes()).toBe(0);
+    expect(reader.pendingChunkCount()).toBe(0);
+  });
+
+  test("an incomplete direct fill expires on the frame deadline", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    const started = performance.now();
+    reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 2));
+    reader.push(new Uint8Array([0x41]));
+    expect(reader.bufferedBytes()).toBe(HEADER_LEN + 1);
+    await expect(pending).rejects.toThrow("KELD-IPC-006");
+    const elapsed = performance.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(APP_LINK_IO_DEADLINE_MS - 25);
+    expect(elapsed).toBeLessThan(APP_LINK_IO_DEADLINE_MS + 1_500);
+    expect(reader.bufferedBytes()).toBe(0);
+  }, 8_000);
+
+  test("late completion of a direct fill cannot beat the frame deadline", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 1));
+    const started = performance.now();
+    while (performance.now() - started < APP_LINK_IO_DEADLINE_MS + 10) {
+      // Hold the JS turn so the already-due timer callback cannot decide first.
+    }
+    reader.push(new Uint8Array([0x41]));
+    await expect(pending).rejects.toThrow("KELD-IPC-006");
+  }, 8_000);
+
+  test("a peer close during a direct fill rejects the truncated frame and releases it", async () => {
+    const reader = new FrameReader();
+    const pending = reader.readFrame();
+    reader.push(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 1, 4));
+    reader.push(new Uint8Array([0x41, 0x42]));
+    expect(reader.bufferedBytes()).toBe(HEADER_LEN + 2);
+    reader.end(new Error("KELD-IPC-001: connection closed by peer"));
+    await expect(pending).rejects.toThrow("KELD-IPC-001");
+    expect(reader.bufferedBytes()).toBe(0);
+    expect(reader.pendingChunkCount()).toBe(0);
+    await expect(reader.readFrame()).rejects.toThrow("KELD-IPC-001");
   });
 });
 
