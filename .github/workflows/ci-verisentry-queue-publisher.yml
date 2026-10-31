@@ -197,18 +197,41 @@ jobs:
                 pr.changed_files < 1 || pr.changed_files >= 300) {
               throw Error('Queue PR moved, changed identity or has unverifiable changed-file count');
             }
-            // Bind a singleton queue stage by its authenticated live queue ref,
-            // exact parents and tree, not the synthetic PR preview commit SHA.
-            // GitHub can regenerate a preview SHA without changing its tree.
-            if (!isSha(pr.merge_commit_sha))
-              throw Error('KELD queue stage lacks a current PR test-merge SHA');
-            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
-            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
-                preview.parents.length !== 2 || preview.parents[0]?.sha !== main ||
-                preview.parents[1]?.sha !== head ||
-                preview.commit?.tree?.sha !== commit.commit.tree.sha) {
-              throw Error('Staged queue tree differs from singleton PR test-merge tree');
+            // The standalone PR preview can be pending or regenerated while the
+            // queue stage stays live. Retry a bounded number of times; only a
+            // current, immutable [main, head] preview with the exact staged tree
+            // may qualify. Preserve exact PR identity across each refresh.
+            let previewReady = false;
+            let previewPr = pr;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (!exactPR(previewPr))
+                throw Error('Queue PR moved during standalone preview regeneration');
+              if (isSha(previewPr.merge_commit_sha)) {
+                let preview;
+                try {
+                  preview = (await github.rest.repos.getCommit({
+                    owner,repo,ref:previewPr.merge_commit_sha,
+                  })).data;
+                } catch (error) {
+                  if (error?.status !== 404) throw error;
+                }
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === main && preview.parents[1]?.sha === head &&
+                    preview.commit?.tree?.sha === commit.commit.tree.sha) {
+                  previewReady = true;
+                  break;
+                }
+              } else if (previewPr.merge_commit_sha != null) {
+                throw Error('Malformed standalone PR preview SHA');
+              }
+              if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                previewPr = await getPR();
+              }
             }
+            if (!previewReady)
+              throw Error('Staged queue tree differs from singleton PR test-merge tree or preview is unavailable');
             // The stage must have exact parents [current main, current PR head].
             // Its separate App check name and live queue-entry identity prevent
             // replay of a legacy PR-preview check on a similarly shaped commit.
@@ -554,17 +577,48 @@ jobs:
                 staged.parents.length !== 2 ||
                 staged.parents[0]?.sha !== expected.base ||
                 staged.parents[1]?.sha !== expected.head ||
-                expected.stage === expected.head ||
-                !isSha(pr.merge_commit_sha)) {
+                expected.stage === expected.head) {
               throw Error('Queued commit or PR test-merge preview changed');
             }
-            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
-            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
-                preview.parents.length !== 2 || preview.parents[0]?.sha !== expected.base ||
-                preview.parents[1]?.sha !== expected.head ||
-                preview.commit?.tree?.sha !== staged.commit.tree.sha) {
-              throw Error('Queue stage no longer matches the singleton PR preview');
+            let previewReady = false;
+            let previewPr = pr;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (previewPr?.number !== expected.number || previewPr.state !== 'open' ||
+                  previewPr.draft !== false || previewPr.base?.sha !== expected.base ||
+                  previewPr.base?.ref !== 'main' ||
+                  previewPr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                  previewPr.head?.sha !== expected.head ||
+                  previewPr.node_id !== entries[0].pullRequest.id)
+                throw Error('Queue PR moved during pre-token preview regeneration');
+              if (isSha(previewPr.merge_commit_sha)) {
+                let preview;
+                try {
+                  preview = (await github.rest.repos.getCommit({
+                    owner,repo,ref:previewPr.merge_commit_sha,
+                  })).data;
+                } catch (error) {
+                  if (error?.status !== 404) throw error;
+                }
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === expected.base &&
+                    preview.parents[1]?.sha === expected.head &&
+                    preview.commit?.tree?.sha === staged.commit.tree.sha) {
+                  previewReady = true;
+                  break;
+                }
+              } else if (previewPr.merge_commit_sha != null) {
+                throw Error('Malformed pre-token PR preview SHA');
+              }
+              if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                previewPr = (await github.rest.pulls.get({
+                  owner,repo,pull_number:expected.number,
+                })).data;
+              }
             }
+            if (!previewReady)
+              throw Error('Queue stage no longer matches the singleton PR preview or preview is unavailable');
             // Repeat the exact first-attempt CI required job witness after the
             // environment admission delay. A new failed/cancelled status cannot be green.
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
@@ -687,15 +741,41 @@ jobs:
                 pr.base?.repo?.full_name !== 'gyldlab/keld' || pr.head?.sha !== head) {
               throw Error('App publisher refuses moved queue PR');
             }
-            if (!isSha(pr.merge_commit_sha))
-              throw Error('Queue PR lost its verifiable test-merge preview');
-            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
-            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
-                preview.parents.length !== 2 || preview.parents[0]?.sha !== base ||
-                preview.parents[1]?.sha !== head ||
-                preview.commit?.tree?.sha !== commit.commit.tree.sha) {
-              throw Error('App publisher refuses queue tree differing from current PR preview');
+            let previewReady = false;
+            let previewPr = pr;
+            for (let attempt = 0; attempt < 3; attempt++) {
+              if (previewPr?.number !== number || previewPr.state !== 'open' ||
+                  previewPr.draft !== false || previewPr.base?.sha !== base ||
+                  previewPr.base?.ref !== 'main' ||
+                  previewPr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                  previewPr.head?.sha !== head)
+                throw Error('App publisher refuses moved PR during preview regeneration');
+              if (isSha(previewPr.merge_commit_sha)) {
+                let preview;
+                try {
+                  preview = (await github.rest.repos.getCommit({
+                    owner,repo,ref:previewPr.merge_commit_sha,
+                  })).data;
+                } catch (error) {
+                  if (error?.status !== 404) throw error;
+                }
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === base && preview.parents[1]?.sha === head &&
+                    preview.commit?.tree?.sha === commit.commit.tree.sha) {
+                  previewReady = true;
+                  break;
+                }
+              } else if (previewPr.merge_commit_sha != null) {
+                throw Error('App publisher refuses malformed PR preview SHA');
+              }
+              if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                previewPr = (await github.rest.pulls.get({owner,repo,pull_number:number})).data;
+              }
             }
+            if (!previewReady)
+              throw Error('App publisher refuses queue tree differing from current PR preview or unavailable preview');
             const q = await github.graphql(`query($owner:String!, $repo:String!) {
               repository(owner:$owner,name:$repo) {
                 mergeQueue(branch:"main") { entries(first:100) {

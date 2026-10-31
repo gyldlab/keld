@@ -66,7 +66,7 @@ jobs:
               }
               const number = Number(match[1]);
               if (!Number.isSafeInteger(number)) throw Error('Invalid queue PR number');
-              const data = await github.graphql(`
+              const queueQuery = `
                 query($owner: String!, $repo: String!) {
                   repository(owner: $owner, name: $repo) {
                     mergeQueue(branch: "main") {
@@ -85,7 +85,8 @@ jobs:
                     }
                   }
                 }
-              `, {owner, repo});
+              `;
+              const data = await github.graphql(queueQuery, {owner, repo});
               const queue = data?.repository?.mergeQueue;
               const entries = queue?.entries;
               // GitHub GraphQL returns configuration:null for some real
@@ -137,25 +138,95 @@ jobs:
                   queued.isDraft !== false ||
                   !['QUEUED','AWAITING_CHECKS','LOCKED','MERGEABLE'].includes(entry.state) ||
                   current?.object?.sha !== event.head_sha ||
-                  !sha(pr.merge_commit_sha)) {
+                  groupCommit.parents.length !== 2 ||
+                  groupCommit.parents[1]?.sha !== pr.head.sha) {
                 throw Error('KeldBot refuses stale or retargeted queue PR');
               }
               // A one-PR merge limit does not ensure the staged group contains
-              // only that PR: earlier queued changes can be stacked. Compare
-              // the staged tree against the LIVE PR's standalone test merge.
-              // A synthetic preview SHA may be regenerated, but its verified
-              // immutable parent pair and tree must describe this exact PR.
-              const preview = (await github.rest.repos.getCommit({
-                owner, repo, ref: pr.merge_commit_sha,
-              })).data;
-              const previewTree = preview?.commit?.tree?.sha;
-              if (preview?.sha !== pr.merge_commit_sha ||
-                  !Array.isArray(preview.parents) || preview.parents.length !== 2 ||
-                  preview.parents[0]?.sha !== pr.base.sha ||
-                  preview.parents[1]?.sha !== pr.head.sha ||
-                  !sha(previewTree) ||
-                  groupCommit?.commit?.tree?.sha !== previewTree) {
-                throw Error('KeldBot refuses a stacked group or stale PR preview tree');
+              // only that PR: earlier queued changes can be stacked. GitHub
+              // computes the standalone preview asynchronously. Retry only a
+              // bounded number of times, without accepting a missing/wrong tree.
+              // Each refresh must retain the exact live PR/base/head identity.
+              let previewReady = false;
+              let previewPr = pr;
+              for (let attempt = 0; attempt < 3; attempt++) {
+                if (previewPr?.number !== number || previewPr.state !== 'open' ||
+                    previewPr.draft !== false || previewPr.base?.ref !== 'main' ||
+                    previewPr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                    previewPr.base?.sha !== event.base_sha ||
+                    previewPr.head?.sha !== queued.headRefOid) {
+                  throw Error('KeldBot refuses a changed PR during preview refresh');
+                }
+                if (sha(previewPr.merge_commit_sha)) {
+                  let preview;
+                  try {
+                    preview = (await github.rest.repos.getCommit({
+                      owner, repo, ref: previewPr.merge_commit_sha,
+                    })).data;
+                  } catch (error) {
+                    // An asynchronously replaced preview may briefly return 404.
+                    // Any other GitHub API uncertainty must fail closed.
+                    if (error?.status !== 404) throw error;
+                  }
+                  if (preview?.sha === previewPr.merge_commit_sha &&
+                      Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                      preview.parents[0]?.sha === event.base_sha &&
+                      preview.parents[1]?.sha === queued.headRefOid &&
+                      sha(preview.commit?.tree?.sha) &&
+                      preview.commit.tree.sha === groupCommit.commit?.tree?.sha) {
+                    previewReady = true;
+                    break;
+                  }
+                } else if (previewPr.merge_commit_sha != null) {
+                  throw Error('KeldBot refuses malformed PR preview SHA');
+                }
+                if (attempt < 2) {
+                  await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+                  previewPr = (await github.rest.pulls.get({
+                    owner, repo, pull_number: number,
+                  })).data;
+                }
+              }
+              if (!previewReady) {
+                throw Error('KeldBot refuses a stacked group or unavailable PR preview tree');
+              }
+              // A consistency delay may outlive the queue entry. Revalidate
+              // live membership/ref/PR after any delayed preview refresh.
+              if (previewPr !== pr) {
+                const newer = (await github.graphql(queueQuery, {owner, repo}))
+                  ?.repository?.mergeQueue;
+                const census = newer?.entries;
+                const found = census?.nodes?.filter(e =>
+                  e?.pullRequest?.number === number &&
+                  e?.headCommit?.oid === event.head_sha);
+                if (!Number.isSafeInteger(census?.totalCount) ||
+                    census.totalCount < 1 || census.totalCount > 100 ||
+                    census.pageInfo?.hasNextPage !== false ||
+                    !Array.isArray(census.nodes) ||
+                    census.nodes.length !== census.totalCount ||
+                    !Array.isArray(found) || found.length !== 1 ||
+                    found[0].pullRequest?.headRefOid !== queued.headRefOid ||
+                    found[0].pullRequest?.baseRefName !== 'main' ||
+                    found[0].pullRequest?.state !== 'OPEN' ||
+                    found[0].pullRequest?.isDraft !== false ||
+                    !['QUEUED','AWAITING_CHECKS','LOCKED','MERGEABLE'].includes(found[0].state) ||
+                    (newer.configuration !== null &&
+                      newer.configuration?.maximumEntriesToMerge !== 1)) {
+                  throw Error('KeldBot queue entry changed after preview refresh');
+                }
+                const finalRef = (await github.rest.git.getRef({
+                  owner, repo, ref: event.head_ref.slice(5),
+                })).data;
+                const finalPR = (await github.rest.pulls.get({
+                  owner, repo, pull_number: number,
+                })).data;
+                if (finalRef?.object?.sha !== event.head_sha ||
+                    finalPR?.number !== number || finalPR.state !== 'open' ||
+                    finalPR.draft !== false || finalPR.base?.ref !== 'main' ||
+                    finalPR.base?.repo?.full_name !== 'gyldlab/keld' ||
+                    finalPR.base?.sha !== event.base_sha ||
+                    finalPR.head?.sha !== queued.headRefOid)
+                  throw Error('KeldBot queue ref or PR changed after preview refresh');
               }
               core.setOutput('number', String(number));
               core.setOutput('head_sha', pr.head.sha);

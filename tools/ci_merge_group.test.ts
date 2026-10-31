@@ -534,6 +534,121 @@ test("live authenticated singleton queue resolves exact PR and group SHA", async
   expect(f.calls).toEqual({ graphql: 1, pr: 1, ref: 1, commit: 2 });
 });
 
+test("KeldBot accepts an async pending preview only after exact same-PR regeneration", async () => {
+  const f = fixture();
+  const original = f.github.rest.pulls.get;
+  let reads = 0;
+  f.github.rest.pulls.get = async (args: any) => {
+    const response = await original(args);
+    reads++;
+    return {
+      data: {
+        ...response.data,
+        merge_commit_sha: reads === 1 ? null : previewSha,
+      },
+    };
+  };
+  await expect(invoke(identity, f)).resolves.toBeUndefined();
+  expect(reads).toBe(3); // initial, refreshed preview, final PR identity
+  expect(f.calls.graphql).toBe(2);
+  expect(f.calls.ref).toBe(2);
+  expect(f.output).toEqual({ number: String(number), head_sha: head });
+});
+
+test("KeldBot retries a transient preview 404 without accepting the wrong stage", async () => {
+  const f = fixture();
+  const original = f.github.rest.repos.getCommit;
+  let previewReads = 0;
+  f.github.rest.repos.getCommit = async (args: any) => {
+    if (args.ref === previewSha && previewReads++ === 0)
+      throw Object.assign(new Error("preview regenerating"), { status: 404 });
+    return original(args);
+  };
+  await expect(invoke(identity, f)).resolves.toBeUndefined();
+  expect(previewReads).toBe(2);
+  expect(f.output).toEqual({ number: String(number), head_sha: head });
+});
+
+test("KeldBot refuses a changed head during preview regeneration", async () => {
+  const f = fixture();
+  const original = f.github.rest.pulls.get;
+  let reads = 0;
+  f.github.rest.pulls.get = async (args: any) => {
+    const response = await original(args);
+    reads++;
+    return {
+      data: {
+        ...response.data,
+        merge_commit_sha: reads === 1 ? null : previewSha,
+        head: { sha: reads === 1 ? head : "e".repeat(40) },
+      },
+    };
+  };
+  await expect(invoke(identity, f)).rejects.toThrow(
+    /changed PR during preview refresh/,
+  );
+  expect(f.output).toEqual({});
+});
+
+test("KeldBot refuses a removed queue entry after delayed preview readiness", async () => {
+  const f = fixture();
+  f.pr.merge_commit_sha = null;
+  const originalPR = f.github.rest.pulls.get;
+  let reads = 0;
+  f.github.rest.pulls.get = async (args: any) => {
+    const response = await originalPR(args);
+    reads++;
+    return {
+      data: {
+        ...response.data,
+        merge_commit_sha: reads === 1 ? null : previewSha,
+      },
+    };
+  };
+  const originalGraphql = f.github.graphql;
+  let queueReads = 0;
+  f.github.graphql = async (query: string, args: any) => {
+    const data = await originalGraphql(query, args);
+    if (++queueReads === 2) {
+      const stale = structuredClone(data);
+      stale.repository.mergeQueue.entries.nodes[0].headCommit.oid = "e".repeat(
+        40,
+      );
+      return stale;
+    }
+    return data;
+  };
+  await expect(invoke(identity, f)).rejects.toThrow(/queue entry changed/);
+  expect(queueReads).toBe(2);
+  expect(f.output).toEqual({});
+});
+
+test("KeldBot refuses a rebuilt queue ref after delayed preview readiness", async () => {
+  const f = fixture();
+  const originalPR = f.github.rest.pulls.get;
+  let reads = 0;
+  f.github.rest.pulls.get = async (args: any) => {
+    const response = await originalPR(args);
+    reads++;
+    return {
+      data: {
+        ...response.data,
+        merge_commit_sha: reads === 1 ? null : previewSha,
+      },
+    };
+  };
+  const originalRef = f.github.rest.git.getRef;
+  let refReads = 0;
+  f.github.rest.git.getRef = async (args: any) => {
+    const response = await originalRef(args);
+    if (++refReads === 2) response.data.object.sha = "e".repeat(40);
+    return response;
+  };
+  await expect(invoke(identity, f)).rejects.toThrow(/queue ref or PR changed/);
+  expect(refReads).toBe(2);
+  expect(f.output).toEqual({});
+});
+
 test("live queue configuration:null accepts distinct staged SHA and PR head", async () => {
   const f = fixture();
   // Dify live GraphQL can return configuration:null. The entry HEAD is

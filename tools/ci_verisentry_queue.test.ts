@@ -1598,6 +1598,49 @@ test("unexpected Compare Commits ancestry status fails closed with no App public
   expect(diverged.written).toHaveLength(0);
 });
 
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase accepts a pending preview only after an unchanged PR regenerates",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.prReads = [{ ...f.pr, merge_commit_sha: null }, f.pr];
+    });
+    await expect(s[phase]()).resolves.toBeUndefined();
+    if (phase === "publish") {
+      expect(s.written).toHaveLength(1);
+      expect(s.written[0].head_sha).toBe(stage);
+    } else {
+      expect(s.written).toHaveLength(0);
+    }
+  },
+);
+
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase refuses a moved PR during pending preview refresh",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.prReads = [
+        { ...f.pr, merge_commit_sha: null },
+        { ...f.pr, head: { sha: "f".repeat(40) } },
+      ];
+    });
+    await expect(s[phase]()).rejects.toThrow(/PR moved|moved PR/);
+    expect(s.written).toHaveLength(0);
+  },
+);
+
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase refuses a permanently unavailable preview",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.pr.merge_commit_sha = null as any;
+    });
+    await expect(s[phase]()).rejects.toThrow(
+      /preview is unavailable|unavailable preview/,
+    );
+    expect(s.written).toHaveLength(0);
+  },
+);
+
 test("KELD stage may differ from regenerated preview SHA but not from PR HEAD", async () => {
   // GitHub can re-mint a preview SHA while retaining identical parents/tree.
   // Only a live queue ref + exact stage parent/tree attestation grants authority.

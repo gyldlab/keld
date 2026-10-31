@@ -37,6 +37,17 @@ are source of truth; this file owns the design invariants.
 
 - Merge-critical workflows/jobs/steps MUST NOT use `continue-on-error`, inherited custom
   shells, retries, skips, or wrappers that suppress an exit status.
+- Narrow read-consistency exception (requires independent CI/security review): within
+  one merge-queue validation step, up to three read-only GitHub API observations of
+  an asynchronously generated PR test-merge preview may be made. Every
+  refreshed PR read must preserve its exact number, state, base and head.
+  Any preview accepted must have the exact parent pair and staged queue tree.
+  After a delayed read, recheck the live queue/ref identity, and revalidate at
+  the privileged publisher boundary before App publication. A missing preview
+  or 404 may be polled; a stale parent/tree must never be accepted. Exhaustion,
+  a changed PR, any other API error, or failed security/CI check must fail
+  closed. This is NOT permission to rerun a failed workflow, job, test, check
+  or publisher, to skip it, or to suppress its exit status.
 - Actions are immutable-SHA pinned. Checkout credentials are disabled unless a named
   operation genuinely needs write authority.
 - A required result must validate router applicability as well as job status; GitHub
