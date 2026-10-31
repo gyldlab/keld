@@ -97,14 +97,14 @@ function plan(fact: Fact): Plan {
   const sameValue = "value" in existing && existing.value === fact.value;
   if (!sameValue) {
     throw new Error(
-      `KELD-COMPAT-013: ${fact.label} is already ${show(existing)}; a second owner defined it before @keld/electron. ${FIX}`,
+      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)}; a second owner defined it before @keld/electron. ${FIX}`,
     );
   }
   // A non-configurable property keeps its enumerability, so only an enumerable
   // one can still become Electron's frozen enumerable fact.
   if (existing.configurable !== true && existing.enumerable !== true) {
     throw new Error(
-      `KELD-COMPAT-013: ${fact.label} is already ${show(existing)} but non-configurable and non-enumerable, so it cannot become Electron's frozen enumerable fact. ${FIX}`,
+      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)} but non-configurable and non-enumerable, so it cannot become Electron's frozen enumerable fact. ${FIX}`,
     );
   }
   return { fact, write: !isInstalled(existing, fact.value) };
@@ -118,7 +118,7 @@ function plan(fact: Fact): Plan {
  * installed the facts, writes nothing. A same-value definition that is still
  * configurable is adopted and frozen.
  *
- * @throws Error `KELD-COMPAT-013` when a fact is already defined with another
+ * @throws Error `KELD-COMPAT-014` when a fact is already defined with another
  * value, as an accessor, or in a shape that cannot be frozen; nothing is written
  * in that case.
  */

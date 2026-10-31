@@ -97,7 +97,7 @@ Non-goals:
    and leaves every descriptor byte-identical.
 7. Error case: given a foreign definition of `type`, `defaultApp` or `versions.electron`
    with a different value (configurable or not), when the installer runs, then it throws
-   an `Error` whose message starts with `KELD-COMPAT-013:`, names the property and the
+   an `Error` whose message starts with `KELD-COMPAT-014:`, names the property and the
    fix (remove the second owner), and defines no fact on that target. A foreign
    *configurable* definition with the *same* value is adopted and frozen, not refused.
 8. Given a Bun role launched with `--preload=<a preload that imports only
@@ -137,7 +137,7 @@ Nothing here widens a grant or reads an environment variable.
 Lifecycle. Facts are installed once per role process and frozen (non-writable,
 non-configurable, enumerable), as Electron installs them (`default_app/main.ts:92-96`;
 `node_bindings.cc` `SetReadOnly`). A second owner is a defect and surfaces as
-`KELD-COMPAT-013`, never as a silent overwrite or a bare `TypeError`.
+`KELD-COMPAT-014`, never as a silent overwrite or a bare `TypeError`.
 
 Failure. The installer does no I/O and opens no link, so it cannot fail on the
 transport; its only failure is the two-owner conflict above.
@@ -204,7 +204,7 @@ export const MAIN_ROLE_UNDEFINED_FLAGS: readonly [
 export interface ProcessFactsTarget {
   readonly versions: object;
 }
-/** Installs `type`, `defaultApp` and `versions.electron`; idempotent; KELD-COMPAT-013 on a second owner. */
+/** Installs `type`, `defaultApp` and `versions.electron`; idempotent; KELD-COMPAT-014 on a second owner. */
 export function installMainProcessFacts(target?: ProcessFactsTarget): void;
 ```
 
@@ -271,7 +271,7 @@ the electron-log-first fixture (AC8) observing `undefined` in a real staged role
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
 - [ ] T1 — one owner module, Option A `(argv, defaultApp)`, frozen descriptors,
-  `KELD-COMPAT-013`, red-first Bun tests and fixtures, scoreboard rows, arch 04
+  `KELD-COMPAT-014`, red-first Bun tests and fixtures, scoreboard rows, arch 04
   sentence. Proposed on the same branch as this draft; it is not landed work until the
   spec is approved.
 - [ ] T2 — pre-entry installation via a Host-staged second `--preload` (KEL-75
@@ -289,7 +289,7 @@ the electron-log-first fixture (AC8) observing `undefined` in a real staged role
 | 3, 4 | descriptor equality in-process after `import "./index"`; `ELECTRON_VERSION_SHIM` vs `package.json` version and vs `44.4.5` | `Object.getOwnPropertyDescriptor` values; file bytes |
 | 5 | in-process `Object.hasOwn`/`typeof` over `MAIN_ROLE_UNDEFINED_FLAGS` and `versions.chrome`; `resourcesPath` absent today (T3 inverts this case) | property census |
 | 6 | second `installMainProcessFacts()` call; descriptors deep-equal before/after | no throw, equal descriptors |
-| 7 | plain-object targets with a foreign `type: "renderer"` (configurable and not), a foreign `versions.electron: "44.4.5"`, and a same-value configurable `type` | message prefix `KELD-COMPAT-013:`, no fact defined on refusal; adoption freezes the same-value case |
+| 7 | plain-object targets with a foreign `type: "renderer"` (configurable and not), a foreign `versions.electron: "44.4.5"`, and a same-value configurable `type` | message prefix `KELD-COMPAT-014:`, no fact defined on refusal; adoption freezes the same-value case |
 | 8 | spawn `fixtures/process_facts_early_entry.ts` with and without `--preload=./process_facts_preload.ts` | `GH570_EARLY mode=main defaultApp=true facadeType=browser` with the preload; `mode=unknown defaultApp=undefined facadeType=browser` without |
 | 9 | T2: #569 `crates/keld-host/tests/no_flag_macos.rs` exact case, real macOS | the two cells flip in the corpus manifest |
 | 10 | T3: #569 `process.resources-path.string` plus a Keld rule test that the value has no `app.asar` segment and equals the payload field | corpus cell plus exact string |

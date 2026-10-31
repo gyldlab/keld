@@ -199,11 +199,11 @@ describe("one owner — AC6, AC7", () => {
     ]);
   });
 
-  test("a foreign non-configurable type refuses with KELD-COMPAT-013 and defines no fact", () => {
+  test("a foreign non-configurable type refuses with KELD-COMPAT-014 and defines no fact", () => {
     const target: ProcessFactsTarget = { versions: {} };
     Object.defineProperty(target, "type", frozen("renderer"));
     expect(() => installMainProcessFacts(target)).toThrow(
-      /^KELD-COMPAT-013: process\.type /,
+      /^KELD-COMPAT-014: process\.type /,
     );
     expect(Object.hasOwn(target, "defaultApp")).toBe(false);
     expect(Object.hasOwn(target.versions, "electron")).toBe(false);
@@ -212,7 +212,7 @@ describe("one owner — AC6, AC7", () => {
   test("a foreign configurable type with another value refuses too; it is not silently overwritten", () => {
     const target = { versions: {}, type: "renderer" };
     expect(() => installMainProcessFacts(target)).toThrow(
-      /^KELD-COMPAT-013: process\.type is already "renderer"/,
+      /^KELD-COMPAT-014: process\.type is already "renderer"/,
     );
     expect(target.type).toBe("renderer");
     expect(Object.hasOwn(target, "defaultApp")).toBe(false);
@@ -221,7 +221,7 @@ describe("one owner — AC6, AC7", () => {
   test("a foreign versions.electron refuses before any fact is written", () => {
     const target: ProcessFactsTarget = { versions: { electron: "44.4.5" } };
     expect(() => installMainProcessFacts(target)).toThrow(
-      /^KELD-COMPAT-013: process\.versions\.electron is already "44\.4\.5"/,
+      /^KELD-COMPAT-014: process\.versions\.electron is already "44\.4\.5"/,
     );
     expect(Object.hasOwn(target, "type")).toBe(false);
     expect(Object.hasOwn(target, "defaultApp")).toBe(false);
