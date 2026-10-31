@@ -12,7 +12,10 @@ pub(crate) fn fence_marker(line: &str) -> Option<(u8, usize, bool)> {
         return None;
     }
     let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
-    (width >= 3).then(|| (marker, width, trimmed[width..].trim().is_empty()))
+    let tail = &trimmed[width..];
+    // A backtick in the info string makes the line inline code, not a fence.
+    (width >= 3 && !(marker == b'`' && tail.contains('`')))
+        .then(|| (marker, width, tail.trim().is_empty()))
 }
 
 /// Removes struck-through text because it is not binding visible prose.
@@ -32,41 +35,80 @@ pub(crate) fn without_struck_text(line: &str) -> String {
     visible
 }
 
-/// Removes inline-code spans because code-shaped text is not an executable Markdown link.
-pub(crate) fn without_inline_code(line: &str) -> String {
-    fn exact_run(input: &str, marker: u8, width: usize) -> Option<usize> {
-        let bytes = input.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] != marker {
-                index += 1;
-                continue;
-            }
-            let start = index;
-            while index < bytes.len() && bytes[index] == marker {
-                index += 1;
-            }
-            if index - start == width {
-                return Some(start);
-            }
-        }
-        None
+/// One inline-code span: `start..end` holds its delimiters, `content` the code text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodeSpan {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) content: std::ops::Range<usize>,
+}
+
+/// CommonMark code spans of one line, left to right: a closing run has the opening width,
+/// a backslash escapes an opening backtick, and a run with no partner is literal.
+pub(crate) fn inline_code_spans(line: &str) -> Vec<CodeSpan> {
+    fn run_width(bytes: &[u8], at: usize) -> usize {
+        bytes[at..].iter().take_while(|byte| **byte == b'`').count()
     }
 
-    let mut visible = String::with_capacity(line.len());
-    let mut remainder = line;
-    while let Some(start) = remainder.find('`') {
-        visible.push_str(&remainder[..start]);
-        let opening = &remainder[start..];
-        let width = opening.bytes().take_while(|byte| *byte == b'`').count();
-        let code = &opening[width..];
-        let Some(end) = exact_run(code, b'`', width) else {
-            visible.push_str(opening);
-            return visible;
-        };
-        remainder = &code[end + width..];
+    let bytes = line.as_bytes();
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'`' => {
+                let width = run_width(bytes, index);
+                let body = index + width;
+                let mut scan = body;
+                let closing = loop {
+                    match bytes[scan..].iter().position(|byte| *byte == b'`') {
+                        None => break None,
+                        Some(offset) => {
+                            let run = scan + offset;
+                            let found = run_width(bytes, run);
+                            if found == width {
+                                break Some(run);
+                            }
+                            scan = run + found;
+                        }
+                    }
+                };
+                let Some(closing) = closing else {
+                    index = body;
+                    continue;
+                };
+                // One space each side is padding, unless the code is only spaces.
+                let text = &line[body..closing];
+                let padded = text.len() > 2
+                    && text.starts_with(' ')
+                    && text.ends_with(' ')
+                    && !text.trim().is_empty();
+                spans.push(CodeSpan {
+                    start: index,
+                    end: closing + width,
+                    content: if padded {
+                        body + 1..closing - 1
+                    } else {
+                        body..closing
+                    },
+                });
+                index = closing + width;
+            }
+            _ => index += 1,
+        }
     }
-    visible.push_str(remainder);
+    spans
+}
+
+/// Removes inline-code spans because code-shaped text is not an executable Markdown link.
+pub(crate) fn without_inline_code(line: &str) -> String {
+    let mut visible = String::with_capacity(line.len());
+    let mut kept = 0;
+    for span in inline_code_spans(line) {
+        visible.push_str(&line[kept..span.start]);
+        kept = span.end;
+    }
+    visible.push_str(&line[kept..]);
     visible
 }
 
@@ -81,6 +123,8 @@ mod tests {
         assert_eq!(fence_marker("```rust"), Some((b'`', 3, false)));
         assert_eq!(fence_marker("````not-a-close"), Some((b'`', 4, false)));
         assert_eq!(fence_marker("````  "), Some((b'`', 4, true)));
+        assert_eq!(fence_marker("```a```"), None, "one line of inline code");
+        assert_eq!(fence_marker("~~~ a`b"), Some((b'~', 3, false)));
     }
 
     #[test]
@@ -108,5 +152,22 @@ mod tests {
             without_inline_code("before ``not-closed-by-one` after"),
             "before ``not-closed-by-one` after"
         );
+        assert_eq!(without_inline_code("a `` b `c` d"), "a `` b  d");
+        assert_eq!(without_inline_code(r"a \`b` c"), r"a \`b` c");
+        assert_eq!(without_inline_code(r"a \\`b` c"), r"a \\ c");
+    }
+
+    #[test]
+    fn code_spans_report_their_content_without_padding() {
+        let content = |line: &'static str| -> Vec<&'static str> {
+            inline_code_spans(line)
+                .into_iter()
+                .map(|span| &line[span.content])
+                .collect()
+        };
+        assert_eq!(content("`a` and ``b``"), ["a", "b"]);
+        assert_eq!(content("`` a`b ``"), ["a`b"]);
+        assert_eq!(content("`  `"), ["  "]);
+        assert_eq!(content("` a`"), [" a"]);
     }
 }

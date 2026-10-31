@@ -400,7 +400,7 @@ expect_exact_output "Rust source alone skips the docs lane" docs false "$rust_so
 expect_exact_output "Rust source alone skips the hygiene lane" hygiene false "$rust_source_only"
 # #1321: a baseline drain edits the spec checker. Like the other hygiene checkers it
 # stays out of the every-lane fallback and also feeds the recursive CLI registry scan.
-spec_checker_classification="$(result_for_paths tools/spec_structure.rs tools/spec_structure_tests.rs)"
+spec_checker_classification="$(result_for_paths tools/spec_structure.rs tools/spec_structure_tests.rs tools/git_base_contract.rs)"
 expect_flags "spec checker feeds hygiene and registry" "$hygiene_rust" "$spec_checker_classification"
 expect_package_token "recursive tools scan selects its CLI reader for the spec checker" keld-cli "$spec_checker_classification"
 # The placeholder checker itself is an unknown tools input: every lane runs.

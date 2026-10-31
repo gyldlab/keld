@@ -249,6 +249,8 @@ fn valid_workflow() -> String {
             "          rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders",
             "          target/doc-placeholders/doc-placeholders check .",
             "      - name: Spec structure contracts",
+            "        env:",
+            "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}",
             "        run: |",
             "          mkdir -p target/spec-structure",
             "          rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test",
@@ -891,10 +893,22 @@ fn spec_structure_step_runs_whenever_the_hygiene_job_runs() {
             "Spec structure contracts",
         ),
         (
-            "      - name: Spec structure contracts\n        run:",
-            "      - name: Spec structure contracts\n        if: needs.changes.outputs.rust == 'true'\n        run:",
+            "      - name: Spec structure contracts\n        env:",
+            "      - name: Spec structure contracts\n        if: needs.changes.outputs.rust == 'true'\n        env:",
             "spec step gated off the docs lane",
-            "only its `run` key",
+            "only its `env` and `run` keys",
+        ),
+        (
+            "      - name: Spec structure contracts\n        env:\n          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n",
+            "      - name: Spec structure contracts\n",
+            "spec step without a comparison base",
+            "only its `env` and `run` keys",
+        ),
+        (
+            "      - name: Spec structure contracts\n        env:\n          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n",
+            "      - name: Spec structure contracts\n        env:\n          KELD_CI_BASE_REF: origin/main\n",
+            "spec step compares main with itself on push",
+            "never with itself",
         ),
         (
             "          target/spec-structure/spec-structure check .",
@@ -3830,16 +3844,20 @@ fn channel_allocations_step_must_bind_the_comparison_base() {
     let env_line = "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n";
     assert!(workflow.contains(env_line), "fixture binds the base");
     check_channel_allocations_step(&workflow).expect("fixture step passes");
+    let head =
+        "      - name: Check this checkout\n        if: needs.changes.outputs.hygiene == 'true'\n";
+    let step = format!("{head}        env:\n{env_line}");
+    assert!(workflow.contains(&step), "fixture step binds the base");
     let mutations = [
-            ("removed env", workflow.replacen(&format!("        env:\n{env_line}"), "", 1), "only its `if`, `env` and `run`"),
+            ("removed env", workflow.replacen(&step, head, 1), "only its `if`, `env` and `run`"),
             (
                 "PR base only",
-                workflow.replacen(" || github.event.before", "", 1),
+                workflow.replacen(&step, &format!("{head}        env:\n{}", env_line.replacen(" || github.event.before", "", 1)), 1),
                 "never with itself",
             ),
             (
                 "default base",
-                workflow.replacen("${{ github.event.pull_request.base.sha || github.event.before }}", "origin/main", 1),
+                workflow.replacen(&step, &format!("{head}        env:\n          KELD_CI_BASE_REF: origin/main\n"), 1),
                 "never with itself",
             ),
             (
