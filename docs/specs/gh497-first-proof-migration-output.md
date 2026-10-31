@@ -1,8 +1,8 @@
 # Spec: first-proof `keld migrate` output, ownership and honest report (GH-497)
 
-Status: draft
-Linear: GH-497 (#517 GitHub tracker of record; KEL-127 sequencing reference) · Owner: @0monish · Updated: 2026-10-29
-Disposition: **OPEN / DRAFT / DO NOT MERGE**. The CLI verb remains reserved (`KELD-CLI-045`); this document and its architecture corrections do not implement or execute migration.
+Status: approved
+Linear: GH-497 (#517 GitHub tracker of record; KEL-127 sequencing reference) · Owner: @0monish · Updated: 2026-10-31
+Disposition: **SOURCE CONTRACT APPROVED / PR DRAFT / DO NOT MERGE**. Owner approval of exact `f5fe281be73c96cf75d1da13da61a4ac9934acf2` content is recorded in [GH497 approval6537344225](https://github.com/gyldlab/keld/issues/497#issuecomment-6537344225). Implementation and merge remain gated. The CLI verb remains reserved (`KELD-CLI-045`); this document and its architecture corrections do not implement or execute migration.
 
 ## 1. Goal & non-goals
 
@@ -132,4 +132,6 @@ None measured or claimed by this documentation-only change. Future analyzer and 
 
 ## 10. Open questions
 
-**Implementation blockers rather than discretionary new keys:** #452 role-env grammar/session admission, #453 single-instance schema, #491 updater adapter, #502 single package entry, #499 installed graph/effective-configuration qualification, #593 launch enforcement/no-runtime-auto-install, actual CLI/package delivery and canonical transport/Source qualification, #541/#552 grants and #542 real document generation, #588 effective Legacy admission, and #589's authentic original-app Mac receipt. Current #446/#449 facade source is available; complete app/OS acceptance still needs its own evidence. The spec can be approved without fabricating these implementations, but T2/T3 must fail closed until the respective owners produce and verify them. Exact-content approval of this draft remains outstanding; it cannot be inferred from the separate #502/#499 approvals or a green docs-only CI run.
+No open contract decision remains in this approved scope.
+
+**Implementation blockers rather than discretionary new keys:** #452 role-env grammar/session admission, #453 single-instance schema, #491 updater adapter, #502 single package entry, #499 installed graph/effective-configuration qualification, #593 launch enforcement/no-runtime-auto-install, actual CLI/package delivery and canonical transport/Source qualification, #541/#552 grants and #542 real document generation, #588 effective Legacy admission, and #589's authentic original-app Mac receipt. Current #446/#449 facade source is available; complete app/OS acceptance still needs its own evidence. The spec can be approved without fabricating these implementations, but T2/T3 must fail closed until the respective owners produce and verify them.
