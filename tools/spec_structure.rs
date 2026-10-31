@@ -36,7 +36,8 @@ use std::process::{Command, Output};
 
 use git_base_contract::{BASE_ENV, BaseError, base_ref, merge_base};
 use markdown_contract::{
-    CodeSpan, fence_marker, inline_code_spans, without_inline_code, without_struck_text,
+    CodeSpan, code_span_at, fence_marker, inline_code_spans, without_inline_code,
+    without_struck_text,
 };
 
 const SPEC_ROOT: &str = "docs/specs";
@@ -94,8 +95,9 @@ const BLOCKER_FIELDS: [&str; 4] = ["Status", "Owner", "Impact", "Check"];
 const EVIDENCE_FIELDS: [&str; 4] = ["Run", "n", "Environment", "Limits"];
 const TASK_BLOCKERS_FIELD: &str = "Blocked by";
 /// AC fields where a bare `none` states nothing. `Given: none` is a real statement.
-const CONTROL_FIELDS: [&str; 4] = [
+const CONTROL_FIELDS: [&str; 5] = [
     "Then",
+    "Negative control",
     "Single fault",
     "At-risk precondition",
     "Expected RED",
@@ -176,13 +178,13 @@ const HTML_BLOCK_TAGS: [&str; 62] = [
     "tr",
     "track",
 ];
-/// HTML elements whose raw content runs to a closing tag, across blank lines.
-const RAW_HTML_ELEMENTS: [(&str, &str); 4] = [
-    ("pre", "</pre>"),
-    ("script", "</script>"),
-    ("style", "</style>"),
-    ("textarea", "</textarea>"),
-];
+/// HTML elements whose raw content runs across blank lines.
+const RAW_HTML_ELEMENTS: [&str; 4] = ["pre", "script", "style", "textarea"];
+/// Any of these ends such a block, whichever element opened it.
+const RAW_HTML_ENDS: [&str; 4] = ["</pre>", "</script>", "</style>", "</textarea>"];
+
+/// List nesting past this reads as text, so a line of markers stays linear.
+const MAX_LIST_DEPTH: usize = 32;
 
 /// Stable ID kinds and the one section that may define each.
 const KINDS: [(&str, usize); 7] = [
@@ -409,6 +411,27 @@ impl GitHistory<'_> {
     }
 }
 
+/// `git ls-files -s -z` output. A lossy decode would turn a non-UTF-8 name into a path no
+/// read finds, so such a name is an error, never an absent file.
+fn parse_tracked(stdout: &[u8]) -> Result<Vec<Tracked>, String> {
+    let mut tracked = Vec::new();
+    for entry in stdout.split(|byte| *byte == 0) {
+        let text = std::str::from_utf8(entry).map_err(|_| {
+            format!(
+                "SPEC-STRUCTURE: tracked path `{}` is not UTF-8, so no rule can read it. Rename it",
+                String::from_utf8_lossy(entry)
+            )
+        })?;
+        if let Some((stage, path)) = text.split_once('\t') {
+            tracked.push(Tracked {
+                path: path.to_owned(),
+                symlink: stage.starts_with("120000 "),
+            });
+        }
+    }
+    Ok(tracked)
+}
+
 /// The one action that restores a seal this clone cannot read.
 fn seal_fix(shallow: bool) -> &'static str {
     if shallow {
@@ -455,14 +478,7 @@ impl History for GitHistory<'_> {
         let stdout = self
             .git(&["ls-files", "-s", "-z"])
             .map_err(|detail| format!("SPEC-STRUCTURE: cannot list tracked files: {detail}"))?;
-        Ok(String::from_utf8_lossy(&stdout)
-            .split('\0')
-            .filter_map(|entry| entry.split_once('\t'))
-            .map(|(stage, path)| Tracked {
-                path: path.to_owned(),
-                symlink: stage.starts_with("120000 "),
-            })
-            .collect())
+        parse_tracked(&stdout)
     }
 
     fn previous_baseline(&self, path: &str) -> Result<Previous, String> {
@@ -547,6 +563,7 @@ impl Doc {
                 Lexed::Fenced | Lexed::Hidden => None,
             });
         }
+        hide_paragraph_comments(&lines, &mut visible, &lexer.paragraphs);
         Doc {
             rel: rel.to_owned(),
             lines,
@@ -555,7 +572,7 @@ impl Doc {
             headings: lexer.headings,
             bytes: text.len(),
             unclosed_fence: lexer.fence.map(|fence| fence.line),
-            unclosed_raw: lexer.raw.map(|(_, line)| line),
+            unclosed_raw: lexer.raw.map(|raw| raw.line),
         }
     }
 
@@ -595,10 +612,21 @@ struct Fence {
     base: usize,
 }
 
+/// An open comment or raw HTML block.
+#[derive(Clone, Copy)]
+struct RawBlock {
+    ends: &'static [&'static str],
+    line: usize,
+    /// Column of the list item that holds it. The block ends with its item.
+    base: usize,
+}
+
 /// An open paragraph, which a setext underline turns into a heading.
 struct Paragraph {
     first: usize,
     text: String,
+    /// In a block quote: lazy text continues it, and an underline cannot reach it.
+    quoted: bool,
 }
 
 /// The CommonMark block structure the rules depend on, one line at a time: list items for
@@ -610,23 +638,27 @@ struct Lexer {
     items: Vec<usize>,
     paragraph: Option<Paragraph>,
     fence: Option<Fence>,
-    /// The terminator of an open comment or raw HTML block, and where it opened.
-    raw: Option<(&'static str, usize)>,
+    raw: Option<RawBlock>,
     /// Column of the list item holding an open HTML block, which a blank line ends.
     html: Option<usize>,
     headings: Vec<Heading>,
+    /// First and last line of each paragraph, the only blocks an inline comment can span.
+    paragraphs: Vec<(usize, usize)>,
 }
 
 impl Lexer {
     fn step(&mut self, index: usize, line: &str) -> Lexed {
-        if let Some((end, _)) = self.raw {
-            if line.to_ascii_lowercase().contains(end) {
-                self.raw = None;
-            }
-            return Lexed::Hidden;
-        }
         let column = indent(line);
         let blank = line.trim().is_empty();
+        if let Some(raw) = self.raw {
+            if blank || column >= raw.base {
+                if closes_raw(line, raw.ends) {
+                    self.raw = None;
+                }
+                return Lexed::Hidden;
+            }
+            self.raw = None;
+        }
         if let Some(fence) = self.fence {
             if blank || column >= fence.base {
                 let inner = dedent(line, fence.base);
@@ -679,6 +711,7 @@ impl Lexer {
                 };
             }
             if let Some(level) = setext_level(body)
+                && self.paragraph.as_ref().is_some_and(|open| !open.quoted)
                 && let Some(paragraph) = self.paragraph.take()
             {
                 self.headings.push(Heading {
@@ -686,28 +719,36 @@ impl Lexer {
                     level,
                     text: paragraph.text,
                 });
-                return self.visible_line(index, line);
+                return Lexed::Text(shown_text(line));
             }
-            if is_thematic(body) || body.starts_with('>') {
+            if is_thematic(body) {
                 self.paragraph = None;
-                return self.visible_line(index, line);
+                return Lexed::Text(shown_text(line));
+            }
+            if body.starts_with('>') {
+                return self.quote_line(index, line, body);
             }
             // A comment opening the line is a block, so what follows it is no heading.
-            if let Some(end) = raw_block_end(body) {
+            if let Some(ends) = raw_block_ends(body) {
                 self.paragraph = None;
-                if !body.to_ascii_lowercase().contains(end) {
-                    self.raw = Some((end, index));
+                if !closes_raw(body, ends) {
+                    self.raw = Some(RawBlock {
+                        ends,
+                        line: index,
+                        base,
+                    });
                 }
                 return Lexed::Hidden;
             }
-            if let Some((level, title)) = atx_heading(&shown_text(body)) {
+            // Struck text or a comment may hide part of a title, never make a line a heading.
+            if let Some((level, title)) = atx_heading(body) {
                 self.paragraph = None;
                 self.headings.push(Heading {
                     index,
                     level,
-                    text: title,
+                    text: shown_text(&title).trim().to_owned(),
                 });
-                return self.visible_line(index, line);
+                return Lexed::Text(shown_text(line));
             }
             if html_block_start(body, self.paragraph.is_some()) {
                 self.paragraph = None;
@@ -724,24 +765,48 @@ impl Lexer {
                 });
                 return Lexed::Fenced;
             }
-            let Some(marker) = list_marker(body, self.paragraph.is_some()) else {
+            let Some(marker) = list_marker(body, self.paragraph.is_some())
+                .filter(|_| self.items.len() < MAX_LIST_DEPTH)
+            else {
                 return self.paragraph_line(index, line, body);
             };
             let after = &body[marker..];
-            let spaces = indent(after);
-            let (width, rest) = if after.trim().is_empty() || spaces > 4 {
-                (marker + 1, dedent(after, 1))
+            let spaces = indent_from(after, base + column + marker);
+            let content = after.trim_start_matches([' ', '\t']);
+            let (width, pad) = if content.is_empty() || spaces > 4 {
+                (marker + 1, spaces.saturating_sub(1))
             } else {
-                (marker + spaces, dedent(after, spaces))
+                (marker + spaces, 0)
             };
+            let rest = format!("{}{content}", " ".repeat(pad));
             base += column + width;
             self.items.push(base);
             self.paragraph = None;
             if rest.trim().is_empty() {
-                return self.visible_line(index, line);
+                return Lexed::Text(shown_text(line));
             }
             text = rest;
         }
+    }
+
+    /// A quote holds no heading and no field. Its last paragraph can still continue lazily.
+    fn quote_line(&mut self, index: usize, line: &str, body: &str) -> Lexed {
+        let mut inner = body.trim_start_matches(['>', ' ']);
+        while let Some(marker) = list_marker(inner, false) {
+            inner = inner[marker..].trim_start();
+        }
+        if inner.is_empty() || starts_block(inner, false) {
+            self.paragraph = None;
+            return Lexed::Text(shown_text(line));
+        }
+        if self.paragraph.as_ref().is_some_and(|open| !open.quoted) {
+            self.paragraph = None;
+        }
+        let shown = self.paragraph_line(index, line, inner);
+        if let Some(paragraph) = &mut self.paragraph {
+            paragraph.quoted = true;
+        }
+        shown
     }
 
     fn paragraph_line(&mut self, index: usize, line: &str, body: &str) -> Lexed {
@@ -749,28 +814,60 @@ impl Lexer {
         if let Some(paragraph) = &mut self.paragraph {
             paragraph.text.push(' ');
             paragraph.text.push_str(shown.trim());
+            if let Some(run) = self.paragraphs.last_mut() {
+                run.1 = index;
+            }
         } else {
             self.paragraph = Some(Paragraph {
                 first: index,
                 text: shown.trim().to_owned(),
+                quoted: false,
             });
+            self.paragraphs.push((index, index));
         }
-        self.visible_line(index, line)
+        Lexed::Text(shown_text(line))
     }
+}
 
-    /// A comment left open here hides the following lines, up to and with its closing line.
-    fn visible_line(&mut self, index: usize, line: &str) -> Lexed {
-        let (kept, open) = without_comments(line);
-        if open {
-            self.raw = Some(("-->", index));
+/// Hides each comment that spans lines. Blocks parse first, so a comment spans lines only
+/// inside one paragraph. A `<!--` no later line of its paragraph closes is literal text.
+fn hide_paragraph_comments(
+    lines: &[String],
+    visible: &mut [Option<String>],
+    paragraphs: &[(usize, usize)],
+) {
+    for &(first, last) in paragraphs {
+        let mut index = first;
+        let mut text = lines[first].clone();
+        while index < last {
+            let (kept, open) = without_comments(&text);
+            let Some(at) = open else {
+                index += 1;
+                text.clone_from(&lines[index]);
+                continue;
+            };
+            let Some(close) = (index + 1..=last).find(|line| lines[*line].contains("-->")) else {
+                break;
+            };
+            visible[index] = Some(without_struck_text(&kept[..at]));
+            visible[index + 1..close].fill(None);
+            text = lines[close]
+                .split_once("-->")
+                .map_or_else(String::new, |(_, tail)| tail.to_owned());
+            visible[close] = Some(shown_text(&text));
+            index = close;
         }
-        Lexed::Text(without_struck_text(&kept))
     }
 }
 
 /// Columns of leading whitespace. A tab moves to the next multiple of four.
 fn indent(line: &str) -> usize {
-    let mut column = 0;
+    indent_from(line, 0)
+}
+
+/// Columns of leading whitespace in text that starts at column `start`.
+fn indent_from(line: &str, start: usize) -> usize {
+    let mut column = start;
     for byte in line.bytes() {
         match byte {
             b' ' => column += 1,
@@ -778,7 +875,7 @@ fn indent(line: &str) -> usize {
             _ => break,
         }
     }
-    column
+    column - start
 }
 
 /// `line` without its first `columns` columns of leading whitespace.
@@ -792,32 +889,33 @@ fn shown_text(line: &str) -> String {
     without_struck_text(&without_comments(line).0)
 }
 
-/// `line` without its HTML comments, and whether one stays open at the end of the line.
-/// Code spans and comments compete left to right, so `<!--` in a code span opens nothing.
-fn without_comments(line: &str) -> (String, bool) {
+/// `line` without its closed HTML comments, and the offset in that text of a `<!--` left
+/// open. Code spans and comments compete left to right, so one in a code span opens nothing.
+fn without_comments(line: &str) -> (String, Option<usize>) {
+    let bytes = line.as_bytes();
     let mut kept = String::with_capacity(line.len());
-    let mut rest = line;
-    loop {
-        let spans = inline_code_spans(rest);
-        let open = rest.match_indices("<!--").map(|(at, _)| at).find(|at| {
-            let slashes = rest[..*at]
-                .bytes()
-                .rev()
-                .take_while(|byte| *byte == b'\\')
-                .count();
-            slashes % 2 == 0 && !spans.iter().any(|span| span.start <= *at && *at < span.end)
-        });
-        let Some(open) = open else {
-            kept.push_str(rest);
-            return (kept, false);
-        };
-        kept.push_str(&rest[..open]);
-        // `<!-->` is a whole comment: its closing run overlaps its opening run.
-        let Some(close) = rest[open + 2..].find("-->") else {
-            return (kept, true);
-        };
-        rest = &rest[open + 2 + close + 3..];
+    let mut copied = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'`' => index = code_span_at(line, index).map_or_else(|end| end, |span| span.end),
+            b'<' if line[index..].starts_with("<!--") => {
+                kept.push_str(&line[copied..index]);
+                // `<!-->` is a whole comment: its closing run overlaps its opening run.
+                let Some(close) = line[index + 2..].find("-->") else {
+                    let at = kept.len();
+                    kept.push_str(&line[index..]);
+                    return (kept, Some(at));
+                };
+                index += close + 5;
+                copied = index;
+            }
+            _ => index += 1,
+        }
     }
+    kept.push_str(&line[copied..]);
+    (kept, None)
 }
 
 /// True for a line that ends a paragraph instead of continuing it.
@@ -827,7 +925,7 @@ fn starts_block(text: &str, interrupts: bool) -> bool {
         && (is_thematic(body)
             || body.starts_with('>')
             || atx_heading(body).is_some()
-            || raw_block_end(body).is_some()
+            || raw_block_ends(body).is_some()
             || html_block_start(body, true)
             || fence_marker(text).is_some()
             || list_marker(body, interrupts).is_some())
@@ -870,13 +968,12 @@ fn setext_level(body: &str) -> Option<usize> {
 }
 
 fn is_thematic(body: &str) -> bool {
-    let marks: Vec<u8> = body
-        .bytes()
-        .filter(|byte| !matches!(byte, b' ' | b'\t'))
-        .collect();
-    marks.len() >= 3
-        && matches!(marks[0], b'-' | b'*' | b'_')
-        && marks.iter().all(|byte| *byte == marks[0])
+    let mut marks = body.bytes().filter(|byte| !matches!(byte, b' ' | b'\t'));
+    let first = marks.next();
+    matches!(first, Some(b'-' | b'*' | b'_'))
+        && marks.try_fold(1_usize, |count, byte| {
+            (Some(byte) == first).then_some(count + 1)
+        }) >= Some(3)
 }
 
 /// Byte width of a list marker. Inside a paragraph only a nonempty bullet or `1.` opens a
@@ -896,26 +993,32 @@ fn list_marker(body: &str, interrupts: bool) -> Option<usize> {
     (spaced && can_open).then_some(width)
 }
 
-/// The terminator of a block that runs to it, whatever lies between.
-fn raw_block_end(body: &str) -> Option<&'static str> {
+/// The terminators of a block that runs to one of them, whatever lies between.
+fn raw_block_ends(body: &str) -> Option<&'static [&'static str]> {
     if body.starts_with("<!--") {
-        return Some("-->");
+        return Some(&["-->"]);
     }
     if body.starts_with("<?") {
-        return Some("?>");
+        return Some(&["?>"]);
     }
     if body.starts_with("<![CDATA[") {
-        return Some("]]>");
+        return Some(&["]]>"]);
     }
     let declaration = body.strip_prefix("<!");
     if declaration.is_some_and(|rest| rest.starts_with(|ch: char| ch.is_ascii_alphabetic())) {
-        return Some(">");
+        return Some(&[">"]);
     }
     let tag = body.strip_prefix('<')?.to_ascii_lowercase();
-    RAW_HTML_ELEMENTS.iter().find_map(|(name, end)| {
+    RAW_HTML_ELEMENTS.iter().find_map(|name| {
         let rest = tag.strip_prefix(name)?;
-        (rest.is_empty() || rest.starts_with([' ', '\t', '>'])).then_some(*end)
+        (rest.is_empty() || rest.starts_with([' ', '\t', '>'])).then_some(&RAW_HTML_ENDS[..])
     })
+}
+
+/// True when `line` holds a terminator, in any case.
+fn closes_raw(line: &str, ends: &[&str]) -> bool {
+    let lower = line.to_ascii_lowercase();
+    ends.iter().any(|end| lower.contains(end))
 }
 
 /// An HTML block that a blank line ends. Markdown inside it renders as raw text, so a
@@ -957,15 +1060,23 @@ enum NonValue {
 
 /// Matches whole markers only, so `Unknown channels are refused` stays a real statement.
 fn non_value(value: &str, control: bool) -> Option<NonValue> {
-    let bare = value.trim_matches(|ch: char| ch.is_whitespace() || ".,:;!*_`()".contains(ch));
+    let wrapped = value.trim_matches(|ch: char| ch.is_whitespace() || ".,:;!*_`()".contains(ch));
+    // `[TBD]` and `"UNKNOWN"` say what `TBD` and `UNKNOWN` say.
+    let bare = wrapped.trim_matches(|ch: char| !ch.is_alphanumeric());
     let label_tail = bare.strip_prefix("UNKNOWN");
     let lower = bare.to_lowercase();
+    // `TBD: the owner decides` is a marker with a label. `Pending calls fail` is a statement.
+    let labelled = NON_VALUES.iter().any(|marker| {
+        lower
+            .strip_prefix(marker)
+            .is_some_and(|tail| !tail.trim_start().starts_with(char::is_alphanumeric))
+    });
     if lower == "unknown" || label_tail.is_some_and(|tail| !tail.starts_with(char::is_alphanumeric))
     {
         Some(NonValue::Unknown)
-    } else if (bare.starts_with('<') && bare.ends_with('>'))
+    } else if (wrapped.starts_with('<') && wrapped.ends_with('>'))
         || !bare.contains(char::is_alphanumeric)
-        || NON_VALUES.contains(&lower.as_str())
+        || labelled
         || (control && lower == "none")
     {
         Some(NonValue::Placeholder)
@@ -977,18 +1088,23 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
 /// Value of `label` on a `- **Label:** value` or `Label: value` line.
 fn field_value(line: &str, label: &str) -> Option<String> {
     let mut text = line.trim_start();
-    text = text
-        .strip_prefix("- ")
-        .or_else(|| text.strip_prefix("* "))
-        .unwrap_or(text);
+    if let Some(marker) = list_marker(text, false) {
+        text = text[marker..].trim_start();
+    }
     text = text.strip_prefix("**").unwrap_or(text);
-    let text = text.strip_prefix(label)?.strip_prefix(':')?;
+    let text = text.strip_prefix(label)?;
+    let text = text.strip_prefix("**").unwrap_or(text).strip_prefix(':')?;
     Some(text.strip_prefix("**").unwrap_or(text).trim().to_owned())
 }
 
-/// Finds `label` in a line range. A field may hold its value on nested lines.
-fn find_field(doc: &Doc, start: usize, end: usize, label: &str) -> Option<(usize, String)> {
-    (start..end).find_map(|index| {
+/// Each `label` in a line range. A field may hold its value on nested lines.
+fn fields<'a>(
+    doc: &'a Doc,
+    start: usize,
+    end: usize,
+    label: &'a str,
+) -> impl Iterator<Item = (usize, String)> + 'a {
+    (start..end).filter_map(move |index| {
         let line = doc.visible[index].as_deref()?;
         let value = field_value(line, label)?;
         if !value.is_empty() {
@@ -998,13 +1114,20 @@ fn find_field(doc: &Doc, start: usize, end: usize, label: &str) -> Option<(usize
     })
 }
 
+fn find_field(doc: &Doc, start: usize, end: usize, label: &str) -> Option<(usize, String)> {
+    fields(doc, start, end, label).next()
+}
+
 /// The first statement nested under an empty field, without its list markers, so the
 /// non-value rules examine what a reader sees. Empty when nothing is nested.
 fn nested_value(doc: &Doc, field: usize, end: usize) -> String {
     let own = indent(&doc.lines[field]);
     for index in field + 1..end {
         let line = &doc.lines[index];
-        if line.trim().is_empty() || indent(line) <= own {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if indent(line) <= own {
             break;
         }
         let text = if doc.fenced[index] {
@@ -1070,12 +1193,15 @@ fn foreign_prefix(before: &str) -> bool {
         .next()
         .unwrap_or("")
         .trim_end_matches([',', ':']);
+    // `(#1311 AC-2)` and `**#1311** AC-2` are foreign too.
+    let bare = word.trim_matches(|ch: char| "()[]*_`".contains(ch));
     // `[#1311](url) AC-2` is foreign. `[goal](index.md) AC-2` is this spec's AC-2.
     let link_text = word
         .split_once("](")
         .filter(|_| word.ends_with(')'))
-        .and_then(|(text, _)| text.strip_prefix('['));
-    is_tracker_word(word) || link_text.is_some_and(is_tracker_word)
+        .and_then(|(text, _)| text.rsplit_once('['))
+        .map(|(_, text)| text);
+    is_tracker_word(bare) || link_text.is_some_and(is_tracker_word)
 }
 
 /// Every stable-ID token on a visible line. URLs are not prose.
@@ -1148,8 +1274,12 @@ fn link_destination(text: &str) -> (String, &str) {
 fn reference_target(line: &str) -> Option<String> {
     let text = line.trim_start().strip_prefix('[')?;
     let (label, tail) = text.split_once("]:")?;
-    (!label.is_empty() && !label.starts_with('^') && !label.contains(']'))
-        .then(|| link_destination(tail).0)
+    let (target, title) = link_destination(tail);
+    let title = title.trim();
+    // `[FACT]: the host owns it` is prose: CommonMark allows only a title after the target.
+    let definition = title.is_empty() || title.starts_with(['"', '\'', '(']);
+    (definition && !label.is_empty() && !label.starts_with('^') && !label.contains(']'))
+        .then_some(target)
 }
 
 /// Link targets on a visible line: inline links, images and reference definitions.
@@ -1270,6 +1400,8 @@ fn symlink_on_path(root: &Path, resolved: &str, symlinks: &BTreeSet<String>) -> 
 }
 
 fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut Report) {
+    // A spec can link one target many times. Each parse of it costs the whole target.
+    let mut anchors: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
     for (index, line) in doc.visible.iter().enumerate() {
         let Some(line) = line else { continue };
         for target in link_targets(line) {
@@ -1340,7 +1472,11 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
             {
                 continue;
             }
-            let Ok(raw) = fs::read_to_string(&on_disk) else {
+            let slugs = anchors.entry(resolved.clone()).or_insert_with(|| {
+                let raw = fs::read_to_string(&on_disk).ok()?;
+                Some(heading_slugs(&Doc::parse(&resolved, &raw)))
+            });
+            let Some(slugs) = slugs else {
                 report.add(
                     Rule::Anchor,
                     &doc.rel,
@@ -1349,7 +1485,7 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
                 );
                 continue;
             };
-            if !heading_slugs(&Doc::parse(&resolved, &raw)).contains(fragment) {
+            if !slugs.contains(fragment) {
                 report.add(
                     Rule::Anchor,
                     &doc.rel,
@@ -1733,7 +1869,11 @@ fn check_definitions(
                 continue;
             };
             let line = heading.index + 1;
-            let body = doc.body_end(headings, at);
+            // A definition ends at the next one, so a nested ID lends its parent no field.
+            let body = headings[at + 1..]
+                .iter()
+                .find(|next| next.level <= heading.level || defined_id(&next.text).is_some())
+                .map_or(doc.lines.len(), |next| next.index);
             if let Some(previous) = defined.get(&(kind, number)) {
                 report.add(
                     Rule::IdDuplicate,
@@ -1760,21 +1900,24 @@ fn check_definitions(
             }
             let mut required = |labels: &[&str], rule: Rule| {
                 for label in labels {
-                    match find_field(doc, heading.index + 1, body, label) {
-                        Some((index, value)) if !value.is_empty() => {
-                            let found =
-                                non_value(&value, CONTROL_FIELDS.contains(label)).filter(|found| {
-                                    *found != NonValue::Unknown || !allows_unknown(kind, label)
-                                });
-                            let slot = format!("{kind}-{number}.{label}");
-                            add_non_value(doc, index + 1, &slot, &value, found, report);
-                        }
-                        _ => report.add(
+                    // A second statement of a field obeys the rule the first one does.
+                    let values: Vec<_> = fields(doc, heading.index + 1, body, label).collect();
+                    if values.is_empty() || values.iter().any(|(_, value)| value.is_empty()) {
+                        report.add(
                             rule,
                             &doc.rel,
                             line,
                             format!("{kind}-{number} needs a non-empty `{label}:` field"),
-                        ),
+                        );
+                        continue;
+                    }
+                    for (index, value) in values {
+                        let found =
+                            non_value(&value, CONTROL_FIELDS.contains(label)).filter(|found| {
+                                *found != NonValue::Unknown || !allows_unknown(kind, label)
+                            });
+                        let slot = format!("{kind}-{number}.{label}");
+                        add_non_value(doc, index + 1, &slot, &value, found, report);
                     }
                 }
             };
@@ -2243,7 +2386,8 @@ fn parse_metric(text: &str) -> Option<Option<usize>> {
         return Some(None);
     }
     let value: usize = text.parse().ok()?;
-    (value > 0).then_some(Some(value))
+    // The printed form is the only form, as in `Structure::parse`.
+    (value > 0 && value.to_string() == text).then_some(Some(value))
 }
 
 fn parse_baseline(rel: &str, text: &str, report: &mut Report) -> BTreeMap<String, Row> {
@@ -2978,6 +3122,16 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                 row,
                 &Doc::parse(path, &text),
                 &mut report,
+            );
+        } else {
+            report.add(
+                Rule::Unreadable,
+                &baseline_rel,
+                row.line,
+                format!(
+                    "cannot read `{path}` at seal {}, so its row has no bound",
+                    config.seal
+                ),
             );
         }
     }
