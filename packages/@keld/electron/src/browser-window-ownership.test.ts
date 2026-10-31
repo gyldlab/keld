@@ -8,6 +8,7 @@ import {
 } from "../../kipc/src/transport.ts";
 
 for (const scenario of [
+  "dialog-parent",
   "post-create-map-has",
   "post-create-map-get",
   "post-create-map-set",

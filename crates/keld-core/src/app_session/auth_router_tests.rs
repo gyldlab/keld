@@ -139,6 +139,7 @@ impl Fixture {
             fs_worker_commands: None,
             auth: None,
             auth_commands: None,
+            dialog: None,
             guardian: GuardianOwnerHandle {
                 command_tx: guardian_tx,
             },

@@ -13,6 +13,7 @@ import {
   AUTH_CHANNEL,
   APP_LINK_IO_DEADLINE_MS,
   DrainSignal,
+  DIALOG_CHANNEL,
   ECHO_CHANNEL,
   FLAG_RAW,
   FS_CHANNEL,
@@ -265,6 +266,7 @@ describe("GH-527 receive policy mirrors", () => {
       LIFECYCLE_CHANNEL,
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
+      DIALOG_CHANNEL,
     ]);
     for (const channel of [
       ECHO_CHANNEL,
@@ -272,16 +274,17 @@ describe("GH-527 receive policy mirrors", () => {
       LIFECYCLE_CHANNEL,
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
+      DIALOG_CHANNEL,
     ]) {
       expect(isAllocatedChannel(channel)).toBe(true);
     }
-    for (const unallocated of [HANDSHAKE_CHANNEL, 6, 9, 0xffff, 2.5, -1]) {
+    for (const unallocated of [HANDSHAKE_CHANNEL, 7, 9, 0xffff, 2.5, -1]) {
       expect(isAllocatedChannel(unallocated)).toBe(false);
     }
     // Type-level negative control: if `replyWaiter` widened its parameter to
     // `number`, this directive would be unused and `bun run typecheck` fails.
-    // @ts-expect-error 6 is not an allocated channel
-    expect(() => replyWaiter(6, 7)).toThrow(
+    // @ts-expect-error 7 is not an allocated channel
+    expect(() => replyWaiter(7, 7)).toThrow(
       "KELD-IPC-005: channel is not allocated by the channel table",
     );
     for (const unallocated of [9, 0xffff]) {

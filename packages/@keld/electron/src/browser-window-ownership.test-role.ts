@@ -103,7 +103,8 @@ mock.module("./app.ts", () => ({
       throw new Error("application creation callback threw");
   },
 }));
-const { BrowserWindow } = await import("./browser-window.ts");
+const { BrowserWindow, readDialogParentRef } =
+  await import("./browser-window.ts");
 if (mode === "unknown-create-outcome") {
   assert.throws(() => new BrowserWindow(), /KELD-IPC-022/);
   assert.deepEqual(calls, [
@@ -195,6 +196,10 @@ if (mode === "unknown-create-outcome") {
   }
   assert.ok(win, "successful Host Create must return an owned wrapper");
   assert.equal(win.id, ref.id);
+  if (mode === "dialog-parent") {
+    assert.deepEqual(readDialogParentRef(win), ref);
+    assert.throws(() => readDialogParentRef(new Proxy(win, {})), TypeError);
+  }
   assert.equal(BrowserWindow.getAllWindows()[0], win);
   assert.deepEqual(
     creationEvents.map(({ name }) => name),
@@ -233,6 +238,9 @@ if (mode === "unknown-create-outcome") {
     if (mode.startsWith("terminal-")) restore();
   }
   assert.equal(win.isDestroyed(), true);
+  if (mode === "dialog-parent") {
+    assert.throws(() => readDialogParentRef(win), /KELD-COMPAT-011/);
+  }
   assert.equal(contents.isDestroyed(), true);
   assert.deepEqual(terminal, ["contents", "closed"]);
   assert.deepEqual(BrowserWindow.getAllWindows(), []);

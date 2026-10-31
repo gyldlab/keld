@@ -2,16 +2,17 @@
  * GH-477 first-proof native/dialog conformance, pinned to Electron v44.4.5
  * (694f45852a0f1726cd23bfd379854de489cccb65).
  *
- * Four red-until-implemented cells are registered by the shared GH-566 corpus owner.
- * Its mapped Bun test asserts the *current missing API* and therefore passes
- * today while the corpus records expected_verdict: fail: GH-564 for the sync
- * call, GH-478 for the three async calls. Each implementation owner must invert
- * only its mapped cases and cells in the same change as real native acceptance.
+ * GH-566's original four red-until-implemented cells stay independently mapped.
+ * The guarded parented async Message case became real on macOS under GH-478:
+ * its separate no-flag Host test exercises three OS clicks, actual checkbox
+ * state, physical quiescence and 257+1 same-link operations. The parentless
+ * overload remains unsupported, so the broad Message cell stays expected-fail
+ * alongside sync Message, Open and Save until their OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
- * These tests do NOT simulate NSAlert, exercise WorkerLink, authorize native
- * dialog access, or claim a macOS native implementation works.
+ * This Bun test checks exports, Promise shape and early refusal only. Actual
+ * NSAlert/WorkerLink/Guard/native evidence belongs to the macOS Host fixtures.
  */
 import { expect, test } from "bun:test";
 
@@ -58,9 +59,30 @@ test("dialog.show-save-dialog.canceled-path today: no asynchronous native file-s
   expect(dialogMethod(electron.default, "showSaveDialog")).toBeUndefined();
 });
 
-// Electron v44.4.5 dialog.md: async message boxes return a Promise resolving
-// with a clicked response index and checkboxChecked=false without a label.
-test("dialog.show-message-box.response-checkbox today: no asynchronous native message-dialog method is exported", () => {
-  expect(dialogMethod(electron, "showMessageBox")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showMessageBox")).toBeUndefined();
+// Electron v44.4.5: real async facade exists on both export shapes; native
+// clicked index 0/1/2 and actual checkbox state are proved separately by
+// no_flag_macos::dialog_message on the shipping Host, not a JS-only stub.
+test("dialog.show-message-box.response-checkbox: parented async works; parentless native remains incomplete", () => {
+  const method = dialogMethod(electron, "showMessageBox");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showMessageBox")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { message: "invalid", unsupported: undefined },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const result: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [
+      {
+        message: "Confirm",
+        buttons: ["Save", "Cancel", "Discard Changes"],
+        defaultId: 0,
+        cancelId: 1,
+      },
+    ],
+  );
+  expect(result).toBeInstanceOf(Promise);
+  void (result as Promise<unknown>).catch(() => {});
 });
