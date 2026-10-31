@@ -421,6 +421,66 @@ test("GitHub asynchronous mergeability null is retried before check publication"
   expect(s.failures).toHaveLength(0);
 });
 
+test("final mergeable:null re-read cannot erase a previously proven immutable merge", async () => {
+  const current = {
+    number: 345,
+    state: "open",
+    changed_files: 1,
+    head: { sha: head },
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const recomputing = { ...current, mergeable: null };
+  const s = scenario({
+    readSequence: [current, current, current, recomputing],
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getReads()).toBe(4);
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0].conclusion).toBe("success");
+  expect(s.messages.join(" ")).toContain("recomputes mergeability");
+  expect(s.failures).toHaveLength(0);
+});
+
+test("final definite conflict after previously positive immutable merge never signs App PASS", async () => {
+  const current = {
+    number: 345,
+    state: "open",
+    changed_files: 1,
+    head: { sha: head },
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const conflict = { ...current, mergeable: false };
+  const s = scenario({ readSequence: [current, current, current, conflict] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+  expect(s.warnings.join(" ")).toContain("definite conflict");
+});
+
+test("final untrusted changed test-merge SHA does not sign PASS even with transient null", async () => {
+  const current = {
+    number: 345,
+    state: "open",
+    changed_files: 1,
+    head: { sha: head },
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+    mergeable: true,
+    merge_commit_sha: merge,
+  };
+  const drift = {
+    ...current,
+    mergeable: null,
+    merge_commit_sha: "e".repeat(40),
+  };
+  const s = scenario({ readSequence: [current, current, current, drift] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+});
+
 test("GitHub mergeability never resolves: no fabricated PASS and job reports incomplete", async () => {
   const s = scenario({ mergeable: null, forcedMerge: null });
   await expect(s.run()).resolves.toBeUndefined();

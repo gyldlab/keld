@@ -316,10 +316,21 @@ jobs:
                   counts.skipped++;
                   continue;
                 }
-                if (pr.mergeable !== true) {
-                  counts.errors++; // later mergeability recalculation: fail-closed
+                // GitHub may transiently reset mergeable to null when it
+                // re-computes mergeability after our earlier positive proof.
+                // A null second read does NOT invalidate an already-proven
+                // synthetic test merge when PR, base, head and merge SHA are
+                // STILL the exact immutable values verified above. Refuse an
+                // explicit conflict or malformed API state, but do not starve
+                // valid PRs merely because computation is briefly pending.
+                if (pr.mergeable === false ||
+                    (pr.mergeable !== true && pr.mergeable !== null)) {
+                  counts.errors++;
+                  core.warning('VeriSentry prewrite mergeability changed to a definite conflict/malformed value on PR #'+verdict.number);
                   continue;
                 }
+                if (pr.mergeable === null)
+                  core.info('VeriSentry exact PR/merge SHA retained while GitHub recomputes mergeability on PR #'+verdict.number);
                 const checks = await github.paginate(github.rest.checks.listForRef, {
                   owner,repo,ref:verdict.merge,check_name:'KELD VeriSentry',
                   app_id:5550363,filter:'all',per_page:100,
