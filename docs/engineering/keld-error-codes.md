@@ -877,14 +877,20 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-COMPAT-040
 
 - crate: @keld/electron
-- message: An `app` session fact (`getPath`, `getVersion`, `getName`/`name`, `getAppPath`, `getLocale`, `isPackaged`) was read, but the Host delivered no session facts to this role; the facade does not derive these values from HOME, APPDATA, XDG, LANG, argv, cwd, Intl or package.json
-- fix: Run the app under a Keld host that mints session facts at spawn (GH-452 T2, `docs/specs/gh452-app-session-facts.md`); code that can continue without the named fact should catch this error. Do not derive the value in the role.
+- message: An `app` session fact (`getPath`, `getVersion`, `getName`/`name`, `getAppPath`, `getLocale`, `isPackaged`) was read, but the Host delivered no session facts to this role; the facade does not derive these values from HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, Intl or package.json
+- fix: No Keld host delivers session facts yet (GH-452 T2, `docs/specs/gh452-app-session-facts.md`): code that can continue without the named fact should catch this error; otherwise wait for T2. Do not derive the value in the role.
 
 ## KELD-COMPAT-041
 
 - crate: @keld/electron
-- message: `app.getPath(name)` was called with a name that Electron v44.4.5 does not define
-- fix: Pass one of the documented names (`home`, `appData`, `assets`, `userData`, `sessionData`, `temp`, `exe`, `module`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `recent`, `logs`, `crashDumps`).
+- message: `app.getPath(name)` was called with a non-string name, or a name not documented for `app.getPath` in the pinned Electron v44.4.5 `docs/api/app.md`
+- fix: Pass a string name documented under `app.getPath(name)` in that page (the error message lists them). Undocumented names Electron's source also accepts are a GH-452 T2 decision.
+
+## KELD-COMPAT-042
+
+- crate: @keld/electron
+- message: `app.name` was assigned (Electron's `setName`), which the GH-452 first-proof slice does not support because the app name is the Host's compiled descriptor name
+- fix: Remove the assignment and declare the name in `keld.config.ts`; `setName` is outside GH-452.
 
 ## KELD-CORE-030
 

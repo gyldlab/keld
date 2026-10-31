@@ -145,8 +145,10 @@ describe("session facts (red until GH-452 T2 delivers the Host payload)", () => 
   });
 
   test("app.name.property today: no session facts are delivered, so reading app.name throws KELD-COMPAT-040 naming name and GH-452", () => {
-    // Electron defines `name` as an accessor; so does the facade.
-    expect(Object.getOwnPropertyDescriptor(app, "name")?.get).toBeDefined();
+    // Electron defines `name` as a non-enumerable accessor; so does the facade.
+    const descriptor = Object.getOwnPropertyDescriptor(app, "name");
+    expect(typeof descriptor?.get).toBe("function");
+    expect(descriptor?.enumerable).toBe(false);
     expectSessionFactRefusal(() => app.name, "app.name", "name");
   });
 
@@ -163,15 +165,15 @@ describe("session facts (red until GH-452 T2 delivers the Host payload)", () => 
       code: 0,
       stderr: "",
       lines: [
-        "GH445_LOCALE_AFTER_READY has=true threw=KELD-COMPAT-040 fact=locale cites=GH-452",
+        "GH445_LOCALE_AFTER_READY has=true threw=KELD-COMPAT-040 fact=locale cites=GH-452 prefix=true call=true",
       ],
     });
   });
 
   test("app.is-packaged.dev-false today: no session facts are delivered, so reading app.isPackaged throws KELD-COMPAT-040 naming isPackaged and GH-452; it is neither false nor undefined", () => {
-    expect(
-      Object.getOwnPropertyDescriptor(app, "isPackaged")?.get,
-    ).toBeDefined();
+    const descriptor = Object.getOwnPropertyDescriptor(app, "isPackaged");
+    expect(typeof descriptor?.get).toBe("function");
+    expect(descriptor?.enumerable).toBe(false);
     expectSessionFactRefusal(
       () => app.isPackaged,
       "app.isPackaged",

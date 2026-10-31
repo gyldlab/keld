@@ -81,7 +81,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.get-path.user-data-default today: no session facts are delivered, so app.getPath('userData') throws KELD-COMPAT-040 naming path.userData and GH-452",
-      "negative_control": "Today (GH-452 T1): a getPath('userData') that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming path.userData fails it. After GH-452 inverts it: a getPath('userData') that reads HOME or differs from the host-minted appData plus app name fails it."
+      "negative_control": "Today (GH-452 T1): a getPath('userData') that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming path.userData fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: a getPath('userData') that reads HOME or differs from the host-minted appData plus app name fails it."
     },
     {
       "operation_id": "app.get-version.loaded-app",
@@ -98,7 +98,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.get-version.loaded-app today: no session facts are delivered, so app.getVersion() throws KELD-COMPAT-040 naming version and GH-452",
-      "negative_control": "Today (GH-452 T1): a getVersion() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming version fails it. After GH-452 inverts it: a getVersion() that awaits the link or differs from the declared app version fails it."
+      "negative_control": "Today (GH-452 T1): a getVersion() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming version fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: a getVersion() that awaits the link or differs from the declared app version fails it."
     },
     {
       "operation_id": "app.get-name.package-name",
@@ -115,7 +115,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.get-name.package-name today: no session facts are delivered, so app.getName() throws KELD-COMPAT-040 naming name and GH-452",
-      "negative_control": "Today (GH-452 T1): a getName() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming name fails it. After GH-452 inverts it: for an app with no productName declared, a getName() that differs from the declared app name fails it."
+      "negative_control": "Today (GH-452 T1): a getName() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming name fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: for an app with no productName declared, a getName() that differs from the declared app name fails it."
     },
     {
       "operation_id": "app.name.property",
@@ -132,7 +132,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.name.property today: no session facts are delivered, so reading app.name throws KELD-COMPAT-040 naming name and GH-452",
-      "negative_control": "Today (GH-452 T1): an app.name that is a data property, yields a value or undefined, or throws anything other than KELD-COMPAT-040 naming name fails it. After GH-452 inverts it: for an app with no productName declared, an app.name that differs from the declared app name or from app.getName() fails it."
+      "negative_control": "Today (GH-452 T1): an app.name that is a data property or an enumerable accessor, yields a value or undefined, or throws anything other than KELD-COMPAT-040 naming name fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: for an app with no productName declared, an app.name that differs from the declared app name or from app.getName() fails it."
     },
     {
       "operation_id": "app.get-app-path.app-directory",
@@ -149,7 +149,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.get-app-path.app-directory today: no session facts are delivered, so app.getAppPath() throws KELD-COMPAT-040 naming appPath and GH-452",
-      "negative_control": "Today (GH-452 T1): a getAppPath() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming appPath fails it. After GH-452 inverts it: a getAppPath() that differs from the host-minted application directory fails it."
+      "negative_control": "Today (GH-452 T1): a getAppPath() that returns a value, returns undefined, or throws anything other than KELD-COMPAT-040 naming appPath fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: a getAppPath() that differs from the host-minted application directory fails it."
     },
     {
       "operation_id": "app.get-locale.after-ready",
@@ -183,7 +183,7 @@
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
       "test_name": "app.is-packaged.dev-false today: no session facts are delivered, so reading app.isPackaged throws KELD-COMPAT-040 naming isPackaged and GH-452; it is neither false nor undefined",
-      "negative_control": "Today (GH-452 T1): an app.isPackaged that is a data property, yields false, true or undefined, or throws anything other than KELD-COMPAT-040 naming isPackaged fails it. After GH-452 inverts it: hard-coding isPackaged to true fails it under keld dev."
+      "negative_control": "Today (GH-452 T1): an app.isPackaged that is a data property or an enumerable accessor, yields false, true or undefined, or throws anything other than KELD-COMPAT-040 naming isPackaged fails it (this case reads before ready; the after-ready read and the environment-read oracle are held by packages/@keld/electron/src/app-session-facts.test.ts through fixtures/app_session_facts_decoy_env.ts). After GH-452 inverts it: hard-coding isPackaged to true fails it under keld dev."
     },
     {
       "operation_id": "app.request-single-instance-lock.primary-verdict",

@@ -51,8 +51,11 @@ try {
     // GH-452 T1: the fail-closed typed refusal names the fact and the ticket.
     const typed = error as Error & { code?: unknown; fact?: unknown };
     const code = typeof typed.code === "string" ? typed.code : String(error);
-    const cites = typed.message?.includes("GH-452") ? "GH-452" : "none";
-    outcome = `threw=${code} fact=${String(typed.fact)} cites=${cites}`;
+    const message = typed.message ?? "";
+    const cites = message.includes("GH-452") ? "GH-452" : "none";
+    const prefix = message.startsWith("KELD-COMPAT-040: ");
+    const call = message.includes("app.getLocale()");
+    outcome = `threw=${code} fact=${String(typed.fact)} cites=${cites} prefix=${prefix} call=${call}`;
   }
 }
 writeSync(

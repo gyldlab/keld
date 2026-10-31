@@ -21,7 +21,11 @@ import {
   stateMapSet,
 } from "../../kipc/src/transport.ts";
 
-import { readSessionFact, readSessionPath } from "./app-session-facts.ts";
+import {
+  defineSessionFactAccessors,
+  readSessionFact,
+  readSessionPath,
+} from "./app-session-facts.ts";
 
 type AppListener = (...args: never[]) => void;
 
@@ -131,7 +135,10 @@ function onLastWindowClosed(): void {
 }
 
 apiApp.onLastWindowClosed(onLastWindowClosed);
-export const app = {
+// `name` and `isPackaged` are defined below as non-enumerable accessors, as
+// Electron defines them; literal getters would be enumerable and make a spread
+// or JSON.stringify of `app` throw.
+export const app = defineSessionFactAccessors({
   whenReady(): Promise<void> {
     return observeReady();
   },
@@ -201,11 +208,6 @@ export const app = {
     return readSessionFact("name", "app.getName()");
   },
 
-  /** Electron defines `app.name` as an accessor over the app name; so does this. */
-  get name(): string {
-    return readSessionFact("name", "app.name");
-  },
-
   getAppPath(): string {
     return readSessionFact("appPath", "app.getAppPath()");
   },
@@ -214,8 +216,4 @@ export const app = {
   getLocale(): string {
     return readSessionFact("locale", "app.getLocale()");
   },
-
-  get isPackaged(): boolean {
-    return readSessionFact("isPackaged", "app.isPackaged");
-  },
-};
+});

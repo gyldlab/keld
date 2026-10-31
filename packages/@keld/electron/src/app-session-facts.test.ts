@@ -1,12 +1,14 @@
 /**
  * GH-452 T1: the fail-closed half of the `app` session-facts contract
- * (`docs/specs/gh452-app-session-facts.md` §3 criteria 1–8).
+ * (`docs/specs/gh452-app-session-facts.md` §3 criteria 1–9).
  *
  * The corpus-mapped today-tests live in `app-surface.test.ts`; this file holds
- * the module contract: the pinned `getPath` name list, the two typed codes, the
- * `fact` each member names, Electron accessor parity, and the decoy-environment
- * negative control that proves no member derives a value from HOME, XDG, APPDATA,
- * LANG or LC_ALL.
+ * the module contract: the pinned `getPath` name list, the three typed codes,
+ * the `fact` each member names, Electron accessor parity (non-enumerable, with a
+ * refusing `name` setter), the non-string `getPath` guard, and the
+ * decoy-environment observer, whose recording `process.env` Proxy and
+ * before/after-`ready` reads prove that no member derives a value from HOME,
+ * XDG, APPDATA, LANG, LC_*, cwd or the ready state.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -16,6 +18,7 @@ import {
   type AppSessionFact,
   AppSessionFactError,
   ELECTRON_PATH_NAMES,
+  NAME_ASSIGNMENT_REFUSED,
   SESSION_FACT_NOT_DELIVERED,
   UNKNOWN_PATH_NAME,
 } from "./app-session-facts.ts";
@@ -59,13 +62,13 @@ function caught(read: () => unknown): unknown {
 }
 
 describe("getPath name validation (criterion 7)", () => {
-  test("ELECTRON_PATH_NAMES equals the names listed under app.getPath(name) in the pinned v44.4.5 app.md, in order", () => {
+  test("ELECTRON_PATH_NAMES equals the names documented under app.getPath(name) in the pinned v44.4.5 app.md, in order", () => {
     const pinned = pinnedPathNames();
     expect(pinned.length).toBe(17);
     expect(pinned).toEqual([...ELECTRON_PATH_NAMES]);
   });
 
-  test("app.getPath('bogus') throws KELD-COMPAT-041 naming the bad name and listing the accepted names, not the not-delivered code", () => {
+  test("app.getPath('bogus') throws KELD-COMPAT-041 naming the bad name and listing the documented names, not the not-delivered code", () => {
     const error = caught(() => app.getPath("bogus"));
     expect(error).toBeInstanceOf(AppSessionFactError);
     const typed = error as AppSessionFactError;
@@ -74,11 +77,29 @@ describe("getPath name validation (criterion 7)", () => {
     expect(typed.fact).toBeUndefined();
     expect(typed.message.startsWith("KELD-COMPAT-041: ")).toBe(true);
     expect(typed.message).toContain("'bogus'");
+    expect(typed.message).toContain("documented");
     expect(typed.message).toContain("home");
     expect(typed.message).toContain("crashDumps");
   });
 
-  test("every pinned name is accepted as a name and then fails closed on the undelivered path fact", () => {
+  test("a non-string name is KELD-COMPAT-041 naming the received type, never a second untyped TypeError (criterion 9)", () => {
+    const loose = app.getPath as unknown as (name: unknown) => unknown;
+    for (const [value, described] of [
+      [undefined, "undefined"],
+      [null, "null"],
+      [7, "number"],
+      [Symbol("userData"), "symbol"],
+      [{ name: "userData" }, "object"],
+    ] as const) {
+      const error = caught(() => loose(value));
+      expect(error).toBeInstanceOf(AppSessionFactError);
+      const typed = error as AppSessionFactError;
+      expect(typed.code).toBe("KELD-COMPAT-041");
+      expect(typed.message).toContain(`received ${described}`);
+    }
+  });
+
+  test("every documented name is accepted as a name and then fails closed on the undelivered path fact", () => {
     for (const name of ELECTRON_PATH_NAMES) {
       const error = caught(() => app.getPath(name)) as AppSessionFactError;
       expect(error.code).toBe(SESSION_FACT_NOT_DELIVERED);
@@ -115,24 +136,64 @@ describe("fail-closed typed refusal (criteria 1–6)", () => {
       expect(typed.message).toContain(`"${fact}"`);
       expect(typed.message).toContain("GH-452");
       expect(typed.message).toContain("HOME");
+      expect(typed.message).toContain("LC_*");
       expect(typed.message).toContain("package.json");
       // The public typed shape is `Error & { code }`, so the kipc predicate agrees.
       expect(isCallError(error)).toBe(true);
     });
   }
+});
 
-  test("name and isPackaged are accessors on the facade, as in Electron, not data properties", () => {
+describe("Electron accessor parity (criteria 3, 6 and 9)", () => {
+  test("name and isPackaged are non-enumerable, non-configurable accessors: a spread, Object.entries or JSON.stringify of app does not invoke them", () => {
     for (const property of ["name", "isPackaged"]) {
       const descriptor = Object.getOwnPropertyDescriptor(app, property);
       expect(descriptor).toBeDefined();
       expect(typeof descriptor?.get).toBe("function");
+      expect(descriptor?.enumerable).toBe(false);
+      expect(descriptor?.configurable).toBe(false);
       expect("value" in (descriptor ?? {})).toBe(false);
     }
+    expect(Object.keys(app)).not.toContain("name");
+    expect(Object.keys(app)).not.toContain("isPackaged");
+    expect(() => ({ ...app })).not.toThrow();
+    expect(() => Object.entries(app)).not.toThrow();
+    expect(() => JSON.stringify(app)).not.toThrow();
+    // Electron gives `name` a setter (setName) and leaves `isPackaged` read-only.
+    expect(typeof Object.getOwnPropertyDescriptor(app, "name")?.set).toBe(
+      "function",
+    );
+    expect(
+      Object.getOwnPropertyDescriptor(app, "isPackaged")?.set,
+    ).toBeUndefined();
+  });
+
+  test("assigning app.name (Electron's setName) throws KELD-COMPAT-042 naming the value and GH-452, for a string and for a Symbol", () => {
+    for (const [value, described] of [
+      ["Custom", '"Custom"'],
+      [Symbol("Custom"), "symbol"],
+    ] as const) {
+      const error = caught(() => {
+        (app as { name: unknown }).name = value;
+      });
+      expect(error).toBeInstanceOf(AppSessionFactError);
+      const typed = error as AppSessionFactError;
+      expect(typed.code).toBe(NAME_ASSIGNMENT_REFUSED);
+      expect(typed.code).toBe("KELD-COMPAT-042");
+      expect(typed.fact).toBeUndefined();
+      expect(typed.message.startsWith("KELD-COMPAT-042: ")).toBe(true);
+      expect(typed.message).toContain(`app.name = ${described}`);
+      expect(typed.message).toContain("setName");
+      expect(typed.message).toContain("GH-452");
+    }
+    // The refused assignment changed nothing: the next read still fails closed.
+    const after = caught(() => app.name) as AppSessionFactError;
+    expect(after.code).toBe("KELD-COMPAT-040");
   });
 });
 
-describe("decoy environment (criterion 8)", () => {
-  test("with HOME, XDG_CONFIG_HOME, APPDATA, LANG and LC_ALL pointing at decoys, every session-fact member still throws KELD-COMPAT-040 and yields no value", () => {
+describe("decoy environment and environment-read oracle (criterion 8)", () => {
+  test("with HOME, XDG_CONFIG_HOME, APPDATA, LANG and LC_ALL pointing at decoys, every member fails closed at import and after ready, and the facade read none of the watched variables nor the cwd", () => {
     const child = Bun.spawnSync({
       cmd: [process.execPath, "./app_session_facts_decoy_env.ts"],
       cwd: fixtures,
@@ -154,16 +215,21 @@ describe("decoy environment (criterion 8)", () => {
     const lines = child.stdout
       .toString()
       .split("\n")
-      .filter((line) => line.startsWith("GH452_DECOY "));
+      .filter((line) => line.startsWith("GH452_"));
+    const expectedReads = (phase: string): string[] => [
+      `GH452_DECOY phase=${phase} member=getPath(userData) code=KELD-COMPAT-040 fact=path.userData value=none`,
+      `GH452_DECOY phase=${phase} member=getPath(documents) code=KELD-COMPAT-040 fact=path.documents value=none`,
+      `GH452_DECOY phase=${phase} member=getVersion code=KELD-COMPAT-040 fact=version value=none`,
+      `GH452_DECOY phase=${phase} member=getName code=KELD-COMPAT-040 fact=name value=none`,
+      `GH452_DECOY phase=${phase} member=name code=KELD-COMPAT-040 fact=name value=none`,
+      `GH452_DECOY phase=${phase} member=getAppPath code=KELD-COMPAT-040 fact=appPath value=none`,
+      `GH452_DECOY phase=${phase} member=getLocale code=KELD-COMPAT-040 fact=locale value=none`,
+      `GH452_DECOY phase=${phase} member=isPackaged code=KELD-COMPAT-040 fact=isPackaged value=none`,
+    ];
     expect(lines).toEqual([
-      "GH452_DECOY getPath(userData) code=KELD-COMPAT-040 fact=path.userData value=none",
-      "GH452_DECOY getPath(documents) code=KELD-COMPAT-040 fact=path.documents value=none",
-      "GH452_DECOY getVersion code=KELD-COMPAT-040 fact=version value=none",
-      "GH452_DECOY getName code=KELD-COMPAT-040 fact=name value=none",
-      "GH452_DECOY name code=KELD-COMPAT-040 fact=name value=none",
-      "GH452_DECOY getAppPath code=KELD-COMPAT-040 fact=appPath value=none",
-      "GH452_DECOY getLocale code=KELD-COMPAT-040 fact=locale value=none",
-      "GH452_DECOY isPackaged code=KELD-COMPAT-040 fact=isPackaged value=none",
+      ...expectedReads("import"),
+      ...expectedReads("after-ready"),
+      "GH452_ENV_READS watched=[] cwdCalls=0",
     ]);
   });
 });
