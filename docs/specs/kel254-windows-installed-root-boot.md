@@ -211,8 +211,12 @@ D4 note remains outside the frozen decision block so its approved digest does no
    child, and window attempt counters remain zero.
 11. Given a trusted signed executable with no protected direct-install record, when it
    starts, then signature success alone does not admit installed mode. Given a protected
-   record with a different publisher or app id, when it starts, then it refuses without
-   fallback. These are separate negative controls.
+   record with a different publisher or app id than the verified signer, when it
+   starts, then the signer rule refuses without fallback (`KELD-UPDATE-020`). Given a
+   validly signed executable whose embedded build expectation names another app than
+   the protected record, such as another app's signed image substituted into the
+   selected host slot, when it starts, then the provenance binding refuses before the
+   signer rule runs (`KELD-UPDATE-003`). These are separate negative controls.
 12. Given two installed apps with different authenticated KEL-135 app/publisher
    identities under one Windows user, when both open WebView2, then each actual UDF is
    under that user's LocalAppData and differs by the existing `ProfileIdentity`; neither
@@ -568,7 +572,8 @@ provenance binding). `ExpectedAppIdentity` carries no install mode: the recorded
 admitted only together with that mode's protection profile, so a same-user process can
 at most create a `PerUserDirect` record in its own owner-private directory, which is
 within the documented same-user exclusion and grants nothing a genuine per-user install
-does not. KEL-53 refuses unless the record matches that expectation, and
+does not. KEL-53 refuses unless the record matches that expectation
+(`KELD-UPDATE-003`), and
 KEL-96 independently requires the record's publisher scope and app id to equal the
 KEL-135 Authenticode identity of the same executable; from KEL-53 T4d S9a it does so
 through the `keld-update` owner of that rule, which the host calls. The entrypoint

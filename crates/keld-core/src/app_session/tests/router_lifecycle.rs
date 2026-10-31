@@ -129,6 +129,102 @@ fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
 
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+fn accepted_quit_with_failed_owner_shutdown_still_ends_the_ui_loop_as_fatal() {
+    // GH-824 hosted macOS "host did not exit": the accepted Quit tail cleared
+    // the current generation, then the primary owner's shutdown failed (native
+    // Guardian CLEAR group signal: EPERM). The tail returned that error before
+    // any terminal UI command, the reader no longer owned a current attempt,
+    // and the owner thread had already exited, so nothing ever woke the event
+    // loop. The oracle is the UI command channel itself: the failed tail MUST
+    // deliver Fatal (never a successful Quit) without the window's help.
+    use std::io::Read as _;
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::link::{AppLinkDeadlines, read_frame};
+
+    const OWNER_FAILURE: &str = "injected primary owner shutdown failure";
+    let (server, mut client) = UnixStream::pair().expect("session pair");
+    client
+        .set_app_link_deadlines(Some(Duration::from_secs(5)))
+        .expect("client deadlines");
+    let (window_tx, window_rx) = mpsc::channel();
+    let (guardian_tx, guardian_rx) = mpsc::channel();
+    let guardian_thread = std::thread::spawn(move || {
+        let Ok(TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare_reply)) =
+            guardian_rx.recv_timeout(Duration::from_secs(5))
+        else {
+            panic!("accepted Quit must first prepare owner shutdown");
+        };
+        prepare_reply.send(Ok(())).expect("owner preparation reply");
+        let Ok(TestPrimaryOwnerCommand::Shutdown(shutdown_reply)) =
+            guardian_rx.recv_timeout(Duration::from_secs(5))
+        else {
+            panic!("accepted Quit tail must request owner shutdown");
+        };
+        shutdown_reply
+            .send(Err(OWNER_FAILURE.to_owned()))
+            .expect("owner shutdown failure reply");
+        // The production owner thread exits after a failed shutdown.
+        drop(guardian_rx);
+    });
+    let router = PrimaryRouter::start(
+        server,
+        window_tx,
+        PlatformPrimaryOwnerHandle {
+            command_tx: guardian_tx,
+        },
+        SessionShutdownState::new(),
+    )
+    .expect("primary router");
+    router.handle().signal_ready().expect("Ready");
+    assert_lifecycle_event(&mut client, LifecycleEvent::Ready);
+
+    write_frame(
+        &mut client,
+        FrameKind::Call,
+        0,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(91),
+        &encode(&LifecycleRequest::Quit).expect("Quit request"),
+    )
+    .expect("write Quit Call");
+    let (quit_header, quit_payload) = read_frame(&mut client).expect("Quit Reply");
+    assert_eq!(quit_header.kind, FrameKind::Reply);
+    assert_eq!(quit_header.corr, CorrelationId(91));
+    assert_eq!(
+        decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
+        LifecycleResponse::Quit
+    );
+    let mut byte = [0_u8; 1];
+    assert_eq!(client.read(&mut byte).expect("link EOF"), 0);
+    guardian_thread.join().expect("owner fixture joins");
+
+    // Kill switch only: the receipt is the condition awaited.
+    assert_eq!(
+        window_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("failed Quit tail must still wake the UI loop"),
+        AppWindowCommand::Fatal,
+        "a failed owner shutdown must not report a successful Quit"
+    );
+    assert!(
+        window_rx.try_recv().is_err(),
+        "the failed tail must deliver exactly one terminal UI command"
+    );
+    let shutdown = router
+        .shutdown()
+        .expect_err("router must retain the failed Quit tail");
+    assert!(
+        shutdown.to_string().contains(OWNER_FAILURE),
+        "unexpected router failure: {shutdown}"
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn retired_generation_eof_cannot_fail_or_replace_the_successor() {
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;

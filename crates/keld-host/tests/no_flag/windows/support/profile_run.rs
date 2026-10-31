@@ -5,7 +5,7 @@
 
 use super::control::{
     accept_control_or_host_failure, parse_descendant_pid, read_control_line,
-    read_control_line_or_host_failure,
+    read_control_line_or_host_failure, read_ready_or_host_failure,
 };
 use super::installed::InstalledApp;
 use super::process::process_exists;
@@ -15,7 +15,7 @@ use super::profile_response::state_redirect_html;
 use super::profile_server::ProfileStateServer;
 use super::signed_process::SignedStateProcessGuard;
 use super::window::wait_for_host_window;
-use crate::PRODUCT_DEADLINE;
+use crate::{PRODUCT_DEADLINE, startup_kill_switch, ui_end_kill_switch};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufReader, Write};
@@ -41,7 +41,9 @@ pub(crate) fn run_signed_profile_state_case(
     run_nonce: &str,
     case: &SignedProfileStateCase<'_>,
 ) {
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    // One kill switch from launch to the renderer's state report, which the initial
+    // navigation makes only after the host's WebView2 startup.
+    let deadline = Instant::now() + startup_kill_switch();
     state_server.expect_case(case.name, deadline);
     let run = SignedProfileStateRun::start(
         fixture,
@@ -91,7 +93,6 @@ pub(crate) struct SignedProfileStateRun {
     pub(crate) process: SignedStateProcessGuard,
     reader: BufReader<TcpStream>,
     pub(crate) bun_pid: u32,
-    deadline: Instant,
     case_name: String,
     installed: InstalledApp,
 }
@@ -177,7 +178,7 @@ impl SignedProfileStateRun {
         process.observe_bun(bun_pid);
         assert_eq!(parse_descendant_pid(&read_control_line(&mut reader)), 0);
         assert_eq!(
-            read_control_line_or_host_failure(&mut reader, process.child_mut(), "state READY"),
+            read_ready_or_host_failure(&mut reader, process.child_mut(), "state READY"),
             "READY"
         );
         assert_eq!(
@@ -193,34 +194,20 @@ impl SignedProfileStateRun {
             process,
             reader,
             bun_pid,
-            deadline,
             case_name: case.name.to_owned(),
             installed,
         }
     }
 
-    pub(crate) fn finish(self) {
-        let deadline = self.deadline;
-        self.finish_with_deadlines(deadline, None);
-    }
-
-    /// Finish a retained concurrent run without censoring the browser release barrier.
-    pub(crate) fn finish_after_retention(self) {
-        // The window and each control read retain the existing product deadline.
-        // The separate outer host-reap watchdog starts after LINK_EOF and covers
-        // the live-browser shutdown hang guard (BROWSER_SHUTDOWN_HANG_GUARD) plus the
-        // post-exit grace (BROWSER_EXIT_GRACE), plus margin: re-derive this budget
-        // whenever either constant changes. It must stay below the nextest per-test
-        // terminate timeout (slow-timeout period x terminate-after, .config/nextest.toml).
-        self.finish_with_deadlines(
-            Instant::now() + PRODUCT_DEADLINE,
-            Some(Duration::from_mins(6)),
-        );
-    }
-
-    fn finish_with_deadlines(mut self, deadline: Instant, reap_budget: Option<Duration>) {
+    /// Quits the run and reaps its host without censoring the browser release barrier.
+    pub(crate) fn finish(mut self) {
+        // The window and each control read keep the per-step product deadline. The
+        // host reap starts after LINK_EOF and includes the UI end, so it reads that
+        // rule's one owner (`ui_end_kill_switch`), which stays below the nextest
+        // per-test terminate timeout (slow-timeout period x terminate-after,
+        // .config/nextest.toml).
         let host_pid = self.process.host_pid();
-        let _window = wait_for_host_window(host_pid, deadline);
+        let _window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
         self.reader
             .get_mut()
             .write_all(b"QUIT\n")
@@ -231,8 +218,7 @@ impl SignedProfileStateRun {
             .expect("flush state host Quit");
         assert_eq!(read_control_line(&mut self.reader), "QUIT_REPLY");
         assert_eq!(read_control_line(&mut self.reader), "LINK_EOF");
-        let reap_deadline = reap_budget.map_or(deadline, |budget| Instant::now() + budget);
-        let status = self.process.wait(reap_deadline);
+        let status = self.process.wait(Instant::now() + ui_end_kill_switch());
         assert!(
             status.success(),
             "{} host exited with {status}",

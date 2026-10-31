@@ -11,17 +11,39 @@ use nix::unistd::Pid;
 
 use super::super::GUARDIAN_SHUTDOWN_DEADLINE;
 use super::super::process_group::{
-    finish_group_termination, install_test_ambiguous_probe_receipt, observe_group_identity,
-    terminate_attested_group, terminate_registered_group, validate_guardian_child_group,
+    GroupIdentity, finish_group_termination, install_test_ambiguous_probe_receipt,
+    observe_group_identity, reconcile_denied_signal_after_reap, terminate_attested_group,
+    terminate_registered_group, validate_guardian_child_group,
 };
 
 mod cleanup_authority;
+mod exiting_member_race;
 mod native_descendant;
 use self::native_descendant::spawn_held_native_descendant;
 
 // Test-owned direct Child identity ensures a failing negative oracle never
 // leaves an unrelated native process alive after panic/unwind.
 struct TestOwnedGroupChild(Child);
+
+/// Await the kernel's zombie-only state of a group whose test-owned members
+/// were killed with `SIGKILL` but not reaped: `kill(-g, 0)` turns from Ok (a member is
+/// still exiting) to EPERM (every member is `SZOMB`). Polling is the awaited
+/// condition; the existing shutdown deadline is only a kill switch.
+fn await_zombie_only_group(raw: i32) {
+    let deadline = std::time::Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    loop {
+        match kill(Pid::from_raw(-raw), None) {
+            Err(Errno::EPERM) => return,
+            Ok(()) => {}
+            other => panic!("group left the zombie-only path: {other:?}"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "killed members never became a zombie-only group"
+        );
+        thread::yield_now();
+    }
+}
 
 impl Drop for TestOwnedGroupChild {
     fn drop(&mut self) {
@@ -99,6 +121,162 @@ fn denied_group_signal_is_only_ignorable_after_group_absence_proof() {
     assert!(finish_group_termination(Err(Errno::EPERM), || Err(Errno::EPERM)).is_err());
     assert!(finish_group_termination(Err(Errno::EPERM), || Ok(())).is_err());
     assert!(finish_group_termination(Err(Errno::EIO), || Err(Errno::ESRCH)).is_err());
+}
+
+// Regression for the Guardian's distinct signal-before-Child-reap cut.
+// The synthetic EPERM is the exact prior signal-phase error; the independent
+// kernel observations below are real Darwin process-group states. A separate
+// test-owned parent retains the killed group member until the product probe
+// witnesses ESRCH + EPERM, so removing the post-reap retry makes this RED.
+#[test]
+fn guardian_signal_eperm_reconciles_only_after_native_group_absence() {
+    let mut leader = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own original native group leader"),
+    );
+    let group = leader.0.id();
+    let original = observe_group_identity(group).expect("attest original kernel birth");
+    let raw = i32::try_from(group).expect("positive native group");
+    let mut member = TestOwnedGroupChild(
+        Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(raw)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("own another real same-group process"),
+    );
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(
+            i32::try_from(member.0.id()).expect("member PID")
+        ))),
+        Ok(Pid::from_raw(raw)),
+        "second Child must really be in the registered group"
+    );
+    let denied = || {
+        super::super::lifecycle_error(
+            "macOS guardian process-group signal",
+            std::io::Error::from_raw_os_error(nix::libc::EPERM),
+        )
+    };
+    assert!(
+        reconcile_denied_signal_after_reap(original, denied(), std::time::Instant::now()).is_err(),
+        "EPERM cannot be forgiven for an executing group"
+    );
+    assert!(
+        leader.0.try_wait().expect("inspect live leader").is_none(),
+        "read-only reconciliation must not kill a live outsider"
+    );
+
+    terminate_registered_group(group).expect("SIGKILL only the test-owned group");
+    assert_eq!(
+        leader.0.wait().expect("reap exact original Child").signal(),
+        Some(9)
+    );
+    assert_unreaped_native_member_remains_denied(original, raw, denied);
+
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let _receipt = install_test_ambiguous_probe_receipt(group, observed_tx);
+    let reaper = thread::spawn(move || {
+        observed_rx
+            .recv_timeout(GUARDIAN_SHUTDOWN_DEADLINE)
+            .expect("product observed actual EPERM zombie-group ambiguity");
+        member.0.wait().expect("reap independent group member")
+    });
+    let resolved = reconcile_denied_signal_after_reap(
+        original,
+        denied(),
+        std::time::Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+    );
+    assert_eq!(
+        reaper
+            .join()
+            .expect("independent member-reap worker")
+            .signal(),
+        Some(9)
+    );
+    resolved.expect("only genuine post-reap ESRCH of leader and group can reconcile EPERM");
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Err(Errno::ESRCH),
+        "the native group was absent before any fixture rescue"
+    );
+    assert_other_native_failures_remain_denied(original);
+}
+
+// Keep one original native same-PGID member an unreaped zombie for the entire
+// read-only retry budget. The negative oracle is independent of the later
+// receipt-driven reaper, and detects an illegal early-Ok on ESRCH + EPERM.
+fn assert_unreaped_native_member_remains_denied(
+    original: GroupIdentity,
+    raw: i32,
+    denied: impl Fn() -> super::super::RuntimeError,
+) {
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(raw))),
+        Err(Errno::ESRCH)
+    );
+    // Reaping the leader does not prove the SIGKILLed member has finished
+    // exiting: await the kernel's zombie-only state before the oracles.
+    await_zombie_only_group(raw);
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Err(Errno::EPERM),
+        "the other parent's held zombie must still make the group ambiguous"
+    );
+    assert!(
+        reconcile_denied_signal_after_reap(original, denied(), std::time::Instant::now()).is_err(),
+        "reaping only the original leader cannot prove a whole group is gone"
+    );
+    // A zero-remaining-budget check alone cannot catch a false-positive
+    // success in the FUTURE-deadline EPERM retry branch. Keep the separate
+    // native member deliberately unreaped for an existing bounded interval:
+    // even after the retry budget expires, an occupied zombie-only group
+    // is not absence and must never authorize a successful CLEAR.
+    assert!(
+        reconcile_denied_signal_after_reap(
+            original,
+            denied(),
+            std::time::Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE / 4,
+        )
+        .is_err(),
+        "future-budget EPERM ambiguity cannot be reconciled before the other member is reaped"
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-raw), None),
+        Err(Errno::EPERM),
+        "the original same-group member must remain an unreaped native zombie"
+    );
+}
+
+// This separate error-class oracle runs *after* the real two-member native
+// group above has been proved absent. Replacing the EPERM-only classifier
+// with unconditional success must fail both assertions.
+fn assert_other_native_failures_remain_denied(original: GroupIdentity) {
+    for (phase, errno) in [
+        ("macOS guardian process-group signal", nix::libc::EIO),
+        (
+            "macOS guardian registered group identity changed",
+            nix::libc::EPERM,
+        ),
+    ] {
+        assert!(
+            reconcile_denied_signal_after_reap(
+                original,
+                super::super::lifecycle_error(phase, std::io::Error::from_raw_os_error(errno)),
+                std::time::Instant::now()
+            )
+            .is_err(),
+            "unrelated native failure {phase} ({errno}) must not be reconciled"
+        );
+    }
 }
 
 #[test]
@@ -223,11 +401,10 @@ fn reaped_leader_with_temporarily_unreaped_dead_member_clears_without_false_host
         Err(Errno::ESRCH),
         "original leader birth is gone before host CLEAR"
     );
-    assert_eq!(
-        kill(Pid::from_raw(-group_raw), None),
-        Err(Errno::EPERM),
-        "Darwin must report a temporarily zombie-only group as ambiguous"
-    );
+    // Darwin must report a temporarily zombie-only group as ambiguous. A
+    // SIGKILLed member is still *exiting* (found, so Ok) for a moment before
+    // it becomes SZOMB; await that kernel state rather than racing it.
+    await_zombie_only_group(group_raw);
     // A separate actual OS Child owner holds the killed group member until
     // the *shipping* fallback has observed its own first ESRCH + EPERM pair.
     // This exact receipt, rather than a sleep or scheduler hope, prevents a
@@ -289,7 +466,7 @@ fn reaped_leader_with_persistently_unreaped_member_must_not_claim_clear() {
         nix::unistd::getpgid(Some(Pid::from_raw(raw))),
         Err(Errno::ESRCH)
     );
-    assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::EPERM));
+    await_zombie_only_group(raw);
 
     let error = terminate_attested_group(original)
         .expect_err("unreaped zombie-only group is not a proven-empty native group");

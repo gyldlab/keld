@@ -39,7 +39,10 @@ fn renderer_beacon_rechecks_the_absolute_deadline_before_replying() {
 
     assert_eq!(
         result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+        Err(
+            "renderer beacon deadline elapsed before replying to the exact request; phase=reply_write"
+                .to_owned()
+        )
     );
     assert!(
         observations.next().is_none(),
@@ -94,7 +97,10 @@ fn renderer_beacon_reports_its_absolute_deadline_instead_of_disconnect() {
         .expect("beacon worker honored its absolute deadline");
     assert_eq!(
         result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+        Err(
+            "renderer beacon deadline elapsed before the exact request; phase=intake_wait"
+                .to_owned()
+        )
     );
     beacon.join().expect("beacon deadline thread");
 }
@@ -119,7 +125,10 @@ fn renderer_beacon_empty_preconnect_does_not_renew_the_deadline() {
         .expect("empty preconnect retained the original absolute deadline");
     assert_eq!(
         result,
-        Err("renderer beacon deadline elapsed before the exact request".to_owned())
+        Err(
+            "renderer beacon deadline elapsed before the exact request; phase=intake_wait"
+                .to_owned()
+        )
     );
     beacon.join().expect("preconnect deadline thread");
 }
