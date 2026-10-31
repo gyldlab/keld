@@ -306,11 +306,15 @@ unsafe extern "C" {
     fn process_observer_fcntl(fd: i32, command: i32, ...) -> i32;
 }
 
-/// Observes one fixture-admitted PID's kernel exit status without reaping it.
-/// The guardian remains the sole Bun parent/reaper; `OwnedFd` closes this census.
+/// Observes one PID's kernel exit status without reaping it; `OwnedFd` closes
+/// this census. For a fixture-admitted process ([`Self::arm`]) the guardian
+/// remains the sole parent/reaper. For a test-owned child
+/// ([`Self::arm_own_child`]) the test is the parent and reaps it after the
+/// census. The evidence line records which relationship applies.
 pub(crate) struct ProcessExitObserver {
     pid: u32,
     queue: std::os::fd::OwnedFd,
+    observer_is_parent: bool,
 }
 
 impl ProcessExitObserver {
@@ -319,6 +323,15 @@ impl ProcessExitObserver {
     const ERROR_FLAG: u16 = 0x4000; // EV_ERROR
 
     pub(crate) fn arm(pid: u32) -> Self {
+        Self::arm_with_parent(pid, false)
+    }
+
+    /// Arm the census for a child this test spawned and will reap itself.
+    pub(crate) fn arm_own_child(child: &std::process::Child) -> Self {
+        Self::arm_with_parent(child.id(), true)
+    }
+
+    fn arm_with_parent(pid: u32, observer_is_parent: bool) -> Self {
         use std::os::fd::{AsRawFd as _, FromRawFd as _};
         assert!(pid > 1 && pid != std::process::id(), "fixture-admitted PID");
         assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
@@ -378,12 +391,20 @@ impl ProcessExitObserver {
         assert_eq!(receipt.filter, Self::FILTER);
         assert_ne!(receipt.flags & Self::ERROR_FLAG, 0, "EV_RECEIPT missing");
         assert_eq!(receipt.data, 0, "exit watcher registration errno for {pid}");
-        Self { pid, queue }
+        Self {
+            pid,
+            queue,
+            observer_is_parent,
+        }
     }
 
     pub(crate) fn wait(self) -> std::process::ExitStatus {
+        self.wait_before(Instant::now() + PROCESS_DEADLINE)
+    }
+
+    /// Wait for the kernel exit status until the caller's original deadline.
+    pub(crate) fn wait_before(self, deadline: Instant) -> std::process::ExitStatus {
         use std::os::fd::AsRawFd as _;
-        let deadline = Instant::now() + PROCESS_DEADLINE;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
@@ -418,7 +439,13 @@ impl ProcessExitObserver {
                 }
                 panic!("kernel exit census for {} failed: {error}", self.pid);
             }
-            assert_eq!(observed, 1, "kernel exit census timeout for {}", self.pid);
+            // The kevent wait itself reached the deadline: same outcome.
+            assert!(observed != 0, "no kernel exit status for PID {}", self.pid);
+            assert_eq!(
+                observed, 1,
+                "kernel exit census event count for {}",
+                self.pid
+            );
             assert_eq!(event.ident, u64::from(self.pid));
             assert_eq!(event.filter, Self::FILTER);
             assert_eq!(
@@ -431,10 +458,11 @@ impl ProcessExitObserver {
             let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
             let status = std::process::ExitStatus::from_raw(raw);
             eprintln!(
-                "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent=false",
+                "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
                 self.pid,
                 status.code(),
-                status.signal()
+                status.signal(),
+                self.observer_is_parent
             );
             return status;
         }

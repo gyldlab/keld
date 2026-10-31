@@ -5,7 +5,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Cursor;
-use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::AsRawHandle as _;
 use std::path::{Path, PathBuf};
 

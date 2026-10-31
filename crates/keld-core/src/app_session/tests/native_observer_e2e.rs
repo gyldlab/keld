@@ -7,16 +7,16 @@ use std::fs;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+#[path = "native_create_new_race.rs"]
+mod create_new_race;
 #[path = "native_observer_fixture.rs"]
 mod fixture;
+#[path = "native_namespace_race.rs"]
+mod namespace_race;
 #[path = "native_observer_sensor.rs"]
 pub(in crate::app_session) mod sensor;
 #[path = "native_observer_support.rs"]
 mod support;
-#[path = "native_namespace_race.rs"]
-mod namespace_race;
-#[path = "native_create_new_race.rs"]
-mod create_new_race;
 use fixture::{DrainProbe, NativeFixture, held_snapshot};
 
 #[path = "native_generation_recovery.rs"]

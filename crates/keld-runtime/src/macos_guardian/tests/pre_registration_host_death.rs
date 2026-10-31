@@ -1,6 +1,26 @@
 // Halt the registration writer after the child exists, but before its group
 // record can reach the host. EOF must still revoke resources and reap the
 // isolated group: registration is not a precondition for Guardian cleanup.
+use std::io::{self, Read as _, Write as _};
+use std::os::unix::process::ExitStatusExt as _;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
+
+use super::super::process_group::{
+    GroupIdentity, terminate_attested_group, validate_guardian_child_group,
+};
+use super::super::{REGISTRATION_LEN, REGISTRATION_MAGIC, run_with_registration};
+use super::{assert_gone, liveness_pipe, long_running_command};
+
+mod cleanup_authority;
+
 struct PausedGroupRegistration {
     entered: mpsc::Sender<u32>,
     release: mpsc::Receiver<()>,
@@ -8,7 +28,7 @@ struct PausedGroupRegistration {
 
 impl io::Write for PausedGroupRegistration {
     fn write(&mut self, record: &[u8]) -> io::Result<usize> {
-        if record.len() != super::REGISTRATION_LEN || record[..4] != super::REGISTRATION_MAGIC {
+        if record.len() != REGISTRATION_LEN || record[..4] != REGISTRATION_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unexpected group registration record",
@@ -77,7 +97,10 @@ fn host_eof_before_group_registration_reaps_spawned_child() {
     worker.join().expect("Guardian worker joins");
     assert_eq!(report.leader_pid(), pid);
     assert_eq!(report.leader_status().signal(), Some(9));
-    assert!(revoked.load(Ordering::SeqCst), "registered resources revoked");
+    assert!(
+        revoked.load(Ordering::SeqCst),
+        "registered resources revoked"
+    );
     assert_gone(Some(pid));
 }
 
@@ -86,7 +109,8 @@ fn host_eof_before_group_registration_reaps_spawned_child() {
 // frozen in its registration writer, before any group record reaches a host.
 const RACE_ROLE_ENV: &str = "KELD_TEST_GUARDIAN_PRE_REG_ROLE";
 const RACE_SOCKET_ENV: &str = "KELD_TEST_GUARDIAN_PRE_REG_SOCKET";
-const RACE_ROLE_TEST: &str = "macos_guardian::tests::pre_registration_sigkill_role";
+const RACE_ROLE_TEST: &str =
+    "macos_guardian::tests::pre_registration_host_death::pre_registration_sigkill_role";
 
 // The host role is deliberately SIGKILLed before it can wait on its spawned
 // Guardian. The real Guardian is a separate process and remains responsible
@@ -114,7 +138,11 @@ fn pre_registration_sigkill_role() {
             let marker = socket.with_extension("descendant.pid");
             let mut command = Command::new("/bin/sh");
             command
-                .args(["-c", r#"/bin/sleep 60 & echo $! > "$1"; wait"#, "keld-prereg"])
+                .args([
+                    "-c",
+                    r#"/bin/sleep 60 & echo $! > "$1"; wait"#,
+                    "keld-prereg",
+                ])
                 .arg(marker)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -157,7 +185,7 @@ struct SocketPausedGroupRegistration {
 
 impl io::Write for SocketPausedGroupRegistration {
     fn write(&mut self, record: &[u8]) -> io::Result<usize> {
-        if record.len() != super::REGISTRATION_LEN || record[..4] != super::REGISTRATION_MAGIC {
+        if record.len() != REGISTRATION_LEN || record[..4] != REGISTRATION_MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unexpected pre-registration process record",
@@ -182,36 +210,25 @@ impl io::Write for SocketPausedGroupRegistration {
 
 struct PreRegistrationProcessCleanup {
     host: Option<std::process::Child>,
-    guardian_pid: Option<u32>,
-    group_pid: Option<u32>,
-    descendant_pid: Option<u32>,
+    group_birth: Option<GroupIdentity>,
 }
 
 impl Drop for PreRegistrationProcessCleanup {
     fn drop(&mut self) {
-        // The abnormal path must not strand a live group or guardian even if
-        // the test fails while the registration writer is deliberately gated.
-        if let Some(group) = self.group_pid {
-            let _ = nix::sys::signal::killpg(
-                Pid::from_raw(i32::try_from(group).expect("group id fits PID")),
-                Signal::SIGKILL,
-            );
-        }
-        if let Some(guardian) = self.guardian_pid {
-            let _ = kill(
-                Pid::from_raw(i32::try_from(guardian).expect("guardian id fits PID")),
-                Signal::SIGKILL,
-            );
-        }
-        if let Some(descendant) = self.descendant_pid {
-            let _ = kill(
-                Pid::from_raw(i32::try_from(descendant).expect("descendant id fits PID")),
-                Signal::SIGKILL,
-            );
-        }
+        // An owned Child is the only host-kill authority. Closing its writer
+        // causes Guardian EOF, including when the PAUSED receipt never arrived.
+        // No socket/marker PID may authorize a later Guardian/descendant kill.
         if let Some(host) = self.host.as_mut() {
-            let _ = host.kill();
+            if matches!(host.try_wait(), Ok(None)) {
+                let _ = host.kill();
+            }
             let _ = host.wait();
+        }
+        // Capture the original group birth while Guardian and leader are live.
+        // If no proof arrived before a panic, fail closed rather than adopting
+        // the current owner of an old PID. Host EOF remains the first rescue.
+        if let Some(group) = self.group_birth.take() {
+            let _ = terminate_attested_group(group);
         }
     }
 }
@@ -252,7 +269,10 @@ fn receive_pre_registration_event(
                 return (stream, event);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline, "timed out awaiting process event");
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out awaiting process event"
+                );
                 thread::sleep(Duration::from_millis(2));
             }
             Err(error) => panic!("accept process event: {error}"),
@@ -266,26 +286,39 @@ fn pre_registration_real_host_sigkill_reaps_spawned_group() {
     let socket = temp.path().join("prereg.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket)
         .expect("bind pre-registration test control");
-    listener.set_nonblocking(true).expect("bound controller event poll");
+    listener
+        .set_nonblocking(true)
+        .expect("bound controller event poll");
     let host = pre_registration_role_command("host", &socket)
         .spawn()
         .expect("spawn isolated host process");
     let mut cleanup = PreRegistrationProcessCleanup {
         host: Some(host),
-        guardian_pid: None,
-        group_pid: None,
-        descendant_pid: None,
+        group_birth: None,
     };
 
     let (mut pending_registration, paused) =
         receive_pre_registration_event(&listener, Instant::now() + Duration::from_secs(10));
     let mut fields = paused.split_whitespace();
     assert_eq!(fields.next(), Some("PAUSED"), "unexpected event: {paused}");
-    let group_pid: u32 = fields.next().expect("group id").parse().expect("valid group id");
-    let guardian_pid: u32 = fields.next().expect("guardian id").parse().expect("valid guardian id");
+    let group_pid: u32 = fields
+        .next()
+        .expect("group id")
+        .parse()
+        .expect("valid group id");
+    let guardian_pid: u32 = fields
+        .next()
+        .expect("guardian id")
+        .parse()
+        .expect("valid guardian id");
     assert!(fields.next().is_none(), "unexpected event suffix: {paused}");
-    cleanup.group_pid = Some(group_pid);
-    cleanup.guardian_pid = Some(guardian_pid);
+    // The PAUSED writer is still blocked on this live connection. Before
+    // SIGKILLing the host or admitting a cleanup signal, pin the actual native
+    // group leader's birth and its direct-Guardian parent relationship.
+    cleanup.group_birth = Some(
+        validate_guardian_child_group(group_pid, guardian_pid)
+            .expect("paused native group must be the original Guardian's direct child"),
+    );
     let marker = socket.with_extension("descendant.pid");
     let descendant_deadline = Instant::now() + Duration::from_secs(10);
     let descendant_pid = loop {
@@ -300,7 +333,6 @@ fn pre_registration_real_host_sigkill_reaps_spawned_group() {
         );
         thread::sleep(Duration::from_millis(2));
     };
-    cleanup.descendant_pid = Some(descendant_pid);
     let group = Pid::from_raw(i32::try_from(group_pid).expect("group id fits PID"));
     let descendant = Pid::from_raw(i32::try_from(descendant_pid).expect("descendant id fits PID"));
     assert_eq!(
@@ -314,12 +346,16 @@ fn pre_registration_real_host_sigkill_reaps_spawned_group() {
         "registration must still be blocked after group creation"
     );
     assert!(
-        kill(Pid::from_raw(i32::try_from(guardian_pid).expect("guardian id fits PID")), None)
-            .is_ok(),
+        kill(
+            Pid::from_raw(i32::try_from(guardian_pid).expect("guardian id fits PID")),
+            None
+        )
+        .is_ok(),
         "independent Guardian must be alive before host death"
     );
 
-    let mut host = cleanup.host.take().expect("controller owns host child");
+    // Retain the original Child RAII even if kill/wait/assert panics.
+    let host = cleanup.host.as_mut().expect("controller owns host child");
     host.kill().expect("SIGKILL only the real host");
     assert_eq!(
         host.wait().expect("reap SIGKILLed host").signal(),
@@ -341,7 +377,5 @@ fn pre_registration_real_host_sigkill_reaps_spawned_group() {
         );
         thread::sleep(Duration::from_millis(2));
     }
-    cleanup.group_pid = None;
-    cleanup.guardian_pid = None;
-    cleanup.descendant_pid = None;
+    cleanup.group_birth = None;
 }

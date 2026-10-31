@@ -3,9 +3,6 @@
 //! The host-death Job owner retains both Job handles and alone clears kill-on-close
 //! after a settled census. This module observes and terminates eligible members.
 
-#![allow(unsafe_code)] // moved Win32 member-open and termination with exact local SAFETY proofs
-#![deny(unsafe_op_in_unsafe_fn)]
-
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::time::{Duration, Instant};

@@ -27,8 +27,13 @@ const validEchoVectors: ReadonlyArray<readonly [string, readonly number[]]> = [
 describe("postcard Unicode scalar identity", () => {
   for (const [message, vector] of validEchoVectors) {
     test(`preserves exact echo bytes for ${JSON.stringify(message)}`, () => {
-      expect(Array.from(encodeEchoRequest({ message, count: 0 }))).toEqual([...vector]);
-      expect(decodeEchoResponse(Uint8Array.from(vector))).toEqual({ message, count: 0 });
+      expect(Array.from(encodeEchoRequest({ message, count: 0 }))).toEqual([
+        ...vector,
+      ]);
+      expect(decodeEchoResponse(Uint8Array.from(vector))).toEqual({
+        message,
+        count: 0,
+      });
       // The final byte is count, not part of the postcard string.
       expect(decodePostcardStringAt(Uint8Array.from(vector), 0)).toEqual([
         message,
@@ -44,33 +49,50 @@ describe("postcard Unicode scalar identity", () => {
   });
 
   test("a decoder error cannot poison the next independent valid decode", () => {
-    expect(() => decodePostcardStringAt(new Uint8Array([0x01, 0xff]), 0))
-      .toThrow("KELD-IPC-003");
-    expect(decodePostcardStringAt(new Uint8Array([0x03, 0xef, 0xbb, 0xbf]), 0))
-      .toEqual(["\uFEFF", 4]);
+    expect(() =>
+      decodePostcardStringAt(new Uint8Array([0x01, 0xff]), 0),
+    ).toThrow("KELD-IPC-003");
+    expect(
+      decodePostcardStringAt(new Uint8Array([0x03, 0xef, 0xbb, 0xbf]), 0),
+    ).toEqual(["\uFEFF", 4]);
   });
 });
 
 describe("unrepresentable application strings", () => {
-  for (const message of ["\uD800", "\uDFFF", "a\uD800b", "\uDC00\uD800", "\uD800\uD800"]) {
+  for (const message of [
+    "\uD800",
+    "\uDFFF",
+    "a\uD800b",
+    "\uDC00\uD800",
+    "\uD800\uD800",
+  ]) {
     test(`rejects unpaired UTF-16 instead of substituting U+FFFD: ${JSON.stringify(message)}`, () => {
-      expect(() => encodeEchoRequest({ message, count: 0 })).toThrow("KELD-IPC-003");
+      expect(() => encodeEchoRequest({ message, count: 0 })).toThrow(
+        "KELD-IPC-003",
+      );
     });
   }
 
   for (const message of [undefined, null, 42, {}, new String("x")]) {
     test(`rejects non-string input of type ${typeof message}`, () => {
       // Deliberately cross the static boundary as JS/untrusted input can.
-      expect(() => encodeEchoRequest({ message: message as unknown as string, count: 0 }))
-        .toThrow("KELD-IPC-003");
+      expect(() =>
+        encodeEchoRequest({ message: message as unknown as string, count: 0 }),
+      ).toThrow("KELD-IPC-003");
     });
   }
 
   test("rejects an object without invoking its toString conversion", () => {
     let coerced = false;
-    const message = { toString() { coerced = true; return "x"; } };
-    expect(() => encodeEchoRequest({ message: message as unknown as string, count: 0 }))
-      .toThrow("KELD-IPC-003");
+    const message = {
+      toString() {
+        coerced = true;
+        return "x";
+      },
+    };
+    expect(() =>
+      encodeEchoRequest({ message: message as unknown as string, count: 0 }),
+    ).toThrow("KELD-IPC-003");
     expect(coerced).toBe(false);
   });
 });
@@ -86,25 +108,32 @@ describe("malformed postcard strings", () => {
   ];
   for (const vector of malformed) {
     test(`classifies invalid UTF-8 ${vector.join(",")} as a codec error`, () => {
-      expect(() => decodePostcardStringAt(Uint8Array.from(vector), 0))
-        .toThrow("KELD-IPC-003");
-      expect(() => decodeEchoResponse(Uint8Array.from([...vector, 0x00])))
-        .toThrow("KELD-IPC-003");
+      expect(() => decodePostcardStringAt(Uint8Array.from(vector), 0)).toThrow(
+        "KELD-IPC-003",
+      );
+      expect(() =>
+        decodeEchoResponse(Uint8Array.from([...vector, 0x00])),
+      ).toThrow("KELD-IPC-003");
     });
   }
 
   test("retains truncation, offset and trailing-byte rejection", () => {
-    expect(() => decodePostcardStringAt(new Uint8Array([0x03, 0x61]), 0))
-      .toThrow("KELD-IPC-003");
-    expect(() => decodePostcardStringAt(new Uint8Array([0x00]), -1))
-      .toThrow("KELD-IPC-003");
-    expect(() => decodeEchoResponse(new Uint8Array([0x00, 0x00, 0x00])))
-      .toThrow("KELD-IPC-003");
+    expect(() =>
+      decodePostcardStringAt(new Uint8Array([0x03, 0x61]), 0),
+    ).toThrow("KELD-IPC-003");
+    expect(() => decodePostcardStringAt(new Uint8Array([0x00]), -1)).toThrow(
+      "KELD-IPC-003",
+    );
+    expect(() =>
+      decodeEchoResponse(new Uint8Array([0x00, 0x00, 0x00])),
+    ).toThrow("KELD-IPC-003");
   });
 
   test("does not normalize a BOM-prefixed CallError code into a valid identifier", () => {
     // String length 8: U+FEFF followed by KELD-; then an empty message.
-    const payload = new Uint8Array([0x08, 0xef, 0xbb, 0xbf, 0x4b, 0x45, 0x4c, 0x44, 0x2d, 0x00]);
+    const payload = new Uint8Array([
+      0x08, 0xef, 0xbb, 0xbf, 0x4b, 0x45, 0x4c, 0x44, 0x2d, 0x00,
+    ]);
     expect(() => decodeCallError(payload)).toThrow("KELD-IPC-003");
     expect(errorFromErrFrame(payload).message).toContain("KELD-IPC-005");
   });

@@ -27,7 +27,7 @@ fn stage_fault_is_named_and_incomplete_without_publication() {
             Ok(())
         })
         .expect_err("injected failure returned a stage");
-    assert!(!created_name.is_empty());
+    assert_ne!(created_name.len(), 0);
     assert_eq!(
         expect_extraction(error, true).as_deref(),
         Some(created_name.as_str())
@@ -60,7 +60,7 @@ fn precreate_stage_name_collision_refuses_without_reusing_existing_object() {
             Ok(())
         })
         .expect_err("colliding stage reused");
-    assert!(!colliding_name.is_empty());
+    assert_ne!(colliding_name.len(), 0);
     assert!(matches!(
         &error,
         UpdateError::Extraction {

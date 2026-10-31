@@ -15,7 +15,7 @@ use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
 use crate::support::window::wait_for_host_window;
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_count, prepare_keld_dev_helper,
-    wait_for_dev_stage_count,
+    ui_end_kill_switch, wait_for_dev_stage_count,
 };
 use std::fs;
 use std::io::{Read, Write};
@@ -57,9 +57,8 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch shipping keld dev helper");
-    let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
@@ -68,7 +67,8 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     writer.flush().expect("flush shipping Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+    // The CLI returns after its delegated host, whose exit includes the UI end.
+    let status = wait_child(&mut cli, Instant::now() + ui_end_kill_switch());
     if !status.success() {
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -127,8 +127,8 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .expect("launch leased keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "lease renderer beacon");
@@ -152,7 +152,8 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
     let cli_status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
     assert!(!cli_status.success(), "killed CLI reported success");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    wait_process_gone(host_pid, Instant::now() + PRODUCT_DEADLINE);
+    // The closed lease starts the host's ordered shutdown, including its UI end.
+    wait_process_gone(host_pid, Instant::now() + ui_end_kill_switch());
     wait_process_gone(bun_pid, Instant::now() + PRODUCT_DEADLINE);
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
     wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
@@ -202,8 +203,8 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .expect("launch host-death keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "host-death renderer beacon");

@@ -176,14 +176,26 @@ impl HostOwnedHelloSession {
         let link_for_child = link.clone();
         let project_root = project_root.to_path_buf();
 
-        let supervisor = Supervisor::start_with_stdout_markers(policy, markers, move || {
-            let mut cmd = Command::new("bun");
-            cmd.arg("run")
-                .arg(&bun_main)
-                .current_dir(&project_root)
-                .env("KELD_APP_LINK", &link_for_child);
-            cmd
-        })
+        // Every generation gets this one link, and the listener admits one
+        // session. A crash successor is therefore provisioned only while that
+        // admission is unused (a crash before authentication, KEL-70
+        // AC1/AC3). After it, the successor's connect fails at once (the
+        // locator is gone), so restarting it only manufactures crashes that
+        // trip the breaker, and whether they do depends on the caller's
+        // teardown timing (GH-674).
+        let supervisor = Supervisor::start_with_stdout_markers_and_successor_gate(
+            policy,
+            markers,
+            move || {
+                let mut cmd = Command::new("bun");
+                cmd.arg("run")
+                    .arg(&bun_main)
+                    .current_dir(&project_root)
+                    .env("KELD_APP_LINK", &link_for_child);
+                cmd
+            },
+            server.admits_new_client(),
+        )
         .map_err(|e| HelloSessionError::Runtime(e.to_string()))?;
 
         Ok(Self {
@@ -291,9 +303,23 @@ impl HostOwnedHelloSession {
                     if self.mark_ready(supervisor, &captured, needle) {
                         return Ok(());
                     }
-                    return Err(HelloSessionError::Runtime(
-                        "Bun exited before emitting the ready marker".to_owned(),
-                    ));
+                    // Supervision also stops after a crash once the one-session
+                    // listener can admit no successor (GH-674). Name that crash
+                    // with the runtime's own diagnostic; `Stopped` is sent only
+                    // after the ledger records it.
+                    let ledger = supervisor.crash_ledger();
+                    let cause = match ledger.last {
+                        Some(crash)
+                            if ledger
+                                .last_self_termination
+                                .as_ref()
+                                .is_some_and(|last| last.exit_code != Some(0)) =>
+                        {
+                            format!("{crash} (observed before the Bun ready marker)")
+                        }
+                        _ => "Bun exited before emitting the ready marker".to_owned(),
+                    };
+                    return Err(HelloSessionError::Runtime(cause));
                 }
                 Some(_) | None => {}
             }
@@ -311,8 +337,9 @@ impl HostOwnedHelloSession {
     ///
     /// - a crash the supervisor did not recover from before teardown — the
     ///   dominant `keld dev` case, and the one that never trips the breaker:
-    ///   the default policy needs three crashes in 30s, while the restarted
-    ///   generation cannot re-enter the one-session listener to produce them;
+    ///   the default policy needs three crashes in 30s, and once the
+    ///   one-session listener has admitted its role no successor is
+    ///   provisioned to produce them (GH-674);
     /// - a tripped crash-loop breaker;
     /// - a generation that failed to provision.
     ///
@@ -472,8 +499,9 @@ impl HostOwnedHelloSession {
 ///
 /// Uses the marker's *first* occurrence. If a restarted generation printed the
 /// marker again, the earlier generation still died after being ready, and the
-/// v0 one-session listener means the restart cannot serve anyway
-/// (`docs/architecture/02-ipc.md`), so the earlier death is the honest verdict.
+/// v0 one-session listener provisions no successor after its one admission
+/// (`docs/architecture/02-ipc.md`, GH-674), so the earlier death is the honest
+/// verdict.
 fn recovered_termination_baseline(
     stdout: &str,
     dropped: usize,

@@ -70,6 +70,42 @@ class PureReportContracts(unittest.TestCase):
         self.assertEqual("legacy-now-within-proposal", result["finding"])
         self.assertFalse(result["hypothetical_block"])
 
+    def test_legacy_under_both_caps_after_one_axis_grows_is_not_a_block(self):
+        # Review finding on #738: category B hard caps are 1200 lines / 65536 bytes.
+        # 1300 lines / 50000 B -> 1100 lines / 60000 B is under BOTH caps even though
+        # bytes grew, so it must be "legacy-now-within-proposal", never a block.
+        old = row("legacy.rs", 1300, 50000)
+        new = row("legacy.rs", 1100, 60000)
+        result = budget.assess_change("M", "legacy.rs", "legacy.rs",
+                                      old, new, census.CANDIDATE)
+        self.assertEqual("legacy-now-within-proposal", result["finding"])
+        self.assertFalse(result["hypothetical_block"])
+        self.assertTrue(result["legacy_over_proposed_cap"])
+        self.assertFalse(result["currently_over_proposed_cap"])
+        self.assertTrue(result["grew_on_either_axis"])
+
+    def test_legacy_over_by_bytes_then_under_both_caps_with_line_growth(self):
+        # Mirror image: over the byte cap before, lines grow, ends under both caps.
+        old = row("legacy.rs", 1000, 70000)
+        new = row("legacy.rs", 1100, 60000)
+        result = budget.assess_change("M", "legacy.rs", "legacy.rs",
+                                      old, new, census.CANDIDATE)
+        self.assertEqual("legacy-now-within-proposal", result["finding"])
+        self.assertFalse(result["hypothetical_block"])
+        self.assertFalse(result["currently_over_proposed_cap"])
+        self.assertTrue(result["grew_on_either_axis"])
+
+    def test_legacy_still_over_a_cap_with_growth_stays_a_hypothetical_block(self):
+        # Negative control for the reorder: the file is still over the line cap
+        # (1250 > 1200) and bytes grew, so growth must still be reported as a block.
+        old = row("legacy.rs", 1300, 50000)
+        new = row("legacy.rs", 1250, 60000)
+        result = budget.assess_change("M", "legacy.rs", "legacy.rs",
+                                      old, new, census.CANDIDATE)
+        self.assertEqual("grandfathered-growth", result["finding"])
+        self.assertTrue(result["hypothetical_block"])
+        self.assertTrue(result["currently_over_proposed_cap"])
+
     def test_only_bytes_can_trigger_proposed_budget(self):
         result = budget.assess_change("M", "code.rs", "code.rs",
                                       row("code.rs", 900, 50000),
@@ -154,6 +190,33 @@ class RealGitReportContracts(unittest.TestCase):
             self.assertEqual([], identical["findings"])
             with self.assertRaises(RuntimeError):
                 budget.report(repo, "definitely-not-a-ref", head, "candidate")
+
+    def test_real_git_legacy_recovery_does_not_inflate_headline_count(self):
+        # Same case as the #738 review finding, end to end through report():
+        # a 1300 line / ~50 kB file becomes 1100 lines / ~60 kB (under both caps).
+        with tempfile.TemporaryDirectory(prefix="keld-budget-") as tmp:
+            repo = Path(tmp)
+            census.git(repo, "init", "-q")
+            census.git(repo, "config", "gc.auto", "0")
+            census.git(repo, "config", "maintenance.auto", "false")
+
+            (repo / "legacy.rs").write_text(("x" * 37 + "\n") * 1300, encoding="utf-8", newline="\n")
+            census.git(repo, "add", ".")
+            self.commit(repo, "baseline over the line cap")
+            base = census.git(repo, "rev-parse", "HEAD").decode().strip()
+
+            (repo / "legacy.rs").write_text(("x" * 53 + "\n") * 1100, encoding="utf-8", newline="\n")
+            census.git(repo, "add", "-A")
+            self.commit(repo, "fewer lines, more bytes, under both caps")
+            head = census.git(repo, "rev-parse", "HEAD").decode().strip()
+
+            result = budget.report(repo, base, head, "candidate")
+            (finding,) = result["findings"]
+            self.assertEqual((1300, 49400), (finding["base_lines"], finding["base_bytes"]))
+            self.assertEqual((1100, 59400), (finding["head_lines"], finding["head_bytes"]))
+            self.assertEqual("legacy-now-within-proposal", finding["finding"])
+            self.assertEqual(0, result["hypothetical_blocked_changed_count"])
+            self.assertEqual({"legacy-now-within-proposal": 1}, result["finding_counts"])
 
     def test_empty_diff_parity_even_with_renamed_ref(self):
         with tempfile.TemporaryDirectory(prefix="keld-budget-") as tmp:

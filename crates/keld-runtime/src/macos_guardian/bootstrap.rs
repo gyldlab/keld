@@ -1,10 +1,11 @@
 //! Authenticated macOS guardian bootstrap and registration ownership.
+use super::process_group::validate_guardian_child_group;
 use super::{
     BootstrapAdmission, BootstrapListener, BootstrapRejection, BootstrapRejectionObserver, Child,
-    ChildStdin, ChildStdout, Command, GuardedPrimary, HostGuardian, Instant, REGISTRATION_ENV,
-    REGISTRATION_LEN, REGISTRATION_MAGIC, Read, RuntimeError, Stdio, collapse_failures, io,
-    lifecycle_error, reap_pending_guardian, reject_host_registration, require_close_on_exec,
-    validate_group_leader,
+    ChildStdin, ChildStdout, Command, GuardedPrimary, HOST_GROUP_RETAINED_ACK, HostGuardian,
+    Instant, REGISTRATION_ENV, REGISTRATION_LEN, REGISTRATION_MAGIC, Read, RuntimeError, Stdio,
+    Write, collapse_failures, io, lifecycle_error, reap_pending_guardian, reject_host_registration,
+    require_close_on_exec,
 };
 
 /// Host-side authenticated bootstrap for one private guardian process.
@@ -35,7 +36,7 @@ impl GuardianBootstrap {
     }
 
     /// Spawns the private guardian with stdout reserved for the fixed
-    /// accepted-Quit acknowledgment used by [`run_supervised`].
+    /// accepted-Quit acknowledgment used by [`super::run_supervised`].
     ///
     /// # Errors
     ///
@@ -90,7 +91,6 @@ impl GuardianBootstrap {
                     return Err(reject_host_registration(
                         child,
                         liveness_writer,
-                        None,
                         lifecycle_error(
                             "macOS guardian supervised-Quit acknowledgment",
                             io::Error::other("spawned guardian has no acknowledgment reader"),
@@ -102,12 +102,7 @@ impl GuardianBootstrap {
             None
         };
         if let Err(error) = require_close_on_exec(&liveness_writer) {
-            return Err(reject_host_registration(
-                child,
-                liveness_writer,
-                None,
-                error,
-            ));
+            return Err(reject_host_registration(child, liveness_writer, error));
         }
         Ok(Self {
             child: Some(child),
@@ -152,13 +147,12 @@ impl GuardianBootstrap {
             }
             Err(error) => return Err(self.reject_registration(error)),
         };
-        let mut record = [0_u8; REGISTRATION_LEN];
-        if let Err(source) = stream.read_exact(&mut record) {
-            return Err(self.reject_registration(lifecycle_error(
-                "macOS guardian registration record",
-                source,
-            )));
-        }
+        // Authentication alone does not authorize an unbounded read. A
+        // compromised Guardian can authenticate and hold the KGR1 stream open
+        // without sending even one byte; use the caller's *original* deadline
+        // for the full fixed record, not another post-authentication budget.
+        let record = read_registration_record_until(&mut stream, deadline)
+            .map_err(|error| self.reject_registration(error))?;
         if record[..4] != REGISTRATION_MAGIC {
             return Err(self.reject_registration(lifecycle_error(
                 "macOS guardian registration record",
@@ -171,7 +165,18 @@ impl GuardianBootstrap {
                 io::Error::new(io::ErrorKind::InvalidData, "registration pid is truncated"),
             )
         })?);
-        validate_group_leader(group_pid).map_err(|error| self.reject_registration(error))?;
+        let guardian_pid = self
+            .child
+            .as_ref()
+            .ok_or_else(|| {
+                lifecycle_error(
+                    "macOS guardian registration owner",
+                    io::Error::new(io::ErrorKind::NotConnected, "guardian child is missing"),
+                )
+            })?
+            .id();
+        let group_identity = validate_guardian_child_group(group_pid, guardian_pid)
+            .map_err(|error| self.reject_registration(error))?;
 
         let child = self.child.take().ok_or_else(|| {
             lifecycle_error(
@@ -185,12 +190,28 @@ impl GuardianBootstrap {
                 io::Error::new(io::ErrorKind::NotConnected, "liveness writer is missing"),
             )
         })?;
-        HostGuardian::from_registered_parts(
+        let mut guardian = HostGuardian::from_registered_parts(
             child,
             liveness_writer,
             self.quit_ack_reader.take(),
-            group_pid,
-        )
+            group_identity,
+        )?;
+        // Only the test build can stop this shipping-path transition after
+        // the host has taken custody but before the Guardian can permit exec.
+        #[cfg(test)]
+        let ack =
+            super::tests::retained_ack::hold_before_group_ack(group_pid, guardian.guardian_pid())
+                .and_then(|()| stream.write_all(&[HOST_GROUP_RETAINED_ACK]));
+        #[cfg(not(test))]
+        let ack = stream.write_all(&[HOST_GROUP_RETAINED_ACK]);
+        if let Err(source) = ack {
+            let primary = lifecycle_error("macOS guardian group-retention acknowledgment", source);
+            return Err(match guardian.shutdown() {
+                Ok(_) => primary,
+                Err(cleanup) => collapse_failures(vec![primary, cleanup]),
+            });
+        }
+        Ok(guardian)
     }
 
     /// Authenticates the private guardian as a persistent primary-generation
@@ -206,8 +227,31 @@ impl GuardianBootstrap {
     /// Returns a typed lifecycle failure if guardian authentication, handle
     /// extraction, control-channel setup, or host-worker creation fails.
     pub fn register_guarded_primary_until(
+        self,
+        deadline: Instant,
+    ) -> Result<GuardedPrimary, RuntimeError> {
+        self.register_guarded_primary_until_inner(
+            deadline,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn register_guarded_primary_until_with_registration_fence(
+        self,
+        deadline: Instant,
+        fence: super::generation_host::GenerationRegistrationFence,
+    ) -> Result<GuardedPrimary, RuntimeError> {
+        self.register_guarded_primary_until_inner(deadline, Some(fence))
+    }
+
+    fn register_guarded_primary_until_inner(
         mut self,
         deadline: Instant,
+        #[cfg(test)] registration_fence: Option<
+            super::generation_host::GenerationRegistrationFence,
+        >,
     ) -> Result<GuardedPrimary, RuntimeError> {
         let admission = self
             .registration
@@ -242,18 +286,12 @@ impl GuardianBootstrap {
             )
         })?;
         if let Err(error) = require_close_on_exec(&liveness_writer) {
-            return Err(reject_host_registration(
-                child,
-                liveness_writer,
-                None,
-                error,
-            ));
+            return Err(reject_host_registration(child, liveness_writer, error));
         }
         let Some(quit_ack_reader) = self.quit_ack_reader.take() else {
             return Err(reject_host_registration(
                 child,
                 liveness_writer,
-                None,
                 lifecycle_error(
                     "macOS guardian generation acknowledgment",
                     io::Error::new(
@@ -263,7 +301,15 @@ impl GuardianBootstrap {
                 ),
             ));
         };
-        GuardedPrimary::start(child, liveness_writer, quit_ack_reader, control)
+        GuardedPrimary::start(
+            child,
+            liveness_writer,
+            quit_ack_reader,
+            control,
+            deadline,
+            #[cfg(test)]
+            registration_fence,
+        )
     }
 
     fn reject_registration(&mut self, error: RuntimeError) -> RuntimeError {
@@ -273,7 +319,7 @@ impl GuardianBootstrap {
         let Some(liveness_writer) = self.liveness_writer.take() else {
             return error;
         };
-        reject_host_registration(child, liveness_writer, None, error)
+        reject_host_registration(child, liveness_writer, error)
     }
 }
 
@@ -293,4 +339,124 @@ struct NoopRegistrationObserver;
 
 impl BootstrapRejectionObserver for NoopRegistrationObserver {
     fn rejected(&self, _rejection: BootstrapRejection) {}
+}
+
+fn read_registration_record_until(
+    stream: &mut std::os::unix::net::UnixStream,
+    deadline: Instant,
+) -> Result<[u8; REGISTRATION_LEN], RuntimeError> {
+    stream
+        .set_nonblocking(true)
+        .map_err(|source| lifecycle_error("macOS guardian registration record deadline", source))?;
+    let mut record = [0_u8; REGISTRATION_LEN];
+    let mut filled = 0;
+    while filled < record.len() {
+        match stream.read(&mut record[filled..]) {
+            Ok(0) => {
+                return Err(lifecycle_error(
+                    "macOS guardian registration record",
+                    io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "registration record is truncated",
+                    ),
+                ));
+            }
+            Ok(count) => filled += count,
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => {}
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {}
+            Err(source) => {
+                return Err(lifecycle_error(
+                    "macOS guardian registration record",
+                    source,
+                ));
+            }
+        }
+        if filled < record.len() && Instant::now() >= deadline {
+            return Err(lifecycle_error(
+                "macOS guardian registration record deadline",
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "authenticated guardian sent no complete registration record before deadline",
+                ),
+            ));
+        }
+        if filled < record.len() {
+            std::thread::yield_now();
+        }
+    }
+    // A complete record must also arrive within the caller's original
+    // deadline. Never accept an already-buffered record after that deadline
+    // simply because the final read filled the last byte.
+    if Instant::now() >= deadline {
+        return Err(lifecycle_error(
+            "macOS guardian registration record deadline",
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "registration record arrived after deadline",
+            ),
+        ));
+    }
+    Ok(record)
+}
+
+#[cfg(test)]
+mod registration_record_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn authenticated_zero_byte_guardian_cannot_hold_registration_forever() {
+        let (mut reader, _writer) =
+            std::os::unix::net::UnixStream::pair().expect("isolated authenticated stream");
+        let began = Instant::now();
+        let error = read_registration_record_until(&mut reader, began + Duration::from_millis(40))
+            .expect_err("open zero-byte record must time out");
+        assert!(error.to_string().contains("deadline"), "{error}");
+        assert!(began.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn authenticated_partial_record_uses_the_same_deadline() {
+        let (mut reader, mut writer) =
+            std::os::unix::net::UnixStream::pair().expect("isolated authenticated stream");
+        writer.write_all(b"KGR1").expect("partial record");
+        let error =
+            read_registration_record_until(&mut reader, Instant::now() + Duration::from_millis(40))
+                .expect_err("held-open truncated record must time out");
+        assert!(error.to_string().contains("deadline"), "{error}");
+    }
+
+    #[test]
+    fn complete_registration_preserves_every_byte() {
+        let (mut reader, mut writer) =
+            std::os::unix::net::UnixStream::pair().expect("isolated authenticated stream");
+        let mut record = [0_u8; REGISTRATION_LEN];
+        record[..4].copy_from_slice(&REGISTRATION_MAGIC);
+        record[4..].copy_from_slice(&0x1122_3344_u32.to_be_bytes());
+        writer.write_all(&record).expect("complete record");
+        assert_eq!(
+            read_registration_record_until(
+                &mut reader,
+                Instant::now() + Duration::from_millis(200)
+            )
+            .expect("complete record accepted"),
+            record
+        );
+    }
+
+    #[test]
+    fn full_buffered_record_cannot_extend_expired_registration_deadline() {
+        let (mut reader, mut writer) =
+            std::os::unix::net::UnixStream::pair().expect("isolated authenticated stream");
+        let mut record = [0_u8; REGISTRATION_LEN];
+        record[..4].copy_from_slice(&REGISTRATION_MAGIC);
+        record[4..].copy_from_slice(&42_u32.to_be_bytes());
+        writer.write_all(&record).expect("buffered complete record");
+        let past = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("test clock represents a one-millisecond expired deadline");
+        let error = read_registration_record_until(&mut reader, past)
+            .expect_err("complete bytes never extend original admission deadline");
+        assert!(error.to_string().contains("deadline"), "{error}");
+    }
 }

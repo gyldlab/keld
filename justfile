@@ -12,43 +12,47 @@ set positional-arguments
 # Windows installs expose python; Unix hosts need not provide that alias.
 python_command := if os() == "windows" { "python" } else { "python3" }
 
-# Open the current platform hello backend (Phase 1 slice).
+# Diagnostic test: open the platform hello backend window (not the keld create/dev app demo).
 hello:
     cargo run -p keld-host --bin keld-host -- --hello
 
-# Run every applicable CI gate locally (deny requires `cargo install cargo-deny --locked`).
 # Independent policy gates run together. TypeScript then Rust run one at a time:
 # measured compiler and host-test deadlines cannot share the policy batch's load.
 # gitleaks stays GitHub-only (pinned OSS CLI in .github/workflows/ci.yml).
+# Run all applicable local CI gates (deny requires `cargo install cargo-deny --locked`).
 ci:
     {{python_command}} -B tools/ci_local.py ci-inventory
 
 # Executable inventory; direct invocation runs every declared gate.
 [private]
-ci-inventory: ci-policy typescript fmt-check clippy test doc deny
+ci-inventory: ci-policy js-fmt-check typescript fmt-check clippy test doc deny
 
 # Full assurance mode explicitly validates every tracked Mermaid block.
 ci-full:
     {{python_command}} -B tools/ci_local.py ci-full-inventory
 
 [private]
-ci-full-inventory: ci-policy-full typescript fmt-check clippy test doc deny
+ci-full-inventory: ci-policy-full js-fmt-check typescript fmt-check clippy test doc deny
 
 # Reuse Just's configured platform shell when the Python executor asks for a plan.
 [private]
 ci-route:
     tools/ci_changes.sh local
 
-# Hosted CI runs every ci-policy gate (#650) except two that need the real
-# `just` executable, which hosted runners do not install; hosting either needs a
-# pinned `just` in CI (dependency-gate decision, not taken):
+# Hosted CI runs every ci-policy gate (#650) except hooks-test, which needs the
+# hook runner's incoming recipe. The macOS Rust-check matrix installs pinned Just
+# and runs ci-router-test with stock system Bash for the portability contract below.
 # - hooks-test: the hooks under test execute `just` (its negative control runs
 #   the incoming branch's recipe through it); it fails, never skips, without just.
-# - the four test_ci_local.py ExecutorTests in ci-router-test, which drive real
-#   recipes (tools/ci_local.py inventory/execute). SelectionTests and the rest
-#   of test_ci_local.py run hosted through tools/ci_changes_test.sh.
+# SelectionTests and the remaining hosted Python contracts run through
+# tools/ci_changes_test.sh; ci-router-test additionally drives real Just recipes.
 # agent-context's workspace.py check also runs hosted, but only a developer
 # checkout has task records for it to validate.
+# cache-check-test also runs hosted, unchanged, as two steps of the clippy + test
+# matrix on ubuntu, macos and windows: "Worktree cache tool native tests" (the
+# worktree_cache.rs unit tests) and "Worktree cache tool provenance test"
+# (tools/cache_tool_provenance_test.sh). Its cfg(windows) and cfg(unix) paths each
+# compile only on their own OS.
 [parallel]
 ci-policy: agents-md atomic-protocol agent-context-test agent-context cache-check-test ci-router-test hooks-test audit-docs-test audit-docs doc-placeholders-test doc-placeholders-check mermaid-ci product-status-test product-status-check llms-test llms-check hygiene
 
@@ -72,6 +76,9 @@ typescript:
     cd packages/@keld/kipc && bun install --frozen-lockfile
     cd packages/@keld/kipc && bun run typecheck
     cd packages/@keld/kipc && bun test
+    cd packages/@keld/api && bun install --frozen-lockfile
+    cd packages/@keld/api && bun run typecheck
+    cd packages/@keld/api && bun test
     cd packages/@keld/electron && bun install --frozen-lockfile
     cd packages/@keld/electron && bun run typecheck
     cd packages/@keld/electron && bun test
@@ -112,27 +119,31 @@ agent-context-test:
     {{python_command}} -B tools/test_session_closeout_hook.py
     {{python_command}} -B tools/test_workspace.py
 
-# KEL-245: local-only allocation and execution; all roots derive from Git identity.
+# Allocate an isolated task worktree below .keld-work/ (usage: just work-start <issue-id> <slug> [--session <id>]).
 work-start *args:
     #!/usr/bin/env bash
     set -euo pipefail
     {{python_command}} -B tools/workspace.py start "$@"
 
+# Inspect status of managed worktrees and task branches (read-only; pass --sizes for disk usage).
 work-status *args:
     #!/usr/bin/env bash
     set -euo pipefail
     {{python_command}} -B tools/workspace.py status "$@"
 
+# Execute a command inside a task worktree (usage: just work-run <task-name> --session <id> -- <cmd>).
 work-run *args:
     #!/usr/bin/env bash
     set -euo pipefail
     {{python_command}} -B tools/workspace.py run "$@"
 
+# Conclude an active task record with a closeout receipt (requires task, --session, and --receipt).
 work-finish *args:
     #!/usr/bin/env bash
     set -euo pipefail
     {{python_command}} -B tools/workspace.py finish "$@"
 
+# Inspect or delete released-session scratch (dry run by default; pass task, session, --receipt and --apply to delete scratch).
 work-clean *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -141,7 +152,10 @@ work-clean *args:
 work-check:
     {{python_command}} -B tools/workspace.py check
 
-# Source-versioned executable outside target/ survives full cache deletion.
+# Build a fresh executable from a verified source snapshot on every run. No
+# executable from an earlier run is ever trusted or executed: a cache under
+# $HOME cannot prove which bytes it holds. The private scratch directory lives
+# outside every worktree target/, so full cache deletion never removes it.
 [private]
 cache-tool-exec mode *args:
     #!/usr/bin/env bash
@@ -154,34 +168,25 @@ cache-tool-exec mode *args:
             git hash-object "$dir/worktree_cache.rs"
             git hash-object "$dir/worktree_cache_delete.rs"
             git hash-object "$dir/worktree_cache_delete_tests.rs"
-            rustc -vV
         } | git hash-object --stdin
     }
     stamp=$(source_stamp tools)
-    base="$HOME/.cache/keld/worktree-tool/$stamp"
-    mkdir -p "$base"
     name="worktree-cache"
     if [[ "{{os()}}" == "windows" ]]; then name="worktree-cache.exe"; fi
-    binary="$base/$name"
-    if [[ ! -x "$binary" ]]; then
-        scratch=$(mktemp -d "$base/.build.XXXXXXXX")
-        trap 'rm -rf "$scratch"' EXIT
-        # Compile a verified immutable source snapshot, never mutable checkout bytes.
-        cp tools/worktree_cache.rs tools/worktree_cache_delete.rs tools/worktree_cache_delete_tests.rs "$scratch/"
-        [[ "$(source_stamp "$scratch")" == "$stamp" ]] || {
-            echo "cache source changed during snapshot; refusing compilation" >&2; exit 1;
-        }
-        rustc --edition=2024 -D warnings -C opt-level=s -C strip=symbols "$scratch/worktree_cache.rs" -o "$scratch/$name"
-        if ! ln "$scratch/$name" "$binary" 2>/dev/null; then
-            [[ -x "$binary" ]] || { echo "cache binary publication failed" >&2; exit 1; }
-        fi
-    fi
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    # Compile a verified immutable source snapshot, never mutable checkout bytes.
+    cp tools/worktree_cache.rs tools/worktree_cache_delete.rs tools/worktree_cache_delete_tests.rs "$scratch/"
+    [[ "$(source_stamp "$scratch")" == "$stamp" ]] || {
+        echo "cache source changed during snapshot; refusing compilation" >&2; exit 1;
+    }
+    rustc --edition=2024 -D warnings -C opt-level=s -C strip=symbols "$scratch/worktree_cache.rs" -o "$scratch/$name"
     [[ "$(source_stamp tools)" == "$stamp" ]] || {
-        echo "cache source changed during lookup; refusing stale executable" >&2; exit 1;
+        echo "cache source changed during compilation; refusing stale executable" >&2; exit 1;
     }
     # set positional-arguments includes the named mode as $1.
     shift
-    "$binary" "{{mode}}" . "$@"
+    "$scratch/$name" "{{mode}}" . "$@"
 
 # Read-only census of every registered Git worktree build cache.
 cache-check *args:
@@ -203,6 +208,7 @@ cache-check-test:
     trap 'rm -rf "$scratch"' EXIT
     rustc --edition=2024 -D warnings --test tools/worktree_cache.rs -o "$scratch/cache-tests"
     "$scratch/cache-tests"
+    bash tools/cache_tool_provenance_test.sh
 
 work-test:
     {{python_command}} -B tools/test_workspace.py
@@ -280,15 +286,12 @@ mermaid-render-check:
 hygiene:
     bun --no-install test tools/ci_workflow_security.test.ts
     {{python_command}} -B tools/test_hello_command.py
+    {{python_command}} -B tools/test_ci_attempt_metrics.py
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test
     rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene
     target/ci-hygiene/ci-hygiene check .
-
-# KEL-333: after reviewing reader changes, renew only the digests in tools/ci-inputs.json.
-ci-inputs-rebind:
-    {{python_command}} -B tools/ci_inputs.py --rebind
 
 # KEL-81: keep change-based CI routing falsifiable outside GitHub Actions too.
 ci-router-test:
@@ -299,21 +302,38 @@ ci-router-test:
 hooks-test:
     tools/hooks_test.sh
 
-# Format the workspace in place.
+# Format the workspace in place. `cargo fmt` never visits `include!`d files or
+# `#[path]` mods declared inside macro bodies, so tools/fmt_included.sh formats
+# those (and the `mod` files under them) too.
 fmt:
     cargo fmt --all
+    tools/fmt_included.sh
+    just js-fmt
 
-# CI gate: formatting.
-fmt-check:
+# CI gate: formatting, including `include!`d and macro-body `#[path]` files (#834, #1055).
+fmt-check: js-fmt-check
     cargo fmt --all --check
+    tools/fmt_included.sh test
+    tools/fmt_included.sh --check
+
+# Native Bun formatting; generated bytes/stamps remain owned by echo-codegen.
+js-fmt:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun fmt --no-script "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
+    bun packages/@keld/kipc/scripts/echo-codegen.ts generate
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+
+js-fmt-check:
+    bun packages/@keld/kipc/scripts/echo-codegen.ts check
+    bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
 
 # CI gate: lints (warnings are errors, matching CI).
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
-# CI gate: tests (unit + integration + doctests). Matches CI nextest profile.
 # The Linux host suite owns real GTK windows, so preserve its virtual-display
 # contract for the full root gate as well as the routed Ubuntu package lane.
+# Run workspace tests (matches CI nextest profile: unit + integration tests; nextest does not run doctests).
 test:
     #!/usr/bin/env bash
     set -euo pipefail

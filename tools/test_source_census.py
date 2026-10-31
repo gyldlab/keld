@@ -163,6 +163,7 @@ class GitObjectProof(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="keld-census-test-") as tmp:
             repo = Path(tmp)
             census.git(repo, "init", "-q")
+            census.git(repo, "config", "maintenance.auto", "false")
             (repo / "before.rs").write_bytes(b"first\r\nsecond")
             (repo / "empty.rs").write_bytes(b"")
             census.git(repo, "add", "before.rs", "empty.rs")
@@ -204,6 +205,7 @@ class GitObjectProof(unittest.TestCase):
             caller.mkdir()
             isolated.mkdir()
             census.git(caller, "init", "-q")
+            census.git(caller, "config", "maintenance.auto", "false")
             (caller / "caller.rs").write_text("caller")
             census.git(caller, "add", "caller.rs")
             self.commit(caller, "caller baseline")
@@ -216,6 +218,7 @@ class GitObjectProof(unittest.TestCase):
                 "GIT_INDEX_FILE": str(caller / ".git" / "index"),
             }):
                 census.git(isolated, "init", "-q")
+                census.git(isolated, "config", "maintenance.auto", "false")
                 census.git(isolated, "add", "only_here.rs")
                 self.commit(isolated, "isolated baseline")
                 entries = census.parse_tree(
@@ -229,6 +232,7 @@ class GitObjectProof(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="keld-census-test-") as tmp:
             repo = Path(tmp)
             census.git(repo, "init", "-q")
+            census.git(repo, "config", "maintenance.auto", "false")
             (repo / "source.rs").write_bytes(b"line 1\nline 2")
             census.git(repo, "add", "source.rs")
             self.commit(repo, "baseline")

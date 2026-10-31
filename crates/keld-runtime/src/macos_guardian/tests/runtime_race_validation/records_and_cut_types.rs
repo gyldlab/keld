@@ -1,30 +1,42 @@
-const COLLECTION: Duration = Duration::from_secs(7);
+//! Named test records and fixed-width relay receipt types for KEL-143 races.
+use std::io;
+use std::os::unix::net::UnixStream;
+use std::process::Command;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
+
+use super::{
+    ChildPreparer, GENERATION_CONTROL_POLL, GenerationControlReader, GenerationControlRecord,
+    GuardedPrimaryLease, GuardedPrimaryPreparer, PreparedChild, RuntimeError, lifecycle_error,
+};
+
+pub(super) const COLLECTION: Duration = Duration::from_secs(7);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DeliveryCut {
+pub(super) enum DeliveryCut {
     Zero,
     Partial,
     FullBeforeLease,
     LeaseBeforeSpawn,
 }
 
-enum RelayCommand {
+pub(super) enum RelayCommand {
     Full,
     Prefix,
     AwaitClosure,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct ControlFields {
-    kind: u8,
-    cause: u8,
-    attempt: u32,
-    pid: u32,
-    payload_len: usize,
+pub(super) struct ControlFields {
+    pub(super) kind: u8,
+    pub(super) cause: u8,
+    pub(super) attempt: u32,
+    pub(super) pid: u32,
+    pub(super) payload_len: usize,
 }
 
 impl ControlFields {
-    fn capture(record: &GenerationControlRecord) -> Self {
+    pub(super) fn capture(record: &GenerationControlRecord) -> Self {
         Self {
             kind: record.kind,
             cause: record.cause,
@@ -35,7 +47,7 @@ impl ControlFields {
     }
 }
 
-enum RelayReceipt {
+pub(super) enum RelayReceipt {
     ClearedOne,
     PreparedTwo(GenerationControlRecord),
     PrefixSent(Instant),
@@ -50,13 +62,13 @@ enum RelayReceipt {
     GuardianControlEof,
 }
 
-struct PhaseGate {
-    entered: Sender<()>,
-    release: Receiver<()>,
+pub(super) struct PhaseGate {
+    pub(super) entered: Sender<()>,
+    pub(super) release: Receiver<()>,
 }
 
 impl PhaseGate {
-    fn wait(&self) -> Result<(), RuntimeError> {
+    pub(super) fn wait(&self) -> Result<(), RuntimeError> {
         self.entered.send(()).map_err(|_| {
             lifecycle_error(
                 "test Runtime phase receipt",
@@ -69,9 +81,9 @@ impl PhaseGate {
     }
 }
 
-struct ReturnedLeasePreparer<C> {
-    inner: GuardedPrimaryPreparer<C>,
-    gate: Option<PhaseGate>,
+pub(super) struct ReturnedLeasePreparer<C> {
+    pub(super) inner: GuardedPrimaryPreparer<C>,
+    pub(super) gate: Option<PhaseGate>,
 }
 
 impl<C> ChildPreparer for ReturnedLeasePreparer<C>
@@ -93,7 +105,7 @@ where
     }
 }
 
-fn timed_pair() -> (UnixStream, UnixStream) {
+pub(super) fn timed_pair() -> (UnixStream, UnixStream) {
     let (one, two) = UnixStream::pair().expect("existing private Unix pair");
     for stream in [&one, &two] {
         stream
@@ -106,7 +118,9 @@ fn timed_pair() -> (UnixStream, UnixStream) {
     (one, two)
 }
 
-fn receive_record(stream: &mut UnixStream) -> Result<GenerationControlRecord, RuntimeError> {
+pub(super) fn receive_record(
+    stream: &mut UnixStream,
+) -> Result<GenerationControlRecord, RuntimeError> {
     let mut reader = GenerationControlReader::new();
     let deadline = Instant::now() + COLLECTION;
     loop {

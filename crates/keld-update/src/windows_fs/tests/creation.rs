@@ -4,6 +4,9 @@ use super::super::{
     create_directory_relative, create_file_relative_exclusive_with_profile,
     duplicate_activation_lease_for_keeper, publish_new,
 };
+use super::support::{
+    assert_rename_stayed_in_retained_parent, rename_fixture, substitute_parent_spelling,
+};
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::os::windows::fs::OpenOptionsExt as _;
@@ -278,40 +281,9 @@ fn replaced_spelling_with_pinned_source(
     std::path::PathBuf,
     std::path::PathBuf,
 ) {
-    use super::support::junction;
-    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
-
-    let fixture = tempfile::tempdir().expect("relative rename fixture");
-    let original = fixture.path().join("original");
-    let moved = fixture.path().join("moved");
-    let outside = fixture.path().join("outside");
-    std::fs::create_dir(&original).expect("real original parent");
-    std::fs::create_dir(&outside).expect("hostile outside directory");
-    std::fs::write(original.join(source), b"retained authenticated bytes")
-        .expect("prepare real source before renaming parent");
-    if let Some(prior) = prior_destination {
-        std::fs::write(original.join(destination), prior).expect("original typed destination");
-    }
-    std::fs::write(outside.join(source), b"outside decoy source").expect("outside decoy");
-    std::fs::write(outside.join(destination), b"outside destination sentinel")
-        .expect("outside destination");
-
-    let parent = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(&original)
-        .expect("pin source and destination parent with deliberate delete sharing");
-    std::fs::rename(&original, &moved).expect("rename nonempty parent while pinned");
-    junction(&original, &outside);
-    assert_eq!(
-        std::fs::read(original.join(source)).expect("hostile alias reads outside decoy"),
-        b"outside decoy source"
-    );
-    assert_eq!(
-        std::fs::read(moved.join(source)).expect("real retained source"),
-        b"retained authenticated bytes"
-    );
+    let (fixture, parent, original, moved, outside) =
+        rename_fixture(source, destination, prior_destination);
+    substitute_parent_spelling(&original, &moved, &outside, source);
     (fixture, parent, original, moved, outside)
 }
 
@@ -321,22 +293,7 @@ fn publication_uses_pinned_source_and_destination_after_parent_path_substitution
         replaced_spelling_with_pinned_source("prepared", "published", None);
     publish_new(&parent, "prepared", "published")
         .expect("publish real source into retained parent despite hostile pathname");
-    assert!(
-        !moved.join("prepared").exists(),
-        "real source must be consumed"
-    );
-    assert_eq!(
-        std::fs::read(moved.join("published")).expect("published retained bytes"),
-        b"retained authenticated bytes"
-    );
-    assert_eq!(
-        std::fs::read(outside.join("prepared")).unwrap(),
-        b"outside decoy source"
-    );
-    assert_eq!(
-        std::fs::read(outside.join("published")).unwrap(),
-        b"outside destination sentinel"
-    );
+    assert_rename_stayed_in_retained_parent(&moved, &outside, "prepared", "published");
     drop(parent);
     std::fs::remove_dir(original).expect("remove junction, not its target");
 }
@@ -350,22 +307,7 @@ fn typed_replacement_uses_pinned_source_and_destination_after_parent_path_substi
         replaced_spelling_with_pinned_source(&pending, "current", Some(b"prior current"));
     replace_record_slot(&parent, &pending, RecordSlot::Current)
         .expect("replace typed record under retained parent despite hostile pathname");
-    assert!(
-        !moved.join(&pending).exists(),
-        "real pending source must be consumed"
-    );
-    assert_eq!(
-        std::fs::read(moved.join("current")).expect("new retained current"),
-        b"retained authenticated bytes"
-    );
-    assert_eq!(
-        std::fs::read(outside.join(&pending)).unwrap(),
-        b"outside decoy source"
-    );
-    assert_eq!(
-        std::fs::read(outside.join("current")).unwrap(),
-        b"outside destination sentinel"
-    );
+    assert_rename_stayed_in_retained_parent(&moved, &outside, &pending, "current");
     drop(parent);
     std::fs::remove_dir(original).expect("remove junction, not its target");
 }

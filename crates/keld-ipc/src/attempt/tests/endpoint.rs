@@ -22,7 +22,7 @@ use super::oracle::{
 use crate::attempt::{
     WindowsAttemptClient, WindowsAttemptEndpoint, WindowsAttemptEndpointError,
     WindowsAttemptEndpointSecurity, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
-    WindowsPipeSecurityFact,
+    WindowsPipeSecurityFact, sid_text,
 };
 use crate::windows_named_pipe::{
     PipeSecuritySections, WindowsNamedPipeServer, read_pipe_descriptor,
@@ -290,6 +290,18 @@ fn owner_refuses_and_closes_an_instance_whose_readback_deviates() -> io::Result<
     assert_eq!(
         absent.raw_os_error(),
         Some(ERROR_FILE_NOT_FOUND.cast_signed())
+    );
+    Ok(())
+}
+
+#[test]
+fn sid_subauthorities_decode_exact_little_endian_words() -> io::Result<()> {
+    // Independent SID wire bytes: authority 5, subauthorities 1 and 0x01020304.
+    // A byte-order reversal, a dropped word, or a constant result changes SDDL.
+    let sid = [1_u8, 2, 0, 0, 0, 0, 0, 5, 1, 0, 0, 0, 4, 3, 2, 1];
+    assert_eq!(
+        sid_text(&sid).map_err(io::Error::other)?,
+        "S-1-5-1-16909060"
     );
     Ok(())
 }

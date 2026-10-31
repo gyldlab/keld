@@ -266,6 +266,11 @@ fn rename_relative(
     }
     let (source_name, _) = validated_relative_name(source)?;
     let (destination_name, _) = validated_relative_name(destination)?;
+    // Test seam: a pathname-based rename would already have resolved its paths here.
+    // It sits before the source open because NTFS refuses to rename a directory
+    // while any child is open, so after that open the parent cannot be substituted.
+    #[cfg(test)]
+    run_before_rename_binding();
     let source =
         open_units_for_delete_with_options(parent, source_name, DeletePurpose::Remove, true)?
             .ok_or_else(|| {
@@ -286,21 +291,23 @@ fn rename_relative(
     let buffer_size = required.max(size_of::<FILE_RENAME_INFORMATION>());
     let size = u32::try_from(buffer_size).map_err(io::Error::other)?;
     let mut storage = vec![0_u64; buffer_size.div_ceil(size_of::<u64>())];
+    let name_length = u32::try_from(name_bytes).map_err(io::Error::other)?;
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-    let info_value = FILE_RENAME_INFORMATION {
-        Anonymous: FILE_RENAME_INFORMATION_0 {
-            ReplaceIfExists: replace,
-        },
-        RootDirectory: parent.as_raw_handle().cast(),
-        FileNameLength: u32::try_from(name_bytes).map_err(io::Error::other)?,
-        FileName: [0],
-    };
     // SAFETY: storage is writable, 8-byte aligned and large enough for the
     // complete FILE_RENAME_INFORMATION header, the checked UTF-16 name and a trailing
-    // zero. The pointers target this one owned buffer, which stays live through
-    // the synchronous NtSetInformationFile call.
+    // zero. Each field is written in place through `addr_of_mut!`, so no whole-struct
+    // copy overwrites the zero-filled padding or terminator with undefined bytes:
+    // every byte of the buffer is initialized. The union is set through its full
+    // 32-bit `Flags` member (on little-endian Windows targets the BOOLEAN
+    // `ReplaceIfExists` aliases its low byte), so its high bytes are zero rather
+    // than undefined. The pointers target this one owned buffer, which stays live
+    // through the synchronous NtSetInformationFile call.
     unsafe {
-        ptr::write(info, info_value);
+        ptr::addr_of_mut!((*info).Anonymous).write(FILE_RENAME_INFORMATION_0 {
+            Flags: u32::from(replace),
+        });
+        ptr::addr_of_mut!((*info).RootDirectory).write(parent.as_raw_handle().cast());
+        ptr::addr_of_mut!((*info).FileNameLength).write(name_length);
         ptr::copy_nonoverlapping(
             destination_name.as_ptr(),
             ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
@@ -335,6 +342,34 @@ fn rename_relative(
         return Err(io::Error::from_raw_os_error(error.cast_signed()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only seam: one action that `rename_relative` runs on this thread after
+    /// validating both names and before opening the source or binding the destination.
+    static BEFORE_RENAME_BINDING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs the one-shot action for the next relative rename on this thread.
+#[cfg(test)]
+fn set_before_rename_binding(action: impl FnOnce() + 'static) {
+    BEFORE_RENAME_BINDING.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+/// Whether the installed action is still waiting to run on this thread.
+#[cfg(test)]
+fn before_rename_binding_pending() -> bool {
+    BEFORE_RENAME_BINDING.with(|slot| slot.borrow().is_some())
+}
+
+#[cfg(test)]
+fn run_before_rename_binding() {
+    let action = BEFORE_RENAME_BINDING.with(|slot| slot.borrow_mut().take());
+    if let Some(action) = action {
+        action();
+    }
 }
 
 fn volume_guid_root(path: &[u16]) -> io::Result<[u16; VOLUME_GUID_ROOT_UNITS + 1]> {

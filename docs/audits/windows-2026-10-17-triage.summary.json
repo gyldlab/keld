@@ -1,14 +1,14 @@
 {
   "classes": {
-    "ci-tooling": 19,
-    "production-or-fixture": 106,
-    "support": 33,
-    "test": 149
+    "ci-tooling": 21,
+    "production-or-fixture": 112,
+    "support": 36,
+    "test": 161
   },
-  "manifest_sha256": "e72afe22b9abbf4a8745a1add0d3a92eb1464a05c56a24994b813d383285b978",
-  "pending_independent_semantic_review": 307,
+  "manifest_sha256": "63cc445c53cf3d069b44aac6081bb27439444adc1de19a46b2556e469eb569a5",
+  "pending_independent_semantic_review": 330,
   "pinned_ref": "ffdba0e907b366d2552379d9f0fbf60727dbbf3a",
   "reviewed": 0,
   "scope": "candidate Windows-related tracked paths; not all files nor security signoff",
-  "tracked_candidates": 307
+  "tracked_candidates": 330
 }

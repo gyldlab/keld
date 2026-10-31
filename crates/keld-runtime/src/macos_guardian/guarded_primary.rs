@@ -1,11 +1,17 @@
 //! Host-owned persistent guardian and exact registered-generation lifecycle.
+use super::generation_host::{
+    GenerationHostAdmission, is_initial_recovery_denied, is_post_shutdown_spawn_refused,
+};
+use super::process_group::{GroupIdentity, terminate_attested_group};
+#[cfg(test)]
+use super::terminate_registered_group;
 use super::{
     Arc, BoundRoleGeneration, Child, ChildStdin, ChildStdout, Duration, ExitStatus,
     GUARDIAN_SHUTDOWN_DEADLINE, Instant, JoinHandle, Mutex, Receiver, RecoveryState, RoleEvent,
     RuntimeError, SUPERVISED_ORDERLY_SHUTDOWN, SUPERVISED_QUIT_ACCEPTED, Write, collapse_failures,
     io, lifecycle_error, lock_recovery, mpsc, read_supervised_orderly_ack,
     read_supervised_quit_ack, reject_host_registration, run_generation_host,
-    set_liveness_nonblocking, terminate_registered_group, thread,
+    set_liveness_nonblocking, thread,
 };
 
 /// One host-visible update from the guarded primary-generation owner.
@@ -32,12 +38,56 @@ pub struct GuardedPrimary {
     pub(super) updates_rx: Receiver<GuardedPrimaryUpdate>,
     pub(super) worker: Option<JoinHandle<Result<(), RuntimeError>>>,
     pub(super) shutdown_attributed: bool,
+    /// An earlier shutdown returned a fatal error after consuming OS/worker
+    /// witnesses. Re-reading cached child status must not erase that failure.
+    pub(super) shutdown_failed: bool,
+    /// The shutdown acknowledgment was the Guardian's KSA for the host's
+    /// orderly S, not a KQA for an accepted Quit. Only S may retire a
+    /// refused spawn as an orderly cancellation.
+    pub(super) orderly_acknowledged: bool,
+    #[cfg(test)]
+    pub(super) shutdown_sent: Option<mpsc::SyncSender<()>>,
+    /// Scoped native test proof: denial lock must remain held until S is
+    /// physically written. Never present in the shipping Guardian owner.
+    #[cfg(test)]
+    pub(super) shutdown_denial_fence: Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RegisteredPrimaryGeneration {
     pub(super) attempt: u32,
     pub(super) group_pid: u32,
+    pub(super) group_identity: Option<GroupIdentity>,
+}
+
+impl RegisteredPrimaryGeneration {
+    pub(super) const fn authenticated(attempt: u32, group_identity: GroupIdentity) -> Self {
+        Self {
+            attempt,
+            group_pid: group_identity.pid,
+            group_identity: Some(group_identity),
+        }
+    }
+}
+
+fn terminate_generation(generation: RegisteredPrimaryGeneration) -> Result<(), RuntimeError> {
+    if let Some(identity) = generation.group_identity {
+        return terminate_attested_group(identity);
+    }
+    #[cfg(test)]
+    {
+        // Older synthetic-only control/error fixtures explicitly supply no
+        // kernel witness. They never stand in for production enrollment.
+        terminate_registered_group(generation.group_pid)
+    }
+    #[cfg(not(test))]
+    Err(lifecycle_error(
+        "macOS guardian missing native generation identity",
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "authenticated generation has no registered leader birth proof",
+        ),
+    ))
 }
 
 impl GuardedPrimary {
@@ -46,6 +96,10 @@ impl GuardedPrimary {
         liveness_writer: ChildStdin,
         quit_ack_reader: ChildStdout,
         control: std::os::unix::net::UnixStream,
+        first_record_deadline: Instant,
+        #[cfg(test)] registration_fence: Option<
+            super::generation_host::GenerationRegistrationFence,
+        >,
     ) -> Result<Self, RuntimeError> {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -60,7 +114,6 @@ impl GuardedPrimary {
                 return Err(reject_host_registration(
                     child,
                     liveness_writer,
-                    None,
                     lifecycle_error("macOS guardian generation process inspection", source),
                 ));
             }
@@ -70,16 +123,22 @@ impl GuardedPrimary {
         let (updates_tx, updates_rx) = mpsc::channel();
         let generation_for_worker = Arc::clone(&current_generation);
         let recovery_for_worker = Arc::clone(&recovery_decision);
+        // Bind every later KGC1 SPAWNED record to this retained OS child.
+        // A valid control token alone does not authorize an arbitrary PGID.
+        let admission = GenerationHostAdmission::new(child.id(), first_record_deadline);
         let worker = match thread::Builder::new()
             .name("keld-runtime-guardian-generation-host".to_owned())
             .spawn(move || {
                 run_generation_host(
+                    admission,
                     control,
                     &updates_tx,
                     &generation_for_worker,
                     &recovery_for_worker,
                     #[cfg(test)]
                     None,
+                    #[cfg(test)]
+                    registration_fence.as_ref(),
                 )
             }) {
             Ok(worker) => worker,
@@ -87,7 +146,6 @@ impl GuardedPrimary {
                 return Err(reject_host_registration(
                     child,
                     liveness_writer,
-                    None,
                     lifecycle_error("macOS guardian generation host worker", source),
                 ));
             }
@@ -101,6 +159,12 @@ impl GuardedPrimary {
             updates_rx,
             worker: Some(worker),
             shutdown_attributed: false,
+            shutdown_failed: false,
+            orderly_acknowledged: false,
+            #[cfg(test)]
+            shutdown_sent: None,
+            #[cfg(test)]
+            shutdown_denial_fence: None,
         })
     }
 
@@ -137,6 +201,9 @@ impl GuardedPrimary {
     ///
     /// Returns the owning group-signal failure.
     pub fn fail_current_generation(&self, attempt: u32) -> Result<(), RuntimeError> {
+        // The generation lock remains held through kernel identity inspection
+        // and signaling. Otherwise concurrent KGC1 CLEAR could retire this
+        // attempt and publish a successor between the host's read and SIGKILL.
         let current = lock_generation(&self.current_generation);
         let Some(generation) = *current else {
             return Ok(());
@@ -144,7 +211,7 @@ impl GuardedPrimary {
         if generation.attempt != attempt {
             return Ok(());
         }
-        terminate_registered_group(generation.group_pid)
+        terminate_generation(generation)
     }
 
     /// Waits for one generation update up to `timeout`.
@@ -154,6 +221,10 @@ impl GuardedPrimary {
     }
 
     /// Records accepted host shutdown before a correlated reply is published.
+    ///
+    /// Use it only for a Quit accepted from a bound generation. The Guardian
+    /// refuses Q before its first generation exists; cancel an unbound
+    /// startup with [`Self::shutdown`], whose S is acknowledged at every stage.
     ///
     /// # Errors
     ///
@@ -175,6 +246,15 @@ impl GuardedPrimary {
             .write_all(&[SUPERVISED_QUIT_ACCEPTED])
             .and_then(|()| writer.flush())
             .map_err(|source| lifecycle_error("macOS guardian supervised-Quit control", source))?;
+        #[cfg(test)]
+        if let Some(sent) = &self.shutdown_sent {
+            sent.send(()).map_err(|_| {
+                lifecycle_error(
+                    "macOS guardian test-only shutdown receipt",
+                    io::Error::other("native controller stopped before observing Q"),
+                )
+            })?;
+        }
         read_supervised_quit_ack(ack_reader)?;
         self.shutdown_attributed = true;
         lock_recovery(&self.recovery_decision).shutdown_acknowledged = true;
@@ -193,11 +273,10 @@ impl GuardedPrimary {
             Ok(None) => {}
             Ok(Some(status)) => {
                 self.liveness_writer.take();
-                let group_pid = take_generation(&self.current_generation)
-                    .map_or(0, |generation| generation.group_pid);
-                let cleanup_error = (group_pid != 0)
-                    .then(|| terminate_registered_group(group_pid).err())
-                    .flatten()
+                let generation = take_generation(&self.current_generation);
+                let group_pid = generation.map_or(0, |generation| generation.group_pid);
+                let cleanup_error = generation
+                    .and_then(|generation| terminate_generation(generation).err())
                     .map(|error| io::Error::other(error.to_string()));
                 Err(RuntimeError::GuardianExited {
                     group_pid,
@@ -236,6 +315,27 @@ impl GuardedPrimary {
     /// Returns a typed failure for timeout, unexpected guardian exit, current
     /// group cleanup failure, or generation worker failure.
     pub fn shutdown(&mut self) -> Result<ExitStatus, RuntimeError> {
+        if self.shutdown_failed {
+            return Err(lifecycle_error(
+                "macOS guardian generation shutdown",
+                io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "an earlier Guardian shutdown failed; terminal failure cannot be retried as success",
+                ),
+            ));
+        }
+        let result = self.shutdown_once();
+        if result.is_err() {
+            // Cleanup consumed the worker and group witnesses; a later call
+            // cannot turn the original failed shutdown into fresh success.
+            self.shutdown_failed = true;
+        }
+        result
+    }
+
+    /// Performs exactly one owned OS/worker teardown transaction; the public
+    /// wrapper retains a failed terminal outcome across later calls.
+    fn shutdown_once(&mut self) -> Result<ExitStatus, RuntimeError> {
         let mut failures = Vec::new();
         if let Err(error) = self.prepare_orderly_shutdown() {
             failures.push(error);
@@ -298,11 +398,10 @@ impl GuardedPrimary {
         if let Some(observed) = status
             && !observed.success()
         {
-            let group_pid = take_generation(&self.current_generation)
-                .map_or(0, |generation| generation.group_pid);
-            let cleanup_error = (group_pid != 0)
-                .then(|| terminate_registered_group(group_pid).err())
-                .flatten()
+            let generation = take_generation(&self.current_generation);
+            let group_pid = generation.map_or(0, |generation| generation.group_pid);
+            let cleanup_error = generation
+                .and_then(|generation| terminate_generation(generation).err())
                 .map(|error| io::Error::other(error.to_string()));
             failures.push(RuntimeError::GuardianExited {
                 group_pid,
@@ -337,9 +436,33 @@ impl GuardedPrimary {
     }
 
     fn prepare_orderly_shutdown(&mut self) -> Result<(), RuntimeError> {
-        self.deny_recovery();
         if self.shutdown_attributed {
+            self.deny_recovery();
             return Ok(());
+        }
+        // Denial is visible to the generation worker only after S has been
+        // queued on the existing host-exclusive liveness pipe. Without this
+        // one lock, a scheduled gap between deny() and write(S) lets the
+        // worker reject initial PREPARE, then the Guardian exits without KSA.
+        // Never retain this lock while awaiting KSA or host/Guardian reap.
+        let mut recovery = lock_recovery(&self.recovery_decision);
+        recovery.deny();
+        #[cfg(test)]
+        if let Some((arrived, release)) = &self.shutdown_denial_fence {
+            arrived.send(()).map_err(|_| {
+                lifecycle_error(
+                    "test host recovery-denial receipt",
+                    io::Error::other("native shutdown observer ended"),
+                )
+            })?;
+            release
+                .recv_timeout(GUARDIAN_SHUTDOWN_DEADLINE)
+                .map_err(|source| {
+                    lifecycle_error(
+                        "test host recovery-denial release",
+                        io::Error::other(source),
+                    )
+                })?;
         }
         let writer = self.liveness_writer.as_mut().ok_or_else(|| {
             lifecycle_error(
@@ -353,8 +476,19 @@ impl GuardedPrimary {
             .write_all(&[SUPERVISED_ORDERLY_SHUTDOWN])
             .and_then(|()| writer.flush())
             .map_err(|source| lifecycle_error("macOS guardian orderly-shutdown control", source))?;
+        drop(recovery);
+        #[cfg(test)]
+        if let Some(sent) = &self.shutdown_sent {
+            sent.send(()).map_err(|_| {
+                lifecycle_error(
+                    "macOS guardian test-only shutdown receipt",
+                    io::Error::other("native controller stopped before observing S"),
+                )
+            })?;
+        }
         read_supervised_orderly_ack(ack_reader)?;
         self.shutdown_attributed = true;
+        self.orderly_acknowledged = true;
         lock_recovery(&self.recovery_decision).shutdown_acknowledged = true;
         Ok(())
     }
@@ -364,15 +498,51 @@ impl GuardedPrimary {
     // Missing either fact is a fatal owner-state mismatch, not a clean EOF.
     fn join_worker_with_shutdown_proof(&mut self) -> Result<(), RuntimeError> {
         let was_running = self.worker.is_some();
-        self.join_worker()?;
+        let worker_result = self.join_worker();
         if !was_running {
-            return Ok(());
+            return worker_result;
         }
-        if !lock_recovery(&self.recovery_decision).shutdown_acknowledged {
-            return Err(lifecycle_error(
-                "macOS guardian generation host worker",
-                io::Error::other("worker ended before acknowledged shutdown"),
-            ));
+        let orderly_acknowledged = self.orderly_acknowledged;
+        let (acknowledged, denied, denied_before_initial_ready) = {
+            let recovery = lock_recovery(&self.recovery_decision);
+            (
+                recovery.shutdown_acknowledged,
+                recovery.denied,
+                recovery.denied && !recovery.initial_ready && recovery.expected_attempt == 1,
+            )
+        };
+        // The one acknowledgment check. Without an actual KSA/KQA no worker
+        // outcome is orderly; a failed worker keeps its own provenance.
+        if !acknowledged {
+            return Err(worker_result.err().unwrap_or_else(|| {
+                lifecycle_error(
+                    "macOS guardian generation host worker",
+                    io::Error::other("worker ended before acknowledged shutdown"),
+                )
+            }));
+        }
+        let shutdown_won =
+            self.shutdown_attributed && lock_generation(&self.current_generation).is_none();
+        // These are the ONLY expected worker outcomes when the host's own
+        // acknowledged shutdown raced generation admission: a rejected first
+        // PREPARE after the Guardian's idle probe, or an in-flight SPAWNED
+        // refused after S. Each needs zero registered group and its private
+        // typed result; the refusal type exists only after the attested group
+        // was signalled and the lease revoked. Only an orderly S (KSA, not an
+        // accepted Quit's KQA) may retire either one (architecture 06: the
+        // first-PREPARE denial is accepted only after verified KSA). The
+        // Guardian's own exit status still proves its local retirement.
+        // Never downgrade another worker failure.
+        let reconciled = |error: &RuntimeError| {
+            shutdown_won
+                && orderly_acknowledged
+                && ((denied_before_initial_ready && is_initial_recovery_denied(error))
+                    || (denied && is_post_shutdown_spawn_refused(error)))
+        };
+        if let Err(error) = worker_result
+            && !reconciled(&error)
+        {
+            return Err(error);
         }
         if lock_generation(&self.current_generation).is_some() {
             return Err(lifecycle_error(
@@ -396,9 +566,7 @@ impl GuardedPrimary {
     }
 
     fn fail_safe_current_group(&self) -> Result<(), RuntimeError> {
-        take_generation(&self.current_generation).map_or(Ok(()), |generation| {
-            terminate_registered_group(generation.group_pid)
-        })
+        take_generation(&self.current_generation).map_or(Ok(()), terminate_generation)
     }
 }
 

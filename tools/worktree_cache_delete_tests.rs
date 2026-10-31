@@ -41,6 +41,7 @@ impl Fixture {
         let secondary = root.join("secondary worktree");
         fs::create_dir(&repo).unwrap();
         Self::git(&repo, &["init", "-q"]);
+        Self::git(&repo, &["config", "maintenance.auto", "false"]);
         Self::git(&repo, &["config", "user.name", "KELD test"]);
         Self::git(&repo, &["config", "user.email", "example@test.invalid"]);
         fs::write(repo.join("README.md"), "PRESERVE SOURCE").unwrap();
@@ -108,10 +109,44 @@ fn known_process_names_are_detected_without_resident_ide_false_positives() {
         "clang",
         "clippy-driver",
         "rustdoc.exe",
+        "cargo-clippy.exe",
+        // C/C++ drivers and linkers a Rust build commonly spawns.
+        "cc",
+        "c++",
+        "g++",
+        "/usr/bin/clang++",
+        "clang-cl.exe",
+        "cl.exe",
+        "rust-lld",
+        "lld-link.exe",
+        "LLD-LINK",
+        "ld.lld",
+        "ld64",
+        "ld64.lld",
+        "ld.gold",
+        "ld.bfd",
+        "mold",
+        "/usr/libexec/gcc/x86_64-linux-gnu/13/collect2",
+        r"C:\Program Files\LLVM\bin\lld-link.exe",
     ] {
         assert!(active_build_name(name), "{name}");
     }
-    for name in ["rust-analyzer", "sccache", "git", "bash", "notcargo"] {
+    // Exact-name matching: resident tools and near-miss names are not builds.
+    for name in [
+        "rust-analyzer",
+        "sccache",
+        "git",
+        "bash",
+        "notcargo",
+        "clangd",
+        "ccache",
+        "cmd",
+        "molder",
+        "g++-wrapper",
+        "rust-lld-proxy",
+        "ld.so",
+        "",
+    ] {
         assert!(!active_build_name(name), "{name}");
     }
 }
@@ -194,6 +229,7 @@ fn refuses_casefolded_nested_git_marker_and_preserves_unregistered_source() {
     let nested = f.target().join("debug").join("unregistered repo");
     fs::create_dir_all(&nested).unwrap();
     Fixture::git(&nested, &["init", "-q"]);
+    Fixture::git(&nested, &["config", "maintenance.auto", "false"]);
     fs::write(nested.join("source"), "PRESERVE").unwrap();
     fs::rename(nested.join(".git"), nested.join(".GiT")).unwrap();
     let mut args = f.args();
@@ -359,6 +395,65 @@ fn mount_inventory_blocks_even_same_device_bind_mounts() {
     let target = PathBuf::from("/cache/target");
     assert!(no_mount_overlap(&target, &[PathBuf::from("/cache/target/bind")]).is_err());
     assert!(no_mount_overlap(&target, &[PathBuf::from("/cache/targetish")]).is_ok());
+}
+
+#[test]
+fn unresolvable_mount_entries_outside_target_do_not_abort_preflight() {
+    // Regression for #935 review r4320898776: a stale or unreadable mount
+    // entry unrelated to the target must not abort preflight, while every
+    // spelling of a mount inside the target is still refused.
+    use super::no_mount_identity_overlap;
+    let f = Fixture::new(true);
+    let target = f.root.join("tree").join("target");
+    fs::create_dir_all(&target).unwrap();
+    let target = fs::canonicalize(&target).unwrap();
+    let check = |mount: PathBuf| no_mount_identity_overlap(&target, vec![mount]);
+    // Stale (ENOENT) entry outside the target, e.g. a Linux "(deleted)" mount.
+    assert!(check(f.root.join("gone").join("mnt")).is_ok());
+    // Stale entries inside the target are refused, not ignored.
+    assert!(check(target.join("gone").join("mnt")).is_err());
+    // An unresolved `..` can never be placed, so it fails closed.
+    let escape = f.root.join("gone").join("..").join("tree").join("target");
+    assert!(check(escape.join("mnt")).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        // An alias spelling of the target that cannot be fully resolved.
+        let alias = f.root.join("alias");
+        symlink(&target, &alias).unwrap();
+        assert!(check(alias.join("gone").join("mnt")).is_err());
+        // Unreadable (EACCES) parent outside the target, e.g. another user's
+        // FUSE mount; and the same shape inside the target.
+        let outside = f.root.join("locked");
+        let inside = target.join("locked");
+        for dir in [&outside, &inside] {
+            fs::create_dir_all(dir.join("mnt")).unwrap();
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let outside_result = check(outside.join("mnt"));
+        let inside_result = check(inside.join("mnt"));
+        for dir in [&outside, &inside] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(outside_result.is_ok(), "{outside_result:?}");
+        assert!(inside_result.is_err());
+    }
+    // Negative control: a resolvable mount inside the target is refused.
+    fs::create_dir(target.join("bind")).unwrap();
+    assert!(check(target.join("bind")).is_err());
+}
+
+#[test]
+fn dry_run_refuses_eligibility_when_the_process_guard_fails() {
+    let f = Fixture::new(true);
+    let mut args = f.args();
+    args.push("--dry-run".into());
+    let error = run_with_guard(&f.repo, &args, || Err("active build marker".into())).unwrap_err();
+    assert!(error.contains("active build marker"), "{error}");
+    assert!(f.target().exists());
+    // Negative control: the same preview succeeds once the guard is clean.
+    run_with_guard(&f.repo, &args, || Ok(())).unwrap();
+    assert!(f.target().exists());
 }
 
 #[test]

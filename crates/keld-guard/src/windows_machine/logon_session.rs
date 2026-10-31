@@ -4,8 +4,10 @@
 //! At bootstrap the session must exist with a positive logon time, which the journal
 //! records beside the session's LUID. At retirement the recorded session counts as
 //! ended only when `LsaGetLogonSessionData` reports `STATUS_NO_SUCH_LOGON_SESSION`, or
-//! when the session now holding that LUID has a different logon time, because a LUID is
-//! unique only until restart. A live session, access denial and every other status halt.
+//! when the session now holding that LUID has a different positive logon time, because a
+//! LUID is unique only until restart. A present session whose logon time is zero or
+//! negative is malformed data that cannot prove a different logon generation, so it halts
+//! like a live session, access denial and every other status.
 
 // SAFETY policy: the LSA query and the release of its buffer are confined to this
 // module; callers receive copied values only.
@@ -104,7 +106,8 @@ pub enum WindowsLogonSessionError {
         status: NTSTATUS,
     },
     /// The query succeeded but its data was missing, out of bounds, named another
-    /// session, or could not be released (`KELD-GUARD022`).
+    /// session, could not be released, or reported a zero or negative logon time for a
+    /// present session at retirement (`KELD-GUARD022`).
     Malformed {
         /// The queried session.
         session: WindowsLogonSessionId,
@@ -183,13 +186,14 @@ pub fn windows_initiating_logon_time(
 }
 
 /// Requires the recorded initiating session to have ended: no such logon session exists,
-/// or the session now holding that LUID began at another time.
+/// or the session now holding that LUID began at a different positive logon time. A present
+/// session whose logon time is zero or negative is malformed and halts.
 ///
 /// # Errors
 /// [`WindowsLogonSessionError::SessionLive`] when the session still exists with
 /// `recorded` as its logon time, and [`WindowsLogonSessionError::QueryStatus`] or
 /// [`WindowsLogonSessionError::Malformed`] for every other query result, including
-/// access denial.
+/// access denial and a present session with a zero or negative logon time.
 pub fn require_windows_logon_session_ended(
     session: WindowsLogonSessionId,
     recorded: WindowsLogonTime,

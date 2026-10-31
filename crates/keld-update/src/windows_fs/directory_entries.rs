@@ -52,8 +52,10 @@ pub(super) fn parse_directory_entries(bytes: &[u8]) -> io::Result<Vec<DirectoryC
             return Err(malformed());
         }
         let name: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|unit| u16::from_ne_bytes(*unit))
             .collect();
         if name != [u16::from(b'.')] && name != [u16::from(b'.'), u16::from(b'.')] {
             if name.is_empty()

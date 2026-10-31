@@ -4,6 +4,7 @@
 mod creation;
 mod deletion;
 mod enumeration;
+mod rename_binding;
 mod retained_parent;
 mod support;
 mod volume;
