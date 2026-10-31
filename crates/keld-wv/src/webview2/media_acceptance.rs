@@ -1652,6 +1652,106 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         })
     }
 
+    /// GH-814 THROWAWAY, ref `agent/gh-814-exp-image-*` only; MUST NOT land.
+    ///
+    /// One real first controller through the production profile, engine and
+    /// `_until` paths, with explicit stage deadlines in place of the shared
+    /// `PROFILE_LAUNCH_DEADLINE`. The constant and the fixture are unchanged.
+    /// `.github/exp/launch-probe.ps1` owns the hard outer kill, so this
+    /// watchdog must stay above that kill.
+    #[test]
+    #[ignore = "GH-814 throwaway launch timing probe"]
+    fn gh814_launch_timing_probe_subprocess() -> Result<(), WvError> {
+        use tao::platform::windows::WindowExtWindows as _;
+        use tao::window::WindowBuilder;
+        use windows::Win32::Foundation::HWND;
+
+        const STAGE_DEADLINE: Duration = Duration::from_secs(120);
+        const WATCHDOG: Duration = Duration::from_secs(170);
+
+        run_with_watchdog(WATCHDOG, || {
+            let started = Instant::now();
+            let stage = |name: &str| {
+                println!(
+                    "KELD_EXP_STAGE stage={name} t_ms={}",
+                    started.elapsed().as_millis()
+                );
+                let _ = std::io::stdout().flush();
+            };
+            stage("start");
+            println!("KELD_EXP_RUNTIME in_process={}", runtime_version()?);
+            let _ = std::io::stdout().flush();
+            stage("runtime-version-done");
+            let root = profile_fixture_root("gh814");
+            std::fs::create_dir_all(&root).map_err(failure)?;
+            println!("KELD_EXP_ROOT {}", root.display());
+            let ephemeral = crate::profile::EphemeralProfile::from_host_random([95; 32])?;
+            let selection = crate::profile::WebProfileSelection::ephemeral_dev(ephemeral);
+            let (com, profile) = super::super::prepare_profile_before_event_loop(&root, selection)?;
+            stage("profile-prepared");
+            let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
+            builder.with_any_thread(true).with_dpi_aware(false);
+            let event_loop = builder.build();
+            stage("event-loop-built");
+            let environment = super::super::create_environment_for_profile_with_options_until(
+                &profile,
+                CoreWebView2EnvironmentOptions::default(),
+                Instant::now() + STAGE_DEADLINE,
+            )
+            .inspect_err(|error| {
+                println!("KELD_EXP_RESULT outcome=environment-error error={error}");
+            })?;
+            stage("environment-completed");
+            let engine =
+                WebView2Engine::from_selected_environment(com, event_loop, environment, profile)?;
+            let event_loop = engine
+                .event_loop
+                .as_ref()
+                .ok_or_else(|| failure("probe event loop missing"))?;
+            let spec = blank_spec();
+            // Same window attributes as `WebView2Engine::create`.
+            let window = WindowBuilder::new()
+                .with_title(&spec.title)
+                .with_inner_size(tao::dpi::LogicalSize::new(
+                    spec.size.width,
+                    spec.size.height,
+                ))
+                .with_resizable(true)
+                .with_minimizable(true)
+                .with_closable(true)
+                .build(event_loop)
+                .map_err(failure)?;
+            stage("window-built");
+            let controller = super::super::create_controller_observed_until(
+                &engine.environment,
+                HWND(window.hwnd() as _),
+                Instant::now() + STAGE_DEADLINE,
+            )
+            .map_err(|error| {
+                println!("KELD_EXP_RESULT outcome=controller-error error={error}");
+                error.into_wv_error()
+            })?;
+            stage("controller-completed");
+            // SAFETY: the controller was created on this thread just above.
+            let webview = unsafe { controller.CoreWebView2() }.map_err(failure)?;
+            let browser = super::super::webview_browser_process_id(&webview);
+            println!(
+                "KELD_EXP_BROWSER pid={}",
+                browser.map_or_else(|| String::from("none"), |pid| pid.to_string())
+            );
+            println!("KELD_EXP_RESULT outcome=ok");
+            let _ = std::io::stdout().flush();
+            // SAFETY: closes this probe's own live controller on its STA once.
+            unsafe { controller.Close() }.map_err(failure)?;
+            drop(webview);
+            drop(controller);
+            drop(window);
+            drop(engine);
+            stage("teardown-done");
+            Ok(())
+        })
+    }
+
     #[test]
     #[ignore = "real Windows WebView2 dev-profile cleanup"]
     fn windows_dev_profile_cleanup_subprocess() -> Result<(), WvError> {

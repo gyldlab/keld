@@ -1,0 +1,42 @@
+# GH-814 THROWAWAY EXPERIMENT. Lives only on agent/gh-814-exp-image-* refs; never merged.
+# Times the first and repeat real WebView2 launches per hosted runner image.
+name: GH-814 image experiment
+on:
+  push:
+    branches: ['agent/gh-814-exp-image-*']
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+jobs:
+  # The job id matches ci.yml so rust-cache restores the main-saved media cache.
+  windows-media:
+    name: exp image ${{ matrix.rep }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - name: Print image
+        shell: pwsh
+        run: '"KELD_EXP_IMAGE_EARLY image=$env:ImageVersion os=$env:ImageOS"'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
+      - name: Launch probe
+        shell: pwsh
+        run: |
+          $artifacts = @(cargo test -p keld-wv --features media-acceptance --lib --no-run --message-format=json | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0) { throw 'probe build failed' }
+          $fixture = @($artifacts | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'keld_wv' -and $_.profile.test -eq $true -and $_.executable })
+          if ($fixture.Count -ne 1) { throw "expected one keld_wv libtest executable, found $($fixture.Count)" }
+          & ./.github/exp/launch-probe.ps1 -BinaryPath $fixture[0].executable
