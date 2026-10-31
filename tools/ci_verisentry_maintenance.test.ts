@@ -7,6 +7,17 @@ const source = readFileSync(
 );
 const workflow = Bun.YAML.parse(source) as Record<string, any>;
 const job = workflow.jobs.decision;
+const verifierWorkflow = Bun.YAML.parse(
+  readFileSync(".github/workflows/ci-provenance.yml", "utf8"),
+) as Record<string, any>;
+const verifierCode = verifierWorkflow.jobs.provenance.steps[0].with
+  .script as string;
+const policyBlock = (code: string) => {
+  const start = code.indexOf("const protectedPath = (path) => {");
+  const end = code.indexOf("const protectedChanges = [];", start);
+  if (start < 0 || end < 0) throw Error("Missing protected path policy block");
+  return code.slice(start, end).trim();
+};
 const script = job.steps[1].with.script as string;
 const AsyncFunction = Object.getPrototypeOf(async function () {})
   .constructor as new (...args: string[]) => (...args: any[]) => Promise<void>;
@@ -48,6 +59,8 @@ function scenario(
     currentPrAuthor?: string;
     mergeable?: boolean | null;
     reviews?: Record<string, unknown>[];
+    reviewsSequence?: Array<Record<string, unknown>[]>;
+    baseRefSequence?: string[];
     existing?: Record<string, any>[];
     totalCount?: number;
     restFailure?: boolean;
@@ -58,15 +71,43 @@ function scenario(
   const created: Record<string, any>[] = [];
   let reads = 0;
   let reviewReads = 0;
+  let checkReads = 0;
+  let compareReads = 0;
   const prNumber = 345;
   const initial = {
     id: 42,
+    status: "completed",
     app: { id: 5550363 },
     output: { title: "Trusted CI admission rejected", summary: "Fail closed" },
     conclusion: "failure",
   };
   const github = {
     rest: {
+      repos: {
+        compareCommits: async (args: Record<string, unknown>) => {
+          compareReads++;
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            base,
+            head,
+            page: 1,
+            per_page: 100,
+          });
+          if (options.restFailure) throw Error("REST comparison unavailable");
+          return {
+            data: {
+              base_commit: { sha: options.comparisonBase ?? base },
+              files: options.files ?? [
+                {
+                  filename: ".github/workflows/ci-provenance.yml",
+                  status: "modified",
+                },
+              ],
+            },
+          };
+        },
+      },
       pulls: {
         get: async (args: Record<string, unknown>) => {
           expect(args).toEqual({
@@ -79,11 +120,15 @@ function scenario(
           return {
             data: {
               number: prNumber,
+              changed_files: options.changedFiles ?? options.files?.length ?? 1,
               state: options.currentState ?? "open",
               user: { login: options.currentPrAuthor ?? "0monish" },
               head: { sha: options.currentHead ?? head },
               base: {
-                ref: options.currentBaseRef ?? "main",
+                ref:
+                  options.baseRefSequence?.[reads - 1] ??
+                  options.currentBaseRef ??
+                  "main",
                 sha: options.currentBase ?? base,
                 repo: { full_name: options.currentRepo ?? "gyldlab/keld" },
               },
@@ -101,22 +146,8 @@ function scenario(
         },
       },
       checks: {
-        listForRef: async (args: Record<string, unknown>) => {
-          expect(args).toEqual({
-            owner: "gyldlab",
-            repo: "keld",
-            ref: options.expectedMerge ?? merge,
-            check_name: "KELD VeriSentry",
-            filter: "all",
-            per_page: 100,
-          });
-          if (options.restFailure) throw new Error("REST unavailable");
-          return {
-            data: {
-              total_count: options.totalCount ?? options.existing?.length ?? 1,
-              check_runs: options.existing ?? [initial],
-            },
-          };
+        listForRef: () => {
+          throw Error("App checks must be fully paginated");
         },
         update: async (args: Record<string, any>) => {
           if (options.writeFailure) throw new Error("Check update denied");
@@ -130,7 +161,34 @@ function scenario(
         },
       },
     },
-    paginate: async (_unused: unknown, args: Record<string, unknown>) => {
+    paginate: async (fn: unknown, args: Record<string, unknown>) => {
+      if (fn === github.rest.checks.listForRef) {
+        checkReads++;
+        expect(args).toEqual({
+          owner: "gyldlab",
+          repo: "keld",
+          ref: options.expectedMerge ?? merge,
+          check_name: "KELD VeriSentry",
+          app_id: 5550363,
+          filter: "all",
+          per_page: 100,
+        });
+        if (options.restFailure) throw Error("REST unavailable");
+        if (options.totalCount === 1001)
+          return Array.from({ length: 1001 }, (_, i) => ({
+            id: i + 1,
+            app: { id: 5550363 },
+          }));
+        return (
+          options.existing?.map((run) => ({
+            status: "completed",
+            conclusion: "failure",
+            ...run,
+          })) ?? [initial]
+        );
+      }
+      if (fn !== github.rest.pulls.listReviews)
+        throw Error("Unexpected GitHub paginate source");
       reviewReads++;
       expect(args).toEqual({
         owner: "gyldlab",
@@ -139,6 +197,7 @@ function scenario(
         per_page: 100,
       });
       return (
+        options.reviewsSequence?.[reviewReads - 1] ??
         options.reviews ?? [
           {
             user: { login: "amishabenramani" },
@@ -185,10 +244,13 @@ function scenario(
     messages,
     getReads: () => reads,
     getReviewReads: () => reviewReads,
+    getCheckReads: () => checkReads,
+    getCompareReads: () => compareReads,
   };
 }
 
 test("trusted main-only manual workflow has one principal-gated App-only writer", () => {
+  expect(policyBlock(script)).toEqual(policyBlock(verifierCode));
   expect(workflow.name).toBe("KELD VeriSentry maintenance decision");
   expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
   expect(Object.keys(workflow.on.workflow_dispatch.inputs)).toEqual([
@@ -207,7 +269,9 @@ test("trusted main-only manual workflow has one principal-gated App-only writer"
   expect(job.if).toContain("github.ref == 'refs/heads/main'");
   expect(job.if).toContain("github.run_attempt == 1");
   expect(job.if).toContain("github.actor == github.triggering_actor");
-  expect(workflow.concurrency["cancel-in-progress"]).toBe(false);
+  // A PR-owned workflow could cancel an authorized queued revocation via
+  // a shared predictable group. No repo-wide concurrency is used here.
+  expect(workflow.concurrency).toBeUndefined();
   expect(job.steps).toHaveLength(2);
   expect(job.steps[0].uses).toBe(
     "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
@@ -219,6 +283,7 @@ test("trusted main-only manual workflow has one principal-gated App-only writer"
     repositories: "keld",
     "permission-checks": "write",
     "permission-pull-requests": "read",
+    "permission-contents": "read",
   });
   expect(job.steps[1].uses).toBe(
     "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
@@ -233,17 +298,14 @@ test("trusted main-only manual workflow has one principal-gated App-only writer"
 test("a current independent review and exact receipt may authorize only App-owned check", async () => {
   const s = scenario({
     existing: [
-      {
-        id: 20,
-        app: { id: 15368 },
-        output: { summary: "Forged check success" },
-      },
       { id: 42, app: { id: 5550363 }, output: { summary: "Fail closed" } },
     ],
   });
   await expect(s.run()).resolves.toBeUndefined();
   expect(s.getReads()).toBe(2);
-  expect(s.getReviewReads()).toBe(1);
+  expect(s.getReviewReads()).toBe(2);
+  expect(s.getCompareReads()).toBe(1);
+  expect(s.getCheckReads()).toBe(1);
   expect(s.created).toHaveLength(0);
   expect(s.written).toHaveLength(1);
   expect(s.written[0]).toMatchObject({
@@ -406,20 +468,38 @@ test("a duplicate PR marker, older decision, or missing revocation cannot mint P
   expect(missing.written).toHaveLength(0);
 });
 
-test("an absent App check can be created by this trusted manual action only", async () => {
-  const s = scenario({
-    existing: [{ id: 5, app: { id: 15368 }, conclusion: "success" }],
-  });
-  await expect(s.run()).resolves.toBeUndefined();
+test("an absent trusted App failure can never be overridden by a manual PASS", async () => {
+  const s = scenario({ existing: [] });
+  await expect(s.run()).rejects.toThrow("No prior trusted App check exists");
   expect(s.written).toHaveLength(0);
-  expect(s.created).toHaveLength(1);
-  expect(s.created[0]).toMatchObject({
-    owner: "gyldlab",
-    repo: "keld",
-    name: "KELD VeriSentry",
-    head_sha: merge,
-    conclusion: "success",
-  });
+  expect(s.created).toHaveLength(0);
+});
+
+test.each([
+  { changedFiles: 300 },
+  { changedFiles: 301 },
+  { changedFiles: 0 },
+  { changedFiles: 2 },
+  { comparisonBase: "f".repeat(40) },
+  { files: [{ filename: "docs/benign.md", status: "modified" }] },
+  { files: [{ filename: ".github/workflows/x.yml", status: "renamed" }] },
+  { files: [{ filename: ".github/workflows/x.yml", status: "surprise" }] },
+  { files: [{ filename: ".github\\workflows\\x.yml", status: "added" }] },
+])(
+  "manual authorization must not bypass immutable file/authority proof %p",
+  async (options) => {
+    const s = scenario(options);
+    await expect(s.run()).rejects.toThrow();
+    expect(s.created).toHaveLength(0);
+    expect(s.written).toHaveLength(0);
+  },
+);
+
+test("a foreign-App check inside an App-filtered API response is refused", async () => {
+  const s = scenario({ existing: [{ id: 9, app: { id: 15368 } }] });
+  await expect(s.run()).rejects.toThrow("genuine VeriSentry checks");
+  expect(s.created).toHaveLength(0);
+  expect(s.written).toHaveLength(0);
 });
 
 test("API failures, missing merge readiness and incomplete check lists never publish a success", async () => {
@@ -428,11 +508,55 @@ test("API failures, missing merge readiness and incomplete check lists never pub
     { writeFailure: true },
     { currentMerge: null },
     { mergeable: null },
-    { totalCount: 101 },
+    { totalCount: 1001 },
   ]) {
     const s = scenario(options);
     await expect(s.run()).rejects.toThrow();
     expect(s.created).toHaveLength(0);
     if (options.writeFailure !== true) expect(s.written).toHaveLength(0);
   }
+});
+
+test("the workflow operator cannot count their own APPROVED review for a third-party PR", async () => {
+  const s = scenario({
+    currentPrAuthor: "external-contributor",
+    reviews: [
+      {
+        user: { login: "0monish" },
+        state: "APPROVED",
+        commit_id: head,
+        submitted_at: "2026-10-31T04:00:00Z",
+      },
+    ],
+  });
+  await expect(s.run()).rejects.toThrow(
+    "Independent current-head GitHub approval is missing",
+  );
+  expect(s.written).toHaveLength(0);
+});
+
+test("review dismissal between immutable comparison and final writer check blocks PASS", async () => {
+  const good = [
+    {
+      user: { login: "amishabenramani" },
+      state: "APPROVED",
+      commit_id: head,
+      submitted_at: "2026-10-31T04:00:00Z",
+    },
+  ];
+  const dismissed = [
+    { ...good[0], state: "DISMISSED", submitted_at: "2026-10-31T04:01:00Z" },
+  ];
+  const s = scenario({ reviewsSequence: [good, dismissed] });
+  await expect(s.run()).rejects.toThrow(
+    "trusted review was dismissed or changed",
+  );
+  expect(s.getReviewReads()).toBe(2);
+  expect(s.written).toHaveLength(0);
+});
+
+test("target retargeted from main between review reads cannot receive App PASS", async () => {
+  const s = scenario({ baseRefSequence: ["main", "dev"] });
+  await expect(s.run()).rejects.toThrow("Maintenance receipt became stale");
+  expect(s.written).toHaveLength(0);
 });

@@ -20,6 +20,7 @@ const execute = new AsyncFunction(
   "context",
   "process",
   "setTimeout",
+  "core",
   body,
 );
 const head = "a".repeat(40);
@@ -47,12 +48,15 @@ function scenario(
     prNumber?: number;
     apiReadFails?: boolean;
     checkWriteFails?: boolean;
+    checkReadFails?: boolean;
+    existingChecks?: Record<string, any>[];
   } = {},
 ) {
   const prNumber = options.prNumber ?? 345;
   const eventHead = options.eventHead ?? head;
   const eventBase = options.eventBase ?? base;
   const written: Record<string, any>[] = [];
+  const updated: Record<string, any>[] = [];
   let reads = 0;
   const github = {
     rest: {
@@ -98,12 +102,33 @@ function scenario(
         },
       },
       checks: {
+        listForRef: () => {
+          throw Error("GitHub paginate is required for all App check runs");
+        },
+        update: async (args: Record<string, any>) => {
+          if (options.checkWriteFails) throw Error("write unavailable");
+          updated.push(args);
+          return { data: { id: args.check_run_id } };
+        },
         create: async (args: Record<string, any>) => {
           if (options.checkWriteFails) throw new Error("write unavailable");
           written.push(args);
           return { data: { id: 1 } };
         },
       },
+    },
+    paginate: async (_unused: unknown, args: Record<string, unknown>) => {
+      if (options.checkReadFails) throw Error("check inventory unavailable");
+      expect(args).toEqual({
+        owner: "gyldlab",
+        repo: "keld",
+        ref: merge,
+        check_name: "KELD VeriSentry",
+        app_id: 5550363,
+        filter: "all",
+        per_page: 100,
+      });
+      return options.existingChecks ?? [];
     },
   };
   const context = {
@@ -119,6 +144,8 @@ function scenario(
       },
     },
   };
+  const messages: string[] = [];
+  const core = { info: (value: string) => messages.push(value) };
   const processStub = {
     env: {
       VERISENTRY_ADMISSION_RESULT: options.admission ?? "success",
@@ -130,8 +157,16 @@ function scenario(
   };
   return {
     run: () =>
-      execute(github, context, processStub, (resolve: () => void) => resolve()),
+      execute(
+        github,
+        context,
+        processStub,
+        (resolve: () => void) => resolve(),
+        core,
+      ),
     written,
+    updated,
+    messages,
     getReads: () => reads,
   };
 }
@@ -322,4 +357,154 @@ test("unmergeable or indefinitely pending PR never receives a PASS", async () =>
   );
   expect(pending.getReads()).toBe(6);
   expect(pending.written).toHaveLength(0);
+});
+
+test("existing App check is updated in place rather than spawning unlimited duplicate checks", async () => {
+  const s = scenario({ existingChecks: [{ id: 42, app: { id: 5550363 } }] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.written).toHaveLength(0);
+  expect(s.updated).toHaveLength(1);
+  expect(s.updated[0]).toMatchObject({
+    owner: "gyldlab",
+    repo: "keld",
+    check_run_id: 42,
+    status: "completed",
+    conclusion: "success",
+  });
+});
+
+test("a denied PR updates any old App status to failure, never success", async () => {
+  const s = scenario({
+    admission: "failure",
+    existingChecks: [{ id: 43, app: { id: 5550363 } }],
+  });
+  await expect(s.run()).rejects.toThrow("blocking failure");
+  expect(s.written).toHaveLength(0);
+  expect(s.updated).toHaveLength(1);
+  expect(s.updated[0]?.conclusion).toBe("failure");
+});
+
+test.each([
+  [{ id: 43, app: { id: 15368 } }],
+  [{ id: 0, app: { id: 5550363 } }],
+  Array.from({ length: 1001 }, (_, i) => ({ id: i + 1, app: { id: 5550363 } })),
+])(
+  "invalid or unbounded App check inventory refuses all publication",
+  async (existingChecks) => {
+    const s = scenario({ existingChecks });
+    await expect(s.run()).rejects.toThrow(
+      "incomplete or foreign-App check inventory",
+    );
+    expect(s.written).toHaveLength(0);
+    expect(s.updated).toHaveLength(0);
+  },
+);
+
+test("GitHub App check inventory/API outage does not mint a false PASS", async () => {
+  const s = scenario({ checkReadFails: true });
+  await expect(s.run()).rejects.toThrow("check inventory unavailable");
+  expect(s.written).toHaveLength(0);
+  expect(s.updated).toHaveLength(0);
+});
+
+const releaseReceipt = (
+  decision: "approve" | "revoke",
+  pr = 345,
+  headSha = head,
+  baseSha = base,
+  mergeSha = merge,
+  run = 299,
+) =>
+  `actor=0monish decision=${decision} pr=${pr} base=${baseSha} head=${headSha} merge=${mergeSha} maintenance-run=${run}`;
+
+test("an exact-head App-owned manual approval survives a PR metadata edit without losing revocation epoch", async () => {
+  const manual = releaseReceipt("approve");
+  const s = scenario({
+    admission: "failure",
+    existingChecks: [
+      {
+        id: 42,
+        app: { id: 5550363 },
+        status: "completed",
+        conclusion: "success",
+        output: { summary: manual },
+      },
+    ],
+  });
+  await expect(s.run()).rejects.toThrow("independent manual decision retained");
+  expect(s.written).toHaveLength(0);
+  expect(s.updated).toHaveLength(0);
+});
+
+test("an exact-head manual revocation remains blocking across later title edits", async () => {
+  const s = scenario({
+    admission: "failure",
+    existingChecks: [
+      {
+        id: 43,
+        app: { id: 5550363 },
+        status: "completed",
+        conclusion: "failure",
+        output: { summary: releaseReceipt("revoke") },
+      },
+    ],
+  });
+  await expect(s.run()).rejects.toThrow("independent manual decision retained");
+  expect(s.written).toHaveLength(0);
+  expect(s.updated).toHaveLength(0);
+});
+
+test.each([
+  releaseReceipt("approve", 456),
+  releaseReceipt("approve", 345, "f".repeat(40)),
+  releaseReceipt("approve", 345, head, "e".repeat(40)),
+  releaseReceipt("approve", 345, head, base, "d".repeat(40)),
+  releaseReceipt("approve") + " forged suffix",
+])(
+  "a stale, foreign-PR or malformed manual grant %s cannot give an automatic PASS",
+  async (summary) => {
+    const s = scenario({
+      admission: "failure",
+      existingChecks: [
+        {
+          id: 44,
+          app: { id: 5550363 },
+          status: "completed",
+          conclusion: "success",
+          output: { summary },
+        },
+      ],
+    });
+    await expect(s.run()).rejects.toThrow("blocking failure");
+    expect(s.updated).toHaveLength(1);
+    expect(s.updated[0]?.conclusion).toBe("failure");
+  },
+);
+
+test("mixed old App statuses cannot preserve an accidental PASS", async () => {
+  const manual = releaseReceipt("approve");
+  const s = scenario({
+    admission: "failure",
+    existingChecks: [
+      {
+        id: 42,
+        app: { id: 5550363 },
+        status: "completed",
+        conclusion: "success",
+        output: { summary: manual },
+      },
+      {
+        id: 43,
+        app: { id: 5550363 },
+        status: "completed",
+        conclusion: "failure",
+        output: { summary: "plain verifier fail" },
+      },
+    ],
+  });
+  await expect(s.run()).rejects.toThrow("blocking failure");
+  expect(s.updated).toHaveLength(2);
+  expect(s.updated.every((result) => result.conclusion === "failure")).toBe(
+    true,
+  );
 });

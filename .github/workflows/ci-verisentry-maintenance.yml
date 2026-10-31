@@ -31,9 +31,10 @@ permissions:
   contents: read
   pull-requests: read
 
-concurrency:
-  group: verisentry-maintenance-${{ inputs.pull_request }}
-  cancel-in-progress: false
+# Do NOT use repository-wide Actions concurrency as a security lock here:
+# PR-owned workflows can collide with a predictable group and cancel a trusted
+# revocation run. Only two verified maintainers may dispatch this workflow;
+# they must not submit simultaneous opposing decisions for the same PR.
 
 jobs:
   decision:
@@ -56,6 +57,8 @@ jobs:
           repositories: keld
           permission-checks: write
           permission-pull-requests: read
+          # Immutable Compare Commits API requires Contents read (not write).
+          permission-contents: read
       - name: Verify principal, independent review and exact PR state before check update
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
@@ -108,30 +111,138 @@ jobs:
                 if (attempt === 9) throw Error('VeriSentry cannot prove the current test-merge SHA');
                 await new Promise(resolve => setTimeout(resolve, 1000));
               }
+              // A manual exception may bypass ONLY the protected-CI-change
+              // denial. It NEVER waives missing/partial immutable comparisons,
+              // the 299/300 boundary, unknown statuses, malformed paths, or
+              // any other provenance failure. Keep path policy byte-identical
+              // to the protected-main automatic verifier (CI test enforces).
+              if (!Number.isSafeInteger(pr.changed_files) || pr.changed_files < 1 ||
+                  pr.changed_files >= 300)
+                throw Error('Maintenance refuses missing/truncated PR file census');
+              const comparison = (await github.rest.repos.compareCommits({
+                owner, repo, base, head, page:1, per_page:100,
+              })).data;
+              if (comparison?.base_commit?.sha !== base ||
+                  !Array.isArray(comparison?.files) ||
+                  comparison.files.length !== pr.changed_files ||
+                  comparison.files.length >= 300)
+                throw Error('Maintenance refuses incomplete immutable commit comparison');
+            const protectedPath = (path) => {
+              if (typeof path !== "string" || !path || path.includes("\\") ||
+                  path.includes("\u0000")) {
+                throw new Error("CI provenance refuses malformed Git paths");
+              }
+              const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
+              // Strict first rollout: scripts and config files executed by
+              // CI are also authority, not merely the workflow YAML itself.
+              // Require a separate trusted-base review for their changes.
+              // Root workspace metadata and formatter/test configs can also
+              // suppress required test discovery without changing ci.yml.
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+                p === "package.json" || p.endsWith("/package.json") ||
+                p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
+                p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
+                p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
+                p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
+                p === "tsconfig.json" || p.endsWith("/tsconfig.json") ||
+                p.startsWith(".github/") ||
+                p === ".ci-reader-proofs" || p.startsWith(".ci-reader-proofs/") ||
+                p.startsWith(".cargo/") ||
+                p.startsWith(".config/") ||
+                p.startsWith("tools/") ||
+                p === "justfile" ||
+                p === "rust-toolchain.toml" ||
+                p === "deny.toml" ||
+                p.endsWith("/deny.toml") ||
+                p.startsWith(".gitleaks") ||
+                p === "clippy.toml" || p.endsWith("/clippy.toml") ||
+                p === ".clippy.toml" || p.endsWith("/.clippy.toml");
+            };
+              const protectedChanges = [];
+              for (const file of comparison.files) {
+                if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status))
+                  throw Error('Maintenance refuses unknown changed-file status');
+                if (file.status === 'renamed' && !file.previous_filename)
+                  throw Error('Maintenance refuses rename without source');
+                if (protectedPath(file.filename) ||
+                    (file.previous_filename && protectedPath(file.previous_filename)))
+                  protectedChanges.push(file.filename);
+              }
+              if (!protectedChanges.length)
+                throw Error('Only an actual protected CI-authority change can receive a manual exception');
               // Require a second, independently approving maintainer on the
               // exact current head. The operator may be the PR creator only
-              // when a DIFFERENT maintainer actually approved it.
+              // when the OTHER maintainer independently approves. The
+              // operator's OWN review never counts as dual authorization.
               const reviews = await github.paginate(github.rest.pulls.listReviews,
                 {owner, repo, pull_number:n, per_page:100});
               if (!Array.isArray(reviews) || reviews.length > 2000) throw Error('Unbounded review history');
-              const latest = new Map();
-              for (const review of reviews) {
-                const login = review.user?.login;
-                if (!principals.has(login) || login === pr.user?.login) continue;
-                const stamp = Date.parse(review.submitted_at || '');
-                if (!Number.isFinite(stamp)) continue;
-                const old = latest.get(login);
-                if (!old || stamp >= old.stamp) latest.set(login, {stamp, review});
-              }
-              if (![...latest.values()].some(item =>
-                  item.review.state === 'APPROVED' && item.review.commit_id === head)) {
+              const independentApproval = (history) => {
+                if (!Array.isArray(history) || history.length > 2000) return false;
+                const latest = new Map();
+                for (const review of history) {
+                  const login = review.user?.login;
+                  if (!principals.has(login)) continue;
+                  const stamp = Date.parse(review.submitted_at || '');
+                  if (!Number.isFinite(stamp)) continue;
+                  const old = latest.get(login);
+                  if (!old || stamp >= old.stamp) latest.set(login, {stamp, review});
+                }
+                if ([...latest.values()].some(item => item.review.state === 'CHANGES_REQUESTED'))
+                  return false;
+                return [...latest.values()].some(item =>
+                  item.review.user.login !== context.actor &&
+                  item.review.user.login !== pr.user?.login &&
+                  item.review.state === 'APPROVED' && item.review.commit_id === head);
+              };
+              if (!independentApproval(reviews)) {
                 throw Error('Independent current-head GitHub approval is missing');
               }
               // Refuse a hidden head/base change after collecting reviews.
               const latestPR = (await github.rest.pulls.get({owner,repo,pull_number:n})).data;
-              if (latestPR?.state !== 'open' || latestPR.head?.sha !== head ||
-                  latestPR.base?.sha !== base || latestPR.merge_commit_sha !== expectedMerge)
+              if (latestPR?.number !== n || latestPR?.state !== 'open' ||
+                  latestPR.base?.ref !== 'main' ||
+                  latestPR.base?.repo?.full_name !== 'gyldlab/keld' ||
+                  latestPR.head?.sha !== head || latestPR.base?.sha !== base ||
+                  latestPR.merge_commit_sha !== expectedMerge ||
+                  latestPR.changed_files !== pr.changed_files)
                 throw Error('Maintenance receipt became stale after reviewing approvals');
+              // Re-evaluate mutable GitHub review states at the last possible
+              // point. Native branch protection still independently enforces
+              // required reviews, stale dismissals and last-push approval.
+              const currentReviews = await github.paginate(github.rest.pulls.listReviews,
+                {owner,repo,pull_number:n,per_page:100});
+              if (!independentApproval(currentReviews))
+                throw Error('A trusted review was dismissed or changed before release');
             } else {
               pr = (await github.rest.pulls.get({owner,repo,pull_number:n})).data;
               if (pr?.number !== n || pr.base?.repo?.full_name !== 'gyldlab/keld')
@@ -142,11 +253,17 @@ jobs:
             // The App itself authenticates the status source. Only update the
             // same App's check runs on the current test-merge SHA; never trust
             // a same-name green Actions job created by the PR.
-            const fetched = (await github.rest.checks.listForRef({owner,repo,
-              ref:mergeSha,check_name:'KELD VeriSentry',filter:'all',per_page:100})).data;
-            if (fetched.total_count > 100 || !Array.isArray(fetched.check_runs))
-              throw Error('Unable to enumerate all existing VeriSentry checks');
-            const ours = fetched.check_runs.filter(run => run.app?.id === 5550363);
+            // App-specific GitHub pagination: PR-authored same-name Actions
+            // jobs cannot flood this authorized check inventory or starve
+            // maintenance after 100 edits. Automatic publisher upserts in place.
+            const ours = await github.paginate(github.rest.checks.listForRef, {
+              owner, repo, ref:mergeSha, check_name:'KELD VeriSentry',
+              app_id:5550363, filter:'all', per_page:100,
+            });
+            if (!Array.isArray(ours) || ours.length > 1000 ||
+                ours.some(run => run.app?.id !== 5550363 ||
+                  !Number.isSafeInteger(run.id) || run.id < 1))
+              throw Error('Unable to enumerate all genuine VeriSentry checks');
             const thisRun = Number(process.env.GITHUB_RUN_ID);
             if (!Number.isSafeInteger(thisRun) || thisRun < 1) throw Error('Missing audited run id');
             for (const run of ours) {
@@ -166,14 +283,17 @@ jobs:
               summary: `actor=${context.actor} decision=${decision} pr=${n} base=${base} head=${head} merge=${expectedMerge} maintenance-run=${thisRun}`,
             };
             const details_url = `https://github.com/gyldlab/keld/actions/runs/${thisRun}`;
-            if (ours.length) {
-              for (const run of ours) await github.rest.checks.update({
-                owner, repo, check_run_id:run.id, status:'completed',
-                conclusion:permitted ? 'success' : 'failure', details_url, output,
-              });
-            } else {
-              await github.rest.checks.create({owner,repo,name:'KELD VeriSentry',
-                head_sha:mergeSha,status:'completed',conclusion:permitted ? 'success' : 'failure',
-                details_url,output});
-            }
-            core.info(`VeriSentry ${decision}: ${ours.length || 1} exact-merge App check(s) updated by authorized actor`);
+            // A maintenance release MUST be preceded by a real App-authored
+            // automatic FAIL on this exact test merge. A missing source check
+            // is a failure to run verification, never permission to mint PASS.
+            if (!ours.length) throw Error('No prior trusted App check exists to amend');
+            if (permitted && !ours.every(run => run.status === 'completed' &&
+                  run.conclusion === 'failure' &&
+                  (!run.output?.summary?.includes('maintenance-run=') ||
+                    run.output.summary.includes(`decision=revoke pr=${n} base=${base} head=${head} merge=${expectedMerge}`))))
+              throw Error('Manual exception requires an exact-head trusted App failure');
+            for (const run of ours) await github.rest.checks.update({
+              owner, repo, check_run_id:run.id, status:'completed',
+              conclusion:permitted ? 'success' : 'failure', details_url, output,
+            });
+            core.info(`VeriSentry ${decision}: ${ours.length} exact-merge App check(s) updated by authorized actor`);

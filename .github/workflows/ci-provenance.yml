@@ -244,15 +244,74 @@ jobs:
               process.env.VERISENTRY_VERIFIED_HEAD === event.head.sha &&
               process.env.VERISENTRY_VERIFIED_BASE === event.base.sha;
             const details = `${process.env.GITHUB_SERVER_URL || "https://github.com"}/gyldlab/keld/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            await github.rest.checks.create({
-              owner, repo, name: "KELD VeriSentry", head_sha: pr.merge_commit_sha,
-              status: "completed", conclusion: verified ? "success" : "failure",
+            // Update the App's existing canonical check instead of creating a
+            // new same-name check for every PR title edit/synchronize. This
+            // prevents a malicious edit flood from exhausting GitHub's 1000
+            // same-name check-run limit and starving trusted maintenance.
+            const checks = await github.paginate(github.rest.checks.listForRef, {
+              owner, repo, ref: pr.merge_commit_sha,
+              check_name: "KELD VeriSentry", app_id: 5550363,
+              filter: "all", per_page: 100,
+            });
+            if (!Array.isArray(checks) || checks.length > 1000 ||
+                checks.some(check => check.app?.id !== 5550363 ||
+                  !Number.isSafeInteger(check.id) || check.id < 1)) {
+              throw Error("VeriSentry refuses incomplete or foreign-App check inventory");
+            }
+            // An independently authenticated first-attempt manual release
+            // decision is durable for this exact PR/base/head/test-merge SHA.
+            // PR title/body edits must not erase its monotonic decision receipt,
+            // or a later revoke could be replayed by an older manual job.
+            // Candidate-owned Actions cannot forge these checks: the API query
+            // filters by this dedicated GitHub App ID.
+            const manualPattern = /^actor=(0monish|amishabenramani) decision=(approve|revoke) pr=([1-9][0-9]*) base=([a-f0-9]{40}) head=([a-f0-9]{40}) merge=([a-f0-9]{40}) maintenance-run=([1-9][0-9]*)$/;
+            const marked = checks.filter(check =>
+              typeof check.output?.summary === "string" &&
+              check.output.summary.includes("maintenance-run="));
+            let invalidManual = false;
+            if (marked.length) {
+              const summary = marked[0].output.summary;
+              const match = manualPattern.exec(summary);
+              const expectedConclusion = match?.[2] === "approve" ? "success" : "failure";
+              const matchesCurrent = match && Number(match[3]) === event.number &&
+                match[4] === event.base.sha && match[5] === event.head.sha &&
+                match[6] === pr.merge_commit_sha;
+              invalidManual = !matchesCurrent || marked.length !== checks.length ||
+                checks.some(check => check.output?.summary !== summary ||
+                  check.status !== "completed" || check.conclusion !== expectedConclusion);
+              if (!invalidManual) {
+                // A manual release may only have been issued for a protected
+                // change denied by automatic provenance. It never converts
+                // failed immutable evidence into an automatic PASS.
+                core.info("VeriSentry preserves an audited exact-SHA manual " +
+                  match[2] + " decision from run " + match[7]);
+                if (!verified) throw new Error("Automatic admission denied; independent manual decision retained");
+                return;
+              }
+            }
+            const finalVerified = verified && !invalidManual;
+            const result = {
+              status: "completed", conclusion: finalVerified ? "success" : "failure",
               details_url: details,
               output: {
-                title: verified ? "Trusted CI admission passed" : "Trusted CI admission rejected",
-                summary: verified
-                  ? "Protected-base CI authority inspected for the current PR head, base and test merge."
-                  : "Protected-base verification failed or lacked matching head/base evidence for this PR merge.",
+                title: finalVerified ? "Trusted CI admission passed" : "Trusted CI admission rejected",
+                summary: invalidManual
+                  ? "Inconsistent or cross-PR manual release receipt; refusing App PASS."
+                  : finalVerified
+                    ? "Protected-base CI authority inspected for the current PR head, base and test merge."
+                    : "Protected-base verification failed or lacked matching head/base evidence for this PR merge.",
               },
-            });
-            if (!verified) throw new Error("VeriSentry published a blocking failure");
+            };
+            if (!checks.length) {
+              await github.rest.checks.create({
+                owner, repo, name: "KELD VeriSentry", head_sha: pr.merge_commit_sha,
+                ...result,
+              });
+            } else {
+              for (const check of checks) {
+                await github.rest.checks.update({
+                  owner, repo, check_run_id: check.id, ...result,
+                });
+              }
+            }
+            if (!finalVerified) throw new Error("VeriSentry published a blocking failure");

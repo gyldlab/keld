@@ -2,8 +2,9 @@
 
 **Status: source-only verifier/publisher merged on main (PR #1253); App-required enforcement remains OFF while manual-maintenance workflow and recovery are separately tested.**
 
-This document is for the KEL-169 reviewer and release owner. It is not permission
-for an agent to install a new credential, relax protections, or merge PR #1253.
+This is an evidence-led release runbook. Its examples do not authorize silently
+relaxing branch protection, bypassing failed checks, leaking keys or issuing
+manual App release decisions without independent approval.
 
 ## Fixed identities and roles
 
@@ -25,19 +26,22 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
 
 1. `provenance` executes protected-default-branch workflow bytes using only a
    read-only `GITHUB_TOKEN`. It checks the immutable base/head comparison, refuses
-   incomplete (>299) file lists, and refuses ALL changes to CI authority,
-   including direct and transitive Linux/Windows WebView executable harnesses,
-   C interposers, and public audit verifier scripts. An authorized maintenance
-   exception is **not** active because GitHub review revocation does not
-   automatically trigger a protected verifier rerun.
+   incomplete (300+) file lists, and refuses ALL changes to CI authority,
+   including direct/transitive Linux/Windows WebView executable harnesses,
+   C interposers and public audit verifier scripts. A future trusted manual
+   release is additive to this automatic default-deny verification.
    It never checks out or executes untrusted PR code.
-2. `publish` needs `provenance` and runs even if verification fails. It is the
-   **only job** referencing the environment-scoped `VERISENTRY_APP_PRIVATE_KEY`.
-   A fully pinned `actions/create-github-app-token` action mints a repository-
-   scoped installation token, which `actions/github-script` uses to create the
-   `KELD VeriSentry` App check **for the GitHub test-merge commit bound to the current PR base/head**. A failed,
-   skipped, cancelled, or missing verification result publishes a **failure**
-   when the PR head/base is still current. API/secret problems leave **no PASS**.
+2. Automatic `publish` needs `provenance` and runs even if verification fails.
+   It is the only **automatic** job referencing environment-scoped
+   `VERISENTRY_APP_PRIVATE_KEY`; the separately reviewed manual maintenance
+   job uses the same protected environment. A pinned App token action and
+   `actions/github-script` create or update a `KELD VeriSentry` App check for
+   the current GitHub test-merge SHA, bound to the exact PR/base/head. Automatic
+   failure, skip, cancellation or missing evidence publishes a **failure**
+   when the PR head/base remains current; API/secret failures cannot mint PASS.
+   An existing **valid App-authenticated manual release/revocation receipt**
+   tied to that exact PR/base/head/merge remains authoritative across metadata
+   edits; mixed, malformed or cross-PR release receipts fail closed.
    The publisher retries a pending GitHub test-merge SHA a bounded number of
    times, validating current head/base on every read. If the PR moved, closed,
    changed base, or still lacks a valid test merge,
@@ -55,10 +59,15 @@ GitHub `workflow_dispatch` exception without introducing a server. It executes
 only protected-default-branch code (`--ref main`), never checks out PR code, and
 may issue an App-authenticated manual authorization **only** if all of these
 are true: the authenticated first-attempt trigger actor is Monish or Amisha
-(stable GitHub ID checked, including rerun actor); an independent trusted
-reviewer, different from the PR author, has approved the exact current head;
-and explicit PR number, base SHA, head SHA and test-merge SHA all match GitHub's
-live state. The latest-push and CODEOWNERS GitHub branch rules remain active.
+(stable GitHub ID checked, including rerun actor); a **different** trusted
+reviewer, who is also not the PR author, has approved the exact current head;
+the PR has 1–299 fully enumerated changed files including an actual protected
+CI-authority path; and PR number, base SHA, head SHA and test-merge SHA match
+GitHub's live state. Compare Commits requires temporary Contents **read** as
+well as Checks write and Pull requests read. Native latest-push and CODEOWNERS
+review rules remain active. An App-authenticated automatic **FAIL** must already
+exist on the current test-merge SHA; manual dispatch never mints a PASS without
+prior trusted verification.
 
 For a reviewed, current, legitimate protected CI change the maintainer may run:
 
@@ -74,17 +83,24 @@ PR comment. This is an auditable **independent release decision**, not a
 mutable review receipt: the App check records the authenticated actor, PR,
 all three SHAs and the Actions run ID. The same trusted workflow with
 `decision=revoke` overwrites the matching App check with **failure**, even
-if the PR has since closed or moved. It refuses an older decision overwriting
-a newer one, a rerun by another actor, a stale input or a different PR's
-maintenance marker. This manual override is a narrow escape route, not a
+if the PR has since closed or moved. It refuses an older decision when a newer one is visible, a rerun by another
+actor, stale inputs or a different PR's maintenance marker. The publisher
+updates App-owned check runs instead of continuously creating new ones, so an
+untrusted PR title-edit flood cannot consume the same-name check quota. This manual override is a narrow escape route, not a
 blanket acceptance of candidate-owned CI.
 
 GitHub review dismissal still blocks normal merging through native branch
 protection; maintenance authorization is *not automatically revoked* on review
 dismissal. If a maintainer rescinds an exceptional release decision, they must
-run `revoke` promptly. Prove approve/revoke and check-source enforcement in
-real hosted probes before making VeriSentry required. Monish/Amisha's
-intentionally delegated review-bypass allowances remain unchanged.
+run `revoke` promptly. **Do not dispatch opposing manual decisions concurrently:**
+GitHub Checks updates are not an atomic compare-and-swap register, and
+untrusted PR-owned workflows could cancel an Actions concurrency group with a
+predictable name. The manual workflow deliberately has no such concurrency
+group; only authenticated trusted operators may submit a dispatch, and a run
+ID watermark plus fresh PR/review rechecks reject stale decisions when visible.
+An untrusted PR cannot trigger the manual decision itself. Prove the complete
+approve/revoke/check-source sequence in real hosted runs before making VeriSentry
+required. Monish/Amisha's delegated review-bypass settings remain unchanged.
 
 ## Credential isolation and post-test rotation
 
@@ -115,11 +131,33 @@ filesystem permissions do not isolate a key from agents running as the same
 OS user. Only App installation tokens, never the private key, may reach the
 GitHub REST API, and tokens expire/revoke.
 
+## Source rollout and hosted evidence
+
+Source-only PR [#1253](https://github.com/gyldlab/keld/pull/1253) merged into
+protected `main` at `c820452ebbcec975f786e69f175b6d74b9b726ee` after
+latest three-OS CI and independent review. Live temporary PRs all used
+protected-default-branch `pull_request_target` bytes and the same App ID
+5550363, with direct GitHub check-run receipt links:
+
+- [Benign #1326, App PASS](https://github.com/gyldlab/keld/runs/124444395064)
+- [Protected same-name forgery #1327, App FAIL](https://github.com/gyldlab/keld/runs/124444413451) despite a PR-owned Actions `KELD VeriSentry` PASS by App ID 15368
+- [299 changed files #1328, App PASS](https://github.com/gyldlab/keld/runs/124444441233)
+- [300 changed files #1329, App FAIL](https://github.com/gyldlab/keld/runs/124444421429)
+- [Gutted candidate-owned workflow, App FAIL](https://github.com/gyldlab/keld/runs/124445133963)
+- A→B→A: [stale B FAIL](https://github.com/gyldlab/keld/actions/runs/41169908971), [restored A PASS](https://github.com/gyldlab/keld/actions/runs/41169909694)
+
+All disposable PRs were closed and temporary branches deleted. GitHub itself
+rejected a SHA-only branch name with HTTP 422. Distinct-fork qualification remains
+unverified because the available connected fork write permission returned 403;
+do not describe that probe as passing. The signed-check expected-source
+**merge admission** test also remains mandatory before activating required
+branch protection. Preserve existing checks during this rollout.
+
 ## Two-stage rollout to avoid a bootstrap deadlock
 
-**Stage 1 — source only:** After exact-head CI and authorized independent
-review are green, merge this PR to protected `main` through the existing three
-required checks. The new App check is NOT required yet. This deploys trusted
+**Stage 1 — source only (completed):** Exact-head CI and authorized independent
+review were green, and PR #1253 was merged to protected `main` through the
+existing required checks. The new App check is NOT required yet. This deploys trusted
 base-owned verifier code so real hostile PR tests become possible; it is not
 production security admission. Do not bypass failed source checks.
 
@@ -151,6 +189,10 @@ both hostile tests and the maintenance/recovery protocol pass.
   name or green color. Verify no PR-owned job can get the App key or publish
   with that App ID. Verify that CI-authority changes remain rejected without a separately
   qualified trusted maintenance protocol.
+- Before changing main protection, evaluate current open PRs: existing PRs
+  may not have received a `pull_request_target` VeriSentry event. Backfill or
+  re-trigger clean/reviewable checks with a trusted workflow first; never leave
+  unrelated branches unable to merge just because a new check was enabled.
 - ONLY after live evidence, update branch protection to add required check
   `KELD VeriSentry` pinned to source App ID 5550363 **alongside**, not instead
   of, the existing three required checks. Do not modify the existing delegated
