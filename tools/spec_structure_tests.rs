@@ -4270,6 +4270,13 @@ fn a_paragraph_renders_as_one_inline_run() {
 /// GitHub's block rules past the CommonMark examples, each from `POST /markdown`, 2026-10-31.
 #[test]
 fn the_lexer_follows_github_on_these_blocks() {
+    let rows = |text: &str| {
+        let doc = Doc::parse("x.md", text);
+        doc.lines()
+            .iter()
+            .filter(|line| line.cells().is_some())
+            .count()
+    };
     let last = |text: &str| shown_lines(text).last().cloned().flatten();
     assert_eq!(last("*\n\n    b\n"), None, "a blank ends an empty item");
     assert_eq!(last("> *\n>\n>     b\n"), None, "in a quote too");
@@ -4284,9 +4291,29 @@ fn the_lexer_follows_github_on_these_blocks() {
         "no blank, so it holds it"
     );
     assert_eq!(
-        last("-\n  foo\n\n  bar\n"),
+        last("-\n  foo\n\n    bar\n"),
         Some("bar".to_owned()),
-        "the item stays open"
+        "an item with content stays open past a blank line"
+    );
+    assert_eq!(
+        rows("a\n:--\n"),
+        2,
+        "GitHub needs no pipe in a delimiter row"
+    );
+    assert_eq!(
+        rows("a | b\n    --- | ---\n"),
+        0,
+        "a deep line is no delimiter row"
+    );
+    assert_eq!(
+        shown_lines("Foo\n    ---\n")[1].as_deref(),
+        Some("---"),
+        "CommonMark example 87"
+    );
+    let past = Doc::parse("x.md", "- | a |\n  |---|\nPin: x\n");
+    assert!(
+        past.line(2).field().is_some(),
+        "a lazy line is no table row"
     );
     assert_eq!(last("| a |\n|---|\n    b\n"), None, "code ends a table");
     assert_eq!(
@@ -4294,13 +4321,6 @@ fn the_lexer_follows_github_on_these_blocks() {
         Some("c".to_owned()),
         "text past that code is a paragraph"
     );
-    let rows = |text: &str| {
-        let doc = Doc::parse("x.md", text);
-        doc.lines()
-            .iter()
-            .filter(|line| line.cells().is_some())
-            .count()
-    };
     assert_eq!(
         rows("a | b\n--- | ---\n"),
         2,
@@ -4378,6 +4398,11 @@ fn a_block_quote_is_read_as_a_quote() {
     assert_eq!(quoted("> ```\n> # a\n> ```\n"), [""; 0]);
     assert_eq!(quoted("> <!--\n> # a\n> -->\n"), [""; 0]);
     assert_eq!(quoted("> a\n---\n"), [""; 0], "a break ends the quote");
+    assert_eq!(
+        quoted("> ```\nb\n> # c\n"),
+        ["c"],
+        "text ends the quote and its fence"
+    );
     assert_eq!(quoted("> a\n===\n"), [""; 0], "lazy text");
     assert_eq!(quoted("-   > # a\n    > # b\n"), ["a", "b"]);
     assert_eq!(quoted(">\t# a\n"), ["a"]);
@@ -4880,8 +4905,8 @@ fn a_rendered_line_keeps_its_role() {
 #[test]
 fn a_title_is_a_first_level_one_heading_with_text() {
     let fixture = Fixture::new();
-    fixture.replace(SINGLE, "# Spec: single\n", "## Spec: single\n");
-    assert!(fixture.rules().contains("FIELDS"), "{:?}", fixture.rules());
+    fixture.replace(SINGLE, "# Spec: single\n", "### Spec: single\n");
+    assert_only(&fixture, Rule::Fields, "a title at level three");
     let fixture = Fixture::new();
     fixture.replace(SINGLE, "# Spec: single\n", "#\n");
     assert!(fixture.rules().contains("FIELDS"), "{:?}", fixture.rules());
@@ -4899,13 +4924,13 @@ fn a_title_is_a_first_level_one_heading_with_text() {
     let fixture = Fixture::new();
     fixture.replace(
         &design,
-        "# Spec: directory: design\n",
-        "text\n\n# Spec: directory\n",
+        "# Spec: directory: design\n\nPart of: [index](index.md)\nOwns: decisions\n",
+        "text\n\nPart of: [index](index.md)\nOwns: decisions\n\n# Spec: directory: design\n",
     );
-    assert!(
-        fixture.rules().contains("PART-HEADER"),
-        "{:?}",
-        fixture.rules()
+    assert_only(
+        &fixture,
+        Rule::PartHeader,
+        "a title that does not stand first",
     );
     let fixture = Fixture::new();
     fixture.replace(
