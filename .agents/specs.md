@@ -6,12 +6,12 @@ the rest; § Writing and § Authoring checklist are for review.
 
 ## Size
 
-A spec file MUST stay within all three caps:
+A spec file MUST stay within these caps:
 
 | Cap | Value | Why |
 |---|---|---|
 | Lines | 500 | Owner rule |
-| Bytes | 40 KiB | 500 lines at the census p80 of 82 bytes |
+| Bytes | 40 KiB | 500 lines at census p80, 82 bytes |
 | Line | 400 chars | Over prose p99 (303) and table p90 (380); fences count |
 
 A table is an index. Put AC, decision and blocker text under headings.
@@ -37,12 +37,13 @@ docs/specs/<id>-<slug>/
 - A part starts with `# <title>`, `Part of: [index](index.md)`, `Owns: <scope>`.
   A part `##` is a canonical section, with optional `: <subtitle>`.
 
-Agents MUST load the index, then only the parts the task needs.
+Agents MUST load the index, then only the parts a task needs.
 
 ## Hierarchy and stable IDs
 
 Sections keep the template order. An ID is defined once, by a heading that starts with
-the ID, and any part may reference it.
+the ID, and any part may reference it. A field, title, part section or link label is
+unique. Only the header states `Pin`, `Tracker` or `Updated`.
 
 | ID | Meaning | Section | Required fields |
 |---|---|---|---|
@@ -60,7 +61,7 @@ fails, and so does a bare `none` in `Then` or a negative control. Only a `migrat
 or a blocker `Owner` passes `UNKNOWN`.
 
 Qualify another spec's ID with its tracker: `#1311 AC-2`, `KEL-53 B-4`. IDs never change
-meaning; retire one by closing it, not by reuse.
+meaning: close one, never reuse it.
 
 ## Writing
 
@@ -97,13 +98,13 @@ Label every factual claim FACT, INFERRED or UNKNOWN.
 
 ## Authoring checklist
 
-Review the whole spec at the exact head before push, not the diff. Fix every instance of
-a class. Check that:
+Review the whole spec at the exact head before push, not the diff. Fix the whole
+class. Check that:
 
 1. Each negative control can turn RED: a single fault, a reachable precondition, no
    earlier refusal or later defense that hides it, an observable at the rule's owner.
 2. Each cross-owner sentence matches that owner's text at a pinned SHA.
-3. An outcome that depends on an open `Q-n`, `B-n` or `U-n` is conditional and names it,
+3. An outcome that needs an open `Q-n`, `B-n` or `U-n` is conditional and names it,
    and a blocker states its full impact.
 4. No task exposes a capability before its safety atoms, and each task runs its ACs.
 5. Each platform claim is quoted from a primary source, measured, or labelled.
@@ -111,16 +112,16 @@ a class. Check that:
 7. Paired events hold in both orders, and an AC forces the adverse order.
 8. Each citation matches its pin, and each quote is verbatim.
 9. A reply or PR body claims no more than the spec.
-10. An upstream event is not assumed to be OS completion.
+10. An upstream event is not OS completion.
 11. Each documented host obligation has a caller.
-12. An "every" rule is tested on every kind, not on one.
+12. An "every" rule is tested on every kind.
 13. Old evidence does not qualify a new code path.
-14. Task dependencies are explicit, never implied by forward order.
+14. Task dependencies are explicit, not implied by order.
 15. No state commits before a fallible step without recovery.
 16. The oracle branches where the rule branches.
 17. Each queue, retry, buffer and wait has a bound.
 18. A check on a normalized spelling also covers the raw reopen.
-19. A same-world signal is not treated as authority.
+19. A same-world signal is not authority.
 20. A raw path cannot bypass a private narrowing.
 21. Each digest covers every input it vouches for.
 
@@ -128,10 +129,9 @@ a class. Check that:
 
 `docs/specs/.spec-baseline.tsv` lists landed files that fail a cap or the structure. An
 over-cap value MUST equal the measurement. It MUST NOT exceed its value at `BASELINE_SEAL`
-or at the merge base with `KELD_CI_BASE_REF` or `origin/main`, so a shrink is permanent.
-A missing base fails. A new file MUST NOT enter. Remove a row when its file complies, and
-lower `BASELINE_ROWS`. Print rows with
-`target/spec-structure/spec-structure baseline-rows .` after `just spec-structure`.
+or at the merge base with `KELD_CI_BASE_REF` or `origin/main`. A missing base fails. A new
+file MUST NOT enter. Remove a row when its file complies, and lower `BASELINE_ROWS`.
+Print rows with `target/spec-structure/spec-structure baseline-rows .`.
 
 A landed spec with gaps uses `migrated:<id.field,...>`, which names each `UNKNOWN` field
 and can only lose names. A directory keeps its flat row, sizes `-`.
@@ -143,4 +143,4 @@ Agents MUST NOT split a spec to hide text, or lower a value by deleting a contra
 
 Quote accuracy, labels, reworded non-values, cited line content, root-level and
 extensionless citations, `@sha` commits absent from the clone, text split across lines,
-raw HTML links, `<details>` text, renumbered IDs.
+raw HTML links, `<details>` text, renumbered IDs, reworded, tabled or quoted fields.

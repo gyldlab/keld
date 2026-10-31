@@ -1300,7 +1300,7 @@ fn mutants() -> Vec<Mutant> {
             },
         },
         Mutant {
-            rule: Rule::AcFields,
+            rule: Rule::FieldDuplicate,
             label: "a repeated field is empty",
             apply: |f| {
                 f.replace(
@@ -1311,7 +1311,7 @@ fn mutants() -> Vec<Mutant> {
             },
         },
         Mutant {
-            rule: Rule::FieldUnknown,
+            rule: Rule::FieldDuplicate,
             label: "a repeated field holds UNKNOWN",
             apply: |f| {
                 f.replace(
@@ -1612,7 +1612,325 @@ fn mutants() -> Vec<Mutant> {
             label: "a package path with an at sign is still a citation",
             apply: |f| cite_in_design(f, "`crates/@scope/gone.rs:3`"),
         },
+        // Finding 4430984129: a field has one statement, and a spec has one header.
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a second valid Pin with the same value",
+            apply: |f| second_pin(f, PIN),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a second malformed Pin",
+            apply: |f| second_pin(f, "1111111"),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a second Pin this branch cannot reach",
+            apply: |f| second_pin(f, ABSENT_SHA),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "an unreachable Pin before the valid one",
+            apply: |f| {
+                let line = format!("- Pin: {PIN}\n");
+                f.replace(SINGLE, &line, &format!("- Pin: {ABSENT_SHA}\n{line}"));
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a second conflicting Owner",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- Owner: owner\n",
+                    "- Owner: owner\n- Owner: other\n",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a second Run in one evidence",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "- **Run:** one\n",
+                    "- **Run:** one\n- **Run:** two\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a part states the Pin",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let owns = "Owns: decisions\n";
+                f.replace(&path, owns, &format!("{owns}Pin: {ABSENT_SHA}\n"));
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a part states the status",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let owns = "Owns: decisions\n";
+                f.replace(&path, owns, &format!("{owns}Status: done\n"));
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a section restates the Pin",
+            apply: |f| f.replace(SINGLE, "## 5.", &format!("- Pin: {ABSENT_SHA}\n\n## 5.")),
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a part states its scope twice",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(&path, "Owns: decisions\n", "Owns: decisions\nOwns: all\n");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a part states its index twice",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let line = "Owns: decisions\nPart of: [index](index.md)\n";
+                f.replace(&path, "Owns: decisions\n", line);
+            },
+        },
+        Mutant {
+            rule: Rule::FieldDuplicate,
+            label: "a section of a part restates the Pin",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let line = format!("## 5. Boundaries\n\n- Pin: {PIN}\n");
+                f.replace(&path, "## 5. Boundaries\n", &line);
+            },
+        },
+        // The same fault in a value that is one field.
+        Mutant {
+            rule: Rule::Fields,
+            label: "a second Pin nested under the first",
+            apply: |f| {
+                let line = format!("- Pin: {PIN}\n");
+                f.replace(SINGLE, &line, &format!("{line}  - {ABSENT_SHA}\n"));
+            },
+        },
+        Mutant {
+            rule: Rule::BlockerFields,
+            label: "a second status nested under the first",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "- **Status:** open\n",
+                    "- **Status:** open\n  - closed\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a later nested statement holds TBD",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result\n",
+                    "- **Then:**\n  - a result\n  - TBD\n",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a statement nested under a filled field holds UNKNOWN",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result\n",
+                    "- **Then:** a result\n  - UNKNOWN\n",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::TaskFields,
+            label: "a task is blocked by none and by an ID",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "- **Blocked by:** B-1\n",
+                    "- **Blocked by:** none\n  - B-1\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::TaskFields,
+            label: "a task's second blocker is prose",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                let list = "- **Blocked by:**\n  - B-1\n  - later\n";
+                f.replace(&path, "- **Blocked by:** B-1\n", list);
+            },
+        },
+        // Same-class sweep: other places where one of two statements wins silently.
+        Mutant {
+            rule: Rule::Sections,
+            label: "a section repeated across parts",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "## 6. Tasks",
+                    "## 5. Boundaries\n\nmore\n\n## 6. Tasks",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a section repeated in one part",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.write(
+                    &path,
+                    &format!("{}\n## 5. Boundaries\n\nmore\n", f.read(&path)),
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a section repeated in a single file",
+            apply: |f| f.replace(SINGLE, "## 5.", "## 4. Design\n\nmore\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a second parts heading in an index",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                f.replace(
+                    &path,
+                    "## Current blockers",
+                    "## Parts\n\n## Current blockers",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a second blockers heading in an index",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                let extra = "- B-1\n\n## Current blockers\n\n- B-1\n";
+                f.replace(&path, "- B-1\n", extra);
+            },
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a second title in a single file",
+            apply: |f| f.replace(SINGLE, "## 1. Goal", "# Spec: other\n\n## 1. Goal"),
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a second title in a part",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(&path, "## 5. Boundaries", "# Other\n\n## 5. Boundaries");
+            },
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a template with a second copy source",
+            apply: |f| {
+                let text = f.read(TEMPLATE);
+                f.write(TEMPLATE, &format!("{text}\n```markdown\n# x\n```\n"));
+            },
+        },
+        Mutant {
+            rule: Rule::Link,
+            label: "a reference label defined twice with two targets",
+            apply: |f| reference_pair(f, "[a]: index.md", "[a]: design.md"),
+        },
+        Mutant {
+            rule: Rule::Link,
+            label: "a reference label defined twice in another case and spacing",
+            apply: |f| reference_pair(f, "[A b]: index.md", "[a  B]: design.md"),
+        },
+        Mutant {
+            rule: Rule::Link,
+            label: "a footnote defined twice",
+            apply: |f| reference_pair(f, "[^1]: one", "[^1]: two"),
+        },
+        Mutant {
+            rule: Rule::Link,
+            label: "a landed exempt file still has one target for each label",
+            apply: |f| f.write(SMALL, "# old\n\n[a]: old-big.md\n\n[a]: old-small.md\n"),
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a reference definition into code, its target on the next line",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let block = "### D-1: choice\n\n[code]:\n  ../../../crates/x/src/lib.rs\n";
+                f.replace(&path, "### D-1: choice\n", block);
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineFormat,
+            label: "a row listed twice",
+            apply: |f| {
+                let row = format!("{SMALL}\t-\t-\t-\texempt\n");
+                f.replace(BASELINE, &row, &format!("{row}{row}"));
+            },
+        },
+        Mutant {
+            rule: Rule::CiteSha,
+            label: "a citation with two pins",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:1@{PIN}@{ABSENT_SHA}`")),
+        },
+        Mutant {
+            rule: Rule::IdDuplicate,
+            label: "an ID defined twice across parts",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "## 9. Perf impact",
+                    "### AC-1: again\n\n## 9. Perf impact",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::IdDuplicate,
+            label: "a heading restates an ID in other words",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "### B-1: stop", "### Q-1 again\n\n### B-1: stop");
+            },
+        },
+        Mutant {
+            rule: Rule::IdDuplicate,
+            label: "a heading restates an ID in emphasis",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(
+                    &path,
+                    "### B-1: stop",
+                    "### **Q-1**: again\n\n### B-1: stop",
+                );
+            },
+        },
     ]
+}
+
+/// Adds a second `Pin` after the valid one.
+fn second_pin(fixture: &Fixture, value: &str) {
+    let line = format!("- Pin: {PIN}\n");
+    fixture.replace(SINGLE, &line, &format!("{line}- Pin: {value}\n"));
+}
+
+/// Adds two definitions to the clean design part.
+fn reference_pair(fixture: &Fixture, first: &str, second: &str) {
+    let path = format!("{DIR}/design.md");
+    let pair = format!("### D-1: choice\n\n{first}\n\n{second}\n");
+    fixture.replace(&path, "### D-1: choice\n", &pair);
 }
 
 /// Puts one code citation into the clean design part, in place of the pin citation.
@@ -1628,7 +1946,7 @@ fn link_from_design(fixture: &Fixture, target: &str) {
     fixture.replace(&path, "[goal](index.md#1-goal--non-goals)", &link);
 }
 
-const ALL_RULES: [Rule; 43] = [
+const ALL_RULES: [Rule; 44] = [
     Rule::SizeLines,
     Rule::SizeBytes,
     Rule::SizeLineLength,
@@ -1661,6 +1979,7 @@ const ALL_RULES: [Rule; 43] = [
     Rule::EvidenceFields,
     Rule::FieldUnknown,
     Rule::FieldPlaceholder,
+    Rule::FieldDuplicate,
     Rule::OpenBlockers,
     Rule::PinMissing,
     Rule::CitePath,
@@ -2054,10 +2373,265 @@ fn a_field_may_use_any_list_marker_and_either_emphasis() {
         assert_eq!(field_value(line, "Then").as_deref(), Some("x"), "{line}");
     }
     assert_eq!(field_value("- Thenceforth: x", "Then"), None);
+    assert_eq!(field_value("- Then you: x", "Then"), None);
     let doc = Doc::parse("x.md", "- **Then:**\n\n  a loose value\n- **When:** x\n");
-    assert_eq!(nested_value(&doc, 0, 4), "a loose value");
+    assert_eq!(nested_statements(&doc, 0, 4), ["a loose value"]);
     let doc = Doc::parse("x.md", "- **Then:**\n\n- **When:** x\n");
-    assert_eq!(nested_value(&doc, 0, 3), "", "a sibling after a blank line");
+    let none: [String; 0] = [];
+    assert_eq!(
+        nested_statements(&doc, 0, 3),
+        none,
+        "a sibling after a blank line"
+    );
+}
+
+/// One spelling for a reader is one label for the checker, or a variant hides a repeat.
+#[test]
+fn no_spelling_hides_a_second_field() {
+    for spelled in [
+        format!("- Pin: {ABSENT_SHA}"),
+        format!("- pin: {ABSENT_SHA}"),
+        format!("- PIN: {ABSENT_SHA}"),
+        format!("- *Pin*: {ABSENT_SHA}"),
+        format!("- *Pin:* {ABSENT_SHA}"),
+        format!("- **Pin**: {ABSENT_SHA}"),
+        format!("- **Pin:** {ABSENT_SHA}"),
+        format!("- __Pin__: {ABSENT_SHA}"),
+        format!("- `Pin`: {ABSENT_SHA}"),
+        format!("- Pin : {ABSENT_SHA}"),
+        format!("1. Pin: {ABSENT_SHA}"),
+        format!("Pin: {ABSENT_SHA}"),
+    ] {
+        let fixture = Fixture::new();
+        let line = format!("- Pin: {PIN}\n");
+        fixture.replace(SINGLE, &line, &format!("{line}{spelled}\n"));
+        assert_only(&fixture, Rule::FieldDuplicate, &spelled);
+    }
+    for line in ["pin: x", "*Pin*: x", "**Pin**: x", "`Pin`: x", "Pin : x"] {
+        assert_eq!(field_value(line, "Pin").as_deref(), Some("x"), "{line}");
+    }
+}
+
+/// The checklist's "every" rule: each single-valued field, in both orders, reads one RED.
+/// Neither statement reaches a later rule, so the order cannot change the outcome.
+#[test]
+fn every_header_field_is_stated_once_in_either_order() {
+    let index = format!("{DIR}/index.md");
+    for (label, real, other) in [
+        ("Status", "draft", "approved"),
+        ("Tracker", "GH-1", "GH-2"),
+        ("Owner", "owner", "other"),
+        ("Updated", "2026-10-31", "2026-10-30"),
+        ("Pin", PIN, ABSENT_SHA),
+        ("Pin", PIN, FOREIGN_SHA),
+        ("Pin", PIN, "1111111"),
+        ("Pin", PIN, PIN),
+    ] {
+        let line = format!("- {label}: {real}\n");
+        let extra = format!("- {label}: {other}\n");
+        for text in [format!("{line}{extra}"), format!("{extra}{line}")] {
+            for path in [SINGLE, index.as_str()] {
+                let fixture = Fixture::new();
+                fixture.replace(path, &line, &text);
+                let name = format!("{path}: {text}");
+                assert_only(&fixture, Rule::FieldDuplicate, &name);
+            }
+        }
+    }
+}
+
+#[test]
+fn every_required_field_is_stated_once_in_either_order() {
+    let acceptance = format!("{DIR}/acceptance.md");
+    let delivery = format!("{DIR}/delivery.md");
+    let mut fields: Vec<(&str, &str)> = Vec::new();
+    fields.extend(AC_FIELDS.map(|label| (acceptance.as_str(), label)));
+    fields.extend(BLOCKER_FIELDS.map(|label| (delivery.as_str(), label)));
+    fields.extend(EVIDENCE_FIELDS.map(|label| (delivery.as_str(), label)));
+    fields.push((delivery.as_str(), TASK_BLOCKERS_FIELD));
+    for (path, label) in fields {
+        let fixture = Fixture::new();
+        let text = fixture.read(path);
+        let needle = format!("**{label}:**");
+        let line = text
+            .lines()
+            .find(|line| line.contains(&needle))
+            .unwrap_or_else(|| panic!("no {label}"));
+        let lead = &line[..line.find('-').expect("list item")];
+        let extra = format!("{lead}- **{label}:** another value");
+        for repeated in [format!("{line}\n{extra}"), format!("{extra}\n{line}")] {
+            let fixture = Fixture::new();
+            fixture.replace(path, line, &repeated);
+            assert_only(&fixture, Rule::FieldDuplicate, &repeated);
+        }
+    }
+}
+
+/// A value may run across nested lines. That is one field, and each line is read.
+#[test]
+fn one_field_may_hold_many_nested_statements() {
+    for value in [
+        "- **Then:** two results:\n  - one\n  - two\n",
+        "- **Then:**\n  - one\n  - two\n",
+        "- **Then:** a record:\n  ```json\n  {\n    \"a\": 1\n  }\n  ```\n",
+        "- **Then:**\n  ```text\n  a\n  ---\n  ```\n  - another result\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "- **Then:** a result\n", value);
+        assert!(fixture.rules().is_empty(), "{value}: {:?}", fixture.rules());
+    }
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/delivery.md");
+    fixture.replace(
+        &path,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:**\n  - B-1\n  - T-1\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_fence_is_one_statement_wherever_it_opens() {
+    let statements = |text: &str| {
+        let doc = Doc::parse("x.md", text);
+        nested_statements(&doc, 0, doc.lines.len())
+    };
+    assert_eq!(
+        statements("- **Then:**\n  - ```\n    x\n    y\n    ```\n  - z\n"),
+        ["x y", "z"]
+    );
+    assert_eq!(
+        statements("- **Then:** a\n  ```text\n  x\n\n  y\n  ```\n  ```text\n  z\n  ```\n"),
+        ["x y", "z"]
+    );
+}
+
+/// `Status` and `Owner` also label a blocker, and a section may use them in its own prose.
+#[test]
+fn a_header_label_keeps_its_other_meanings() {
+    let fixture = Fixture::new();
+    fixture.replace(
+        SINGLE,
+        "## 5.",
+        "Owner: the team\n\nStatus: unchanged\n\n## 5.",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// A repeated migrated slot still holds no real value, so its row stays right.
+#[test]
+fn a_repeated_migrated_slot_is_one_defect() {
+    let path = format!("{DIR}/acceptance.md");
+    let slot = "  - **Single fault:** UNKNOWN: none named\n";
+    for second in [
+        "  - **Single fault:** UNKNOWN: none named\n",
+        "  - **Single fault:** a real fault\n",
+    ] {
+        for text in [format!("{slot}{second}"), format!("{second}{slot}")] {
+            let fixture = migrated_fixture();
+            fixture.replace(&path, slot, &text);
+            assert_only(&fixture, Rule::FieldDuplicate, &text);
+        }
+    }
+    let fixture = migrated_fixture();
+    fixture.replace(
+        &path,
+        "- **Then:** a result\n",
+        "- **Then:** a result\n- **Then:** another\n",
+    );
+    assert_only(
+        &fixture,
+        Rule::FieldDuplicate,
+        "a slot the row does not name",
+    );
+}
+
+/// The migrated header slot of KEL-142, with the reviewer's second `Owner`.
+#[test]
+fn a_repeated_migrated_owner_is_one_defect() {
+    let fixture = migrated_fixture();
+    let path = format!("{DIR}/index.md");
+    fixture.replace(
+        BASELINE,
+        MIGRATED_CELL,
+        &format!("{MIGRATED_CELL},{HEADER_OWNER_SLOT}"),
+    );
+    fixture.replace(&path, "- Owner: owner\n", "- Owner: UNKNOWN (none named)\n");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    fixture.replace(
+        &path,
+        "- Owner: UNKNOWN (none named)\n",
+        "- Owner: UNKNOWN (none named)\n- Owner: other\n",
+    );
+    assert_only(&fixture, Rule::FieldDuplicate, "second migrated owner");
+}
+
+/// Both statements decide the same row, so the base must refuse it too.
+#[test]
+fn a_contradictory_row_is_refused_here_and_at_the_base() {
+    let fixture = Fixture::new();
+    let row = format!("{BIG}\t600\t-\t-\texempt\n");
+    fixture.replace(BASELINE, &row, &format!("{row}{BIG}\t599\t-\t-\texempt\n"));
+    assert!(
+        fixture.rules().contains("BASELINE-FORMAT"),
+        "{:?}",
+        fixture.rules()
+    );
+    let mut fixture = Fixture::new();
+    let doubled = format!("{BASELINE_HEADER}\n{row}{row}");
+    fixture.previous = Ok(Some(doubled));
+    let error = fixture.try_run().err().expect("a doubled base is no pass");
+    assert!(error.contains("does not parse"), "{error}");
+}
+
+/// A split section keeps a subtitle in each part, as KEL-142 section 4 does.
+#[test]
+fn parts_may_split_a_section_under_subtitles() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/design.md");
+    fixture.replace(&path, "## 5. Boundaries\n", "## 5. Boundaries: inside\n");
+    let delivery = format!("{DIR}/delivery.md");
+    fixture.replace(
+        &delivery,
+        "## 6. Tasks",
+        "## 5. Boundaries: outside\n\nnone\n\n## 6. Tasks",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_target_may_follow_its_label_but_prose_makes_no_definition() {
+    assert_eq!(continued_target("[a]:", "  b.md").as_deref(), Some("b.md"));
+    assert_eq!(
+        continued_target("[a]:", "  b.md 'title'").as_deref(),
+        Some("b.md")
+    );
+    assert_eq!(continued_target("[a]:", "some prose here"), None);
+    assert_eq!(continued_target("[a]:", ""), None);
+    assert_eq!(continued_target("[a]: b.md", "c.md"), None, "already whole");
+    assert_eq!(
+        continued_target("[a]: b.md", "'title'"),
+        None,
+        "already whole"
+    );
+    assert_eq!(continued_target("[^1]:", "b.md"), None, "a footnote");
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/design.md");
+    let block = "### D-1: choice\n\n[a]:\n  index.md\n\n[note]:\nthe host owns it\n";
+    fixture.replace(&path, "### D-1: choice\n", block);
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_label_is_folded_as_commonmark_folds_it() {
+    let label = |line: &str| defined_label(line);
+    assert_eq!(label("[Foo  Bar]: a.md"), label("[foo bar]: b.md"));
+    assert_eq!(label("  [A]: a.md"), Some("a".to_owned()));
+    assert_eq!(label("[STRASSE]: a.md"), label("[stra\u{df}e]: b.md"));
+    assert_eq!(label("[^1]: a footnote"), Some("^1".to_owned()));
+    assert_eq!(label("[FACT]: the host owns it"), None, "prose");
+    assert_eq!(label("`[a]: b.md`"), None, "code");
+    assert_eq!(label("`x` [a]: b.md"), None, "text before the bracket");
 }
 
 /// CommonMark reads `-` under a paragraph as a setext underline, so the field line turns
@@ -2864,6 +3438,11 @@ fn citations_parse_only_repository_paths() {
     assert_eq!(parse_citation("C:/x/y.rs:3"), None, "absolute Windows path");
     assert_eq!(parse_citation("/usr/lib/y.so:3"), None, "absolute path");
     assert_eq!(parse_citation("a/b.rs:x"), None, "no line part");
+    assert_eq!(
+        parse_citation("a/b.rs:3@abc@def"),
+        cited("a/b.rs", (3, 3), Some("abc@def")),
+        "a second pin stays in the commit text"
+    );
 }
 
 /// A shape no range can parse stays a citation, so `CITE-LINE` refuses it.
@@ -2926,6 +3505,21 @@ fn slugs_match_github_anchors() {
         assert!(slugs.contains(slug), "{slug}: {slugs:?}");
     }
     assert!(!slugs.contains("hidden"));
+}
+
+/// github-slugger's loop: a suffix skips every slug a heading already holds.
+#[test]
+fn a_repeated_heading_skips_a_taken_anchor() {
+    let slugs = |text: &str| heading_slugs(&Doc::parse("x.md", text));
+    assert_eq!(
+        slugs("## Top-1\n\n## Top\n\n## Top\n"),
+        BTreeSet::from(["top".to_owned(), "top-1".to_owned(), "top-2".to_owned()])
+    );
+    assert_eq!(
+        slugs("## Top\n\n## Top\n\n## Top-1\n"),
+        BTreeSet::from(["top".to_owned(), "top-1".to_owned(), "top-1-1".to_owned()])
+    );
+    assert_eq!(slugs("## Top\n\n## Top\n\n## Top\n").len(), 3);
 }
 
 #[test]
