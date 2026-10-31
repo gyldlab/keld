@@ -1,25 +1,23 @@
 # CI and KeldBot playbook
 
-Load only for GitHub Actions, the change router, required checks, CI dependencies,
-KeldBot, or branch-protection work. `.github/workflows/ci.yml` and the router/checkers
-are source of truth; this file owns the design invariants.
+Load for Actions, routing, checks, dependencies, KeldBot or protection.
+`.github/workflows/ci.yml` and router/checkers own behavior; this owns invariants.
 
 ## Required workflow and routing
 
-- CI workflows MUST be created for every PR and push. Required workflows MUST NOT use
-  workflow-level `paths`/`paths-ignore`; route at job boundaries so skipped jobs report.
+- Run CI workflows for every PR and push. Required workflows MUST NOT use
+  workflow-level `paths`/`paths-ignore`; route jobs so skips remain visible.
 - Job-level `if` may use `needs`, `github`, `vars`, and `inputs`, never `matrix` (GitHub
   evaluates the job condition before matrix expansion).
 - Every lane names its observable contract and changed inputs. `gitleaks` is unconditional
   because every byte is input; it is the checksum-pinned CLI job, not the org-licensed
   Action. `CI required` always runs, consumes every routed lane plus gitleaks, and
   rejects missing, cancelled, failed, or selected-as-skipped evidence.
-- Mermaid is separate from broad documentation routing: changed/added/deleted/malformed
-  diagram blocks and parser/renderer/config/pin/router/workflow inputs select it; prose-only
-  changes do not. Local and hosted routing share the same applicability owner. Unknown
-  comparisons fail safe to full rendering. `just ci-full` retains explicit full-corpus
-  assurance. Zero-candidate rendering performs no Docker probe; `CI required` rejects a
-  selected Mermaid job that is skipped, missing, cancelled, or failed.
+- Mermaid routing selects changed/added/deleted/malformed diagram blocks and
+  parser/renderer/config/pin/router/workflow inputs, not prose-only edits. Local
+  and hosted share applicability; unknown comparisons render all. `just ci-full`
+  covers the corpus. Zero candidates need no Docker; `CI required` rejects a
+  selected Mermaid job missing/skipped/cancelled/failed.
 - Build closures come from current metadata where available. Unknown/shared/workspace
   graph/comparison-base inputs fail safe by enabling every possibly affected lane,
   including Ubuntu WebKitGTK apt.
@@ -28,8 +26,8 @@ are source of truth; this file owns the design invariants.
   timeout and tests the full selection. MSRV stays on macOS without apt.
 - Router metadata/parse failure fails the router job before outputs. It MUST NOT emit an
   empty/skipped-green selection.
-- Contract tests cover relevant, unrelated, unknown, empty, PR, and push diffs. Verify
-  branch-protection behavior against current official GitHub documentation before change.
+- Test relevant/unrelated/unknown/empty PR and push diffs. Verify branch
+  protection against current official GitHub docs before change.
 - CI routing is an independently reviewed shared-file concern and lands in its own
   Linear-scoped PR unless CI is already the owning issue.
 
@@ -37,21 +35,15 @@ are source of truth; this file owns the design invariants.
 
 - Merge-critical workflows/jobs/steps MUST NOT use `continue-on-error`, inherited custom
   shells, retries, skips, or wrappers that suppress an exit status.
-- Narrow read-consistency exception (requires independent CI/security review): within
-  one merge-queue validation step, up to three read-only GitHub API observations of
-  an asynchronously generated PR test-merge preview may be made. Every
-  refreshed PR read must preserve its exact number, state, base and head.
-  Any preview accepted must have the exact parent pair and staged queue tree.
-  After a delayed read, recheck the live queue/ref identity, and revalidate at
-  the privileged publisher boundary before App publication. A missing preview
-  or 404 may be polled; a stale parent/tree must never be accepted. Exhaustion,
-  a changed PR, any other API error, or failed security/CI check must fail
-  closed. This is NOT permission to rerun a failed workflow, job, test, check
-  or publisher, to skip it, or to suppress its exit status.
+- Exception requiring CI/security review: up to three read-only, pre-verdict
+  GitHub PR-preview reads for null/404/stale parents. Each pins PR/base/head;
+  after delay recheck queue/ref. Admit only exact preview parents/staged tree.
+  Wrong tree, changed identity, other API error or exhaustion denies. NEVER
+  retry failed jobs, tests, checks, verdicts or App writes.
 - Actions are immutable-SHA pinned. Checkout credentials are disabled unless a named
   operation genuinely needs write authority.
-- A required result must validate router applicability as well as job status; GitHub
-  considers a skipped required check successful.
+- Required results validate router applicability and job status; GitHub
+  treats skipped required checks as successful.
 - Never weaken a test/check to fit a change. Diagnose per root atomic protocol and
   `.agents/testing.md`.
 
@@ -65,9 +57,8 @@ are source of truth; this file owns the design invariants.
   sections and strip submitted template comments.
 - `gatekeeper` and `title-lint` are required. `size-label` is informational. All rerun on
   edited/synchronize and self-resolve after the fix.
-- KeldBot uses `pull_request_target` so fork metadata checks work. It MUST NOT checkout
-  PR code or interpolate PR-controlled text into shell/script execution. Re-derive the
-  threat model before changing that boundary.
+- `pull_request_target` supports fork metadata. KeldBot MUST NOT checkout PR
+  code or execute interpolated PR text. Re-derive threat model before changes.
 - Bot labels: `needs-template-fix`, `needs-conventional-title`, `size/*`, `type:*`.
   Human-only review labels: the five `gate:*` and twelve `crate:*`; do not claim KeldBot
   inferred them.

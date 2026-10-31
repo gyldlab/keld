@@ -649,6 +649,33 @@ test("KeldBot refuses a rebuilt queue ref after delayed preview readiness", asyn
   expect(f.output).toEqual({});
 });
 
+test("KeldBot refreshes stale preview parents but never accepts a different stage tree", async () => {
+  const f = fixture();
+  const original = f.github.rest.repos.getCommit;
+  let previews = 0;
+  f.github.rest.repos.getCommit = async (args: any) => {
+    if (args.ref === previewSha && previews++ === 0) {
+      const old = structuredClone(f.previewCommit);
+      old.parents[0].sha = "e".repeat(40);
+      return { data: old };
+    }
+    return original(args);
+  };
+  await expect(invoke(identity, f)).resolves.toBeUndefined();
+  expect(previews).toBe(2);
+  expect(f.output).toEqual({ number: String(number), head_sha: head });
+});
+
+test("KeldBot immediately denies a valid-parent wrong-tree preview", async () => {
+  const f = fixture();
+  f.previewCommit.commit.tree.sha = "e".repeat(40);
+  await expect(invoke(identity, f)).rejects.toThrow(
+    /definitive stacked queue tree/,
+  );
+  expect(f.calls.pr).toBe(1);
+  expect(f.output).toEqual({});
+});
+
 test("live queue configuration:null accepts distinct staged SHA and PR head", async () => {
   const f = fixture();
   // Dify live GraphQL can return configuration:null. The entry HEAD is

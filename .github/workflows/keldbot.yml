@@ -173,6 +173,13 @@ jobs:
                       preview.parents[0]?.sha === event.base_sha &&
                       preview.parents[1]?.sha === queued.headRefOid &&
                       sha(preview.commit?.tree?.sha) &&
+                      preview.commit.tree.sha !== groupCommit.commit?.tree?.sha)
+                    throw Error('KeldBot refuses definitive stacked queue tree');
+                  if (preview?.sha === previewPr.merge_commit_sha &&
+                      Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                      preview.parents[0]?.sha === event.base_sha &&
+                      preview.parents[1]?.sha === queued.headRefOid &&
+                      sha(preview.commit?.tree?.sha) &&
                       preview.commit.tree.sha === groupCommit.commit?.tree?.sha) {
                     previewReady = true;
                     break;

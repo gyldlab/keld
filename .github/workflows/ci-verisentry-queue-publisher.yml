@@ -218,6 +218,12 @@ jobs:
                 if (preview?.sha === previewPr.merge_commit_sha &&
                     Array.isArray(preview.parents) && preview.parents.length === 2 &&
                     preview.parents[0]?.sha === main && preview.parents[1]?.sha === head &&
+                    isSha(preview.commit?.tree?.sha) &&
+                    preview.commit.tree.sha !== commit.commit.tree.sha)
+                  throw Error('Definitive queue preview tree mismatch during admission');
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === main && preview.parents[1]?.sha === head &&
                     preview.commit?.tree?.sha === commit.commit.tree.sha) {
                   previewReady = true;
                   break;
@@ -603,6 +609,13 @@ jobs:
                     Array.isArray(preview.parents) && preview.parents.length === 2 &&
                     preview.parents[0]?.sha === expected.base &&
                     preview.parents[1]?.sha === expected.head &&
+                    isSha(preview.commit?.tree?.sha) &&
+                    preview.commit.tree.sha !== staged.commit.tree.sha)
+                  throw Error('Definitive queue preview tree mismatch before App token');
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === expected.base &&
+                    preview.parents[1]?.sha === expected.head &&
                     preview.commit?.tree?.sha === staged.commit.tree.sha) {
                   previewReady = true;
                   break;
@@ -759,6 +772,12 @@ jobs:
                 } catch (error) {
                   if (error?.status !== 404) throw error;
                 }
+                if (preview?.sha === previewPr.merge_commit_sha &&
+                    Array.isArray(preview.parents) && preview.parents.length === 2 &&
+                    preview.parents[0]?.sha === base && preview.parents[1]?.sha === head &&
+                    isSha(preview.commit?.tree?.sha) &&
+                    preview.commit.tree.sha !== commit.commit.tree.sha)
+                  throw Error('Definitive queue preview tree mismatch before App write');
                 if (preview?.sha === previewPr.merge_commit_sha &&
                     Array.isArray(preview.parents) && preview.parents.length === 2 &&
                     preview.parents[0]?.sha === base && preview.parents[1]?.sha === head &&

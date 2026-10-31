@@ -174,6 +174,8 @@ function fixture() {
     },
     parents: [{ sha: main }, { sha: head }],
     previewParents: [{ sha: main }, { sha: head }],
+    previewParentsReads: [] as Array<Array<{ sha: string }>>,
+    previewReadError404: 0,
     stageTree: treeSha,
     previewTree: treeSha,
     ciMainSha: "f".repeat(40),
@@ -286,24 +288,32 @@ function scenario(mutate?: (f: Fixture) => void) {
             },
           };
         },
-        getCommit: async (a: any) => ({
-          data:
-            a.ref === stage
-              ? {
-                  sha: stage,
-                  parents: f.parents,
-                  commit: { tree: { sha: f.stageTree } },
-                }
-              : a.ref === previewSha
-                ? {
-                    sha: previewSha,
-                    parents: f.previewParents,
-                    commit: { tree: { sha: f.previewTree } },
-                  }
-                : (() => {
-                    throw Error("Unexpected commit SHA");
-                  })(),
-        }),
+        getCommit: async (a: any) => {
+          if (a.ref === stage)
+            return {
+              data: {
+                sha: stage,
+                parents: f.parents,
+                commit: { tree: { sha: f.stageTree } },
+              },
+            };
+          if (a.ref === previewSha) {
+            if (f.previewReadError404 > 0) {
+              f.previewReadError404--;
+              throw Object.assign(new Error("transient preview regeneration"), {
+                status: 404,
+              });
+            }
+            return {
+              data: {
+                sha: previewSha,
+                parents: f.previewParentsReads.shift() ?? f.previewParents,
+                commit: { tree: { sha: f.previewTree } },
+              },
+            };
+          }
+          throw Error("Unexpected commit SHA");
+        },
         compareCommits: async (a: any) => {
           compareCount++;
           if (f.compareFails) throw Error("compare API fail");
@@ -892,14 +902,14 @@ test("prewrite tree-drift and grouped second PR refuse both source and App gates
     f.previewTree = "f".repeat(40);
   });
   await expect(fresh.fresh()).rejects.toThrow(
-    /Queue stage no longer matches the singleton PR preview/,
+    /Definitive queue preview tree mismatch before App token/,
   );
   const publish = scenario((f) => {
     f.pr.merge_commit_sha = previewSha;
     f.stageTree = "f".repeat(40);
   });
   await expect(publish.publish()).rejects.toThrow(
-    /queue tree differing from current PR preview/,
+    /Definitive queue preview tree mismatch before App write/,
   );
   expect(publish.written).toHaveLength(0);
 });
@@ -1637,6 +1647,55 @@ test.each(["admit", "fresh", "publish"] as const)(
     await expect(s[phase]()).rejects.toThrow(
       /preview is unavailable|unavailable preview/,
     );
+    expect(s.written).toHaveLength(0);
+  },
+);
+
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase accepts stale old-base parents only after authenticated refresh",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.pr.merge_commit_sha = previewSha;
+      f.previewParentsReads = [[{ sha: "f".repeat(40) }, { sha: head }]];
+    });
+    await expect(s[phase]()).resolves.toBeUndefined();
+    if (phase === "publish") {
+      expect(s.written).toHaveLength(1);
+      expect(s.written[0].head_sha).toBe(stage);
+    } else {
+      expect(s.written).toHaveLength(0);
+    }
+  },
+);
+
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase accepts a transient GitHub preview 404, not an incomplete tree",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.pr.merge_commit_sha = previewSha;
+      f.previewReadError404 = 1;
+    });
+    await expect(s[phase]()).resolves.toBeUndefined();
+    if (phase === "publish") {
+      expect(s.written).toHaveLength(1);
+      expect(s.written[0].head_sha).toBe(stage);
+    } else {
+      expect(s.written).toHaveLength(0);
+    }
+  },
+);
+
+test.each(["admit", "fresh", "publish"] as const)(
+  "privileged %s phase immediately refuses a correct-parent wrong-tree preview",
+  async (phase) => {
+    const s = scenario((f) => {
+      f.pr.merge_commit_sha = previewSha;
+      f.previewTree = "f".repeat(40);
+    });
+    await expect(s[phase]()).rejects.toThrow(
+      /Definitive queue preview tree mismatch/,
+    );
+    expect(s.counts().p).toBe(1); // no retry of a definitive security mismatch
     expect(s.written).toHaveLength(0);
   },
 );
