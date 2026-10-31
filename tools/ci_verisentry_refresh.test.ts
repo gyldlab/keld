@@ -32,10 +32,18 @@ const protectedMain = "d".repeat(40);
 
 function protectedPathBlock(code: string): string {
   const begin = code.indexOf("const protectedPath = (path) => {");
-  const end = code.includes("// __PROTECTED_PATH_POLICY_END__")
-    ? code.indexOf("// __PROTECTED_PATH_POLICY_END__", begin)
-    : code.indexOf("const protectedChanges = [];", begin);
+  const end =
+    code.indexOf("// __PROTECTED_PATH_POLICY_END__", begin) >= 0
+      ? code.indexOf("// __PROTECTED_PATH_POLICY_END__", begin)
+      : code.indexOf("// __TRUSTED_COMMIT_HISTORY_BEGIN__", begin);
   if (begin < 0 || end < 0) throw Error("Protected policy no longer found");
+  return code.slice(begin, end).trim();
+}
+
+function historyBlock(code: string): string {
+  const begin = code.indexOf("// __TRUSTED_COMMIT_HISTORY_BEGIN__");
+  const end = code.indexOf("// __TRUSTED_COMMIT_HISTORY_END__", begin);
+  if (begin < 0 || end < 0) throw Error("Commit-history verification missing");
   return code.slice(begin, end).trim();
 }
 
@@ -67,6 +75,11 @@ function scenario(
     failedCompare?: boolean;
     batchIndex?: string;
     clockMillis?: number;
+    strictNative?: boolean;
+    historyCommits?: string[];
+    historyTotal?: number;
+    commitFilesBySha?: Record<string, Record<string, any>[]>;
+    checksByRef?: Record<string, Record<string, any>[]>;
   } = {},
 ) {
   const basePR = {
@@ -86,6 +99,7 @@ function scenario(
   const failures: string[] = [];
   let reads = 0;
   let compareReads = 0;
+  let commitReads = 0;
   let checkReads = 0;
   let mainReads = 0;
   const context = {
@@ -154,8 +168,57 @@ function scenario(
           return {
             data: {
               base_commit: { sha: options.compareBase ?? base },
+              merge_base_commit: { sha: base },
+              total_commits:
+                options.historyTotal ?? options.historyCommits?.length ?? 1,
+              commits: (options.historyCommits ?? [String(args.head)]).map(
+                (sha) => ({ sha }),
+              ),
               files: options.files ?? [
                 { filename: "docs/normal.md", status: "modified" },
+              ],
+            },
+          };
+        },
+        getCommit: async (args: Record<string, any>) => {
+          commitReads++;
+          expect(args).toMatchObject({
+            owner: "gyldlab",
+            repo: "keld",
+            per_page: 100,
+          });
+          const files = options.commitFilesBySha?.[args.ref] ??
+            options.files ?? [
+              { filename: "docs/normal.md", status: "modified" },
+            ];
+          return {
+            data: {
+              sha: args.ref,
+              parents: [{ sha: base }],
+              files: files.slice((args.page - 1) * 100, args.page * 100),
+            },
+          };
+        },
+        getRepoRuleset: async (args: Record<string, any>) => {
+          expect(args).toEqual({
+            owner: "gyldlab",
+            repo: "keld",
+            ruleset_id: 26261486,
+          });
+          return {
+            data: {
+              enforcement: "active",
+              rules: [
+                {
+                  type: "required_status_checks",
+                  parameters: {
+                    strict_required_status_checks_policy:
+                      options.strictNative ?? false,
+                    required_status_checks: [
+                      { context: "KELD VeriSentry", integration_id: 5550363 },
+                    ],
+                  },
+                },
               ],
             },
           };
@@ -203,7 +266,7 @@ function scenario(
         expect(
           typeof args.ref === "string" && /^[a-f0-9]{40}$/.test(args.ref),
         ).toBe(true);
-        return options.checks ?? [];
+        return options.checksByRef?.[String(args.ref)] ?? options.checks ?? [];
       }
       throw Error("Unexpected paginated method");
     },
@@ -237,6 +300,7 @@ function scenario(
     failures,
     getReads: () => reads,
     getCompareReads: () => compareReads,
+    getCommitReads: () => commitReads,
     getCheckReads: () => checkReads,
     getMainReads: () => mainReads,
   };
@@ -289,6 +353,7 @@ test("refresh is a protected-main-only cron and authorized manual dispatch, with
   );
   expect(refreshSource).not.toMatch(/actions\/checkout|\n\s+-\s+run:/);
   expect(protectedPathBlock(body)).toBe(protectedPathBlock(verifierBody));
+  expect(historyBlock(body)).toBe(historyBlock(verifierBody));
 });
 
 test("a normal current PR gets exactly one App ID 5550363 success on test merge, never head", async () => {
@@ -307,6 +372,43 @@ test("a normal current PR gets exactly one App ID 5550363 success on test merge,
   expect(s.failures).toEqual([]);
   expect(s.getReads()).toBe(4);
   expect(s.getCompareReads()).toBe(1);
+});
+
+test("strict native rule and current main ancestry refresh both HEAD and merge", async () => {
+  const s = scenario({ strictNative: true, sourceSha: base, mainSha: base });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses.map((x) => x.head_sha)).toEqual([merge, head]);
+  expect(s.statuses.every((x) => x.conclusion === "success")).toBe(true);
+  expect(s.failures).toEqual([]);
+});
+test("loose ruleset withholds HEAD even when already-complete history passes", async () => {
+  const s = scenario({ strictNative: false, sourceSha: base, mainSha: base });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses.map((x) => x.head_sha)).toEqual([merge]);
+  expect(s.messages.join(" ")).toContain("headWithheld");
+});
+test("hidden protected modification followed by revert blocks App PASS in refresh", async () => {
+  const futureMain = "e".repeat(40);
+  const s = scenario({
+    files: [{ filename: "docs/readme.md", status: "modified" }],
+    historyCommits: [futureMain, head],
+    commitFilesBySha: {
+      [futureMain]: [
+        { filename: ".github/workflows/ci.yml", status: "modified" },
+      ],
+      [head]: [{ filename: "docs/readme.md", status: "modified" }],
+    },
+  });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(1);
+  expect(s.statuses[0]?.conclusion).toBe("failure");
+  expect(s.statuses[0]?.head_sha).toBe(merge);
+});
+test("incomplete commit inventory cannot create sticky App failure or PASS", async () => {
+  const s = scenario({ historyTotal: 2 });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
 });
 
 test("protected CI path is a real App failure, not an omitted or neutral result", async () => {
