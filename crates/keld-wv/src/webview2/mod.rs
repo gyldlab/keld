@@ -136,6 +136,8 @@ use windows_permissions::{Acl, LocalBox, SecurityDescriptor};
 use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
+pub use crate::engine::AppReadyTrigger;
+use crate::engine::first_host_init_turn;
 use crate::engine::{
     AppWindowCommand, AppWindowEvent, DevtoolsAction, NavTarget, Rect, WebEngine,
     WebView2EngineExt, WebviewSpec,
@@ -2545,6 +2547,13 @@ struct ProfileReleaseWait {
     withhold_release_event: bool,
 }
 
+/// Parks a [`AppReadyTrigger::HostInitialized`] boot's UI thread after loop setup and
+/// before the first Init turn, so the host's Init watch must end the process alone
+/// (the macOS control's name). A `profile-test-hooks` debug fixture, never in a
+/// release build; `keld-core` removes it from the Bun child's environment.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub const TEST_STALL_BEFORE_INIT_ENV: &str = "KELD_T1B_STALL_BEFORE_INIT";
+
 /// `KELD_TEST_WINDOWS_BARRIER_GRACE_EXPIRY=1` makes the host site's barrier lose
 /// its `BrowserProcessExited` event under a 1 s post-exit grace, so the handover's
 /// UI end fails typed with `GraceExpired` (KEL-53 §7 "8, 20 (profile handover)",
@@ -3202,6 +3211,10 @@ impl WebView2Engine {
     /// Commands cross tao's [`EventLoopProxy`], so I/O threads never mutate
     /// the HWND or `WebView2` controller directly. Closing the last window emits
     /// [`AppWindowEvent::LastWindowClosed`] and waits for the app's Quit.
+    /// `on_loop_entry` runs once after loop setup succeeded, before the first turn:
+    /// the host arms its external Init watch there. A
+    /// [`AppReadyTrigger::HostInitialized`] boot then emits
+    /// [`AppWindowEvent::HostInitialized`] from the loop's actual first Init turn.
     ///
     /// # Errors
     ///
@@ -3213,6 +3226,8 @@ impl WebView2Engine {
         mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
+        ready_trigger: AppReadyTrigger,
+        on_loop_entry: impl FnOnce(),
     ) -> Result<(), WvError> {
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
@@ -3260,6 +3275,20 @@ impl WebView2Engine {
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
         let mut first_loop_turn = true;
+        let mut host_init_emitted = false;
+        // Arm the host's external Init watch only after loop setup has succeeded.
+        // The watch is independent of Tao's pre-Init proxy availability.
+        on_loop_entry();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if ready_trigger == AppReadyTrigger::HostInitialized
+            && std::env::var_os(TEST_STALL_BEFORE_INIT_ENV).is_some()
+        {
+            // Private child-only failure control. The coordinator must terminate
+            // this process: the UI thread cannot service a proxy or unwind.
+            loop {
+                std::thread::park();
+            }
+        }
         let code = event_loop.run_return(move |event, _, control_flow| {
             if first_loop_turn {
                 first_loop_turn = false;
@@ -3267,6 +3296,16 @@ impl WebView2Engine {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .first_loop_turn();
+            }
+            if ready_trigger == AppReadyTrigger::HostInitialized
+                && first_host_init_turn(&event, &mut host_init_emitted)
+                && !report_host_initialized(&events)
+            {
+                fatal_in_loop.store(true, Ordering::Release);
+                commit_profile_stop(stop_in_loop.as_ref());
+                views.clear();
+                exit_requested = true;
+                release_in_loop.arm();
             }
             release_in_loop.poll();
             if release_in_loop.fault().is_some() {
@@ -3402,6 +3441,18 @@ impl WebView2Engine {
             .get(&id.0)
             .ok_or(WvError::UnknownWebview { id: id.0 })
     }
+}
+
+/// Sends the first-Init milestone, sampled on the native UI owner before enqueueing:
+/// the Core receiver may be descheduled past the absolute first-Init deadline even
+/// when this genuine event happened on time. `false` means Core's receiver is gone,
+/// so nothing can ever observe Ready; the caller ends the session fatally.
+fn report_host_initialized(events: &Sender<AppWindowEvent>) -> bool {
+    events
+        .send(AppWindowEvent::HostInitialized {
+            observed_at: Instant::now(),
+        })
+        .is_ok()
 }
 
 const fn app_window_slot_available(created: bool, pending: bool, has_views: bool) -> bool {
@@ -4675,6 +4726,25 @@ mod tests {
             }
             other => panic!("callback failure must produce typed Navigate: {other:?}"),
         }
+    }
+
+    #[test]
+    fn host_initialized_report_is_sampled_once_and_detects_a_gone_coordinator() {
+        let (events, receiver) = std::sync::mpsc::channel();
+        let before = std::time::Instant::now();
+        assert!(super::report_host_initialized(&events));
+        match receiver.try_recv() {
+            Ok(super::AppWindowEvent::HostInitialized { observed_at }) => {
+                assert!(observed_at >= before, "the UI turn samples the instant");
+            }
+            other => panic!("expected the Init milestone, got {other:?}"),
+        }
+        assert!(receiver.try_recv().is_err(), "one report is one milestone");
+        drop(receiver);
+        assert!(
+            !super::report_host_initialized(&events),
+            "a dropped coordinator can never publish Ready"
+        );
     }
 
     #[test]
