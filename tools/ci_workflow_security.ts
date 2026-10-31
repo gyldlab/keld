@@ -784,6 +784,174 @@ export function checkPullRequestTargetWorkflow(
       }
     }
   }
+  if (label.endsWith("keldbot.yml")) {
+    checkKeldBotMergeGroupTokenIsolation(workflow, jobs);
+  }
+}
+
+/**
+ * KeldBot uses its write-capable legacy bot secret only for metadata labels
+ * and comments on pull_request_target. The merge_group path must not acquire
+ * this token if a later edit adds a step, changes a condition or token input.
+ */
+function checkKeldBotMergeGroupTokenIsolation(
+  workflow: Mapping,
+  jobs: Mapping,
+): void {
+  const on = mapping(workflow.on, "KeldBot event triggers");
+  const group = mapping(on.merge_group, "KeldBot merge_group trigger");
+  if (
+    Object.keys(group).length !== 2 ||
+    !Array.isArray(group.types) ||
+    group.types.length !== 1 ||
+    group.types[0] !== "checks_requested" ||
+    !Array.isArray(group.branches) ||
+    group.branches.length !== 1 ||
+    group.branches[0] !== "main" ||
+    Object.keys(mapping(workflow.permissions, "KeldBot permissions")).length !==
+      0 ||
+    Object.hasOwn(workflow, "env")
+  ) {
+    fail(
+      "KeldBot merge_group must target only main with default-deny permissions.",
+    );
+  }
+  const names = ["queue-identity", "gatekeeper", "size-label", "title-lint"];
+  if (
+    Object.keys(jobs).length !== names.length ||
+    names.some((name) => !Object.hasOwn(jobs, name))
+  ) {
+    fail("KeldBot merge_group must retain its reviewed jobs.");
+  }
+  const botSecret = "$" + "{{ secrets.ROBOKELD_TOKEN }}";
+  const readToken = "$" + "{{ github.token }}";
+  const prOnly = "github.event_name == 'pull_request_target'";
+  const groupOnly = "github.event_name == 'merge_group'";
+  const sizeOnly =
+    "github.event_name == 'pull_request_target' && github.event.action != 'edited'";
+  const identityNumber = "$" + "{{ needs['queue-identity'].outputs.number }}";
+  const identityHead = "$" + "{{ needs['queue-identity'].outputs.head_sha }}";
+  const identityResult = "$" + "{{ needs['queue-identity'].result }}";
+  const pinnedScript =
+    "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3";
+  for (const name of names) {
+    const job = mapping(jobs[name], "KeldBot " + name);
+    const jobKeys =
+      name === "queue-identity"
+        ? ["name", "runs-on", "permissions", "outputs", "steps"]
+        : name === "size-label"
+          ? ["if", "runs-on", "steps"]
+          : ["needs", "if", "permissions", "runs-on", "steps"];
+    exactKeys(job, jobKeys, "KeldBot " + name + " job");
+    if (job["runs-on"] !== "ubuntu-latest") {
+      fail("KeldBot " + name + " must use its reviewed Ubuntu runner.");
+    }
+    const steps = job.steps;
+    const count = name === "queue-identity" || name === "size-label" ? 1 : 3;
+    if (!Array.isArray(steps) || steps.length !== count) {
+      fail("KeldBot " + name + " must retain its reviewed step count.");
+    }
+    if (name === "size-label") {
+      if (job.if !== sizeOnly || Object.hasOwn(job, "permissions")) {
+        fail("KeldBot size-label bot secret must be PR-only.");
+      }
+    } else {
+      const permissions = mapping(
+        job.permissions,
+        "KeldBot " + name + " token",
+      );
+      if (
+        Object.keys(permissions).length !== 2 ||
+        permissions.contents !== "read" ||
+        permissions["pull-requests"] !== "read"
+      ) {
+        fail("KeldBot " + name + " merge_group token must be read-only.");
+      }
+    }
+    if (name === "gatekeeper" || name === "title-lint") {
+      if (
+        job.needs !== "queue-identity" ||
+        job.if !== "$" + "{{ always() }}" ||
+        steps[1]?.if !== prOnly ||
+        steps[2]?.if !== groupOnly
+      ) {
+        fail("KeldBot " + name + " must preserve PR/group step isolation.");
+      }
+    }
+    for (const [index, raw] of steps.entries()) {
+      const step = mapping(raw, "KeldBot " + name + " step");
+      const stepKeys =
+        name === "queue-identity"
+          ? ["name", "id", "uses", "with"]
+          : name === "size-label"
+            ? ["name", "uses", "with"]
+            : index === 0
+              ? ["name", "env", "uses", "with"]
+              : index === 1
+                ? ["name", "if", "uses", "with"]
+                : ["name", "if", "env", "uses", "with"];
+      exactKeys(step, stepKeys, "KeldBot " + name + " step");
+      const inputs = mapping(step.with, "KeldBot " + name + " inputs");
+      const token = inputs["github-token"];
+      if (
+        typeof inputs.script === "string" &&
+        inputs.script.includes("$" + "{{")
+      ) {
+        fail(
+          "KeldBot script must not contain GitHub Actions expression interpolation.",
+        );
+      }
+      if (
+        actionRef(step.uses, "KeldBot " + name) !== pinnedScript ||
+        Object.keys(inputs).length !== 2 ||
+        typeof inputs.script !== "string" ||
+        (token !== readToken && token !== botSecret)
+      ) {
+        fail(
+          "KeldBot " + name + " step must use approved GitHub-script tokens.",
+        );
+      }
+      if (token === botSecret) {
+        if (
+          (name === "size-label" && index !== 0) ||
+          (name !== "size-label" && (index !== 1 || step.if !== prOnly))
+        ) {
+          fail("KeldBot ROBOKELD_TOKEN must never run on merge_group.");
+        }
+      } else if (
+        name === "size-label" ||
+        (index === 1 && name !== "queue-identity")
+      ) {
+        fail("KeldBot " + name + " must preserve PR-only bot credentials.");
+      }
+      if (name === "gatekeeper" || name === "title-lint") {
+        if (index === 0) {
+          inputsMatch(
+            mapping(step.env, "KeldBot identity guard environment"),
+            {
+              KELD_QUEUE_RESULT: identityResult,
+              KELD_QUEUE_NUMBER: identityNumber,
+              KELD_QUEUE_HEAD: identityHead,
+            },
+            "KeldBot identity guard environment",
+          );
+        } else if (index === 2) {
+          inputsMatch(
+            mapping(step.env, "KeldBot group check environment"),
+            {
+              KELD_QUEUE_NUMBER: identityNumber,
+              KELD_QUEUE_HEAD: identityHead,
+            },
+            "KeldBot group check environment",
+          );
+        } else if (Object.hasOwn(step, "env")) {
+          fail("KeldBot PR-only step must not add environment credentials.");
+        }
+      } else if (Object.hasOwn(step, "env")) {
+        fail("KeldBot " + name + " must not add environment credentials.");
+      }
+    }
+  }
 }
 
 /**

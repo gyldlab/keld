@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { checkPullRequestTargetWorkflow } from "./ci_workflow_security";
 
 const keldbot = Bun.YAML.parse(
   readFileSync(".github/workflows/keldbot.yml", "utf8"),
@@ -209,6 +210,136 @@ test("merge_group produces the three existing GitHub required checks on its own 
       expect(step).not.toHaveProperty("run");
       expect(step.uses).not.toMatch(/actions\/checkout/);
     }
+  }
+});
+
+test("KeldBot cannot escalate the PR bot secret into merge_group", () => {
+  expect(() =>
+    checkPullRequestTargetWorkflow(
+      readFileSync(".github/workflows/keldbot.yml", "utf8"),
+      "keldbot.yml",
+    ),
+  ).not.toThrow();
+  const mutants: Array<[string, (workflow: any) => void, string]> = [
+    [
+      "secret token under the group check",
+      (f) => {
+        f.jobs.gatekeeper.steps[2].with["github-token"] =
+          "$" + "{{ secrets.ROBOKELD_TOKEN }}";
+      },
+      "never run on merge_group",
+    ],
+    [
+      "PR bot step also runs for group events",
+      (f) => {
+        f.jobs.gatekeeper.steps[1].if = "always()";
+      },
+      "PR/group step isolation",
+    ],
+    [
+      "size label reenabled on group",
+      (f) => {
+        f.jobs["size-label"].if = "always()";
+      },
+      "PR-only",
+    ],
+    [
+      "write-capable queue token",
+      (f) => {
+        f.jobs["queue-identity"].permissions["pull-requests"] = "write";
+      },
+      "read-only",
+    ],
+    [
+      "job-level secret interpolation",
+      (f) => {
+        f.jobs.gatekeeper.env = {
+          GITHUB_SECRET: "$" + "{{ secrets.ROBOKELD_TOKEN }}",
+        };
+      },
+      "must contain only",
+    ],
+    [
+      "job service can exfiltrate read token",
+      (f) => {
+        f.jobs["queue-identity"].services = {
+          spy: { image: "image", env: { SECRET: "$" + "{{ github.token }}" } },
+        };
+      },
+      "must contain only",
+    ],
+    [
+      "job container credential injection",
+      (f) => {
+        f.jobs.gatekeeper.container = {
+          image: "image",
+          credentials: { password: "$" + "{{ secrets.ROBOKELD_TOKEN }}" },
+        };
+      },
+      "must contain only",
+    ],
+    [
+      "extra step on queued PR",
+      (f) => {
+        f.jobs["queue-identity"].steps[0].continue_on_error = true;
+      },
+      "must contain only",
+    ],
+    [
+      "step-level secret interpolation",
+      (f) => {
+        f.jobs.gatekeeper.steps[2].env.EXTRA =
+          "$" + "{{ secrets.ROBOKELD_TOKEN }}";
+      },
+      "group check environment",
+    ],
+    [
+      "script expression interpolates secret before JavaScript",
+      (f) => {
+        f.jobs.gatekeeper.steps[2].with.script +=
+          '\nconst stolen = "' + "$" + "{{ secrets.ROBOKELD_TOKEN }}" + '";';
+      },
+      "script must not contain GitHub Actions expression interpolation",
+    ],
+    [
+      "workflow-level secret interpolation",
+      (f) => {
+        f.env = { TOKEN: "$" + "{{ secrets.ROBOKELD_TOKEN }}" };
+      },
+      "default-deny",
+    ],
+    [
+      "unreviewed group execution step",
+      (f) => {
+        f.jobs.gatekeeper.steps.push({
+          uses: f.jobs.gatekeeper.steps[2].uses,
+          with: f.jobs.gatekeeper.steps[2].with,
+        });
+      },
+      "reviewed step count",
+    ],
+    [
+      "changed github-script action pin",
+      (f) => {
+        f.jobs.gatekeeper.steps[2].uses =
+          "actions/github-script@" + "f".repeat(40);
+      },
+      "approved GitHub-script tokens",
+    ],
+  ];
+  for (const [label, mutate, message] of mutants) {
+    const candidate = Bun.YAML.parse(
+      readFileSync(".github/workflows/keldbot.yml", "utf8"),
+    ) as Record<string, any>;
+    mutate(candidate);
+    expect(
+      () =>
+        checkPullRequestTargetWorkflow(
+          Bun.YAML.stringify(candidate),
+          "keldbot.yml",
+        ),
+      label,
+    ).toThrow(message);
   }
 });
 
