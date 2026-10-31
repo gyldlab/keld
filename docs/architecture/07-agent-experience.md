@@ -73,9 +73,12 @@ docs      https://keld.dev/e/KELD-<area><nnn> (task-oriented page, works in llms
 - **Examples as tests**: every documented API has a runnable happy-path, a
   validation-error, and an edge-case example; CI extracts and executes doc snippets so
   examples cannot drift.
-- **Generated project guidance**: `create-keld` and `keld migrate` emit an `AGENTS.md`
+- **Generated project guidance**: `create-keld` emits an `AGENTS.md`
   into the app (build/dev/test commands for *that* app, Keld conventions, permission
-  workflow, link to llms.txt) — Bun's `bun init` precedent. Keld's own docs ship an
+  workflow, link to llms.txt) — Bun's `bun init` precedent. Migration-generated
+  `AGENTS.md` is a later, separately owned CLI-guidance phase, outside GH-497's
+  first-proof `keld migrate --write` output set. It requires a separate approved
+  file owner, output contract, consent and rollback tests. Keld's own docs ship an
   `agents.md` alongside llms.txt (Shopify precedent).
 
 ## 4. Official Keld MCP server

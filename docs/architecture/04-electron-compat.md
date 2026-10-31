@@ -248,7 +248,13 @@ compatibility regression is a P1.
 ## 7. Updater bridge (the trap every migrator hits)
 
 Electron→Keld switchers face the same discontinuity as Electron→Tauri (Fluxzy lesson:
-users stranded on the old updater). `keld migrate` therefore generates a **bridge
-release recipe**: final Electron release whose electron-updater feed points at a
-Keld-built installer, plus feed-server config for serving both formats during the
-transition window. Documented as a first-class guide, not a footnote.
+users stranded on the old updater). A **bridge release recipe** and feed-server
+configuration are later guidance owned separately by #491's updater and release
+owners: a final Electron release whose electron-updater feed points at a Keld-built
+installer, with both formats served during the transition window.
+
+First-proof `keld migrate` does not generate that recipe or feed-server configuration;
+both are outside GH-497's closed output map. Future automatic generation requires a
+separately approved owner, exact output map, consent and rollback. Observing
+`setFeedURL` grants no updater network authority. The bridge remains a first-class
+guide, not a footnote.
