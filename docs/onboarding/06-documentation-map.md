@@ -66,7 +66,9 @@ on day one; read the others when you touch their area.
 
 ## `docs/specs/` — scoped feature designs
 
-Feature specs use [`docs/agents/spec-template.md`](../agents/spec-template.md), name the
+Feature specs use [`docs/agents/spec-template.md`](../agents/spec-template.md) and follow
+the size, layout and ID standard in [`.agents/specs.md`](../../.agents/specs.md). A spec
+over a cap is a directory: read its `index.md`, then only the parts your task needs. Specs name the
 owning tracker issue (Linear, or GitHub under #517), expose a visible status, and turn acceptance criteria into tests.
 `Status: draft` is design work only. `approved` authorizes the ordered implementation;
 `implementing` means approved slices are in progress; `done` means the spec's entire
@@ -162,7 +164,7 @@ source ledger before promoting any unresolved claim.
 | Doc | What's in it |
 |---|---|
 | [`workflow.md`](../agents/workflow.md) | The development loop: pick up the tracker issue (Linear, or GitHub under #517) → spec gate → isolated worktree → implementation/tests → verification → adversarial review → PR. Operational branch/OS rules live in `.agents/coordination.md`; current-head and PR rules live in `.agents/review.md`. |
-| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<kebab-name>.md`: goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
+| [`spec-template.md`](../agents/spec-template.md) | The ten-section template every change bigger than a bug fix needs, copied to `docs/specs/<id>-<slug>.md` under the standard in [`.agents/specs.md`](../../.agents/specs.md): goal and non-goals, spec refs, binary acceptance criteria (each becomes a test), design, boundaries (including "must not touch"), ordered tasks, test plan, review gates triggered, perf impact, open questions. Implementation may begin only after human approval; an approved spec may then move to `Status: implementing`. |
 | [`learnings.md`](../agents/learnings.md) | The searchable evidence log. Query relevant areas only; it is not loaded wholesale into every agent session. |
 
 ### `.agents/` — conditional playbooks

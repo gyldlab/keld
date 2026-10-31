@@ -883,7 +883,7 @@ classify_path() {
         .github/CODEOWNERS | .github/PULL_REQUEST_TEMPLATE.md | .github/ISSUE_TEMPLATE/* | \
         .gitignore | justfile | .codex/* | .agents/instruction-budget.tsv | \
         tools/ci_hygiene.rs | tools/atomic_protocol.rs | tools/agent_context.rs | tools/markdown_contract.rs | \
-        tools/justfile_contract.rs)
+        tools/justfile_contract.rs | tools/spec_structure.rs | tools/spec_structure_tests.rs)
             hygiene="$TRUE"
             # The shared justfile parser decides which recipes count as the Mermaid gate.
             if [[ "$changed_file" == justfile || "$changed_file" == tools/ci_hygiene.rs || \

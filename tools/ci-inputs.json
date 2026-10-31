@@ -290,6 +290,20 @@
       "reader_set": "policy-readers"
     },
     {
+      "owner": "Spec structure gate and self-tests",
+      "outputs": [
+        "local_spec-structure-test",
+        "local_spec-structure"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "AGENTS.md"
+      ],
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, relative link targets and Git history. A link target outside these inputs is rechecked at the next selected run, not when the target alone changes.",
+      "reader_set": "policy-readers"
+    },
+    {
       "owner": "Product status and self-tests",
       "outputs": [
         "local_product-status-test",
@@ -518,7 +532,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "e1436c12b8b92ac87e27cf312d59965749014df681004262869527398cc4d0c2"
+      "sha256": "9652b6f100d2116c2faf2a2d9e017ab091ae54a03908ffe5a8fe6d70df1bda8c"
     },
     "policy-readers": {
       "patterns": [
@@ -528,14 +542,14 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "b54721d9f58ea8314a4dffa0057c747e827166e76ae4129fa7e514cb21c19a50"
+      "sha256": "b35e4176ebdf708727dbf89ef9294de0779f7c60b1eb2f522abe7cadbe5d7d69"
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
       ],
-      "sha256": "ad9a8171d95dd644cd8eb158636154b77b0eebf5b7de047b0d2cb30310070c2a"
+      "sha256": "458180542beffbf63666dce1c0e13196c8bc09c1e1e221327c9aaaaae0fb2745"
     },
     "rustdoc-readers": {
       "patterns": [
@@ -545,13 +559,13 @@
         "rust-toolchain.toml",
         ".cargo/*"
       ],
-      "sha256": "4d9bb8ff7e708b80a1394ee9d010cbe9d5f659eea7b2737181ab70fc4bb97e21"
+      "sha256": "b38a14cdfdd191e00cdfc127b2f218729028cfae60745755fbe9be7745888c28"
     },
     "dependency-command": {
       "patterns": [
         "justfile"
       ],
-      "sha256": "6c86664370001bcdc8d3e6f3386ea17a293edad7ea158a4c4695adb73d6ed94f"
+      "sha256": "e419601d24a79fc10d56217d9974a65a4c050a68bb7473b431897080b232e50f"
     },
     "status-test-readers": {
       "patterns": [
@@ -561,7 +575,7 @@
         "rust-toolchain.toml",
         "justfile"
       ],
-      "sha256": "265e56c85ca7f438be8f5d39dc7c763d58b950ad36e7a184693d96124b2dc40b"
+      "sha256": "4d6b0262f8d7a5b287173e5193fa76142907eff02c9dddf0ed27c89804f516c4"
     }
   },
   "live_inputs": {
