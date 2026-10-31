@@ -14,6 +14,7 @@ const workflow = Bun.YAML.parse(
   readFileSync(".github/workflows/ci-provenance.yml", "utf8"),
 ) as Record<string, any>;
 const job = workflow.jobs.provenance;
+const publisherJob = workflow.jobs.publish;
 const reviewedAction =
   "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3";
 const code = job.steps[0].with.script as string;
@@ -41,6 +42,9 @@ function fixture(
     state?: string;
     changedFiles?: number;
     changedOnSecondFetch?: boolean;
+    reviews?: Array<Record<string, any>>;
+    reviewError?: boolean;
+    userLogin?: string;
     apiFailure?: boolean;
     badEventNumber?: boolean;
     mutablePrFileList?: ChangedFile[];
@@ -52,6 +56,7 @@ function fixture(
   const expectedBase = overrides.base ?? "base-commit-1";
   const current = {
     number: 123,
+    user: { login: overrides.userLogin ?? "ordinary-agent" },
     state: overrides.state ?? "open",
     changed_files: overrides.changedFiles ?? files.length,
     base: {
@@ -63,6 +68,7 @@ function fixture(
   };
   let reads = 0;
   let paginationCalls = 0;
+  let reviewCalls = 0;
   let comparisonCalls = 0;
   const github = {
     rest: {
@@ -77,6 +83,9 @@ function fixture(
         },
         listFiles: () => {
           throw Error("GitHub paginate must be used");
+        },
+        listReviews: () => {
+          throw Error("GitHub paginate must be used for all review pages");
         },
       },
       repos: {
@@ -103,7 +112,7 @@ function fixture(
       },
     },
     paginate: async (_unused: unknown, args: Record<string, unknown>) => {
-      paginationCalls += 1;
+      reviewCalls += 1;
       if (overrides.apiFailure) throw Error("GitHub API unavailable");
       expect(args).toEqual({
         owner: "gyldlab",
@@ -111,7 +120,8 @@ function fixture(
         pull_number: 123,
         per_page: 100,
       });
-      return overrides.mutablePrFileList ?? files;
+      if (overrides.reviewError) throw Error("Review API unavailable");
+      return overrides.reviews ?? [];
     },
   };
   const context = {
@@ -125,13 +135,21 @@ function fixture(
     },
   };
   const messages: string[] = [];
-  const core = { info: (message: string) => messages.push(message) };
+  const outputs: Record<string, string> = {};
+  const core = {
+    info: (message: string) => messages.push(message),
+    setOutput: (name: string, value: string) => {
+      outputs[name] = value;
+    },
+  };
   return {
     run: () => evaluate(github, context, core),
     getReads: () => reads,
     getPages: () => paginationCalls,
+    getReviewCalls: () => reviewCalls,
     getComparisons: () => comparisonCalls,
     messages,
+    outputs,
   };
 }
 
@@ -148,13 +166,18 @@ test("base-owned workflow is immutable/read-only and never executes PR code", ()
     contents: "read",
     "pull-requests": "read",
   });
-  expect(Object.keys(workflow.jobs)).toEqual(["provenance"]);
+  expect(Object.keys(workflow.jobs)).toEqual(["provenance", "publish"]);
+  expect(job.outputs).toEqual({
+    verified_head_sha: "${{ steps.verify.outputs.verified_head_sha }}",
+    verified_base_sha: "${{ steps.verify.outputs.verified_base_sha }}",
+  });
   expect(job.name).toBe("CI provenance");
   expect(job["runs-on"]).toBe("ubuntu-latest");
   expect(job["timeout-minutes"]).toBe(5);
   expect(job.steps).toHaveLength(1);
   expect(job.steps[0].uses).toBe(reviewedAction);
-  expect(Object.keys(job.steps[0])).toEqual(["name", "uses", "with"]);
+  expect(job.steps[0].id).toBe("verify");
+  expect(Object.keys(job.steps[0])).toEqual(["name", "id", "uses", "with"]);
   expect(Object.keys(job.steps[0].with)).toEqual(["script"]);
   expect(job.steps[0].run).toBeUndefined();
   expect(job.if).toBeUndefined();
@@ -170,6 +193,10 @@ test("benign documentation and non-authority lockfile changes are admitted", asy
   expect(f.getPages()).toBe(0);
   expect(f.getComparisons()).toBe(1);
   expect(f.messages[0]).toContain("2 PR files inspected");
+  expect(f.outputs).toEqual({
+    verified_head_sha: "head-commit-1",
+    verified_base_sha: "base-commit-1",
+  });
 });
 
 test.each([
@@ -460,4 +487,74 @@ test("backslash and NUL in GitHub paths are refused, not normalized", async () =
       fixture([{ filename, status: "added" }]).run(),
     ).rejects.toThrow("malformed Git paths");
   }
+});
+
+test("a protected CI change needs an exact-head-and-base authenticated owner review", async () => {
+  const head = "c".repeat(40);
+  const base = "d".repeat(40);
+  const receipt = `KELD-VERISENTRY-CI-MAINTENANCE base=${base} head=${head}`;
+  const protectedFile = [
+    { filename: ".github/workflows/ci.yml", status: "modified" },
+  ];
+  const valid = {
+    id: 3,
+    user: { login: "0monish" },
+    state: "APPROVED",
+    commit_id: head,
+    body: receipt,
+  };
+  const f = fixture(protectedFile, { head, base, reviews: [valid] });
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(f.getReads()).toBe(2);
+  expect(f.messages.join(" ")).toContain("authenticated maintainer approval");
+  expect(f.outputs).toEqual({
+    verified_head_sha: head,
+    verified_base_sha: base,
+  });
+
+  // No review, another identity, stale head/base or a later change-request
+  // cannot turn a protected workflow edit into a fake-green PR.
+  for (const reviews of [
+    [],
+    [{ ...valid, user: { login: "evil-agent" } }],
+    [{ ...valid, commit_id: "e".repeat(40) }],
+    [{ ...valid, body: receipt.replace(base, "f".repeat(40)) }],
+    [{ ...valid, body: receipt.replace(head, "a".repeat(40)) }],
+    [{ ...valid, body: "LGTM" }],
+    [{ ...valid, state: "DISMISSED" }],
+    [{ ...valid }, { ...valid, id: 4, state: "CHANGES_REQUESTED" }],
+  ]) {
+    const attempt = fixture(protectedFile, { head, base, reviews });
+    await expect(attempt.run()).rejects.toThrow("protected CI authority");
+    expect(attempt.outputs).toEqual({});
+  }
+});
+
+test("maintainer self-approval and review API failure do not authorize CI edits", async () => {
+  const head = "c".repeat(40);
+  const base = "d".repeat(40);
+  const reviews = [
+    {
+      id: 10,
+      user: { login: "amishabenramani" },
+      state: "APPROVED",
+      commit_id: head,
+      body: `KELD-VERISENTRY-CI-MAINTENANCE base=${base} head=${head}`,
+    },
+  ];
+  const file = [{ filename: "tools/ci_changes.sh", status: "modified" }];
+  await expect(
+    fixture(file, { head, base, reviews, userLogin: "amishabenramani" }).run(),
+  ).rejects.toThrow("protected CI authority");
+  await expect(
+    fixture(file, { head, base, reviewError: true }).run(),
+  ).rejects.toThrow("Review API unavailable");
+  await expect(
+    fixture(file, {
+      head,
+      base,
+      reviews,
+      changedOnSecondFetch: true,
+    }).run(),
+  ).rejects.toThrow("stale pull-request head/base");
 });
