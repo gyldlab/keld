@@ -29,27 +29,28 @@ Before completion or handoff:
 
 - Every material finding MUST have a disposition: implemented with evidence, tracked
   on its owning issue with finding and next acceptance check, independently refuted
-  with evidence, or blocked with owner and exact next action. Search/dedupe first;
+  with evidence, or blocked with owner and next action. Search/dedupe first;
   local reports or unrelated ticket URLs are insufficient.
 - Within authorized scope, persist Linear findings/acceptance updates this session,
   then re-fetch and verify their content. Preserve other claims; comment evidence on
-  actively owned issues. Publication/tool blockers retain the exact pending update;
+  owned issues. Publication/tool blockers retain the exact pending update;
   never fabricate a receipt.
-- Reconcile original objectives, applicable gates, review/merge/publication and
-  parent/subtask status. Coordination owns resource disposition and actual cleanup.
+- Reconcile original objectives, gates, review/merge/publication and parent/subtask
+  status. Coordination owns resource disposition and actual cleanup.
   Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
-- Run `just session-closeout <receipt>` after the final state change. Preserve receipt,
-  baseline and hashed evidence. `tools/session_closeout.py` owns the receipt format.
-  Reconcile baseline against conversation/tool history; the validator cannot discover
-  omitted work or authenticate an agent-written remote receipt. Independently re-read
-  remote updates and resource state before accepting the result.
+- Run `just session-closeout <receipt>` after the final state change. Publish receipt,
+  baseline and hashed evidence to the owning remote record; verify its tip before
+  local copies are disposable; no machine holds the only evidence copy.
+  `tools/session_closeout.py` owns the receipt format. Reconcile baseline with
+  conversation/tool history; the validator cannot find omitted work or authenticate an
+  agent-written remote receipt. Re-read remote state first.
 
-Interruptions preserve inventory/next action; refresh on resume before acting.
+Interruptions preserve inventory/next action; refresh on resume.
 Prior receipts do not prove new-turn completion; checked handoff is not implementation.
 CI checks validator/policy, not live Linear or local cleanup. Activate only for
 non-trivial work, never standalone factual questions. Hook enforcement requires client
-support, registration trusted through its UI and exercised activation. Without activation,
-claim no enforcement; report unsupported/untrusted clients.
+support, UI-trusted registration and exercised activation; without it claim no
+enforcement and report unsupported/untrusted clients.
 
 ## Tracker issue
 
