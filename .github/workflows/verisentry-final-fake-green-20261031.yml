@@ -1,0 +1,11 @@
+name: Untrusted same-name green spoof proof
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  forged_verisentry:
+    name: KELD VeriSentry
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "GitHub Actions App 15368 cannot impersonate VeriSentry App 5550363"
