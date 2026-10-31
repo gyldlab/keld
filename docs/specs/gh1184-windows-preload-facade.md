@@ -50,7 +50,7 @@ Owner: @amishabenramani (real Windows operator) · Updated: 2026-10-31
 
 Code citations are at `origin/main` `457a9c3b37f71179f167bd1f8c706c461cc4c479`. W2 and W3
 citations name the head each was read at; r15 re-read the task, blocker, ticket and fence sentences at
-#1280 `421b0125` (r19) and #1311 `17bc89fb` (r17, pushed, though its Status line still says local draft):
+#1280 `421b0125` (r19, merged to `main` as `231a212a`) and #1311 `17bc89fb` (r17, pushed, though its Status line still says local draft):
 they hold there except for AC24 (15)'s `CreateWindow` answer and §4.4's transaction order, both corrected
 in r15. GH-497 is read at #1172 `2044f22e`: `Status: approved`, an owner-delegated source-contract
 approval of exact `984c355a`, whose rows the pin keeps unchanged, and "not independent review or
@@ -2412,7 +2412,7 @@ message/effect/credit counters, the failing mutants and the native control's act
     `PostWebMessageAsString`. Until decided, accepted divergence 4 covers it. Decide before
     T3.
 13. **Q13 (browser-process exit terminal; owner #1188/W2) — (a) answered by #1280 r16 D8
-    (`be9e9e56`), a named dependency until #1280 is approved and its T3 lands; (b) a future
+    (`be9e9e56`), a named dependency until W2's T3 lands (#1280 merged as `231a212a`); (b) a future
     option.** W1 never applies `onLoss` after `ProcessFailed(BROWSER_PROCESS_EXITED)`
     and revokes at once (§4.5). It reuses W2's `AbnormalExit` terminal instead of adding one. On
     main at `457a9c3b` only an abnormal `BrowserProcessExited` receipt latches it
