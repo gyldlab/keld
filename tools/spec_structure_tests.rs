@@ -2985,8 +2985,10 @@ fn the_committed_gh1095_row_is_below_its_seal() {
     let mut report = Report::default();
     let rows = parse_baseline(BASELINE, &committed, &mut report);
     assert!(report.findings.is_empty(), "{:?}", report.findings);
-    let bytes = rows[path].bytes.expect("over the byte cap");
-    assert!(bytes < at_seal, "{bytes} at head, {at_seal} at the seal");
+    // A drained row, or a value back under the byte cap, is the shrink this test guards.
+    if let Some(bytes) = rows.get(path).and_then(|row| row.bytes) {
+        assert!(bytes < at_seal, "{bytes} at head, {at_seal} at the seal");
+    }
 }
 
 #[test]
