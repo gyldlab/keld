@@ -165,7 +165,7 @@ Windows/app: #449 → #450 → #474 → #451 → #456 → #534 (+ `setDocumentEd
 Native: #477 → #478 → #561; #480 → #556; #481 → #558 → #1356; #479 (shell, navigation handler).
 Protocol/session: #554 → #471; #473 seam.
 Runtime: #452, #453, #502, #570, #593, #586/#588 (all first-proof; consumed, not re-specified).
-Proof: #589 (draw.io) → #1354 (Zettlr). Migrate: #592 reports the Zettlr blocker classes; the proof uses a hand-authored artefact (X02-T3 pattern) because `keld migrate --write` (#591) is not required for scoring.
+Proof: #589 (draw.io) → #1354 (Zettlr macOS) → #1359 (Linux lane) → #1360 (Windows lane). Migrate: #592 reports the Zettlr blocker classes; the proof uses a hand-authored artefact (X02-T3 pattern) because `keld migrate --write` (#591) is not required for scoring.
 
 ### Parked (named re-entry condition)
 
@@ -290,12 +290,13 @@ immediate close instead of veto → Cancel branch fails; non-macOS or mocked hos
 
 ## 11. Issue links
 
-New (this plan): [#1354](https://github.com/gyldlab/keld/issues/1354) Zettlr product proof ·
+New (this plan): [#1354](https://github.com/gyldlab/keld/issues/1354) Zettlr product proof (macOS) ·
 [#1355](https://github.com/gyldlab/keld/issues/1355) chokidar-on-Bun prototype ·
 [#1356](https://github.com/gyldlab/keld/issues/1356) `systemPreferences.subscribeNotification` ·
+[#1359](https://github.com/gyldlab/keld/issues/1359) Zettlr Linux lane · [#1360](https://github.com/gyldlab/keld/issues/1360) Zettlr Windows lane ·
 [#1358](https://github.com/gyldlab/keld/issues/1358) `program(zettlr)` tracker.
 
-Decisions updated with primary-source receipts (not closed): [#399](https://github.com/gyldlab/keld/issues/399), [#401](https://github.com/gyldlab/keld/issues/401).
+Decisions updated with primary-source receipts (not closed): [#399](https://github.com/gyldlab/keld/issues/399), [#401](https://github.com/gyldlab/keld/issues/401) (incl. the origin precondition correction); oracle ruling posted on [#1183](https://github.com/gyldlab/keld/issues/1183).
 
 Existing tickets reused (no duplicates created): #540 #465 #543 #544 #545 #546 #547 #548 #549 #550
 #551 #541 #552 #542 #484 #467 #571 #567 #570 #554 #471 #473 #474 #555 #449 #450 #451 #455 #456 #534
