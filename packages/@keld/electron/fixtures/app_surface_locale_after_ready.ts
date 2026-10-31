@@ -45,7 +45,15 @@ try {
   const locale = (app as unknown as { getLocale(): unknown }).getLocale();
   outcome = `returned=${typeof locale}`;
 } catch (error) {
-  outcome = `threw=${error instanceof TypeError ? "TypeError" : String(error)}`;
+  if (error instanceof TypeError) {
+    outcome = "threw=TypeError";
+  } else {
+    // GH-452 T1: the fail-closed typed refusal names the fact and the ticket.
+    const typed = error as Error & { code?: unknown; fact?: unknown };
+    const code = typeof typed.code === "string" ? typed.code : String(error);
+    const cites = typed.message?.includes("GH-452") ? "GH-452" : "none";
+    outcome = `threw=${code} fact=${String(typed.fact)} cites=${cites}`;
+  }
 }
 writeSync(
   1,
