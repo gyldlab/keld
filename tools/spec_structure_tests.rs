@@ -4219,6 +4219,16 @@ fn the_normalizer_renders_inline_text() {
     assert_eq!(shown(&referenced, 0).as_deref(), Some("a b c"));
     let targets: Vec<&str> = referenced.targets().iter().map(|(_, link)| *link).collect();
     assert_eq!(targets, ["/u", "/v", "/w/x", "/u", "/v", "/w/x"]);
+    assert_eq!(
+        shown_lines("[a][R] [B c]\n\n[r]: /u\n[b  C]: /v\n")[0].as_deref(),
+        Some("a B c"),
+        "a label folds as CommonMark folds it"
+    );
+    assert_eq!(
+        targets_of("[s]:\n\\\nb\n"),
+        ["\\"],
+        "a line ending ends a target, backslash or not"
+    );
     let unresolved = render_text("&foo; \\&bar; `&baz;` &amp;qux;");
     assert_eq!(unresolved.text, "&foo; &bar; &baz; &qux;");
     assert_eq!(
