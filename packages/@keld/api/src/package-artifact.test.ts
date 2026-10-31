@@ -59,6 +59,7 @@ test("real packed SDK installs offline with one API app identity", async () => {
       ]),
     );
     const build = Bun.spawnSync(["bun", producer, scratch], {
+      cwd: resolve(import.meta.dir, "../../../.."),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -66,6 +67,7 @@ test("real packed SDK installs offline with one API app identity", async () => {
     const second = join(scratch, "second");
     mkdirSync(second);
     const rebuild = Bun.spawnSync(["bun", producer, second], {
+      cwd: resolve(import.meta.dir, ".."),
       stdout: "pipe",
       stderr: "pipe",
     });
