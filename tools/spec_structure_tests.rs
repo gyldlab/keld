@@ -4,6 +4,7 @@
 //! mutant must trip exactly the rule it names: if a second rule also fired, deleting
 //! the first rule could leave the fixture red and hide that deletion.
 
+use super::rendered::{MAX_LIST_DEPTH, is_thematic, split_cells};
 use super::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -284,6 +285,38 @@ struct Mutant {
     apply: fn(&mut Fixture),
 }
 
+/// The value of `label` on the first line of `line`, read from its rendered view.
+fn value_of(line: &str, label: &str, spelling: Spelling) -> Option<String> {
+    let doc = Doc::parse("x.md", line);
+    field_value(doc.line(0).field()?, label, spelling)
+}
+
+/// The rendered text of one line, or `None` when it shows nothing.
+fn shown(doc: &Doc, index: usize) -> Option<String> {
+    doc.line(index).prose().map(|line| line.text.clone())
+}
+
+/// Every line of `text` in the rendered view: `None` for one that shows nothing.
+fn shown_lines(text: &str) -> Vec<Option<String>> {
+    let doc = Doc::parse("x.md", text);
+    (0..doc.line_count()).map(|at| shown(&doc, at)).collect()
+}
+
+/// The link targets of `text`, definitions included.
+fn targets_of(text: &str) -> Vec<String> {
+    let doc = Doc::parse("x.md", text);
+    doc.targets()
+        .iter()
+        .map(|(_, target)| (*target).to_owned())
+        .collect()
+}
+
+/// The first definition or footnote label of `text`.
+fn label_of(text: &str) -> Option<String> {
+    let doc = Doc::parse("x.md", text);
+    doc.labels().first().map(|(_, label)| (*label).to_owned())
+}
+
 fn long_line() -> String {
     format!("{}\n", "x".repeat(MAX_LINE_CHARS + 1))
 }
@@ -507,6 +540,16 @@ fn mutants() -> Vec<Mutant> {
             rule: Rule::Sections,
             label: "template fence loses a section",
             apply: |f| f.replace(TEMPLATE, "## 9. Perf impact\n", ""),
+        },
+        Mutant {
+            rule: Rule::Entity,
+            label: "a heading holds a reference no rule resolves",
+            apply: |f| f.replace(SINGLE, "## 5.", "### A note&foo;\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::Entity,
+            label: "a label holds a reference no rule resolves",
+            apply: |f| f.replace(SINGLE, "## 5.", "&foo;Pin: x\n\n## 5."),
         },
         Mutant {
             rule: Rule::Link,
@@ -1946,7 +1989,7 @@ fn link_from_design(fixture: &Fixture, target: &str) {
     fixture.replace(&path, "[goal](index.md#1-goal--non-goals)", &link);
 }
 
-const ALL_RULES: [Rule; 44] = [
+const ALL_RULES: [Rule; 45] = [
     Rule::SizeLines,
     Rule::SizeBytes,
     Rule::SizeLineLength,
@@ -1973,6 +2016,7 @@ const ALL_RULES: [Rule; 44] = [
     Rule::Comment,
     Rule::Collision,
     Rule::Unreadable,
+    Rule::Entity,
     Rule::AcFields,
     Rule::TaskFields,
     Rule::BlockerFields,
@@ -2370,14 +2414,11 @@ fn a_field_may_use_any_list_marker_and_either_emphasis() {
         "**Then**: x",
         "Then: x",
     ] {
-        let value = field_value(line, "Then", Spelling::Exact);
+        let value = value_of(line, "Then", Spelling::Exact);
         assert_eq!(value.as_deref(), Some("x"), "{line}");
     }
-    assert_eq!(
-        field_value("- Thenceforth: x", "Then", Spelling::Header),
-        None
-    );
-    assert_eq!(field_value("- Then you: x", "Then", Spelling::Header), None);
+    assert_eq!(value_of("- Thenceforth: x", "Then", Spelling::Header), None);
+    assert_eq!(value_of("- Then you: x", "Then", Spelling::Header), None);
     let doc = Doc::parse("x.md", "- **Then:**\n\n  a loose value\n- **When:** x\n");
     assert_eq!(field_statements(&doc, 0, 4, None), ["a loose value"]);
     let doc = Doc::parse("x.md", "- **Then:**\n\n- **When:** x\n");
@@ -2412,7 +2453,7 @@ fn no_spelling_hides_a_second_field() {
         assert_only(&fixture, Rule::FieldDuplicate, &spelled);
     }
     for line in ["pin: x", "*Pin*: x", "**Pin**: x", "`Pin`: x", "Pin : x"] {
-        let value = field_value(line, "Pin", Spelling::Header);
+        let value = value_of(line, "Pin", Spelling::Header);
         assert_eq!(value.as_deref(), Some("x"), "{line}");
     }
 }
@@ -2546,9 +2587,9 @@ fn a_lower_case_label_in_a_body_is_prose() {
 /// A code span that runs past the colon quotes a field, on a wrapped line or anywhere.
 #[test]
 fn a_quoted_field_states_nothing() {
-    assert_eq!(field_value("`Pin: x` holds", "Pin", Spelling::Header), None);
-    assert_eq!(field_value("`Pin:x`", "Pin", Spelling::Header), None);
-    let value = field_value("`Pin:` x", "Pin", Spelling::Header);
+    assert_eq!(value_of("`Pin: x` holds", "Pin", Spelling::Header), None);
+    assert_eq!(value_of("`Pin:x`", "Pin", Spelling::Header), None);
+    let value = value_of("`Pin:` x", "Pin", Spelling::Header);
     assert_eq!(value.as_deref(), Some("x"));
     let fixture = Fixture::new();
     let path = format!("{DIR}/delivery.md");
@@ -2647,7 +2688,7 @@ fn one_field_may_hold_many_nested_statements() {
 fn a_fence_is_one_statement_wherever_it_opens() {
     let statements = |text: &str| {
         let doc = Doc::parse("x.md", text);
-        field_statements(&doc, 0, doc.lines.len(), None)
+        field_statements(&doc, 0, doc.line_count(), None)
     };
     assert_eq!(
         statements("- **Then:**\n  - ```\n    x\n    y\n    ```\n  - z\n"),
@@ -2669,14 +2710,14 @@ fn a_fence_is_one_statement_wherever_it_opens() {
 fn a_wrapped_line_continues_its_statement() {
     let statements = |text: &str, inline: &str| {
         let doc = Doc::parse("x.md", text);
-        field_statements(&doc, 0, doc.lines.len(), Some(inline.to_owned()))
+        field_statements(&doc, 0, doc.line_count(), Some(inline.to_owned()))
     };
     assert_eq!(statements("- Then: a\n  b\n  c\n", "a"), ["a b c"]);
     assert_eq!(statements("- Then: a\n  - b\n    c\n", "a"), ["a", "b c"]);
     assert_eq!(statements("- Then: a\n\n  b\n", "a"), ["a", "b"]);
     assert_eq!(
         statements("- Then: a\n  | x |\n  |---|\n", "a"),
-        ["a | x | |---|"]
+        ["a | x |"]
     );
     assert_eq!(statements("- Then: a\n\n  ```\n  b\n  ```\n", "a"), ["a b"]);
     assert_eq!(
@@ -2830,28 +2871,24 @@ fn parts_may_split_a_section_under_subtitles() {
 
 #[test]
 fn a_target_may_follow_its_label_but_prose_makes_no_definition() {
-    assert_eq!(continued_target("[a]:", "  b.md").as_deref(), Some("b.md"));
-    assert_eq!(
-        continued_target("[a]:", "  b.md 'title'").as_deref(),
-        Some("b.md")
-    );
-    assert_eq!(continued_target("[a]:", "some prose here"), None);
-    assert_eq!(continued_target("[a]:", ""), None);
+    let target = |text: &str| targets_of(text);
+    assert_eq!(target("[a]:\n  b.md\n"), ["b.md"]);
+    assert_eq!(target("[a]:\n  b.md 'title'\n"), ["b.md"]);
+    assert!(target("[a]:\nsome prose here\n").is_empty());
+    assert!(target("[a]:\n\n").is_empty());
     for block in ["---", "***", "===", "# a.md", "- a.md", "> a.md"] {
-        assert_eq!(continued_target("[a]:", block), None, "{block}");
+        assert!(target(&format!("[a]:\n{block}\n")).is_empty(), "{block}");
     }
     assert_eq!(
-        continued_target("[a]:", "    b.md").as_deref(),
-        Some("b.md"),
+        target("[a]:\n    b.md\n"),
+        ["b.md"],
         "indentation continues a paragraph"
     );
-    assert_eq!(continued_target("[a]: b.md", "c.md"), None, "already whole");
-    assert_eq!(
-        continued_target("[a]: b.md", "'title'"),
-        None,
-        "already whole"
-    );
-    assert_eq!(continued_target("[^1]:", "b.md"), None, "a footnote");
+    let whole = Doc::parse("x.md", "[a]: b.md\nc.md\n");
+    assert_eq!(shown(&whole, 1).as_deref(), Some("c.md"), "already whole");
+    let titled = Doc::parse("x.md", "[a]: b.md\n'title'\n");
+    assert_eq!(shown(&titled, 1), None, "a title on the next line");
+    assert!(target("[^1]:\nb.md\n").is_empty(), "a footnote");
     let fixture = Fixture::new();
     let path = format!("{DIR}/design.md");
     let block = "### D-1: choice\n\n[a]:\n  index.md\n\n[note]:\nthe host owns it\n\n\
@@ -2873,7 +2910,7 @@ fn a_target_may_follow_its_label_but_prose_makes_no_definition() {
 
 #[test]
 fn a_label_is_folded_as_commonmark_folds_it() {
-    let label = |line: &str| defined_label(line, None);
+    let label = label_of;
     assert_eq!(label("[Foo  Bar]: a.md"), label("[foo bar]: b.md"));
     assert_eq!(label("  [A]: a.md"), Some("a".to_owned()));
     assert_eq!(label("[STRASSE]: a.md"), label("[stra\u{df}e]: b.md"));
@@ -2894,9 +2931,9 @@ fn a_label_is_folded_as_commonmark_folds_it() {
     );
     assert_eq!(label("[a]: <>"), Some("a".to_owned()), "an empty target");
     assert_eq!(label("[a]:"), None, "no target");
-    assert_eq!(defined_label("[a]:", Some("prose words here")), None);
-    assert_eq!(defined_label("[a]:", Some("---")), None);
-    assert_eq!(defined_label("[A]:", Some("  b.md")), Some("a".to_owned()));
+    assert_eq!(label("[a]:\nprose words here"), None);
+    assert_eq!(label("[a]:\n---"), None);
+    assert_eq!(label("[A]:\n  b.md"), Some("a".to_owned()));
     assert_eq!(label("[^1]: a footnote"), Some("^1".to_owned()));
     assert_eq!(label("[FACT]: the host owns it"), None, "prose");
     assert_eq!(label("`[a]: b.md`"), None, "code");
@@ -3261,9 +3298,9 @@ fn list_content_stays_visible_at_any_indent() {
         "x.md",
         "- item\n\n    continued\n\n1. one\n2. two\n\n   text\n\n        code\n",
     );
-    assert_eq!(doc.visible[2].as_deref(), Some("    continued"));
-    assert_eq!(doc.visible[7].as_deref(), Some("   text"));
-    assert_eq!(doc.visible[9], None, "four columns past the item");
+    assert_eq!(shown(&doc, 2).as_deref(), Some("continued"));
+    assert_eq!(shown(&doc, 7).as_deref(), Some("text"));
+    assert_eq!(shown(&doc, 9), None, "four columns past the item");
 }
 
 /// Facts of the one lexer, each from the CommonMark 0.31.2 examples.
@@ -3274,7 +3311,7 @@ fn the_lexer_follows_commonmark_blocks() {
         doc(text)
             .headings()
             .iter()
-            .map(|heading| (heading.level, heading.text.clone()))
+            .map(|heading| (heading.level, heading.text().to_owned()))
             .collect()
     };
     let one = |level: usize, title: &str| vec![(level, title.to_owned())];
@@ -3282,7 +3319,7 @@ fn the_lexer_follows_commonmark_blocks() {
     assert_eq!(heading_levels("##\ta"), one(2, "a"));
     assert_eq!(heading_levels("## a ##"), one(2, "a"));
     assert_eq!(heading_levels("## a#"), one(2, "a#"));
-    assert_eq!(heading_levels("## a \\#"), one(2, "a \\#"));
+    assert_eq!(heading_levels("## a \\#"), one(2, "a #"));
     assert_eq!(heading_levels("###"), one(3, ""));
     assert_eq!(heading_levels("## ##"), one(2, ""));
     assert_eq!(heading_levels("    ## a"), vec![], "four spaces is code");
@@ -3422,11 +3459,11 @@ fn the_lexer_follows_commonmark_blocks() {
     );
     assert_eq!(heading_levels("<pre>\n</style>\n## a\n"), one(2, "a"));
     assert!(
-        doc("<https://example.com>\n").visible[0].is_some(),
+        shown(&doc("<https://example.com>\n"), 0).is_some(),
         "an autolink"
     );
-    assert!(doc("<id>-<slug> text\n").visible[0].is_some(), "prose");
-    assert!(doc("<state>\n").visible[0].is_none(), "a lone tag");
+    assert!(shown(&doc("<id>-<slug> text\n"), 0).is_some(), "prose");
+    assert!(shown(&doc("<state>\n"), 0).is_none(), "a lone tag");
 }
 
 #[test]
@@ -3440,15 +3477,15 @@ fn only_a_real_list_item_interrupts_a_paragraph() {
     assert_eq!(list_marker("-b", false), None);
     assert_eq!(list_marker("1234567890. b", false), None, "ten digits");
     let doc = Doc::parse("x.md", "a\n2. b\n    c\n\n    d\n");
-    assert_eq!(doc.visible[2].as_deref(), Some("    c"));
-    assert_eq!(doc.visible[4], None, "no list opened, so this is code");
+    assert_eq!(shown(&doc, 2).as_deref(), Some("c"));
+    assert_eq!(shown(&doc, 4), None, "no list opened, so this is code");
 }
 
 /// Whether an item stays open decides whether a deep line is its content or code.
 #[test]
 fn an_open_list_item_decides_what_indented_text_is() {
-    let last = |text: &str| Doc::parse("x.md", text).visible.last().cloned().flatten();
-    let content = Some("    c".to_owned());
+    let last = |text: &str| shown_lines(text).last().cloned().flatten();
+    let content = Some("c".to_owned());
     assert_eq!(last("- a\n\n    c\n"), content, "item content");
     assert_eq!(
         last("- a\nb\n\n    c\n"),
@@ -3461,7 +3498,7 @@ fn an_open_list_item_decides_what_indented_text_is() {
         None,
         "a heading closes the item"
     );
-    let deep = Some("     b".to_owned());
+    let deep = Some("b".to_owned());
     assert_eq!(
         last("2. a\n\n     b\n"),
         deep,
@@ -3469,23 +3506,23 @@ fn an_open_list_item_decides_what_indented_text_is() {
     );
     assert_eq!(
         last("-\n\n     b\n"),
-        Some("     b".to_owned()),
-        "an empty item"
+        None,
+        "a blank line ends an empty item"
     );
 }
 
 /// Blocks parse first, so a comment spans lines only inside one paragraph.
 #[test]
 fn a_comment_spans_lines_only_inside_its_paragraph() {
-    let visible = |text: &str| Doc::parse("x.md", text).visible;
+    let visible = shown_lines;
     let shown = |text: &str| Some(text.to_owned());
     assert_eq!(
         visible("a <!-- b\nc\nd --> e\n"),
-        [shown("a "), None, shown(" e")]
+        [shown("a"), None, shown("e")]
     );
     assert_eq!(
         visible("a <!-- b\nc --> d <!-- e\nf --> g\n"),
-        [shown("a "), shown(" d "), shown(" g")]
+        [shown("a"), shown("d"), shown("g")]
     );
     assert_eq!(
         visible("a <!-- b\nc\n"),
@@ -3494,22 +3531,22 @@ fn a_comment_spans_lines_only_inside_its_paragraph() {
     );
     assert_eq!(
         visible("a <!-- b\n\nc --> d\n"),
-        [shown("a <!-- b"), shown(""), shown("c --> d")],
+        [shown("a <!-- b"), None, shown("c --> d")],
         "a blank line ends the paragraph"
     );
     assert_eq!(
         visible("- a\nb <!-- c\nd -->\n"),
-        [shown("- a"), shown("b "), shown("")],
+        [shown("a"), shown("b"), None],
         "a lazy line is still that paragraph"
     );
     assert_eq!(
         visible("> a <!-- b\nc --> d\n"),
-        [shown("> a "), shown(" d")],
+        [shown("a"), shown("d")],
         "a lazy line after a quote too"
     );
     assert_eq!(
         visible("a <!-- b\n> c --> d\n"),
-        [shown("a <!-- b"), shown("> c --> d")],
+        [shown("a <!-- b"), shown("c --> d")],
         "a quote ends the paragraph before it"
     );
 }
@@ -3531,7 +3568,7 @@ fn list_nesting_stops_at_the_depth_cap() {
         "x.md",
         &format!("{}x\n\n{}y\n", "- ".repeat(depth), "  ".repeat(depth)),
     );
-    assert_eq!(doc.visible[2], None, "past the cap, the column is code");
+    assert_eq!(shown(&doc, 2), None, "past the cap, the column is code");
     let doc = Doc::parse(
         "x.md",
         &format!(
@@ -3541,7 +3578,7 @@ fn list_nesting_stops_at_the_depth_cap() {
         ),
     );
     assert!(
-        doc.visible[2].is_some(),
+        shown(&doc, 2).is_some(),
         "at the cap, the column is content"
     );
     assert!(is_thematic("- - -"));
@@ -3554,29 +3591,800 @@ fn list_nesting_stops_at_the_depth_cap() {
 
 #[test]
 fn inline_comments_leave_the_line_around_them() {
+    let text = |line: &str| render_text(line).text;
+    assert_eq!(text("a <!-- b --> c"), "a  c");
+    assert_eq!(text("a <!-- b"), "a <!-- b");
+    assert_eq!(text("a <!--> b"), "a  b");
+    assert_eq!(text("`<!--` a"), "<!-- a");
+    assert_eq!(text("a <!-- ` --> b `"), "a  b `");
+    assert_eq!(text("<!--a--> <!--b-->"), "");
+    assert_eq!(text(r"\<!-- a -->"), "<!-- a -->");
+    assert_eq!(text(r"\\<!-- a -->"), r"\");
+}
+
+/// The review's control: a file outside the root that renders the spec heading is a spec,
+/// in every spelling that renders the same, and a plain note stays green.
+#[test]
+fn every_spelling_of_the_spec_heading_is_outside() {
+    for heading in [
+        "## Acceptance criteria\n",
+        "## Acceptance&#32;criteria\n",
+        "## Acceptance&#x20;criteria\n",
+        "## Acceptance&#00000032;criteria\n",
+        "## Acceptance&nbsp;criteria\n",
+        "## Acceptance&#xA0;criteria\n",
+        "## Acceptance&Tab;criteria\n",
+        "## Acceptance&NewLine;criteria\n",
+        "## Acceptance<br>criteria\n",
+        "## Acceptance<!-- x --> criteria\n",
+        "## Accept<!-- x -->ance criteria\n",
+        "## <span>Acceptance</span> criteria\n",
+        "## [Acceptance criteria](x.md)\n",
+        "## [Acceptance criteria][r]\n\n[r]: x.md\n",
+        "## ![Acceptance criteria](x.png)\n",
+        "## ACCEPTANCE CRITERIA\n",
+        "## **Acceptance** _criteria_\n",
+        "## `Acceptance criteria`\n",
+        "## Accept&shy;ance criteria\n",
+        "## Accept&#8203;ance criteria\n",
+        "## &#65;cceptance criteria\n",
+        "## ~~Acceptance criteria~~\n",
+        "Acceptance criteria\n---\n",
+        "Acceptance&#32;criteria\n===\n",
+        "Acceptance\ncriteria\n---\n",
+        "> ## Acceptance&#32;criteria\n",
+        "> Acceptance criteria\n> ---\n",
+        "> > ## Acceptance criteria\n",
+        "- > ## Acceptance criteria\n",
+        "## Acceptance&foo;criteria\n",
+        "## Accept&foo;ance criteria\n",
+        "## &foo;cceptance criteria\n",
+        "## &Acirc;cceptance criteria\n",
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.track("crates/keld-compat/gh999-offroot.md", heading.as_bytes());
+        assert_only(&fixture, Rule::Outside, heading);
+    }
+    for note in [
+        "# Notes\n\nA note with &nbsp; and &#32; and &foo; in its prose.\n",
+        "## Caf&eacute; report\n",
+        "## AT&T; rules\n",
+        "## &foo;\n",
+        "## Acceptance\n\n## Criteria\n",
+        "`## Acceptance criteria`\n",
+        "\\## Acceptance criteria\n",
+        "## Acceptance&#45;criteria\n",
+        "## Acceptance&amp;#32;criteria\n",
+        "<div>\n\n<!-- ## Acceptance criteria -->\n\n</div>\n",
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.track("crates/keld-compat/gh999-offroot.md", note.as_bytes());
+        assert!(fixture.rules().is_empty(), "{note}: {:?}", fixture.rules());
+    }
+}
+
+/// The review's control: only a fence a reader sees is the copy source.
+#[test]
+fn a_hidden_copy_source_is_no_copy_source() {
+    let copy = single_spec();
+    assert!(Fixture::new().rules().is_empty(), "the unchanged template");
+    for template in [
+        format!("<!--\n```markdown\n{copy}```\n-->\n"),
+        format!("<!-- x\n\n```markdown\n{copy}```\n\n-->\n"),
+        format!("<pre>\n```markdown\n{copy}```\n</pre>\n"),
+        format!("<script>\n```markdown\n{copy}```\n</script>\n"),
+        format!("<div>\n```markdown\n{copy}```\n"),
+        format!("````\n```markdown\n{copy}```\n````\n"),
+        format!("~~~\n```markdown\n{copy}```\n~~~\n"),
+        format!("    ```markdown\n{}", copy.replace('\n', "\n    ")),
+        format!("> ```markdown\n> {}\n> ```\n", copy.replace('\n', "\n> ")),
+        format!("```markdown\n{copy}"),
+        format!("```markdown\n```\n"),
+        "No fence at all.\n".to_owned(),
+        format!("```markdown\n{copy}```\n\n```markdown\n{copy}```\n"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(TEMPLATE, &format!("# Template\n\n{template}"));
+        assert_only(&fixture, Rule::Sections, &template);
+        assert_eq!(fixture.run().findings.len(), 1, "{template}");
+    }
+    for template in [
+        format!("~~~markdown\n{copy}~~~\n"),
+        format!("````markdown\n{copy}````\n"),
+        format!("``` markdown extra\n{copy}```\n"),
+        format!("<details>\n\n```markdown\n{copy}```\n\n</details>\n"),
+        format!("```&#109;arkdown\n{copy}```\n"),
+        format!("<!--\n```markdown\nhidden\n```\n-->\n\n```markdown\n{copy}```\n"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(TEMPLATE, &format!("# Template\n\n{template}"));
+        assert!(
+            fixture.rules().is_empty(),
+            "{template}: {:?}",
+            fixture.rules()
+        );
+    }
+    let fixture = Fixture::new();
+    fixture.write(
+        TEMPLATE,
+        "# Template\n\n<!--\n```markdown\nhidden\n```\n-->\n\n```markdown\n# broken\n```\n",
+    );
+    assert!(
+        fixture.rules().contains("SECTIONS"),
+        "only the visible fence is validated: {:?}",
+        fixture.rules()
+    );
+}
+
+/// A label reads as what it renders as, so each spelling states the field or repeats it.
+#[test]
+fn an_encoded_label_is_the_label_it_renders_as() {
+    for spelled in [
+        format!("- Pin&#58; {ABSENT_SHA}"),
+        format!("- Pin&colon; {ABSENT_SHA}"),
+        format!("- Pin\\: {ABSENT_SHA}"),
+        format!("- [Pin](gh1-single.md): {ABSENT_SHA}"),
+        format!("- [Pin](gh1-single.md)&#58; {ABSENT_SHA}"),
+        format!("- &#80;in: {ABSENT_SHA}"),
+        format!("- &#x50;in: {ABSENT_SHA}"),
+        format!("- P&#105;n: {ABSENT_SHA}"),
+        format!("- Pi&shy;n: {ABSENT_SHA}"),
+        format!("- Pi&#8203;n: {ABSENT_SHA}"),
+        format!("- Pin&nbsp;: {ABSENT_SHA}"),
+        format!("- Pi<!-- x -->n: {ABSENT_SHA}"),
+        format!("- <b>Pin</b>: {ABSENT_SHA}"),
+        format!("- <span>Pin:</span> {ABSENT_SHA}"),
+        format!("- **Pin&#58;** {ABSENT_SHA}"),
+        format!("- *Pin*\\: {ABSENT_SHA}"),
+    ] {
+        let fixture = Fixture::new();
+        let line = format!("- Pin: {PIN}\n");
+        fixture.replace(SINGLE, &line, &format!("{line}{spelled}\n"));
+        assert_only(&fixture, Rule::FieldDuplicate, &spelled);
+    }
+    for spelled in [
+        format!("- &#80;in: {PIN}\n"),
+        format!("- Pin&#58; {PIN}\n"),
+        format!("- Pin\\: {PIN}\n"),
+        format!("- [Pin](index.md): {PIN}\n"),
+        format!("- Pin: `{PIN}`\n"),
+        format!("- Pin: &#49;{}\n", &PIN[1..]),
+    ] {
+        let fixture = Fixture::new();
+        let path = format!("{DIR}/index.md");
+        fixture.replace(&path, &format!("- Pin: {PIN}\n"), &spelled);
+        assert!(
+            fixture.rules().is_empty(),
+            "{spelled}: {:?}",
+            fixture.rules()
+        );
+    }
+    let fixture = Fixture::new();
+    fixture.replace(
+        SINGLE,
+        "- **Given:** a state\n",
+        "- **G&#105;ven&colon;** a state\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    // A label a reader sees as its own text, not a field, stays prose.
+    for prose in ["- `Pin: x` holds it\n", "- \\`Pin: x\\` is a label\n"] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "## 5.", &format!("{prose}\n## 5."));
+        let quoted = prose.starts_with("- `");
+        assert_eq!(fixture.rules().is_empty(), quoted, "{prose}");
+    }
+}
+
+/// The value is what renders too, so an encoded blank or marker states nothing.
+#[test]
+fn an_encoded_value_is_the_value_it_renders_as() {
+    for (value, rule) in [
+        ("&nbsp;", Rule::AcFields),
+        ("&#160;", Rule::AcFields),
+        ("&#xA0;", Rule::AcFields),
+        ("&#32;", Rule::AcFields),
+        ("&emsp;", Rule::AcFields),
+        ("&ZeroWidthSpace;", Rule::AcFields),
+        ("<!-- none -->", Rule::AcFields),
+        ("&foo;", Rule::FieldPlaceholder),
+        ("&#84;BD", Rule::FieldPlaceholder),
+        ("T&#66;D", Rule::FieldPlaceholder),
+        ("&#84;&#66;&#68;", Rule::FieldPlaceholder),
+        ("**TBD**", Rule::FieldPlaceholder),
+        ("[TBD](x.md)", Rule::FieldPlaceholder),
+        ("<state>", Rule::FieldPlaceholder),
+        ("<state> &nbsp;", Rule::FieldPlaceholder),
+        ("&lt;state&gt;", Rule::FieldPlaceholder),
+        ("&#85;NKNOWN", Rule::FieldUnknown),
+        ("[UNKNOWN](x.md)", Rule::FieldUnknown),
+    ] {
+        let fixture = Fixture::new();
+        let path = format!("{DIR}/acceptance.md");
+        let line = format!("- **Given:** {value}\n");
+        fixture.replace(&path, "- **Given:** a state\n", &line);
+        if value.contains("x.md") {
+            fixture.write(&format!("{DIR}/x.md"), "");
+            fixture.remove(&format!("{DIR}/x.md"));
+            fixture.replace(&path, "(x.md)", "(index.md)");
+        }
+        assert_only(&fixture, rule, value);
+    }
+    let path = format!("{DIR}/delivery.md");
+    let fixture = Fixture::new();
+    fixture.replace(&path, "- **Status:** open\n", "- **Status:** &#111;pen\n");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:** B&#45;1\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:** &#110;one\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:** B&#45;9\n",
+    );
+    assert_only(&fixture, Rule::IdDangling, "an encoded dangling ID");
+}
+
+/// An ID reads as what it renders as, wherever it is defined or referenced.
+#[test]
+fn an_encoded_id_is_the_id_it_renders_as() {
+    let acceptance = format!("{DIR}/acceptance.md");
+    for heading in [
+        "### AC&#45;1: rule\n",
+        "### &#65;C-1: rule\n",
+        "### &#x41;C&#x2d;1: rule\n",
+        "### AC\\-1: rule\n",
+        "### <span>AC-1</span>: rule\n",
+        "### AC<!-- x -->-1: rule\n",
+        "### [AC-1](index.md): rule\n",
+        "### **AC-1**: rule\n",
+        "### `AC-1`: rule\n",
+        "### &shy;AC-1: rule\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&acceptance, "### AC-1: rule\n", heading);
+        assert!(
+            fixture.rules().is_empty(),
+            "{heading}: {:?}",
+            fixture.rules()
+        );
+        let fixture = Fixture::new();
+        let again = format!("### AC-1: rule\n\n{}{}", "- x\n\n", heading);
+        fixture.replace(&acceptance, "### AC-1: rule\n", &again);
+        assert!(fixture.rules().contains("ID-DUPLICATE"), "{heading}");
+    }
+    let design = format!("{DIR}/design.md");
+    for reference in [
+        "AC&#45;9",
+        "&#65;C-9",
+        "[AC-9](index.md)",
+        "A<!-- x -->C-9",
+        "<span>AC-9</span>",
+        "AC\\-9",
+        "`AC-9`",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&design, "AC-1 needs", &format!("{reference} needs"));
+        assert_only(&fixture, Rule::IdDangling, reference);
+    }
+    let fixture = Fixture::new();
+    fixture.replace(&design, "AC-1 needs", "AC1 needs");
+    assert_only(&fixture, Rule::IdLegacyForm, "the bare form");
+    let fixture = Fixture::new();
+    fixture.replace(&design, "AC-1 needs", "A&#67;1 needs");
+    assert_only(&fixture, Rule::IdLegacyForm, "the encoded bare form");
+    // A link destination is no prose, and neither is an entity a code span keeps.
+    let fixture = Fixture::new();
+    fixture.replace(&design, "AC-1 needs", "[AC-1](index.md#ac-9) needs");
+    fixture.replace(
+        &format!("{DIR}/index.md"),
+        "## 1. Goal",
+        "### AC-9 note\n\n## 1. Goal",
+    );
+    let rules = fixture.rules();
+    assert!(
+        !rules.contains("ID-DANGLING") || rules.len() > 1,
+        "{rules:?}"
+    );
+    let fixture = Fixture::new();
+    fixture.replace(&design, "AC-1 needs", "`AC&#45;9` and AC-1 need");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    // A foreign qualifier renders too.
+    for foreign in ["[#1311](index.md) AC-9", "**KEL-9** AC-9", "&#35;1311 AC-9"] {
+        let fixture = Fixture::new();
+        fixture.replace(&design, "AC-1 needs", &format!("AC-1 and {foreign} need"));
+        assert!(
+            fixture.rules().is_empty(),
+            "{foreign}: {:?}",
+            fixture.rules()
+        );
+    }
+}
+
+/// Section titles, the part table and part headers all read their rendered text.
+#[test]
+fn encoded_structure_reads_as_it_renders() {
+    let index = format!("{DIR}/index.md");
+    let design = format!("{DIR}/design.md");
+    for (path, from, to) in [
+        (SINGLE, "## 5. Boundaries", "## 5.&#32;Boundaries"),
+        (SINGLE, "## 5. Boundaries", "## 5\\. Bound<!-- x -->aries"),
+        (SINGLE, "## 5. Boundaries", "## <b>5. Boundaries</b>"),
+        (SINGLE, "# Spec: single", "Spec: single\n==="),
+        (
+            index.as_str(),
+            PART_TABLE_HEADER,
+            "| Pa&#114;t | **Owns** | Load&#32;when |",
+        ),
+        (
+            index.as_str(),
+            "| [design.md](design.md) |",
+            "| [design&#46;md](design&#46;md) |",
+        ),
+        (
+            index.as_str(),
+            "| [design.md](design.md) |",
+            "| [design.md](design%2Emd) |",
+        ),
+        (index.as_str(), "## Parts", "## Pa&#114;ts"),
+        (
+            index.as_str(),
+            "## Current blockers",
+            "## Current&#32;blockers",
+        ),
+        (index.as_str(), "- B-1", "- B&#45;1"),
+        (
+            design.as_str(),
+            "Part of: [index](index.md)",
+            "Part&#32;of: [index](index.md)",
+        ),
+        (
+            design.as_str(),
+            "Part of: [index](index.md)",
+            "Part of: [ind&#101;x](index&#46;md)",
+        ),
+        (design.as_str(), "Owns: decisions", "Own&#115;: decisions"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(path, from, to);
+        assert!(fixture.rules().is_empty(), "{to}: {:?}", fixture.rules());
+    }
+    for (path, from, to, rule) in [
+        (
+            SINGLE,
+            "## 5. Boundaries",
+            "## 5.&#160;Boundaries",
+            Rule::Sections,
+        ),
+        (
+            SINGLE,
+            "## 5. Boundaries",
+            "## 5. BOUNDARIES",
+            Rule::Sections,
+        ),
+        (
+            SINGLE,
+            "# Spec: single",
+            "<!--\n# Spec: single\n-->",
+            Rule::Fields,
+        ),
+        (
+            index.as_str(),
+            PART_TABLE_HEADER,
+            "| Part | Owns | Load |",
+            Rule::PartTable,
+        ),
+        (
+            design.as_str(),
+            "Part of: [index](index.md)",
+            "<!-- Part of: [index](index.md) -->",
+            Rule::PartHeader,
+        ),
+        (
+            design.as_str(),
+            "Part of: [index](index.md)",
+            "Part of: index",
+            Rule::PartHeader,
+        ),
+        (
+            design.as_str(),
+            "Part of: [index](index.md)",
+            "Part of: [index](other.md)",
+            Rule::PartHeader,
+        ),
+        (
+            design.as_str(),
+            "Owns: decisions",
+            "Owns: &nbsp;",
+            Rule::PartHeader,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(path, from, to);
+        assert!(
+            fixture.rules().contains(rule.code()),
+            "{to}: {:?}",
+            fixture.rules()
+        );
+    }
+}
+
+/// A link is checked at the path it renders to, however its text spells the path.
+#[test]
+fn an_encoded_link_is_checked_at_its_path() {
+    for target in [
+        "../../../crates/x/src/lib.rs",
+        "../../../crates&#47;x/src/lib.rs",
+        "../../../crates&sol;x/src/lib.rs",
+        "../../../crates%2Fx/src/lib.rs",
+        "..%2F..%2F..%2Fcrates%2Fx%2Fsrc%2Flib.rs",
+        "%2E%2E/../../crates/x/src/lib.rs",
+        "..\\/..\\/..\\/crates/x/src/lib.rs",
+        "<../../../crates/x/src/lib.rs>",
+        "../../../crates/x/src/lib%2Ers",
+    ] {
+        let fixture = Fixture::new();
+        link_from_design(&fixture, target);
+        assert_only(&fixture, Rule::LinkCode, target);
+    }
+    for block in [
+        "[a]: ../../../crates&#47;x/src/lib.rs\n",
+        "[a]: ../../../crates%2Fx/src/lib.rs\n",
+        "- [a]:\n  ../../../crates/x/src/lib.rs\n",
+    ] {
+        let fixture = Fixture::new();
+        let path = format!("{DIR}/design.md");
+        fixture.replace(
+            &path,
+            "### D-1: choice\n",
+            &format!("### D-1: choice\n\n{block}\n"),
+        );
+        assert_only(&fixture, Rule::LinkCode, block);
+    }
+    for target in [
+        "index&#46;md#1-goal--non-goals",
+        "index%2Emd#1%2Dgoal--non-goals",
+    ] {
+        let fixture = Fixture::new();
+        link_from_design(&fixture, target);
+        assert!(
+            fixture.rules().is_empty(),
+            "{target}: {:?}",
+            fixture.rules()
+        );
+    }
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "%2e%2e/%2e%2e/%2e%2e/%2e%2e/x.md");
+    assert_only(
+        &fixture,
+        Rule::Link,
+        "a percent-encoded climb out of the repository",
+    );
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "index.md#no%2Dsuch");
+    assert_only(&fixture, Rule::Anchor, "a percent-encoded anchor");
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "..%2Fresearch%2Fnote.md");
     assert_eq!(
-        without_comments("a <!-- b --> c"),
-        ("a  c".to_owned(), None)
+        fixture.run().findings.len(),
+        1,
+        "the sibling is a real path"
+    );
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "../../research%2Fnote.md");
+    let report = fixture.run();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    assert_eq!(report.private_links, 1, "the private checkout, encoded");
+    assert_eq!(percent_decoded("a%2Fb%zz%"), "a/b%zz%");
+    assert_eq!(percent_decoded("%C3%A9"), "\u{e9}");
+    assert_eq!(percent_decoded("%+1"), "%+1", "a sign is no hex digit");
+    assert_eq!(percent_decoded("%FF"), "%FF", "not UTF-8");
+}
+
+/// A reference no table resolves can render as anything, so a rule refuses to guess.
+#[test]
+fn an_unresolved_reference_in_a_heading_or_label_is_refused() {
+    let acceptance = format!("{DIR}/acceptance.md");
+    for (path, from, to) in [
+        (SINGLE, "## 5.", "### A note&foo;\n\n## 5."),
+        (SINGLE, "## 5. Boundaries", "## 5. Boundaries: &eacute;"),
+        (
+            acceptance.as_str(),
+            "### AC-1: rule",
+            "### AC-1: &foo; rule",
+        ),
+        (
+            acceptance.as_str(),
+            "### AC-2: rule\n",
+            "### AC-2: rule\n\n### &hyphen;AC-3: x\n",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(path, from, to);
+        assert!(
+            fixture.rules().contains("ENTITY"),
+            "{to}: {:?}",
+            fixture.rules()
+        );
+    }
+    for label in [
+        "&foo;Pin: x\n",
+        "Pi&foo;n: x\n",
+        "- Pin&foo; x\n",
+        "- **Pin&foo;** x\n",
+        "- Then&foo;: x\n",
+        "- Blocked&foo; by: x\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "## 5.", &format!("{label}\n## 5."));
+        assert_only(&fixture, Rule::Entity, label);
+    }
+    for prose in [
+        "A note on &foo; in prose.\n",
+        "Report&foo;: x\n",
+        "\\&foo;Pin: x\n",
+        "`&foo;`Pin: x\n",
+        "&amp;foo;Pin: x\n",
+        "Pin: &foo; costs less\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "## 5.", &format!("{prose}\n## 5."));
+        let duplicate = prose.starts_with("Pin:");
+        let rules = fixture.rules();
+        assert!(!rules.contains("ENTITY"), "{prose}: {rules:?}");
+        assert_eq!(rules.is_empty(), !duplicate, "{prose}: {rules:?}");
+    }
+}
+
+/// One table of what the normalizer renders, from the CommonMark 0.31.2 examples.
+#[test]
+fn the_normalizer_renders_inline_text() {
+    let text = |source: &str| render_text(source).text;
+    for (source, rendered) in [
+        ("&#35; &#1234; &#992; &#0;", "# \u{4d2} \u{3e0} \u{fffd}"),
+        ("&#X22; &#XD06; &#xcab;", "\" \u{d06} \u{cab}"),
+        ("a&nbsp;b &amp; &copy", "a\u{a0}b & &copy"),
+        ("&#xD800; &#x110000;", "\u{fffd} \u{fffd}"),
+        ("&#000000065; &#x000000041;", "&#000000065; &#x000000041;"),
+        ("&#00000065; &#x00000041;", "A A"),
+        ("&amp;amp; &amp;#32;", "&amp; &#32;"),
+        ("&x; &#; &#x; &; &nbsp", "&x; &#; &#x; &; &nbsp"),
+        (r"\!\#\&\*\[\]\`\\ \a \1", r"!#&*[]`\ \a \1"),
+        (r"\&amp; \*a\* \[a\](b)", "&amp; *a* [a](b)"),
+        ("`&amp; \\*` x", "&amp; \\* x"),
+        ("`` a`b ``", "a`b"),
+        ("` a ` `  `", "a"),
+        ("*a* **b** ***c*** _d_ __e__", "a b c d e"),
+        ("*a **b** c*", "a b c"),
+        (
+            "snake_case_word 2 * 3 * 4 a*b*c",
+            "snake_case_word 2 * 3 * 4 abc",
+        ),
+        ("*a _b* c_", "a _b c_"),
+        ("**a*", "*a"),
+        ("* a *", "* a *"),
+        ("~~a~~ b ~c~ d", "b  d"),
+        ("~~~a~~~ ~b~~", "~~~a~~~ ~b~~"),
+        ("x~~ y ~~z", "x~~ y ~~z"),
+        ("<b>a</b> <x y=\"1\" z='2' w=3 v>c", "a c"),
+        ("<a b, c> <1> < a> <a", "<a b, c> <1> < a> <a"),
+        ("a<br>b<BR/>c<br />d", "a b c d"),
+        ("a <?p ?> b <!X y> c <![CDATA[d]]> e", "a  b  c  e"),
+        (
+            "<https://x.y/z> <a@b.co> <m:n>",
+            "https://x.y/z a@b.co <m:n>",
+        ),
+        ("[a](b) ![c](d) [e](f \"t\") [g](<h i>)", "a c e g"),
+        ("[a *b*](c) [d](e)f", "a b df"),
+        ("[a [b](c) d](e)", "[a b d](e)"),
+        ("![a *b* [c](d)](e) f", "a b c f"),
+        ("*foo**bar*", "foo**bar"),
+        ("***a** b*", "a b"),
+        ("[a](b(c) [d](e f) [g]()", "[a](b(c) [d](e f) g"),
+        ("[a]&#40;b) \\[c](d)", "[a](b) [c](d)"),
+        ("[a][b] [c][] [d]", "[a][b] [c][] [d]"),
+        ("**[a](b)** [**c**](d)", "a c"),
+        ("[*a](b)*", "*a*"),
+        ("a\u{ad}b\u{200b}c\u{2060}d\u{feff}e", "abcde"),
+    ] {
+        assert_eq!(text(source), rendered, "{source}");
+    }
+    let links = |source: &str| render_text(source).links;
+    assert_eq!(links("[a](b&#47;c) ![d](e%20f)"), ["b/c", "e%20f"]);
+    assert_eq!(links(r"[a](b\)c) [d](<e\>f>)"), ["b)c", "e>f"]);
+    assert_eq!(
+        links("<https://x.y> <a@b.co>"),
+        ["https://x.y", "mailto:a@b.co"]
     );
     assert_eq!(
-        without_comments("a <!-- b"),
-        ("a <!-- b".to_owned(), Some(2))
+        links("~~[a](b)~~ [c](d)"),
+        ["d"],
+        "struck text is not binding"
     );
-    assert_eq!(without_comments("a <!--> b"), ("a  b".to_owned(), None));
-    assert_eq!(without_comments("`<!--` a"), ("`<!--` a".to_owned(), None));
+    let referenced = Doc::parse(
+        "x.md",
+        "[a][r] [b][] [c]\n\n[r]: /u\n[b]: /v\n[c]: /w&#47;x\n",
+    );
+    assert_eq!(shown(&referenced, 0).as_deref(), Some("a b c"));
+    let targets: Vec<&str> = referenced.targets().iter().map(|(_, link)| *link).collect();
+    assert_eq!(targets, ["/u", "/v", "/w/x", "/u", "/v", "/w/x"]);
+    let unresolved = render_text("&foo; \\&bar; `&baz;` &amp;qux;");
+    assert_eq!(unresolved.text, "&foo; &bar; &baz; &qux;");
     assert_eq!(
-        without_comments("a <!-- ` --> b `"),
-        ("a  b `".to_owned(), None)
+        unresolved.unresolved,
+        [0..5],
+        "only the first is a reference"
+    );
+    let code = render_text("a `b` **`c`** ~~`d`~~");
+    assert_eq!(code.code_spans().collect::<Vec<_>>(), ["b", "c"]);
+}
+
+/// Inline constructs span lines inside one paragraph, and belong to the line that opens them.
+#[test]
+fn a_paragraph_renders_as_one_inline_run() {
+    assert_eq!(
+        shown_lines("a `b\nc` d\n"),
+        [Some("a b c".to_owned()), Some("d".to_owned())]
     );
     assert_eq!(
-        without_comments("<!--a--> <!--b-->"),
-        (" ".to_owned(), None)
+        shown_lines("**a\nb** c\n[d\ne](f)\n"),
+        [
+            Some("a".to_owned()),
+            Some("b c".to_owned()),
+            Some("d".to_owned()),
+            Some("e".to_owned())
+        ]
     );
     assert_eq!(
-        without_comments(r"\<!-- a -->"),
-        (r"\<!-- a -->".to_owned(), None)
+        shown_lines("a <span\nclass=\"x\">b\n"),
+        [Some("a".to_owned()), Some("b".to_owned())]
     );
-    assert_eq!(without_comments(r"\\<!-- a -->"), (r"\\".to_owned(), None));
+    assert_eq!(
+        shown_lines("a\\\nb\n"),
+        [Some("a".to_owned()), Some("b".to_owned())]
+    );
+    let doc = Doc::parse("x.md", "`a\nb`\n");
+    assert_eq!(doc.lines()[0].prose().map(|line| line.code.len()), Some(1));
+    // Blocks parse first: a span never joins two blocks.
+    assert_eq!(
+        shown_lines("`a\n\nb`\n"),
+        [Some("`a".to_owned()), None, Some("b`".to_owned())]
+    );
+    assert_eq!(
+        shown_lines("| `a | b` |\n|---|---|\n"),
+        [Some("| `a | b` |".to_owned()), None]
+    );
+}
+
+/// GitHub's block rules past the CommonMark examples, each from `POST /markdown`, 2026-10-31.
+#[test]
+fn the_lexer_follows_github_on_these_blocks() {
+    let last = |text: &str| shown_lines(text).last().cloned().flatten();
+    assert_eq!(last("*\n\n    b\n"), None, "a blank ends an empty item");
+    assert_eq!(last("> *\n>\n>     b\n"), None, "in a quote too");
+    assert_eq!(
+        last("- -\n\n  b\n"),
+        Some("b".to_owned()),
+        "the outer item stays"
+    );
+    assert_eq!(
+        last("-\n  foo\n"),
+        Some("foo".to_owned()),
+        "no blank, so it holds it"
+    );
+    assert_eq!(
+        last("-\n  foo\n\n  bar\n"),
+        Some("bar".to_owned()),
+        "the item stays open"
+    );
+    assert_eq!(last("| a |\n|---|\n    b\n"), None, "code ends a table");
+    assert_eq!(
+        last("| a |\n|---|\n    b\nc\n"),
+        Some("c".to_owned()),
+        "text past that code is a paragraph"
+    );
+    let rows = |text: &str| {
+        let doc = Doc::parse("x.md", text);
+        doc.lines()
+            .iter()
+            .filter(|line| line.cells().is_some())
+            .count()
+    };
+    assert_eq!(
+        rows("a | b\n--- | ---\n"),
+        2,
+        "no leading pipe, still a table"
+    );
+    assert_eq!(
+        shown_lines("> a | b\n--- | ---\n")[1].as_deref(),
+        Some("--- | ---")
+    );
+    let heads = |text: &str| Doc::parse("x.md", text).headings().len();
+    assert_eq!(heads("| a |\n|---|\n===\n"), 0, "`===` is a row");
+    assert_eq!(
+        heads("[a]: b\n===\n"),
+        0,
+        "definitions leave nothing to underline"
+    );
+    assert_eq!(heads("[a]: b\n---\n"), 0, "a thematic break needs no text");
+    assert_eq!(heads("[a]: b\nc\n---\n"), 1, "a definition leaves text");
+    assert_eq!(heads("[a]:\n---\n"), 1, "no target, so no definition");
+    assert_eq!(last("[a]: b\n===\n").as_deref(), Some("==="));
+    assert_eq!(
+        last("[a]: b\n---\n").as_deref(),
+        Some("---"),
+        "cmark keeps it as text"
+    );
+    assert_eq!(last("[a]: b\n***\n"), None, "this one is a real break");
+    let fence = |text: &str| {
+        Doc::parse("x.md", text)
+            .fences()
+            .first()
+            .map(|found| (found.language.clone(), found.body.clone()))
+    };
+    assert_eq!(
+        fence("```\n\ta\n```\n"),
+        Some((String::new(), "\ta\n".to_owned())),
+        "code keeps its tab"
+    );
+    assert_eq!(
+        fence("- ```\n  \ta\n  ```\n"),
+        Some((String::new(), "\ta\n".to_owned()))
+    );
+    assert_eq!(
+        fence("  ```\n    a\n b\n  ```\n"),
+        Some((String::new(), "  a\nb\n".to_owned())),
+        "the fence's own indent leaves each line"
+    );
+    assert_eq!(
+        fence("``` a&#32;b c\n```\n"),
+        Some(("a".to_owned(), String::new())),
+        "the info string decodes before it splits"
+    );
+    assert_eq!(
+        fence("```\na\n```\u{a0}\n").map(|(_, body)| body.len()),
+        Some(8)
+    );
+    assert_eq!(heads("\u{a0}## a\n"), 0, "a no-break space is text");
+    assert!(!Doc::parse("x.md", "\u{a0}\n").line(0).is_blank());
+}
+
+/// A block quote is a nested document: it holds headings a census reads and no field.
+#[test]
+fn a_block_quote_is_read_as_a_quote() {
+    let quoted = |text: &str| -> Vec<String> {
+        let doc = Doc::parse("x.md", text);
+        let heads = doc.quoted_headings().iter();
+        heads.map(|heading| heading.text().to_owned()).collect()
+    };
+    assert_eq!(quoted("> # a\n> > ## b\n"), ["a", "b"]);
+    assert_eq!(quoted("> a\n> ---\n> b\n> ===\n"), ["a", "b"]);
+    assert_eq!(quoted("> ```\n> # a\n> ```\n"), [""; 0]);
+    assert_eq!(quoted("> <!--\n> # a\n> -->\n"), [""; 0]);
+    assert_eq!(quoted("> a\n---\n"), [""; 0], "a break ends the quote");
+    assert_eq!(quoted("> a\n===\n"), [""; 0], "lazy text");
+    assert_eq!(quoted("-   > # a\n    > # b\n"), ["a", "b"]);
+    assert_eq!(quoted(">\t# a\n"), ["a"]);
+    assert_eq!(quoted(">     # a\n"), [""; 0], "code in the quote");
+    let doc = Doc::parse("x.md", "> Pin: x\ny: z\n");
+    assert!(doc.line(0).field().is_none(), "a quote holds no field");
+    assert!(doc.line(1).field().is_none(), "nor does its lazy line");
+    assert!(doc.line(0).prose().is_some());
+    let deep = ">".repeat(100_000);
+    assert_eq!(Doc::parse("x.md", &format!("{deep} a\n")).line_count(), 1);
+    assert!(Doc::parse("x.md", "> ```\n").unclosed_fence.is_none());
+    assert!(Doc::parse("x.md", "> <!--\n").unclosed_raw.is_none());
 }
 
 #[test]
@@ -3608,17 +4416,21 @@ fn a_table_cell_may_hold_an_escaped_pipe() {
     let path = format!("{DIR}/index.md");
     fixture.replace(&path, "| D-1 and E-1 |", r"| D-1 \| E-1 |");
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
-    assert_eq!(table_cells(r"| a \| b | c |"), [r"a \| b", "c"]);
-    assert_eq!(table_cells(r"| a \\| b |"), [r"a \\", "b"]);
-    assert!(is_table_delimiter("|---|:--|-:|"));
-    assert!(is_table_delimiter("| --- | :-: | --- |"));
-    assert!(!is_table_delimiter("|---|---|"));
-    assert!(!is_table_delimiter("|x|y|z|"));
+    assert_eq!(split_cells(r"| a \| b | c |"), ["a | b", "c"]);
+    assert_eq!(split_cells(r"| a \\| b |"), [r"a \\", "b"]);
+    let delimiter = |row: &str| {
+        let doc = Doc::parse("x.md", row);
+        is_table_delimiter(doc.line(0).cells().expect("a row"))
+    };
+    assert!(delimiter("|---|:--|-:|"));
+    assert!(delimiter("| --- | :-: | --- |"));
+    assert!(!delimiter("|---|---|"));
+    assert!(!delimiter("|x|y|z|"));
 }
 
 #[test]
 fn links_parse_as_commonmark_destinations() {
-    let targets = |line: &str| link_targets(line);
+    let targets = targets_of;
     assert_eq!(targets(r#"[a](b.md "t")"#), ["b.md"]);
     assert_eq!(targets(r#"[a](b.md "t)") [c](d.md)"#), ["b.md", "d.md"]);
     assert_eq!(targets("[a](<b c.md>)"), ["b c.md"]);
@@ -3642,7 +4454,7 @@ fn links_parse_as_commonmark_destinations() {
 #[test]
 fn id_tokens_respect_word_boundaries() {
     let numbers = |line: &str| -> Vec<(&str, u32)> {
-        id_tokens(line)
+        id_tokens(&render_text(line).text)
             .into_iter()
             .map(|token| (token.kind, token.number))
             .collect()
@@ -3653,7 +4465,11 @@ fn id_tokens_respect_word_boundaries() {
     );
     assert_eq!(numbers("CODE-T-1 and T-1x and x-U-2 and Q-3-b"), []);
     assert_eq!(numbers("https://example.com/AC-1 and D-Bus"), []);
-    let foreign = |line: &str| id_tokens(line).iter().all(|token| token.foreign);
+    let foreign = |line: &str| {
+        id_tokens(&render_text(line).text)
+            .iter()
+            .all(|token| token.foreign)
+    };
     assert!(foreign("[#1311](https://example.com/x) AC-9"));
     assert!(foreign("[KEL-9](u), AC-9"));
     assert!(foreign("([#1311](u) AC-9)"));
@@ -3988,4 +4804,150 @@ fn baseline_rows_reproduces_the_committed_baseline() {
         baseline_rows_at(&root, &history).expect("rows print"),
         committed
     );
+}
+
+/// Each fact from the mutant round: a label keeps its block role and its value stays its own.
+#[test]
+fn a_rendered_line_keeps_its_role() {
+    let doc = Doc::parse("x.md", "## Pin: x\n\nPin: y\n---\n\n| Pin: z |\n|---|\n");
+    assert!(
+        doc.line(0).field().is_none(),
+        "an ATX heading states no field"
+    );
+    assert!(
+        doc.line(2).field().is_none(),
+        "a setext heading states no field"
+    );
+    assert!(doc.line(5).field().is_none(), "a table row states no field");
+    assert_eq!(
+        value_of("<b>Pin</b>:", "Pin", Spelling::Header).as_deref(),
+        Some("")
+    );
+    assert_eq!(
+        value_of("Pin: <x>", "Pin", Spelling::Header).as_deref(),
+        Some("<x>")
+    );
+    assert_eq!(
+        value_of("Pin: <x> y", "Pin", Spelling::Header).as_deref(),
+        Some("y")
+    );
+    assert_eq!(
+        value_of("Pin:** y", "Pin", Spelling::Header).as_deref(),
+        Some("y")
+    );
+    let first = |text: &str| {
+        let doc = Doc::parse("x.md", text);
+        field_statements(&doc, 0, doc.line_count(), None)
+    };
+    assert_eq!(first("- Then:\n  - a\n    b\n  - c\n"), ["a b", "c"]);
+    let wrapped = |text: &str| {
+        let doc = Doc::parse("x.md", text);
+        field_statements(&doc, 0, doc.line_count(), Some("v".to_owned()))
+    };
+    assert_eq!(wrapped("- Then: v\n  1. a\n"), ["v", "a"]);
+    assert_eq!(
+        targets_of("[s]:\n\\\n"),
+        ["\\"],
+        "a backslash before a line end escapes nothing"
+    );
+    let table = |text: &str| shown_lines(text);
+    assert_eq!(
+        table("a\n--- | ---\n")[1].as_deref(),
+        Some("--- | ---"),
+        "widths differ"
+    );
+    assert_eq!(table("---\n---\n"), [None, None]);
+    assert_eq!(table("a\n---\n")[1], None);
+}
+
+/// A title stands first, at level one, and holds text. A part opens with one too.
+#[test]
+fn a_title_is_a_first_level_one_heading_with_text() {
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "# Spec: single\n", "## Spec: single\n");
+    assert!(fixture.rules().contains("FIELDS"), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "# Spec: single\n", "#\n");
+    assert!(fixture.rules().contains("FIELDS"), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "# Spec: single\n", "<!-- x -->\n# Spec: single\n");
+    assert!(fixture.rules().contains("FIELDS"), "{:?}", fixture.rules());
+    let design = format!("{DIR}/design.md");
+    let fixture = Fixture::new();
+    fixture.replace(&design, "# Spec: directory: design\n", "### design\n");
+    assert!(
+        fixture.rules().contains("PART-HEADER"),
+        "{:?}",
+        fixture.rules()
+    );
+    let fixture = Fixture::new();
+    fixture.replace(
+        &design,
+        "# Spec: directory: design\n",
+        "text\n\n# Spec: directory\n",
+    );
+    assert!(
+        fixture.rules().contains("PART-HEADER"),
+        "{:?}",
+        fixture.rules()
+    );
+    let fixture = Fixture::new();
+    fixture.replace(
+        &design,
+        "Part of: [index](index.md)",
+        "Part of: [other](index.md)",
+    );
+    assert_only(
+        &fixture,
+        Rule::PartHeader,
+        "a back-link that names something else",
+    );
+    let index = format!("{DIR}/index.md");
+    let fixture = Fixture::new();
+    fixture.replace(&index, PART_TABLE_HEADER, "| Part | Owns |");
+    assert!(
+        fixture.rules().contains("PART-TABLE"),
+        "{:?}",
+        fixture.rules()
+    );
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "index.md#1-goal--non-goals");
+    fixture.replace(
+        &design,
+        "## 4. Design",
+        "## 4. Design\n\n[^1]: a\n\n[^1]: b\n",
+    );
+    assert_only(&fixture, Rule::Link, "a repeated footnote label");
+}
+
+/// A citation is a rendered code span, wherever it renders and however the line spells it.
+#[test]
+fn a_citation_is_read_from_every_rendered_span() {
+    for span in [
+        format!("[`{CITED_FILE}:99`](index.md)"),
+        format!("**`{CITED_FILE}:99`**"),
+        format!("<span>`{CITED_FILE}:99`</span>"),
+        format!("`{CITED_FILE}:99` <!-- x -->"),
+    ] {
+        let fixture = Fixture::new();
+        cite_in_design(&fixture, &span);
+        assert_only(&fixture, Rule::CiteLine, &span);
+    }
+    let fixture = Fixture::new();
+    let index = format!("{DIR}/index.md");
+    let cell = format!("| `{CITED_FILE}:99` |");
+    fixture.replace(&index, "| D-1 and E-1 |", &cell);
+    assert_only(&fixture, Rule::CiteLine, "a table cell");
+    for span in [
+        format!("\\`{CITED_FILE}:99\\`"),
+        format!("`{CITED_FILE}&#58;99`"),
+        format!("~~`{CITED_FILE}:99`~~"),
+        format!("<!-- `{CITED_FILE}:99` -->"),
+        format!("&#96;{CITED_FILE}:99&#96;"),
+    ] {
+        let fixture = Fixture::new();
+        cite_in_design(&fixture, &span);
+        let report = fixture.run();
+        assert!(report.findings.is_empty(), "{span}: {:?}", report.findings);
+    }
 }
