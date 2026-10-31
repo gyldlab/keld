@@ -25,7 +25,7 @@ other engineering playbooks still apply.
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
 | Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
 | Editing generated docs, Mermaid, public documentation, or publishing/correcting a public technical audit | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
-| Writing or changing a feature/architecture specification | [`specs.md`](specs.md), [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
+| Writing, changing or reviewing a feature/architecture specification | [`specs.md`](specs.md), [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
 | Maintainer issue another agent/device may hold | `docs/agents/workflow.md` § Agent claim |
 | Test-layout, placement, oversized tests, discovery or acceptance refactors | [`test-layout.md`](test-layout.md) |
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |

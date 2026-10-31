@@ -2,7 +2,8 @@
 
 Copy this into `docs/specs/<id>-<slug>.md` for any change bigger than a bug fix.
 [`.agents/specs.md`](../../.agents/specs.md) owns the caps, the directory layout, IDs,
-writing and citations. Keep every section; write "none" rather than deleting. A spec is
+writing and citations. Keep every section; write "none" rather than deleting, except
+sections 3 and 6, which need an AC and a task. A spec is
 implementable when a fresh agent could build it without asking questions. Status is
 draft, approved, implementing or done. Implementation may start only at `approved`
 (human sign-off).

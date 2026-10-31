@@ -8,11 +8,14 @@
 //! review duty; `.agents/specs.md` says why.
 //!
 //! Landed files that predate the standard pass only through a ratchet: the baseline
-//! records each one's over-cap values, the row must equal the measured value, and a row
-//! leaves when its file complies. `BASELINE_SEAL` and `BASELINE_ROWS` stop a new file
-//! from entering. A change can lower the count. Raising it, or moving the seal, is a
-//! visible edit to this file under `tools/` code-owner review; no in-repository check
-//! can forbid a pull request that rewrites both the rule and its data.
+//! records each one's over-cap values, a row must equal the measured value and must not
+//! exceed that file's measurement at `BASELINE_SEAL`, and a row leaves when its file
+//! complies. A sealed spec that moves to the standard before its gaps are filled keeps a
+//! `migrated:<n>` row, which is the only way an `UNKNOWN` required field passes; a new
+//! spec cannot hold one. `BASELINE_SEAL` and `BASELINE_ROWS` stop a new file from
+//! entering. A change can lower the count. Raising it, or moving the seal, is a visible
+//! edit under code-owner review; no in-repository check can forbid a pull request that
+//! rewrites both the rule and its data.
 
 #[path = "markdown_contract.rs"]
 #[allow(
@@ -21,6 +24,7 @@
 )]
 mod markdown_contract;
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -46,7 +50,7 @@ const INDEX_MAX_LINES: usize = 120;
 const INDEX_MAX_BYTES: usize = 8 * 1024;
 
 /// Exact baseline row count. Lower it when a row drains; never raise it.
-const BASELINE_ROWS: usize = 41;
+const BASELINE_ROWS: usize = 42;
 /// Every baseline path must exist in this commit: the last `main` before the standard.
 /// Moving it forward is legitimate only for a rebase over a newly landed spec.
 const BASELINE_SEAL: &str = "8e6f544ff3b7719d305c27a461b3db84dd5fed5a";
@@ -83,6 +87,19 @@ const AC_FIELDS: [&str; 7] = [
 const BLOCKER_FIELDS: [&str; 4] = ["Status", "Owner", "Impact", "Check"];
 const EVIDENCE_FIELDS: [&str; 4] = ["Run", "n", "Environment", "Limits"];
 const TASK_BLOCKERS_FIELD: &str = "Blocked by";
+/// AC fields where a bare `none` states nothing. `Given: none` is a real statement.
+const CONTROL_FIELDS: [&str; 4] = [
+    "Then",
+    "Single fault",
+    "At-risk precondition",
+    "Expected RED",
+];
+/// Whole values that fill a required field without saying anything.
+const NON_VALUES: [&str; 11] = [
+    "tbd", "tba", "todo", "n/a", "na", "-", "--", "\u{2014}", "?", "???", "pending",
+];
+/// A heading with this text marks a spec, wherever the file sits.
+const SPEC_SIGNATURE: &str = "acceptance criteria";
 
 /// Stable ID kinds and the one section that may define each.
 const KINDS: [(&str, usize); 7] = [
@@ -120,15 +137,21 @@ enum Rule {
     Fields,
     Sections,
     Link,
+    LinkCode,
     Anchor,
+    Outside,
     IdDuplicate,
     IdDangling,
     IdSection,
     IdLegacyForm,
+    IdRequired,
+    Fence,
     AcFields,
     TaskFields,
     BlockerFields,
     EvidenceFields,
+    FieldUnknown,
+    FieldPlaceholder,
     OpenBlockers,
     PinMissing,
     CitePath,
@@ -138,6 +161,7 @@ enum Rule {
     BaselineNew,
     BaselineCount,
     BaselineGrew,
+    BaselineRaised,
     BaselineStale,
 }
 
@@ -158,15 +182,21 @@ impl Rule {
             Rule::Fields => "FIELDS",
             Rule::Sections => "SECTIONS",
             Rule::Link => "LINK",
+            Rule::LinkCode => "LINK-CODE",
             Rule::Anchor => "ANCHOR",
+            Rule::Outside => "OUTSIDE",
             Rule::IdDuplicate => "ID-DUPLICATE",
             Rule::IdDangling => "ID-DANGLING",
             Rule::IdSection => "ID-SECTION",
             Rule::IdLegacyForm => "ID-LEGACY-FORM",
+            Rule::IdRequired => "ID-REQUIRED",
+            Rule::Fence => "FENCE",
             Rule::AcFields => "AC-FIELDS",
             Rule::TaskFields => "TASK-FIELDS",
             Rule::BlockerFields => "BLOCKER-FIELDS",
             Rule::EvidenceFields => "EVIDENCE-FIELDS",
+            Rule::FieldUnknown => "FIELD-UNKNOWN",
+            Rule::FieldPlaceholder => "FIELD-PLACEHOLDER",
             Rule::OpenBlockers => "OPEN-BLOCKERS",
             Rule::PinMissing => "PIN-MISSING",
             Rule::CitePath => "CITE-PATH",
@@ -176,6 +206,7 @@ impl Rule {
             Rule::BaselineNew => "BASELINE-NEW",
             Rule::BaselineCount => "BASELINE-COUNT",
             Rule::BaselineGrew => "BASELINE-GREW",
+            Rule::BaselineRaised => "BASELINE-RAISED",
             Rule::BaselineStale => "BASELINE-STALE",
         }
     }
@@ -209,13 +240,28 @@ impl Report {
             detail,
         });
     }
+
+    /// Takes over one spec's separately collected result.
+    fn absorb(&mut self, mut other: Report) {
+        self.findings.append(&mut other.findings);
+        self.citations_verified += other.citations_verified;
+        self.citations_unverifiable += other.citations_unverifiable;
+    }
 }
 
 /// Git facts the checker needs. Tests substitute a table for the real repository.
 trait History {
     fn paths_at(&self, commit: &str, dir: &str) -> Result<BTreeSet<String>, String>;
     fn has_commit(&self, sha: &str) -> bool;
-    fn lines_at(&self, commit: &str, path: &str) -> Option<usize>;
+    /// True when `sha` stays in a fresh clone of this branch after its PR merges.
+    fn is_reachable(&self, sha: &str) -> bool;
+    fn text_at(&self, commit: &str, path: &str) -> Option<String>;
+    /// Every tracked Markdown path. An untracked private checkout is not repository text.
+    fn tracked_markdown(&self) -> Result<Vec<String>, String>;
+
+    fn lines_at(&self, commit: &str, path: &str) -> Option<usize> {
+        Some(self.text_at(commit, path)?.lines().count())
+    }
 }
 
 struct GitHistory<'a> {
@@ -223,14 +269,36 @@ struct GitHistory<'a> {
 }
 
 impl GitHistory<'_> {
-    fn git(&self, args: &[&str]) -> Option<Vec<u8>> {
+    /// Standard output, or Git's own explanation of why it failed.
+    fn git(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let mut command = Command::new("git");
         command.arg("-C").arg(self.root).args(args);
         for name in GIT_ENV {
             command.env_remove(name);
         }
-        let output = command.output().ok()?;
-        output.status.success().then_some(output.stdout)
+        let output = command
+            .output()
+            .map_err(|error| format!("cannot start git: {error}"))?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+
+    fn is_shallow(&self) -> bool {
+        self.git(&["rev-parse", "--is-shallow-repository"])
+            .is_ok_and(|stdout| stdout.starts_with(b"true"))
+    }
+}
+
+/// The one action that restores a seal this clone cannot read.
+fn seal_fix(shallow: bool) -> &'static str {
+    if shallow {
+        "This clone is shallow: run `git fetch --unshallow`, or set `fetch-depth: 0` on the \
+         checkout."
+    } else {
+        "This clone lacks the commit: run `git fetch origin main`. A fork runs `git fetch \
+         <upstream> main`."
     }
 }
 
@@ -238,10 +306,10 @@ impl History for GitHistory<'_> {
     fn paths_at(&self, commit: &str, dir: &str) -> Result<BTreeSet<String>, String> {
         let stdout = self
             .git(&["ls-tree", "-r", "--name-only", commit, "--", dir])
-            .ok_or_else(|| {
+            .map_err(|detail| {
                 format!(
-                    "SPEC-STRUCTURE: cannot read `{dir}` at baseline seal {commit}. This gate \
-                     needs full history: run `git fetch --unshallow`, or set `fetch-depth: 0`."
+                    "SPEC-STRUCTURE: cannot read `{dir}` at baseline seal {commit}: {detail}. {}",
+                    seal_fix(self.is_shallow())
                 )
             })?;
         Ok(String::from_utf8_lossy(&stdout)
@@ -252,12 +320,28 @@ impl History for GitHistory<'_> {
 
     fn has_commit(&self, sha: &str) -> bool {
         self.git(&["cat-file", "-e", &format!("{sha}^{{commit}}")])
-            .is_some()
+            .is_ok()
     }
 
-    fn lines_at(&self, commit: &str, path: &str) -> Option<usize> {
-        let stdout = self.git(&["show", &format!("{commit}:{path}")])?;
-        Some(String::from_utf8_lossy(&stdout).lines().count())
+    fn is_reachable(&self, sha: &str) -> bool {
+        self.git(&["merge-base", "--is-ancestor", sha, "HEAD"])
+            .is_ok()
+    }
+
+    fn text_at(&self, commit: &str, path: &str) -> Option<String> {
+        let stdout = self.git(&["show", &format!("{commit}:{path}")]).ok()?;
+        Some(String::from_utf8_lossy(&stdout).into_owned())
+    }
+
+    fn tracked_markdown(&self) -> Result<Vec<String>, String> {
+        let stdout = self
+            .git(&["ls-files", "-z", "--", "*.md"])
+            .map_err(|detail| format!("SPEC-STRUCTURE: cannot list tracked Markdown: {detail}"))?;
+        Ok(String::from_utf8_lossy(&stdout)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 }
 
@@ -278,24 +362,27 @@ struct Doc {
     lines: Vec<String>,
     visible: Vec<Option<String>>,
     bytes: usize,
+    /// A fence that never closes hides the rest of the file from every other rule.
+    unclosed_fence: Option<usize>,
 }
 
 impl Doc {
     fn parse(rel: &str, raw: &str) -> Doc {
         let text = raw.replace("\r\n", "\n");
         let lines: Vec<String> = text.lines().map(str::to_owned).collect();
-        let mut fence: Option<(u8, usize)> = None;
+        let mut fence: Option<(u8, usize, usize)> = None;
         let visible = lines
             .iter()
-            .map(|line| {
+            .enumerate()
+            .map(|(index, line)| {
                 if let Some((marker, width, closing_tail)) = fence_marker(line) {
                     match fence {
-                        Some((open_marker, open_width))
+                        Some((open_marker, open_width, _))
                             if marker == open_marker && width >= open_width && closing_tail =>
                         {
                             fence = None;
                         }
-                        None => fence = Some((marker, width)),
+                        None => fence = Some((marker, width, index)),
                         _ => {}
                     }
                     return None;
@@ -308,6 +395,7 @@ impl Doc {
             lines,
             visible,
             bytes: text.len(),
+            unclosed_fence: fence.map(|(_, _, index)| index),
         }
     }
 
@@ -350,6 +438,31 @@ fn canonical_section(text: &str) -> Option<usize> {
         let exact = format!("{}. {title}", index + 1);
         (text == exact || text.starts_with(&format!("{exact}: "))).then_some(index + 1)
     })
+}
+
+/// Why a required field holds no statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NonValue {
+    Unknown,
+    Placeholder,
+}
+
+/// Matches whole markers only, so `Unknown channels are refused` stays a real statement.
+fn non_value(value: &str, control: bool) -> Option<NonValue> {
+    let bare = value.trim_matches(|ch: char| ch.is_whitespace() || ".,:;!*_`()".contains(ch));
+    let label_tail = bare.strip_prefix("UNKNOWN");
+    let lower = bare.to_lowercase();
+    if lower == "unknown" || label_tail.is_some_and(|tail| !tail.starts_with(char::is_alphanumeric))
+    {
+        Some(NonValue::Unknown)
+    } else if (bare.starts_with('<') && bare.ends_with('>'))
+        || NON_VALUES.contains(&lower.as_str())
+        || (control && lower == "none")
+    {
+        Some(NonValue::Placeholder)
+    } else {
+        None
+    }
 }
 
 /// Value of `label` on a `- **Label:** value` or `Label: value` line.
@@ -425,7 +538,12 @@ fn foreign_prefix(before: &str) -> bool {
         .next()
         .unwrap_or("")
         .trim_end_matches([',', ':']);
-    is_tracker_word(word) || (word.contains("](") && word.ends_with(')'))
+    // `[#1311](url) AC-2` is foreign. `[goal](index.md) AC-2` is this spec's AC-2.
+    let link_text = word
+        .split_once("](")
+        .filter(|_| word.ends_with(')'))
+        .and_then(|(text, _)| text.strip_prefix('['));
+    is_tracker_word(word) || link_text.is_some_and(is_tracker_word)
 }
 
 /// Every stable-ID token on a visible line. URLs are not prose.
@@ -559,6 +677,18 @@ fn resolve_link(doc_rel: &str, target: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
+/// The router selects this gate for these paths. A link to any other path could go stale
+/// through a change that does not run the gate, and turn the next docs PR red instead.
+fn in_docs_lane(resolved: &str) -> bool {
+    resolved.ends_with(".md")
+        || [".agents", "docs"].iter().any(|dir| {
+            resolved == *dir
+                || resolved
+                    .strip_prefix(dir)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
 fn check_links(root: &Path, doc: &Doc, report: &mut Report) {
     for (index, line) in doc.visible.iter().enumerate() {
         let Some(line) = line else { continue };
@@ -586,13 +716,28 @@ fn check_links(root: &Path, doc: &Doc, report: &mut Report) {
                 report.private_links += 1;
                 continue;
             }
+            if !in_docs_lane(&resolved) {
+                report.add(
+                    Rule::LinkCode,
+                    &doc.rel,
+                    index + 1,
+                    format!(
+                        "link `{target}` leaves the documentation. Cite code as \
+                         `` `{resolved}:<line>` ``, which resolves at the spec `Pin`"
+                    ),
+                );
+                continue;
+            }
             let on_disk = root.join(&resolved);
             if !on_disk.exists() {
                 report.add(
                     Rule::Link,
                     &doc.rel,
                     index + 1,
-                    format!("link target `{target}` does not exist (resolved `{resolved}`)"),
+                    format!(
+                        "link target `{target}` does not exist (resolved `{resolved}`). Fix the \
+                         path, or remove the link"
+                    ),
                 );
                 continue;
             }
@@ -673,7 +818,7 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
         },
         "KEL-<n> or GH-<n>",
     );
-    value("Owner", &|text| !text.is_empty(), "the accountable owner");
+    let owner = value("Owner", &|text| !text.is_empty(), "the accountable owner");
     value(
         "Updated",
         &|text| {
@@ -688,7 +833,52 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
         },
         "YYYY-MM-DD",
     );
-    value("Pin", &is_full_sha, "a full 40-hex commit SHA")
+    let pin = value("Pin", &is_full_sha, "a full 40-hex commit SHA");
+    if let Some(owner) = owner {
+        add_non_value(doc, 1, "Owner", &owner, non_value(&owner, true), report);
+    }
+    pin
+}
+
+fn add_non_value(
+    doc: &Doc,
+    line: usize,
+    label: &str,
+    value: &str,
+    kind: Option<NonValue>,
+    report: &mut Report,
+) {
+    let rule = match kind {
+        Some(NonValue::Unknown) => Rule::FieldUnknown,
+        Some(NonValue::Placeholder) => Rule::FieldPlaceholder,
+        None => return,
+    };
+    report.add(
+        rule,
+        &doc.rel,
+        line,
+        format!(
+            "`{label}: {value}` states nothing. Write the real content; a new spec cannot \
+             defer a required field"
+        ),
+    );
+}
+
+/// `kel142-slug` carries `KEL-142`. The ID in the name and the tracker are one fact.
+fn check_tracker(doc: &Doc, stem: &str, report: &mut Report) {
+    let id = stem.split('-').next().unwrap_or("");
+    let digits = id.trim_start_matches(|ch: char| ch.is_ascii_alphabetic());
+    let expected = format!("{}-{digits}", id[..id.len() - digits.len()].to_uppercase());
+    if let Some((index, value)) = find_field(doc, 0, doc.lines.len(), "Tracker")
+        && value != expected
+    {
+        report.add(
+            Rule::Fields,
+            &doc.rel,
+            index + 1,
+            format!("`Tracker: {value}` must be `{expected}`, the ID in the spec name"),
+        );
+    }
 }
 
 fn is_full_sha(text: &str) -> bool {
@@ -707,19 +897,21 @@ fn section_headings(doc: &Doc) -> Vec<(usize, String)> {
 }
 
 fn check_single_sections(doc: &Doc, report: &mut Report) {
-    let found: Vec<Option<usize>> = section_headings(doc)
+    let headings = section_headings(doc);
+    let found: Vec<Option<usize>> = headings
         .iter()
         .map(|(_, text)| canonical_section(text))
         .collect();
     let expected: Vec<Option<usize>> = (1..=SECTIONS.len()).map(Some).collect();
     if found != expected {
+        let titles: Vec<&str> = headings.iter().map(|(_, text)| text.as_str()).collect();
         report.add(
             Rule::Sections,
             &doc.rel,
             1,
             format!(
                 "a single-file spec needs exactly the ten `## n. Title` sections of `{TEMPLATE}` \
-                 in order; found {found:?}"
+                 in order; found {titles:?}"
             ),
         );
     }
@@ -913,7 +1105,13 @@ fn check_definitions(
             let mut required = |labels: &[&str], rule: Rule| {
                 for label in labels {
                     match find_field(doc, heading.index + 1, body, label) {
-                        Some((_, value)) if !value.is_empty() => {}
+                        Some((index, value)) if !value.is_empty() => {
+                            // UNKNOWN stays legal for a blocker's owner: root AGENTS.md tells
+                            // an agent to say so and name the first identification action.
+                            let found = non_value(&value, CONTROL_FIELDS.contains(label))
+                                .filter(|found| kind == "AC" || *found != NonValue::Unknown);
+                            add_non_value(doc, index + 1, label, &value, found, report);
+                        }
                         _ => report.add(
                             rule,
                             &doc.rel,
@@ -967,6 +1165,42 @@ fn check_definitions(
         }
     }
     defined
+}
+
+/// A definition inside a fence, or a fence that never closes, escapes every ID rule.
+fn check_fences(docs: &[&Doc], report: &mut Report) {
+    for doc in docs {
+        if let Some(index) = doc.unclosed_fence {
+            report.add(
+                Rule::Fence,
+                &doc.rel,
+                index + 1,
+                "this fence never closes, so no rule reads the text after it. Close it".to_owned(),
+            );
+        }
+        for (index, line) in doc.lines.iter().enumerate() {
+            let heading = line.trim_start_matches('#');
+            let defines = doc.visible[index].is_none()
+                && heading.len() < line.len()
+                && heading
+                    .strip_prefix(' ')
+                    .and_then(parse_id)
+                    .is_some_and(|(_, _, end)| {
+                        let tail = &heading[1 + end..];
+                        tail.is_empty() || tail.starts_with(": ")
+                    });
+            if defines {
+                report.add(
+                    Rule::Fence,
+                    &doc.rel,
+                    index + 1,
+                    "a fence holds an ID definition, which no rule reads. Move it out of the \
+                     fence, or change the example's label"
+                        .to_owned(),
+                );
+            }
+        }
+    }
 }
 
 fn check_references(
@@ -1037,24 +1271,36 @@ fn check_open_blockers(
             Rule::OpenBlockers,
             &index.rel,
             headings[at].index + 1,
-            format!("`## {BLOCKERS_HEADING}` lists {listed:?}; the open blockers are {open:?}"),
+            format!(
+                "`## {BLOCKERS_HEADING}` lists {listed:?}; the open blockers are {open:?}. List \
+                 exactly the open `B-n`, or write none"
+            ),
         );
     }
 }
 
-/// `path:line[-line][@sha]` in one inline-code span.
+/// `path:line[-line][:column][@sha]` in one inline-code span. A citation names a
+/// repository file, so an image tag, a domain or an absolute path is not one.
 fn parse_citation(span: &str) -> Option<(&str, usize, Option<&str>)> {
     let (location, sha) = match span.split_once('@') {
         Some((location, sha)) => (location, Some(sha)),
         None => (span, None),
     };
     let (path, lines) = location.rsplit_once(':')?;
+    let (path, lines) = match path.rsplit_once(':') {
+        Some((inner, cited)) if cited.parse::<usize>().is_ok() => (inner, cited),
+        _ => (path, lines),
+    };
     let last = lines.rsplit('-').next()?;
     let line: usize = last.parse().ok()?;
     let valid_lines = lines.split('-').all(|part| part.parse::<usize>().is_ok());
+    let first = path.split('/').next()?;
+    let file = path.rsplit('/').next()?;
     let plausible = path.contains('/')
-        && !path.contains("://")
-        && path.rsplit('/').next().is_some_and(|name| !name.is_empty());
+        && !path.contains(':')
+        && !path.starts_with('/')
+        && (first.starts_with('.') || !first.contains('.'))
+        && file.contains('.');
     (valid_lines && plausible).then_some((path, line, sha))
 }
 
@@ -1089,13 +1335,19 @@ fn check_citations(docs: &[&Doc], pin: &str, history: &dyn History, report: &mut
                         Rule::CitePath,
                         &doc.rel,
                         index + 1,
-                        format!("`{path}` does not exist at {commit}"),
+                        format!(
+                            "`{path}` does not exist at {commit}. Fix the path, or add \
+                             `@<full-sha>` for a commit that holds it"
+                        ),
                     ),
                     Some(count) if cited == 0 || cited > count => report.add(
                         Rule::CiteLine,
                         &doc.rel,
                         index + 1,
-                        format!("`{span}` is past the {count} lines at {commit}"),
+                        format!(
+                            "`{span}` is past the {count} lines at {commit}. Cite a line that \
+                             exists at that commit"
+                        ),
                     ),
                     Some(_) => report.citations_verified += 1,
                 }
@@ -1123,18 +1375,35 @@ fn check_structure(
     docs.extend(parts);
     let defined = check_definitions(&docs, report);
     check_references(&docs, &defined, report);
+    check_fences(&docs, report);
+    for kind in ["AC", "T"] {
+        if !defined
+            .keys()
+            .any(|(defined_kind, _)| *defined_kind == kind)
+        {
+            report.add(
+                Rule::IdRequired,
+                &index.rel,
+                1,
+                format!("a spec defines at least one `{kind}-n`; none has a heading here"),
+            );
+        }
+    }
     if directory {
         check_open_blockers(index, &defined, report);
     }
     if let (Some(pin), Some(history)) = (pin, history) {
-        if history.has_commit(&pin) {
+        if history.is_reachable(&pin) {
             check_citations(&docs, &pin, history, report);
         } else {
             report.add(
                 Rule::PinMissing,
                 &index.rel,
                 1,
-                format!("`Pin: {pin}` is not a commit in this clone's history"),
+                format!(
+                    "`Pin: {pin}` is not in this branch's history, so a later clone can lose \
+                     it. Pin the output of `git merge-base origin/main HEAD`"
+                ),
             );
         }
     }
@@ -1168,7 +1437,11 @@ fn check_size(doc: &Doc, report: &mut Report) {
             Rule::SizeLines,
             &doc.rel,
             MAX_LINES + 1,
-            format!("{} lines; the cap is {MAX_LINES}", size.lines),
+            format!(
+                "{} lines; the cap is {MAX_LINES}. Split it into the directory layout of \
+                 `.agents/specs.md`",
+                size.lines
+            ),
         );
     }
     if size.bytes > MAX_BYTES {
@@ -1176,7 +1449,11 @@ fn check_size(doc: &Doc, report: &mut Report) {
             Rule::SizeBytes,
             &doc.rel,
             1,
-            format!("{} bytes; the cap is {MAX_BYTES}", size.bytes),
+            format!(
+                "{} bytes; the cap is {MAX_BYTES}. Split it into the directory layout of \
+                 `.agents/specs.md`",
+                size.bytes
+            ),
         );
     }
     for (index, line) in doc.lines.iter().enumerate() {
@@ -1195,12 +1472,44 @@ fn check_size(doc: &Doc, report: &mut Report) {
     }
 }
 
+/// The structure column of a baseline row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Structure {
+    Exempt,
+    Conforms,
+    /// Conforms except for this many `UNKNOWN` required fields.
+    Migrated(usize),
+}
+
+impl Structure {
+    fn parse(cell: &str) -> Option<Structure> {
+        match cell {
+            "exempt" => Some(Structure::Exempt),
+            "ok" => Some(Structure::Conforms),
+            _ => cell
+                .strip_prefix("migrated:")?
+                .parse()
+                .ok()
+                .filter(|count| *count > 0)
+                .map(Structure::Migrated),
+        }
+    }
+
+    fn cell(self) -> String {
+        match self {
+            Structure::Exempt => "exempt".to_owned(),
+            Structure::Conforms => "ok".to_owned(),
+            Structure::Migrated(count) => format!("migrated:{count}"),
+        }
+    }
+}
+
 struct Row {
     line: usize,
     lines: Option<usize>,
     bytes: Option<usize>,
     overflow: Option<usize>,
-    exempt: bool,
+    structure: Structure,
 }
 
 fn parse_metric(text: &str) -> Option<Option<usize>> {
@@ -1230,12 +1539,8 @@ fn parse_baseline(rel: &str, text: &str, report: &mut Report) -> BTreeMap<String
             [path, lines, bytes, overflow, structure] => parse_metric(lines)
                 .zip(parse_metric(bytes))
                 .zip(parse_metric(overflow))
-                .zip(match *structure {
-                    "exempt" => Some(true),
-                    "ok" => Some(false),
-                    _ => None,
-                })
-                .map(|(((lines, bytes), overflow), exempt)| {
+                .zip(Structure::parse(structure))
+                .map(|(((lines, bytes), overflow), structure)| {
                     (
                         (*path).to_owned(),
                         Row {
@@ -1243,7 +1548,7 @@ fn parse_baseline(rel: &str, text: &str, report: &mut Report) -> BTreeMap<String
                             lines,
                             bytes,
                             overflow,
-                            exempt,
+                            structure,
                         },
                     )
                 }),
@@ -1254,8 +1559,8 @@ fn parse_baseline(rel: &str, text: &str, report: &mut Report) -> BTreeMap<String
                 Rule::BaselineFormat,
                 rel,
                 index + 1,
-                "a row is `path<TAB>lines<TAB>bytes<TAB>line_overflow<TAB>exempt|ok`, with `-` \
-                 for a value inside its cap"
+                "a row is `path<TAB>lines<TAB>bytes<TAB>line_overflow<TAB>structure`, with `-` \
+                 for a value inside its cap and structure `exempt`, `ok` or `migrated:<n>`"
                     .to_owned(),
             );
             continue;
@@ -1274,7 +1579,7 @@ fn parse_baseline(rel: &str, text: &str, report: &mut Report) -> BTreeMap<String
     rows
 }
 
-fn expected_row(path: &str, size: Size, exempt: bool) -> String {
+fn expected_row(path: &str, size: Size, structure: Structure) -> String {
     let metric = |value: usize, over: bool| {
         if over {
             value.to_string()
@@ -1287,7 +1592,7 @@ fn expected_row(path: &str, size: Size, exempt: bool) -> String {
         metric(size.lines, size.lines > MAX_LINES),
         metric(size.bytes, size.bytes > MAX_BYTES),
         metric(size.overflow, size.overflow > 0),
-        if exempt { "exempt" } else { "ok" }
+        structure.cell()
     )
 }
 
@@ -1306,13 +1611,20 @@ fn check_row(rel_baseline: &str, path: &str, row: &Row, doc: &Doc, report: &mut 
                 Rule::BaselineGrew,
                 path,
                 1,
-                format!("{name} is {measured}, over cap {cap}, and the row allows none"),
+                format!(
+                    "{name} is {measured}, over cap {cap}, and the row allows none. Cut the \
+                     file back, or split it into the directory layout of `.agents/specs.md`"
+                ),
             ),
             (true, Some(value)) if measured > value => report.add(
                 Rule::BaselineGrew,
                 path,
                 1,
-                format!("{name} grew from {value} to {measured}; a listed file may only shrink"),
+                format!(
+                    "{name} grew from {value} to {measured}; a listed file may only shrink. Cut \
+                     as much as you added, or split it into the directory layout of \
+                     `.agents/specs.md`"
+                ),
             ),
             (true, Some(value)) if measured < value => replacement = true,
             (false, Some(_)) => replacement = true,
@@ -1326,9 +1638,80 @@ fn check_row(rel_baseline: &str, path: &str, row: &Row, doc: &Doc, report: &mut 
             row.line,
             format!(
                 "`{path}` shrank; the row must click down to `{}`",
-                expected_row(path, size, row.exempt)
+                expected_row(path, size, row.structure)
             ),
         );
+    }
+}
+
+/// A row may not record more than its file held at the seal, whatever the file holds now.
+/// Without this, editing a file and its row together would grow the file.
+fn check_seal(rel_baseline: &str, path: &str, row: &Row, sealed: &Doc, report: &mut Report) {
+    let size = measure(sealed);
+    let metrics = [
+        ("lines", size.lines, row.lines),
+        ("bytes", size.bytes, row.bytes),
+        ("line_overflow", size.overflow, row.overflow),
+    ];
+    for (name, at_seal, recorded) in metrics {
+        if let Some(value) = recorded
+            && value > at_seal
+        {
+            report.add(
+                Rule::BaselineRaised,
+                rel_baseline,
+                row.line,
+                format!(
+                    "`{path}` {name} is {value} in the row and {at_seal} at the seal. A row never \
+                     rises: cut the file to {at_seal}, or split it into the directory layout of \
+                     `.agents/specs.md`"
+                ),
+            );
+        }
+    }
+}
+
+/// Settles a spec's `UNKNOWN` fields against the count its `migrated:<n>` row allows.
+fn settle_unknowns(
+    rel_baseline: &str,
+    path: &str,
+    row: &Row,
+    structure: &mut Report,
+    report: &mut Report,
+) {
+    let Structure::Migrated(allowed) = row.structure else {
+        return;
+    };
+    let before = structure.findings.len();
+    structure
+        .findings
+        .retain(|finding| finding.rule != Rule::FieldUnknown);
+    let found = before - structure.findings.len();
+    match found.cmp(&allowed) {
+        Ordering::Equal => {}
+        Ordering::Greater => report.add(
+            Rule::BaselineGrew,
+            path,
+            1,
+            format!(
+                "{found} UNKNOWN required fields; the row allows {allowed}. Fill the new field; \
+                 a migrated count may only shrink"
+            ),
+        ),
+        Ordering::Less if found == 0 => report.add(
+            Rule::BaselineStale,
+            rel_baseline,
+            row.line,
+            format!("`{path}` has no UNKNOWN required field; remove its row"),
+        ),
+        Ordering::Less => report.add(
+            Rule::BaselineStale,
+            rel_baseline,
+            row.line,
+            format!(
+                "`{path}` has {found} UNKNOWN required fields; the row must say migrated:{found}"
+            ),
+        ),
     }
 }
 
@@ -1358,6 +1741,7 @@ fn is_spec_name(name: &str) -> bool {
 fn check_directory(
     root: &Path,
     rel: &str,
+    rows: &BTreeMap<String, Row>,
     history: &dyn History,
     report: &mut Report,
 ) -> Result<(), String> {
@@ -1441,7 +1825,18 @@ fn check_directory(
         check_size(part, report);
         check_links(root, part, report);
     }
-    check_structure(&index, &parts, true, Some(history), report);
+    let mut structure = Report::default();
+    check_structure(&index, &parts, true, Some(history), &mut structure);
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    if is_spec_name(name) {
+        check_tracker(&index, name, &mut structure);
+    }
+    // A migrated spec keeps the row of the flat file the seal holds.
+    if let Some(row) = rows.get(&format!("{rel}.md")) {
+        let baseline_rel = format!("{SPEC_ROOT}/{BASELINE_FILE}");
+        settle_unknowns(&baseline_rel, rel, row, &mut structure, report);
+    }
+    report.absorb(structure);
     Ok(())
 }
 
@@ -1469,7 +1864,61 @@ fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
         );
         return Ok(());
     }
-    check_structure(&Doc::parse(TEMPLATE, &body), &[], false, None, report);
+    let mut structure = Report::default();
+    let copy_source = Doc::parse(TEMPLATE, &body);
+    check_structure(&copy_source, &[], false, None, &mut structure);
+    // The fence is the copy source, so its slots are meant to be unfilled.
+    structure
+        .findings
+        .retain(|finding| finding.rule != Rule::FieldPlaceholder);
+    report.absorb(structure);
+    Ok(())
+}
+
+/// A spec is the standard's business wherever it lands: outside `docs/specs` no other rule
+/// runs on it. A sealed spec's file name marks a move out of the ratchet.
+fn check_outside(
+    root: &Path,
+    sealed: &BTreeSet<String>,
+    history: &dyn History,
+    report: &mut Report,
+) -> Result<(), String> {
+    let base_name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_owned();
+    let sealed_names: BTreeSet<String> = sealed.iter().map(|path| base_name(path)).collect();
+    for rel in history.tracked_markdown()? {
+        if rel.starts_with(&format!("{SPEC_ROOT}/")) {
+            continue;
+        }
+        if sealed_names.contains(&base_name(&rel)) {
+            report.add(
+                Rule::Outside,
+                &rel,
+                1,
+                format!("a landed spec has this name; move it back to `{SPEC_ROOT}`"),
+            );
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(root.join(&rel)) else {
+            continue;
+        };
+        let doc = Doc::parse(&rel, &raw);
+        let marked = doc
+            .headings()
+            .into_iter()
+            .find(|heading| heading.text.to_lowercase().contains(SPEC_SIGNATURE));
+        if let Some(heading) = marked {
+            report.add(
+                Rule::Outside,
+                &rel,
+                heading.index + 1,
+                format!(
+                    "`{}` marks a spec, and a spec lives in `{SPEC_ROOT}`. Move the file, or \
+                     rename the heading if this is not a spec",
+                    heading.text
+                ),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1523,7 +1972,7 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                     "a spec directory is named `<kel|gh><n>-<kebab-slug>`".to_owned(),
                 );
             }
-            check_directory(root, &rel, history, &mut report)?;
+            check_directory(root, &rel, &rows, history, &mut report)?;
         } else if kind.is_file() && name.ends_with(".md") {
             report.specs += 1;
             let doc = read_doc(root, &rel)?;
@@ -1532,22 +1981,23 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                 check_row(&baseline_rel, &rel, row, &doc, &mut report);
                 let mut structure = Report::default();
                 check_structure(&doc, &[], false, Some(history), &mut structure);
-                match (row.exempt, structure.findings.is_empty()) {
-                    (true, true) => report.add(
-                        Rule::BaselineStale,
-                        &baseline_rel,
-                        row.line,
-                        format!("`{rel}` now conforms; its structure column must be `ok`"),
-                    ),
-                    (true, false) => report.exempt += 1,
-                    (false, _) => {
-                        report.findings.append(&mut structure.findings);
-                        report.citations_verified += structure.citations_verified;
-                        report.citations_unverifiable += structure.citations_unverifiable;
+                if row.structure == Structure::Exempt {
+                    if structure.findings.is_empty() {
+                        report.add(
+                            Rule::BaselineStale,
+                            &baseline_rel,
+                            row.line,
+                            format!("`{rel}` now conforms; its structure column must be `ok`"),
+                        );
+                    } else {
+                        report.exempt += 1;
                     }
+                } else {
+                    settle_unknowns(&baseline_rel, &rel, row, &mut structure, &mut report);
+                    report.absorb(structure);
                 }
                 let size = measure(&doc);
-                if !row.exempt
+                if row.structure == Structure::Conforms
                     && size.lines <= MAX_LINES
                     && size.bytes <= MAX_BYTES
                     && size.overflow == 0
@@ -1560,7 +2010,10 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                     );
                 }
             } else {
-                if !is_spec_name(name.trim_end_matches(".md")) {
+                let stem = name.trim_end_matches(".md");
+                if is_spec_name(stem) {
+                    check_tracker(&doc, stem, &mut report);
+                } else {
                     report.add(
                         Rule::Name,
                         &rel,
@@ -1582,7 +2035,12 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
     }
 
     for (path, row) in &rows {
-        if !root.join(path).is_file() {
+        let migrated = matches!(row.structure, Structure::Migrated(_))
+            && root
+                .join(path.trim_end_matches(".md"))
+                .join(INDEX_FILE)
+                .is_file();
+        if !root.join(path).is_file() && !migrated {
             report.add(
                 Rule::BaselineStale,
                 &baseline_rel,
@@ -1596,12 +2054,22 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                 &baseline_rel,
                 row.line,
                 format!(
-                    "`{path}` is not in seal {}; a new file may not enter",
+                    "`{path}` is not in seal {}; a new file may not enter. Make it comply, and \
+                     remove the row",
                     config.seal
                 ),
             );
+        } else if let Some(text) = history.text_at(config.seal, path) {
+            check_seal(
+                &baseline_rel,
+                path,
+                row,
+                &Doc::parse(path, &text),
+                &mut report,
+            );
         }
     }
+    check_outside(root, &sealed, history, &mut report)?;
     check_template(root, &mut report)?;
     report
         .findings
@@ -1663,7 +2131,12 @@ fn baseline_rows(root: &Path) -> Result<String, String> {
         let size = measure(&doc);
         let exempt = !structure.findings.is_empty();
         if exempt || size.lines > MAX_LINES || size.bytes > MAX_BYTES || size.overflow > 0 {
-            out.push_str(&expected_row(&rel, size, exempt));
+            let cell = if exempt {
+                Structure::Exempt
+            } else {
+                Structure::Conforms
+            };
+            out.push_str(&expected_row(&rel, size, cell));
             out.push('\n');
         }
     }

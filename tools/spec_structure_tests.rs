@@ -15,28 +15,41 @@ const CITED_FILE: &str = "crates/x/src/lib.rs";
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
-/// Git facts for fixtures: one pin with a ten-line file, one foreign head, one seal.
+/// Git facts for fixtures: one reachable pin with a ten-line file, one foreign head that
+/// is present but unreachable, one seal.
 struct Table {
-    sealed: BTreeSet<String>,
+    sealed: BTreeMap<String, String>,
+    tracked: Vec<String>,
 }
 
 impl History for Table {
     fn paths_at(&self, commit: &str, _dir: &str) -> Result<BTreeSet<String>, String> {
         assert_eq!(commit, SEAL);
-        Ok(self.sealed.clone())
+        Ok(self.sealed.keys().cloned().collect())
     }
     fn has_commit(&self, sha: &str) -> bool {
         sha == PIN || sha == FOREIGN_SHA
     }
-    fn lines_at(&self, commit: &str, path: &str) -> Option<usize> {
-        (path == CITED_FILE && (commit == PIN || commit == FOREIGN_SHA)).then_some(10)
+    fn is_reachable(&self, sha: &str) -> bool {
+        sha == PIN
+    }
+    fn text_at(&self, commit: &str, path: &str) -> Option<String> {
+        if commit == SEAL {
+            return self.sealed.get(path).cloned();
+        }
+        (path == CITED_FILE && (commit == PIN || commit == FOREIGN_SHA))
+            .then(|| "line\n".repeat(10))
+    }
+    fn tracked_markdown(&self) -> Result<Vec<String>, String> {
+        Ok(self.tracked.clone())
     }
 }
 
 struct Fixture {
     root: PathBuf,
     rows: usize,
-    sealed: BTreeSet<String>,
+    sealed: BTreeMap<String, String>,
+    tracked: Vec<String>,
 }
 
 impl Drop for Fixture {
@@ -125,7 +138,7 @@ fn legacy_big() -> String {
 const BIG: &str = "docs/specs/old-big.md";
 const SMALL: &str = "docs/specs/old-small.md";
 const DIR: &str = "docs/specs/gh1-directory";
-const SINGLE: &str = "docs/specs/gh2-single.md";
+const SINGLE: &str = "docs/specs/gh1-single.md";
 const BASELINE: &str = "docs/specs/.spec-baseline.tsv";
 
 impl Fixture {
@@ -136,7 +149,11 @@ impl Fixture {
         let fixture = Fixture {
             root,
             rows: 2,
-            sealed: [BIG, SMALL].iter().map(|path| (*path).to_owned()).collect(),
+            sealed: BTreeMap::from([
+                (BIG.to_owned(), legacy_big()),
+                (SMALL.to_owned(), "# old\n".to_owned()),
+            ]),
+            tracked: Vec::new(),
         };
         fixture.write(SINGLE, &single_spec());
         fixture.write(&format!("{DIR}/index.md"), &index_spec());
@@ -179,6 +196,7 @@ impl Fixture {
     fn run(&self) -> Report {
         let history = Table {
             sealed: self.sealed.clone(),
+            tracked: self.tracked.clone(),
         };
         let config = Config {
             rows: self.rows,
@@ -303,7 +321,7 @@ fn mutants() -> Vec<Mutant> {
             label: "listed part is an existing file outside the directory",
             apply: |f| {
                 let path = format!("{DIR}/index.md");
-                let row = "| [../gh2-single.md](../gh2-single.md) | x | y |\n\n## Current";
+                let row = "| [../gh1-single.md](../gh1-single.md) | x | y |\n\n## Current";
                 f.replace(&path, "\n## Current", row);
             },
         },
@@ -359,6 +377,19 @@ fn mutants() -> Vec<Mutant> {
             apply: |f| f.replace(SINGLE, &format!("Pin: {PIN}"), "Pin: 1111111"),
         },
         Mutant {
+            rule: Rule::Fields,
+            label: "tracker left at the template value",
+            apply: |f| f.replace(SINGLE, "Tracker: GH-1", "Tracker: GH-0"),
+        },
+        Mutant {
+            rule: Rule::Fields,
+            label: "directory tracker disagrees with the directory name",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                f.replace(&path, "Tracker: GH-1", "Tracker: KEL-1");
+            },
+        },
+        Mutant {
             rule: Rule::Sections,
             label: "two sections swapped in a single file",
             apply: |f| {
@@ -400,7 +431,11 @@ fn mutants() -> Vec<Mutant> {
             label: "index carries an extra section",
             apply: |f| {
                 let path = format!("{DIR}/index.md");
-                f.replace(&path, "## Current blockers", "## Notes\n\nx\n\n## Current blockers");
+                f.replace(
+                    &path,
+                    "## Current blockers",
+                    "## Notes\n\nx\n\n## Current blockers",
+                );
             },
         },
         Mutant {
@@ -410,7 +445,11 @@ fn mutants() -> Vec<Mutant> {
                 let path = format!("{DIR}/index.md");
                 let design = "| [design.md](design.md) | D-1 and E-1 | designing |\n";
                 f.replace(&path, design, "");
-                f.replace(&path, "| [acceptance.md]", &format!("{design}| [acceptance.md]"));
+                f.replace(
+                    &path,
+                    "| [acceptance.md]",
+                    &format!("{design}| [acceptance.md]"),
+                );
             },
         },
         Mutant {
@@ -434,6 +473,36 @@ fn mutants() -> Vec<Mutant> {
             rule: Rule::Link,
             label: "a landed exempt file still needs resolvable links",
             apply: |f| f.write(SMALL, "# old\n\n[x](missing.md)\n"),
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a link into code goes stale without running this gate",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(
+                    &path,
+                    "[goal](index.md#1-goal--non-goals)",
+                    "[goal](../../../crates/x/src/lib.rs)",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a spec written outside the spec root",
+            apply: |f| {
+                let path = "docs/design/gh9-outside.md";
+                f.write(path, "# Spec\n\n## 3. Acceptance criteria\n");
+                f.tracked.push(path.to_owned());
+            },
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "a landed spec moved out under its own name",
+            apply: |f| {
+                let path = "docs/archive/old-big.md";
+                f.write(path, "# moved\n");
+                f.tracked.push(path.to_owned());
+            },
         },
         Mutant {
             rule: Rule::Anchor,
@@ -464,6 +533,14 @@ fn mutants() -> Vec<Mutant> {
             },
         },
         Mutant {
+            rule: Rule::IdDangling,
+            label: "a local link in front of an ID does not make it foreign",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(&path, "non-goals),", "non-goals) AC-9,");
+            },
+        },
+        Mutant {
             rule: Rule::IdSection,
             label: "decision defined outside the design section",
             apply: |f| {
@@ -477,6 +554,39 @@ fn mutants() -> Vec<Mutant> {
             apply: |f| {
                 let path = format!("{DIR}/design.md");
                 f.replace(&path, "AC-1 needs", "AC1 needs");
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "a spec with no acceptance criterion",
+            apply: |f| f.replace(SINGLE, &ac_block(1), "none\n\n"),
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "a spec with no task",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "### T-1: slice\n\n- **Blocked by:** none\n\n",
+                    "none\n\n",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::Fence,
+            label: "an AC definition hidden in a fence",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let fence = "\n```text\n### AC-9: hidden\n```\n\n## 5. Boundaries";
+                f.replace(&path, "\n## 5. Boundaries", fence);
+            },
+        },
+        Mutant {
+            rule: Rule::Fence,
+            label: "a fence that never closes",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.write(&path, &format!("{}\n```text\nhidden\n", f.read(&path)));
             },
         },
         Mutant {
@@ -532,6 +642,60 @@ fn mutants() -> Vec<Mutant> {
             },
         },
         Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec defers its negative control",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "**Single fault:** the rule is removed",
+                    "**Single fault:** UNKNOWN: later",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec names no owner",
+            apply: |f| f.replace(SINGLE, "- Owner: owner", "- Owner: UNKNOWN (nobody yet)"),
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a template slot left in a negative control",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "**Expected RED:** the test fails",
+                    "**Expected RED:** <what fails>",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a bare none is not a negative control",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "**At-risk precondition:** the state holds",
+                    "**At-risk precondition:** none",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a blocker check left at TBD",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Check:** a test", "- **Check:** TBD");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a template slot left in the owner",
+            apply: |f| f.replace(SINGLE, "- Owner: owner", "- Owner: <human>"),
+        },
+        Mutant {
             rule: Rule::OpenBlockers,
             label: "open blocker missing from the index",
             apply: |f| {
@@ -555,6 +719,17 @@ fn mutants() -> Vec<Mutant> {
                     SINGLE,
                     &format!("Pin: {PIN}"),
                     &format!("Pin: {ABSENT_SHA}"),
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::PinMissing,
+            label: "pin is a commit here that this branch cannot reach",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    &format!("Pin: {PIN}"),
+                    &format!("Pin: {FOREIGN_SHA}"),
                 );
             },
         },
@@ -621,6 +796,26 @@ fn mutants() -> Vec<Mutant> {
             apply: |f| f.write(SMALL, &format!("# old\n{}", long_line())),
         },
         Mutant {
+            rule: Rule::BaselineRaised,
+            label: "a row raised to fit a grown file",
+            apply: |f| {
+                f.write(BIG, &format!("{}line\n", legacy_big()));
+                f.replace(BASELINE, "\t600\t", "\t601\t");
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineRaised,
+            label: "a row records a cap its file passed at the seal",
+            apply: |f| {
+                f.write(SMALL, &format!("# old\n{}", long_line()));
+                f.replace(
+                    BASELINE,
+                    &format!("{SMALL}\t-\t-\t-"),
+                    &format!("{SMALL}\t-\t-\t1"),
+                );
+            },
+        },
+        Mutant {
             rule: Rule::BaselineStale,
             label: "a listed file shrank and the row did not click down",
             apply: |f| f.write(BIG, &"line\n".repeat(599)),
@@ -650,7 +845,7 @@ fn mutants() -> Vec<Mutant> {
     ]
 }
 
-const ALL_RULES: [Rule; 33] = [
+const ALL_RULES: [Rule; 40] = [
     Rule::SizeLines,
     Rule::SizeBytes,
     Rule::SizeLineLength,
@@ -665,15 +860,21 @@ const ALL_RULES: [Rule; 33] = [
     Rule::Fields,
     Rule::Sections,
     Rule::Link,
+    Rule::LinkCode,
     Rule::Anchor,
+    Rule::Outside,
     Rule::IdDuplicate,
     Rule::IdDangling,
     Rule::IdSection,
     Rule::IdLegacyForm,
+    Rule::IdRequired,
+    Rule::Fence,
     Rule::AcFields,
     Rule::TaskFields,
     Rule::BlockerFields,
     Rule::EvidenceFields,
+    Rule::FieldUnknown,
+    Rule::FieldPlaceholder,
     Rule::OpenBlockers,
     Rule::PinMissing,
     Rule::CitePath,
@@ -683,6 +884,7 @@ const ALL_RULES: [Rule; 33] = [
     Rule::BaselineNew,
     Rule::BaselineCount,
     Rule::BaselineGrew,
+    Rule::BaselineRaised,
     Rule::BaselineStale,
 ];
 
@@ -777,8 +979,10 @@ fn a_ratchet_row_that_records_the_shrink_stays_green() {
 /// The bypass the character sum exists for: same longest line, one more long line.
 #[test]
 fn a_second_long_line_grows_the_overflow_even_at_the_same_maximum() {
-    let fixture = Fixture::new();
+    let mut fixture = Fixture::new();
     let long = long_line();
+    let at_seal = format!("# old\n{long}{long}{long}");
+    fixture.sealed.insert(SMALL.to_owned(), at_seal);
     fixture.write(SMALL, &format!("# old\n{long}"));
     fixture.replace(
         BASELINE,
@@ -793,7 +997,11 @@ fn a_second_long_line_grows_the_overflow_even_at_the_same_maximum() {
 #[test]
 fn a_row_above_the_count_is_refused_even_when_it_is_sealed() {
     let mut fixture = Fixture::new();
-    fixture.sealed.insert("docs/specs/kel9-third.md".to_owned());
+    let third = (
+        "docs/specs/kel9-third.md".to_owned(),
+        "# third\n".to_owned(),
+    );
+    fixture.sealed.insert(third.0, third.1);
     fixture.write("docs/specs/kel9-third.md", "# third\n");
     let row = "docs/specs/kel9-third.md\t-\t-\t-\texempt\n";
     fixture.replace(BASELINE, BIG, &format!("{row}{BIG}"));
@@ -809,6 +1017,223 @@ fn a_malformed_row_is_a_format_defect() {
     let fixture = Fixture::new();
     fixture.replace(BASELINE, BASELINE_HEADER, "# path");
     assert_only(&fixture, Rule::BaselineFormat, "wrong header");
+}
+
+const MIGRATED_ROW: &str = "docs/specs/gh1-directory.md";
+
+/// A sealed flat spec, now a directory, with three unfilled control fields of one AC.
+fn migrated_fixture() -> Fixture {
+    let mut fixture = Fixture::new();
+    fixture.rows = 3;
+    fixture
+        .sealed
+        .insert(MIGRATED_ROW.to_owned(), "# flat\n".to_owned());
+    fixture.replace(
+        BASELINE,
+        BIG,
+        &format!("{MIGRATED_ROW}\t-\t-\t-\tmigrated:3\n{BIG}"),
+    );
+    let path = format!("{DIR}/acceptance.md");
+    for field in [
+        "Single fault:** the rule is removed",
+        "At-risk precondition:** the state holds",
+        "Expected RED:** the test fails",
+    ] {
+        let (label, _) = field.split_once("** ").expect("field anchor");
+        fixture.replace(&path, field, &format!("{label}** UNKNOWN: none named"));
+    }
+    fixture
+}
+
+#[test]
+fn only_a_sealed_spec_can_keep_unknown_required_fields() {
+    let fixture = migrated_fixture();
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let mut unsealed = migrated_fixture();
+    unsealed.sealed.remove(MIGRATED_ROW);
+    assert_only(
+        &unsealed,
+        Rule::BaselineNew,
+        "a new spec claims a migrated row",
+    );
+
+    let fixture = migrated_fixture();
+    fixture.replace(
+        &format!("{DIR}/index.md"),
+        "- Owner: owner",
+        "- Owner: UNKNOWN",
+    );
+    assert_only(&fixture, Rule::BaselineGrew, "a fourth UNKNOWN field");
+
+    let fixture = migrated_fixture();
+    let path = format!("{DIR}/acceptance.md");
+    fixture.replace(
+        &path,
+        "Single fault:** UNKNOWN: none named",
+        "Single fault:** a real fault",
+    );
+    assert_only(
+        &fixture,
+        Rule::BaselineStale,
+        "one field filled, count not lowered",
+    );
+    fixture.replace(BASELINE, "migrated:3", "migrated:2");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let fixture = migrated_fixture();
+    fixture.write(&path, &acceptance_part());
+    assert_only(
+        &fixture,
+        Rule::BaselineStale,
+        "every field filled, row kept",
+    );
+}
+
+#[test]
+fn a_flat_landed_spec_can_migrate_in_place() {
+    let fixture = Fixture::new();
+    let text = single_spec().replace(
+        "**Expected RED:** the test fails",
+        "**Expected RED:** UNKNOWN",
+    );
+    fixture.write(SMALL, &text);
+    fixture.replace(
+        BASELINE,
+        &format!("{SMALL}\t-\t-\t-\texempt"),
+        &format!("{SMALL}\t-\t-\t-\tmigrated:1"),
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_migrated_row_with_no_spec_left_is_stale() {
+    let fixture = migrated_fixture();
+    fs::remove_dir_all(fixture.root.join(DIR)).expect("fixture remove");
+    assert_only(&fixture, Rule::BaselineStale, "migrated spec deleted");
+}
+
+/// Only a `migrated:<n>` row follows its spec into a directory.
+#[test]
+fn an_exempt_row_does_not_cover_a_directory() {
+    let mut fixture = Fixture::new();
+    fixture.rows = 3;
+    fixture
+        .sealed
+        .insert(MIGRATED_ROW.to_owned(), "# flat\n".to_owned());
+    fixture.replace(
+        BASELINE,
+        BIG,
+        &format!("{MIGRATED_ROW}\t-\t-\t-\texempt\n{BIG}"),
+    );
+    assert_only(
+        &fixture,
+        Rule::BaselineStale,
+        "flat file gone, exempt row kept",
+    );
+}
+
+#[test]
+fn a_migrated_count_must_be_a_positive_number() {
+    for cell in ["migrated:0", "migrated:x", "migrated"] {
+        let fixture = migrated_fixture();
+        fixture.replace(BASELINE, "migrated:3", cell);
+        assert!(fixture.rules().contains("BASELINE-FORMAT"), "{cell}");
+    }
+}
+
+#[test]
+fn real_statements_are_not_non_values() {
+    for value in [
+        "None of the handlers run.",
+        "Unknown channels are refused.",
+        "unknown channel accepted",
+        "UNKNOWNS stay labelled",
+        "Pending calls fail",
+        "INFERRED: a page runs",
+        "a `<state>` slot in prose",
+    ] {
+        assert_eq!(non_value(value, true), None, "{value}");
+    }
+    assert_eq!(
+        non_value("none", false),
+        None,
+        "`Given: none` is a statement"
+    );
+    for value in [
+        "UNKNOWN",
+        "UNKNOWN: none named",
+        "UNKNOWN (no owner)",
+        "unknown.",
+    ] {
+        assert_eq!(non_value(value, false), Some(NonValue::Unknown), "{value}");
+    }
+    for value in ["<state>", "TBD", "todo", "N/A", "-", "?", "pending"] {
+        assert_eq!(
+            non_value(value, false),
+            Some(NonValue::Placeholder),
+            "{value}"
+        );
+    }
+    assert_eq!(non_value("None.", true), Some(NonValue::Placeholder));
+}
+
+/// A blocker owner may be unknown: root AGENTS.md says to state that and name the first step.
+#[test]
+fn a_blocker_may_name_an_unknown_owner() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/delivery.md");
+    fixture.replace(
+        &path,
+        "- **Owner:** owner",
+        "- **Owner:** UNKNOWN: ask the maintainers",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// The template's slots are the copy source; the same slot in a copy is a defect above.
+#[test]
+fn the_template_fence_may_keep_its_slots() {
+    let fixture = Fixture::new();
+    fixture.replace(TEMPLATE, "- Owner: owner", "- Owner: <human>");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_non_spec_page_outside_the_root_is_not_a_spec() {
+    let mut fixture = Fixture::new();
+    fixture.write(
+        "docs/guide.md",
+        "# Guide\n\n```text\n## 3. Acceptance criteria\n```\n",
+    );
+    fixture.tracked.push("docs/guide.md".to_owned());
+    fixture.tracked.push(TEMPLATE.to_owned());
+    fixture.tracked.push(SINGLE.to_owned());
+    fixture
+        .tracked
+        .push("docs/deleted-in-the-worktree.md".to_owned());
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_link_may_reach_any_documentation_but_no_code() {
+    for path in [
+        "docs/a.png",
+        "docs",
+        ".agents/ci.md",
+        "AGENTS.md",
+        "crates/x/README.md",
+    ] {
+        assert!(in_docs_lane(path), "{path}");
+    }
+    for path in [
+        "crates/x/src/lib.rs",
+        "justfile",
+        "docs-old/a.png",
+        ".agents-old/a.txt",
+    ] {
+        assert!(!in_docs_lane(path), "{path}");
+    }
 }
 
 #[test]
@@ -834,6 +1259,10 @@ fn id_tokens_respect_word_boundaries() {
     );
     assert_eq!(numbers("CODE-T-1 and T-1x and x-U-2 and Q-3-b"), []);
     assert_eq!(numbers("https://example.com/AC-1 and D-Bus"), []);
+    let foreign = |line: &str| id_tokens(line).iter().all(|token| token.foreign);
+    assert!(foreign("[#1311](https://example.com/x) AC-9"));
+    assert!(foreign("[KEL-9](u), AC-9"));
+    assert!(!foreign("[goal](index.md) AC-9"));
 }
 
 #[test]
@@ -847,6 +1276,16 @@ fn citations_parse_only_repository_paths() {
     assert_eq!(parse_citation("127.0.0.1:8080"), None);
     assert_eq!(parse_citation("http://x/y:80"), None);
     assert_eq!(parse_citation("a/b.rs"), None);
+    assert_eq!(parse_citation("a/b.rs:12:5"), Some(("a/b.rs", 12, None)));
+    assert_eq!(
+        parse_citation(".agents/ci.md:3"),
+        Some((".agents/ci.md", 3, None))
+    );
+    assert_eq!(parse_citation("ghcr.io/org/image:11"), None, "image tag");
+    assert_eq!(parse_citation("ghcr.io/org/image.v1:11"), None, "domain");
+    assert_eq!(parse_citation("org/image:11"), None, "no file extension");
+    assert_eq!(parse_citation("C:/x/y.rs:3"), None, "absolute Windows path");
+    assert_eq!(parse_citation("/usr/lib/y.so:3"), None, "absolute path");
 }
 
 #[test]
@@ -889,11 +1328,28 @@ fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
     let identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
     git(&[&identity[..], &["commit", "-q", "--no-gpg-sign", "-m", "x"]].concat());
     let head = git(&["rev-parse", "HEAD"]);
+    git(&[
+        &identity[..],
+        &["commit", "-q", "--allow-empty", "--no-gpg-sign", "-m", "y"],
+    ]
+    .concat());
+    let unreachable = git(&["rev-parse", "HEAD"]);
+    git(&["reset", "-q", "--soft", &head]);
 
     let history = GitHistory {
         root: &fixture.root,
     };
     assert!(history.has_commit(&head));
+    assert!(history.is_reachable(&head));
+    assert!(history.has_commit(&unreachable));
+    assert!(!history.is_reachable(&unreachable), "a dropped commit");
+    assert!(!history.is_reachable(ABSENT_SHA));
+    let tracked = history.tracked_markdown().expect("index reads");
+    assert!(tracked.iter().any(|path| path == BIG), "{tracked:?}");
+    assert!(
+        tracked.iter().all(|path| path.ends_with(".md")),
+        "{tracked:?}"
+    );
     assert!(!history.has_commit(ABSENT_SHA));
     assert_eq!(history.lines_at(&head, BIG), Some(600));
     assert_eq!(history.lines_at(&head, "docs/specs/absent.md"), None);
@@ -903,7 +1359,12 @@ fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
     let error = history
         .paths_at(ABSENT_SHA, SPEC_ROOT)
         .expect_err("seal absent");
-    assert!(error.contains("fetch-depth: 0"), "{error}");
+    assert!(
+        error.contains(ABSENT_SHA) && error.contains(&seal_fix(false)),
+        "{error}"
+    );
+    assert!(seal_fix(true).contains("fetch-depth: 0"));
+    assert!(seal_fix(false).contains("git fetch origin main"));
     let config = Config {
         rows: 2,
         seal: ABSENT_SHA,

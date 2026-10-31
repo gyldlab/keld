@@ -298,9 +298,9 @@
       "inputs": [
         "docs/*",
         ".agents/*",
-        "AGENTS.md"
+        "*.md"
       ],
-      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, relative link targets and Git history. A link target outside these inputs is rechecked at the next selected run, not when the target alone changes.",
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked Markdown file, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
       "reader_set": "policy-readers"
     },
     {
@@ -542,7 +542,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "b35e4176ebdf708727dbf89ef9294de0779f7c60b1eb2f522abe7cadbe5d7d69"
+      "sha256": "89a0f4924050ebe40c5ffe2ddae7602df7c5f0b23c83ec71969a75e63369fbf1"
     },
     "audit-readers": {
       "patterns": [
