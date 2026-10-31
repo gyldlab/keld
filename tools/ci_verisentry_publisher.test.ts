@@ -176,6 +176,8 @@ test("publisher has its own pinned identity and no PR-owned executable code", ()
     "private-key": "${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}",
     owner: "gyldlab",
     repositories: "keld",
+    "permission-checks": "write",
+    "permission-pull-requests": "read",
   });
   expect(publish.steps[1].uses).toBe(githubScript);
   expect(publish.steps[1].with["github-token"]).toBe(

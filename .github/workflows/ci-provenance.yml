@@ -187,6 +187,9 @@ jobs:
           private-key: ${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}
           owner: gyldlab
           repositories: keld
+          # Narrow the installation token; the App installation has more access.
+          permission-checks: write
+          permission-pull-requests: read
       - name: Publish fail-closed exact-head VeriSentry check
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9.0.0
         env:
