@@ -15,10 +15,20 @@
   <img alt="HTML parse calibration" src="http://127.0.0.1:__GH1037_PARSE_PORT__/GH1037_PARSE">
   <script>
     "use strict";
-    const state = { css: "pending", image: "pending", control: "pending" };
-    const sheet = document.createElement("link");
-    const relative = document.createElement("img");
-    const control = document.createElement("img");
+    // The sole load/error observer. Only it mints "pending", together with
+    // both listeners; the same-helper controls prove those listeners fire.
+    const state = {};
+    function observe(element, key) {
+      state[key] = "pending";
+      element.addEventListener("load", () => { state[key] = "load"; }, { once: true });
+      element.addEventListener("error", () => { state[key] = "error"; }, { once: true });
+      return element;
+    }
+    const seen = (key) => state[key] ?? "UNOBSERVED";
+    const sheet = observe(document.createElement("link"), "css");
+    const relative = observe(document.createElement("img"), "image");
+    const control = observe(document.createElement("img"), "control");
+    const sheetControl = observe(document.createElement("link"), "sheetControl");
     function report(port, path) {
       const image = document.createElement("img");
       image.alt = path;
@@ -28,8 +38,8 @@
     const color = (id) => getComputedStyle(document.getElementById(id)).color.match(/\d+/g).join("-");
     function snapshot() {
       return [
-        state.css, state.image, relative.naturalWidth, color("relative-probe"),
-        state.control, control.naturalWidth, color("inline-control"),
+        seen("css"), seen("image"), relative.naturalWidth, color("relative-probe"),
+        seen("control"), control.naturalWidth, color("inline-control"),
         encodeURIComponent(document.baseURI),
         sheet.hasAttribute("href") ? "1" : "0",
         encodeURIComponent(sheet.getAttribute("href") ?? "UNASSIGNED"),
@@ -43,15 +53,9 @@
         relative.isConnected ? "1" : "0",
         relative.localName, relative.ownerDocument === document ? "1" : "0",
         document.readyState, sheet.disabled ? "1" : "0",
-        relative.complete ? "1" : "0"
+        relative.complete ? "1" : "0", seen("sheetControl")
       ].join("/");
     }
-    sheet.addEventListener("load", () => { state.css = "load"; }, { once: true });
-    sheet.addEventListener("error", () => { state.css = "error"; }, { once: true });
-    relative.addEventListener("load", () => { state.image = "load"; }, { once: true });
-    relative.addEventListener("error", () => { state.image = "error"; }, { once: true });
-    control.addEventListener("load", () => { state.control = "load"; }, { once: true });
-    control.addEventListener("error", () => { state.control = "error"; }, { once: true });
     window.addEventListener("load", () => {
       report(__GH1037_LOAD_PORT__, "GH1037_ASSETS/" + snapshot());
     }, { once: true });
@@ -62,6 +66,9 @@
     sheet.rel = "stylesheet";
     sheet.href = "./relative.css";
     document.head.append(sheet);
+    sheetControl.rel = "stylesheet";
+    sheetControl.href = "data:text/css," + encodeURIComponent("#gh1037-unused {}");
+    document.head.append(sheetControl);
     relative.src = "./relative.svg";
     document.body.append(relative);
     control.src = "data:image/svg+xml," + encodeURIComponent(

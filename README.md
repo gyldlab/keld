@@ -198,8 +198,12 @@ restart `keld dev`. **Live reload is not implemented yet.**
 | `src/echo.generated.ts` | Rust-derived compile-time declarations for the demo's echo payloads. | Not copied. |
 | `keld.config.ts` | The app's configuration, including its name and entry paths. | Read to compile the boot descriptor; not copied. |
 
-The current stage does not copy imported sibling modules or separate renderer
-stylesheets and images. Multi-file staging is being verified and specified in
+The current stage does not copy imported sibling modules, so an entry that
+imports a sibling file such as `./sibling.ts` fails to start. Relative
+stylesheet and image references in the renderer do not load at all: the inline
+renderer page's base address is `about:blank`, so those references cannot
+resolve, whether or not the files are staged. Serving renderer files is tracked
+separately as KEL-79. Multi-file staging is being verified and specified in
 [#1037](https://github.com/gyldlab/keld/issues/1037); it is not implemented yet.
 
 The scaffold also includes its KIPC transport; there are no package dependencies

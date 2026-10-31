@@ -66,11 +66,13 @@ fn shipping_stage_missing_sibling_has_an_explicit_injected_byte_counterweight() 
         "GH1037_SIBLING_MISSING host={host_pid} status={}\n{stderr}",
         output.status
     );
-    assert!(
-        !output.status.success(),
-        "missing sibling became Host success"
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "missing sibling must be a Host startup failure: {stderr}"
     );
     assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
+    assert!(stderr.contains("KELD-RUNTIME-003"), "{stderr}");
     assert!(
         stderr.contains("before its initial authenticated generation bound"),
         "{stderr}"

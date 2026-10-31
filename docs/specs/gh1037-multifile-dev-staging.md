@@ -60,6 +60,9 @@ load with width3/color19-73-109. The original CSS would yield7-31-91 and the SVG
 width7. Pending is not relabelled eventual error. This is the **schema-one inline
 HTML path**, not the unrun Drawio facade/schema-four `BrowserWindow.loadURL`
 path. It proves no Drawio resource failure or product-corpus outcome.
+The operative cause is that base, not file absence: the reflected `href`/`src`
+stay the unresolved raw values, and an uncommitted diagnostic run that also
+copied both files into the stage produced a byte-identical snapshot.
 
 The first fixture revision0f13b7f failed0/2/EXIT101; its unsupported raw-stderr
 assumption and all-callbacks reporter were corrected in retained later commits.
@@ -86,6 +89,19 @@ href/src omission failed its dedicated target oracle while inline controls and
 orderly lifecycle cleanup passed. The restored healthy-following case passed.
 These controlled failures are retained separately from the two old159 false
 passes and the earlier3fd2/2 result. External exact-head re-review remains required.
+
+A later adversarial review reproduced four findings natively. Deleting the
+stylesheet listeners left a byte-identical pending snapshot that still passed;
+a `<base>` change was blamed on the target oracle; README blamed staging rather
+than the base for unloaded renderer assets; and the sibling case asserted less
+than this section states. The R2 correction routes every element through one
+fixture observer that alone mints pending, so a bypassed target reports
+UNOBSERVED, and a data-URL stylesheet control through that observer must load.
+Base-resolved reflections are document-baseline fields, read only for an
+assigned attribute. The sibling case now asserts exit1 plus both codes. On the
+same macOS26.5.1/25F80 arm64 Mac with Bun1.4.4, ten pure and both native cases
+pass. Deleting the observer listeners, bypassing it for the stylesheet, or
+omitting href or src fails; a `<base>` change fails only the document baseline.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
