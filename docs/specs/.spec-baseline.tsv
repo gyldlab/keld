@@ -2,6 +2,7 @@
 docs/specs/gh1091-bun-native-tooling.md	-	-	-	exempt
 docs/specs/gh1095-request-error-codes.md	912	60578	2916	exempt
 docs/specs/gh1149-settled-source-reclamation.md	-	-	1733	exempt
+docs/specs/gh1188-windows-window-adapter.md	1676	233627	76493	exempt
 docs/specs/gh508-kipc-channel-table.md	897	64352	397	exempt
 docs/specs/gh527-worker-owned-blocking-call-transport.md	1528	113099	476	exempt
 docs/specs/gh531-window-registry-close-state-machine.md	1665	119162	262	exempt
