@@ -12,9 +12,7 @@ A spec file MUST stay within:
 |---|---|---|
 | Lines | 500 | Owner rule |
 | Bytes | 40 KiB | 500 lines at p80, 82 bytes |
-| Line | 400 chars | Over prose p99 (303), table p90 (380). Fences count |
-
-Put AC, decision and blocker text under headings.
+| Line | 400 chars | Prose p99 303, table p90 380. Fences count |
 
 ## Layout
 
@@ -24,7 +22,7 @@ An "Acceptance criteria" heading elsewhere fails.
 
 ```text
 docs/specs/<id>-<slug>/
-  index.md   map: header, sections 1 and 8, Parts, Current blockers
+  index.md   map: header and the sections below
   <part>.md  sections 2-7, 9, 10, in part-table order
 ```
 
@@ -140,9 +138,10 @@ Agents MUST NOT split a spec to hide text, or lower a value by deleting a contra
 
 ## Not enforced
 
-Rules read the page: an unresolved `&name;` in a heading or label fails.
+A heading or label with an unresolved `&name;` fails, as do nesting past 32, a block over
+64 KiB and, in a spec, a tag just after a quote or list.
 
-Quote accuracy, labels, reworded non-values, cited line content, root-level and
-extensionless citations, absent `@sha` commits, homoglyphs, fields split across lines,
-raw HTML links, HTML block text, renumbered IDs, lower-case body labels, reworded, tabled
-or quoted fields.
+Exempt rows, labels, non-code citations, quotes, cited lines, root-level,
+extensionless or absent-`@sha` paths, `docs/research` links, homoglyphs, struck text, raw
+HTML links or text, reused IDs, reworded non-values, split, lower-case, reworded, tabled,
+quoted or footnote fields.
