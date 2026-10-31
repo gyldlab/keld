@@ -332,6 +332,319 @@ test("actual workflow passes parsed security admission", () => {
   expect(() => checkWorkflowSecurity(source)).not.toThrow();
 });
 
+// Keep each job-only mutation separate: the executable steps remain byte-for-byte
+// equivalent, so their existing reviewed digest cannot serve as this oracle.
+const bunJobMutations: Array<[string, (job: Step) => void]> = [
+  [
+    "Ubuntu-only matrix",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os = ["ubuntu-latest"];
+    },
+  ],
+  [
+    "Ubuntu-only runner",
+    (job) => {
+      job["runs-on"] = "ubuntu-latest";
+    },
+  ],
+  [
+    "BASH_ENV",
+    (job) => {
+      job.env = { BASH_ENV: "./ci-hook.sh" };
+    },
+  ],
+  [
+    "PATH",
+    (job) => {
+      job.env = { PATH: "/tmp/hijack:$PATH" };
+    },
+  ],
+  [
+    "Bun preload",
+    (job) => {
+      job.env = { BUN_OPTIONS: "--preload=./hijack.ts" };
+    },
+  ],
+  [
+    "false condition string",
+    (job) => {
+      job.if = "false";
+    },
+  ],
+  [
+    "false condition boolean",
+    (job) => {
+      job.if = false;
+    },
+  ],
+  [
+    "changed job name",
+    (job) => {
+      job.name = "unreviewed Bun lane";
+    },
+  ],
+  [
+    "changed dependency",
+    (job) => {
+      job.needs = "fmt";
+    },
+  ],
+  [
+    "changed timeout",
+    (job) => {
+      job["timeout-minutes"] = 5;
+    },
+  ],
+  [
+    "self-hosted runner",
+    (job) => {
+      job["runs-on"] = ["self-hosted"];
+    },
+  ],
+  [
+    "duplicate OS",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os = [
+        "ubuntu-latest",
+        "macos-latest",
+        "macos-latest",
+      ];
+    },
+  ],
+  [
+    "expression OS census",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.os =
+        "${{ fromJSON(needs.changes.outputs.check_os) }}";
+    },
+  ],
+  [
+    "matrix include",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.include = [
+        { os: "ubuntu-latest" },
+      ];
+    },
+  ],
+  [
+    "matrix exclude",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.exclude = [
+        { os: "windows-latest" },
+      ];
+    },
+  ],
+  [
+    "extra matrix axis",
+    (job) => {
+      (job.strategy as { matrix: Step }).matrix.enabled = [false];
+    },
+  ],
+  [
+    "fail-fast enabled",
+    (job) => {
+      (job.strategy as Step)["fail-fast"] = true;
+    },
+  ],
+  [
+    "expression fail-fast",
+    (job) => {
+      (job.strategy as Step)["fail-fast"] = "${{ true }}";
+    },
+  ],
+  [
+    "missing fail-fast",
+    (job) => {
+      delete (job.strategy as Step)["fail-fast"];
+    },
+  ],
+  [
+    "max-parallel control",
+    (job) => {
+      (job.strategy as Step)["max-parallel"] = 1;
+    },
+  ],
+  [
+    "unknown strategy control",
+    (job) => {
+      (job.strategy as Step)["unreviewed-control"] = false;
+    },
+  ],
+  [
+    "working-directory defaults",
+    (job) => {
+      job.defaults = { run: { "working-directory": "./other" } };
+    },
+  ],
+  [
+    "custom shell defaults",
+    (job) => {
+      job.defaults = { run: { shell: "bash -c true {0}" } };
+    },
+  ],
+  [
+    "container",
+    (job) => {
+      job.container = "ubuntu:24.04";
+    },
+  ],
+  [
+    "services",
+    (job) => {
+      job.services = { db: { image: "postgres:16" } };
+    },
+  ],
+  [
+    "continue-on-error true",
+    (job) => {
+      job["continue-on-error"] = true;
+    },
+  ],
+  [
+    "continue-on-error false",
+    (job) => {
+      job["continue-on-error"] = false;
+    },
+  ],
+  [
+    "permission override",
+    (job) => {
+      job.permissions = { contents: "write" };
+    },
+  ],
+  [
+    "unknown job control",
+    (job) => {
+      job["unreviewed-control"] = false;
+    },
+  ],
+];
+for (const key of [
+  "name",
+  "runs-on",
+  "timeout-minutes",
+  "needs",
+  "strategy",
+  "if",
+]) {
+  bunJobMutations.push([
+    `missing ${key}`,
+    (job) => {
+      delete job[key];
+    },
+  ]);
+}
+for (const [label, mutate] of bunJobMutations) {
+  test(`Bun job execution contract rejects ${label}`, () => {
+    const workflow = fixture();
+    const job = workflow.jobs["bun-test"]!;
+    const unchangedSteps = JSON.stringify(job.steps);
+    mutate(job as Step);
+    expect(JSON.stringify(job.steps)).toBe(unchangedSteps);
+    expect(() => check(workflow), label).toThrow();
+  });
+}
+
+test("Bun job execution contract admits reordered mapping keys", () => {
+  const workflow = fixture();
+  const job = workflow.jobs["bun-test"]!;
+  const strategy = job.strategy!;
+  job.strategy = Object.fromEntries(
+    Object.entries(strategy).reverse(),
+  ) as typeof strategy;
+  workflow.jobs["bun-test"] = Object.fromEntries(
+    Object.entries(job).reverse(),
+  ) as FixtureJob;
+  expect(() => check(workflow)).not.toThrow();
+});
+
+// GH1301: this checks the shipping workflow, not a copied example or fixture.
+// A real cold hosted API suite failed because it ran before KIPC's compiler was
+// installed; a Rust-hosted Bun corpus independently failed to import @keld/kipc.
+test("frozen SDK prerequisites precede both TypeScript and Rust-hosted Bun tests", () => {
+  const workflow = fixture();
+  const run = step(
+    workflow,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  ).run!;
+  const phases = run.split("for package in $KELD_CI_TS_PACKAGES; do");
+  expect(phases).toHaveLength(3);
+  expect(phases[1]).toContain("bun install --frozen-lockfile");
+  expect(phases[1]).not.toContain("bun test");
+  expect(phases[1]).not.toContain("bun run typecheck");
+  expect(phases[2]).toContain("bun run typecheck");
+  expect(phases[2]).toContain("bun test");
+  expect(phases[2]).not.toContain("bun install --frozen-lockfile");
+
+  const nativeSteps = workflow.jobs.check!.steps;
+  const setupIndex = nativeSteps.findIndex((candidate) =>
+    candidate.uses?.startsWith("oven-sh/setup-bun@"),
+  );
+  const dependencyIndex = nativeSteps.findIndex(
+    (candidate) =>
+      candidate.name ===
+      "Prepare frozen SDK fixtures for Rust-hosted Bun corpus",
+  );
+  const clippyIndex = nativeSteps.findIndex(
+    (candidate) => candidate.name === "clippy (warnings deny)",
+  );
+  expect(setupIndex).toBeGreaterThanOrEqual(0);
+  expect(dependencyIndex).toBeGreaterThan(setupIndex);
+  expect(clippyIndex).toBeGreaterThan(dependencyIndex);
+  const dependency = nativeSteps[dependencyIndex]!;
+  expect(dependency.run).toContain("packages/@keld/kipc");
+  expect(dependency.run).toContain("packages/@keld/api");
+  expect(dependency.run).toContain("packages/@keld/electron");
+  expect(dependency.run).toContain("bun install --frozen-lockfile");
+  expect(dependency["continue-on-error"]).toBeUndefined();
+});
+
+test("cold Bun dependency setup cannot be echoed, removed or reordered", () => {
+  const echoOnly = fixture();
+  const bun = step(
+    echoOnly,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  );
+  bun.run = bun.run!.replace(
+    "bun install --frozen-lockfile",
+    "echo bun install --frozen-lockfile",
+  );
+  expect(() => check(echoOnly)).toThrow(
+    "Bun test reviewed fixture install/order",
+  );
+
+  const missingNative = fixture();
+  const nativeSteps = missingNative.jobs.check!.steps;
+  const installIndex = nativeSteps.findIndex(
+    (candidate) =>
+      candidate.name ===
+      "Prepare frozen SDK fixtures for Rust-hosted Bun corpus",
+  );
+  expect(installIndex).toBeGreaterThanOrEqual(0);
+  nativeSteps.splice(installIndex, 1);
+  expect(() => check(missingNative)).toThrow(
+    "native check reviewed step inventory/order",
+  );
+
+  const reordered = fixture();
+  const run = step(
+    reordered,
+    "bun-test",
+    "frozen install, typecheck, and bun test",
+  );
+  const phaseBoundary = "done\nfor package in $KELD_CI_TS_PACKAGES; do";
+  expect(run.run).toContain(phaseBoundary);
+  run.run = run.run!.replace(
+    phaseBoundary,
+    "bun test\ndone\nfor package in $KELD_CI_TS_PACKAGES; do",
+  );
+  expect(() => check(reordered)).toThrow(
+    "Bun test reviewed fixture install/order",
+  );
+});
+
 test("Linux and Windows native acceptance tests print cargo failure output", () => {
   const f = fixture();
   const bash =
