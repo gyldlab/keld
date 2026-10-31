@@ -1,5 +1,5 @@
 # Critical ownership stays explicit; the verified visible team has repository write access.
-# All PRs require independent approval; these paths additionally require owner review.
+# These paths request owner review; branch-review bypass still needs an independent gate.
 /Cargo.toml                            @gyldlab/keld-maintainers
 /Cargo.lock                            @gyldlab/keld-maintainers
 /rust-toolchain.toml                   @gyldlab/keld-maintainers
@@ -18,3 +18,4 @@
 /MAINTAINERS.md                        @gyldlab/keld-maintainers
 /SECURITY.md                           @gyldlab/keld-maintainers
 /CODE_OF_CONDUCT.md                    @gyldlab/keld-maintainers
+/.ci-reader-proofs/                     @gyldlab/keld-maintainers
