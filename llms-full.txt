@@ -5683,7 +5683,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-cli
 - message: Failed to write the hello template
-- fix: Check the parent path exists and is a writable directory.
+- fix: Resolve the reported I/O error and check that the parent path exists and is a writable directory. If the target directory was created, it may contain incomplete files. Inspect and preserve any files in that directory, then retry with an unused project name.
 
 ## KELD-CLI-030
 
