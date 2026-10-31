@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>GH1037 relative assets</title>
+  <style>
+    html, body { background: #111; color: #eee; }
+    #relative-probe { color: rgb(11, 22, 33); }
+    #inline-control { color: rgb(19, 73, 109); }
+  </style>
+</head>
+<body>
+  <p id="relative-probe">Relative stylesheet observation</p>
+  <p id="inline-control">Inline stylesheet control</p>
+  <script>
+    "use strict";
+    function loaded(element, assign) {
+      return new Promise((resolve) => {
+        element.addEventListener("load", () => resolve("load"), { once: true });
+        element.addEventListener("error", () => resolve("error"), { once: true });
+        assign();
+      });
+    }
+    async function observe() {
+      const sheet = document.createElement("link");
+      sheet.rel = "stylesheet";
+      const css = loaded(sheet, () => {
+        sheet.href = "./relative.css";
+        document.head.append(sheet);
+      });
+      const relative = document.createElement("img");
+      const image = loaded(relative, () => {
+        relative.src = "./relative.svg";
+        document.body.append(relative);
+      });
+      const control = document.createElement("img");
+      const positive = loaded(control, () => {
+        control.src = "data:image/svg+xml," + encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="5"></svg>');
+        document.body.append(control);
+      });
+      const [cssState, imageState, controlState] = await Promise.all([css, image, positive]);
+      const color = (id) => getComputedStyle(document.getElementById(id)).color.match(/\d+/g).join("-");
+      const values = [
+        cssState, imageState, relative.naturalWidth, color("relative-probe"),
+        controlState, control.naturalWidth, color("inline-control"),
+        encodeURIComponent(document.baseURI)
+      ];
+      const report = document.createElement("img");
+      report.alt = "GH1037 observed asset values: " + values.join("/");
+      report.src = "http://127.0.0.1:__GH1037_PORT__/GH1037_ASSETS/" + values.join("/");
+      document.body.append(report);
+    }
+    void observe();
+  </script>
+</body>
+</html>

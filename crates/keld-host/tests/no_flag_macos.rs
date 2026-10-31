@@ -18,6 +18,8 @@ mod facade_ready;
 mod facade_window;
 #[path = "no_flag/macos/lifecycle.rs"]
 mod lifecycle;
+#[path = "no_flag/macos/multifile_staging.rs"]
+mod multifile_staging;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/media/mod.rs"]
 mod media;
