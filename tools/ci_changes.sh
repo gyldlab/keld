@@ -169,8 +169,9 @@ emit() {
 }
 
 # The same reviewed reader/input contract supplements both local and hosted
-# selections. A stale reader binding enables its consumers; malformed contracts
-# fail before any selection is published. No source-text inference is involved.
+# selections. A reader source changed in the diff widens its consumers for that
+# change; malformed contracts fail before any selection is published. No
+# source-text inference is involved.
 apply_consumer_contract() {
     local source_root python_command
     source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -956,6 +957,10 @@ classify_stream() {
     local -a contract_options=()
     if [[ "$mode" == paths ]]; then
         contract_options+=(--paths-only)
+    else
+        # Membership (a crate path the base did not track) is read from the base
+        # tree; nothing about reader bytes is recorded between changes (GH-1275).
+        contract_options+=(--base "$base")
     fi
     if [[ ${#changed_files[@]} -gt 0 ]]; then
         apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} < <(printf '%s\0' "${changed_files[@]}")
