@@ -114,9 +114,12 @@ jobs:
                 p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
                 // Directly executed native CI validation/harness sources. A
                 // candidate must not replace a smoke/registry gate with echo 0.
-                p === "crates/keld-wv/tests/linux_gui_smoke.sh" ||
-                p === "crates/keld-wv/tests/windows_media_guard.ps1" ||
-                p === "crates/keld-wv/tests/fixtures/linux_media_interpose.c" ||
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
                 p === "docs/audits/verify.py" ||
                 p === "docs/audits/test_verify.py" ||
                 p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||

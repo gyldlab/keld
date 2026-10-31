@@ -1,6 +1,6 @@
 # KELD VeriSentry — source-authenticated CI admission rollout
 
-**Status: draft / NO-GO for merge admission until hosted hostile probes pass.**
+**Status: reviewed source-only bootstrap pending exact-head hosted CI; App-required merge admission remains NO-GO until live hostile probes and CI-maintenance acceptance pass.**
 
 This document is for the KEL-169 reviewer and release owner. It is not permission
 for an agent to install a new credential, relax protections, or merge PR #1253.
@@ -14,9 +14,9 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
 - Required check to be registered only after live qualification:
   `KELD VeriSentry`, **expected source App ID 5550363**, not the shared GitHub
   Actions App ID 15368. Preserve `gatekeeper`, `title-lint`, and `CI required`.
-- Intended Actions execution policy: target exactly
-  `.github/workflows/ci-provenance.yml`, allow only `pull_request_target`;
-  it was created **Disabled** and must remain so until qualification.
+- Active Actions execution policy `10173`: targets only
+  `.github/workflows/ci-provenance.yml` and permits only `pull_request_target`.
+  It does not, by itself, enable or require a GitHub App security check.
 - Environment: `verisentry-publisher`, with a `main` deployment branch rule.
   Required reviewers are OFF for automatic admission; administrator deployment
   bypass is OFF. This is NOT a replacement for code-owner protection of `main`.
@@ -26,7 +26,8 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
 1. `provenance` executes protected-default-branch workflow bytes using only a
    read-only `GITHUB_TOKEN`. It checks the immutable base/head comparison, refuses
    incomplete (>299) file lists, and refuses ALL changes to CI authority,
-   including directly executed Linux/Windows media harnesses and audit scripts. An authorized maintenance
+   including direct and transitive Linux/Windows WebView executable harnesses,
+   C interposers, and public audit verifier scripts. An authorized maintenance
    exception is **not** active because GitHub review revocation does not
    automatically trigger a protected verifier rerun.
    It never checks out or executes untrusted PR code.
@@ -54,13 +55,21 @@ dismissing a maintainer review must invalidate any previously published App
 PASS for the affected PR test-merge commit. A static approval lookup alone is
 not sufficient. Do not claim CI-authority updates are automatically admitted.
 
-## Credential isolation
+## Credential isolation and post-test rotation
 
-**Do not put a `.pem` key in the repository, a PR, a workflow `env` expression,
-logs, artifacts, caches, or chat.** After the workflow and protected-main branch
-admission are independently reviewed, a trusted maintainer can load the private
-key **directly from a local file via stdin** into the GitHub Actions environment
-secret, not a repository-wide secret. Example (replace the placeholder path):
+**The GitHub App private key was provisioned on 31 October 2026 as encrypted
+`verisentry-publisher` environment secret `VERISENTRY_APP_PRIVATE_KEY`; this
+is not a repository-wide secret.** No key bytes were printed or committed.
+A non-required real test-merge check ([App ID 5550363 receipt](https://github.com/gyldlab/keld/runs/124432341055))
+proved GitHub App authentication and Checks write; the temporary test token
+was revoked. This alone does not prove a protected-workflow execution.
+
+**Never put a `.pem` key in the repository, a PR, workflow code, logs,
+artifacts, caches, or chat.** After successful end-to-end tests, the owner
+will generate a fresh App key, replace the existing environment secret by
+reading that new file directly through stdin, then revoke the old key in
+GitHub App credentials and remove stale local copies. Example for the owner
+(replace the placeholder path):
 
 ```sh
 gh secret set VERISENTRY_APP_PRIVATE_KEY --repo gyldlab/keld \
@@ -69,11 +78,25 @@ gh secret set VERISENTRY_APP_PRIVATE_KEY --repo gyldlab/keld \
 
 This `gh` command must be run from the trusted maintainer's machine. Do not
 print or log the key. Confirm environment permissions and execution policy
-before provisioning. A PR-authored workflow must never have access to this
+during rotation. A PR-authored workflow must never have access to this
 secret. Local downloaded copies must be secured/rotated appropriately;
 filesystem permissions do not isolate a key from agents running as the same
 OS user. Only App installation tokens, never the private key, may reach the
 GitHub REST API, and tokens expire/revoke.
+
+## Two-stage rollout to avoid a bootstrap deadlock
+
+**Stage 1 — source only:** After exact-head CI and authorized independent
+review are green, merge this PR to protected `main` through the existing three
+required checks. The new App check is NOT required yet. This deploys trusted
+base-owned verifier code so real hostile PR tests become possible; it is not
+production security admission. Do not bypass failed source checks.
+
+**Stage 2 — active admission:** Execute the full live matrix below. Before
+making the App check required, establish and test a safe authorized
+CI-maintenance path; simply rejecting all future CI config changes would
+otherwise lock out legitimate maintenance. Only enable required status once
+both hostile tests and the maintenance/recovery protocol pass.
 
 ## Mandatory live qualification BEFORE enforcing a required check
 
