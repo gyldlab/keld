@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:11703ad7b5efccc74227e166d225a2628813a1c958391cc77d62547b3c8194a9
+// @keld/kipc-transport sha256:7e4129473924084dde4f39d23baac2a122a56d72d9379b1486faeecadfe75f74
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -748,6 +748,14 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  * Prefix-concatenating the whole buffer on every chunk is quadratic on a
  * fragmented max-size frame.
  *
+ * While a waiter is set and the head frame's header is complete but its
+ * payload is not, the reader allocates that payload once (its declared length
+ * is already capped by `MAX_FRAME_LEN`) and copies each later callback buffer
+ * straight into it: one copy per byte, no per-fragment allocation, and no
+ * second gather at completion. Bytes past the frame's end are queued as owned
+ * chunks for the next frame. Fragments that arrive while no waiter is set, or
+ * before a header is complete, are queued as owned chunks as before.
+ *
  * One in-flight `readFrame()` only. A second call while a waiter is set is
  * `KELD-IPC-005`; it must not overwrite the waiter. An idle waiter has no
  * deadline; its first buffered byte starts one absolute frame deadline that
@@ -755,7 +763,11 @@ export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
  */
 const CHUNK_COMPACT_THRESHOLD = 1024;
 
-/** Maximum unread fragments retained for one in-flight frame. */
+/**
+ * Maximum unread socket fragments counted against one in-flight frame. A
+ * fragment copied straight into a payload still counts until that frame is
+ * delivered, so the bound does not depend on how the bytes are stored.
+ */
 export const MAX_PENDING_CHUNKS = 65_536;
 
 export class FrameReader {
@@ -763,6 +775,7 @@ export class FrameReader {
   #chunkArrivals: Array<number | undefined> = [];
   #chunkIndex = 0;
   #head = 0;
+  /** Bytes held in the chunk queue; `bufferedBytes()` adds the active fill. */
   #length = 0;
   #censusChunkIndex = 0;
   #censusOffset = 0;
@@ -775,32 +788,64 @@ export class FrameReader {
   #closeError: Error | null = null;
   #ending: Error | null = null;
   #frameDeadline: ReturnType<typeof setTimeout> | undefined;
+  // The frame the waiter is receiving once its header is decoded: the exact
+  // payload, how much of it has arrived, the arrival of its first byte (the
+  // frame deadline clock), the arrival that completed it, and how many socket
+  // fragments it has consumed (header fragments included) so
+  // `pendingChunkCount()` is unchanged by where the bytes live.
+  #fillHeader: FrameHeader | null = null;
+  #fill: Uint8Array | null = null;
+  #fillOffset = 0;
+  #fillStartedAt = 0;
+  #fillCompletedAt = 0;
+  #fillChunks = 0;
 
   /** Unread buffered bytes. Independent of how many socket chunks carried them. */
   bufferedBytes(): number {
-    return this.#length;
+    return this.#fill === null
+      ? this.#length
+      : this.#length + HEADER_LEN + this.#fillOffset;
   }
 
   /**
    * Unread socket chunks. A prefix-concat reader collapses this to 1 after the
-   * second `push`; the chunk-queue reader keeps one entry per unread chunk.
+   * second `push`; this reader counts one per fragment until its frame is
+   * delivered, whether the fragment is queued or already in the payload.
    */
   pendingChunkCount(): number {
-    return this.#chunks.length - this.#chunkIndex;
+    return this.#chunks.length - this.#chunkIndex + this.#fillChunks;
   }
 
   push(chunk: Uint8Array): void {
     const arrivedAt = performance.now();
     if (this.#closed || this.#ending !== null || chunk.byteLength === 0) return;
-    // Bun documents the callback value's type but not a retain-after-callback
-    // lifetime. Own each queued chunk so a reused/mutated producer buffer
-    // cannot rewrite a partially received frame after `push` returns.
-    this.#chunks.push(new Uint8Array(chunk));
-    this.#chunkArrivals.push(arrivedAt);
-    this.#length += chunk.byteLength;
+    const fill = this.#fill;
+    if (fill === null) {
+      // Bun documents the callback value's type but not a retain-after-callback
+      // lifetime. Own each queued chunk so a reused/mutated producer buffer
+      // cannot rewrite a partially received frame after `push` returns.
+      this.#enqueue(new Uint8Array(chunk), arrivedAt);
+    } else {
+      // The header is decoded and the payload allocated: copy the callback
+      // bytes into it now (the one copy; the callback buffer is not retained).
+      // A complete fill resolves synchronously below, so `room` is positive.
+      const room = fill.byteLength - this.#fillOffset;
+      this.#fillChunks += 1;
+      if (chunk.byteLength <= room) {
+        fill.set(chunk, this.#fillOffset);
+        this.#fillOffset += chunk.byteLength;
+      } else {
+        fill.set(chunk.subarray(0, room), this.#fillOffset);
+        this.#fillOffset += room;
+        // The rest starts the next frame: queue an owned copy, same arrival.
+        this.#enqueue(new Uint8Array(chunk.subarray(room)), arrivedAt);
+      }
+      if (this.#fillOffset === fill.byteLength)
+        this.#fillCompletedAt = arrivedAt;
+    }
     this.#ensureFrameDeadline();
     this.#tryResolve();
-    if (!this.#closed && this.#length > HEADER_LEN + MAX_FRAME_LEN) {
+    if (!this.#closed && this.bufferedBytes() > HEADER_LEN + MAX_FRAME_LEN) {
       this.fail(
         payloadTooLarge(
           `buffered app-link data exceeds one maximum frame envelope (${HEADER_LEN + MAX_FRAME_LEN} bytes). ` +
@@ -843,13 +888,29 @@ export class FrameReader {
     this.#censusChunkIndex = 0;
     this.#censusOffset = 0;
     this.#censusBytes = 0;
+    this.#dropFill();
     const pending = this.#pending;
     this.#pending = null;
     pending?.reject(err);
   }
 
-  #copyOut(n: number): Uint8Array {
-    const out = new Uint8Array(n);
+  #enqueue(owned: Uint8Array, arrivedAt: number): void {
+    this.#chunks.push(owned);
+    this.#chunkArrivals.push(arrivedAt);
+    this.#length += owned.byteLength;
+  }
+
+  #dropFill(): void {
+    this.#fillHeader = null;
+    this.#fill = null;
+    this.#fillOffset = 0;
+    this.#fillStartedAt = 0;
+    this.#fillCompletedAt = 0;
+    this.#fillChunks = 0;
+  }
+
+  /** Copies the next `n` unread queue bytes into `out` at `at` without consuming them. */
+  #copyInto(out: Uint8Array, at: number, n: number): void {
     let written = 0;
     let idx = this.#chunkIndex;
     let offset = this.#head;
@@ -858,11 +919,16 @@ export class FrameReader {
       if (chunk === undefined)
         throw kipcError("KELD-IPC-001", "frame reader underrun");
       const take = Math.min(chunk.byteLength - offset, n - written);
-      out.set(chunk.subarray(offset, offset + take), written);
+      out.set(chunk.subarray(offset, offset + take), at + written);
       written += take;
       idx += 1;
       offset = 0;
     }
+  }
+
+  #copyOut(n: number): Uint8Array {
+    const out = new Uint8Array(n);
+    this.#copyInto(out, 0, n);
     return out;
   }
 
@@ -937,7 +1003,13 @@ export class FrameReader {
   }
 
   #tryResolve(): void {
-    if (!this.#pending || this.#length < HEADER_LEN) return;
+    if (!this.#pending) return;
+    if (this.#fill !== null) {
+      if (this.#fillOffset < this.#fill.byteLength) return;
+      this.#resolveFill();
+      return;
+    }
+    if (this.#length < HEADER_LEN) return;
     const startedAt = this.#arrivalAt(0);
     const headerCompletedAt = this.#arrivalAt(HEADER_LEN - 1);
     if (headerCompletedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
@@ -958,7 +1030,10 @@ export class FrameReader {
       return;
     }
     const total = HEADER_LEN + header.len;
-    if (this.#length < total) return;
+    if (this.#length < total) {
+      this.#startFill(header, startedAt);
+      return;
+    }
     const completedAt = this.#arrivalAt(total - 1);
     if (completedAt - startedAt >= APP_LINK_IO_DEADLINE_MS) {
       this.fail(
@@ -973,6 +1048,52 @@ export class FrameReader {
     const payload =
       header.len === 0 ? new Uint8Array(0) : this.#copyOut(header.len);
     if (header.len > 0) this.#consume(header.len);
+    this.#clearFrameDeadline();
+    this.#ensureFrameDeadline();
+    const pending = this.#pending;
+    this.#pending = null;
+    pending?.resolve({ header, payload });
+  }
+
+  /**
+   * The waiter's frame has a complete header but an incomplete payload: move
+   * the frame out of the chunk queue into its exact-size payload so later
+   * fragments are copied once, straight from the callback buffer. The queue is
+   * empty afterwards (only this frame's bytes could precede its completion),
+   * and the frame keeps its first-byte deadline clock and fragment count.
+   */
+  #startFill(header: FrameHeader, startedAt: number): void {
+    const payload = new Uint8Array(header.len);
+    const prefix = this.#length - HEADER_LEN;
+    this.#fillChunks = this.pendingChunkCount();
+    this.#consume(HEADER_LEN);
+    if (prefix > 0) {
+      this.#copyInto(payload, 0, prefix);
+      this.#consume(prefix);
+    }
+    this.#fillHeader = header;
+    this.#fill = payload;
+    this.#fillOffset = prefix;
+    this.#fillStartedAt = startedAt;
+  }
+
+  #resolveFill(): void {
+    const header = this.#fillHeader;
+    const payload = this.#fill;
+    if (header === null || payload === null) return;
+    if (
+      this.#fillCompletedAt - this.#fillStartedAt >=
+      APP_LINK_IO_DEADLINE_MS
+    ) {
+      this.fail(
+        kipcError(
+          "KELD-IPC-006",
+          "started app-link frame did not finish within the I/O deadline",
+        ),
+      );
+      return;
+    }
+    this.#dropFill();
     this.#clearFrameDeadline();
     this.#ensureFrameDeadline();
     const pending = this.#pending;
@@ -1004,8 +1125,12 @@ export class FrameReader {
   }
 
   #ensureFrameDeadline(): void {
-    if (this.#censusBytes >= this.#length || this.#frameDeadline !== undefined)
+    if (this.#frameDeadline !== undefined) return;
+    if (this.#fill !== null) {
+      this.#scheduleFrameDeadline(this.#fillStartedAt);
       return;
+    }
+    if (this.#censusBytes >= this.#length) return;
     this.#scheduleFrameDeadline(this.#censusArrival());
   }
 
@@ -1051,6 +1176,9 @@ export class FrameReader {
   }
 
   #incompleteFrameStartedAt(): number | undefined {
+    // The waiter's frame is the only incomplete one while it is being filled;
+    // its first byte's arrival left the queue with the header.
+    if (this.#fill !== null) return this.#fillStartedAt;
     let idx = this.#censusChunkIndex;
     let chunkOffset = this.#censusOffset;
     let remaining = this.#length - this.#censusBytes;
