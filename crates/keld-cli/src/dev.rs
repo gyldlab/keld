@@ -1140,6 +1140,56 @@ mod tests {
         );
     }
 
+    /// GH-1188 D15 at T1: the staged-host preflight leaves only a valid Windows schema-2
+    /// project's renderer verdict to the host. A renderer project's missing renderer and
+    /// an invalid `initialWindow` still fail here, and `keld doctor` keeps its refusal.
+    #[cfg(windows)]
+    #[test]
+    fn staged_host_preflight_defers_only_a_valid_windows_facade_renderer_verdict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let config = dir.path().join("keld.config.ts");
+
+        fs::write(&config, "export default {}\n").expect("renderer config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("a missing renderer must fail before staging")
+            .to_string();
+        assert!(msg.contains("[FAIL] renderer"), "{msg}");
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { initialWindow: \"window\" } as const;\n",
+        )
+        .expect("invalid facade config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("an invalid initialWindow must fail before staging")
+            .to_string();
+        assert!(msg.contains("KELD-CLI-047"), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
+        )
+        .expect("facade config");
+        if let Err(error) = staged_host_doctor_or_err(dir.path()) {
+            let msg = error.to_string();
+            assert!(!msg.contains("renderer"), "{msg}");
+        }
+        let doctor = run_checks(Some(dir.path()));
+        let renderer = doctor
+            .iter()
+            .find(|check| check.label == "renderer")
+            .expect("doctor renderer check");
+        assert!(!renderer.ok, "keld doctor keeps its T1 refusal");
+        assert!(
+            renderer.detail.contains("KELD-CLI-047"),
+            "{}",
+            renderer.detail
+        );
+    }
+
     #[test]
     fn window_title_comes_from_config_name() {
         let dir = tempfile::tempdir().expect("tempdir");
