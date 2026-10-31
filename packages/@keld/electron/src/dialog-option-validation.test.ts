@@ -152,3 +152,79 @@ test("UTF-8 wire envelope bounds are checked without truncation or coercion", ()
     expect(() => normalizeMessageOptions(options)).toThrow("KELD-COMPAT");
   }
 });
+
+test("button iteration snapshots the own data length without invoking get traps", () => {
+  let lengthReads = 0;
+  let elementInspections = 0;
+  const buttons = new Proxy(["Yes"], {
+    get(target, key, receiver) {
+      if (key === "length") {
+        lengthReads++;
+        return lengthReads === 1 ? 1 : 1000;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (key !== "length") elementInspections++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  expect(normalizeMessageOptions({ message: "hi", buttons }).buttons).toEqual([
+    "Yes",
+  ]);
+  expect(lengthReads).toBe(0);
+  expect(elementInspections).toBe(1);
+});
+
+test("oversized buttons refuse before inspecting any element", () => {
+  let elementInspections = 0;
+  const buttons = new Proxy(Array(17).fill("Yes"), {
+    getOwnPropertyDescriptor(target, key) {
+      if (key !== "length") elementInspections++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+    "KELD-COMPAT-010",
+  );
+  expect(elementInspections).toBe(0);
+});
+
+test("revoked and throwing inspection traps become canonical Message refusal", () => {
+  const revokedRoot = Proxy.revocable({ message: "hi" }, {});
+  revokedRoot.revoke();
+  const revokedButtons = Proxy.revocable(["Yes"], {});
+  revokedButtons.revoke();
+  const throwingPrototype = new Proxy(["Yes"], {
+    getPrototypeOf() {
+      throw new Error("hostile prototype");
+    },
+  });
+  const throwingLength = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor() {
+      throw new Error("hostile descriptor");
+    },
+  });
+  const throwingElement = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === "0") throw new Error("hostile element");
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  expect(() => normalizeMessageOptions(revokedRoot.proxy)).toThrow(
+    "KELD-COMPAT-010",
+  );
+  for (const buttons of [
+    revokedButtons.proxy,
+    throwingPrototype,
+    throwingLength,
+    throwingElement,
+  ]) {
+    expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+      "KELD-COMPAT-010",
+    );
+  }
+  expect(
+    normalizeMessageOptions({ message: "healthy", buttons: ["Yes", "No"] }).buttons,
+  ).toEqual(["Yes", "No"]);
+});

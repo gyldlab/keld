@@ -33,7 +33,7 @@ function invalid(detail: string): never {
 }
 
 function optionValues(input: unknown): Map<string, unknown> {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+  if (input === null || typeof input !== "object") {
     invalid("options must be an object");
   }
   // Do not trust inherited fields, prototype monkey-patching or accessors to
@@ -41,6 +41,7 @@ function optionValues(input: unknown): Map<string, unknown> {
   // are precisely what the supported draw.io call supplies.
   let descriptors: PropertyDescriptorMap;
   try {
+    if (Array.isArray(input)) invalid("options must be an object");
     const prototype = Object.getPrototypeOf(input);
     if (prototype !== Object.prototype && prototype !== null) {
       invalid("custom-prototype options are unsupported");
@@ -94,20 +95,37 @@ function optionalBoolean(
 
 function buttonLabels(value: unknown): string[] {
   if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Array.prototype
-  ) {
-    invalid("buttons must be a plain array");
-  }
-  if (value.length > MAX_BUTTONS) invalid("too many buttons");
   const labels: string[] = [];
-  for (let index = 0; index < value.length; index++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-    if (!descriptor || !("value" in descriptor)) {
-      invalid("button labels must be own data values");
+  try {
+    if (
+      !Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype
+    ) {
+      invalid("buttons must be a plain array");
     }
-    labels.push(boundedText(descriptor.value, "button label"));
+    // Snapshot the own data length once. Never invoke Proxy get traps or
+    // enumerate an unbounded array before enforcing the native button limit.
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    const length: unknown = lengthDescriptor?.value;
+    if (
+      !lengthDescriptor ||
+      !("value" in lengthDescriptor) ||
+      typeof length !== "number" ||
+      !Number.isInteger(length) ||
+      length < 0 ||
+      length > MAX_BUTTONS
+    ) {
+      invalid("buttons must have a bounded own data length");
+    }
+    for (let index = 0; index < length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !("value" in descriptor)) {
+        invalid("button labels must be own data values");
+      }
+      labels.push(boundedText(descriptor.value, "button label"));
+    }
+  } catch {
+    return invalid("buttons could not be inspected safely");
   }
   return labels;
 }
