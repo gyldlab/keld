@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 
 type Mapping = Record<string, unknown>;
 const baseRef =
-  "${{ github.event.pull_request.base.sha || github.event.before }}";
-const headRef = "${{ github.event.pull_request.head.sha || github.sha }}";
+  "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}";
+const headRef =
+  "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}";
 const windowsMediaOracle = "crates/keld-wv/tests/windows_media_guard.ps1";
 const windowsMediaOracleSha256 =
   "3657f3b87a1f28f7902ba23f74b9492d9194a91b50bd2802ece9ffeab0f6ff47";
@@ -459,7 +460,7 @@ const approvedCodeqlActionSha = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"; // v
  */
 export function codeqlRoute(language: string): string {
   const output = `needs.changes.outputs.codeql_${language.replaceAll("-", "_")}`;
-  return `\${{ !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
+  return `\${{ github.event_name != 'merge_group' && !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
 }
 
 /**
@@ -475,6 +476,7 @@ function checkCodeqlJobs(
   const owners = new Set<string>(
     codeqlLanguages.map((language) => `codeql-${language}`),
   );
+  owners.add("codeql-queue");
   for (const [jobName, steps] of stepsByJob) {
     if (owners.has(jobName)) continue;
     if (
@@ -589,6 +591,162 @@ function checkCodeqlJobs(
       "CodeQL job executable context",
     );
   }
+  checkQueuedCodeqlJob(jobs, stepsByJob);
+}
+
+/**
+ * Validate the unprivileged merge_group CodeQL matrix independently from
+ * the SARIF upload jobs. GitHub considers skipped required jobs successful;
+ * the single matrix result is therefore a blocking input to CI required.
+ */
+function checkQueuedCodeqlJob(
+  jobs: Mapping,
+  stepsByJob: Map<string, Mapping[]>,
+): void {
+  if (!Object.hasOwn(jobs, "codeql-queue")) {
+    fail("CodeQL queue read-only matrix must exist for merge_group.");
+  }
+  const job = mapping(jobs["codeql-queue"], "CodeQL queue job");
+  exactKeys(
+    job,
+    [
+      "name",
+      "runs-on",
+      "timeout-minutes",
+      "needs",
+      "if",
+      "permissions",
+      "strategy",
+      "steps",
+    ],
+    "CodeQL queue job context",
+  );
+  const matrixRef = "$" + "{{ matrix.language }}";
+  if (
+    job.name !== "CodeQL queue (" + matrixRef + ")" ||
+    job["runs-on"] !== "$" + "{{ matrix.os }}" ||
+    job["timeout-minutes"] !== 30 ||
+    job.needs !== "changes" ||
+    job.if !==
+      "$" +
+        "{{ github.event_name == 'merge_group' && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.codeql_rust == 'true' && needs.changes.outputs.codeql_javascript_typescript == 'true' && needs.changes.outputs.codeql_actions == 'true' }}"
+  ) {
+    fail(
+      "CodeQL queue must run only for fully routed merge_group with 30-minute bound.",
+    );
+  }
+  inputsMatch(
+    mapping(job.permissions, "CodeQL queue permissions"),
+    { contents: "read" },
+    "CodeQL queue permissions",
+  );
+  const strategy = mapping(job.strategy, "CodeQL queue matrix strategy");
+  exactKeys(strategy, ["fail-fast", "matrix"], "CodeQL queue matrix strategy");
+  const matrix = mapping(strategy.matrix, "CodeQL queue matrix");
+  exactKeys(matrix, ["include"], "CodeQL queue matrix");
+  if (
+    strategy["fail-fast"] !== false ||
+    JSON.stringify(matrix.include) !==
+      JSON.stringify([
+        { language: "rust", os: "macos-latest" },
+        { language: "javascript-typescript", os: "ubuntu-latest" },
+        { language: "actions", os: "ubuntu-latest" },
+      ])
+  ) {
+    fail(
+      "CodeQL queue must run exactly all three languages on their reviewed OSes.",
+    );
+  }
+  const steps = stepsByJob.get("codeql-queue");
+  if (!steps || steps.length !== 5) {
+    fail(
+      "CodeQL queue must retain checkout, Rust pin, init, local analysis, SARIF proof.",
+    );
+  }
+  const checkout = steps[0]!;
+  exactKeys(checkout, ["uses", "with"], "CodeQL queue checkout");
+  if (
+    checkout.uses !==
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  ) {
+    fail("CodeQL queue must checkout the event-owned staging SHA.");
+  }
+  inputsMatch(
+    mapping(checkout.with, "CodeQL queue checkout inputs"),
+    { "persist-credentials": "false" },
+    "CodeQL queue checkout inputs",
+  );
+  const compiler = steps[1]!;
+  exactKeys(compiler, ["uses", "if", "with"], "CodeQL queue Rust compiler");
+  if (
+    compiler.uses !==
+      "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8" ||
+    compiler.if !== "matrix.language == 'rust'"
+  ) {
+    fail("CodeQL queue must pin Rust only on its macOS Rust leg.");
+  }
+  inputsMatch(
+    mapping(compiler.with, "CodeQL queue compiler input"),
+    { toolchain: "1.99.1" },
+    "CodeQL queue compiler input",
+  );
+  const init = steps[2]!;
+  exactKeys(init, ["name", "uses", "with"], "CodeQL queue init");
+  if (
+    init.name !== "Initialize queued CodeQL" ||
+    init.uses !== "github/codeql-action/init@" + approvedCodeqlActionSha
+  ) {
+    fail("CodeQL queue init must use the approved immutable action.");
+  }
+  inputsMatch(
+    mapping(init.with, "CodeQL queue init inputs"),
+    {
+      languages: matrixRef,
+      "build-mode": "none",
+    },
+    "CodeQL queue init inputs",
+  );
+  const analyze = steps[3]!;
+  exactKeys(analyze, ["name", "id", "uses", "with"], "CodeQL queue analyze");
+  if (
+    analyze.name !== "Analyze queued source locally" ||
+    analyze.id !== "local-codeql" ||
+    analyze.uses !== "github/codeql-action/analyze@" + approvedCodeqlActionSha
+  ) {
+    fail("CodeQL queue analyze must run approved immutable local CodeQL.");
+  }
+  inputsMatch(
+    mapping(analyze.with, "CodeQL queue analyze inputs"),
+    {
+      category: "/language:" + matrixRef,
+      upload: "never",
+      "upload-database": "false",
+      output: "$" + "{{ runner.temp }}/codeql-queue-results",
+      "skip-queries": "false",
+      "wait-for-processing": "false",
+    },
+    "CodeQL queue analyze inputs",
+  );
+  const proof = steps[4]!;
+  exactKeys(proof, ["name", "shell", "env", "run"], "CodeQL queue SARIF proof");
+  if (
+    proof.name !== "Verify local CodeQL SARIF" ||
+    proof.shell !== "bash" ||
+    typeof proof.run !== "string" ||
+    createHash("sha256").update(proof.run).digest("hex") !==
+      "a733f3831ca0c8f9ce8f2738bcef4ccc37a77c313b9dd5931f8df9cd433996a5"
+  ) {
+    fail(
+      "CodeQL queue SARIF proof must run its exact nonempty result validator.",
+    );
+  }
+  inputsMatch(
+    mapping(proof.env, "CodeQL queue SARIF proof env"),
+    {
+      KELD_CODEQL_OUTPUT: "$" + "{{ steps.local-codeql.outputs.sarif-output }}",
+    },
+    "CodeQL queue SARIF proof env",
+  );
 }
 
 /**
@@ -783,6 +941,174 @@ export function checkPullRequestTargetWorkflow(
       }
     }
   }
+  if (label.endsWith("keldbot.yml")) {
+    checkKeldBotMergeGroupTokenIsolation(workflow, jobs);
+  }
+}
+
+/**
+ * KeldBot uses its write-capable legacy bot secret only for metadata labels
+ * and comments on pull_request_target. The merge_group path must not acquire
+ * this token if a later edit adds a step, changes a condition or token input.
+ */
+function checkKeldBotMergeGroupTokenIsolation(
+  workflow: Mapping,
+  jobs: Mapping,
+): void {
+  const on = mapping(workflow.on, "KeldBot event triggers");
+  const group = mapping(on.merge_group, "KeldBot merge_group trigger");
+  if (
+    Object.keys(group).length !== 2 ||
+    !Array.isArray(group.types) ||
+    group.types.length !== 1 ||
+    group.types[0] !== "checks_requested" ||
+    !Array.isArray(group.branches) ||
+    group.branches.length !== 1 ||
+    group.branches[0] !== "main" ||
+    Object.keys(mapping(workflow.permissions, "KeldBot permissions")).length !==
+      0 ||
+    Object.hasOwn(workflow, "env")
+  ) {
+    fail(
+      "KeldBot merge_group must target only main with default-deny permissions.",
+    );
+  }
+  const names = ["queue-identity", "gatekeeper", "size-label", "title-lint"];
+  if (
+    Object.keys(jobs).length !== names.length ||
+    names.some((name) => !Object.hasOwn(jobs, name))
+  ) {
+    fail("KeldBot merge_group must retain its reviewed jobs.");
+  }
+  const botSecret = "$" + "{{ secrets.ROBOKELD_TOKEN }}";
+  const readToken = "$" + "{{ github.token }}";
+  const prOnly = "github.event_name == 'pull_request_target'";
+  const groupOnly = "github.event_name == 'merge_group'";
+  const sizeOnly =
+    "github.event_name == 'pull_request_target' && github.event.action != 'edited'";
+  const identityNumber = "$" + "{{ needs['queue-identity'].outputs.number }}";
+  const identityHead = "$" + "{{ needs['queue-identity'].outputs.head_sha }}";
+  const identityResult = "$" + "{{ needs['queue-identity'].result }}";
+  const pinnedScript =
+    "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3";
+  for (const name of names) {
+    const job = mapping(jobs[name], "KeldBot " + name);
+    const jobKeys =
+      name === "queue-identity"
+        ? ["name", "runs-on", "permissions", "outputs", "steps"]
+        : name === "size-label"
+          ? ["if", "runs-on", "steps"]
+          : ["needs", "if", "permissions", "runs-on", "steps"];
+    exactKeys(job, jobKeys, "KeldBot " + name + " job");
+    if (job["runs-on"] !== "ubuntu-latest") {
+      fail("KeldBot " + name + " must use its reviewed Ubuntu runner.");
+    }
+    const steps = job.steps;
+    const count = name === "queue-identity" || name === "size-label" ? 1 : 3;
+    if (!Array.isArray(steps) || steps.length !== count) {
+      fail("KeldBot " + name + " must retain its reviewed step count.");
+    }
+    if (name === "size-label") {
+      if (job.if !== sizeOnly || Object.hasOwn(job, "permissions")) {
+        fail("KeldBot size-label bot secret must be PR-only.");
+      }
+    } else {
+      const permissions = mapping(
+        job.permissions,
+        "KeldBot " + name + " token",
+      );
+      if (
+        Object.keys(permissions).length !== 2 ||
+        permissions.contents !== "read" ||
+        permissions["pull-requests"] !== "read"
+      ) {
+        fail("KeldBot " + name + " merge_group token must be read-only.");
+      }
+    }
+    if (name === "gatekeeper" || name === "title-lint") {
+      if (
+        job.needs !== "queue-identity" ||
+        job.if !== "$" + "{{ always() }}" ||
+        steps[1]?.if !== prOnly ||
+        steps[2]?.if !== groupOnly
+      ) {
+        fail("KeldBot " + name + " must preserve PR/group step isolation.");
+      }
+    }
+    for (const [index, raw] of steps.entries()) {
+      const step = mapping(raw, "KeldBot " + name + " step");
+      const stepKeys =
+        name === "queue-identity"
+          ? ["name", "id", "uses", "with"]
+          : name === "size-label"
+            ? ["name", "uses", "with"]
+            : index === 0
+              ? ["name", "env", "uses", "with"]
+              : index === 1
+                ? ["name", "if", "uses", "with"]
+                : ["name", "if", "env", "uses", "with"];
+      exactKeys(step, stepKeys, "KeldBot " + name + " step");
+      const inputs = mapping(step.with, "KeldBot " + name + " inputs");
+      const token = inputs["github-token"];
+      if (
+        typeof inputs.script === "string" &&
+        inputs.script.includes("$" + "{{")
+      ) {
+        fail(
+          "KeldBot script must not contain GitHub Actions expression interpolation.",
+        );
+      }
+      if (
+        actionRef(step.uses, "KeldBot " + name) !== pinnedScript ||
+        Object.keys(inputs).length !== 2 ||
+        typeof inputs.script !== "string" ||
+        (token !== readToken && token !== botSecret)
+      ) {
+        fail(
+          "KeldBot " + name + " step must use approved GitHub-script tokens.",
+        );
+      }
+      if (token === botSecret) {
+        if (
+          (name === "size-label" && index !== 0) ||
+          (name !== "size-label" && (index !== 1 || step.if !== prOnly))
+        ) {
+          fail("KeldBot ROBOKELD_TOKEN must never run on merge_group.");
+        }
+      } else if (
+        name === "size-label" ||
+        (index === 1 && name !== "queue-identity")
+      ) {
+        fail("KeldBot " + name + " must preserve PR-only bot credentials.");
+      }
+      if (name === "gatekeeper" || name === "title-lint") {
+        if (index === 0) {
+          inputsMatch(
+            mapping(step.env, "KeldBot identity guard environment"),
+            {
+              KELD_QUEUE_RESULT: identityResult,
+              KELD_QUEUE_NUMBER: identityNumber,
+              KELD_QUEUE_HEAD: identityHead,
+            },
+            "KeldBot identity guard environment",
+          );
+        } else if (index === 2) {
+          inputsMatch(
+            mapping(step.env, "KeldBot group check environment"),
+            {
+              KELD_QUEUE_NUMBER: identityNumber,
+              KELD_QUEUE_HEAD: identityHead,
+            },
+            "KeldBot group check environment",
+          );
+        } else if (Object.hasOwn(step, "env")) {
+          fail("KeldBot PR-only step must not add environment credentials.");
+        }
+      } else if (Object.hasOwn(step, "env")) {
+        fail("KeldBot " + name + " must not add environment credentials.");
+      }
+    }
+  }
 }
 
 /**
@@ -806,10 +1132,11 @@ const rustToolchainInstallerJobs = new Set([
   "hygiene",
   "mermaid",
   "codeql-rust",
+  "codeql-queue",
 ]);
 
 // The required-result command consumes these bindings in the documented
-// 35-argument order. Keep the environment and complete shell script bound to
+// 36-argument order. Keep the environment and complete shell script bound to
 // one reviewed contract: injected BASH_ENV/PATH or a prepended exit 0 must fail.
 const reviewedRequiredResultBindings: Record<string, string> = {
   KELD_RESULT_CHANGES: "${{ needs.changes.result }}",
@@ -851,6 +1178,7 @@ const reviewedRequiredResultBindings: Record<string, string> = {
   KELD_ROUTE_MEDIA:
     "${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
   KELD_RESULT_ROUTER_CONTRACTS: "${{ needs['router-contracts'].result }}",
+  KELD_RESULT_CODEQL_QUEUE: "${{ needs['codeql-queue'].result }}",
 };
 
 const reviewedRequiredResultNames = Object.keys(reviewedRequiredResultBindings);
@@ -950,19 +1278,28 @@ function checkWorkflowAdmission(workflow: Mapping): void {
     );
   }
   const pushTrigger = mapping(push, "workflow.on.push");
+  const groupTrigger = mapping(triggers.merge_group, "workflow.on.merge_group");
   if (
-    Object.keys(triggers).length !== 2 ||
+    Object.keys(triggers).length !== 3 ||
     !Object.hasOwn(triggers, "push") ||
     !Object.hasOwn(triggers, "pull_request") ||
+    !Object.hasOwn(triggers, "merge_group") ||
     triggers.pull_request !== null ||
     Object.keys(pushTrigger).length !== 1 ||
     !Object.hasOwn(pushTrigger, "branches") ||
     !Array.isArray(pushTrigger.branches) ||
     pushTrigger.branches.length !== 1 ||
-    pushTrigger.branches[0] !== "main"
+    pushTrigger.branches[0] !== "main" ||
+    Object.keys(groupTrigger).length !== 2 ||
+    !Array.isArray(groupTrigger.types) ||
+    groupTrigger.types.length !== 1 ||
+    groupTrigger.types[0] !== "checks_requested" ||
+    !Array.isArray(groupTrigger.branches) ||
+    groupTrigger.branches.length !== 1 ||
+    groupTrigger.branches[0] !== "main"
   ) {
     fail(
-      "CI workflow must run on main pushes and all pull requests without filters.",
+      "CI workflow must run on main pushes and all pull requests without filters, and checks_requested merge groups on main.",
     );
   }
 
@@ -1091,8 +1428,14 @@ export function checkRustToolchainPins(
           `${label} must install Rust immediately after checkout, before any other step.`,
         );
       }
+      // The queue matrix includes non-Rust languages. Only its Rust leg
+      // installs a compiler; all other reviewed installer jobs are unconditional.
+      const selectedQueueRust =
+        jobName === "codeql-queue" && step.if === "matrix.language == 'rust'";
       if (
-        Object.hasOwn(step, "if") ||
+        (jobName === "codeql-queue"
+          ? !selectedQueueRust
+          : Object.hasOwn(step, "if")) ||
         Object.hasOwn(step, "continue-on-error")
       ) {
         fail(
@@ -1220,10 +1563,11 @@ export function checkWorkflowSecurity(source: string): void {
     const job = mapping(value, `jobs.${jobName}`);
     refuseInheritedCustomShell(job, `jobs.${jobName}`);
     // A job-level token override replaces the read-only workflow default.
-    // CodeQL's three exact job names are the only reviewed exception; each
-    // receives its own restricted SARIF-upload permission check below.
+    // Privileged CodeQL upload jobs and the separate read-only queue job are
+    // reviewed independently; no other job may override token permissions.
     if (
       !codeqlLanguages.some((language) => jobName === `codeql-${language}`) &&
+      jobName !== "codeql-queue" &&
       Object.hasOwn(job, "permissions")
     ) {
       fail("non-CodeQL jobs must inherit read-only workflow permissions.");
@@ -1345,10 +1689,13 @@ export function checkWorkflowSecurity(source: string): void {
     mapping(classifier.env, "changes classifier env"),
     {
       KELD_CI_EVENT_NAME: "${{ github.event_name }}",
-      KELD_CI_BASE_SHA: "${{ github.event.pull_request.base.sha || '' }}",
+      KELD_CI_BASE_SHA:
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
       KELD_CI_HEAD_SHA:
-        "${{ github.event.pull_request.head.sha || github.sha }}",
+        "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}",
       KELD_CI_BEFORE_SHA: "${{ github.event.before || '' }}",
+      KELD_CI_GROUP_BASE_REF: "${{ github.event.merge_group.base_ref || '' }}",
+      KELD_CI_GROUP_HEAD_REF: "${{ github.event.merge_group.head_ref || '' }}",
     },
     "change router classifier must run the reviewed command and source",
   );
@@ -1707,6 +2054,7 @@ export function checkWorkflowSecurity(source: string): void {
     "codeql-rust",
     "codeql-javascript-typescript",
     "codeql-actions",
+    "codeql-queue",
     "dependency-review",
     "workspace-contracts",
     "doctest",
@@ -1856,7 +2204,7 @@ export function checkWorkflowSecurity(source: string): void {
     fail(changesContract);
   }
   const routerStepsSha256 =
-    "38cd11beea7e6a508709d8263e0ce6d8c95c0da92fd623292ca490acd8ea3cbe";
+    "a27287955c380a6f349a300a390b2eb3a545966ce7963f01890e959f2cc08d6c";
   if (
     createHash("sha256")
       .update(JSON.stringify(classifierSteps))

@@ -273,7 +273,7 @@ fn valid_workflow() -> String {
             "      - name: Check this checkout",
             "        if: needs.changes.outputs.hygiene == 'true'",
             "        env:",
-            "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}",
+            "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}",
             "        run: |",
             "          rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene",
             "          target/ci-hygiene/ci-hygiene check .",
@@ -355,6 +355,7 @@ fn valid_workflow() -> String {
             "      - codeql-rust",
             "      - codeql-javascript-typescript",
             "      - codeql-actions",
+            "      - codeql-queue",
             "      - dependency-review",
             "      - workspace-contracts",
             "      - doctest",
@@ -387,6 +388,7 @@ fn valid_workflow() -> String {
             "          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}",
             "          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}",
             "          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}",
+            "          KELD_RESULT_CODEQL_QUEUE: ${{ needs['codeql-queue'].result }}",
             "          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}",
             "          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}",
             "          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}",
@@ -420,7 +422,7 @@ fn valid_workflow() -> String {
             "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
             "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" \\",
             "            \"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" \\",
-            "            \"$KELD_RESULT_ROUTER_CONTRACTS\"",
+            "            \"$KELD_RESULT_ROUTER_CONTRACTS\" \"$KELD_RESULT_CODEQL_QUEUE\"",
             "",
         ]
         .join("\n")
@@ -435,6 +437,8 @@ fn valid_keldbot_workflow() -> String {
             "permissions: {}",
             "jobs:",
             "  gatekeeper:",
+            "    needs: queue-identity",
+            "    if: ${{ always() }}",
             "    runs-on: ubuntu-latest",
             "    steps:",
             "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
@@ -442,6 +446,8 @@ fn valid_keldbot_workflow() -> String {
             "          script: |",
             "            const REQUIRED = [\"Summary\", \"Spec refs\", \"Review gates\", \"Tests\", \"Platforms\", \"Perf impact\"];",
             "  title-lint:",
+            "    needs: queue-identity",
+            "    if: ${{ always() }}",
             "    runs-on: ubuntu-latest",
             "    steps:",
             "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0",
@@ -1131,7 +1137,7 @@ fn required_result_must_receive_router_applicability() {
         &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
     );
     let error = check(temp.path()).expect_err("unused router output must fail");
-    assert!(error.contains("35-argument"), "{error}");
+    assert!(error.contains("36-argument"), "{error}");
 }
 
 #[test]
@@ -1140,6 +1146,7 @@ fn required_result_must_observe_security_jobs() {
         "codeql-rust",
         "codeql-javascript-typescript",
         "codeql-actions",
+        "codeql-queue",
         "dependency-review",
         "workspace-contracts",
         "doctest",
@@ -1167,6 +1174,10 @@ fn required_result_must_receive_security_results_without_spoofing() {
             "${{ needs['codeql-actions'].result }}",
         ),
         (
+            "KELD_RESULT_CODEQL_QUEUE",
+            "${{ needs['codeql-queue'].result }}",
+        ),
+        (
             "KELD_ROUTE_CODEQL_RUST",
             "${{ needs.changes.outputs.codeql_rust }}",
         ),
@@ -1188,7 +1199,7 @@ fn required_result_must_receive_security_results_without_spoofing() {
         assert!(error.contains(key), "{error}");
         let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
         let error = check_required_job(&workflow).expect_err("unused security result must fail");
-        assert!(error.contains("35-argument"), "{error}");
+        assert!(error.contains("36-argument"), "{error}");
     }
 }
 
@@ -1578,7 +1589,7 @@ fn keldbot_required_jobs_revalidate_synchronized_heads() {
         ),
     );
     let error = check(temp.path()).expect_err("skipped gatekeeper must fail");
-    assert!(error.contains("synchronize"), "{error}");
+    assert!(error.contains("queue-identity"), "{error}");
 
     temp.write(
         KELDBOT_WORKFLOW,
@@ -2680,7 +2691,7 @@ fn parallel_windows_media_job_preserves_required_admission() {
         assert!(
             error.contains("windows-media")
                 || error.contains("MEDIA")
-                || error.contains("35-argument"),
+                || error.contains("36-argument"),
             "{needle}: {error}"
         );
     }
@@ -3750,7 +3761,7 @@ fn gitleaks_scan_refusals_exit_nonzero() {
 #[test]
 fn gitleaks_range_inputs_come_from_the_event() {
     assert_gitleaks_scan_refused(
-        "KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.base.sha }}",
+        "KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
         "KELD_GITLEAKS_PR_BASE: ${{ github.event.pull_request.head.sha }}",
         "a spoofed base SHA must fail",
     );
@@ -3783,7 +3794,7 @@ fn empty_issue_template_dir_fails() {
 #[test]
 fn channel_allocations_step_must_bind_the_comparison_base() {
     let workflow = valid_workflow();
-    let env_line = "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}\n";
+    let env_line = "          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}\n";
     assert!(workflow.contains(env_line), "fixture binds the base");
     check_channel_allocations_step(&workflow).expect("fixture step passes");
     let mutations = [
@@ -3795,7 +3806,7 @@ fn channel_allocations_step_must_bind_the_comparison_base() {
             ),
             (
                 "default base",
-                workflow.replacen("${{ github.event.pull_request.base.sha || github.event.before }}", "origin/main", 1),
+                workflow.replacen("${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}", "origin/main", 1),
                 "never with itself",
             ),
             (

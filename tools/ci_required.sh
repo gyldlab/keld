@@ -40,11 +40,12 @@ require_routed_result() {
 # contracts job result; 27 its router output; 28 the triggering event name;
 # 29 the router's rust_documentation_only output; 30 its check_os output;
 # 31 doctest job result; 32 its router output; 33 Windows media acceptance
-# job result; 34 its router output; 35 independent router contract test result.
-readonly CHECK_ARGUMENT_COUNT=35
+# job result; 34 its router output; 35 independent router contract test result;
+# 36 read-only three-language CodeQL queue matrix result.
+readonly CHECK_ARGUMENT_COUNT=36
 check_results() {
     if [[ "$#" -ne "$CHECK_ARGUMENT_COUNT" ]]; then
-        fail "expected 10 routed/core job results, 8 router outputs, 3 CodeQL job results, 3 CodeQL router outputs, 1 dependency review result, workspace contracts, event and OS routes, doctests, Windows media and independent router contract test result, got $#; restore the required job's complete needs and applicability handoff."
+        fail "expected 36 arguments including 3 privileged CodeQL results and the separate read-only queue CodeQL matrix, got $#; restore the required job's complete needs and applicability handoff."
         return
     fi
 
@@ -72,14 +73,52 @@ check_results() {
             ;;
     esac
     require_routed_result "Mermaid diagram validation/render" "${10}" "${18}" || return 1
-    # Pull requests route each language on its own inputs; push and every
-    # unknown/all input select all three, which the router owns (#624).
-    require_routed_result "CodeQL rust analysis and upload" "${19}" "${22}" || return 1
-    require_routed_result "CodeQL javascript-typescript analysis and upload" "${20}" "${23}" || return 1
-    require_routed_result "CodeQL actions analysis and upload" "${21}" "${24}" || return 1
+    # CodeQL SARIF uploads require security-events:write. They are allowed
+    # only on PR/push; the untrusted merge-group SHA runs a read-only local
+    # three-language analysis matrix. A skipped selected lane never suffices.
+    case "${28}" in
+        merge_group)
+            local old
+            for old in "${19}" "${20}" "${21}"; do
+                if [[ "$old" != skipped ]]; then
+                    fail "merge_group must skip privileged CodeQL uploads, got '$old'."
+                    return 1
+                fi
+            done
+            require_success "read-only merge_group CodeQL matrix" "${36}" || return 1
+            ;;
+        push | pull_request)
+            if [[ "${36}" != skipped ]]; then
+                fail "push/pull_request must skip merge_group-only CodeQL, got '${36}'."
+                return 1
+            fi
+            require_routed_result "CodeQL rust analysis and upload" "${19}" "${22}" || return 1
+            require_routed_result "CodeQL javascript-typescript analysis and upload" "${20}" "${23}" || return 1
+            require_routed_result "CodeQL actions analysis and upload" "${21}" "${24}" || return 1
+            ;;
+        *)
+            fail "unsupported event '${28}' for CodeQL admission"
+            return 1
+            ;;
+    esac
     require_success "dependency review" "${25}" || return 1
     require_routed_result "workspace path and process contracts" "${26}" "${27}" || return 1
     require_push_codeql "${28}" "${22}" "${23}" "${24}" || return 1
+    if [[ "${28}" == merge_group ]]; then
+        # The queue commit combines prior queued changes. Every lane must run;
+        # a green aggregator with skipped work would be false evidence.
+        local route
+        for route in "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${22}" "${23}" "${24}" "${27}" "${32}" "${34}"; do
+            if [[ "$route" != true ]]; then
+                fail "merge_group must select every CI lane, got '$route'."
+                return 1
+            fi
+        done
+        if [[ "${29}" != false || "${30}" != "$ALL_CHECK_OS" ]]; then
+            fail "merge_group must run every check OS without documentation-only narrowing."
+            return 1
+        fi
+    fi
     require_check_os "${11}" "${29}" "${30}" || return 1
     # Doctests are a Rust lane (#632): selected only within a Rust selection.
     if [[ "${32}" == true && "${11}" != true ]]; then
@@ -97,24 +136,24 @@ check_results() {
     require_routed_result "Windows WebView2 media acceptance" "${33}" "${34}" || return 1
 }
 
-# A push to main must analyse every CodeQL language; this does not trust the
-# router to have said so (#624). Only the workflow's own triggers are admitted.
+# Push and merge-group commits must analyse every CodeQL language. GitHub
+# queue groups can combine multiple PRs, so a partial route is unsafe.
 require_push_codeql() {
     local event="$1"
     shift
     case "$event" in
-        push)
+        push | merge_group)
             local route
             for route in "$@"; do
                 if [[ "$route" != true ]]; then
-                    fail "a push must select every CodeQL language, got routes '$*'. Restore the router's push selection; main needs a complete baseline."
+                    fail "a push or merge_group must select every CodeQL language, got routes '$*'. Restore the router's push selection; main needs a complete baseline."
                     return 1
                 fi
             done
             ;;
         pull_request) ;;
         *)
-            fail "unsupported event '$event' for the required result. The workflow runs on push and pull_request only; review this evaluator before adding a trigger."
+            fail "unsupported event '$event' for the required result. The workflow runs on push, pull_request and merge_group only."
             return 1
             ;;
     esac
@@ -151,7 +190,7 @@ require_check_os() {
 
 # Older self-test rows predate Mermaid (18 arguments) and per-language CodeQL
 # routing (20 arguments, one always-selected CodeQL result). Widen them with
-# the meaning they had then; check_results accepts only the current 35.
+# the meaning they had then; the hosted check requires all 36 arguments.
 normalize_self_test_args() {
     local -a args=("$@")
     if [[ "${#args[@]}" -eq 18 ]]; then
@@ -182,6 +221,15 @@ normalize_self_test_args() {
     # rejects 34 arguments and demands the separate result from GitHub.
     if [[ "${#args[@]}" -eq 34 ]]; then
         args=("${args[@]}" success)
+    fi
+    # Historical fixtures lack the new queue-only CodeQL result. Production
+    # check rejects missing arg 36; only self-tests synthesize it.
+    if [[ "${#args[@]}" -eq 35 ]]; then
+        if [[ "${args[27]}" == merge_group ]]; then
+            args=("${args[@]}" success)
+        else
+            args=("${args[@]}" skipped)
+        fi
     fi
     normalized_args=("${args[@]}")
 }
@@ -416,6 +464,58 @@ router_contract_self_test() {
     echo "ok: independent router contract tests cannot disappear or false-green"
 }
 
+merge_group_self_test() {
+    # This group includes the whole queue candidate, not merely the last PR:
+    # even a docs-only change must not skip any lane or native OS.
+    local -a group=(
+        success success success success success success success success success success
+        true true true true true true true true
+        skipped skipped skipped true true true
+        success success true merge_group false "$ALL_CHECK_OS"
+        success true success true success
+    )
+    expect_pass "authenticated merge-group full matrix admits CI required" "${group[@]}"
+    local index
+    local -a mutated
+    # Each of the routes is required, including docs/Mermaid/hygiene, workspace,
+    # CodeQL, doctests and the separate WebView2 media acceptance gate.
+    for index in 11 12 13 14 15 16 17 18 22 23 24 27 32 34; do
+        mutated=("${group[@]}")
+        mutated[index - 1]=false
+        expect_fail "merge_group cannot skip required route $index" "${mutated[@]}"
+    done
+    for index in 1 2 7 10 25 26 31 33 35; do
+        mutated=("${group[@]}")
+        mutated[index - 1]=skipped
+        expect_fail "merge_group cannot skip required result $index" "${mutated[@]}"
+    done
+    for index in 19 20 21; do
+        mutated=("${group[@]}")
+        mutated[index - 1]=success
+        expect_fail "merge_group cannot run privileged CodeQL job $index" "${mutated[@]}"
+    done
+    local queue_result
+    for queue_result in failure skipped cancelled missing ''; do
+        expect_fail "merge_group requires real read-only CodeQL result '$queue_result'" "${group[@]}" "$queue_result"
+    done
+    mutated=("${group[@]}")
+    mutated[28 - 1]=pull_request
+    mutated[19 - 1]=success
+    mutated[20 - 1]=success
+    mutated[21 - 1]=success
+    expect_pass "existing pull request still admits a full matrix" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[29 - 1]=true
+    expect_fail "merge_group cannot narrow rust to documentation-only" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[30 - 1]="$DOCUMENTATION_CHECK_OS"
+    expect_fail "merge_group cannot narrow native OSes" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[28 - 1]=workflow_dispatch
+    expect_fail "merge_group evaluator rejects unrelated event" "${mutated[@]}"
+    echo "ok: required CI aggregator refuses skipped merge-group lanes, results and OSes"
+}
+
 self_test() {
     expect_pass "all applicable jobs succeed" \
         success success success success success success success success success \
@@ -487,6 +587,7 @@ self_test() {
     doctest_self_test
     windows_media_self_test
     router_contract_self_test
+    merge_group_self_test
 
     echo "ci-required contract tests ok"
 }

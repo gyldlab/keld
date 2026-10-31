@@ -1006,6 +1006,25 @@ classify_github_event() {
             base_sha="${KELD_CI_BASE_SHA:-}"
             head_sha="${KELD_CI_HEAD_SHA:-${GITHUB_SHA:-}}"
             ;;
+        merge_group)
+            # GitHub owns the queue ref and SHA. A malformed or unrelated group
+            # must fail here, before producing any applicability outputs.
+            if [[ "${KELD_CI_GROUP_BASE_REF:-}" != "refs/heads/main" ]] ||
+                [[ ! "${KELD_CI_GROUP_HEAD_REF:-}" =~ ^refs/heads/gh-readonly-queue/main/pr-[1-9][0-9]*-[0-9a-f]{8,40}$ ]] ||
+                [[ ! "${KELD_CI_BASE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+                [[ ! "${KELD_CI_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
+                [[ "${KELD_CI_HEAD_SHA:-}" != "${GITHUB_SHA:-}" ]]; then
+                echo "ci router: merge_group event is not an authenticated main queue commit" >&2
+                exit 1
+            fi
+            # Run ALL test lanes: an earlier queued PR may already be stacked
+            # under this group's base, so comparing only its final commit is unsafe.
+            mark_unknown
+            apply_consumer_contract --unknown </dev/null
+            finalize_selection
+            publish "$(emit)"
+            return
+            ;;
         push)
             base_sha="${KELD_CI_BEFORE_SHA:-}"
             head_sha="${GITHUB_SHA:-}"

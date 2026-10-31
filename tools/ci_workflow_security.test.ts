@@ -1,6 +1,8 @@
 import "./ci_provenance.test";
 import "./ci_verisentry_publisher.test";
 import "./ci_verisentry_refresh.test";
+import "./ci_merge_group.test";
+import "./ci_verisentry_queue.test";
 import { expect, test } from "bun:test";
 import {
   cpSync,
@@ -1242,7 +1244,7 @@ test("every Rust installer agrees with the exact pin and immutable action commit
   const installers = Object.values(workflow.jobs)
     .flatMap((job) => job.steps)
     .filter((s) => String(s.uses ?? "").startsWith("dtolnay/rust-toolchain@"));
-  expect(installers.length).toBe(requiredRustInstallerJobs.length);
+  expect(installers.length).toBe(requiredRustInstallerJobs.length + 1);
 
   // A single stale installer may not hide behind nine current copies.
   (installers[3]!.with as Record<string, unknown>).toolchain = staleRust;
@@ -1260,6 +1262,40 @@ test("every Rust installer agrees with the exact pin and immutable action commit
   expect(() => checkRustToolchainPins(source, staleRustToolchain)).toThrow(
     "must select Rust",
   );
+});
+
+test("queue CodeQL Rust compiler is pinned only to its Rust matrix leg", () => {
+  const f = fixture();
+  const queue = f.jobs["codeql-queue"];
+  expect(queue.steps[1].if).toBe("matrix.language == 'rust'");
+  for (const mutation of [
+    (step: Step) => {
+      delete step.if;
+    },
+    (step: Step) => {
+      step.if = "matrix.language == 'actions'";
+    },
+    (step: Step) => {
+      step["continue-on-error"] = false;
+    },
+    (step: Step) => {
+      step.with = { toolchain: staleRust };
+    },
+  ]) {
+    const candidate = fixture();
+    mutation(candidate.jobs["codeql-queue"]!.steps[1]!);
+    expect(() =>
+      checkRustToolchainPins(
+        Bun.YAML.stringify(candidate),
+        selectedRustToolchain,
+      ),
+    ).toThrow();
+  }
+  const missing = fixture();
+  missing.jobs["codeql-queue"]!.steps.splice(1, 1);
+  expect(() =>
+    checkRustToolchainPins(Bun.YAML.stringify(missing), selectedRustToolchain),
+  ).toThrow("requires a pinned Rust toolchain installer");
 });
 
 test("Rust toolchain admission reads the actual TOML toolchain table, never a decoy", () => {

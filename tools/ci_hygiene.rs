@@ -48,7 +48,7 @@ const CHANNEL_ALLOCATIONS_STEP: &str = "Check this checkout";
 const CHANNEL_ALLOCATIONS_STEP_IF: &str = "needs.changes.outputs.hygiene == 'true'";
 const CHANNEL_ALLOCATIONS_STEP_ENV: &[(&str, &str)] = &[(
     CHANNEL_ALLOCATIONS_BASE_ENV,
-    "${{ github.event.pull_request.base.sha || github.event.before }}",
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}",
 )];
 const CHANNEL_ALLOCATIONS_STEP_COMMANDS: &[&str] = &[
     "rustc --edition=2024 -D warnings tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene",
@@ -153,18 +153,18 @@ const GITLEAKS_SCAN_ENV: &[(&str, &str)] = &[
     ("KELD_GITLEAKS_EVENT", "${{ github.event_name }}"),
     (
         "KELD_GITLEAKS_PR_BASE",
-        "${{ github.event.pull_request.base.sha }}",
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
     ),
     (
         "KELD_GITLEAKS_PR_HEAD",
-        "${{ github.event.pull_request.head.sha }}",
+        "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}",
     ),
 ];
 
 const GITLEAKS_SCAN_COMMANDS: &[&str] = &[
     "set -euo pipefail",
     "case \"$KELD_GITLEAKS_EVENT\" in",
-    "pull_request)",
+    "pull_request | merge_group)",
     "for sha in \"$KELD_GITLEAKS_PR_BASE\" \"$KELD_GITLEAKS_PR_HEAD\"; do",
     "if [ -z \"$sha\" ] || ! git cat-file -e \"${sha}^{commit}\"; then",
     "echo \"gitleaks: a pull_request base or head SHA is missing or not a local commit; refusing an unresolvable range\" >&2",
@@ -1657,6 +1657,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "codeql-rust",
         "codeql-javascript-typescript",
         "codeql-actions",
+        "codeql-queue",
         "dependency-review",
         "workspace-contracts",
         "doctest",
@@ -1706,6 +1707,10 @@ fn check_required_job(text: &str) -> Result<(), String> {
         (
             "KELD_RESULT_CODEQL_ACTIONS",
             "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_QUEUE",
+            "${{ needs['codeql-queue'].result }}",
         ),
         (
             "KELD_ROUTE_CODEQL_RUST",
@@ -1785,7 +1790,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
         "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" ",
         "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" ",
-        "\"$KELD_RESULT_ROUTER_CONTRACTS\""
+        "\"$KELD_RESULT_ROUTER_CONTRACTS\" ",
+        "\"$KELD_RESULT_CODEQL_QUEUE\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1795,7 +1801,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 35-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 36-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 
@@ -2027,7 +2033,7 @@ fn check_channel_allocations_step(text: &str) -> Result<(), String> {
         != Some(expected_env.as_slice())
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{CHANNEL_ALLOCATIONS_BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{CHANNEL_ALLOCATIONS_BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
         ));
     }
     let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
@@ -2272,9 +2278,11 @@ fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
                 "CI-HYGIENE: `{KELDBOT_WORKFLOW}` has no `{job}` job. Restore the required PR metadata check."
             ));
         };
-        if let Some(condition) = workflow_job_level_if(&block) {
+        if workflow_job_level_if(&block).as_deref() != Some("${{ always() }}")
+            || !uncommented_line_contains(&block, "needs: queue-identity")
+        {
             return Err(format!(
-                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` `{job}` has job-level `if: {condition}`. Required metadata checks must run again on synchronize; a skipped job satisfies branch protection without revalidating the final head."
+                "CI-HYGIENE: `{KELDBOT_WORKFLOW}` `{job}` must depend on queue-identity and use exact always(). A failed identity job must never skip a required status."
             ));
         }
     }
