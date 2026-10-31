@@ -47,10 +47,15 @@ function fixture(
     mutablePrFileList?: ChangedFile[];
     comparisonFiles?: ChangedFile[];
     comparisonBase?: string;
+    comparisonMergeBase?: string;
+    historyCommits?: string[];
+    historyTotal?: number;
+    commitFilesBySha?: Record<string, ChangedFile[]>;
+    badCommitSha?: boolean;
   } = {},
 ) {
-  const expectedHead = overrides.head ?? "head-commit-1";
-  const expectedBase = overrides.base ?? "base-commit-1";
+  const expectedHead = overrides.head ?? "a".repeat(40);
+  const expectedBase = overrides.base ?? "b".repeat(40);
   const current = {
     number: 123,
     state: overrides.state ?? "open",
@@ -65,6 +70,7 @@ function fixture(
   let reads = 0;
   let paginationCalls = 0;
   let comparisonCalls = 0;
+  let commitReads = 0;
   const github = {
     rest: {
       pulls: {
@@ -97,7 +103,33 @@ function fixture(
               base_commit: {
                 sha: overrides.comparisonBase ?? current.base.sha,
               },
+              merge_base_commit: {
+                sha: overrides.comparisonMergeBase ?? current.base.sha,
+              },
+              total_commits:
+                overrides.historyTotal ?? overrides.historyCommits?.length ?? 1,
+              commits: (overrides.historyCommits ?? [expectedHead]).map(
+                (sha) => ({
+                  sha,
+                }),
+              ),
               files: overrides.comparisonFiles ?? files,
+            },
+          };
+        },
+        getCommit: async (args: Record<string, any>) => {
+          commitReads++;
+          expect(args).toMatchObject({
+            owner: "gyldlab",
+            repo: "keld",
+            per_page: 100,
+          });
+          const historyFiles = overrides.commitFilesBySha?.[args.ref] ?? files;
+          return {
+            data: {
+              sha: overrides.badCommitSha ? "0".repeat(40) : args.ref,
+              parents: [{ sha: current.base.sha }],
+              files: historyFiles.slice((args.page - 1) * 100, args.page * 100),
             },
           };
         },
@@ -138,6 +170,7 @@ function fixture(
     getReads: () => reads,
     getPages: () => paginationCalls,
     getComparisons: () => comparisonCalls,
+    getCommitReads: () => commitReads,
     messages,
     outputs,
   };
@@ -160,6 +193,8 @@ test("base-owned workflow is immutable/read-only and never executes PR code", ()
   expect(job.outputs).toEqual({
     verified_head_sha: "${{ steps.verify.outputs.verified_head_sha }}",
     verified_base_sha: "${{ steps.verify.outputs.verified_base_sha }}",
+    verified_base_is_ancestor:
+      "${{ steps.verify.outputs.verified_base_is_ancestor }}",
   });
   expect(job.name).toBe("CI provenance");
   expect(job["runs-on"]).toBe("ubuntu-latest");
@@ -184,8 +219,9 @@ test("benign documentation and non-authority lockfile changes are admitted", asy
   expect(f.getComparisons()).toBe(1);
   expect(f.messages[0]).toContain("2 PR files inspected");
   expect(f.outputs).toEqual({
-    verified_head_sha: "head-commit-1",
-    verified_base_sha: "base-commit-1",
+    verified_head_sha: "a".repeat(40),
+    verified_base_sha: "b".repeat(40),
+    verified_base_is_ancestor: "true",
   });
 });
 
@@ -488,6 +524,89 @@ test("backslash and NUL in GitHub paths are refused, not normalized", async () =
       fixture([{ filename, status: "added" }]).run(),
     ).rejects.toThrow("malformed Git paths");
   }
+});
+
+test("history scan detects future-main protected commit and its later revert hidden by clean net diff", async () => {
+  // Branch A: trusted CI. B: future main changes CI. H: reverts B and edits
+  // docs. Compare(A,H).files is innocuous, but H can later be replayed when
+  // B becomes main without changing HEAD SHA.
+  const futureMain = "c".repeat(40);
+  const h = "a".repeat(40);
+  const f = fixture([{ filename: "docs/readme.md", status: "modified" }], {
+    historyCommits: [futureMain, h],
+    commitFilesBySha: {
+      [futureMain]: [
+        { filename: ".github/workflows/ci.yml", status: "modified" },
+      ],
+      [h]: [
+        { filename: ".github/workflows/ci.yml", status: "modified" },
+        { filename: "docs/readme.md", status: "modified" },
+      ],
+    },
+  });
+  await expect(f.run()).rejects.toThrow(
+    "protected authority touched in commit history",
+  );
+  expect(f.outputs).toEqual({});
+  expect(f.getCommitReads()).toBe(1);
+});
+
+test("history scan refuses missing, excessive and wrong-head commit inventories", async () => {
+  const benign = [{ filename: "docs/ok.md", status: "modified" }];
+  await expect(fixture(benign, { historyTotal: 2 }).run()).rejects.toThrow(
+    "incomplete or excessive commit history",
+  );
+  await expect(
+    fixture(benign, {
+      historyCommits: Array.from({ length: 31 }, (_, i) =>
+        i.toString(16).padStart(40, "0"),
+      ),
+    }).run(),
+  ).rejects.toThrow("incomplete or excessive commit history");
+  await expect(
+    fixture(benign, { historyCommits: ["f".repeat(40)] }).run(),
+  ).rejects.toThrow("incomplete or excessive commit history");
+  await expect(fixture(benign, { badCommitSha: true }).run()).rejects.toThrow(
+    "malformed commit file evidence",
+  );
+});
+
+test("commit page 101 and 299 are fully scanned; 300th file boundary rejects", async () => {
+  const files = Array.from({ length: 299 }, (_, i) => ({
+    filename: "docs/file" + i + ".md",
+    status: "modified",
+  }));
+  const admitted = fixture(files);
+  await expect(admitted.run()).resolves.toBeUndefined();
+  expect(admitted.getCommitReads()).toBe(3);
+  const hidden = fixture([{ filename: "docs/ok.md", status: "modified" }], {
+    commitFilesBySha: {
+      ["a".repeat(40)]: [
+        ...files.slice(0, 100),
+        { filename: ".github/workflows/hidden.yml", status: "modified" },
+      ],
+    },
+  });
+  await expect(hidden.run()).rejects.toThrow(
+    "protected authority touched in commit history",
+  );
+  const capped = fixture([{ filename: "docs/ok.md", status: "modified" }], {
+    commitFilesBySha: {
+      ["a".repeat(40)]: [
+        ...files,
+        { filename: "docs/file299.md", status: "modified" },
+      ],
+    },
+  });
+  await expect(capped.run()).rejects.toThrow("truncated commit file history");
+});
+
+test("ancestor marker withheld for an outdated PR base; fork head is still evaluated", async () => {
+  const f = fixture([{ filename: "docs/ok.md", status: "modified" }], {
+    comparisonMergeBase: "c".repeat(40),
+  });
+  await expect(f.run()).resolves.toBeUndefined();
+  expect(f.outputs.verified_base_is_ancestor).toBe("false");
 });
 
 test("review-state changes cannot authorize a protected CI edit without a trusted re-evaluation event", async () => {

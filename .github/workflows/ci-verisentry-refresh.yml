@@ -73,6 +73,28 @@ jobs:
               (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
             if (await currentMain() !== context.sha)
               throw Error('VeriSentry refresh refuses a stale protected-main workflow SHA');
+            // A HEAD receipt remains reusable if main advances. Only strict
+            // native required-check freshness can make that safe; the live
+            // App ruleset is currently loose, so HEAD writes remain gated.
+            const strictNativeAppGate = async () => {
+              const rule = (await github.rest.repos.getRepoRuleset({
+                owner,repo,ruleset_id:26261486,
+              })).data;
+              const requirements = rule?.rules?.filter(r => r.type === 'required_status_checks');
+              return rule?.enforcement === 'active' && requirements?.length === 1 &&
+                requirements[0]?.parameters?.strict_required_status_checks_policy === true &&
+                requirements[0]?.parameters?.required_status_checks?.some(c =>
+                  c.context === 'KELD VeriSentry' && c.integration_id === 5550363) &&
+                requirements[0].parameters.required_status_checks.length === 1;
+            };
+            let headGateEnabled = false;
+            try {
+              headGateEnabled = await strictNativeAppGate();
+            } catch {
+              // A rule API outage can safely withhold optional HEAD receipts;
+              // the existing synthetic merge renewal is still usable.
+              core.warning('VeriSentry could not prove strict native HEAD freshness');
+            }
             const list = await github.paginate(github.rest.pulls.list, {
               owner, repo, state: 'open', base: 'main', per_page: 100,
             });
@@ -112,7 +134,9 @@ jobs:
             // two colliding PRs fall into different daily batches.
             const hintCounts = new Map();
             const parentPairCounts = new Map();
+            const headCounts = new Map();
             for (const item of allSnapshots) {
+              headCounts.set(item.head,(headCounts.get(item.head)||0)+1);
               if (isSha(item.testMergeHint))
                 hintCounts.set(item.testMergeHint,(hintCounts.get(item.testMergeHint)||0)+1);
               // A Git merge commit SHA contains its parent HEAD and BASE.
@@ -185,10 +209,71 @@ jobs:
                 p === ".clippy.toml" || p.endsWith("/.clippy.toml");
             };
             // __PROTECTED_PATH_POLICY_END__
+            // __TRUSTED_COMMIT_HISTORY_BEGIN__
+            // Net diffs cannot see a protected change followed by a revert.
+            // Scan every ahead commit from the immutable Compare Commits list.
+            // Bound API work and refuse missing/truncated pages before PASS.
+            const verifyHistory = async (comparison, expectedBase, expectedHead) => {
+              if (comparison?.base_commit?.sha !== expectedBase ||
+                  !isSha(comparison?.merge_base_commit?.sha) ||
+                  !Number.isSafeInteger(comparison?.total_commits) ||
+                  comparison.total_commits < 1 || comparison.total_commits > 30 ||
+                  !Array.isArray(comparison.commits) ||
+                  comparison.commits.length !== comparison.total_commits ||
+                  comparison.commits.at(-1)?.sha !== expectedHead) {
+                throw Error('CI provenance refuses incomplete or excessive commit history');
+              }
+              const visited = new Set();
+              for (const commit of comparison.commits) {
+                if (!isSha(commit?.sha) || visited.has(commit.sha))
+                  throw Error('CI provenance refuses duplicated or malformed commit history');
+                visited.add(commit.sha);
+                const paths = new Set();
+                let complete = false;
+                // GitHub paginates commit file lists; 300 or more changed
+                // files in one commit are deliberately outside this policy.
+                for (let page = 1; page <= 3; page++) {
+                  const detail = (await github.rest.repos.getCommit({
+                    owner, repo, ref: commit.sha, page, per_page: 100,
+                  })).data;
+                  if (detail?.sha !== commit.sha || !Array.isArray(detail.files) ||
+                      detail.files.length > 100 || !Array.isArray(detail.parents) ||
+                      detail.parents.length < 1 || detail.parents.length > 2 ||
+                      detail.parents.some(parent => !isSha(parent?.sha))) {
+                    throw Error('CI provenance refuses malformed commit file evidence');
+                  }
+                  for (const file of detail.files) {
+                    if (!file ||
+                        !['added','removed','modified','renamed','changed','copied'].includes(file.status) ||
+                        (file.status === 'renamed' && !file.previous_filename)) {
+                      throw Error('CI provenance refuses unknown commit file or rename');
+                    }
+                    // Validation is shared with the net-diff policy, including
+                    // old rename paths and malformed case/encoding.
+                    const touched = protectedPath(file.filename) ||
+                      (file.previous_filename && protectedPath(file.previous_filename));
+                    if (paths.has(file.filename))
+                      throw Error('CI provenance refuses duplicate paginated commit files');
+                    paths.add(file.filename);
+                    if (touched)
+                      throw Error('CI provenance: protected authority touched in commit history');
+                  }
+                  if (detail.files.length < 100) {
+                    complete = true;
+                    break;
+                  }
+                }
+                if (!complete)
+                  throw Error('CI provenance refuses truncated commit file history (>=300 files)');
+              }
+              return comparison.merge_base_commit.sha === expectedBase;
+            };
+            // __TRUSTED_COMMIT_HISTORY_END__
             const verdicts = [];
             for (const event of snapshots) {
               let admitted = false;
               let verifiedDenied = false;
+              let baseIsAncestor = false;
               let reason = 'missing trusted proof';
               let current;
               const fetchPR = async () =>
@@ -232,6 +317,14 @@ jobs:
                 if (protectedChanges.length) {
                   verifiedDenied = true; // concrete immutable protected path evidence
                   throw Error('Protected CI authority changed');
+                }
+                try {
+                  baseIsAncestor = await verifyHistory(compare, event.base, event.head);
+                } catch (error) {
+                  if (error instanceof Error &&
+                      error.message.includes('protected authority touched in commit history'))
+                    verifiedDenied = true;
+                  throw error;
                 }
                 if (!matches(await fetchPR())) throw Error('PR moved after immutable comparison');
                 admitted = true;
@@ -283,12 +376,75 @@ jobs:
                   retry:skip !== 'unmergeable PR' && skip !== 'moved or closed PR'});
                 continue;
               }
-              verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason});
+              verdicts.push({...event,merge:current.merge_commit_sha,admitted,baseIsAncestor,reason});
             }
             const mergeCounts = new Map();
             for (const v of verdicts) if (v.merge)
               mergeCounts.set(v.merge,(mergeCounts.get(v.merge) || 0)+1);
-            const counts = {created:0,existing:0,denied:0,skipped:0,errors:0};
+            const counts = {created:0,existing:0,denied:0,skipped:0,
+              headCreated:0,headExisting:0,headWithheld:0,errors:0};
+            const refreshHead = async verdict => {
+              if (!verdict.admitted || !verdict.baseIsAncestor ||
+                  verdict.base !== context.sha || headCounts.get(verdict.head) !== 1) {
+                counts.headWithheld++;
+                return;
+              }
+              if (!headGateEnabled) {
+                counts.headWithheld++;
+                return;
+              }
+              // A later PR cannot borrow a same-SHA receipt from the current
+              // enumeration. The strict branch rule also invalidates an old
+              // HEAD result whenever main advances after publication.
+              const pr = (await github.rest.pulls.get({
+                owner,repo,pull_number:verdict.number,
+              })).data;
+              if (pr?.state !== 'open' || pr.number !== verdict.number ||
+                  pr.base?.ref !== 'main' || pr.base?.sha !== verdict.base ||
+                  pr.head?.sha !== verdict.head || pr.merge_commit_sha !== verdict.merge ||
+                  pr.mergeable === false)
+                throw Error('HEAD PR identity changed before App publication');
+              const checks = await github.paginate(github.rest.checks.listForRef, {
+                owner,repo,ref:verdict.head,check_name:'KELD VeriSentry',
+                app_id:5550363,filter:'all',per_page:100,
+              });
+              if (!Array.isArray(checks) || checks.length > 1000 ||
+                  checks.some(c => c.app?.id !== 5550363 || c.head_sha !== verdict.head ||
+                    (c.output?.summary || '').includes('maintenance-run=')))
+                throw Error('HEAD has foreign/incomplete/exceptional App receipt');
+              if (checks.some(c => c.conclusion === 'failure'))
+                throw Error('HEAD has a prior App denial that needs an updated commit');
+              const latest = checks.slice().sort((a,b) =>
+                Date.parse(b.completed_at || '') - Date.parse(a.completed_at || ''))[0];
+              const ageMs = Date.now() - Date.parse(latest?.completed_at || '');
+              const evidence = 'PR #'+verdict.number+' base='+verdict.base+
+                ' head='+verdict.head+' merge='+verdict.merge+' target=head policy='+context.sha;
+              if (latest?.status === 'completed' && latest.conclusion === 'success' &&
+                  latest.output?.summary?.includes(evidence) &&
+                  Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 4*86400*1000) {
+                counts.headExisting++;
+                return;
+              }
+              if (await currentMain() !== context.sha || !await strictNativeAppGate())
+                throw Error('HEAD native strict rule or main moved before signed App write');
+              const latestPr = (await github.rest.pulls.get({
+                owner,repo,pull_number:verdict.number,
+              })).data;
+              if (latestPr?.state !== 'open' || latestPr.base?.sha !== verdict.base ||
+                  latestPr.head?.sha !== verdict.head ||
+                  latestPr.merge_commit_sha !== verdict.merge)
+                throw Error('HEAD PR moved before signed App write');
+              const created = (await github.rest.checks.create({
+                owner,repo,name:'KELD VeriSentry',head_sha:verdict.head,
+                status:'completed',conclusion:'success',
+                details_url:'https://github.com/gyldlab/keld/pull/'+verdict.number,
+                output:{title:'Trusted CI admission refreshed',
+                  summary:evidence+' complete immutable ancestry and protected-main policy PASS'},
+              })).data;
+              if (created?.app?.id !== 5550363 || created.head_sha !== verdict.head)
+                throw Error('Wrong HEAD check App identity or SHA');
+              counts.headCreated++;
+            };
             for (const verdict of verdicts) {
               try {
                 if (!verdict.merge) {
@@ -354,6 +510,7 @@ jobs:
                 if (latest && latest.status === 'completed' && latest.conclusion === expected &&
                     Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 4*86400*1000) {
                   counts.existing++;
+                  await refreshHead(verdict);
                   continue;
                 }
                 // An existing App FAIL may be a separately audited denial;
@@ -377,6 +534,7 @@ jobs:
                   throw Error('Wrong App identity or SHA after publishing');
                 counts.created++;
                 if (!verdict.admitted) counts.denied++;
+                await refreshHead(verdict);
                 await new Promise(resolve => setTimeout(resolve, 1000));
               } catch (error) {
                 counts.errors++;

@@ -20,6 +20,7 @@ const execute = new AsyncFunction(
   "context",
   "process",
   "setTimeout",
+  "core",
   body,
 );
 const head = "a".repeat(40);
@@ -47,6 +48,15 @@ function scenario(
     prNumber?: number;
     apiReadFails?: boolean;
     checkWriteFails?: boolean;
+    strictNative?: boolean;
+    verifiedAncestry?: string;
+    duplicateHead?: boolean;
+    duplicateMerge?: boolean;
+    runAttempt?: string;
+    workflowRef?: string;
+    sourceSha?: string;
+    mainSequence?: string[];
+    appId?: number;
   } = {},
 ) {
   const prNumber = options.prNumber ?? 345;
@@ -54,9 +64,20 @@ function scenario(
   const eventBase = options.eventBase ?? base;
   const written: Record<string, any>[] = [];
   let reads = 0;
+  let mainReads = 0;
   const github = {
     rest: {
+      git: {
+        getRef: async () => ({
+          data: {
+            object: { sha: options.mainSequence?.[mainReads++] ?? eventBase },
+          },
+        }),
+      },
       pulls: {
+        list: () => {
+          throw Error("PR list must be paginated");
+        },
         get: async (args: Record<string, unknown>) => {
           expect(args).toEqual({
             owner: "gyldlab",
@@ -101,9 +122,64 @@ function scenario(
         create: async (args: Record<string, any>) => {
           if (options.checkWriteFails) throw new Error("write unavailable");
           written.push(args);
-          return { data: { id: 1 } };
+          return {
+            data: {
+              id: 1,
+              app: { id: options.appId ?? 5550363 },
+              head_sha: args.head_sha,
+              conclusion: args.conclusion,
+            },
+          };
         },
       },
+      repos: {
+        getRepoRuleset: async () => ({
+          data: {
+            enforcement: "active",
+            rules: [
+              {
+                type: "required_status_checks",
+                parameters: {
+                  strict_required_status_checks_policy:
+                    options.strictNative ?? false,
+                  required_status_checks: [
+                    { context: "KELD VeriSentry", integration_id: 5550363 },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      },
+    },
+    paginate: async (fn: unknown, args: Record<string, any>) => {
+      expect(args).toMatchObject({
+        owner: "gyldlab",
+        repo: "keld",
+        state: "open",
+        base: "main",
+        per_page: 100,
+      });
+      if (fn !== github.rest.pulls.list) throw Error("Unexpected pagination");
+      const first = {
+        number: prNumber,
+        head: { sha: eventHead },
+        base: { sha: eventBase },
+        merge_commit_sha: merge,
+      };
+      if (options.duplicateHead)
+        return [first, { ...first, number: prNumber + 1 }];
+      if (options.duplicateMerge)
+        return [
+          first,
+          {
+            number: prNumber + 1,
+            head: { sha: "f".repeat(40) },
+            base: { sha: eventBase },
+            merge_commit_sha: merge,
+          },
+        ];
+      return [first];
     },
   };
   const context = {
@@ -111,6 +187,7 @@ function scenario(
       owner: options.owner ?? "gyldlab",
       repo: options.repository ?? "keld",
     },
+    sha: options.sourceSha ?? eventBase,
     payload: {
       pull_request: {
         number: prNumber,
@@ -124,15 +201,29 @@ function scenario(
       VERISENTRY_ADMISSION_RESULT: options.admission ?? "success",
       VERISENTRY_VERIFIED_HEAD: options.verifiedHead ?? head,
       VERISENTRY_VERIFIED_BASE: options.verifiedBase ?? base,
+      VERISENTRY_VERIFIED_ANCESTRY: options.verifiedAncestry ?? "true",
+      GITHUB_RUN_ATTEMPT: options.runAttempt ?? "1",
+      GITHUB_WORKFLOW_REF:
+        options.workflowRef ??
+        "gyldlab/keld/.github/workflows/ci-provenance.yml@refs/heads/main",
+      GITHUB_SHA: options.sourceSha ?? eventBase,
       GITHUB_SERVER_URL: "https://github.com",
       GITHUB_RUN_ID: "4321",
     },
   };
+  const core = { info: (_m: string) => undefined };
   return {
     run: () =>
-      execute(github, context, processStub, (resolve: () => void) => resolve()),
+      execute(
+        github,
+        context,
+        processStub,
+        (resolve: () => void) => resolve(),
+        core,
+      ),
     written,
     getReads: () => reads,
+    getMainReads: () => mainReads,
   };
 }
 
@@ -160,6 +251,8 @@ test("publisher has its own pinned identity and no PR-owned executable code", ()
   expect(verify.outputs).toEqual({
     verified_head_sha: "${{ steps.verify.outputs.verified_head_sha }}",
     verified_base_sha: "${{ steps.verify.outputs.verified_base_sha }}",
+    verified_base_is_ancestor:
+      "${{ steps.verify.outputs.verified_base_is_ancestor }}",
   });
   expect(publish.needs).toBe("provenance");
   expect(publish.if).toBe("${{ always() }}");
@@ -178,6 +271,7 @@ test("publisher has its own pinned identity and no PR-owned executable code", ()
     repositories: "keld",
     "permission-checks": "write",
     "permission-pull-requests": "read",
+    "permission-contents": "read",
   });
   expect(publish.steps[1].uses).toBe(githubScript);
   expect(publish.steps[1].with["github-token"]).toBe(
@@ -189,6 +283,8 @@ test("publisher has its own pinned identity and no PR-owned executable code", ()
       "${{ needs.provenance.outputs.verified_head_sha }}",
     VERISENTRY_VERIFIED_BASE:
       "${{ needs.provenance.outputs.verified_base_sha }}",
+    VERISENTRY_VERIFIED_ANCESTRY:
+      "${{ needs.provenance.outputs.verified_base_is_ancestor }}",
   });
   expect(
     (source.match(/secrets\.VERISENTRY_APP_PRIVATE_KEY/g) ?? []).length,
@@ -202,7 +298,7 @@ test("publisher has its own pinned identity and no PR-owned executable code", ()
 test("only a real success with matching immutable head/base emits verified App PASS", async () => {
   const s = scenario();
   await expect(s.run()).resolves.toBeUndefined();
-  expect(s.getReads()).toBe(1);
+  expect(s.getReads()).toBe(2);
   expect(s.written).toHaveLength(1);
   expect(s.written[0]).toEqual({
     owner: "gyldlab",
@@ -215,9 +311,62 @@ test("only a real success with matching immutable head/base emits verified App P
     output: {
       title: "Trusted CI admission passed",
       summary:
-        "Protected-base CI authority inspected for the current PR head, base and test merge.",
+        "PR #345 base=" +
+        base +
+        " head=" +
+        head +
+        " merge=" +
+        merge +
+        " target=test-merge policy=" +
+        base +
+        " trusted immutable history and protected-path admission success",
     },
   });
+});
+
+test("strict native App gate and complete ancestry publish both merge and HEAD", async () => {
+  const s = scenario({ strictNative: true });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.written.map((x) => x.head_sha)).toEqual([merge, head]);
+  expect(s.written.every((x) => x.conclusion === "success")).toBe(true);
+  expect(s.written[1]?.output.summary).toContain("target=head");
+});
+test.each([
+  { strictNative: false },
+  { strictNative: true, verifiedAncestry: "false" },
+])(
+  "a loose native App rule or stale branch ancestry withholds HEAD PASS %p",
+  async (inputs) => {
+    const s = scenario(inputs);
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.written.map((x) => x.head_sha)).toEqual([merge]);
+  },
+);
+test.each([{ duplicateHead: true }, { duplicateMerge: true }])(
+  "cross-PR SHA collisions refuse both signed targets %p",
+  async (inputs) => {
+    const s = scenario(inputs);
+    await expect(s.run()).rejects.toThrow(
+      "shared HEAD or synthetic-merge identity",
+    );
+    expect(s.written).toEqual([]);
+  },
+);
+test("stale workflow source and old rerun cannot mint App PASS", async () => {
+  for (const inputs of [
+    { runAttempt: "2" },
+    { sourceSha: "f".repeat(40) },
+    { mainSequence: ["f".repeat(40)] },
+    { workflowRef: "gyldlab/keld/.github/workflows/evil.yml@refs/heads/main" },
+  ]) {
+    const s = scenario(inputs);
+    await expect(s.run()).rejects.toThrow(/stale|workflow|source/);
+    expect(s.written).toHaveLength(0);
+  }
+});
+test("App identity mismatch is a publication error", async () => {
+  const s = scenario({ appId: 15368 });
+  await expect(s.run()).rejects.toThrow("unverified App identity");
 });
 
 test.each(["failure", "cancelled", "skipped", "neutral", "unknown"])(
@@ -296,7 +445,7 @@ test.each([null, "", "not-a-SHA", "ABCDEF".repeat(6)])(
 test("a delayed GitHub synthetic merge becomes usable after a bounded re-read", async () => {
   const s = scenario({ mergeSequence: [null, null, merge] });
   await expect(s.run()).resolves.toBeUndefined();
-  expect(s.getReads()).toBe(3);
+  expect(s.getReads()).toBe(4);
   expect(s.written).toHaveLength(1);
   expect(s.written[0]?.head_sha).toBe(merge);
   expect(s.written[0]?.conclusion).toBe("success");

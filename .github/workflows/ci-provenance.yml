@@ -20,6 +20,7 @@ jobs:
     outputs:
       verified_head_sha: ${{ steps.verify.outputs.verified_head_sha }}
       verified_base_sha: ${{ steps.verify.outputs.verified_base_sha }}
+      verified_base_is_ancestor: ${{ steps.verify.outputs.verified_base_is_ancestor }}
     steps:
       - name: Refuse unreviewed CI authority changes
         id: verify
@@ -32,6 +33,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const event = context.payload.pull_request;
+            const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
             if (owner !== "gyldlab" || repo !== "keld" || !event) {
               throw new Error("CI provenance requires the expected base repository and PR event");
             }
@@ -139,6 +141,66 @@ jobs:
                 p === "clippy.toml" || p.endsWith("/clippy.toml") ||
                 p === ".clippy.toml" || p.endsWith("/.clippy.toml");
             };
+            // __TRUSTED_COMMIT_HISTORY_BEGIN__
+            // Net diffs cannot see a protected change followed by a revert.
+            // Scan every ahead commit from the immutable Compare Commits list.
+            // Bound API work and refuse missing/truncated pages before PASS.
+            const verifyHistory = async (comparison, expectedBase, expectedHead) => {
+              if (comparison?.base_commit?.sha !== expectedBase ||
+                  !isSha(comparison?.merge_base_commit?.sha) ||
+                  !Number.isSafeInteger(comparison?.total_commits) ||
+                  comparison.total_commits < 1 || comparison.total_commits > 30 ||
+                  !Array.isArray(comparison.commits) ||
+                  comparison.commits.length !== comparison.total_commits ||
+                  comparison.commits.at(-1)?.sha !== expectedHead) {
+                throw Error('CI provenance refuses incomplete or excessive commit history');
+              }
+              const visited = new Set();
+              for (const commit of comparison.commits) {
+                if (!isSha(commit?.sha) || visited.has(commit.sha))
+                  throw Error('CI provenance refuses duplicated or malformed commit history');
+                visited.add(commit.sha);
+                const paths = new Set();
+                let complete = false;
+                // GitHub paginates commit file lists; 300 or more changed
+                // files in one commit are deliberately outside this policy.
+                for (let page = 1; page <= 3; page++) {
+                  const detail = (await github.rest.repos.getCommit({
+                    owner, repo, ref: commit.sha, page, per_page: 100,
+                  })).data;
+                  if (detail?.sha !== commit.sha || !Array.isArray(detail.files) ||
+                      detail.files.length > 100 || !Array.isArray(detail.parents) ||
+                      detail.parents.length < 1 || detail.parents.length > 2 ||
+                      detail.parents.some(parent => !isSha(parent?.sha))) {
+                    throw Error('CI provenance refuses malformed commit file evidence');
+                  }
+                  for (const file of detail.files) {
+                    if (!file ||
+                        !['added','removed','modified','renamed','changed','copied'].includes(file.status) ||
+                        (file.status === 'renamed' && !file.previous_filename)) {
+                      throw Error('CI provenance refuses unknown commit file or rename');
+                    }
+                    // Validation is shared with the net-diff policy, including
+                    // old rename paths and malformed case/encoding.
+                    const touched = protectedPath(file.filename) ||
+                      (file.previous_filename && protectedPath(file.previous_filename));
+                    if (paths.has(file.filename))
+                      throw Error('CI provenance refuses duplicate paginated commit files');
+                    paths.add(file.filename);
+                    if (touched)
+                      throw Error('CI provenance: protected authority touched in commit history');
+                  }
+                  if (detail.files.length < 100) {
+                    complete = true;
+                    break;
+                  }
+                }
+                if (!complete)
+                  throw Error('CI provenance refuses truncated commit file history (>=300 files)');
+              }
+              return comparison.merge_base_commit.sha === expectedBase;
+            };
+            // __TRUSTED_COMMIT_HISTORY_END__
             const protectedChanges = [];
             for (const file of files) {
               if (!file || !["added", "removed", "modified", "renamed", "changed", "copied"].includes(file.status)) {
@@ -160,11 +222,13 @@ jobs:
               throw new Error("CI provenance: changes to protected CI authority require a separately reviewed trusted-base policy update: " +
                 protectedChanges.slice(0, 12).join(", "));
             }
+            const baseIsAncestor = await verifyHistory(comparison, before.base.sha, before.head.sha);
             verifyPR(await fetchPR()); // A new head must trigger its own event.
-            core.info("CI provenance: unchanged workflow/router/CI authority; " +
+            core.info("CI provenance: unchanged workflow/router/CI authority and commit history; " +
               files.length + " PR files inspected at " + before.head.sha);
             core.setOutput("verified_head_sha", before.head.sha);
             core.setOutput("verified_base_sha", before.base.sha);
+            core.setOutput("verified_base_is_ancestor", String(baseIsAncestor));
 
   publish:
     name: KELD VeriSentry publisher
@@ -190,12 +254,14 @@ jobs:
           # Narrow the installation token; the App installation has more access.
           permission-checks: write
           permission-pull-requests: read
-      - name: Publish fail-closed exact-head VeriSentry check
+          permission-contents: read # verify protected main has not advanced before App writes
+      - name: Publish fail-closed dual-target VeriSentry checks
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9.0.0
         env:
           VERISENTRY_ADMISSION_RESULT: ${{ needs.provenance.result }}
           VERISENTRY_VERIFIED_HEAD: ${{ needs.provenance.outputs.verified_head_sha }}
           VERISENTRY_VERIFIED_BASE: ${{ needs.provenance.outputs.verified_base_sha }}
+          VERISENTRY_VERIFIED_ANCESTRY: ${{ needs.provenance.outputs.verified_base_is_ancestor }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -204,11 +270,39 @@ jobs:
             const { owner, repo } = context.repo;
             const event = context.payload.pull_request;
             const isSha = (value) => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+            // A late pull_request_target rerun must never use stale protected
+            // workflow bytes to create an App receipt under a newer policy.
+            if (process.env.GITHUB_RUN_ATTEMPT !== '1' ||
+                !process.env.GITHUB_WORKFLOW_REF?.endsWith('/.github/workflows/ci-provenance.yml@refs/heads/main') ||
+                context.sha !== process.env.GITHUB_SHA) {
+              throw Error('VeriSentry refuses stale/untrusted workflow source');
+            }
             if (owner !== "gyldlab" || repo !== "keld" || !event ||
                 !Number.isSafeInteger(event.number) || event.number < 1 ||
                 !isSha(event.head?.sha) || !isSha(event.base?.sha)) {
               throw new Error("VeriSentry refuses an untrusted PR event");
             }
+            if (event.base.sha !== context.sha)
+              throw Error('VeriSentry requires the event base to equal protected workflow SHA');
+            const currentMain = async () =>
+              (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            if (await currentMain() !== context.sha)
+              throw Error('VeriSentry refuses a stale protected-main source');
+            // HEAD App SUCCESS is only safe with GitHub-enforced strict
+            // freshness, which invalidates prior HEAD checks on base advance.
+            // The native App ruleset is currently loose; never infer strict
+            // from a user-controlled PR or workflow environment variable.
+            const strictNativeAppGate = async () => {
+              const rule = (await github.rest.repos.getRepoRuleset({
+                owner,repo,ruleset_id:26261486,
+              })).data;
+              const requirements = rule?.rules?.filter(r => r.type === 'required_status_checks');
+              return rule?.enforcement === 'active' && requirements?.length === 1 &&
+                requirements[0]?.parameters?.strict_required_status_checks_policy === true &&
+                requirements[0]?.parameters?.required_status_checks?.some(c =>
+                  c.context === 'KELD VeriSentry' && c.integration_id === 5550363) &&
+                requirements[0].parameters.required_status_checks.length === 1;
+            };
             // GitHub computes the test-merge SHA asynchronously. Retry only
             // bounded GitHub API reads, never execute or fetch PR code.
             // Reject a moved/closed PR on EVERY read (including after delay).
@@ -243,16 +337,76 @@ jobs:
             const verified = process.env.VERISENTRY_ADMISSION_RESULT === "success" &&
               process.env.VERISENTRY_VERIFIED_HEAD === event.head.sha &&
               process.env.VERISENTRY_VERIFIED_BASE === event.base.sha;
-            const details = `${process.env.GITHUB_SERVER_URL || "https://github.com"}/gyldlab/keld/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            await github.rest.checks.create({
-              owner, repo, name: "KELD VeriSentry", head_sha: pr.merge_commit_sha,
-              status: "completed", conclusion: verified ? "success" : "failure",
-              details_url: details,
-              output: {
-                title: verified ? "Trusted CI admission passed" : "Trusted CI admission rejected",
-                summary: verified
-                  ? "Protected-base CI authority inspected for the current PR head, base and test merge."
-                  : "Protected-base verification failed or lacked matching head/base evidence for this PR merge.",
-              },
+            // SECURITY REVIEW BLOCKER (draft only): a HEAD check is keyed by
+            // commit SHA. Today's unique-open-PR census cannot prevent a
+            // SECOND PR opened later from inheriting the signed HEAD PASS.
+            // Native strict required-check freshness prevents base-advance
+            // reuse, but does not bind a prior PASS to the original PR ID.
+            // Do not deploy HEAD publication; use exact staged SHA merge queue.
+            // The native test-merge receipt is PR-specific.
+            const open = await github.paginate(github.rest.pulls.list, {
+              owner,repo,state:'open',base:'main',per_page:100,
             });
-            if (!verified) throw new Error("VeriSentry published a blocking failure");
+            if (!Array.isArray(open) || open.length > 20000 ||
+                new Set(open.map(p => p.number)).size !== open.length ||
+                open.some(p => !Number.isSafeInteger(p.number) || p.number < 1 ||
+                  !isSha(p.head?.sha) || !isSha(p.base?.sha))) {
+              throw Error('VeriSentry refuses malformed or incomplete PR identity census');
+            }
+            const collisions = open.filter(p =>
+              p.head.sha === event.head.sha ||
+              (isSha(p.merge_commit_sha) && p.merge_commit_sha === pr.merge_commit_sha));
+            const uniquelyBound = collisions.length === 1 &&
+              collisions[0].number === event.number;
+            if (!uniquelyBound)
+              throw Error('VeriSentry refuses shared HEAD or synthetic-merge identity');
+            // Recheck both the PR and main immediately before signed writes.
+            const current = (await github.rest.pulls.get({owner,repo,pull_number:event.number})).data;
+            if (current?.state !== 'open' || current.number !== event.number ||
+                current.head?.sha !== event.head.sha || current.base?.sha !== event.base.sha ||
+                current.merge_commit_sha !== pr.merge_commit_sha ||
+                current.mergeable === false || await currentMain() !== context.sha) {
+              throw Error('VeriSentry refuses moved PR or main before App publication');
+            }
+            const details = `${process.env.GITHUB_SERVER_URL || "https://github.com"}/gyldlab/keld/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const publish = async (sha, conclusion, target) => {
+              if (await currentMain() !== context.sha)
+                throw Error('VeriSentry refuses main advance during signed App writes');
+              const result = (await github.rest.checks.create({
+                owner,repo,name:'KELD VeriSentry',head_sha:sha,
+                status:'completed',conclusion,details_url:details,
+                output:{
+                  title: conclusion === 'success' ? 'Trusted CI admission passed' : 'Trusted CI admission rejected',
+                  summary:'PR #'+event.number+' base='+event.base.sha+' head='+event.head.sha+
+                    ' merge='+pr.merge_commit_sha+' target='+target+' policy='+context.sha+
+                    ' trusted immutable history and protected-path admission '+conclusion,
+                },
+              })).data;
+              if (result?.app?.id !== 5550363 || result.head_sha !== sha ||
+                  result.conclusion !== conclusion)
+                throw Error('VeriSentry refuses unverified App identity or check SHA');
+            };
+            // Preserve the synthetic test-merge check for GitHub's PR UI and
+            // mergeability logic, even while native strict HEAD release is gated.
+            await publish(pr.merge_commit_sha,verified ? 'success' : 'failure','test-merge');
+            if (!verified) throw Error('VeriSentry published a blocking failure');
+            if (process.env.VERISENTRY_VERIFIED_ANCESTRY !== 'true') {
+              core.info('VeriSentry HEAD check withheld: base is not ancestor of PR HEAD');
+              return;
+            }
+            if (!await strictNativeAppGate()) {
+              core.info('VeriSentry HEAD check withheld: native App rule is not strict');
+              return;
+            }
+            if (await currentMain() !== context.sha)
+              throw Error('VeriSentry refuses main advance before HEAD App check');
+            const stillCurrent = (await github.rest.pulls.get({
+              owner,repo,pull_number:event.number,
+            })).data;
+            if (stillCurrent?.head?.sha !== event.head.sha ||
+                stillCurrent?.base?.sha !== event.base.sha ||
+                stillCurrent?.merge_commit_sha !== pr.merge_commit_sha ||
+                stillCurrent?.state !== 'open') {
+              throw Error('VeriSentry refuses changed PR before HEAD App check');
+            }
+            await publish(event.head.sha,'success','head');
