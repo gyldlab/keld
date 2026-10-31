@@ -88,7 +88,12 @@ jobs:
               `, {owner, repo});
               const queue = data?.repository?.mergeQueue;
               const entries = queue?.entries;
-              if (queue?.configuration?.maximumEntriesToMerge !== 1 ||
+              // GitHub GraphQL returns configuration:null for some real
+              // queues. Enforce the one-PR merge limit when supplied; check
+              // the exact staged tree below even if this config is absent.
+              const maxEntries = queue?.configuration?.maximumEntriesToMerge;
+              if ((queue?.configuration !== null &&
+                   (!Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 1)) ||
                   !Number.isSafeInteger(entries?.totalCount) ||
                   entries.totalCount < 1 || entries.totalCount > 100 ||
                   entries?.pageInfo?.hasNextPage !== false ||
@@ -101,10 +106,11 @@ jobs:
               if (matches.length !== 1) {
                 throw Error('KeldBot cannot identify exactly one live queue PR');
               }
-              // The queue entry identifies one live PR. Prior queued PRs may
-              // already be included in the group base; merge limits do not
-              // restrict that build content. The synthetic group SHA is tied
-              // to its live GitHub-owned ref and immutable first parent.
+              // The queue entry's headCommit is the STAGED group commit, not
+              // the PR head. Prior queued PRs may already be included in its
+              // history; merge limits alone do not restrict build content.
+              // Bind stage SHA to this event and the live GitHub queue ref;
+              // bind the PR head separately to pullRequest.headRefOid.
               const entry = matches[0];
               const queued = entry.pullRequest;
               const pr = (await github.rest.pulls.get({
@@ -124,13 +130,32 @@ jobs:
               if (pr?.number !== number || pr.state !== 'open' || pr.draft ||
                   pr.base?.ref !== 'main' ||
                   pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                  !sha(pr.base?.sha) || pr.base.sha !== event.base_sha ||
                   !sha(pr.head?.sha) || pr.head.sha !== queued.headRefOid ||
-                  pr.head.sha !== entry.headCommit?.oid ||
+                  entry.headCommit?.oid !== event.head_sha ||
                   queued.baseRefName !== 'main' || queued.state !== 'OPEN' ||
                   queued.isDraft !== false ||
                   !['QUEUED','AWAITING_CHECKS','LOCKED','MERGEABLE'].includes(entry.state) ||
-                  current?.object?.sha !== event.head_sha) {
+                  current?.object?.sha !== event.head_sha ||
+                  !sha(pr.merge_commit_sha)) {
                 throw Error('KeldBot refuses stale or retargeted queue PR');
+              }
+              // A one-PR merge limit does not ensure the staged group contains
+              // only that PR: earlier queued changes can be stacked. Compare
+              // the staged tree against the LIVE PR's standalone test merge.
+              // A synthetic preview SHA may be regenerated, but its verified
+              // immutable parent pair and tree must describe this exact PR.
+              const preview = (await github.rest.repos.getCommit({
+                owner, repo, ref: pr.merge_commit_sha,
+              })).data;
+              const previewTree = preview?.commit?.tree?.sha;
+              if (preview?.sha !== pr.merge_commit_sha ||
+                  !Array.isArray(preview.parents) || preview.parents.length !== 2 ||
+                  preview.parents[0]?.sha !== pr.base.sha ||
+                  preview.parents[1]?.sha !== pr.head.sha ||
+                  !sha(previewTree) ||
+                  groupCommit?.commit?.tree?.sha !== previewTree) {
+                throw Error('KeldBot refuses a stacked group or stale PR preview tree');
               }
               core.setOutput('number', String(number));
               core.setOutput('head_sha', pr.head.sha);

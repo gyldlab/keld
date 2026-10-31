@@ -10,6 +10,8 @@ const ci = Bun.YAML.parse(
 const base = "b".repeat(40);
 const head = "c".repeat(40);
 const group = "d".repeat(40);
+const previewSha = "f".repeat(40);
+const treeSha = "1".repeat(40);
 const number = 1340;
 const ref = "refs/heads/gh-readonly-queue/main/pr-1340-" + base;
 const sections = [
@@ -40,12 +42,13 @@ function fixture(): any {
     draft: false,
     title: "ci(queue): validate group",
     body: validBody,
-    base: { ref: "main", repo: { full_name: "gyldlab/keld" } },
+    base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
     head: { sha: head },
+    merge_commit_sha: previewSha,
   };
   const entry = {
     state: "AWAITING_CHECKS",
-    headCommit: { oid: head },
+    headCommit: { oid: group },
     pullRequest: {
       number,
       headRefOid: head,
@@ -61,6 +64,16 @@ function fixture(): any {
       pageInfo: { hasNextPage: false },
       nodes: [entry],
     },
+  };
+  const stageCommit = {
+    sha: group,
+    parents: [{ sha: base }, { sha: head }],
+    commit: { tree: { sha: treeSha } },
+  };
+  const previewCommit = {
+    sha: previewSha,
+    parents: [{ sha: base }, { sha: head }],
+    commit: { tree: { sha: treeSha } },
   };
   const context = {
     repo: { owner: "gyldlab", repo: "keld" },
@@ -109,10 +122,11 @@ function fixture(): any {
       repos: {
         getCommit: async (args: any) => {
           calls.commit++;
-          expect(args).toEqual({ owner: "gyldlab", repo: "keld", ref: group });
-          return {
-            data: { sha: group, parents: [{ sha: base }, { sha: head }] },
-          };
+          expect(args.owner).toBe("gyldlab");
+          expect(args.repo).toBe("keld");
+          if (args.ref === group) return { data: stageCommit };
+          if (args.ref === previewSha) return { data: previewCommit };
+          throw Error("Unexpected GitHub commit ref " + String(args.ref));
         },
       },
     },
@@ -121,6 +135,8 @@ function fixture(): any {
     queue,
     entry,
     pr,
+    stageCommit,
+    previewCommit,
     context,
     github,
     output,
@@ -200,7 +216,21 @@ test("live authenticated singleton queue resolves exact PR and group SHA", async
   const f = fixture();
   await expect(invoke(identity, f)).resolves.toBeUndefined();
   expect(f.output).toEqual({ number: String(number), head_sha: head });
-  expect(f.calls).toEqual({ graphql: 1, pr: 1, ref: 1, commit: 1 });
+  expect(f.calls).toEqual({ graphql: 1, pr: 1, ref: 1, commit: 2 });
+});
+
+test("live queue configuration:null accepts distinct staged SHA and PR head", async () => {
+  const f = fixture();
+  // Dify live GraphQL can return configuration:null. The entry HEAD is
+  // staged commit SHA, while pullRequest.headRefOid is the original PR head.
+  f.queue.configuration = null;
+  expect(f.entry.headCommit.oid).toBe(group);
+  expect(f.entry.pullRequest.headRefOid).toBe(head);
+  expect(f.pr.head.sha).toBe(head);
+  expect(group).not.toBe(head);
+  await expect(invoke(identity, f)).resolves.toBeUndefined();
+  expect(f.output).toEqual({ number: String(number), head_sha: head });
+  expect(f.calls).toEqual({ graphql: 1, pr: 1, ref: 1, commit: 2 });
 });
 
 test("existing pull_request_target path still yields PR metadata without queue reads", async () => {
@@ -266,6 +296,18 @@ test.each([
     },
   ],
   [
+    "malformed present queue configuration",
+    (f: any) => {
+      f.queue.configuration = {};
+    },
+  ],
+  [
+    "invalid present queue limit",
+    (f: any) => {
+      f.queue.configuration.maximumEntriesToMerge = "1";
+    },
+  ],
+  [
     "missing entry",
     (f: any) => {
       f.queue.entries.nodes = [];
@@ -291,9 +333,59 @@ test.each([
     },
   ],
   [
-    "stale queued head",
+    "stale staged group SHA",
     (f: any) => {
       f.entry.headCommit.oid = "e".repeat(40);
+    },
+  ],
+  [
+    "mismatched queued PR head identity",
+    (f: any) => {
+      f.entry.pullRequest.headRefOid = "e".repeat(40);
+    },
+  ],
+  [
+    "changed PR base SHA",
+    (f: any) => {
+      f.pr.base.sha = "e".repeat(40);
+    },
+  ],
+  [
+    "missing standalone preview",
+    (f: any) => {
+      f.pr.merge_commit_sha = null;
+    },
+  ],
+  [
+    "stale preview commit identity",
+    (f: any) => {
+      f.previewCommit.sha = "e".repeat(40);
+    },
+  ],
+  [
+    "wrong preview base parent",
+    (f: any) => {
+      f.previewCommit.parents[0].sha = "e".repeat(40);
+    },
+  ],
+  [
+    "wrong preview head parent",
+    (f: any) => {
+      f.previewCommit.parents[1].sha = "e".repeat(40);
+    },
+  ],
+  [
+    "second queued PR changes staged tree",
+    (f: any) => {
+      // A group build containing another PR has a different tree even
+      // when the queue configuration says maximumEntriesToMerge=1.
+      f.stageCommit.commit.tree.sha = "e".repeat(40);
+    },
+  ],
+  [
+    "preview tree missing",
+    (f: any) => {
+      f.previewCommit.commit.tree.sha = null;
     },
   ],
   [
