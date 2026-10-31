@@ -3989,3 +3989,67 @@ fn baseline_rows_reproduces_the_committed_baseline() {
         committed
     );
 }
+
+/// The review's control: a character reference renders as the same heading, so it marks
+/// the same spec. A reference that renders as another word marks none.
+#[test]
+fn a_character_reference_cannot_hide_the_spec_heading() {
+    for heading in [
+        "## Acceptance&#32;criteria",
+        "## Acceptance&#x20;criteria",
+        "## Acceptance&#X20;criteria",
+        "## Acceptance&nbsp;criteria",
+        "## Acceptance&Tab;criteria",
+        "## Acc&#101;ptance criteria",
+        "## 3. Acceptance&#0032;criteria",
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.track(
+            "crates/x/n.md",
+            format!("# Notes\n\n{heading}\n").as_bytes(),
+        );
+        assert_only(&fixture, Rule::Outside, heading);
+    }
+    let mut fixture = Fixture::new();
+    fixture.track(
+        "crates/x/n.md",
+        b"# Notes\n\n## Tools &amp; criteria\n\nAT&T; &#; &#xZZ; &#12345678; &#x1234567;\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    assert_eq!(
+        decode_references("a&#32;b&#x41;c&amp;d &#0; &#x110000; &#; &#xZZ; AT&T &#12345678;"),
+        "a bAc d \u{fffd} \u{fffd} &#; &#xZZ; AT&T &#12345678;"
+    );
+}
+
+/// The review's control: a fence a reader cannot see is not the copy source.
+#[test]
+fn a_hidden_template_fence_is_not_the_copy_source() {
+    let fence = format!("```markdown\n{}```\n", single_spec());
+    let indented: String = fence.lines().map(|line| format!("    {line}\n")).collect();
+    let quoted: String = fence.lines().map(|line| format!("> {line}\n")).collect();
+    for (label, text) in [
+        ("html comment", format!("# Template\n\n<!--\n{fence}-->\n")),
+        ("raw html", format!("# Template\n\n<pre>\n{fence}</pre>\n")),
+        ("indented code", format!("# Template\n\n{indented}")),
+        ("block quote", format!("# Template\n\n{quoted}")),
+        (
+            "never closed",
+            format!("# Template\n\n```markdown\n{}", single_spec()),
+        ),
+        (
+            "outer fence",
+            format!("# Template\n\n````text\n{fence}````\n"),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(TEMPLATE, &text);
+        assert_only(&fixture, Rule::Sections, label);
+    }
+    let fixture = Fixture::new();
+    fixture.write(
+        TEMPLATE,
+        &format!("# Template\n\n{fence}\n```text\nnot a spec\n```\n"),
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}

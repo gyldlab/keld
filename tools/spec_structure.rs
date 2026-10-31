@@ -57,10 +57,10 @@ const INDEX_MAX_LINES: usize = 120;
 const INDEX_MAX_BYTES: usize = 8 * 1024;
 
 /// Exact baseline row count. Lower it when a row drains; never raise it.
-const BASELINE_ROWS: usize = 42;
+const BASELINE_ROWS: usize = 43;
 /// Every baseline path must exist in this commit: the last `main` before the standard.
 /// Moving it forward is legitimate only for a rebase over a newly landed spec.
-const BASELINE_SEAL: &str = "8e6f544ff3b7719d305c27a461b3db84dd5fed5a";
+const BASELINE_SEAL: &str = "231a212a7f8441d54f5fe24793d6fd020f54699e";
 
 /// The ten sections of `docs/agents/spec-template.md`, in order.
 const SECTIONS: [&str; 10] = [
@@ -547,6 +547,8 @@ struct Doc {
     visible: Vec<Option<String>>,
     /// `fenced[i]` marks a line of a fence, or a fence marker.
     fenced: Vec<bool>,
+    /// Each fence's opening line and, when a closing run ends it, that line.
+    fences: Vec<(usize, Option<usize>)>,
     headings: Vec<Heading>,
     bytes: usize,
     /// A fence that never closes hides the rest of the file from every other rule.
@@ -581,6 +583,7 @@ impl Doc {
             lines,
             visible,
             fenced,
+            fences: lexer.fences,
             headings: lexer.headings,
             bytes: text.len(),
             unclosed_fence: lexer.fence.map(|fence| fence.line),
@@ -653,6 +656,8 @@ struct Lexer {
     raw: Option<RawBlock>,
     /// Column of the list item holding an open HTML block, which a blank line ends.
     html: Option<usize>,
+    /// Each fence's opening line and, when a closing run ends it, that line.
+    fences: Vec<(usize, Option<usize>)>,
     headings: Vec<Heading>,
     /// First and last line of each paragraph, the only blocks an inline comment can span.
     paragraphs: Vec<(usize, usize)>,
@@ -678,6 +683,9 @@ impl Lexer {
                     marker == fence.marker && width >= fence.width && closing
                 }) {
                     self.fence = None;
+                    if let Some((_, close)) = self.fences.last_mut() {
+                        *close = Some(index);
+                    }
                 }
                 return Lexed::Fenced;
             }
@@ -775,6 +783,7 @@ impl Lexer {
                     line: index,
                     base,
                 });
+                self.fences.push((index, None));
                 return Lexed::Fenced;
             }
             let Some(marker) = list_marker(body, self.paragraph.is_some())
@@ -3097,28 +3106,31 @@ fn check_directory(
     Ok(())
 }
 
-/// The template's first `markdown` fence, which must itself pass the standard.
+/// The template's one rendered `markdown` fence, which must itself pass the standard. A
+/// fence inside a comment, raw HTML, indented code, a block quote or another fence is not
+/// what a reader copies, so the lexer's fences decide, never the raw lines. A fence that no
+/// closing run ends has no body a reader can copy.
 fn check_template(root: &Path, report: &mut Report) -> Result<(), String> {
     let doc = read_doc(root, TEMPLATE)?;
-    let mut body = String::new();
-    let mut inside = false;
-    for line in &doc.lines {
-        if inside && line.trim() == "```" {
-            break;
-        }
-        if inside {
-            body.push_str(line);
-            body.push('\n');
-        }
-        inside = inside || line.trim() == "```markdown";
-    }
-    let fences = doc.lines.iter().filter(|line| line.trim() == "```markdown");
-    if body.is_empty() || fences.count() != 1 {
+    let openers: Vec<(usize, Option<usize>)> = doc
+        .fences
+        .iter()
+        .copied()
+        .filter(|(open, _)| doc.lines[*open].trim() == "```markdown")
+        .collect();
+    let body: String = match openers.as_slice() {
+        [(open, Some(close))] => doc.lines[open + 1..*close]
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect(),
+        _ => String::new(),
+    };
+    if body.is_empty() {
         report.add(
             Rule::Sections,
             TEMPLATE,
             1,
-            "the template needs exactly one ```markdown fence".to_owned(),
+            "the template needs exactly one rendered ```markdown fence".to_owned(),
         );
         return Ok(());
     }
@@ -3140,9 +3152,69 @@ fn is_markdown_path(path: &str) -> bool {
     })
 }
 
-/// True for text a reader takes for the spec heading, whatever its emphasis or spacing.
+/// `text` as CommonMark renders its character references: a numeric reference becomes
+/// its character (U+FFFD when invalid), and a named reference becomes one space. This gate
+/// carries no HTML5 entity table, and no named entity renders as a letter or a digit, so
+/// a space can hide no word of the signature. A run that is no reference stays literal.
+fn decode_references(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        shown.push_str(&rest[..start]);
+        rest = &rest[start..];
+        match character_reference(rest) {
+            Some((len, decoded)) => {
+                shown.push(decoded);
+                rest = &rest[len..];
+            }
+            None => {
+                shown.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    shown.push_str(rest);
+    shown
+}
+
+/// The character reference that opens `text`, as its byte length and rendered character.
+/// CommonMark 0.31 §6.2: `&#` and 1-7 decimal digits, `&#x` and 1-6 hex digits, or `&`, a
+/// letter and up to 31 more alphanumerics, each closed by `;`.
+fn character_reference(text: &str) -> Option<(usize, char)> {
+    let body = text.strip_prefix('&')?;
+    let end = body.find(';')?;
+    let name = &body[..end];
+    let len = end + 2;
+    if let Some(number) = name.strip_prefix('#') {
+        let (digits, radix, max) = match number.strip_prefix(['x', 'X']) {
+            Some(hex) => (hex, 16, 6),
+            None => (number, 10, 7),
+        };
+        let valid = !digits.is_empty()
+            && digits.len() <= max
+            && digits.chars().all(|digit| digit.is_digit(radix));
+        if !valid {
+            return None;
+        }
+        let code = u32::from_str_radix(digits, radix).ok()?;
+        let decoded = char::from_u32(code)
+            .filter(|decoded| *decoded != '\0')
+            .unwrap_or('\u{fffd}');
+        return Some((len, decoded));
+    }
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && name.len() <= 32
+        && chars.all(|next| next.is_ascii_alphanumeric());
+    valid.then_some((len, ' '))
+}
+
+/// True for text a reader takes for the spec heading, whatever its emphasis, spacing or
+/// character references.
 fn marks_spec(text: &str) -> bool {
-    let plain: String = text
+    let plain: String = decode_references(text)
         .chars()
         .filter(|ch| !"*_`~\\".contains(*ch))
         .flat_map(char::to_lowercase)
