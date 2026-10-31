@@ -7,7 +7,7 @@ docs/specs/gh508-kipc-channel-table.md	897	64352	397	exempt
 docs/specs/gh527-worker-owned-blocking-call-transport.md	1528	113099	476	exempt
 docs/specs/gh531-window-registry-close-state-machine.md	1665	119162	262	exempt
 docs/specs/gh532-first-proof-evidence-rules.md	691	43313	-	exempt
-docs/specs/gh566-corpus-manifest-owner.md	1421	84855	97	exempt
+docs/specs/gh566-corpus-manifest-owner.md	1421	84867	97	exempt
 docs/specs/kel101-windows-named-pipe-dacl.md	-	-	1336	exempt
 docs/specs/kel102-host-guard-enforcement.md	865	60432	3820	exempt
 docs/specs/kel130-retained-filesystem.md	1011	88401	10432	exempt
