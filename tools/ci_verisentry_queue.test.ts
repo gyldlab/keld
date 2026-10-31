@@ -222,6 +222,9 @@ function fixture() {
     refReads: [] as string[],
     prReads: [] as any[],
     compareStatus: "ahead",
+    prStatus: "ahead",
+    prBehindBy: 0,
+    prMergeBase: main,
     comparePhantomHead: false,
     compareTruncateCommits: false,
     compareFails: false,
@@ -330,9 +333,18 @@ function scenario(mutate?: (f: Fixture) => void) {
               files,
               commits: f.compareTruncateCommits ? [] : commits,
               total_commits,
-              status: f.compareStatus,
+              status:
+                f.compareStatus !== "ahead"
+                  ? f.compareStatus
+                  : a.base === main && a.head === head
+                    ? f.prStatus
+                    : "ahead",
               ahead_by: total_commits,
-              behind_by: 0,
+              behind_by: a.base === main && a.head === head ? f.prBehindBy : 0,
+              merge_base_commit: {
+                sha:
+                  a.base === main && a.head === head ? f.prMergeBase : a.base,
+              },
               ...(f.comparePhantomHead ? { head_commit: { sha: a.head } } : {}),
             },
           };
@@ -445,7 +457,7 @@ test("positive: full queue attestation publishes real App5550363 on staged commi
     ci_run_id: String(runId),
     ci_job_id: "124499000001",
   });
-  expect(s.counts().compareCount).toBe(3); // base..head, base..stage, head..stage
+  expect(s.counts().compareCount).toBe(2); // main..head and main..stage; stage second-parent edge is trusted main import
   await s.fresh();
   expect(s.outputs.ready).toBe("true");
   await s.publish();
@@ -880,14 +892,14 @@ test("prewrite tree-drift and grouped second PR refuse both source and App gates
     f.previewTree = "f".repeat(40);
   });
   await expect(fresh.fresh()).rejects.toThrow(
-    /Queued commit or PR test-merge preview changed/,
+    /Queue stage no longer matches the singleton PR preview/,
   );
   const publish = scenario((f) => {
     f.pr.merge_commit_sha = previewSha;
     f.stageTree = "f".repeat(40);
   });
   await expect(publish.publish()).rejects.toThrow(
-    /exact staged test-merge SHA/,
+    /queue tree differing from current PR preview/,
   );
   expect(publish.written).toHaveLength(0);
 });
@@ -1489,6 +1501,93 @@ test("fabricated Compare Commits head_commit cannot replace missing actual commi
   expect(falseHead.written).toHaveLength(0);
 });
 
+test("unrebased benign PR remains admitted when main advances", async () => {
+  // GitHub Compare main...head now reports 12/26 ahead/behind on a real PR.
+  // The exact queue stage still has first parent = current main.
+  const oldBase = "8".repeat(40);
+  const s = scenario((f) => {
+    f.prStatus = "diverged";
+    f.prBehindBy = 26;
+    f.prMergeBase = oldBase;
+    f.prCommits = [{ sha: head, parents: [{ sha: oldBase }] }];
+    f.stageCommits = [
+      { sha: head, parents: [{ sha: oldBase }] },
+      { sha: stage, parents: [{ sha: main }, { sha: head }] },
+    ];
+  });
+  await expect(s.admit()).resolves.toBeUndefined();
+  expect(s.counts().compareCount).toBe(3); // diverged head, old-base commit edge, staged first-parent net
+  await expect(s.fresh()).resolves.toBeUndefined();
+  await expect(s.publish()).resolves.toBeUndefined();
+  expect(s.written).toHaveLength(1);
+  expect(s.written[0].head_sha).toBe(stage);
+});
+
+test("trusted main protected-file update is not mistaken for PR authority", async () => {
+  const oldBase = "8".repeat(40);
+  const s = scenario((f) => {
+    f.prStatus = "diverged";
+    f.prBehindBy = 26;
+    f.prMergeBase = oldBase;
+    f.prCommits = [{ sha: head, parents: [{ sha: oldBase }] }];
+    f.stageCommits = [
+      { sha: head, parents: [{ sha: oldBase }] },
+      { sha: stage, parents: [{ sha: main }, { sha: head }] },
+    ];
+    // GitHub head..stage diff includes a protected file changed only by
+    // trusted main since the PR was branched. main..stage remains docs-only.
+    f.commitEdges[`${head}:${stage}`] = [danger];
+  });
+  await expect(s.admit()).resolves.toBeUndefined();
+  await expect(s.fresh()).resolves.toBeUndefined();
+  await expect(s.publish()).resolves.toBeUndefined();
+  expect(s.written).toHaveLength(1);
+});
+
+test("diverged PR still rejects protected files in an old-base commit edge", async () => {
+  const oldBase = "8".repeat(40);
+  const s = scenario((f) => {
+    f.prStatus = "diverged";
+    f.prBehindBy = 26;
+    f.prMergeBase = oldBase;
+    f.prCommits = [{ sha: head, parents: [{ sha: oldBase }] }];
+    f.stageCommits = [
+      { sha: head, parents: [{ sha: oldBase }] },
+      { sha: stage, parents: [{ sha: main }, { sha: head }] },
+    ];
+    f.commitEdges[`${oldBase}:${head}`] = [danger];
+  });
+  await expect(s.admit()).rejects.toThrow(
+    /Protected CI authority touched in commit history/,
+  );
+  expect(s.written).toHaveLength(0);
+});
+
+test("inconsistent PR compare divergence or merge-base metadata fails closed", async () => {
+  const zeroBehind = scenario((f) => {
+    f.prStatus = "diverged";
+    f.prMergeBase = "8".repeat(40);
+  });
+  await expect(zeroBehind.admit()).rejects.toThrow(
+    /Immutable comparison file census incomplete/,
+  );
+  const invalidMergeBase = scenario((f) => {
+    f.prStatus = "diverged";
+    f.prBehindBy = 2;
+    f.prMergeBase = "invalid";
+  });
+  await expect(invalidMergeBase.admit()).rejects.toThrow(
+    /Immutable comparison file census incomplete/,
+  );
+  const aheadWithBehind = scenario((f) => {
+    f.prStatus = "ahead";
+    f.prBehindBy = 2;
+  });
+  await expect(aheadWithBehind.admit()).rejects.toThrow(
+    /Immutable comparison file census incomplete/,
+  );
+});
+
 test("unexpected Compare Commits ancestry status fails closed with no App publication", async () => {
   const diverged = scenario((f) => {
     f.compareStatus = "diverged";
@@ -1499,17 +1598,17 @@ test("unexpected Compare Commits ancestry status fails closed with no App public
   expect(diverged.written).toHaveLength(0);
 });
 
-test("KELD stage must differ from PR HEAD and equal its current live merge preview SHA", async () => {
+test("KELD stage may differ from regenerated preview SHA but not from PR HEAD", async () => {
+  // GitHub can re-mint a preview SHA while retaining identical parents/tree.
+  // Only a live queue ref + exact stage parent/tree attestation grants authority.
   const regenerated = scenario((f) => {
     f.pr.merge_commit_sha = previewSha;
   });
-  await expect(regenerated.admit()).rejects.toThrow(/exact PR test-merge SHA/);
-  await expect(regenerated.fresh()).rejects.toThrow(
-    /Queued commit or PR test-merge preview changed/,
-  );
-  await expect(regenerated.publish()).rejects.toThrow(
-    /exact staged test-merge SHA/,
-  );
+  await expect(regenerated.admit()).resolves.toBeUndefined();
+  await expect(regenerated.fresh()).resolves.toBeUndefined();
+  await expect(regenerated.publish()).resolves.toBeUndefined();
+  expect(regenerated.written).toHaveLength(1);
+  expect(regenerated.written[0].head_sha).toBe(stage);
   const headStage = scenario((f) => {
     f.entry.pullRequest.headRefOid = stage;
     f.pr.head.sha = stage;

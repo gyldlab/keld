@@ -197,11 +197,11 @@ jobs:
                 pr.changed_files < 1 || pr.changed_files >= 300) {
               throw Error('Queue PR moved, changed identity or has unverifiable changed-file count');
             }
-            // An entry is considered singleton only if the staged tree equals the
-            // current GitHub-generated standalone merge of this exact PR against main.
-            // This catches preceding/batched PR changes even when queue metadata is partial.
-            if (!isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== stage)
-              throw Error('KELD queue stage is not the current exact PR test-merge SHA');
+            // Bind a singleton queue stage by its authenticated live queue ref,
+            // exact parents and tree, not the synthetic PR preview commit SHA.
+            // GitHub can regenerate a preview SHA without changing its tree.
+            if (!isSha(pr.merge_commit_sha))
+              throw Error('KELD queue stage lacks a current PR test-merge SHA');
             const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
             if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
                 preview.parents.length !== 2 || preview.parents[0]?.sha !== main ||
@@ -209,13 +209,12 @@ jobs:
                 preview.commit?.tree?.sha !== commit.commit.tree.sha) {
               throw Error('Staged queue tree differs from singleton PR test-merge tree');
             }
-            // The staged commit MUST have exactly one parent: main. A legacy
-            // two-parent PR test-merge commit could already have an App SUCCESS from
-            // the original verifier; accepting it as a queue stage would permit replay.
-            // GitHub Compare Commits returns the *net* diff, which can hide a protected
-            // path modified and later reverted. Enumerate every bounded branch commit and
-            // compare each parent edge; this rejects transient authority modifications and
-            // stacked queue histories whose final tree alone looks benign.
+            // The stage must have exact parents [current main, current PR head].
+            // Its separate App check name and live queue-entry identity prevent
+            // replay of a legacy PR-preview check on a similarly shaped commit.
+            // Compare Commits returns the *net* diff, which can hide a protected
+            // path modified and later reverted. Enumerate every bounded branch commit
+            // and compare each parent edge, including divergent PR histories.
             const allHistoryPaths = new Set();
             const seenCommits = new Set();
             const inspectFiles = (files, name) => {
@@ -239,9 +238,21 @@ jobs:
             };
             const inspect = async (tip, expectedCount) => {
               const diff = (await github.rest.repos.compareCommits({owner,repo,base:main,head:tip,page:1,per_page:100})).data;
-              if (diff?.base_commit?.sha !== main || diff?.status !== 'ahead' ||
+              // GitHub queues unchanged PR heads after main advances. Only the
+              // head comparison may diverge; its unique ahead commits remain
+              // bounded and are checked edge-by-edge. The staged comparison must
+              // descend directly from current main with no behind commits.
+              const headAhead = tip === head && diff?.status === 'ahead' &&
+                diff.behind_by === 0 && diff.merge_base_commit?.sha === main;
+              const headDiverged = tip === head && diff?.status === 'diverged' &&
+                Number.isSafeInteger(diff.behind_by) && diff.behind_by > 0 &&
+                isSha(diff.merge_base_commit?.sha) && diff.merge_base_commit.sha !== main;
+              const stageAhead = tip === stage && diff?.status === 'ahead' &&
+                diff.behind_by === 0 && diff.merge_base_commit?.sha === main;
+              if (diff?.base_commit?.sha !== main ||
+                  !(headAhead || headDiverged || stageAhead) ||
                   !Number.isSafeInteger(diff.ahead_by) || diff.ahead_by < 1 ||
-                  diff.behind_by !== 0 || diff.ahead_by !== diff.total_commits ||
+                  diff.ahead_by !== diff.total_commits ||
                   !Array.isArray(diff.files) || diff.files.length < 1 || diff.files.length >= 300 ||
                   (expectedCount !== null && diff.files.length !== expectedCount)) {
                 throw Error('Immutable comparison file census incomplete');
@@ -275,6 +286,14 @@ jobs:
                 // proofs remain valid across those two graphs, without duplicate queries.
                 if (seenCommits.has(c.sha)) continue;
                 for (const parent of c.parents) {
+                  // On the authenticated final [main, head] merge, the second
+                  // parent head..stage diff imports trusted main changes.
+                  // Only main..stage represents net changes to protected main.
+                  // Do not misclassify trusted upstream edits as PR authority.
+                  if (tip === stage && c.sha === stage &&
+                      c.parents.length === 2 && c.parents[0]?.sha === main &&
+                      c.parents[1]?.sha === head && parent.sha === head)
+                    continue;
                   const edge = parent.sha === main && c.sha === tip
                     ? diff
                     : (await github.rest.repos.compareCommits({
@@ -536,7 +555,7 @@ jobs:
                 staged.parents[0]?.sha !== expected.base ||
                 staged.parents[1]?.sha !== expected.head ||
                 expected.stage === expected.head ||
-                !isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== expected.stage) {
+                !isSha(pr.merge_commit_sha)) {
               throw Error('Queued commit or PR test-merge preview changed');
             }
             const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
@@ -668,8 +687,8 @@ jobs:
                 pr.base?.repo?.full_name !== 'gyldlab/keld' || pr.head?.sha !== head) {
               throw Error('App publisher refuses moved queue PR');
             }
-            if (!isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== stage)
-              throw Error('Queue PR lost its exact staged test-merge SHA');
+            if (!isSha(pr.merge_commit_sha))
+              throw Error('Queue PR lost its verifiable test-merge preview');
             const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
             if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
                 preview.parents.length !== 2 || preview.parents[0]?.sha !== base ||
