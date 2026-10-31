@@ -166,6 +166,9 @@ Recipes are grouped by developer task and lifecycle stage:
     `just product-status-test`: renders the Markdown view from the canonical TSV ledger.
   - `just doc-placeholders-check` · `just doc-placeholders-test`: enforces that no template
     placeholders reach checked-in prose.
+  - `just spec-structure` · `just spec-structure-test`: enforces the spec standard in
+    [`.agents/specs.md`](../../.agents/specs.md): size caps, layout, stable IDs, links and
+    the landed-file ratchet.
   - `just mermaid-check` · `just mermaid-test` · `just mermaid-render-check`: validates
     Mermaid diagrams and renders SVG assets via container.
 - **Managed worktrees & session helpers:**
@@ -441,7 +444,7 @@ is the process of record. Condensed:
    Then grep the codebase; a surprising amount already exists.
 2. **Spec gate** — bigger than a bug fix and no approved spec? Write one from
    [`docs/agents/spec-template.md`](../agents/spec-template.md) into
-   `docs/specs/<kebab-name>.md` and stop for human approval. Implementation starts only
+   `docs/specs/<id>-<slug>.md` under [`.agents/specs.md`](../../.agents/specs.md) and stop for human approval. Implementation starts only
    at `Status: approved`. Existing specs in `docs/specs/` are examples of the required
    shape, not implicit approval for a new implementation. Bug fixes skip the spec but
    not the regression test.

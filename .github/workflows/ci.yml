@@ -929,6 +929,15 @@ jobs:
           target/doc-placeholders/doc-placeholders-test
           rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
           target/doc-placeholders/doc-placeholders check .
+      # spec-structure reads the baseline seal and spec pins from Git, which is why
+      # this job keeps fetch-depth: 0. A missing commit fails the gate (#1321).
+      - name: Spec structure contracts
+        run: |
+          mkdir -p target/spec-structure
+          rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test
+          target/spec-structure/spec-structure-test
+          rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure
+          target/spec-structure/spec-structure check .
       # The `hygiene` recipe's hello-command regression reads the justfile and
       # two onboarding docs, both of which select this job (#650).
       - name: Hello command contract

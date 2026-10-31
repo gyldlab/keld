@@ -126,6 +126,15 @@ const DOC_PLACEHOLDER_COMMANDS: &[&str] = &[
     "target/doc-placeholders/doc-placeholders check .",
 ];
 
+/// The spec-structure recipe pair, run by the hosted hygiene job (#1321).
+const SPEC_STRUCTURE_COMMANDS: &[&str] = &[
+    "mkdir -p target/spec-structure",
+    "rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test",
+    "target/spec-structure/spec-structure-test",
+    "rustc --edition=2024 -D warnings tools/spec_structure.rs -o target/spec-structure/spec-structure",
+    "target/spec-structure/spec-structure check .",
+];
+
 /// The `hygiene` recipe's hello-command regression, run by the hosted hygiene job (#650).
 const HELLO_COMMAND_COMMANDS: &[&str] = &["python3 -B tools/test_hello_command.py"];
 
@@ -1879,6 +1888,11 @@ fn check_doc_placeholders_step(text: &str) -> Result<(), String> {
     )
 }
 
+/// spec-structure runs whenever the hygiene job runs; `docs/*` selects it (#1321).
+fn check_spec_structure_step(text: &str) -> Result<(), String> {
+    check_hygiene_contract_step(text, "Spec structure contracts", SPEC_STRUCTURE_COMMANDS)
+}
+
 /// The hello-command regression reads the justfile and onboarding docs (#650).
 fn check_hello_command_step(text: &str) -> Result<(), String> {
     check_hygiene_contract_step(text, "Hello command contract", HELLO_COMMAND_COMMANDS)
@@ -2687,6 +2701,7 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_release_updater_helper_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_doc_placeholders_step(&text)?;
+    check_spec_structure_step(&text)?;
     check_hello_command_step(&text)?;
     check_agent_context_step(&text)?;
     check_public_audit_step(&text)?;
