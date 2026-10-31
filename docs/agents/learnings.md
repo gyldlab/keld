@@ -196,3 +196,4 @@ agents MUST use bounded area queries rather than a full read.
 - 2026-10-28 [compat] Host Created precedes wrapper ownership. Captured registries and confirmed cleanup protect unpublished new Creates; adopted/published owners stay. Native post-effect injection starts after actual Created, not before correlation allocation. (evidence: PR1181 r4396003287; browser-window-ownership.test.ts; facade_window native test)
 - 2026-10-28 [ci] `CLAUDECODE=1` hides Bun `(pass)` lines, so keld-compat corpus admission fails locally; run gates with `env -u CLAUDECODE`. (evidence: #1073)
 - 2026-10-30 [test] Bun38afee defaults: file JIT is concurrent; --eval JIT is synchronous. (GH1287)
+- 2026-10-31 [ci] ci-inputs digests stayed fresh on main (`--check` gated CI) and never widened a later diff; v2 routes from diff + base tree. (evidence: GH-1275)
