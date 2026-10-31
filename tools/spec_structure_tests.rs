@@ -4313,6 +4313,11 @@ fn the_lexer_follows_github_on_these_blocks() {
     let heads = |text: &str| Doc::parse("x.md", text).headings().len();
     assert_eq!(heads("| a |\n|---|\n===\n"), 0, "`===` is a row");
     assert_eq!(
+        heads("a\n> b\n---\n"),
+        0,
+        "a quote ends the paragraph before it"
+    );
+    assert_eq!(
         heads("[a]: b\n===\n"),
         0,
         "definitions leave nothing to underline"
@@ -4832,9 +4837,20 @@ fn a_rendered_line_keeps_its_role() {
         Some("y")
     );
     assert_eq!(
+        value_of("Expected *RED: y", "Expected RED", Spelling::Header).as_deref(),
+        Some("y"),
+        "a literal mark inside a label"
+    );
+    assert_eq!(
         value_of("Pin:** y", "Pin", Spelling::Header).as_deref(),
         Some("y")
     );
+    // An invisible character stops the lexer seeing a list, and the reader still sees one.
+    assert_eq!(
+        value_of("\u{200b}- - - Pin: y", "Pin", Spelling::Header).as_deref(),
+        Some("y")
+    );
+    assert_eq!(defined_id("*AC-1: a literal mark"), Some(("AC", 1)));
     let first = |text: &str| {
         let doc = Doc::parse("x.md", text);
         field_statements(&doc, 0, doc.line_count(), None)
