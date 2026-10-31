@@ -1,0 +1,37 @@
+# Disposable GH-1341 queue preflight: this status is NEVER emitted by a PR-head event.
+# Only the synthetic merge SHA's isolated branch push or a native merge group may mint it.
+name: GH-1341 isolated queue preflight
+
+on:
+  push:
+    branches:
+      - verisentry-queue-preflight-synth-w5-20261031
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  queue-preflight-probe:
+    name: queue-preflight-probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert trusted event shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              [[ "$GITHUB_REF" == "refs/heads/verisentry-queue-preflight-synth-w5-20261031" ]]
+              ;;
+            merge_group)
+              [[ "$GITHUB_REF" == refs/heads/gh-readonly-queue/verisentry-queue-preflight-base-w5-20261031/* ]]
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf 'event=%s ref=%s sha=%s\n' "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$GITHUB_SHA"
