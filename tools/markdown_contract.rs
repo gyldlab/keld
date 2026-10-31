@@ -15,7 +15,7 @@ pub(crate) fn fence_marker(line: &str) -> Option<(u8, usize, bool)> {
     let tail = &trimmed[width..];
     // A backtick in the info string makes the line inline code, not a fence.
     (width >= 3 && !(marker == b'`' && tail.contains('`')))
-        .then(|| (marker, width, tail.trim().is_empty()))
+        .then(|| (marker, width, tail.trim_matches([' ', '\t']).is_empty()))
 }
 
 /// Removes struck-through text because it is not binding visible prose.
@@ -127,6 +127,11 @@ mod tests {
         assert_eq!(fence_marker("````  "), Some((b'`', 4, true)));
         assert_eq!(fence_marker("```a```"), None, "one line of inline code");
         assert_eq!(fence_marker("~~~ a`b"), Some((b'~', 3, false)));
+        assert_eq!(
+            fence_marker("```\u{a0}"),
+            Some((b'`', 3, false)),
+            "a no-break space is text"
+        );
     }
 
     #[test]

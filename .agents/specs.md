@@ -1,8 +1,8 @@
 # Spec standard
 
-Load to write, change or review a `docs/specs/` spec. Copy source:
+Load for any `docs/specs/` spec. Copy source:
 [`spec-template.md`](../docs/agents/spec-template.md). `just spec-structure` enforces
-the rest; § Writing and § Authoring checklist are for review.
+the rest but § Writing and § Authoring checklist.
 
 ## Size
 
@@ -14,7 +14,7 @@ A spec file MUST stay within:
 | Bytes | 40 KiB | 500 lines at p80, 82 bytes |
 | Line | 400 chars | Over prose p99 (303), table p90 (380). Fences count |
 
-A table is an index. Put AC, decision and blocker text under headings.
+Put AC, decision and blocker text under headings.
 
 ## Layout
 
@@ -140,7 +140,9 @@ Agents MUST NOT split a spec to hide text, or lower a value by deleting a contra
 
 ## Not enforced
 
+Rules read the page: an unresolved `&name;` in a heading or label fails.
+
 Quote accuracy, labels, reworded non-values, cited line content, root-level and
-extensionless citations, `@sha` commits absent from the clone, text split across lines,
-raw HTML links, `<details>` text, renumbered IDs, lower-case body labels, reworded,
-encoded, linked, tabled or quoted fields.
+extensionless citations, absent `@sha` commits, homoglyphs, fields split across lines,
+raw HTML links, HTML block text, renumbered IDs, lower-case body labels, reworded, tabled
+or quoted fields.
