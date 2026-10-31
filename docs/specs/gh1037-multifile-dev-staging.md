@@ -66,6 +66,22 @@ assumption and all-callbacks reporter were corrected in retained later commits.
 The changed-source verification passed2/2. Both attempts remain in the evidence
 archive; a later pass does not replace the original failed result.
 
+External [review6543505060](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543505060)
+found that the later159 renderer predicate did not enforce its relative-resource
+claims. Two actual old159 HTML-only one-fault controls confirmed this: removing
+only the stylesheet href assignment, or separately only the image src assignment,
+still passed the unchanged Rust predicate and inline controls. This does not
+falsify the independently recorded native baseline above; it does falsify that
+predicate's ability to guard the probe.
+
+The R1 correction records live DOM attribute presence/value, reflected href/src,
+node insertion/type/owner, document readiness and actual resource effects.
+Dedicated predicates require both relative target assignments and the exact
+measured inline-document baseline, separately from inline positives. DOM
+assignment/insertion is not claimed to be a network request, and CSS pending
+remains pending. New-source pure predicates, actual one-fault rejection controls
+and external re-review remain required; the old2/2 is not their proof.
+
 ## 3. Acceptance criteria (binary, each becomes a test)
 
 1. **Ordinary sibling:** the normal producer stages a project whose configured

@@ -30,7 +30,20 @@
       return [
         state.css, state.image, relative.naturalWidth, color("relative-probe"),
         state.control, control.naturalWidth, color("inline-control"),
-        encodeURIComponent(document.baseURI)
+        encodeURIComponent(document.baseURI),
+        sheet.hasAttribute("href") ? "1" : "0",
+        encodeURIComponent(sheet.getAttribute("href") ?? "UNASSIGNED"),
+        encodeURIComponent(sheet.href),
+        sheet.isConnected ? "1" : "0",
+        encodeURIComponent(sheet.rel), sheet.localName,
+        sheet.ownerDocument === document ? "1" : "0",
+        relative.hasAttribute("src") ? "1" : "0",
+        encodeURIComponent(relative.getAttribute("src") ?? "UNASSIGNED"),
+        encodeURIComponent(relative.src),
+        relative.isConnected ? "1" : "0",
+        relative.localName, relative.ownerDocument === document ? "1" : "0",
+        document.readyState, sheet.disabled ? "1" : "0",
+        relative.complete ? "1" : "0"
       ].join("/");
     }
     sheet.addEventListener("load", () => { state.css = "load"; }, { once: true });

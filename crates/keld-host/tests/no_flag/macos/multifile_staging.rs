@@ -6,12 +6,15 @@
 mod fixture;
 #[path = "multifile_staging/lifecycle.rs"]
 mod lifecycle;
+#[path = "multifile_staging/renderer_oracle.rs"]
+mod renderer_oracle;
 
 use crate::support::EVENT_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::process::session_dirs_for;
 use crate::support::renderer::Beacon;
 use lifecycle::BoundRole;
+use renderer_oracle::RendererSnapshot;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
@@ -137,7 +140,7 @@ fn request(beacon: &mut Beacon, label: &str) -> String {
 }
 
 #[test]
-fn shipping_stage_calibrates_native_html_script_load_and_relative_asset_states() {
+fn shipping_stage_enforces_native_relative_asset_targets_and_baseline() {
     let fixture = fixture::project("gh1037-renderer-assets");
     fixture::assert_original_inputs_exist(&fixture);
     let mut parsed = Beacon::bind("GH1037_PARSE");
@@ -174,30 +177,23 @@ fn shipping_stage_calibrates_native_html_script_load_and_relative_asset_states()
         .expect("load observer")
         .join()
         .expect("load observer joins");
-    let fields: Vec<_> = request_line
-        .split_whitespace()
-        .nth(1)
-        .expect("snapshot URI")
-        .split('/')
-        .collect();
-    assert_eq!(
-        fields.len(),
-        10,
-        "one explicit state per measured field: {request_line}"
-    );
-    assert_eq!(fields[1], "GH1037_ASSETS");
-    assert!(["load", "error", "pending"].contains(&fields[2]));
-    assert!(["load", "error", "pending"].contains(&fields[3]));
-    assert_eq!(
-        fields[6], "load",
-        "inline image positive control: {request_line}"
-    );
-    assert_eq!(fields[7], "3", "inline image natural width: {request_line}");
-    assert_eq!(
-        fields[8], "19-73-109",
-        "inline style positive control: {request_line}"
-    );
-    // Record pending as pending. No event/status timeout or data control can
-    // manufacture a relative-resource failure or a supported-origin claim.
+    let snapshot = RendererSnapshot::parse(request_line).expect("live DOM/load snapshot");
+    let inline = snapshot.inline_controls();
+    let targets = snapshot.relative_targets();
+    let baseline = snapshot.measured_baseline();
+    eprintln!("GH1037_INLINE_POSITIVES {inline:?}");
+    eprintln!("GH1037_DOM_TARGET_ORACLE {targets:?}");
+    eprintln!("GH1037_WINDOW_LOAD_BASELINE {baseline:?}");
+    // Complete the actual authenticated lifecycle even when a diagnostic
+    // mutation is rejected. A passing inline control cannot fill a target.
+    let host_pid = role.host_pid;
     let _capture = role.quit(&stage);
+    eprintln!("GH1037_RENDERER_ORDERLY_CLEANUP host={host_pid}");
+    assert_eq!(inline, Ok(()), "inline controls: {snapshot:?}");
+    assert_eq!(targets, Ok(()), "dedicated DOM target oracle: {snapshot:?}");
+    assert_eq!(
+        baseline,
+        Ok(()),
+        "stated window-load baseline: {snapshot:?}"
+    );
 }
