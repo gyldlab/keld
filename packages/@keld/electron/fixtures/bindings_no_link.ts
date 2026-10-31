@@ -3,12 +3,13 @@
  *
  * `LifecycleLink.connect`, the one funnel every Host path of the facade uses
  * (`@keld/api/src/app.ts` ensureLink), is replaced by a recorder *before* the facade
- * loads. The observer then imports the facade and touches every own member of the ten
- * link-time bindings: it calls each function with no arguments, reads each accessor,
- * constructs each class with `{}` and, where construction succeeds, touches the
- * prototype members on that instance. The parent sets `KELD_APP_LINK`, so a stray
- * `ensureLink()` reaches the recorder instead of failing early on the unset variable.
- * It prints one `GH565_NO_LINK` line and exits 0, or exits 2 when a binding is missing.
+ * loads. The observer then imports the facade and touches every own member of the nine
+ * link-time bindings (`ipcMain` is PR #1365's, spec D5): it calls each function with no
+ * arguments, reads each accessor, constructs each class with `{}` and, where construction
+ * succeeds, touches the prototype members on that instance. The parent sets
+ * `KELD_APP_LINK`, so a stray `ensureLink()` reaches the recorder instead of failing early
+ * on the unset variable. It prints one `GH565_NO_LINK` line and exits 0, or exits 2 when a
+ * binding is missing.
  * `src/module-bindings.test.ts` holds the oracle; this file derives nothing from the
  * member table under test.
  */
@@ -33,7 +34,6 @@ const BINDINGS = [
   "clipboard",
   "nativeImage",
   "nativeTheme",
-  "ipcMain",
 ] as const;
 
 /** Own names every function has; they are not Electron members. */
