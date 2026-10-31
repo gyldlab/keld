@@ -169,9 +169,8 @@ test("button iteration snapshots the own data length without invoking get traps"
       return Reflect.getOwnPropertyDescriptor(target, key);
     },
   });
-  expect(normalizeMessageOptions({ message: "hi", buttons }).buttons).toEqual([
-    "Yes",
-  ]);
+  const normalized = normalizeMessageOptions({ message: "hi", buttons });
+  expect(normalized.buttons).toEqual(["Yes"]);
   expect(lengthReads).toBe(0);
   expect(elementInspections).toBe(1);
 });
@@ -224,7 +223,9 @@ test("revoked and throwing inspection traps become canonical Message refusal", (
       "KELD-COMPAT-010",
     );
   }
-  expect(
-    normalizeMessageOptions({ message: "healthy", buttons: ["Yes", "No"] }).buttons,
-  ).toEqual(["Yes", "No"]);
+  const healthy = normalizeMessageOptions({
+    message: "healthy",
+    buttons: ["Yes", "No"],
+  });
+  expect(healthy.buttons).toEqual(["Yes", "No"]);
 });
