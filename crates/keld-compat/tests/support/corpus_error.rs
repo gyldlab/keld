@@ -178,6 +178,10 @@ pub enum CorpusError {
     },
     /// A product run was requested for a non-product corpus.
     NotProductPanel { corpus_id: String },
+    /// A product receipt has no covered cells (GH-587 C15).
+    EmptyProductReceipt { corpus_id: String },
+    /// A product receipt lists the same cell more than once (GH-587 C15).
+    DuplicateProductReceiptCell { corpus_id: String, cell: String },
     /// A product receipt cell has no record, so the run would be dropped (gh532 AC8).
     MissingProductRecord {
         corpus_id: String,
@@ -438,6 +442,14 @@ impl fmt::Display for CorpusError {
             Self::NotProductPanel { corpus_id } => write!(
                 f,
                 "{corpus_id}: product runs exist only for product corpora. Validate harness runs instead."
+            ),
+            Self::EmptyProductReceipt { corpus_id } => write!(
+                f,
+                "{corpus_id}: product receipt has no cells (GH-587 C15). Supply a verified nonempty set of observed product cells before validating records."
+            ),
+            Self::DuplicateProductReceiptCell { corpus_id, cell } => write!(
+                f,
+                "{corpus_id}: product receipt repeats cell {cell} (GH-587 C15). Each observed product cell must appear exactly once in the receipt."
             ),
             Self::MissingProductRecord {
                 corpus_id,
