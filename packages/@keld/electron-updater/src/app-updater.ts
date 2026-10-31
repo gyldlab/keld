@@ -100,7 +100,9 @@ export class AppUpdater extends EventEmitter<AppUpdaterEventMap> {
    * Upstream's packaged gate (`:253-256`, `:277-284`): not packaged resolves
    * `null` with no event. Packaged with no host updater is refused with one
    * `error` and the same promise rejecting, in upstream's catch order
-   * (`:265-268`). No `checking-for-update`, no feed.
+   * (`:269-272`). No `checking-for-update`, no feed. A failure reading the
+   * packaged fact propagates synchronously before a Promise exists, as in
+   * upstream's gate; it emits no updater event and is not a false fact.
    */
   checkForUpdates(): Promise<UpdateCheckResult | null> {
     if (!this.#isUpdaterActive()) {
@@ -117,7 +119,7 @@ export class AppUpdater extends EventEmitter<AppUpdaterEventMap> {
     });
   }
 
-  /** Same two outcomes as `checkForUpdates` (`:286-300`); nothing is ever downloaded. */
+  /** Same outcomes and synchronous fact-read failure as `checkForUpdates` (`:286-300`). */
   checkForUpdatesAndNotify(
     _downloadNotification?: DownloadNotification,
   ): Promise<UpdateCheckResult | null> {

@@ -14,9 +14,10 @@ implementation on its branch is review material until the exact text is approved
 
 ## 1. Goal & non-goals
 
-drawio-desktop's main process does `import elecUpPkg from 'electron-updater'; const {autoUpdater}
-= elecUpPkg` (`electron.js:17-18`) and, before any guard, assigns `autoUpdater.logger`, writes
-through it (`:81-83`), sets `autoDownload`/`autoInstallOnAppQuit` (`:85-86`), registers six
+drawio-desktop's main process default-imports `elecUpPkg` from `electron-updater` and
+destructures its `autoUpdater` property (`electron.js:17-18`). Before any guard, it assigns
+`autoUpdater.logger`, writes through it (`:81-83`), sets `autoDownload`/`autoInstallOnAppQuit`
+(`:85-86`), registers six
 listeners at module top level (`:2228-2355`) and calls `setFeedURL` inside `whenReady`
 (`:2078-2083`) outside its `disableUpdate` guard. Real electron-updater needs Electron's `net`
 session, a feed and a host updater; none exists under Keld, and a throwing or missing member
@@ -61,7 +62,7 @@ Non-goals (owners in parentheses):
 Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named otherwise.
 
 1. Given a Bun 1.4.4 role, when `import pkg from "@keld/electron-updater"` runs and
-   `const {autoUpdater} = pkg` follows, then `autoUpdater` is an `EventEmitter` and the same
+   its `autoUpdater` property is destructured, then `autoUpdater` is an `EventEmitter` and the same
    object as the named export `autoUpdater`, and `pkg.AppUpdater`/`pkg.NoOpLogger` exist
    (upstream `out/main.js` module object).
 2. Given a probe that refuses every socket, Worker, child process and file write (`fetch`,
@@ -84,17 +85,22 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
 6. `getFeedURL()` returns exactly `"Deprecated. Do not use it."` (`:227-229`).
 7. Given the application facts report not packaged, when `checkForUpdates()` is called, then it
    resolves `null`, emits no event and logs upstream's skip line through the assigned logger
-   (`:277-284`). Today the Electron facade has no `isPackaged`, which reads as not packaged
-   exactly as upstream's `=== true` comparison does (`out/ElectronAppAdapter.js`
-   `get isPackaged`); `keld dev` is unpackaged (#452).
+   (`:277-284`). At the source basis, the Electron facade has no `isPackaged`; the bridge
+   follows upstream's `=== true` comparison (`out/ElectronAppAdapter.js:19-20`). This
+   absent-property snapshot is not proof of a Host-delivered development `false` fact.
+   Producing and delivering that fact remains #452's responsibility.
 8. Error case: given the application facts report packaged and no host updater exists, when
    `checkForUpdates()` is called, then exactly one `error` event fires carrying an `Error`
    whose `code` is `KELD-COMPAT-050` (a registry code outside `KELD-COMPAT-001..009` and not a
    `KELD-UPDATE-*` host code), whose message starts with that code and states the fix, with
-   upstream's second argument shape `Cannot check for updates: …` (`:265-268`); then the
+   upstream's second argument shape `Cannot check for updates: …` (`:269-272`); then the
    returned promise rejects with the identical `Error` object. `checking-for-update` never
-   fires, no feed is contacted. `checkForUpdatesAndNotify()` has the same two outcomes
-   (`:286-300`).
+   fires, no feed is contacted. `checkForUpdatesAndNotify()` has the same outcomes after
+   the fact read succeeds (`:286-300`). If the `AppAdapter.isPackaged` getter throws, both
+   methods instead propagate the identical error and its code synchronously, before a Promise
+   is returned, with no updater event, log or I/O. Upstream reads the getter outside its
+   Promise catch (`:253-255`, `:277-278`, `:286-287`). The adapter neither converts that
+   failure to `false` nor replaces it with the packaged no-host-updater refusal.
 9. `downloadUpdate()` before any offer dispatches one `error` with message
    `Please check update first` and rejects with the same `Error` (`:435-441`, `dispatchError`
    `:476-478`). `quitAndInstall()` with nothing staged logs `Install on explicit quitAndInstall`,
@@ -135,10 +141,11 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
   process's state; the only outputs are `EventEmitter` events, promise settlements and lines
   through the application-assigned logger.
 - Lifecycle and failure: one `EventEmitter` is constructed at import; there is no steady-state
-  work, timer or queue. Every refusal is the same shape upstream uses (one `error`, then the
-  promise rejects), so draw.io's existing handlers (`:124-141`, `:2228`) stay the owners of the
-  user-visible consequence. An `error` listener that throws propagates to the caller exactly as
-  under upstream's `EventEmitter`.
+  work, timer or queue. A packaged check refusal uses upstream's one `error` followed by a
+  rejected Promise. A failure reading the packaged fact propagates synchronously before that
+  Promise exists. draw.io's existing `safeUpdaterCall` handles both throws and rejections
+  (`:124-141`); its handlers (`:2228`) own the user-visible consequence. An `error` listener
+  that throws propagates to the caller exactly as under upstream's `EventEmitter`.
 - Existing options evaluated:
   - Real electron-updater 6.8.9: needs Electron's `net`/`session`, a feed and a platform
     installer path; under Keld it would contact `api.github.com` at the first check and fail at
@@ -305,6 +312,7 @@ of the form `electron-updater.<member>.<observable>` so #580's cells can map to 
 | 5, 6 | `app-updater.test.ts`: `electron-updater.set-feed-url.no-throw-no-effect`, `electron-updater.get-feed-url.deprecated-literal` | `undefined` return; exact literal; zero events; probe in replay | `throw` inside `setFeedURL` |
 | 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.unpackaged-null`, `electron-updater.check-for-updates.facade-today-unpackaged` | `null`; zero events; upstream skip line | remove the gate (packaged path taken) |
 | 8 | `app-updater.test.ts`: `electron-updater.check-for-updates.packaged-no-host-updater-error`, `electron-updater.error-code.provenance`, `electron-updater.check-for-updates-and-notify.same-outcome` | one `error`; `isCallError`; `code === KELD-COMPAT-050`; identical rejection; registry heading present | resolve `null` when packaged; reuse `KELD-UPDATE-001` |
+| 7, 8 (fact-read failure) | `replay.test.ts`: `electron-updater.checks.missing-facts`, through `fixtures/missing_facts.ts` and the existing I/O probe | both methods synchronously throw the identical test-only typed error; no Promise, events, log, quit or probe-visible I/O | make `checkForUpdates` async; catch the getter failure and treat it as `false` |
 | 9 | `app-updater.test.ts`: `electron-updater.download-update.check-first`, `electron-updater.quit-and-install.nothing-staged-no-quit` | upstream message text; one `error`; `quit` count 0 | call `app.quit()` from `quitAndInstall` |
 | 10 | `replay.test.ts`: `electron-updater.replay.env-disabled`, `electron-updater.replay.env-absent-unpackaged`, `electron-updater.replay.env-absent-packaged-no-host-updater` | fixture `GH491_RESULT` line: call count, events, replica catch; probe counts | make `setFeedURL` throw (env-disabled replica records a sync throw) |
 | 11 | `app-updater.test.ts`: `electron-updater.never-fabricate`; every replay case | listeners for all nine names count zero | emit `update-not-available` from `checkForUpdates` |
@@ -315,8 +323,11 @@ Anti-flake: fixtures are spawned with `Bun.spawnSync` and a kill-switch timeout 
 await `setImmediate` to let events flush and exit by themselves. The environment is built
 explicitly (`DRAWIO_DISABLE_UPDATE` set or deleted per case). No ports, no files, no timing
 assertions. The facade-today case (criterion 7) is pinned to the current facade: when #452 mints
-`isPackaged`, `bun test` still runs unpackaged, so the case keeps passing; an installed-root run
-is X02-T4's cell, not this suite's.
+`isPackaged`, its delivered-facts and missing-facts paths must be exercised explicitly.
+An unlaunched Bun test is not proof of a development `false` fact. The missing-facts fixture
+uses the public `AppAdapter` seam and a test-only typed error; it proves propagation and
+probe-visible purity, not Host fact delivery or installed-package resolution. Those composed
+acceptance checks remain with #452 and X02-T4.
 
 ## 8. Review gates triggered
 
