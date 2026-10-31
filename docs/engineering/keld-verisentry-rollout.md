@@ -1,8 +1,16 @@
 # KELD VeriSentry — source-authenticated CI admission
 
-**Release state (31 October 2026):** trusted workflow is merged into `main`;
-production App-required ruleset is created but **disabled** pending backfill and
-final deployment qualification. No new server or private repository is needed.
+**Release state (31 October 2026, P1 still open):** the trusted verifier and
+refresh workflow are merged into `main`. Production ruleset **26261486 is
+ACTIVE** and requires `KELD VeriSentry` from App ID **5550363**. Negative
+non-bypass canaries #1338 and #1339 were correctly blocked and closed unmerged.
+**Positive merge admission is NOT qualified:** approved docs-only
+[PR #1340](https://github.com/gyldlab/keld/pull/1340) passed all three older
+required checks and received genuine App SUCCESS, but two ordinary non-bypass
+merge attempts returned HTTP 405: `Required status check "KELD VeriSentry" is
+expected`. See [P1 #1341](https://github.com/gyldlab/keld/issues/1341).
+Do NOT declare the release fully qualified or weaken the required-source rule
+to conceal this failure. App private-key rotation is also not yet verified.
 
 ## Identity and protected-main configuration
 
@@ -15,7 +23,7 @@ final deployment qualification. No new server or private repository is needed.
 | Expected required check | `KELD VeriSentry` from **App ID 5550363**, not any matching check name |
 | Credential | Encrypted `VERISENTRY_APP_PRIVATE_KEY` in `verisentry-publisher` GitHub Actions environment, branch rule **main** |
 | Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate** protected-main `push`/`schedule`/trusted `workflow_dispatch` workflow |
-| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **disabled until final release** |
+| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **active; P1 #1341 positive merge admission unresolved** |
 | Native bypass actors | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
 
 The existing protected `main` status checks `gatekeeper`, `title-lint` and
@@ -134,7 +142,8 @@ branch. [#1331](https://github.com/gyldlab/keld/pull/1331) published a green
 blocked. An authorized `0monish` PR-only admin-bypass merge was exercised into
 that temporary branch with safe [#1332](https://github.com/gyldlab/keld/pull/1332);
 protected `main` SHA remained unchanged. The canary ruleset and all its
-branches were deleted afterward. The production ruleset remains **disabled**.
+branches were deleted afterward. The production ruleset was subsequently made
+**active**, after trusted backfill and additional production-main canaries.
 
 GitHub refused a literal 40-hex-only branch name with HTTP 422; that
 specific SHA-like-branch event cannot be tested as such. The genuine external
@@ -173,7 +182,12 @@ confirmed security reason **not** to deploy that prototype. The native
 ruleset replaces it using GitHub's own actor identity and bypass audit trail.
 Do not reintroduce mutable manual release checks or broaden the bypass list.
 
-## Before activating the required rule on main
+## Historical activation checklist (1–3 qualified; 4 blocked; 5 pending)
+
+This checklist records the pre-activation requirements. Steps 1–3 have
+supporting evidence. Step 4's negative admission tests passed, but its positive
+non-bypass merge requirement failed (HTTP 405 on #1340; see P1 #1341).
+Step 5 is an owner-only key rotation that has not been verified.
 
 1. Preserve the current main protection snapshot and ruleset definition.
    Require the **complete** `bypass_actors` array to contain **exactly** two
@@ -181,7 +195,7 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
    (ID `130687844`), both with `bypass_mode: pull_request`. Reject every
    additional actor, actor type or bypass mode. Confirm required context
    `KELD VeriSentry` and `integration_id: 5550363` exactly, and check
-   enforcement remains `disabled` until qualification.
+   enforcement was held `disabled` until qualification; it is now `active`.
 2. Existing open PRs predate the workflow and may have no VeriSentry check.
    Run the protected-main scheduled/manual refresh **once** after its exact
    source and security tests land. Backfill only from trusted default-main
@@ -206,6 +220,67 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
 5. After successful end-to-end qualification, the owner generates a new App
    private key. Replace the environment-scoped GitHub secret from the local
    file via stdin, revoke the old key, then run fresh benign/hostile checks.
+
+## Production source-gate audit — 31 October 2026 (P1 open)
+
+- **Ruleset:** [26261486](https://github.com/gyldlab/keld/rules/26261486)
+  confirmed `active` on `refs/heads/main`, requiring context
+  `KELD VeriSentry` from **App ID 5550363**. Its only bypass users are
+  `0monish` (155816356) and `amishabenramani` (130687844), both
+  **pull-request-only**. Non-bypass account `Neelkanth238` reports
+  `current_user_can_bypass: never`. Existing
+  `gatekeeper`, `title-lint`, and `CI required` remain required.
+- **Trusted refresh:** [protected-main push run 41181581624](https://github.com/gyldlab/keld/actions/runs/41181581624)
+  succeeded. Its live log reports **58 open main-targeted PRs scanned**,
+  **41 existing App checks**, **17 skips**, **0 new checks**, and **0 errors**.
+  Skips are not represented as accepted PASS. Open PRs targeting other base
+  branches are not part of this main-rule backfill. The `main` push and
+  daily `02:17 UTC` backup refresh remain configured.
+- **Non-bypass live negative control:** [PR #1338](https://github.com/gyldlab/keld/pull/1338)
+  by `Neelkanth238` changed only a documentation file beneath `.github/`
+  (plus a benign documentation file). On exact synthetic test merge
+  `0e0eb921c2d690a990464a812fbf55c836a1a82f`, the
+  [genuine App check](https://github.com/gyldlab/keld/runs/124491708686)
+  concluded **FAILURE** from App ID 5550363. At the same time
+  [`CI required`](https://github.com/gyldlab/keld/actions/runs/41185559741),
+  [`gatekeeper` and `title-lint`](https://github.com/gyldlab/keld/actions/runs/41185558403)
+  all concluded **SUCCESS**. GitHub reported
+  `mergeable: true` (no conflict) and `mergeable_state: blocked`.
+- **Independent duplicate negative control:** [PR #1339](https://github.com/gyldlab/keld/pull/1339)
+  reproduced the same required-green/App-failed/merge-blocked result from
+  the same non-bypass identity. Both #1338 and #1339 were **closed, unmerged**,
+  with exact-SHA receipts recorded in their PR comments.
+- **Positive/forgery contrasts:** [benign source App PASS](https://github.com/gyldlab/keld/runs/124487847132)
+  and [same-name spoof rejected by genuine App](https://github.com/gyldlab/keld/runs/124487771530)
+  were verified on separate disposable production-main PR canaries. An
+  Actions job named like the genuine check is not sufficient because its
+  App ID is 15368, not 5550363.
+- **What this demonstrates:** GitHub's *live merge-admission state* rejects
+  a current non-bypass protected-path PR while other required checks are
+  successful. No actual merge API operation was attempted on an intentionally
+  unsafe disposable canary. This is sufficient live blocked-state evidence;
+  it is not a claim that a risky merge attempt was performed.
+- **Positive admission is blocked:** [Docs-only PR #1340](https://github.com/gyldlab/keld/pull/1340)
+  had independent Amisha approval at head
+  `c9f204591d1404794636e4fc77d5dce38b49278a`. Its three old required
+  checks plus provenance and App publisher all succeeded. App ID **5550363**
+  signed genuine SUCCESS on synthetic test merges
+  `8684384f8dc38736dbcdbeeb61468dd3baeffbdc` and
+  `fb804034ebfc734cb57dc459dd8e561f0a41ae9b`.
+  Yet two non-bypass GitHub merge attempts returned **HTTP 405**, saying
+  `Required status check "KELD VeriSentry" is expected`. GitHub generated
+  a further test-merge SHA from identical base/head/tree with no check at the
+  observation time. The required App status is absent on the PR **head** SHA.
+  It is **not yet proven** whether GitHub checks the PR head, a newly generated
+  test-merge SHA, or both. [P1 #1341](https://github.com/gyldlab/keld/issues/1341)
+  tracks this. PR #1340 was converted to **Draft**, never merged.
+  Do not bypass this availability failure with a forged or weakly bound PASS.
+- **Operations left with owner:** After resolving #1341, the private-key rotation described below
+  must be performed by an authorized App owner, with a fresh post-rotation
+  benign/negative check pair. No key material is available in this public
+  repository or this audit; do **not** mark rotation done without its receipt.
+  The separate CodeQL alert-admission ruleset is not part of VeriSentry
+  activation.
 
 ## Safe rollback and key rotation
 
