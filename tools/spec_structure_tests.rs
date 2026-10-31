@@ -3989,3 +3989,35 @@ fn baseline_rows_reproduces_the_committed_baseline() {
         committed
     );
 }
+
+/// The review's control: a character reference renders as the same heading, so it marks
+/// the same spec. A reference that renders as another word marks none.
+#[test]
+fn a_character_reference_cannot_hide_the_spec_heading() {
+    for heading in [
+        "## Acceptance&#32;criteria",
+        "## Acceptance&#x20;criteria",
+        "## Acceptance&#X20;criteria",
+        "## Acceptance&nbsp;criteria",
+        "## Acceptance&Tab;criteria",
+        "## Acc&#101;ptance criteria",
+        "## 3. Acceptance&#0032;criteria",
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.track(
+            "crates/x/n.md",
+            format!("# Notes\n\n{heading}\n").as_bytes(),
+        );
+        assert_only(&fixture, Rule::Outside, heading);
+    }
+    let mut fixture = Fixture::new();
+    fixture.track(
+        "crates/x/n.md",
+        b"# Notes\n\n## Tools &amp; criteria\n\nAT&T; &#; &#xZZ; &#12345678; &#x1234567;\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    assert_eq!(
+        decode_references("a&#32;b&#x41;c&amp;d &#0; &#x110000; &#; &#xZZ; AT&T &#12345678;"),
+        "a bAc d \u{fffd} \u{fffd} &#; &#xZZ; AT&T &#12345678;"
+    );
+}

@@ -3140,9 +3140,69 @@ fn is_markdown_path(path: &str) -> bool {
     })
 }
 
-/// True for text a reader takes for the spec heading, whatever its emphasis or spacing.
+/// `text` as CommonMark renders its character references: a numeric reference becomes
+/// its character (U+FFFD when invalid), and a named reference becomes one space. This gate
+/// carries no HTML5 entity table, and no named entity renders as a letter or a digit, so
+/// a space can hide no word of the signature. A run that is no reference stays literal.
+fn decode_references(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        shown.push_str(&rest[..start]);
+        rest = &rest[start..];
+        match character_reference(rest) {
+            Some((len, decoded)) => {
+                shown.push(decoded);
+                rest = &rest[len..];
+            }
+            None => {
+                shown.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    shown.push_str(rest);
+    shown
+}
+
+/// The character reference that opens `text`, as its byte length and rendered character.
+/// CommonMark 0.31 §6.2: `&#` and 1-7 decimal digits, `&#x` and 1-6 hex digits, or `&`, a
+/// letter and up to 31 more alphanumerics, each closed by `;`.
+fn character_reference(text: &str) -> Option<(usize, char)> {
+    let body = text.strip_prefix('&')?;
+    let end = body.find(';')?;
+    let name = &body[..end];
+    let len = end + 2;
+    if let Some(number) = name.strip_prefix('#') {
+        let (digits, radix, max) = match number.strip_prefix(['x', 'X']) {
+            Some(hex) => (hex, 16, 6),
+            None => (number, 10, 7),
+        };
+        let valid = !digits.is_empty()
+            && digits.len() <= max
+            && digits.chars().all(|digit| digit.is_digit(radix));
+        if !valid {
+            return None;
+        }
+        let code = u32::from_str_radix(digits, radix).ok()?;
+        let decoded = char::from_u32(code)
+            .filter(|decoded| *decoded != '\0')
+            .unwrap_or('\u{fffd}');
+        return Some((len, decoded));
+    }
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && name.len() <= 32
+        && chars.all(|next| next.is_ascii_alphanumeric());
+    valid.then_some((len, ' '))
+}
+
+/// True for text a reader takes for the spec heading, whatever its emphasis, spacing or
+/// character references.
 fn marks_spec(text: &str) -> bool {
-    let plain: String = text
+    let plain: String = decode_references(text)
         .chars()
         .filter(|ch| !"*_`~\\".contains(*ch))
         .flat_map(char::to_lowercase)
