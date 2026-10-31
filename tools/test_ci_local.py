@@ -1035,7 +1035,7 @@ class ProductionConsumerTests(unittest.TestCase):
             self.assertFalse(result["input_all"])
             for gate in ("fmt-check", "clippy", "test", "doc"):
                 self.assertTrue(result["local_" + gate], gate)
-            for gate in ("typescript", "llms-check", "llms-test", "doc-placeholders-check",
+            for gate in ("typescript", "llms-check", "llms-test", "doc-placeholders-check", "spec-structure",
                          "agent-context-test", "audit-docs-test", "product-status-test", "ci-router-test"):
                 self.assertFalse(result["local_" + gate], gate)
             # A new cross-tree read in an existing source also declares its

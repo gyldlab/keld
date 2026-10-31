@@ -78,7 +78,7 @@ Non-goals:
 
 ## 2. Spec refs
 
-- `docs/specs/kel142-macos-renderer-bridge-api.md` §4.1 (no automatic replay),
+- `docs/specs/kel142-macos-renderer-bridge-api/` §4.1 (no automatic replay),
   §4.2 (terminal outcomes), §6 (ordering, one terminal), §7 (errors). This
   revision replaces §7 and refines §4.2's "missing handler" bullet. Every other
   KEL-142 rule is unchanged.
