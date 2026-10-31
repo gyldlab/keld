@@ -28,7 +28,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::process::Command;
 
 use markdown_contract::{fence_marker, without_inline_code, without_struck_text};
@@ -2110,35 +2110,75 @@ fn check(root: &Path) -> Result<String, String> {
     ))
 }
 
-/// Prints the row each flat spec needs today, for a drain or a shrink.
+/// Prints the row each landed spec needs today, for a drain or a shrink: exactly the
+/// rows `check` accepts. A directory spec keeps the row of the flat file the seal holds.
 fn baseline_rows(root: &Path) -> Result<String, String> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(root.join(SPEC_ROOT))
-        .map_err(|error| format!("SPEC-STRUCTURE: cannot read `{SPEC_ROOT}`: {error}"))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
-        .collect();
-    paths.sort();
-    let history = GitHistory { root };
-    let mut out = format!("{BASELINE_HEADER}\n");
-    for path in paths {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        let rel = format!("{SPEC_ROOT}/{}", name.unwrap_or_default());
-        let doc = read_doc(root, &rel)?;
-        let mut structure = Report::default();
-        check_structure(&doc, &[], false, Some(&history), &mut structure);
-        let size = measure(&doc);
-        let exempt = !structure.findings.is_empty();
-        if exempt || size.lines > MAX_LINES || size.bytes > MAX_BYTES || size.overflow > 0 {
-            let cell = if exempt {
-                Structure::Exempt
-            } else {
-                Structure::Conforms
-            };
-            out.push_str(&expected_row(&rel, size, cell));
-            out.push('\n');
+    baseline_rows_at(root, &GitHistory { root })
+}
+
+/// Splits a spec's findings into its `UNKNOWN` fields and every other defect.
+fn unknown_split(report: &Report) -> (usize, usize) {
+    let unknowns = report
+        .findings
+        .iter()
+        .filter(|finding| finding.rule == Rule::FieldUnknown)
+        .count();
+    (unknowns, report.findings.len() - unknowns)
+}
+
+fn baseline_rows_at(root: &Path, history: &dyn History) -> Result<String, String> {
+    let entries = fs::read_dir(root.join(SPEC_ROOT))
+        .map_err(|error| format!("SPEC-STRUCTURE: cannot read `{SPEC_ROOT}`: {error}"))?;
+    let mut rows = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("SPEC-STRUCTURE: `{SPEC_ROOT}`: {error}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("SPEC-STRUCTURE: `{name}`: {error}"))?;
+        let rel = format!("{SPEC_ROOT}/{name}");
+        if kind.is_dir() {
+            let mut report = Report::default();
+            check_directory(root, &rel, &BTreeMap::new(), history, &mut report)?;
+            let (unknowns, others) = unknown_split(&report);
+            if unknowns > 0 && others == 0 {
+                let size = Size {
+                    lines: 0,
+                    bytes: 0,
+                    overflow: 0,
+                };
+                let flat = format!("{rel}.md");
+                let row = expected_row(&flat, size, Structure::Migrated(unknowns));
+                rows.insert(flat, row);
+            }
+        } else if kind.is_file() && name.ends_with(".md") {
+            let doc = read_doc(root, &rel)?;
+            let mut structure = Report::default();
+            check_structure(&doc, &[], false, Some(history), &mut structure);
+            let size = measure(&doc);
+            let (unknowns, others) = unknown_split(&structure);
+            if others > 0
+                || unknowns > 0
+                || size.lines > MAX_LINES
+                || size.bytes > MAX_BYTES
+                || size.overflow > 0
+            {
+                let cell = if others > 0 {
+                    Structure::Exempt
+                } else if unknowns > 0 {
+                    Structure::Migrated(unknowns)
+                } else {
+                    Structure::Conforms
+                };
+                let row = expected_row(&rel, size, cell);
+                rows.insert(rel, row);
+            }
         }
+    }
+    let mut out = format!("{BASELINE_HEADER}\n");
+    for row in rows.values() {
+        out.push_str(row);
+        out.push('\n');
     }
     Ok(out)
 }

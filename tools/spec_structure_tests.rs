@@ -5,6 +5,7 @@
 //! the first rule could leave the fixture red and hide that deletion.
 
 use super::*;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const PIN: &str = "1111111111111111111111111111111111111111";
@@ -1371,4 +1372,45 @@ fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
     };
     let refused = check_tree(&fixture.root, &config, &history);
     assert!(refused.is_err(), "a missing seal must not read as a pass");
+}
+
+fn printed_rows(fixture: &Fixture) -> String {
+    let history = Table {
+        sealed: fixture.sealed.clone(),
+        tracked: fixture.tracked.clone(),
+    };
+    baseline_rows_at(&fixture.root, &history).expect("rows print")
+}
+
+/// `baseline-rows` is the paste source for a drain: what it prints must be what `check`
+/// accepts, for a directory spec and a flat spec that both keep `UNKNOWN` fields.
+#[test]
+fn baseline_rows_prints_what_check_accepts() {
+    let fixture = migrated_fixture();
+    let text = single_spec().replace(
+        "**Expected RED:** the test fails",
+        "**Expected RED:** UNKNOWN",
+    );
+    fixture.write(SMALL, &text);
+    let printed = printed_rows(&fixture);
+    let migrated = format!("{MIGRATED_ROW}\t-\t-\t-\tmigrated:3");
+    let flat = format!("{SMALL}\t-\t-\t-\tmigrated:1");
+    assert!(printed.lines().any(|row| row == migrated), "{printed}");
+    assert!(printed.lines().any(|row| row == flat), "{printed}");
+    fixture.write(BASELINE, &printed);
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    assert_eq!(printed_rows(&fixture), printed, "printing is a fixed point");
+}
+
+#[test]
+fn baseline_rows_reproduces_the_committed_baseline() {
+    let root = env::current_dir().expect("cwd");
+    let committed = fs::read_to_string(root.join(SPEC_ROOT).join(BASELINE_FILE))
+        .expect("run from the repository root")
+        .replace("\r\n", "\n");
+    let history = GitHistory { root: &root };
+    assert_eq!(
+        baseline_rows_at(&root, &history).expect("rows print"),
+        committed
+    );
 }
