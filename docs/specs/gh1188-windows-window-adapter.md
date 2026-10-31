@@ -1206,7 +1206,7 @@ none. Channel 5 and its payloads are gh531's; Windows begins answering them.
   instance's normal credit), D10's and D11's per-view host obligations (AC26, renderer boots
   included), because T3 is the first change that can build a second
   browser instance in one session, with its unit control (AC21 NC 4); the U7 fixture
-  (approved, §10) and the U18 hooks (pending, §10); the `crates/keld-wv/AGENTS.md` edits
+  (approved, §10) and the U18 hooks (approved, §10); the `crates/keld-wv/AGENTS.md` edits
   (D6, D8, D10, D11). PROPOSED
   `facade_window.rs` (AC6, AC7, AC9–AC13, AC15, AC16, AC24–AC26), `facade_lifecycle.rs` (AC14, AC17)
   and `profiles/facade_lifecycle.rs` (AC18 (a), NC 2 and NC 5; AC21; AC27 (e)) on `InstalledApp`; the
@@ -1237,8 +1237,7 @@ none. Channel 5 and its payloads are gh531's; Windows begins answering them.
   approval stays RED even when every ordinary Windows test and every unit test passes.
   The U7 approval covers the fixture only; no unsafe-gate evidence is claimed for it or
   for any T3 production path, which keep their own gates (§8). Blocks on: T2 merged (D7,
-  A21 and the lent witness, without which D1 stays `Some(false)`); U18's owner decision;
-  the native fault gate above.
+  A21 and the lent witness, without which D1 stays `Some(false)`); the native fault gate above.
 
 ## 7. Test plan
 
@@ -1370,8 +1369,7 @@ constant's doc (`:310-319`), which says a new barrier wait changes the sum.
 ## 10. Open questions
 
 Each is an UNKNOWN with the probe that decides it, or RESOLVED with the evidence that
-decided it. **Blocking for approval: none of the design; U18's owner decision blocks T3's
-cells that use its hooks, and T3 cannot qualify without it.** Approval confirms the A21 reading of
+decided it. **Blocking for approval: none of the design.** Approval confirms the A21 reading of
 KEL-135 recorded under U10 and the census direction in D7 (owner-approved
 2026-10-29, gyldlab/keld#1188 comment 6498281882); U14 is decided at T2 under its review
 gates.
@@ -1439,25 +1437,25 @@ gates.
   on real Windows at T3's exact head with nonzero at-risk counts, with no unit-only fallback
   (§6 T3 native fault gate); it covers neither unsafe-gate evidence for any production path
   nor any change to product admission, which keep their own gates.
-- **U18 (AC24, AC25, AC26) Native-order test hooks — PENDING repository-owner decision.** No
-  approved hook can do these three jobs, so nothing here is claimed approved. U7's `defer` holds
+- **U18 (AC24, AC25, AC26) Native-order test hooks — APPROVED by the repository owner
+  (https://github.com/gyldlab/keld/pull/1280#issuecomment-6536623057), which also extends the
+  `KELD_TEST_WINDOWS_ENVIRONMENT_DESCENDANT` scope to AC27.** No
+  earlier hook could do these three jobs. U7's `defer` holds
   the event in Keld's dispatch and returns, so `DestroyWindow` finishes and nothing is held
   inside `WM_DESTROY`; `swallow` never answers; U7's points fail a build; D16's existing hooks
   touch receipts, the guard and a spawned helper. **U7 itself needs no extension:** its approved
   points (`hwnd`, `webview`, `view`) and modes (default, `swallow`, `defer`) stay as they are, and
-  AC24 (c) runs the `hwnd` point in default mode with the hold below. Proposed, same limits as
-  U7 (debug `profile-test-hooks` class, child-only env, scrubbed from the Bun env, compiled out of
-  product builds, no product behaviour, permission or public API; approval would cover neither
-  unsafe-gate evidence nor product admission): (1) `KELD_TEST_WINDOWS_NATIVE_HOLD=<point>:<dir>`,
+  AC24 (c) runs the `hwnd` point in default mode with the hold below. Approved under the same
+  limits as U7 (debug `profile-test-hooks` class, child-only env, scrubbed from the Bun env,
+  compiled out of product builds, no product behaviour, permission or public API; the approval
+  covers neither unsafe-gate evidence nor product admission): (1) `KELD_TEST_WINDOWS_NATIVE_HOLD=<point>:<dir>`,
   points `destroyed` (AC24: blocks the UI thread last in the `Destroyed` arm) and `build-pump`
   (AC25: keeps pumping in `pump_message_or_handle`), each released by a file in `<dir>` and bounded
   by `PROFILE_LAUNCH_DEADLINE`, with the lines those ACs name; (2)
   `KELD_TEST_WINDOWS_PAGE_READBACK=<ms>` (AC26): every `<ms>` the loop calls `ExecuteScript` on
   each live view with one fixed expression, because W2 windows have no bridge and no
-  `executeJavaScript` (W1, W3), and the only non-call observable found is in the page. If the
-  owner refuses, AC24–AC26 lose their device oracles and T3's native fault gate stays RED until
-  an equivalent oracle is approved (§6). *Check:* a recorded owner decision on PR #1280 naming
-  both hooks.
+  `executeJavaScript` (W1, W3), and the only non-call observable found is in the page. The
+  cells these hooks serve stay mandatory at T3's exact head (§6).
 - **U8 Dev-stage custody and handover.** On Windows the host never deletes its stage
   (the host's own deletion is macOS/Linux, `keld-host/src/main.rs:111-134`); the
   `keld dev` private cleanup process deletes it after the attempt Job empties
