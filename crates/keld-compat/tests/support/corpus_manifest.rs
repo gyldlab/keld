@@ -323,8 +323,26 @@ pub const NATIVE_V1: Registration = Registration {
     ],
 };
 
+/// The pinned v44.4.5 draw.io `session.webRequest` listener cells (gh470, the F05-T1
+/// listener slice). A macOS first proof: every cell declares `macos`, so other hosts list
+/// its cells `unknown` (gh566 D13). Both cells are red until GH-553 exports `session`;
+/// the mapped target is a keld-compat libtest that observes the facade through a Bun
+/// fixture, so the slice adds no test under `packages/@keld/electron/src/`.
+pub const SESSION_V1: Registration = Registration {
+    corpus_id: "electron-session-v1",
+    fixture_dir: "fixtures/session-corpus",
+    shape: Shape::V1,
+    platforms: &[Platform::Macos],
+    targets: &[TestTarget {
+        path: "crates/keld-compat/tests/session_web_request.rs",
+        runner: Runner::Libtest {
+            target: "session_web_request",
+        },
+    }],
+};
+
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
-pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1, APP_V1, NATIVE_V1];
+pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1, APP_V1, NATIVE_V1, SESSION_V1];
 
 /// Parent of the one doc-snapshot store, relative to `crates/keld-compat`. Every v1
 /// corpus reads its cited pages from `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/<commit>/<page>`
