@@ -1025,7 +1025,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.codeql_rust == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
+    if: ${{ github.event_name != 'merge_group' && !cancelled() && (needs.changes.outputs.codeql_rust == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
@@ -1057,7 +1057,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.codeql_javascript_typescript == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
+    if: ${{ github.event_name != 'merge_group' && !cancelled() && (needs.changes.outputs.codeql_javascript_typescript == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
@@ -1083,7 +1083,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.codeql_actions == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
+    if: ${{ github.event_name != 'merge_group' && !cancelled() && (needs.changes.outputs.codeql_actions == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}
     permissions:
       contents: read
       security-events: write
@@ -1103,6 +1103,80 @@ jobs:
           upload: always
           skip-queries: false
           wait-for-processing: true
+
+  # Merge-group workflows execute the staged candidate tree. CodeQL has a
+  # local analysis-only group lane with no upload or security-events:write.
+  # The privileged SARIF-upload jobs above are excluded from merge_group.
+  # All three matrix legs are mandatory; one failed leg makes this job fail.
+  codeql-queue:
+    name: CodeQL queue (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: changes
+    if: ${{ github.event_name == 'merge_group' && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.codeql_rust == 'true' && needs.changes.outputs.codeql_javascript_typescript == 'true' && needs.changes.outputs.codeql_actions == 'true' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            os: macos-latest
+          - language: javascript-typescript
+            os: ubuntu-latest
+          - language: actions
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # pinned compiler
+        if: matrix.language == 'rust'
+        with:
+          toolchain: 1.99.1
+      - name: Initialize queued CodeQL
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - name: Analyze queued source locally
+        id: local-codeql
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:${{ matrix.language }}
+          upload: never
+          upload-database: false
+          output: ${{ runner.temp }}/codeql-queue-results
+          skip-queries: false
+          wait-for-processing: false
+      - name: Verify local CodeQL SARIF
+        shell: bash
+        env:
+          KELD_CODEQL_OUTPUT: ${{ steps.local-codeql.outputs.sarif-output }}
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PYCODEQL'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["KELD_CODEQL_OUTPUT"])
+          if not root.is_dir():
+              raise SystemExit("queue CodeQL: missing local SARIF output")
+          files = sorted(root.rglob("*.sarif"))
+          if not files:
+              raise SystemExit("queue CodeQL: no SARIF results produced")
+          for file in files:
+              if not file.is_file() or file.stat().st_size == 0:
+                  raise SystemExit("queue CodeQL: empty result file")
+              document = json.loads(file.read_text(encoding="utf-8"))
+              if document.get("version") != "2.1.0" or not any(
+                  run.get("tool", {}).get("driver", {}).get("name") == "CodeQL"
+                  for run in document.get("runs", [])
+              ):
+                  raise SystemExit("queue CodeQL: invalid CodeQL SARIF")
+          print(f"queue CodeQL: verified {len(files)} local SARIF file(s)")
+          PYCODEQL
 
   dependency-review:
     name: dependency review
@@ -1155,6 +1229,7 @@ jobs:
       - codeql-rust
       - codeql-javascript-typescript
       - codeql-actions
+      - codeql-queue
       - dependency-review
       - workspace-contracts
       - doctest
@@ -1188,6 +1263,7 @@ jobs:
           KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}
           KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}
           KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}
+          KELD_RESULT_CODEQL_QUEUE: ${{ needs['codeql-queue'].result }}
           KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}
           KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}
           KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}
@@ -1239,4 +1315,5 @@ jobs:
             "$KELD_ROUTE_DOCTEST" \
             "$KELD_RESULT_MEDIA" \
             "$KELD_ROUTE_MEDIA" \
-            "$KELD_RESULT_ROUTER_CONTRACTS"
+            "$KELD_RESULT_ROUTER_CONTRACTS" \
+            "$KELD_RESULT_CODEQL_QUEUE"

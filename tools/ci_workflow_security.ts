@@ -460,7 +460,7 @@ const approvedCodeqlActionSha = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"; // v
  */
 export function codeqlRoute(language: string): string {
   const output = `needs.changes.outputs.codeql_${language.replaceAll("-", "_")}`;
-  return `\${{ !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
+  return `\${{ github.event_name != 'merge_group' && !cancelled() && (${output} == 'true' || (github.event_name == 'push' && needs.changes.result != 'success')) }}`;
 }
 
 /**
@@ -476,6 +476,7 @@ function checkCodeqlJobs(
   const owners = new Set<string>(
     codeqlLanguages.map((language) => `codeql-${language}`),
   );
+  owners.add("codeql-queue");
   for (const [jobName, steps] of stepsByJob) {
     if (owners.has(jobName)) continue;
     if (
@@ -590,6 +591,162 @@ function checkCodeqlJobs(
       "CodeQL job executable context",
     );
   }
+  checkQueuedCodeqlJob(jobs, stepsByJob);
+}
+
+/**
+ * Validate the unprivileged merge_group CodeQL matrix independently from
+ * the SARIF upload jobs. GitHub considers skipped required jobs successful;
+ * the single matrix result is therefore a blocking input to CI required.
+ */
+function checkQueuedCodeqlJob(
+  jobs: Mapping,
+  stepsByJob: Map<string, Mapping[]>,
+): void {
+  if (!Object.hasOwn(jobs, "codeql-queue")) {
+    fail("CodeQL queue read-only matrix must exist for merge_group.");
+  }
+  const job = mapping(jobs["codeql-queue"], "CodeQL queue job");
+  exactKeys(
+    job,
+    [
+      "name",
+      "runs-on",
+      "timeout-minutes",
+      "needs",
+      "if",
+      "permissions",
+      "strategy",
+      "steps",
+    ],
+    "CodeQL queue job context",
+  );
+  const matrixRef = "$" + "{{ matrix.language }}";
+  if (
+    job.name !== "CodeQL queue (" + matrixRef + ")" ||
+    job["runs-on"] !== "$" + "{{ matrix.os }}" ||
+    job["timeout-minutes"] !== 30 ||
+    job.needs !== "changes" ||
+    job.if !==
+      "$" +
+        "{{ github.event_name == 'merge_group' && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.codeql_rust == 'true' && needs.changes.outputs.codeql_javascript_typescript == 'true' && needs.changes.outputs.codeql_actions == 'true' }}"
+  ) {
+    fail(
+      "CodeQL queue must run only for fully routed merge_group with 30-minute bound.",
+    );
+  }
+  inputsMatch(
+    mapping(job.permissions, "CodeQL queue permissions"),
+    { contents: "read" },
+    "CodeQL queue permissions",
+  );
+  const strategy = mapping(job.strategy, "CodeQL queue matrix strategy");
+  exactKeys(strategy, ["fail-fast", "matrix"], "CodeQL queue matrix strategy");
+  const matrix = mapping(strategy.matrix, "CodeQL queue matrix");
+  exactKeys(matrix, ["include"], "CodeQL queue matrix");
+  if (
+    strategy["fail-fast"] !== false ||
+    JSON.stringify(matrix.include) !==
+      JSON.stringify([
+        { language: "rust", os: "macos-latest" },
+        { language: "javascript-typescript", os: "ubuntu-latest" },
+        { language: "actions", os: "ubuntu-latest" },
+      ])
+  ) {
+    fail(
+      "CodeQL queue must run exactly all three languages on their reviewed OSes.",
+    );
+  }
+  const steps = stepsByJob.get("codeql-queue");
+  if (!steps || steps.length !== 5) {
+    fail(
+      "CodeQL queue must retain checkout, Rust pin, init, local analysis, SARIF proof.",
+    );
+  }
+  const checkout = steps[0]!;
+  exactKeys(checkout, ["uses", "with"], "CodeQL queue checkout");
+  if (
+    checkout.uses !==
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+  ) {
+    fail("CodeQL queue must checkout the event-owned staging SHA.");
+  }
+  inputsMatch(
+    mapping(checkout.with, "CodeQL queue checkout inputs"),
+    { "persist-credentials": "false" },
+    "CodeQL queue checkout inputs",
+  );
+  const compiler = steps[1]!;
+  exactKeys(compiler, ["uses", "if", "with"], "CodeQL queue Rust compiler");
+  if (
+    compiler.uses !==
+      "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8" ||
+    compiler.if !== "matrix.language == 'rust'"
+  ) {
+    fail("CodeQL queue must pin Rust only on its macOS Rust leg.");
+  }
+  inputsMatch(
+    mapping(compiler.with, "CodeQL queue compiler input"),
+    { toolchain: "1.99.1" },
+    "CodeQL queue compiler input",
+  );
+  const init = steps[2]!;
+  exactKeys(init, ["name", "uses", "with"], "CodeQL queue init");
+  if (
+    init.name !== "Initialize queued CodeQL" ||
+    init.uses !== "github/codeql-action/init@" + approvedCodeqlActionSha
+  ) {
+    fail("CodeQL queue init must use the approved immutable action.");
+  }
+  inputsMatch(
+    mapping(init.with, "CodeQL queue init inputs"),
+    {
+      languages: matrixRef,
+      "build-mode": "none",
+    },
+    "CodeQL queue init inputs",
+  );
+  const analyze = steps[3]!;
+  exactKeys(analyze, ["name", "id", "uses", "with"], "CodeQL queue analyze");
+  if (
+    analyze.name !== "Analyze queued source locally" ||
+    analyze.id !== "local-codeql" ||
+    analyze.uses !== "github/codeql-action/analyze@" + approvedCodeqlActionSha
+  ) {
+    fail("CodeQL queue analyze must run approved immutable local CodeQL.");
+  }
+  inputsMatch(
+    mapping(analyze.with, "CodeQL queue analyze inputs"),
+    {
+      category: "/language:" + matrixRef,
+      upload: "never",
+      "upload-database": "false",
+      output: "$" + "{{ runner.temp }}/codeql-queue-results",
+      "skip-queries": "false",
+      "wait-for-processing": "false",
+    },
+    "CodeQL queue analyze inputs",
+  );
+  const proof = steps[4]!;
+  exactKeys(proof, ["name", "shell", "env", "run"], "CodeQL queue SARIF proof");
+  if (
+    proof.name !== "Verify local CodeQL SARIF" ||
+    proof.shell !== "bash" ||
+    typeof proof.run !== "string" ||
+    createHash("sha256").update(proof.run).digest("hex") !==
+      "a733f3831ca0c8f9ce8f2738bcef4ccc37a77c313b9dd5931f8df9cd433996a5"
+  ) {
+    fail(
+      "CodeQL queue SARIF proof must run its exact nonempty result validator.",
+    );
+  }
+  inputsMatch(
+    mapping(proof.env, "CodeQL queue SARIF proof env"),
+    {
+      KELD_CODEQL_OUTPUT: "$" + "{{ steps.local-codeql.outputs.sarif-output }}",
+    },
+    "CodeQL queue SARIF proof env",
+  );
 }
 
 /**
@@ -975,10 +1132,11 @@ const rustToolchainInstallerJobs = new Set([
   "hygiene",
   "mermaid",
   "codeql-rust",
+  "codeql-queue",
 ]);
 
 // The required-result command consumes these bindings in the documented
-// 35-argument order. Keep the environment and complete shell script bound to
+// 36-argument order. Keep the environment and complete shell script bound to
 // one reviewed contract: injected BASH_ENV/PATH or a prepended exit 0 must fail.
 const reviewedRequiredResultBindings: Record<string, string> = {
   KELD_RESULT_CHANGES: "${{ needs.changes.result }}",
@@ -1020,6 +1178,7 @@ const reviewedRequiredResultBindings: Record<string, string> = {
   KELD_ROUTE_MEDIA:
     "${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
   KELD_RESULT_ROUTER_CONTRACTS: "${{ needs['router-contracts'].result }}",
+  KELD_RESULT_CODEQL_QUEUE: "${{ needs['codeql-queue'].result }}",
 };
 
 const reviewedRequiredResultNames = Object.keys(reviewedRequiredResultBindings);
@@ -1269,8 +1428,14 @@ export function checkRustToolchainPins(
           `${label} must install Rust immediately after checkout, before any other step.`,
         );
       }
+      // The queue matrix includes non-Rust languages. Only its Rust leg
+      // installs a compiler; all other reviewed installer jobs are unconditional.
+      const selectedQueueRust =
+        jobName === "codeql-queue" && step.if === "matrix.language == 'rust'";
       if (
-        Object.hasOwn(step, "if") ||
+        (jobName === "codeql-queue"
+          ? !selectedQueueRust
+          : Object.hasOwn(step, "if")) ||
         Object.hasOwn(step, "continue-on-error")
       ) {
         fail(
@@ -1398,10 +1563,11 @@ export function checkWorkflowSecurity(source: string): void {
     const job = mapping(value, `jobs.${jobName}`);
     refuseInheritedCustomShell(job, `jobs.${jobName}`);
     // A job-level token override replaces the read-only workflow default.
-    // CodeQL's three exact job names are the only reviewed exception; each
-    // receives its own restricted SARIF-upload permission check below.
+    // Privileged CodeQL upload jobs and the separate read-only queue job are
+    // reviewed independently; no other job may override token permissions.
     if (
       !codeqlLanguages.some((language) => jobName === `codeql-${language}`) &&
+      jobName !== "codeql-queue" &&
       Object.hasOwn(job, "permissions")
     ) {
       fail("non-CodeQL jobs must inherit read-only workflow permissions.");
@@ -1888,6 +2054,7 @@ export function checkWorkflowSecurity(source: string): void {
     "codeql-rust",
     "codeql-javascript-typescript",
     "codeql-actions",
+    "codeql-queue",
     "dependency-review",
     "workspace-contracts",
     "doctest",

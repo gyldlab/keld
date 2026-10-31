@@ -1,6 +1,17 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { checkPullRequestTargetWorkflow } from "./ci_workflow_security";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  checkPullRequestTargetWorkflow,
+  checkWorkflowSecurity,
+} from "./ci_workflow_security";
 
 const keldbot = Bun.YAML.parse(
   readFileSync(".github/workflows/keldbot.yml", "utf8"),
@@ -340,6 +351,179 @@ test("KeldBot cannot escalate the PR bot secret into merge_group", () => {
         ),
       label,
     ).toThrow(message);
+  }
+});
+
+test("queue CodeQL runs all languages with only read permission and local SARIF", () => {
+  const job = ci.jobs["codeql-queue"];
+  expect(job.permissions).toEqual({ contents: "read" });
+  expect(job.needs).toBe("changes");
+  expect(job.strategy["fail-fast"]).toBe(false);
+  expect(job.strategy.matrix.include).toEqual([
+    { language: "rust", os: "macos-latest" },
+    { language: "javascript-typescript", os: "ubuntu-latest" },
+    { language: "actions", os: "ubuntu-latest" },
+  ]);
+  expect(job.if).toContain("github.event_name == 'merge_group'");
+  const analyzed = job.steps.find(
+    (step: any) => step.name === "Analyze queued source locally",
+  );
+  expect(analyzed.with.upload).toBe("never");
+  expect(analyzed.with["upload-database"]).toBe(false);
+  expect(analyzed.with.output).toContain("runner.temp");
+  expect(
+    job.steps.some((step: any) => step.name === "Verify local CodeQL SARIF"),
+  ).toBe(true);
+  for (const language of ["rust", "javascript-typescript", "actions"]) {
+    const normal = ci.jobs["codeql-" + language];
+    expect(normal.permissions["security-events"]).toBe("write");
+    expect(normal.if).toContain("github.event_name != 'merge_group'");
+    expect(
+      normal.steps.find(
+        (step: any) => step.name === "Analyze and upload CodeQL results",
+      ).with.upload,
+    ).toBe("always");
+  }
+  expect(ci.jobs.required.needs).toContain("codeql-queue");
+  expect(ci.jobs.required.steps[1].env.KELD_RESULT_CODEQL_QUEUE).toBe(
+    "$" + "{{ needs['codeql-queue'].result }}",
+  );
+});
+
+test("CI queue CodeQL cannot regain write permissions, upload, or bypass its result", () => {
+  const mutants: Array<[string, (f: any) => void]> = [
+    [
+      "write-capable stage CodeQL",
+      (f) => {
+        f.jobs["codeql-queue"].permissions["security-events"] = "write";
+      },
+    ],
+    [
+      "upload to repository from stage",
+      (f) => {
+        f.jobs["codeql-queue"].steps[3].with.upload = "always";
+      },
+    ],
+    [
+      "upload CodeQL database from stage",
+      (f) => {
+        f.jobs["codeql-queue"].steps[3].with["upload-database"] = true;
+      },
+    ],
+    [
+      "skip native Rust stage analysis",
+      (f) => {
+        f.jobs["codeql-queue"].strategy.matrix.include.shift();
+      },
+    ],
+    [
+      "skip all CodeQL stage analysis",
+      (f) => {
+        f.jobs["codeql-queue"].if = "false";
+      },
+    ],
+    [
+      "let stage analyzer run with PR token",
+      (f) => {
+        f.jobs["codeql-queue"].permissions = {
+          contents: "read",
+          "pull-requests": "write",
+        };
+      },
+    ],
+    [
+      "exclude SARIF evidence check",
+      (f) => {
+        f.jobs["codeql-queue"].steps[4].if = "false";
+      },
+    ],
+    [
+      "replace SARIF verification with echo",
+      (f) => {
+        f.jobs["codeql-queue"].steps[4].run = "echo success";
+      },
+    ],
+    [
+      "drop SARIF analyzer",
+      (f) => {
+        f.jobs["codeql-queue"].steps.splice(3, 1);
+      },
+    ],
+    [
+      "run PR/push privileged upload on group",
+      (f) => {
+        f.jobs["codeql-rust"].if =
+          "$" +
+          "{{ !cancelled() && needs.changes.outputs.codeql_rust == 'true' }}";
+      },
+    ],
+    [
+      "omit queue CodeQL from CI required",
+      (f) => {
+        f.jobs.required.needs = f.jobs.required.needs.filter(
+          (n: string) => n !== "codeql-queue",
+        );
+      },
+    ],
+    [
+      "forge queue CodeQL result from another job",
+      (f) => {
+        f.jobs.required.steps[1].env.KELD_RESULT_CODEQL_QUEUE =
+          "$" + "{{ needs['codeql-rust'].result }}";
+      },
+    ],
+    [
+      "remove queue SARIF output binding",
+      (f) => {
+        delete f.jobs["codeql-queue"].steps[3].with.output;
+      },
+    ],
+  ];
+  for (const [label, mutate] of mutants) {
+    const f = structuredClone(ci);
+    mutate(f);
+    expect(() => checkWorkflowSecurity(Bun.YAML.stringify(f)), label).toThrow();
+  }
+});
+
+test("local queue CodeQL SARIF verifier accepts a real result and rejects missing/forged bytes", () => {
+  const proof = ci.jobs["codeql-queue"].steps[4];
+  const dir = mkdtempSync(join(tmpdir(), "keld-codeql-queue-sarif-"));
+  const output = join(dir, "output");
+  const file = join(output, "results.sarif");
+  const run = () =>
+    Bun.spawnSync(["bash", "-e", "-c", String(proof.run)], {
+      cwd: dir,
+      env: { ...process.env, KELD_CODEQL_OUTPUT: output },
+    });
+  try {
+    expect(run().exitCode).not.toBe(0);
+    mkdirSync(output);
+    expect(run().exitCode).not.toBe(0);
+    writeFileSync(file, "");
+    expect(run().exitCode).not.toBe(0);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: "2.1.0",
+        runs: [{ tool: { driver: { name: "CodeQL" } } }],
+      }),
+    );
+    expect(run().exitCode).toBe(0);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: "2.1.0",
+        runs: [{ tool: { driver: { name: "attacker" } } }],
+      }),
+    );
+    expect(run().exitCode).not.toBe(0);
+    writeFileSync(file, JSON.stringify({ version: "2.1.0", runs: [] }));
+    expect(run().exitCode).not.toBe(0);
+    writeFileSync(file, "{ invalid");
+    expect(run().exitCode).not.toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -1657,6 +1657,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "codeql-rust",
         "codeql-javascript-typescript",
         "codeql-actions",
+        "codeql-queue",
         "dependency-review",
         "workspace-contracts",
         "doctest",
@@ -1706,6 +1707,10 @@ fn check_required_job(text: &str) -> Result<(), String> {
         (
             "KELD_RESULT_CODEQL_ACTIONS",
             "${{ needs['codeql-actions'].result }}",
+        ),
+        (
+            "KELD_RESULT_CODEQL_QUEUE",
+            "${{ needs['codeql-queue'].result }}",
         ),
         (
             "KELD_ROUTE_CODEQL_RUST",
@@ -1785,7 +1790,8 @@ fn check_required_job(text: &str) -> Result<(), String> {
         "\"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" ",
         "\"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" ",
         "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" ",
-        "\"$KELD_RESULT_ROUTER_CONTRACTS\""
+        "\"$KELD_RESULT_ROUTER_CONTRACTS\" ",
+        "\"$KELD_RESULT_CODEQL_QUEUE\""
     );
     let expected_commands = [
         "tools/ci_required.sh test".to_owned(),
@@ -1795,7 +1801,7 @@ fn check_required_job(text: &str) -> Result<(), String> {
         .unwrap_or_default();
     if actual_commands != expected_commands {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 35-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
+            "CI-HYGIENE: `{WORKFLOW}` `required` evaluator run block must contain only its self-test and the exact ordered 36-argument check, without control flow, reassignment, wrappers, or exit-status suppression."
         ));
     }
 

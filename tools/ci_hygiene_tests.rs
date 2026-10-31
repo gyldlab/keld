@@ -355,6 +355,7 @@ fn valid_workflow() -> String {
             "      - codeql-rust",
             "      - codeql-javascript-typescript",
             "      - codeql-actions",
+            "      - codeql-queue",
             "      - dependency-review",
             "      - workspace-contracts",
             "      - doctest",
@@ -387,6 +388,7 @@ fn valid_workflow() -> String {
             "          KELD_RESULT_CODEQL_RUST: ${{ needs['codeql-rust'].result }}",
             "          KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs['codeql-javascript-typescript'].result }}",
             "          KELD_RESULT_CODEQL_ACTIONS: ${{ needs['codeql-actions'].result }}",
+            "          KELD_RESULT_CODEQL_QUEUE: ${{ needs['codeql-queue'].result }}",
             "          KELD_ROUTE_CODEQL_RUST: ${{ needs.changes.outputs.codeql_rust }}",
             "          KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT: ${{ needs.changes.outputs.codeql_javascript_typescript }}",
             "          KELD_ROUTE_CODEQL_ACTIONS: ${{ needs.changes.outputs.codeql_actions }}",
@@ -420,7 +422,7 @@ fn valid_workflow() -> String {
             "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
             "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" \\",
             "            \"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" \\",
-            "            \"$KELD_RESULT_ROUTER_CONTRACTS\"",
+            "            \"$KELD_RESULT_ROUTER_CONTRACTS\" \"$KELD_RESULT_CODEQL_QUEUE\"",
             "",
         ]
         .join("\n")
@@ -1135,7 +1137,7 @@ fn required_result_must_receive_router_applicability() {
         &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
     );
     let error = check(temp.path()).expect_err("unused router output must fail");
-    assert!(error.contains("35-argument"), "{error}");
+    assert!(error.contains("36-argument"), "{error}");
 }
 
 #[test]
@@ -1144,6 +1146,7 @@ fn required_result_must_observe_security_jobs() {
         "codeql-rust",
         "codeql-javascript-typescript",
         "codeql-actions",
+        "codeql-queue",
         "dependency-review",
         "workspace-contracts",
         "doctest",
@@ -1171,6 +1174,10 @@ fn required_result_must_receive_security_results_without_spoofing() {
             "${{ needs['codeql-actions'].result }}",
         ),
         (
+            "KELD_RESULT_CODEQL_QUEUE",
+            "${{ needs['codeql-queue'].result }}",
+        ),
+        (
             "KELD_ROUTE_CODEQL_RUST",
             "${{ needs.changes.outputs.codeql_rust }}",
         ),
@@ -1192,7 +1199,7 @@ fn required_result_must_receive_security_results_without_spoofing() {
         assert!(error.contains(key), "{error}");
         let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
         let error = check_required_job(&workflow).expect_err("unused security result must fail");
-        assert!(error.contains("35-argument"), "{error}");
+        assert!(error.contains("36-argument"), "{error}");
     }
 }
 
@@ -2684,7 +2691,7 @@ fn parallel_windows_media_job_preserves_required_admission() {
         assert!(
             error.contains("windows-media")
                 || error.contains("MEDIA")
-                || error.contains("35-argument"),
+                || error.contains("36-argument"),
             "{needle}: {error}"
         );
     }
