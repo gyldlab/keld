@@ -1,0 +1,23 @@
+# Disposable GH-1341 witness. Never uses the required queue-preflight-probe job name.
+name: GH-1341 isolated PR witness
+
+on:
+  pull_request:
+    branches:
+      - verisentry-queue-preflight-base-w5-20261031
+
+permissions:
+  contents: read
+
+jobs:
+  preflight-witness:
+    name: preflight-witness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Observe PR event without granting queue status
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]]
+          printf 'PR head event witnessed: run=%s\n' "$GITHUB_RUN_ID"
