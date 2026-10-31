@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-main-bindings-v1",
-  "corpus_sha256": "sha256:092e00dc1913d15a510c758939d6f159bbd9672f539e0e740d18583a204825d1",
+  "corpus_sha256": "sha256:a1ad6044cbd5efcfa885f4c0a427ef40f1beb2ed01335abb3c75b6c24b3dc898",
   "kind": "activation",
   "cells": [
     {
