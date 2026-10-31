@@ -16,7 +16,7 @@ docs/specs/kel135-persistent-profile-identity.md	1104	83767	1350	exempt
 docs/specs/kel136-generated-ts-app-link-transport.md	-	-	-	exempt
 docs/specs/kel139-macos-product-spine.md	-	-	-	exempt
 docs/specs/kel140-macos-public-filesystem.md	-	45526	10690	exempt
-docs/specs/kel142-macos-renderer-bridge-api.md	-	-	-	migrated:22
+docs/specs/kel142-macos-renderer-bridge-api.md	-	-	-	migrated:AC-1.At-risk precondition,AC-1.Expected RED,AC-1.Single fault,AC-3.At-risk precondition,AC-3.Expected RED,AC-3.Single fault,AC-4.At-risk precondition,AC-4.Expected RED,AC-4.Single fault,AC-5.At-risk precondition,AC-5.Expected RED,AC-5.Single fault,AC-6.At-risk precondition,AC-6.Expected RED,AC-6.Single fault,AC-7.At-risk precondition,AC-7.Expected RED,AC-7.Single fault,AC-8.At-risk precondition,AC-8.Expected RED,AC-8.Single fault,header.Owner
 docs/specs/kel143-macos-generation-filesystem-recovery.md	-	-	10922	exempt
 docs/specs/kel210-windows-lpac-primary.md	-	-	-	exempt
 docs/specs/kel245-local-agent-workspace.md	-	-	-	exempt

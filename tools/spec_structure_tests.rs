@@ -12,6 +12,7 @@ const PIN: &str = "1111111111111111111111111111111111111111";
 const FOREIGN_SHA: &str = "2222222222222222222222222222222222222222";
 const ABSENT_SHA: &str = "3333333333333333333333333333333333333333";
 const SEAL: &str = "4444444444444444444444444444444444444444";
+const BASE: &str = "5555555555555555555555555555555555555555";
 const CITED_FILE: &str = "crates/x/src/lib.rs";
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -21,6 +22,9 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Table {
     sealed: BTreeMap<String, String>,
     tracked: Vec<String>,
+    symlinks: Vec<String>,
+    /// The baseline at the comparison base, or why the base does not resolve.
+    previous: Result<Option<String>, String>,
 }
 
 impl History for Table {
@@ -41,8 +45,20 @@ impl History for Table {
         (path == CITED_FILE && (commit == PIN || commit == FOREIGN_SHA))
             .then(|| "line\n".repeat(10))
     }
-    fn tracked_markdown(&self) -> Result<Vec<String>, String> {
-        Ok(self.tracked.clone())
+    fn tracked_files(&self) -> Result<Vec<Tracked>, String> {
+        let file = |path: &String, symlink| Tracked {
+            path: path.clone(),
+            symlink,
+        };
+        let plain = self.tracked.iter().map(|path| file(path, false));
+        let links = self.symlinks.iter().map(|path| file(path, true));
+        Ok(plain.chain(links).collect())
+    }
+    fn previous_baseline(&self, _path: &str) -> Result<Previous, String> {
+        self.previous.clone().map(|text| Previous {
+            commit: BASE.to_owned(),
+            text,
+        })
     }
 }
 
@@ -51,6 +67,8 @@ struct Fixture {
     rows: usize,
     sealed: BTreeMap<String, String>,
     tracked: Vec<String>,
+    symlinks: Vec<String>,
+    previous: Result<Option<String>, String>,
 }
 
 impl Drop for Fixture {
@@ -155,6 +173,8 @@ impl Fixture {
                 (SMALL.to_owned(), "# old\n".to_owned()),
             ]),
             tracked: Vec::new(),
+            symlinks: Vec::new(),
+            previous: Ok(None),
         };
         fixture.write(SINGLE, &single_spec());
         fixture.write(&format!("{DIR}/index.md"), &index_spec());
@@ -175,9 +195,19 @@ impl Fixture {
     }
 
     fn write(&self, rel: &str, text: &str) {
+        self.write_bytes(rel, text.as_bytes());
+    }
+
+    fn write_bytes(&self, rel: &str, bytes: &[u8]) {
         let path = self.root.join(rel);
         fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture dir");
-        fs::write(path, text).expect("fixture write");
+        fs::write(path, bytes).expect("fixture write");
+    }
+
+    /// A tracked file outside the spec root, which the census must read.
+    fn track(&mut self, rel: &str, bytes: &[u8]) {
+        self.write_bytes(rel, bytes);
+        self.tracked.push(rel.to_owned());
     }
 
     fn read(&self, rel: &str) -> String {
@@ -194,16 +224,30 @@ impl Fixture {
         fs::remove_file(self.root.join(rel)).expect("fixture remove");
     }
 
-    fn run(&self) -> Report {
-        let history = Table {
+    fn history(&self) -> Table {
+        Table {
             sealed: self.sealed.clone(),
             tracked: self.tracked.clone(),
-        };
+            symlinks: self.symlinks.clone(),
+            previous: self.previous.clone(),
+        }
+    }
+
+    fn try_run(&self) -> Result<Report, String> {
         let config = Config {
             rows: self.rows,
             seal: SEAL,
         };
-        check_tree(&self.root, &config, &history).expect("check ran")
+        check_tree(&self.root, &config, &self.history())
+    }
+
+    fn run(&self) -> Report {
+        self.try_run().expect("check ran")
+    }
+
+    /// Makes the committed baseline the comparison base, as after this PR lands.
+    fn commit_baseline(&mut self) {
+        self.previous = Ok(Some(self.read(BASELINE)));
     }
 
     fn rules(&self) -> BTreeSet<&'static str> {
@@ -843,10 +887,633 @@ fn mutants() -> Vec<Mutant> {
                 );
             },
         },
+        // Finding 4430014030: only a blocker owner may be UNKNOWN.
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec claims evidence with an UNKNOWN run",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Run:** one", "- **Run:** UNKNOWN");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec leaves evidence limits UNKNOWN",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Limits:** none", "- **Limits:** UNKNOWN: later");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec leaves a blocker impact UNKNOWN",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Impact:** blocks T-1", "- **Impact:** UNKNOWN");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a new spec leaves a blocker check UNKNOWN",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Check:** a test", "- **Check:** UNKNOWN");
+            },
+        },
+        // Finding 4430014035: nested content meets the same non-value rules.
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "an indented UNKNOWN fills an empty Then",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "- **Then:** a result\n",
+                    "- **Then:**\n  - UNKNOWN\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "an indented TBD fills an empty Single fault",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "  - **Single fault:** the rule is removed\n",
+                    "  - **Single fault:**\n    - TBD\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a bare nested list marker fills an empty Then",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(&path, "- **Then:** a result\n", "- **Then:**\n  *\n");
+            },
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a nested comment fills an empty Then",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "- **Then:** a result\n",
+                    "- **Then:**\n  <!-- a result -->\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "an indented UNKNOWN fills the header owner",
+            apply: |f| f.replace(SINGLE, "- Owner: owner\n", "- Owner:\n  - UNKNOWN\n"),
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "an indented TBD fills a blocker owner",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.replace(&path, "- **Owner:** owner\n", "- **Owner:**\n  - TBD\n");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a value of bare punctuation states nothing",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(&path, "- **Then:** a result", "- **Then:** .");
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a fenced TBD fills an empty Then",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "- **Then:** a result\n",
+                    "- **Then:**\n  ```text\n  TBD\n  ```\n",
+                );
+            },
+        },
+        // Finding 4430014043: one spec has one location.
+        Mutant {
+            rule: Rule::Collision,
+            label: "a flat spec shadows a directory spec",
+            apply: |f| f.write(&format!("{DIR}.md"), &single_spec()),
+        },
+        // Finding 4430014046: a shrink is permanent.
+        Mutant {
+            rule: Rule::BaselineGrew,
+            label: "a file and its row regrow to the seal after a shrink",
+            apply: |f| {
+                let row = format!("{BIG}\t599\t-\t-\texempt\n{SMALL}\t-\t-\t-\texempt\n");
+                f.previous = Ok(Some(format!("{BASELINE_HEADER}\n{row}")));
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineGrew,
+            label: "a value that left its row at the base comes back",
+            apply: |f| {
+                let row = format!("{BIG}\t-\t-\t-\texempt\n{SMALL}\t-\t-\t-\texempt\n");
+                f.previous = Ok(Some(format!("{BASELINE_HEADER}\n{row}")));
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineGrew,
+            label: "a structure cell widens from its base",
+            apply: |f| {
+                let row = format!("{BIG}\t600\t-\t-\texempt\n{SMALL}\t-\t-\t-\tok\n");
+                f.previous = Ok(Some(format!("{BASELINE_HEADER}\n{row}")));
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineNew,
+            label: "a drained row returns",
+            apply: |f| {
+                let row = format!("{BIG}\t600\t-\t-\texempt\n");
+                f.previous = Ok(Some(format!("{BASELINE_HEADER}\n{row}")));
+            },
+        },
+        // Finding 4430014051: a directory holds no flat size.
+        Mutant {
+            rule: Rule::BaselineRaised,
+            label: "a migrated directory row reacquires a line allowance",
+            apply: |f| {
+                migrate(f);
+                let old = "line\n".repeat(600);
+                f.sealed.insert(MIGRATED_ROW.to_owned(), old);
+                f.replace(
+                    BASELINE,
+                    &format!("{MIGRATED_ROW}\t-\t-\t-"),
+                    &format!("{MIGRATED_ROW}\t600\t-\t-"),
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineRaised,
+            label: "a migrated directory row reacquires a byte allowance",
+            apply: |f| {
+                migrate(f);
+                let old = "line\n".repeat(600);
+                f.sealed.insert(MIGRATED_ROW.to_owned(), old);
+                f.replace(
+                    BASELINE,
+                    &format!("{MIGRATED_ROW}\t-\t-\t-"),
+                    &format!("{MIGRATED_ROW}\t-\t3000\t-"),
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineRaised,
+            label: "a migrated directory row reacquires a line-overflow allowance",
+            apply: |f| {
+                migrate(f);
+                let old = format!("{}\n", "x".repeat(MAX_LINE_CHARS + 9));
+                f.sealed.insert(MIGRATED_ROW.to_owned(), old);
+                f.replace(
+                    BASELINE,
+                    &format!("{MIGRATED_ROW}\t-\t-\t-"),
+                    &format!("{MIGRATED_ROW}\t-\t-\t9"),
+                );
+            },
+        },
+        // Finding 4430014056: each UNKNOWN is bound to its slot.
+        Mutant {
+            rule: Rule::BaselineGrew,
+            label: "a filled field trades places with an unfilled one",
+            apply: |f| {
+                migrate(f);
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(&path, "**Then:** a result", "**Then:** UNKNOWN");
+                f.replace(
+                    &path,
+                    "Single fault:** UNKNOWN: none named",
+                    "Single fault:** a real fault",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::BaselineGrew,
+            label: "the row follows the trade but the base does not",
+            apply: |f| {
+                migrate(f);
+                f.commit_baseline();
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(&path, "**Then:** a result", "**Then:** UNKNOWN");
+                f.replace(
+                    &path,
+                    "Single fault:** UNKNOWN: none named",
+                    "Single fault:** a real fault",
+                );
+                f.replace(BASELINE, "AC-1.Single fault", "AC-1.Then");
+            },
+        },
+        // Finding 4430014058: the lane is a rule on the real file.
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a tracked symlink checked out as text leaves the lane",
+            apply: |f| {
+                f.write("docs/alias.md", "../crates/x/src/lib.rs");
+                f.symlinks.push("docs/alias.md".to_owned());
+                link_from_design(f, "../../alias.md");
+            },
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a tracked symlink ancestor leaves the lane",
+            apply: |f| {
+                f.write("docs/alias/lib.md", "# real\n");
+                f.symlinks.push("docs/alias".to_owned());
+                link_from_design(f, "../../alias/lib.md");
+            },
+        },
+        // Finding 4430014060: the one lexer follows CommonMark ATX headings.
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading indented one space",
+            apply: |f| f.track("docs/n.md", b"# Spec\n\n ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading indented three spaces",
+            apply: |f| f.track("docs/n.md", b"# Spec\n\n   ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading with a tab after the hashes",
+            apply: |f| f.track("docs/n.md", b"# Spec\n\n##\tAcceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "an indented heading is a section too",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "## 9. Perf impact",
+                    "## 9. Perf impact\n\n  ## Extra",
+                )
+            },
+        },
+        // Finding 4430014066: an unreadable census input is never proof.
+        Mutant {
+            rule: Rule::Unreadable,
+            label: "tracked Markdown that is not UTF-8",
+            apply: |f| f.track("crates/x/n.md", b"# Spec\n## Acceptance criteria\n\xff"),
+        },
+        Mutant {
+            rule: Rule::Unreadable,
+            label: "a tracked Markdown path that cannot be read",
+            apply: |f| {
+                fs::create_dir_all(f.root.join("docs/odd.md")).expect("fixture dir");
+                f.tracked.push("docs/odd.md".to_owned());
+            },
+        },
+        // Finding 4430014068: code spans match by delimiter width.
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a cited line past the end in a two-backtick span",
+            apply: |f| cite_in_design(f, &format!("``{CITED_FILE}:999``")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a cited line past the end in a padded span",
+            apply: |f| cite_in_design(f, &format!("`` {CITED_FILE}:999 ``")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a span that opens after an unmatched wider run",
+            apply: |f| cite_in_design(f, &format!("``` then `{CITED_FILE}:999`")),
+        },
+        // Finding 4430014070: both ends of a range must exist, in order.
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a reversed range ending on a real line",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:999-2`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a range whose start is past the end",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:11-10`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a reversed range inside the file",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:9-3`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a range that starts at zero",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:0-1`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a range with a third part",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:1-2-3`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a line number no integer holds",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:99999999999999999999999`")),
+        },
+        Mutant {
+            rule: Rule::CiteLine,
+            label: "a reversed range with a column",
+            apply: |f| cite_in_design(f, &format!("`{CITED_FILE}:9-3:5`")),
+        },
+        // Finding 4430018059: a comment renders nothing, so it defines nothing.
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "the only AC sits in a multi-line comment",
+            apply: |f| {
+                let block = format!("<!--\n{}-->\n\n", ac_block(1));
+                f.replace(SINGLE, &ac_block(1), &block);
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "the only task sits in a multi-line comment",
+            apply: |f| {
+                let task = "### T-1: slice\n\n- **Blocked by:** none\n\n";
+                f.replace(SINGLE, task, &format!("<!--\n{task}-->\n\n"));
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "a comment that opens mid-line hides the definition",
+            apply: |f| {
+                let block = format!("text <!--\n{}-->\n\n", ac_block(1));
+                f.replace(SINGLE, &ac_block(1), &block);
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "text after a block comment on its line is no heading",
+            apply: |f| f.replace(SINGLE, "### AC-1: rule", "<!-- x --> ### AC-1: rule"),
+        },
+        Mutant {
+            rule: Rule::Comment,
+            label: "a comment that never closes",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.write(&path, &format!("{}\n<!-- hidden\n", f.read(&path)));
+            },
+        },
+        Mutant {
+            rule: Rule::Comment,
+            label: "a raw HTML block that never closes",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.write(&path, &format!("{}\n<pre>\nhidden\n", f.read(&path)));
+            },
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a field value that is only a comment",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                f.replace(
+                    &path,
+                    "- **Then:** a result",
+                    "- **Then:** <!-- a result -->",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Anchor,
+            label: "a heading in a comment is no anchor",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                f.replace(&path, "A goal.\n", "A goal.\n\n<!--\n# hidden\n-->\n");
+                let path = format!("{DIR}/design.md");
+                f.replace(&path, "index.md#1-goal--non-goals", "index.md#hidden");
+            },
+        },
+        // Same-class sweep: other ways Markdown hides or fakes content.
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root setext heading",
+            apply: |f| f.track("docs/n.md", b"# Spec\n\nAcceptance criteria\n---\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading split over a setext paragraph",
+            apply: |f| f.track("docs/n.md", b"Acceptance\ncriteria\n===\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading with a closing run",
+            apply: |f| f.track("docs/n.md", b"## Acceptance criteria ##\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading in emphasis and double spaces",
+            apply: |f| f.track("docs/n.md", b"## **Acceptance**  *criteria*\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root struck heading",
+            apply: |f| f.track("docs/n.md", b"## ~~Acceptance criteria~~\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading in a block quote",
+            apply: |f| f.track("docs/n.md", b"> > ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading in a list item",
+            apply: |f| f.track("docs/n.md", b"- ## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading after a BOM",
+            apply: |f| f.track("docs/n.md", "\u{feff}## Acceptance criteria\n".as_bytes()),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root heading after a bare CR",
+            apply: |f| f.track("docs/n.md", b"# Spec\r## Acceptance criteria\r"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root spec under another Markdown extension",
+            apply: |f| f.track("docs/n.markdown", b"## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Outside,
+            label: "an off-root spec under an upper-case extension",
+            apply: |f| f.track("docs/n.MD", b"## Acceptance criteria\n"),
+        },
+        Mutant {
+            rule: Rule::Sections,
+            label: "a setext heading adds an eleventh section",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "## 9. Perf impact",
+                    "Extra\n---\n\n## 9. Perf impact",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "an AC heading in indented code is code",
+            apply: |f| f.replace(SINGLE, "### AC-1: rule", "    ### AC-1: rule"),
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "an AC heading after a tab is code",
+            apply: |f| f.replace(SINGLE, "### AC-1: rule", "\t### AC-1: rule"),
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a field in indented code is code",
+            apply: |f| {
+                let path = format!("{DIR}/acceptance.md");
+                let code = "    - **Given:** a state\n\n";
+                f.replace(&path, "- **Given:** a state\n", code);
+            },
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "an AC in an HTML block is raw text",
+            apply: |f| f.replace(SINGLE, "### AC-1: rule", "<details>\n### AC-1: rule"),
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "an AC after a lone tag is raw text",
+            apply: |f| f.replace(SINGLE, "### AC-1: rule", "<span>\n### AC-1: rule"),
+        },
+        Mutant {
+            rule: Rule::IdRequired,
+            label: "a raw element hides an AC across blank lines",
+            apply: |f| {
+                let block = format!("<pre>\n\n{}</pre>\n\n", ac_block(1));
+                f.replace(SINGLE, &ac_block(1), &block);
+            },
+        },
+        Mutant {
+            rule: Rule::Fence,
+            label: "an AC definition hidden in a tilde fence",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                let fence = "\n~~~text\n### AC-9: hidden\n~~~\n\n## 5. Boundaries";
+                f.replace(&path, "\n## 5. Boundaries", fence);
+            },
+        },
+        Mutant {
+            rule: Rule::Fence,
+            label: "a tilde fence that a backtick fence does not close",
+            apply: |f| {
+                let path = format!("{DIR}/delivery.md");
+                f.write(&path, &format!("{}\n~~~\nhidden\n```\n", f.read(&path)));
+            },
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "one line of triple-backtick code opens no fence",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(
+                    &path,
+                    "### D-1: choice\n",
+                    "### D-1: choice\n\n```a```\n\nB-7\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a reference definition into code",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(
+                    &path,
+                    "### D-1: choice\n",
+                    "### D-1: choice\n\n[code]: ../../../crates/x/src/lib.rs\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Link,
+            label: "a reference definition to nothing",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(
+                    &path,
+                    "### D-1: choice\n",
+                    "### D-1: choice\n\n[gone]: gone.md\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a scheme text inside a relative link",
+            apply: |f| link_from_design(f, "../../../crates/x/src/lib.rs?a=://"),
+        },
+        Mutant {
+            rule: Rule::LinkCode,
+            label: "a title parenthesis hides the next link",
+            apply: |f| {
+                let path = format!("{DIR}/design.md");
+                f.replace(
+                    &path,
+                    "[goal](index.md#1-goal--non-goals)",
+                    "[a](index.md \"(\") [b](../../../crates/x/src/lib.rs)",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::Anchor,
+            label: "an anchor into a file no rule can read",
+            apply: |f| {
+                f.write_bytes("docs/bin.md", b"\xff");
+                let path = format!("{DIR}/design.md");
+                let link = "[goal](../../bin.md#section)";
+                f.replace(&path, "[goal](index.md#1-goal--non-goals)", link);
+            },
+        },
+        Mutant {
+            rule: Rule::PartTable,
+            label: "a part table without a delimiter row",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                f.replace(&path, "|---|---|---|\n", "|x|\n");
+            },
+        },
+        Mutant {
+            rule: Rule::PartTable,
+            label: "a second link behind an escaped pipe in a part cell",
+            apply: |f| {
+                let path = format!("{DIR}/index.md");
+                let cell = "| [design.md](design.md) \\| [index.md](index.md) |";
+                f.replace(&path, "| [design.md](design.md) |", cell);
+            },
+        },
+        Mutant {
+            rule: Rule::CitePath,
+            label: "a package path with an at sign is still a citation",
+            apply: |f| cite_in_design(f, "`crates/@scope/gone.rs:3`"),
+        },
     ]
 }
 
-const ALL_RULES: [Rule; 40] = [
+/// Puts one code citation into the clean design part, in place of the pin citation.
+fn cite_in_design(fixture: &Fixture, citation: &str) {
+    let path = format!("{DIR}/design.md");
+    fixture.replace(&path, &format!("`{CITED_FILE}:10`"), citation);
+}
+
+/// Points the clean design part's one relative link at `target`.
+fn link_from_design(fixture: &Fixture, target: &str) {
+    let path = format!("{DIR}/design.md");
+    let link = format!("[goal]({target})");
+    fixture.replace(&path, "[goal](index.md#1-goal--non-goals)", &link);
+}
+
+const ALL_RULES: [Rule; 43] = [
     Rule::SizeLines,
     Rule::SizeBytes,
     Rule::SizeLineLength,
@@ -870,6 +1537,9 @@ const ALL_RULES: [Rule; 40] = [
     Rule::IdLegacyForm,
     Rule::IdRequired,
     Rule::Fence,
+    Rule::Comment,
+    Rule::Collision,
+    Rule::Unreadable,
     Rule::AcFields,
     Rule::TaskFields,
     Rule::BlockerFields,
@@ -901,6 +1571,11 @@ fn the_clean_fixture_passes_and_reports_what_it_skipped() {
         report.citations_unverifiable, 1,
         "absent @sha is never a pass"
     );
+    assert_eq!(
+        report.ratchet,
+        format!("no baseline at comparison base {BASE}")
+    );
+    assert_eq!(report.absent_markdown, 0);
 }
 
 #[test]
@@ -1021,10 +1696,18 @@ fn a_malformed_row_is_a_format_defect() {
 }
 
 const MIGRATED_ROW: &str = "docs/specs/gh1-directory.md";
+/// The three slots `migrate` leaves unfilled, as the row prints them.
+const MIGRATED_CELL: &str =
+    "migrated:AC-1.At-risk precondition,AC-1.Expected RED,AC-1.Single fault";
 
 /// A sealed flat spec, now a directory, with three unfilled control fields of one AC.
 fn migrated_fixture() -> Fixture {
     let mut fixture = Fixture::new();
+    migrate(&mut fixture);
+    fixture
+}
+
+fn migrate(fixture: &mut Fixture) {
     fixture.rows = 3;
     fixture
         .sealed
@@ -1032,7 +1715,7 @@ fn migrated_fixture() -> Fixture {
     fixture.replace(
         BASELINE,
         BIG,
-        &format!("{MIGRATED_ROW}\t-\t-\t-\tmigrated:3\n{BIG}"),
+        &format!("{MIGRATED_ROW}\t-\t-\t-\t{MIGRATED_CELL}\n{BIG}"),
     );
     let path = format!("{DIR}/acceptance.md");
     for field in [
@@ -1043,7 +1726,6 @@ fn migrated_fixture() -> Fixture {
         let (label, _) = field.split_once("** ").expect("field anchor");
         fixture.replace(&path, field, &format!("{label}** UNKNOWN: none named"));
     }
-    fixture
 }
 
 #[test]
@@ -1077,9 +1759,9 @@ fn only_a_sealed_spec_can_keep_unknown_required_fields() {
     assert_only(
         &fixture,
         Rule::BaselineStale,
-        "one field filled, count not lowered",
+        "one field filled, slot not removed",
     );
-    fixture.replace(BASELINE, "migrated:3", "migrated:2");
+    fixture.replace(BASELINE, ",AC-1.Single fault", "");
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 
     let fixture = migrated_fixture();
@@ -1102,7 +1784,7 @@ fn a_flat_landed_spec_can_migrate_in_place() {
     fixture.replace(
         BASELINE,
         &format!("{SMALL}\t-\t-\t-\texempt"),
-        &format!("{SMALL}\t-\t-\t-\tmigrated:1"),
+        &format!("{SMALL}\t-\t-\t-\tmigrated:AC-1.Expected RED"),
     );
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }
@@ -1114,7 +1796,7 @@ fn a_migrated_row_with_no_spec_left_is_stale() {
     assert_only(&fixture, Rule::BaselineStale, "migrated spec deleted");
 }
 
-/// Only a `migrated:<n>` row follows its spec into a directory.
+/// Only a `migrated:` row follows its spec into a directory.
 #[test]
 fn an_exempt_row_does_not_cover_a_directory() {
     let mut fixture = Fixture::new();
@@ -1134,12 +1816,270 @@ fn an_exempt_row_does_not_cover_a_directory() {
     );
 }
 
+/// The printed form is the only form, so a row cannot hide a slot in spelling.
 #[test]
-fn a_migrated_count_must_be_a_positive_number() {
-    for cell in ["migrated:0", "migrated:x", "migrated"] {
+fn a_migrated_cell_names_sorted_unique_slots() {
+    for cell in [
+        "migrated:3",
+        "migrated:0",
+        "migrated:",
+        "migrated",
+        "migrated:AC-1.Nonsense",
+        "migrated:x.Then",
+        "migrated:AC-1x.Then",
+        "migrated:AC-1.Then,AC-1.Given",
+        "migrated:AC-1.Then,AC-1.Then",
+        "migrated:AC-1.Then,",
+    ] {
         let fixture = migrated_fixture();
-        fixture.replace(BASELINE, "migrated:3", cell);
+        fixture.replace(BASELINE, MIGRATED_CELL, cell);
         assert!(fixture.rules().contains("BASELINE-FORMAT"), "{cell}");
+    }
+    assert!(is_slot("AC-1.Then") && is_slot("T-2.Blocked by") && is_slot("E-3.n"));
+    assert!(is_slot("B-4.Check") && is_slot(HEADER_OWNER_SLOT));
+}
+
+/// The real row grew to a list, and a list stays a fixed point of its own parser.
+#[test]
+fn a_migrated_cell_round_trips() {
+    let parsed = Structure::parse(MIGRATED_CELL).expect("cell parses");
+    assert_eq!(parsed.cell(), MIGRATED_CELL);
+}
+
+/// A flat shadow of a healthy migrated directory: both forms would share one row.
+#[test]
+fn a_directory_and_its_flat_shadow_collide() {
+    let fixture = migrated_fixture();
+    let shadow = format!("{DIR}.md");
+    let text = single_spec()
+        .replace(
+            "**Single fault:** the rule is removed",
+            "**Single fault:** UNKNOWN",
+        )
+        .replace(
+            "**At-risk precondition:** the state holds",
+            "**At-risk precondition:** UNKNOWN",
+        )
+        .replace(
+            "**Expected RED:** the test fails",
+            "**Expected RED:** UNKNOWN",
+        );
+    fixture.write(&shadow, &text);
+    assert_only(&fixture, Rule::Collision, "same-stem flat shadow");
+    fixture.remove(&shadow);
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// Exactly a blocker's `Owner`: the neighbouring fields stay refused by the mutants above.
+#[test]
+fn unknown_is_allowed_only_for_a_blocker_owner() {
+    assert!(allows_unknown("B", "Owner"));
+    for (kind, label) in [
+        ("B", "Impact"),
+        ("B", "Check"),
+        ("B", "Status"),
+        ("E", "Run"),
+        ("E", "Limits"),
+        ("AC", "Owner"),
+        ("T", "Blocked by"),
+    ] {
+        assert!(!allows_unknown(kind, label), "{kind} {label}");
+    }
+}
+
+#[test]
+fn a_nested_real_value_passes_every_empty_field() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/acceptance.md");
+    fixture.replace(
+        &path,
+        "- **Then:** a result\n",
+        "- **Then:**\n  - a nested result\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "- **Then:** a result\n",
+        "- **Then:**\n  ```text\n  a fenced result\n  ```\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let fixture = Fixture::new();
+    let delivery = format!("{DIR}/delivery.md");
+    fixture.replace(
+        &delivery,
+        "- **Blocked by:** B-1\n",
+        "- **Blocked by:**\n  - B-1\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// CommonMark reads `-` under a paragraph as a setext underline, so the field line turns
+/// into a heading. It stays RED, through the field rule and the section rule.
+#[test]
+fn a_bare_dash_under_an_empty_field_is_red() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/acceptance.md");
+    fixture.replace(&path, "- **Then:** a result\n", "- **Then:**\n  -\n");
+    assert!(
+        fixture.rules().contains("AC-FIELDS"),
+        "{:?}",
+        fixture.rules()
+    );
+}
+
+/// `Then` is empty when the next line is a sibling, whatever its indent.
+#[test]
+fn a_sibling_field_is_not_a_nested_value() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/acceptance.md");
+    fixture.replace(
+        &path,
+        "- **Then:** a result\n- **Negative control:**\n",
+        "- **Then:**\n- **Negative control:**\n",
+    );
+    assert_only(&fixture, Rule::AcFields, "next line is a sibling");
+}
+
+/// A bytes row at 60,578 lands; the seal keeps 60,580. The schedule the review traced.
+#[test]
+fn a_shrink_stays_shrunk_across_pull_requests() {
+    const SEALED: usize = 60_580;
+    const LANDED: usize = 60_578;
+    fn sized(bytes: usize) -> String {
+        let line = format!("{}\n", "y".repeat(MAX_LINE_CHARS - 1));
+        let mut text = line.repeat(bytes / line.len());
+        text.push_str(&"z".repeat(bytes - text.len()));
+        text
+    }
+    fn row(bytes: usize) -> String {
+        format!("{BIG}\t-\t{bytes}\t-\texempt\n{SMALL}\t-\t-\t-\texempt\n")
+    }
+    let mut fixture = Fixture::new();
+    fixture.sealed.insert(BIG.to_owned(), sized(SEALED));
+    fixture.write(BIG, &sized(LANDED));
+    fixture.write(BASELINE, &format!("{BASELINE_HEADER}\n{}", row(LANDED)));
+    fixture.previous = Ok(Some(format!("{BASELINE_HEADER}\n{}", row(SEALED))));
+    assert!(
+        fixture.rules().is_empty(),
+        "first shrink: {:?}",
+        fixture.rules()
+    );
+
+    fixture.commit_baseline();
+    fixture.write(BIG, &sized(SEALED));
+    fixture.write(BASELINE, &format!("{BASELINE_HEADER}\n{}", row(SEALED)));
+    assert_only(&fixture, Rule::BaselineGrew, "regrown to the seal");
+
+    fixture.write(BIG, &sized(LANDED - 2));
+    fixture.write(BASELINE, &format!("{BASELINE_HEADER}\n{}", row(LANDED - 2)));
+    assert!(
+        fixture.rules().is_empty(),
+        "second shrink: {:?}",
+        fixture.rules()
+    );
+}
+
+/// The committed row for the file the review named has already shrunk under its seal.
+#[test]
+fn the_committed_gh1095_row_is_below_its_seal() {
+    let root = env::current_dir().expect("cwd");
+    let history = GitHistory {
+        root: &root,
+        base_ref: "HEAD".to_owned(),
+    };
+    let path = "docs/specs/gh1095-request-error-codes.md";
+    let text = history.text_at(BASELINE_SEAL, path).expect("seal holds it");
+    let at_seal = measure(&Doc::parse(path, &text)).bytes;
+    let committed = fs::read_to_string(root.join(SPEC_ROOT).join(BASELINE_FILE))
+        .expect("run from the repository root");
+    let mut report = Report::default();
+    let rows = parse_baseline(BASELINE, &committed, &mut report);
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    let bytes = rows[path].bytes.expect("over the byte cap");
+    assert!(bytes < at_seal, "{bytes} at head, {at_seal} at the seal");
+}
+
+#[test]
+fn a_ratchet_with_no_base_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.previous = Err("SPEC-STRUCTURE: no base".to_owned());
+    let error = fixture.try_run().err().expect("a missing base is no pass");
+    assert!(error.contains("no base"), "{error}");
+}
+
+#[test]
+fn a_base_baseline_that_does_not_parse_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.previous = Ok(Some("# wrong header\n".to_owned()));
+    let error = fixture.try_run().err().expect("an unread base is no pass");
+    assert!(error.contains("does not parse"), "{error}");
+}
+
+#[test]
+fn a_committed_baseline_reports_its_comparison_base() {
+    let mut fixture = Fixture::new();
+    fixture.commit_baseline();
+    let report = fixture.run();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    assert_eq!(report.ratchet, format!("comparison base {BASE}"));
+}
+
+/// Every lawful narrowing passes, so the ratchet does not freeze a drain.
+#[test]
+fn a_structure_cell_only_narrows() {
+    let slots =
+        |names: &[&str]| Structure::Migrated(names.iter().map(|name| (*name).to_owned()).collect());
+    let (wide, narrow) = (slots(&["AC-1.Then", "AC-2.Then"]), slots(&["AC-1.Then"]));
+    assert!(!Structure::Conforms.loosens(&Structure::Exempt));
+    assert!(!Structure::Conforms.loosens(&wide));
+    assert!(!wide.loosens(&Structure::Exempt));
+    assert!(!narrow.loosens(&wide));
+    assert!(!wide.loosens(&wide));
+    assert!(!Structure::Exempt.loosens(&Structure::Exempt));
+    assert!(!Structure::Conforms.loosens(&Structure::Conforms));
+    assert!(wide.loosens(&narrow));
+    assert!(wide.loosens(&Structure::Conforms));
+    assert!(Structure::Exempt.loosens(&wide));
+    assert!(Structure::Exempt.loosens(&Structure::Conforms));
+}
+
+/// Same-source controls: a direct code link is RED, a real in-lane file stays GREEN, and a
+/// real symlink is RED without the index's help.
+#[test]
+fn a_real_symlink_cannot_carry_a_link_out_of_the_lane() {
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, at)
+    }
+    #[cfg(windows)]
+    fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, at)
+    }
+
+    let fixture = Fixture::new();
+    link_from_design(&fixture, "../../../crates/x/src/lib.rs");
+    assert_only(&fixture, Rule::LinkCode, "direct code link");
+
+    let fixture = Fixture::new();
+    fixture.write("docs/real.md", "# real\n");
+    link_from_design(&fixture, "../../real.md");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let fixture = Fixture::new();
+    fixture.write("crates/x/src/lib.rs", "line\n");
+    fs::create_dir_all(fixture.root.join("docs")).expect("fixture dir");
+    let target = fixture.root.join("crates/x/src/lib.rs");
+    match link(&target, &fixture.root.join("docs/alias.md")) {
+        // Creating a symlink is a privilege on Windows; hosted Linux always proves this arm.
+        Err(error) if cfg!(windows) => eprintln!("symlink arm not exercised: {error}"),
+        created => {
+            created.expect("fixture symlink");
+            link_from_design(&fixture, "../../alias.md");
+            assert_only(&fixture, Rule::LinkCode, "symlink alias");
+        }
     }
 }
 
@@ -1213,7 +2153,39 @@ fn a_non_spec_page_outside_the_root_is_not_a_spec() {
     fixture
         .tracked
         .push("docs/deleted-in-the-worktree.md".to_owned());
+    fixture.track("docs/other.txt", b"## Acceptance criteria\n\xff");
+    fixture.track(
+        "docs/code.md",
+        b"# Code\n\n    ## Acceptance criteria\n\n<!--\n## Acceptance criteria\n-->\n",
+    );
+    let report = fixture.run();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    assert_eq!(
+        report.absent_markdown, 1,
+        "a skip is counted, never implied"
+    );
+}
+
+/// The review's control: the same text is OUTSIDE when valid and UNREADABLE when not.
+#[test]
+fn an_unreadable_census_input_is_named_and_a_valid_one_is_classified() {
+    let mut fixture = Fixture::new();
+    fixture.track("crates/x/n.md", b"# Spec\n## Acceptance criteria\n");
+    assert_only(&fixture, Rule::Outside, "valid control");
+    fixture.write_bytes("crates/x/n.md", b"# Spec\n## Acceptance criteria\n\xff");
+    assert_only(&fixture, Rule::Unreadable, "one invalid byte");
+    fixture.write_bytes("crates/x/n.md", b"# Notes\n");
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn every_rendered_markdown_extension_is_censused() {
+    for path in ["a.md", "b/c.MD", "d.markdown", "e.Mkd", "f.mdx", "g.mdown"] {
+        assert!(is_markdown_path(path), "{path}");
+    }
+    for path in ["a.txt", "md", "b.rs", "c.md.txt"] {
+        assert!(!is_markdown_path(path), "{path}");
+    }
 }
 
 #[test]
@@ -1246,6 +2218,293 @@ fn a_fence_hides_ids_and_a_foreign_id_is_not_resolved() {
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }
 
+/// A comment opener in code is code, and a closed comment hides only itself.
+#[test]
+fn a_comment_marker_in_code_opens_nothing() {
+    for text in [
+        "### D-1: choice\n\n`<!--` and ``<!-- x`` stay code\n\nAC-1",
+        "### D-1: choice\n\n```text\n<!-- fenced\n```\n\nAC-1",
+        "### D-1: choice\n\n~~~\n<!--\n~~~\n\nAC-1",
+        "### D-1: choice\n\n    <!-- indented code\n\nAC-1",
+        "### D-1: choice\n\nAC-1 <!-- B-99 --> and <!-- AC-98 --> AC-1\n\nAC-1",
+        "### D-1: choice\n\n<!-- B-99 -->\n\n<!--\nB-98\n-->\n\nAC-1",
+        "### D-1: choice\n\n\\<!-- not a comment B-1\n\nAC-1",
+    ] {
+        let fixture = Fixture::new();
+        let path = format!("{DIR}/design.md");
+        fixture.replace(&path, "### D-1: choice\n\nAC-1", text);
+        assert!(fixture.rules().is_empty(), "{text}: {:?}", fixture.rules());
+    }
+}
+
+/// A list item's continuation is not indented code, however deep.
+#[test]
+fn list_content_stays_visible_at_any_indent() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/acceptance.md");
+    fixture.replace(
+        &path,
+        "  - **Single fault:** the rule is removed",
+        "    - **Single fault:** the rule is removed",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+
+    let doc = Doc::parse(
+        "x.md",
+        "- item\n\n    continued\n\n1. one\n2. two\n\n   text\n\n        code\n",
+    );
+    assert_eq!(doc.visible[2].as_deref(), Some("    continued"));
+    assert_eq!(doc.visible[7].as_deref(), Some("   text"));
+    assert_eq!(doc.visible[9], None, "four columns past the item");
+}
+
+/// Facts of the one lexer, each from the CommonMark 0.31.2 examples.
+#[test]
+fn the_lexer_follows_commonmark_blocks() {
+    let doc = |text: &str| Doc::parse("x.md", text);
+    let heading_levels = |text: &str| -> Vec<(usize, String)> {
+        doc(text)
+            .headings()
+            .iter()
+            .map(|heading| (heading.level, heading.text.clone()))
+            .collect()
+    };
+    let one = |level: usize, title: &str| vec![(level, title.to_owned())];
+    assert_eq!(heading_levels("   ## a"), one(2, "a"));
+    assert_eq!(heading_levels("##\ta"), one(2, "a"));
+    assert_eq!(heading_levels("## a ##"), one(2, "a"));
+    assert_eq!(heading_levels("## a#"), one(2, "a#"));
+    assert_eq!(heading_levels("## a \\#"), one(2, "a \\#"));
+    assert_eq!(heading_levels("###"), one(3, ""));
+    assert_eq!(heading_levels("## ##"), one(2, ""));
+    assert_eq!(heading_levels("    ## a"), vec![], "four spaces is code");
+    assert_eq!(heading_levels("#a"), vec![], "no delimiter");
+    assert_eq!(heading_levels("####### a"), vec![], "seven hashes");
+    assert_eq!(heading_levels("\\## a"), vec![], "escaped");
+    assert_eq!(heading_levels("a\n===\n"), one(1, "a"));
+    assert_eq!(heading_levels("a\n---\n"), one(2, "a"));
+    assert_eq!(heading_levels("a\nb\n---\n"), one(2, "a b"));
+    assert_eq!(heading_levels("a\n\n---\n"), vec![], "a thematic break");
+    assert_eq!(
+        heading_levels("- a\n---\n"),
+        vec![],
+        "the underline ends the list"
+    );
+    assert_eq!(heading_levels("- a\n  ---\n"), one(2, "a"));
+    assert_eq!(heading_levels("- ## a"), one(2, "a"));
+    assert_eq!(
+        heading_levels("a\n    ## b"),
+        vec![],
+        "paragraph continuation"
+    );
+    assert_eq!(
+        heading_levels("<div>\n## a\n</div>\n"),
+        vec![],
+        "HTML block"
+    );
+    assert_eq!(
+        heading_levels("<div>\n\n## a\n"),
+        one(2, "a"),
+        "ended by a blank"
+    );
+    assert_eq!(
+        heading_levels("a\n<span>\n## b"),
+        one(2, "b"),
+        "lone tag in a paragraph"
+    );
+    assert_eq!(heading_levels("```a```\n## b"), one(2, "b"), "inline code");
+    assert_eq!(
+        heading_levels("~~~ a`b\n## c\n~~~\n"),
+        vec![],
+        "a tilde info string"
+    );
+    assert_eq!(
+        heading_levels("````\n```\n## a\n```\n````\n"),
+        vec![],
+        "nested fences"
+    );
+    assert_eq!(
+        heading_levels("- ```\n  ## a\n  ```\n"),
+        vec![],
+        "a fence in a list"
+    );
+    assert_eq!(
+        heading_levels("- ```\n  a\n## b"),
+        one(2, "b"),
+        "a fence ends with its item"
+    );
+    assert_eq!(
+        heading_levels("    ```\n## a"),
+        one(2, "a"),
+        "indented code is no fence"
+    );
+    assert!(doc("- ```\n  a\n## b").unclosed_fence.is_none());
+    assert!(doc("```\n").unclosed_fence.is_some());
+    assert_eq!(
+        heading_levels("- <div>\n## a\n"),
+        one(2, "a"),
+        "ended by its item"
+    );
+    assert_eq!(
+        heading_levels("> a\n---\n"),
+        vec![],
+        "a quote ends at a thematic break"
+    );
+    assert_eq!(
+        heading_levels("- a\n> b\n---\n"),
+        vec![],
+        "a quote ends the list"
+    );
+    assert_eq!(heading_levels("## a"), one(2, "a"));
+    assert_eq!(heading_levels(" ## a"), one(2, "a"));
+    assert_eq!(heading_levels("  ## a"), one(2, "a"));
+    assert_eq!(atx_heading("   ## a"), Some((2, "a".to_owned())));
+    assert_eq!(atx_heading("    ## a"), None);
+    assert!(doc("<!--\n").unclosed_raw.is_some());
+    assert!(
+        doc("<!-->\n").unclosed_raw.is_none(),
+        "CommonMark 0.31 short comment"
+    );
+    assert!(doc("<!---->\n").unclosed_raw.is_none());
+    assert!(doc("<?x\n?>\n").unclosed_raw.is_none());
+    assert!(doc("<?x\n").unclosed_raw.is_some());
+    assert!(doc("<![CDATA[x\n").unclosed_raw.is_some());
+    assert!(doc("<!DOCTYPE x\n").unclosed_raw.is_some());
+    assert!(doc("<script>\n\n</SCRIPT>\n").unclosed_raw.is_none());
+    assert!(
+        doc("<https://example.com>\n").visible[0].is_some(),
+        "an autolink"
+    );
+    assert!(doc("<id>-<slug> text\n").visible[0].is_some(), "prose");
+    assert!(doc("<state>\n").visible[0].is_none(), "a lone tag");
+}
+
+#[test]
+fn only_a_real_list_item_interrupts_a_paragraph() {
+    assert_eq!(list_marker("2. b", true), None);
+    assert_eq!(list_marker("1. b", true), Some(2));
+    assert_eq!(list_marker("-", true), None);
+    assert_eq!(list_marker("- b", true), Some(1));
+    assert_eq!(list_marker("2. b", false), Some(2));
+    assert_eq!(list_marker("-", false), Some(1));
+    assert_eq!(list_marker("-b", false), None);
+    assert_eq!(list_marker("1234567890. b", false), None, "ten digits");
+    let doc = Doc::parse("x.md", "a\n2. b\n    c\n\n    d\n");
+    assert_eq!(doc.visible[2].as_deref(), Some("    c"));
+    assert_eq!(doc.visible[4], None, "no list opened, so this is code");
+}
+
+/// Whether an item stays open decides whether a deep line is its content or code.
+#[test]
+fn an_open_list_item_decides_what_indented_text_is() {
+    let last = |text: &str| Doc::parse("x.md", text).visible.last().cloned().flatten();
+    let content = Some("    c".to_owned());
+    assert_eq!(last("- a\n\n    c\n"), content, "item content");
+    assert_eq!(
+        last("- a\nb\n\n    c\n"),
+        content,
+        "a lazy line keeps the item"
+    );
+    assert_eq!(last("- a\n> b\n\n    c\n"), None, "a quote closes the item");
+    assert_eq!(
+        last("- a\n## b\n\n    c\n"),
+        None,
+        "a heading closes the item"
+    );
+    let deep = Some("     b".to_owned());
+    assert_eq!(
+        last("2. a\n\n     b\n"),
+        deep,
+        "no paragraph, so `2.` opens a list"
+    );
+    assert_eq!(
+        last("-\n\n     b\n"),
+        Some("     b".to_owned()),
+        "an empty item"
+    );
+}
+
+#[test]
+fn inline_comments_leave_the_line_around_them() {
+    assert_eq!(
+        without_comments("a <!-- b --> c"),
+        ("a  c".to_owned(), false)
+    );
+    assert_eq!(without_comments("a <!-- b"), ("a ".to_owned(), true));
+    assert_eq!(without_comments("a <!--> b"), ("a  b".to_owned(), false));
+    assert_eq!(without_comments("`<!--` a"), ("`<!--` a".to_owned(), false));
+    assert_eq!(
+        without_comments("a <!-- ` --> b `"),
+        ("a  b `".to_owned(), false)
+    );
+    assert_eq!(
+        without_comments("<!--a--> <!--b-->"),
+        (" ".to_owned(), false)
+    );
+    assert_eq!(
+        without_comments(r"\<!-- a -->"),
+        (r"\<!-- a -->".to_owned(), false)
+    );
+    assert_eq!(without_comments(r"\\<!-- a -->"), (r"\\".to_owned(), false));
+}
+
+#[test]
+fn a_bom_crlf_and_bare_cr_are_invisible_to_every_rule() {
+    let fixture = Fixture::new();
+    fixture.write(SINGLE, &format!("\u{feff}{}", single_spec()));
+    assert!(fixture.rules().is_empty(), "BOM: {:?}", fixture.rules());
+
+    let fixture = Fixture::new();
+    fixture.write(SINGLE, &single_spec().replace('\n', "\r\n"));
+    assert!(fixture.rules().is_empty(), "CRLF: {:?}", fixture.rules());
+
+    let fixture = Fixture::new();
+    fixture.write(SINGLE, &single_spec().replace('\n', "\r"));
+    assert!(fixture.rules().is_empty(), "CR: {:?}", fixture.rules());
+}
+
+/// A closing run and setext-free spelling stay definitions, so the lexer adds no red.
+#[test]
+fn a_closing_run_is_not_part_of_a_definition() {
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "### AC-1: rule", "### AC-1: rule ###");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+#[test]
+fn a_table_cell_may_hold_an_escaped_pipe() {
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/index.md");
+    fixture.replace(&path, "| D-1 and E-1 |", r"| D-1 \| E-1 |");
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    assert_eq!(table_cells(r"| a \| b | c |"), [r"a \| b", "c"]);
+    assert_eq!(table_cells(r"| a \\| b |"), [r"a \\", "b"]);
+    assert!(is_table_delimiter("|---|:--|-:|"));
+    assert!(is_table_delimiter("| --- | :-: | --- |"));
+    assert!(!is_table_delimiter("|---|---|"));
+    assert!(!is_table_delimiter("|x|y|z|"));
+}
+
+#[test]
+fn links_parse_as_commonmark_destinations() {
+    let targets = |line: &str| link_targets(line);
+    assert_eq!(targets(r#"[a](b.md "t")"#), ["b.md"]);
+    assert_eq!(targets(r#"[a](b.md "t)") [c](d.md)"#), ["b.md", "d.md"]);
+    assert_eq!(targets("[a](<b c.md>)"), ["b c.md"]);
+    assert_eq!(targets("[a](b(c).md)"), ["b(c).md"]);
+    assert_eq!(targets("![a](b.png)"), ["b.png"]);
+    assert_eq!(targets("[a]: b.md"), ["b.md"]);
+    assert_eq!(targets("  [a]: <b c.md> 'title'"), ["b c.md"]);
+    assert!(targets("[^1]: a footnote").is_empty());
+    assert!(targets("`[a](b.md)`").is_empty());
+    for url in ["https://x.y/z", "git+ssh://x/y", "mailto:a@b.c"] {
+        assert!(is_external(url), "{url}");
+    }
+    for path in ["a.md", "../x.rs?y=://", "a b://c", "://x", "1a://x"] {
+        assert!(!is_external(path), "{path}");
+    }
+}
+
 #[test]
 fn id_tokens_respect_word_boundaries() {
     let numbers = |line: &str| -> Vec<(&str, u32)> {
@@ -1268,25 +2527,97 @@ fn id_tokens_respect_word_boundaries() {
 
 #[test]
 fn citations_parse_only_repository_paths() {
-    assert_eq!(parse_citation("a/b.rs:12"), Some(("a/b.rs", 12, None)));
-    assert_eq!(parse_citation("a/b.rs:3-9"), Some(("a/b.rs", 9, None)));
+    let cited = |path, lines, sha| {
+        Some(Citation {
+            path,
+            lines: Some(lines),
+            sha,
+        })
+    };
+    assert_eq!(parse_citation("a/b.rs:12"), cited("a/b.rs", (12, 12), None));
+    assert_eq!(parse_citation("a/b.rs:3-9"), cited("a/b.rs", (3, 9), None));
     assert_eq!(
         parse_citation("a/b.rs:3@abc"),
-        Some(("a/b.rs", 3, Some("abc")))
+        cited("a/b.rs", (3, 3), Some("abc"))
     );
     assert_eq!(parse_citation("127.0.0.1:8080"), None);
     assert_eq!(parse_citation("http://x/y:80"), None);
     assert_eq!(parse_citation("a/b.rs"), None);
-    assert_eq!(parse_citation("a/b.rs:12:5"), Some(("a/b.rs", 12, None)));
+    assert_eq!(
+        parse_citation("a/b.rs:12:5"),
+        cited("a/b.rs", (12, 12), None)
+    );
+    assert_eq!(
+        parse_citation("a/b.rs:3-9:5"),
+        cited("a/b.rs", (3, 9), None)
+    );
     assert_eq!(
         parse_citation(".agents/ci.md:3"),
-        Some((".agents/ci.md", 3, None))
+        cited(".agents/ci.md", (3, 3), None)
+    );
+    assert_eq!(
+        parse_citation("packages/@keld/a.ts:3"),
+        cited("packages/@keld/a.ts", (3, 3), None)
+    );
+    assert_eq!(
+        parse_citation("packages/@keld/a.ts:3@abc"),
+        cited("packages/@keld/a.ts", (3, 3), Some("abc"))
     );
     assert_eq!(parse_citation("ghcr.io/org/image:11"), None, "image tag");
     assert_eq!(parse_citation("ghcr.io/org/image.v1:11"), None, "domain");
     assert_eq!(parse_citation("org/image:11"), None, "no file extension");
     assert_eq!(parse_citation("C:/x/y.rs:3"), None, "absolute Windows path");
     assert_eq!(parse_citation("/usr/lib/y.so:3"), None, "absolute path");
+    assert_eq!(parse_citation("a/b.rs:x"), None, "no line part");
+}
+
+/// A shape no range can parse stays a citation, so `CITE-LINE` refuses it.
+#[test]
+fn a_malformed_line_part_is_refused_not_ignored() {
+    for span in [
+        "a/b.rs:1-2-3",
+        "a/b.rs:5-",
+        "a/b.rs:-5",
+        "a/b.rs:99999999999999999999999",
+    ] {
+        let citation = parse_citation(span).expect(span);
+        assert_eq!(citation.lines, None, "{span}");
+        assert!(!range_exists(citation.lines, 10), "{span}");
+    }
+}
+
+#[test]
+fn a_range_exists_only_with_both_ends_in_order() {
+    for lines in [(1, 2), (1, 10), (10, 10), (3, 3)] {
+        assert!(range_exists(Some(lines), 10), "{lines:?}");
+    }
+    for lines in [
+        (11, 10),
+        (999, 2),
+        (0, 1),
+        (9, 3),
+        (0, 0),
+        (1, 11),
+        (11, 11),
+    ] {
+        assert!(!range_exists(Some(lines), 10), "{lines:?}");
+    }
+}
+
+#[test]
+fn a_citation_verifies_in_any_span_width() {
+    for span in [
+        format!("`{CITED_FILE}:1-2`"),
+        format!("``{CITED_FILE}:1-2``"),
+        format!("`` {CITED_FILE}:1-2 ``"),
+        format!("`` `{CITED_FILE}:1-2` ``"),
+    ] {
+        let fixture = Fixture::new();
+        cite_in_design(&fixture, &span);
+        let report = fixture.run();
+        assert!(report.findings.is_empty(), "{span}: {:?}", report.findings);
+        assert_eq!(report.citations_verified, 2, "{span}");
+    }
 }
 
 #[test]
@@ -1339,18 +2670,23 @@ fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
 
     let history = GitHistory {
         root: &fixture.root,
+        base_ref: head.clone(),
     };
     assert!(history.has_commit(&head));
     assert!(history.is_reachable(&head));
     assert!(history.has_commit(&unreachable));
     assert!(!history.is_reachable(&unreachable), "a dropped commit");
     assert!(!history.is_reachable(ABSENT_SHA));
-    let tracked = history.tracked_markdown().expect("index reads");
-    assert!(tracked.iter().any(|path| path == BIG), "{tracked:?}");
-    assert!(
-        tracked.iter().all(|path| path.ends_with(".md")),
-        "{tracked:?}"
-    );
+    let tracked = history.tracked_files().expect("index reads");
+    assert!(tracked.iter().any(|file| file.path == BIG), "{tracked:?}");
+    assert!(tracked.iter().all(|file| !file.symlink), "{tracked:?}");
+    let blob = git(&["rev-parse", &format!("HEAD:{BIG}")]);
+    let entry = format!("120000,{blob},docs/alias.md");
+    git(&["update-index", "--add", "--cacheinfo", &entry]);
+    let tracked = history.tracked_files().expect("index reads");
+    let alias = tracked.iter().find(|file| file.path == "docs/alias.md");
+    assert!(alias.is_some_and(|file| file.symlink), "{tracked:?}");
+    git(&["rm", "-q", "--cached", "docs/alias.md"]);
     assert!(!history.has_commit(ABSENT_SHA));
     assert_eq!(history.lines_at(&head, BIG), Some(600));
     assert_eq!(history.lines_at(&head, "docs/specs/absent.md"), None);
@@ -1372,14 +2708,59 @@ fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
     };
     let refused = check_tree(&fixture.root, &config, &history);
     assert!(refused.is_err(), "a missing seal must not read as a pass");
+
+    let previous = history.previous_baseline(BASELINE).expect("base resolves");
+    assert_eq!(previous.commit, head);
+    let committed = previous.text.expect("the head holds the baseline");
+    assert_eq!(committed.replace("\r\n", "\n"), fixture.read(BASELINE));
+    let absent = history.previous_baseline("docs/specs/none.tsv");
+    assert!(absent.expect("base resolves").text.is_none());
+
+    for base_ref in [
+        "origin/none",
+        "",
+        "0000000000000000000000000000000000000000",
+        ABSENT_SHA,
+    ] {
+        let history = GitHistory {
+            root: &fixture.root,
+            base_ref: base_ref.to_owned(),
+        };
+        let error = history
+            .previous_baseline(BASELINE)
+            .err()
+            .expect("a missing base is no pass");
+        assert!(
+            error.contains("git fetch origin main") && error.contains(BASE_ENV),
+            "{base_ref}: {error}"
+        );
+        // The seal resolves here, so only the missing base can refuse this run.
+        let config = Config {
+            rows: 2,
+            seal: &head,
+        };
+        let refused = check_tree(&fixture.root, &config, &history);
+        let refused = refused.err().expect("a missing base must not pass");
+        assert!(refused.contains("comparison base"), "{base_ref}: {refused}");
+    }
+    let unrelated = git(&[
+        &identity[..],
+        &["commit-tree", "-m", "z", &format!("{head}^{{tree}}")],
+    ]
+    .concat());
+    let history = GitHistory {
+        root: &fixture.root,
+        base_ref: unrelated,
+    };
+    let error = history
+        .previous_baseline(BASELINE)
+        .err()
+        .expect("no history");
+    assert!(error.contains("no merge base"), "{error}");
 }
 
 fn printed_rows(fixture: &Fixture) -> String {
-    let history = Table {
-        sealed: fixture.sealed.clone(),
-        tracked: fixture.tracked.clone(),
-    };
-    baseline_rows_at(&fixture.root, &history).expect("rows print")
+    baseline_rows_at(&fixture.root, &fixture.history()).expect("rows print")
 }
 
 /// `baseline-rows` is the paste source for a drain: what it prints must be what `check`
@@ -1393,8 +2774,8 @@ fn baseline_rows_prints_what_check_accepts() {
     );
     fixture.write(SMALL, &text);
     let printed = printed_rows(&fixture);
-    let migrated = format!("{MIGRATED_ROW}\t-\t-\t-\tmigrated:3");
-    let flat = format!("{SMALL}\t-\t-\t-\tmigrated:1");
+    let migrated = format!("{MIGRATED_ROW}\t-\t-\t-\t{MIGRATED_CELL}");
+    let flat = format!("{SMALL}\t-\t-\t-\tmigrated:AC-1.Expected RED");
     assert!(printed.lines().any(|row| row == migrated), "{printed}");
     assert!(printed.lines().any(|row| row == flat), "{printed}");
     fixture.write(BASELINE, &printed);
@@ -1408,7 +2789,10 @@ fn baseline_rows_reproduces_the_committed_baseline() {
     let committed = fs::read_to_string(root.join(SPEC_ROOT).join(BASELINE_FILE))
         .expect("run from the repository root")
         .replace("\r\n", "\n");
-    let history = GitHistory { root: &root };
+    let history = GitHistory {
+        root: &root,
+        base_ref: "HEAD".to_owned(),
+    };
     assert_eq!(
         baseline_rows_at(&root, &history).expect("rows print"),
         committed

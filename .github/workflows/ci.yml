@@ -930,8 +930,11 @@ jobs:
           rustc --edition=2024 -D warnings tools/doc_placeholders.rs -o target/doc-placeholders/doc-placeholders
           target/doc-placeholders/doc-placeholders check .
       # spec-structure reads the baseline seal and spec pins from Git, which is why
-      # this job keeps fetch-depth: 0. A missing commit fails the gate (#1321).
+      # this job keeps fetch-depth: 0. A missing commit fails the gate (#1321). Its
+      # ratchet compares with the PR base or, on push, the previous tip.
       - name: Spec structure contracts
+        env:
+          KELD_CI_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           mkdir -p target/spec-structure
           rustc --edition=2024 -D warnings --test tools/spec_structure.rs -o target/spec-structure/spec-structure-test

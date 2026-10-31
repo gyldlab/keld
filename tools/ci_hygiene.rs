@@ -9,7 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod git_base_contract;
 mod justfile_contract;
+use git_base_contract::{BASE_ENV, BaseError, base_ref, merge_base};
 use justfile_contract::{declaration_words, dependency_gates, expanded_gates};
 
 #[path = "ci_hygiene_workflow_access.rs"]
@@ -40,14 +42,13 @@ const MERMAID_RENDERER: &str = "tools/mermaid_render_check.sh";
 const MERMAID_CONFIG: &str = "tools/mermaid-render-config.json";
 /// GH-508 committed kipc channel allocation baseline (append-only).
 const CHANNEL_ALLOCATIONS: &str = "crates/keld-ipc/channel_allocations.txt";
-/// Comparison base, resolved the way `tools/ci_changes.sh local` resolves it.
-const CHANNEL_ALLOCATIONS_BASE_ENV: &str = "KELD_CI_BASE_REF";
-const CHANNEL_ALLOCATIONS_DEFAULT_BASE: &str = "origin/main";
 /// The hosted step that runs the append-only rule, and the base it binds.
 const CHANNEL_ALLOCATIONS_STEP: &str = "Check this checkout";
 const CHANNEL_ALLOCATIONS_STEP_IF: &str = "needs.changes.outputs.hygiene == 'true'";
-const CHANNEL_ALLOCATIONS_STEP_ENV: &[(&str, &str)] = &[(
-    CHANNEL_ALLOCATIONS_BASE_ENV,
+const CHANNEL_ALLOCATIONS_STEP_ENV: &[(&str, &str)] = COMPARISON_BASE_STEP_ENV;
+/// A ratchet step compares with the PR base or the previous push tip, never with itself.
+const COMPARISON_BASE_STEP_ENV: &[(&str, &str)] = &[(
+    BASE_ENV,
     "${{ github.event.pull_request.base.sha || github.event.before }}",
 )];
 const CHANNEL_ALLOCATIONS_STEP_COMMANDS: &[&str] = &[
@@ -1816,6 +1817,16 @@ fn check_hygiene_contract_step(
     step: &str,
     expected_commands: &[&str],
 ) -> Result<(), String> {
+    check_hygiene_contract_step_env(text, step, &[], expected_commands)
+}
+
+/// The same contract for a step that binds exactly `expected_env` and nothing else.
+fn check_hygiene_contract_step_env(
+    text: &str,
+    step: &str,
+    expected_env: &[(&str, &str)],
+    expected_commands: &[&str],
+) -> Result<(), String> {
     let Some(hygiene) = workflow_job_block(text, "hygiene") else {
         return Err(format!(
             "CI-HYGIENE: `{WORKFLOW}` has no `hygiene` job for `{step}`."
@@ -1847,13 +1858,36 @@ fn check_hygiene_contract_step(
     let contract_step = workflow_direct_named_step_block(&hygiene, step).ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `hygiene.steps`.")
     })?;
-    let expected_keys = ["run".to_owned()];
+    let binds_env = !expected_env.is_empty();
+    let expected_keys: Vec<String> = binds_env
+        .then(|| "env".to_owned())
+        .into_iter()
+        .chain(["run".to_owned()])
+        .collect();
     if workflow_named_step_direct_keys(&contract_step, step).as_deref()
         != Some(expected_keys.as_slice())
     {
+        let keys = if binds_env {
+            "`env` and `run` keys"
+        } else {
+            "`run` key"
+        };
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its `run` key. A condition, custom shell, or continue-on-error can erase enforcement."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` may contain only its {keys}. A condition, custom shell, or continue-on-error can erase enforcement."
         ));
+    }
+    if binds_env {
+        let expected: Vec<(String, String)> = expected_env
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        if workflow_named_step_mapping(&hygiene, step, "env").as_deref()
+            != Some(expected.as_slice())
+        {
+            return Err(format!(
+                "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly {expected_env:?}, so it compares with the PR base or the previous push tip, never with itself."
+            ));
+        }
     }
     let commands = workflow_named_step_shell_commands(&contract_step, step).ok_or_else(|| {
         format!("CI-HYGIENE: `{WORKFLOW}` `{step}` has no executable multiline `run` block.")
@@ -1890,7 +1924,12 @@ fn check_doc_placeholders_step(text: &str) -> Result<(), String> {
 
 /// spec-structure runs whenever the hygiene job runs; `docs/*` selects it (#1321).
 fn check_spec_structure_step(text: &str) -> Result<(), String> {
-    check_hygiene_contract_step(text, "Spec structure contracts", SPEC_STRUCTURE_COMMANDS)
+    check_hygiene_contract_step_env(
+        text,
+        "Spec structure contracts",
+        COMPARISON_BASE_STEP_ENV,
+        SPEC_STRUCTURE_COMMANDS,
+    )
 }
 
 /// The hello-command regression reads the justfile and onboarding docs (#650).
@@ -2041,7 +2080,7 @@ fn check_channel_allocations_step(text: &str) -> Result<(), String> {
         != Some(expected_env.as_slice())
     {
         return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{CHANNEL_ALLOCATIONS_BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
+            "CI-HYGIENE: `{WORKFLOW}` `{step}` must bind exactly `{BASE_ENV}: ${{{{ github.event.pull_request.base.sha || github.event.before }}}}` so {CHANNEL_ALLOCATIONS} is compared with the PR base or the previous push tip, never with itself."
         ));
     }
     let commands = workflow_named_step_shell_commands(&block, step).ok_or_else(|| {
@@ -2841,42 +2880,14 @@ fn git_output(root: &Path, args: &[&str]) -> Result<std::process::Output, String
 /// Resolves the merge base of `base_ref` and `HEAD`, failing closed when the
 /// base is unavailable instead of passing without a comparison.
 fn allocations_merge_base(root: &Path, base_ref: &str) -> Result<String, String> {
-    let unresolved = |detail: &str| {
-        format!(
+    merge_base(&|args| git_output(root, args), base_ref).map_err(|error| match error {
+        BaseError::Git(detail) => detail,
+        BaseError::Unresolved(detail) => format!(
             "CI-HYGIENE: cannot resolve the {CHANNEL_ALLOCATIONS} comparison base `{base_ref}` \
-             ({detail}). Run `git fetch origin main`, or set {CHANNEL_ALLOCATIONS_BASE_ENV} to an \
-             available commit, then rerun just hygiene; the append-only check never passes \
-             without a base."
-        )
-    };
-    if base_ref.is_empty() || base_ref.bytes().all(|byte| byte == b'0') {
-        return Err(unresolved(
-            "empty or all-zero; a first push has no comparison base",
-        ));
-    }
-    let verify = git_output(
-        root,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{base_ref}^{{commit}}"),
-        ],
-    )?;
-    if !verify.status.success() {
-        return Err(unresolved("not a commit in this repository"));
-    }
-    let merge_base = git_output(root, &["merge-base", base_ref, "HEAD"])?;
-    if !merge_base.status.success() {
-        return Err(unresolved("no merge base with HEAD"));
-    }
-    let sha = String::from_utf8_lossy(&merge_base.stdout)
-        .trim()
-        .to_owned();
-    if sha.is_empty() {
-        return Err(unresolved("empty merge base"));
-    }
-    Ok(sha)
+             ({detail}). Run `git fetch origin main`, or set {BASE_ENV} to an available commit, \
+             then rerun just hygiene; the append-only check never passes without a base."
+        ),
+    })
 }
 
 /// The baseline file at `merge_base`, or `None` when that commit lacks it.
@@ -2960,9 +2971,7 @@ fn run_cli() -> Result<(), String> {
                     "CI-HYGIENE: workflow semantic check failed ({status}); restore the reported security contract before rerunning."
                 ));
             }
-            let base_ref = env::var(CHANNEL_ALLOCATIONS_BASE_ENV)
-                .unwrap_or_else(|_| CHANNEL_ALLOCATIONS_DEFAULT_BASE.to_owned());
-            check_channel_allocations_append_only(&root, &base_ref)
+            check_channel_allocations_append_only(&root, &base_ref())
         }
         _ => Err(format!(
             "CI-HYGIENE: unknown command `{command}`. Use `check` to verify KEL-39 files."
