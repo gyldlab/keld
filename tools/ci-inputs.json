@@ -509,7 +509,8 @@
         "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
         "crates/keld-host/tests/no_flag/macos/public_fs.rs",
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
-        "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
+        "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts",
+        "crates/keld-host/tests/no_flag/macos/multifile_staging/fixture.rs"
       ],
       "sha256": "50bbde015768cac7f21b687f15652080dfb09cfe48c062a313c40705b6a4fbcf"
     },
