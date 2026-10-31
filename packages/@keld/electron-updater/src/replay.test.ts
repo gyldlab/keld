@@ -179,6 +179,36 @@ test("electron-updater.import.zero-io: importing the adapter the way draw.io doe
   });
 });
 
+// Negative controls: wrap checkForUpdates in an async function, or catch the
+// fact getter's failure and treat it as false. Neither preserves this boundary.
+test("electron-updater.checks.missing-facts: both check methods synchronously propagate the identical typed application-fact error, with zero events and no I/O", () => {
+  const run = runFixture("missing_facts.ts");
+  expectCleanExit(run);
+  expectNoIo(run);
+  expect(run.result).toEqual({
+    constructorReads: 0,
+    outcomes: [
+      {
+        method: "checkForUpdates",
+        returnedPromise: false,
+        sameError: true,
+        code: "TEST-APP-FACT-UNAVAILABLE",
+        factReads: 1,
+      },
+      {
+        method: "checkForUpdatesAndNotify",
+        returnedPromise: false,
+        sameError: true,
+        code: "TEST-APP-FACT-UNAVAILABLE",
+        factReads: 1,
+      },
+    ],
+    events: ZERO_EVENTS,
+    quitCalls: 0,
+    logLines: [],
+  });
+});
+
 // Negative control: make setFeedURL throw; the replica records a synchronous
 // throw (draw.io's safeUpdaterCall would open its Update Error dialog).
 test("electron-updater.replay.env-disabled: with DRAWIO_DISABLE_UPDATE=true set explicitly, the draw.io sequence makes zero checkForUpdates calls, sees zero error events and zero throws, and the logger identity holds", () => {
