@@ -403,7 +403,7 @@ expect_flags "doc-placeholders checker edit selects every lane" "$all_true" "$(r
 # #630: an all-workspace fallback (router, workflow or ci-inputs.json edits)
 # builds and tests every package on Ubuntu, installing WebKitGTK; it never
 # narrows to the GTK-free subset. The #640 diff (a keld-compat change plus a
-# ci-inputs.json rebind) ran only keld-guard keld-ipc keld-native keld-pack.
+# ci-inputs.json policy edit) ran only keld-guard keld-ipc keld-native keld-pack.
 for input in tools/ci_changes.sh tools/ci-inputs.json .github/workflows/ci.yml; do
     fallback="$(result_for_paths "$input")"
     expect_exact_output "$input installs WebKitGTK on Ubuntu" webkitgtk true "$fallback"
@@ -546,8 +546,12 @@ compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
 expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"
 expect_package_token "compat-only change includes its owner package" keld-compat "$compat_classification"
 
-compat_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
+compat_test_classification="$(result_for_paths crates/keld-compat/tests/support/corpus_error.rs)"
 expect_flags "Rust-only change does not select the TypeScript lane" "$compat_flags" "$compat_test_classification"
+# GH-1275: a registered Rust reader (tools/ci-inputs.json rust-readers) that changes
+# in the diff widens to every lane for that change; no digest is recorded or rebound.
+reader_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
+expect_flags "registered Rust reader change selects every lane" "$all_true" "$reader_test_classification"
 expect_empty_output "Rust-only change selects no Bun suite" ts_packages "$compat_test_classification"
 
 ipc_fixture_classification="$(result_for_paths crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv)"
@@ -669,8 +673,8 @@ printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/packa
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-# Keep the real shared native policy in this minimal graph fixture. Bind a real,
-# immutable reader so TS selects hygiene without stale-reader or all-gate rescue.
+# Keep the real shared native policy in this minimal graph fixture with its real
+# reader pattern, so TS selects hygiene through the edge and not an all-gate rescue.
 "$python_command" -B - "$repo_root" "$temp_dir" <<'PY'
 import json, shutil, sys
 from pathlib import Path
@@ -680,9 +684,7 @@ import ci_inputs
 native = next(consumer for consumer in ci_inputs.load(source)["consumers"]
               if consumer["owner"] == "Native JavaScript formatting")
 shutil.copyfile(source / "tools/ci_inputs.py", fixture / "tools/ci_inputs.py")
-patterns = ["tools/ci_inputs.py"]
-reader = {"patterns": patterns,
-          "sha256": ci_inputs.fingerprint(fixture, ci_inputs.files(fixture), patterns)}
+reader = {"patterns": ["tools/ci_inputs.py"]}
 contract = {"schema": ci_inputs.SCHEMA, "known_inputs": ["*"],
             "reader_sets": {native["reader_set"]: reader}, "consumers": [native]}
 (fixture / "tools/ci-inputs.json").write_text(json.dumps(contract) + "\n", encoding="utf-8")
@@ -1078,4 +1080,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests
