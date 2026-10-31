@@ -556,33 +556,40 @@ mod admitted {
         }
     }
 
-    /// AC5 NC 3: a linked or non-file sidecar is refused by the admission owner before
-    /// Bun starts, so the oracle never depends on what Bun does with such a preload.
+    /// A staged sidecar replaced by a fixture that points outside the stage.
+    fn linked_sidecar_fixture(
+        facade: bool,
+    ) -> (
+        ProductFixture,
+        std::path::PathBuf,
+        keld_cli::boot::DevBootStage,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let (fixture, marker) = entry_marker_fixture(true, facade);
+        let stage = stage_boot(&fixture.project);
+        let sidecar = stage.root().join("src").join("kipc-transport.ts");
+        let outside = fixture.root.path().join("outside");
+        fs::create_dir(&outside).expect("external directory");
+        fs::write(outside.join("outside.ts"), "export {};\n").expect("external file");
+        fs::remove_file(&sidecar).expect("remove the staged sidecar");
+        (fixture, marker, stage, sidecar, outside)
+    }
+
+    /// AC5 NC 3: a junction or non-file sidecar is refused by the admission owner before
+    /// Bun starts, so the oracle never depends on what Bun does with such a preload. A
+    /// junction needs no privilege, so this cell runs on every Windows session.
     #[test]
-    fn windows_primary_refuses_junction_symlink_and_directory_sidecars() {
+    fn windows_primary_refuses_junction_and_directory_sidecars() {
         for facade in [true, false] {
-            for shape in ["junction", "symlink", "directory"] {
-                let (fixture, marker) = entry_marker_fixture(true, facade);
-                let stage = stage_boot(&fixture.project);
-                let sidecar = stage.root().join("src").join("kipc-transport.ts");
-                let outside = fixture.root.path().join("outside");
-                fs::create_dir(&outside).expect("external directory");
-                fs::write(outside.join("outside.ts"), "export {};\n").expect("external file");
-                fs::remove_file(&sidecar).expect("remove the staged sidecar");
-                let expected = match shape {
-                    "junction" => {
-                        junction(&sidecar, &outside);
-                        "reparse point"
-                    }
-                    "symlink" => {
-                        std::os::windows::fs::symlink_file(outside.join("outside.ts"), &sidecar)
-                            .expect("symbolic-link sidecar needs the symlink privilege");
-                        "reparse point"
-                    }
-                    _ => {
-                        fs::create_dir(&sidecar).expect("directory sidecar");
-                        "not a regular file"
-                    }
+            for shape in ["junction", "directory"] {
+                let (_fixture, marker, stage, sidecar, outside) = linked_sidecar_fixture(facade);
+                let expected = if shape == "junction" {
+                    junction(&sidecar, &outside);
+                    "reparse point"
+                } else {
+                    fs::create_dir(&sidecar).expect("directory sidecar");
+                    "not a regular file"
                 };
                 assert_launch_refused(
                     &stage,
@@ -590,10 +597,29 @@ mod admitted {
                     expected,
                     &format!("{shape} facade={facade}"),
                 );
-                if shape != "symlink" {
-                    fs::remove_dir(&sidecar).expect("remove the sidecar fixture, not its target");
-                }
+                fs::remove_dir(&sidecar).expect("remove the sidecar fixture, not its target");
             }
+        }
+    }
+
+    /// AC5 NC 3, symbolic-link row. Creating a Windows symbolic link needs Developer Mode
+    /// or `SeCreateSymbolicLinkPrivilege` (hosted `windows-latest` has it). Without it this
+    /// cell fails on that prerequisite instead of passing unexercised, and the junction
+    /// and directory rows above still run.
+    #[test]
+    fn windows_primary_refuses_a_symbolic_link_sidecar() {
+        for facade in [true, false] {
+            let (_fixture, marker, stage, sidecar, outside) = linked_sidecar_fixture(facade);
+            std::os::windows::fs::symlink_file(outside.join("outside.ts"), &sidecar).expect(
+                "create a Windows symbolic link: needs Developer Mode or \
+                 SeCreateSymbolicLinkPrivilege (hosted windows-latest has it)",
+            );
+            assert_launch_refused(
+                &stage,
+                &marker,
+                "reparse point",
+                &format!("symlink facade={facade}"),
+            );
         }
     }
 

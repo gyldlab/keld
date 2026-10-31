@@ -191,9 +191,17 @@ fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties
             );
         }
         wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
-        // The zero count was observed first, so a stage deleted under a live family fails.
-        assert!(!process_exists(host_pid), "stage deleted under the host");
-        assert!(!process_exists(bun_pid), "stage deleted under Bun");
+        // End state only: once the stage count reads 0, the host and Bun are gone. This
+        // does not show either was gone when the stage was deleted; that order is the
+        // existing Job gate's, and no fixture here keeps a member alive at it (AC19 *NC*).
+        assert!(
+            !process_exists(host_pid),
+            "host alive after the stage count reached 0"
+        );
+        assert!(
+            !process_exists(bun_pid),
+            "Bun alive after the stage count reached 0"
+        );
         wait_process_gone(cleanup_pid, Instant::now() + PRODUCT_DEADLINE);
         println!(
             "KELD_GH1188_AC19 stalled={stalled} host_pid={host_pid} bun_pid={bun_pid} sentinel_pid={cleanup_pid} stage_count=0"

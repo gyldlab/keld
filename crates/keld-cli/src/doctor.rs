@@ -624,18 +624,10 @@ mod tests {
         );
     }
 
+    /// The prefix rules themselves are tested beside their owner, keld-runtime
+    /// `strip_verbatim_prefix`; this cell pins doctor's display of a verbatim root.
     #[test]
-    fn strip_verbatim_prefix_disk_and_unc() {
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\C:\foo")),
-            std::path::PathBuf::from(r"C:\foo")
-        );
-        assert_eq!(
-            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
-            std::path::PathBuf::from(r"\\server\share")
-        );
-        let ordinary = Path::new("/var/tmp/app");
-        assert_eq!(strip_verbatim_prefix(ordinary), ordinary);
+    fn display_project_path_drops_the_verbatim_prefix() {
         assert_eq!(
             display_project_path(Path::new(r"\\?\C:\Users\runneradmin\app")),
             r"C:\Users\runneradmin\app"

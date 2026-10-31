@@ -1504,7 +1504,7 @@ mod debug_attempt_witness_tests {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
 mod staged_launch_tests {
-    use super::{admit_staged_transport_sidecar, staged_bun_launch_args};
+    use super::{admit_staged_transport_sidecar, staged_bun_launch_args, strip_verbatim_prefix};
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1647,6 +1647,21 @@ mod staged_launch_tests {
         let preload = args[1].to_string_lossy();
         assert!(preload.starts_with("--preload="), "{preload}");
         assert!(!preload.contains(r"\\?\"), "{preload}");
+    }
+
+    /// Disk and UNC verbatim prefixes lose only the prefix; anything else is unchanged.
+    #[test]
+    fn strip_verbatim_prefix_disk_and_unc() {
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\C:\foo")),
+            PathBuf::from(r"C:\foo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+        let ordinary = Path::new("/var/tmp/app");
+        assert_eq!(strip_verbatim_prefix(ordinary), ordinary);
     }
 
     #[test]
