@@ -2471,8 +2471,23 @@ fn a_variant_alone_does_not_state_a_field() {
         assert_only(&fixture, Rule::Fields, &variant);
     }
     let fixture = Fixture::new();
+    fixture.replace(SINGLE, "- Owner: owner\n", "- owner:\n  - owner\n");
+    assert_only(
+        &fixture,
+        Rule::Fields,
+        "a variant lends a nested value nothing",
+    );
+    let fixture = Fixture::new();
     fixture.replace(SINGLE, "- **Given:** a state\n", "- **given:** a state\n");
     assert_only(&fixture, Rule::AcFields, "a lower-case AC field");
+    let fixture = Fixture::new();
+    let line = "- Tracker: GH-1\n";
+    fixture.replace(SINGLE, line, "- Tracker: GH-2\n- tracker: GH-1\n");
+    assert_only(
+        &fixture,
+        Rule::FieldDuplicate,
+        "a repeat has no tracker to compare",
+    );
     let fixture = Fixture::new();
     let path = format!("{DIR}/index.md");
     fixture.replace(&path, "- Tracker: GH-1\n", "- tracker: KEL-9\n");
@@ -2501,6 +2516,31 @@ fn a_lower_case_label_in_a_body_is_prose() {
         "- updated: true when a row moves\n- pin: the Bun version\n- tracker: the object\n\n## 5.",
     );
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "## 9. Perf impact\n\nnone\n",
+        "## 9. Perf impact\n\n- pin: the Bun version\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "## 9. Perf impact\n\nnone\n",
+        "## 9. Perf impact\n\n- UPDATED: a body variant\n",
+    );
+    assert_only(&fixture, Rule::FieldDuplicate, "a variant in capitals");
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "Owns: tasks and evidence\n",
+        "Owns: tasks and evidence\n\nstatus: draft\n",
+    );
+    assert_only(
+        &fixture,
+        Rule::FieldDuplicate,
+        "a part header holds no prose",
+    );
 }
 
 /// A code span that runs past the colon quotes a field, on a wrapped line or anywhere.
