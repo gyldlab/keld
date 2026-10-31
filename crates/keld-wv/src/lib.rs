@@ -41,9 +41,13 @@ mod view_drop_order;
 /// short. On Windows that bound is `webview2::WEBVIEW2_STARTUP_BOUND`, which composes
 /// this deadline with the launch and recovery bounds; the Windows no-flag harness reads
 /// it.
+/// Shared 15-second first-milestone bound: navigation on renderer boots, Init
+/// on zero-window macOS facade boots. The host coordinates the latter itself.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(crate) const INITIAL_NAVIGATION_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(15);
+pub const INITIAL_MILESTONE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) const INITIAL_NAVIGATION_DEADLINE: std::time::Duration = INITIAL_MILESTONE_DEADLINE;
 
 /// A user closing the last view leaves no renderer whose startup can time out.
 /// Terminal app intent also wins over the initial navigation hang guard.
@@ -105,8 +109,9 @@ pub mod wkwebview;
 pub mod wv_link;
 
 pub use engine::{
-    AppWindowCommand, AppWindowEvent, DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine,
-    WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
+    WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,
+    WkWebViewEngineExt,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};

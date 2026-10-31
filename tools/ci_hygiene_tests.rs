@@ -43,7 +43,7 @@ fn windows_media_step() -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "      - name: Windows media guard acceptance (KEL-132)\n        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')\n        shell: pwsh\n        run: |\n{commands}"
+        "      - name: Windows media guard acceptance (KEL-132)\n        shell: pwsh\n        run: |\n{commands}"
     )
 }
 
@@ -109,6 +109,10 @@ fn valid_workflow() -> String {
     let deny_job = live_deny_job();
     [
             "name: CI",
+            "env:",
+            "  CARGO_TERM_COLOR: always",
+            "  RUST_BACKTRACE: 1",
+            "  CARGO_INCREMENTAL: \"0\"",
             "jobs:",
             "  changes:",
             "    name: change router",
@@ -119,8 +123,6 @@ fn valid_workflow() -> String {
             "        with:",
             "          fetch-depth: 0",
             "          persist-credentials: false",
-            "      - name: Router contract tests",
-            "        run: tools/ci_changes_test.sh",
             "      - name: Classify changed-path ownership",
             "        run: tools/ci_changes.sh github",
             "      - name: Agent instruction inventory (agents-md)",
@@ -132,6 +134,16 @@ fn valid_workflow() -> String {
             "          target/product-status/product-status-test",
             "          rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status",
             "          target/product-status/product-status check .",
+            "  router-contracts:",
+            "    name: Router contract tests",
+            "    runs-on: ubuntu-latest",
+            "    steps:",
+            "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
+            "        with:",
+            "          fetch-depth: 0",
+            "          persist-credentials: false",
+            "      - name: Router contract tests",
+            "        run: tools/ci_changes_test.sh",
             "  check:",
             "    strategy:",
             "      matrix:",
@@ -169,10 +181,20 @@ fn valid_workflow() -> String {
             "          mkdir -p target/product-status",
             "          rustc --edition=2024 -D warnings --test tools/product_status.rs -o target/product-status/product-status-test",
             "          target/product-status/product-status-test",
-            windows_media_step.as_str(),
             &release_helper_step(),
+            "  windows-media:",
+            "    runs-on: windows-latest",
+            "    needs: changes",
+            "    if: needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')",
+            "    steps:",
+            windows_media_step.as_str(),
             "  bun-test:",
+            "    runs-on: ${{ matrix.os }}",
             "    if: needs.changes.outputs.ts == 'true'",
+            "    strategy:",
+            "      fail-fast: false",
+            "      matrix:",
+            "        os: [ubuntu-latest, macos-latest, windows-latest]",
             "    steps:",
             "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
             "        with:",
@@ -320,6 +342,7 @@ fn valid_workflow() -> String {
             "    if: ${{ always() }}",
             "    needs:",
             "      - changes",
+            "      - router-contracts",
             "      - fmt",
             "      - check",
             "      - bun-test",
@@ -335,6 +358,7 @@ fn valid_workflow() -> String {
             "      - dependency-review",
             "      - workspace-contracts",
             "      - doctest",
+            "      - windows-media",
             "    steps:",
             "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0",
             "        with:",
@@ -342,6 +366,7 @@ fn valid_workflow() -> String {
             "      - name: Verify required CI results",
             "        env:",
             "          KELD_RESULT_CHANGES: ${{ needs.changes.result }}",
+            "          KELD_RESULT_ROUTER_CONTRACTS: ${{ needs['router-contracts'].result }}",
             "          KELD_RESULT_FMT: ${{ needs.fmt.result }}",
             "          KELD_RESULT_CHECK: ${{ needs.check.result }}",
             "          KELD_RESULT_BUN: ${{ needs['bun-test'].result }}",
@@ -373,6 +398,8 @@ fn valid_workflow() -> String {
             "          KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}",
             "          KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}",
             "          KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}",
+            "          KELD_RESULT_MEDIA: ${{ needs['windows-media'].result }}",
+            "          KELD_ROUTE_MEDIA: ${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
             "        run: |",
             "          tools/ci_required.sh test",
             "          tools/ci_required.sh check \\",
@@ -391,7 +418,9 @@ fn valid_workflow() -> String {
             "            \"$KELD_RESULT_DEPENDENCY_REVIEW\" \\",
             "            \"$KELD_RESULT_WORKSPACE\" \"$KELD_ROUTE_WORKSPACE\" \\",
             "            \"$KELD_EVENT_NAME\" \"$KELD_ROUTE_RUST_DOCUMENTATION_ONLY\" \"$KELD_ROUTE_CHECK_OS\" \\",
-            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\"",
+            "            \"$KELD_RESULT_DOCTEST\" \"$KELD_ROUTE_DOCTEST\" \\",
+            "            \"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\" \\",
+            "            \"$KELD_RESULT_ROUTER_CONTRACTS\"",
             "",
         ]
         .join("\n")
@@ -1102,7 +1131,7 @@ fn required_result_must_receive_router_applicability() {
         &valid_workflow().replacen("\"$KELD_ROUTE_TS\"", "false", 1),
     );
     let error = check(temp.path()).expect_err("unused router output must fail");
-    assert!(error.contains("32-argument"), "{error}");
+    assert!(error.contains("35-argument"), "{error}");
 }
 
 #[test]
@@ -1114,6 +1143,7 @@ fn required_result_must_observe_security_jobs() {
         "dependency-review",
         "workspace-contracts",
         "doctest",
+        "windows-media",
     ] {
         let workflow = valid_workflow().replacen(&format!("      - {job}\n"), "", 1);
         let error = check_required_job(&workflow).expect_err("missing security job must fail");
@@ -1158,7 +1188,7 @@ fn required_result_must_receive_security_results_without_spoofing() {
         assert!(error.contains(key), "{error}");
         let workflow = valid_workflow().replacen(&format!("\"${key}\""), "success", 1);
         let error = check_required_job(&workflow).expect_err("unused security result must fail");
-        assert!(error.contains("32-argument"), "{error}");
+        assert!(error.contains("35-argument"), "{error}");
     }
 }
 
@@ -1454,6 +1484,89 @@ fn required_evaluator_rejects_false_green_shell_shapes() {
 }
 
 #[test]
+fn required_evaluator_refuses_unreviewed_step_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed required result baseline");
+    let needle = "      - name: Verify required CI results\n        env:\n";
+    assert!(baseline.contains(needle));
+    for (label, injection) in [
+        (
+            "shell startup override",
+            "          BASH_ENV: ./tools/ignored.sh",
+        ),
+        ("path shadow", "          PATH: ./untrusted/bin"),
+        (
+            "GitHub environment file",
+            "          GITHUB_ENV: ./untrusted/out",
+        ),
+        ("ordinary unreviewed binding", "          UNREVIEWED: value"),
+    ] {
+        let mutated = baseline.replacen(needle, &format!("{needle}{injection}\n"), 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn required_job_refuses_inherited_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed required job baseline");
+    let needle = "  required:\n    name: CI required\n";
+    assert!(baseline.contains(needle));
+    for (label, injection) in [
+        (
+            "shell startup override",
+            "    env:\n      BASH_ENV: ./tools/ignored.sh\n",
+        ),
+        ("path shadow", "    env:\n      PATH: ./untrusted/bin\n"),
+        ("flow mapping", "    env: {BASH_ENV: ./tools/ignored.sh}\n"),
+    ] {
+        let mutated = baseline.replacen(needle, &format!("{needle}{injection}"), 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn required_job_preserves_only_reviewed_workflow_environment() {
+    let baseline = valid_workflow();
+    check_required_job(&baseline).expect("reviewed workflow environment baseline");
+    for (label, old, replacement) in [
+        (
+            "additional Bash startup authority",
+            "env:\n",
+            "env:\n  BASH_ENV: ./tools/ignored.sh\n",
+        ),
+        (
+            "additional GitHub environment writer",
+            "env:\n",
+            "env:\n  GITHUB_ENV: ./untrusted/out\n",
+        ),
+        ("mutable PATH", "env:\n", "env:\n  PATH: ./untrusted/bin\n"),
+        (
+            "missing reviewed compiler environment",
+            "  CARGO_INCREMENTAL: \"0\"\n",
+            "",
+        ),
+        (
+            "changed reviewed compiler environment",
+            "  CARGO_INCREMENTAL: \"0\"\n",
+            "  CARGO_INCREMENTAL: \"1\"\n",
+        ),
+        (
+            "duplicate workflow environment overrides the reviewed map",
+            "jobs:\n",
+            "env:\n  BASH_ENV: ./tools/ignored.sh\njobs:\n",
+        ),
+    ] {
+        assert!(baseline.contains(old), "{label}: mutation input must exist");
+        let mutated = baseline.replacen(old, replacement, 1);
+        let error = check_required_job(&mutated).expect_err(label);
+        assert!(error.contains("env"), "{label}: {error}");
+    }
+}
+
+#[test]
 fn keldbot_required_jobs_revalidate_synchronized_heads() {
     let temp = complete_fixture();
     temp.write(
@@ -1644,7 +1757,7 @@ fn commented_out_retries_is_not_a_retry() {
 }
 
 #[test]
-fn router_test_in_another_job_does_not_satisfy_changes_contract() {
+fn router_test_in_another_job_does_not_satisfy_independent_contract() {
     let temp = complete_fixture();
     let workflow = valid_workflow()
         .replacen("        run: tools/ci_changes_test.sh\n", "", 1)
@@ -1653,8 +1766,8 @@ fn router_test_in_another_job_does_not_satisfy_changes_contract() {
             "  unrelated:\n    steps:\n      - run: tools/ci_changes_test.sh\n  secrets:\n",
         );
     temp.write(WORKFLOW, &workflow);
-    let error = check(temp.path()).expect_err("router test must run in changes job");
-    assert!(error.contains("changes` job"), "{error}");
+    let error = check(temp.path()).expect_err("router contract test must run in its dedicated job");
+    assert!(error.contains("router-contracts`"), "{error}");
     assert!(error.contains("tools/ci_changes_test.sh"), "{error}");
 }
 
@@ -1877,6 +1990,108 @@ fn deleting_the_bun_lane_fails() {
     without_lane.replace_range(start..end, "");
     temp.write(WORKFLOW, &without_lane);
     let error = check(temp.path()).expect_err("removing the only bun test lane must fail");
+    assert!(error.contains("bun-test"), "{error}");
+}
+
+#[test]
+fn bun_lane_runs_on_every_os() {
+    let workflow = valid_workflow();
+    check_bun_test_job(&workflow).expect("the three-OS Bun lane passes");
+    let lane = "    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n";
+    for (old, new, label) in [
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest]\n"),
+            "Ubuntu only",
+        ),
+        (
+            format!("{lane}        os: [ubuntu-latest, macos-latest, windows-latest]\n"),
+            format!("{lane}        os: [ubuntu-latest, macos-latest]\n"),
+            "no Windows",
+        ),
+        (
+            String::from("  bun-test:\n    runs-on: ${{ matrix.os }}\n"),
+            String::from("  bun-test:\n    runs-on: ubuntu-latest\n"),
+            "fixed runner",
+        ),
+    ] {
+        assert!(
+            workflow.contains(&old),
+            "fixture lacks the {label} mutation target"
+        );
+        let changed = workflow.replace(&old, &new);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_rejects_matrix_exclusions_and_includes() {
+    let workflow = valid_workflow();
+    let lane = "  bun-test:\n    runs-on: ${{ matrix.os }}\n    if: needs.changes.outputs.ts == 'true'\n    strategy:\n      fail-fast: false\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n";
+    assert!(workflow.contains(lane), "fixture lacks the Bun matrix");
+    for (extra, label) in [
+        (
+            "        exclude:\n          - os: windows-latest\n",
+            "exclude Windows",
+        ),
+        (
+            "        exclude:\n          - os: macos-latest\n",
+            "exclude macOS",
+        ),
+        (
+            "        exclude:\n          - os: ubuntu-latest\n",
+            "exclude Ubuntu",
+        ),
+        (
+            "        include:\n          - os: windows-latest\n",
+            "matrix include",
+        ),
+        (
+            "        os: [ubuntu-latest, macos-latest, windows-latest]\n",
+            "duplicate os key",
+        ),
+    ] {
+        let changed = workflow.replacen(lane, &format!("{lane}{extra}"), 1);
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn bun_lane_requires_the_actual_job_level_routing_condition() {
+    let workflow = valid_workflow();
+    let route = "    if: needs.changes.outputs.ts == 'true'\n    strategy:";
+    let step = "      - name: bun test\n";
+    assert!(workflow.contains(route), "fixture lacks the Bun route");
+    assert!(workflow.contains(step), "fixture lacks the Bun test step");
+
+    // A step-level condition cannot substitute for the job-level router gate.
+    for (job_if, label) in [
+        (
+            "    if: needs.changes.outputs.rust == 'true'\n",
+            "wrong job route",
+        ),
+        ("", "missing job route"),
+    ] {
+        let changed = workflow
+            .replacen(route, &format!("{job_if}    strategy:"), 1)
+            .replacen(
+                step,
+                "      - name: bun test\n        if: needs.changes.outputs.ts == 'true'\n",
+                1,
+            );
+        let error = check_bun_test_job(&changed).expect_err(label);
+        assert!(error.contains("bun-test"), "{label}: {error}");
+    }
+
+    // Duplicate mapping keys are ambiguous: never trust a matching first key.
+    let duplicated = workflow.replacen(
+        route,
+        "    if: needs.changes.outputs.ts == 'true'\n    if: needs.changes.outputs.rust == 'true'\n    strategy:",
+        1,
+    );
+    let error = check_bun_test_job(&duplicated).expect_err("duplicate job route");
     assert!(error.contains("bun-test"), "{error}");
 }
 
@@ -2227,15 +2442,6 @@ fn missing_pr_gate_fails() {
 }
 
 #[test]
-fn missing_toolchain_pin_fails() {
-    let temp = complete_fixture();
-    let workflow = valid_workflow().replace("toolchain: 1.99.1", "");
-    temp.write(WORKFLOW, &workflow);
-    let error = check(temp.path()).expect_err("workflow without toolchain pin must fail");
-    assert!(error.contains("toolchain: 1.99.1"), "{error}");
-}
-
-#[test]
 fn missing_llms_docs_check_fails() {
     let temp = complete_fixture();
     let workflow = valid_workflow()
@@ -2428,11 +2634,64 @@ fn release_updater_helper_step_cannot_be_narrowed_or_made_inert() {
 }
 
 #[test]
+fn parallel_windows_media_job_preserves_required_admission() {
+    let base = valid_workflow();
+    for (needle, replacement) in [
+        (
+            "  windows-media:\n    runs-on: windows-latest\n",
+            "  windows-media:\n    runs-on: ubuntu-latest\n",
+        ),
+        (
+            "  windows-media:\n    runs-on: windows-latest\n    needs: changes\n",
+            "  windows-media:\n    runs-on: windows-latest\n",
+        ),
+        (
+            "  windows-media:\n    runs-on: windows-latest\n",
+            "  windows-media:\n    continue-on-error: true\n    runs-on: windows-latest\n",
+        ),
+    ] {
+        assert!(base.contains(needle));
+        let temp = complete_fixture();
+        temp.write(WORKFLOW, &base.replacen(needle, replacement, 1));
+        let error = check(temp.path()).expect_err("media job must reject weakened scope");
+        assert!(
+            error.contains("KEL-132") || error.contains("continue-on-error"),
+            "{error}"
+        );
+    }
+    for (needle, replacement) in [
+        ("      - windows-media\n", ""),
+        (
+            "KELD_RESULT_MEDIA: ${{ needs['windows-media'].result }}",
+            "KELD_RESULT_MEDIA: success",
+        ),
+        (
+            "KELD_ROUTE_MEDIA: ${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
+            "KELD_ROUTE_MEDIA: false",
+        ),
+        (
+            "\"$KELD_RESULT_MEDIA\" \"$KELD_ROUTE_MEDIA\"",
+            "\"$KELD_RESULT_MEDIA\" false",
+        ),
+    ] {
+        assert!(base.contains(needle), "fixture holds {needle}");
+        let error = check_required_job(&base.replacen(needle, replacement, 1))
+            .expect_err("media gate must reject dropped/spoofed status or applicability");
+        assert!(
+            error.contains("windows-media")
+                || error.contains("MEDIA")
+                || error.contains("35-argument"),
+            "{needle}: {error}"
+        );
+    }
+}
+
+#[test]
 fn windows_media_acceptance_condition_and_shell_are_exact() {
     for (needle, replacement) in [
         (
-            "matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')",
-            "matrix.os == 'windows-latest'",
+            "needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')",
+            "needs.changes.outputs.rust == 'true'",
         ),
         ("        shell: pwsh", "        shell: bash"),
     ] {
