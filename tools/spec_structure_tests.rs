@@ -5181,6 +5181,9 @@ fn a_footnote_body_is_a_container() {
     );
     assert_eq!(shown(&doc, 0).as_deref(), Some("Then: x"));
     assert_eq!(label_of("[^1]: x\n"), Some("^1".to_owned()));
+    // GitHub, by `POST /markdown`: a caret label that opens no footnote is a definition.
+    assert_eq!(targets_of("[^a b]: /x\n"), ["/x"]);
+    assert_eq!(shown_lines("[^a b]: /x\n"), [None]);
     let fenced = Doc::parse("x.md", "[^1]: x\n\n    ```markdown\n    a\n    ```\n");
     assert!(fenced.fences()[0].quoted, "no copy source");
     assert_eq!(
