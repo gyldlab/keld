@@ -12,5 +12,11 @@
     "target": "ES2024",
     "types": ["bun"]
   },
-  "include": ["bench/**/*.ts", "scripts/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "bench/**/*.ts",
+    "scripts/**/*.ts",
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "../../../tools/*.ts"
+  ]
 }

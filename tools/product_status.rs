@@ -1,5 +1,7 @@
 //! Semantic validator and deterministic renderer for Keld product status.
 
+#![forbid(unsafe_code)]
+
 #[path = "justfile_contract.rs"]
 mod justfile_contract;
 #[path = "repo_path_contract.rs"]
@@ -558,12 +560,10 @@ fn is_root_roadmap(root: &Path, canonical: &Path) -> bool {
 }
 
 fn is_normative_target_path(path: &Path) -> bool {
-    ["docs/architecture", "docs/specs"]
-        .iter()
-        .any(|prefix| {
-            path.strip_prefix(prefix)
-                .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
-        })
+    ["docs/architecture", "docs/specs"].iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_ok_and(|suffix| !suffix.as_os_str().is_empty())
+    })
 }
 
 fn run_git(root: &Path, args: &[&str], line: usize) -> Result<std::process::Output, String> {
@@ -1959,7 +1959,10 @@ mod tests {
             ),
         );
         let error = check(temp.path()).expect_err("a gate missing from the group must fail");
-        assert!(error.contains("must include product-status-test"), "{error}");
+        assert!(
+            error.contains("must include product-status-test"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2121,7 +2124,10 @@ mod tests {
         generate(temp.path()).expect("generate missing-crate mutation");
         let error = check(temp.path()).expect_err("missing crate row must fail");
         assert!(error.starts_with("KELD-DOCS007:"), "{error}");
-        assert!(error.contains("Update `docs/engineering/product-status.tsv`"), "{error}");
+        assert!(
+            error.contains("Update `docs/engineering/product-status.tsv`"),
+            "{error}"
+        );
         assert!(error.contains("just product-status-check"), "{error}");
     }
 
@@ -2966,7 +2972,12 @@ mod tests {
         std::os::unix::fs::symlink("../../../ROADMAP.md", &source)
             .expect("replace source with current roadmap symlink");
         temp.git(&["add", "crates/keld-core/src/lib.rs"]);
-        temp.git(&["commit", "--quiet", "-m", "replace source with roadmap symlink"]);
+        temp.git(&[
+            "commit",
+            "--quiet",
+            "-m",
+            "replace source with roadmap symlink",
+        ]);
 
         expect_check_error(&temp, "public planning narrative");
     }

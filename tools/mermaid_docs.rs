@@ -1,5 +1,7 @@
 //! Validates Mermaid documentation blocks without adding a workspace dependency.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -836,7 +838,10 @@ flowchart LR
 
         let followed_by_valid = format!("{colon_fence}{VALID}");
         assert_eq!(diagram_blocks(&followed_by_valid).len(), 2);
-        assert_eq!(validate_markdown(Path::new("doc.md"), &followed_by_valid).len(), 1);
+        assert_eq!(
+            validate_markdown(Path::new("doc.md"), &followed_by_valid).len(),
+            1
+        );
     }
 
     #[test]
@@ -887,7 +892,14 @@ flowchart LR
         git_fixture(root, &["add", "--all"]);
         git_fixture(
             root,
-            &["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", message],
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ],
         );
         let output = Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -935,9 +947,15 @@ flowchart LR
         if !same_path {
             fs::remove_dir_all(&second).expect("remove second owned fixture");
         }
-        assert!(!same_path, "same-clock allocations reused the fixture namespace");
+        assert!(
+            !same_path,
+            "same-clock allocations reused the fixture namespace"
+        );
         assert_eq!(first_marker, b"first-owner");
-        assert!(!second_has_marker, "second fixture inherited the first owner's marker");
+        assert!(
+            !second_has_marker,
+            "second fixture inherited the first owner's marker"
+        );
     }
 
     #[test]
@@ -949,8 +967,7 @@ flowchart LR
         let next = AtomicU64::new(0);
         let first = create_fixture_root("keld-mermaid-exclusive", nonce, &next)
             .expect("create fixture owner");
-        fs::write(first.join("namespace-marker"), b"first-owner")
-            .expect("write owner marker");
+        fs::write(first.join("namespace-marker"), b"first-owner").expect("write owner marker");
         // This counter belongs only to this test. Force the actual allocator's
         // next candidate to be the already-owned directory, without a race.
         next.store(0, Ordering::Relaxed);
@@ -1043,10 +1060,7 @@ flowchart LR
         )
         .expect("add Mermaid CLI colon fence");
         let head = commit_fixture(&root, "colon Mermaid fence");
-        assert!(
-            changed_mermaid_inputs(&root, &base, &head)
-                .expect("classify colon Mermaid fence")
-        );
+        assert!(changed_mermaid_inputs(&root, &base, &head).expect("classify colon Mermaid fence"));
         fs::remove_dir_all(root).expect("remove colon-fence route fixture");
     }
 
@@ -1096,7 +1110,9 @@ flowchart LR
         fs::create_dir_all(root.join("docs/research")).expect("create nested research directory");
         fs::write(root.join("docs/research/.git"), "malformed gitdir marker\n")
             .expect("write malformed nested gitdir marker");
-        assert!(changed_mermaid_worktree(&root, &base).expect("fail safe for invalid nested checkout"));
+        assert!(
+            changed_mermaid_worktree(&root, &base).expect("fail safe for invalid nested checkout")
+        );
         fs::remove_dir_all(root.join("docs/research")).expect("remove malformed nested checkout");
         #[cfg(unix)]
         {

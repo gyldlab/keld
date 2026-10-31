@@ -329,9 +329,10 @@
         "AGENTS.md",
         "*/AGENTS.md",
         "crates/keld-ipc/channel_allocations.txt",
-        "crates/keld-ipc/src/channel_table.rs"
+        "crates/keld-ipc/src/channel_table.rs",
+        "packages/@keld/kipc/tsconfig.json"
       ],
-      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does.",
+      "contract": "ci-hygiene check also compares crates/keld-ipc/channel_allocations.txt with its merge base (GH-508 append-only rule); the baseline and channel_table.rs select it, as the hosted router does. The workflow-tool compiler admission test reads the KIPC compiler project; edits to that project select both hosted and local hygiene.",
       "reader_set": "policy-readers"
     },
     {
@@ -457,9 +458,10 @@
         "*/.[pP][rR][eE][tT][tT][iI][eE][rR][rR][cC].[tT][oO][mM][lL]",
         ".[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
         "*/.[eE][dD][iI][tT][oO][rR][cC][oO][nN][fF][iI][gG]",
-        ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]"
+        ".[pP][rR][eE][tT][tT][iI][eE][rR][iI][gG][nN][oO][rR][eE]",
+        "packages/@keld/kipc/tsconfig.json"
       ],
-      "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. This same consumer selects hosted hygiene through input_hygiene.",
+      "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. This same consumer selects hosted hygiene through input_hygiene. Its existing hosted hygiene output also admits the workflow-tool compiler-input assertion when the KIPC compiler project changes.",
       "reader_set": "policy-readers"
     }
   ],

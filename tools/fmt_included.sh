@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # rustfmt coverage for Rust files `cargo fmt` cannot reach (#834, #1055): the
 # one copy of this check. `cargo fmt --all` follows `mod` items only and never
-# expands macros, so it misses two kinds of file:
+# expands macros and only visits Cargo targets, so it misses:
 #   - a file pulled in by a literal `include!("x.rs")`, and every `mod` file
 #     declared inside it;
 #   - a file declared by `#[path = "x.rs"] mod m;` inside a macro body (for
 #     example `keld_native_fs_observer_items! { ... }`), and every `mod` file
-#     declared inside it, `#[path]` or not.
-# Both kinds are discovered from every tracked `.rs` file, so a new declaration,
+#     declared inside it, `#[path]` or not;
+#   - standalone Git-tracked Rust tooling, including future tools subdirectories.
+# The include/path kinds are discovered from every tracked `.rs` file, so a new declaration,
 # and a `#[path]` nested in a `#[path]` file, is covered without editing a list.
 # Each file is handed to rustfmt, which then also follows the `mod` items
 # declared in it. A `#[path]` file `cargo fmt` already reaches is checked twice,
@@ -28,6 +29,14 @@ set -euo pipefail
 # Must match the workspace edition in Cargo.toml: rustfmt defaults to 2015 when
 # it is given a bare file, and cargo is what normally supplies the edition.
 edition=2024
+
+# Canonicalize one regular source; reject final symlinks and resolve parent links.
+canonical_file() {
+    local source="$1" directory
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    directory="$(cd "$(dirname "$source")" && pwd -P)" || return 1
+    printf '%s/%s\n' "$directory" "$(basename "$source")"
+}
 
 # Print one included file path per line: plain `include!("...rs");` statements
 # on their own line. `concat!`/`env!` forms and mentions in comments or string
@@ -89,8 +98,28 @@ path_files() {
     while IFS=$'\t' read -r kind where what; do
         case "$kind" in
             OK)
-                if [[ -f "$(dirname "$where")/$what" ]]; then
-                    printf '%s\n' "$(dirname "$where")/$what"
+                local candidate="$(dirname "$where")/$what" origin target source_tools target_tools
+                if [[ -f "$candidate" ]]; then
+                    if ! origin="$(canonical_file "$where")" || ! target="$(canonical_file "$candidate")"; then
+                        echo "fmt_included: indirect or unreadable #[path] source: $where" >&2
+                        status=1
+                        continue
+                    fi
+                    local root="$(pwd -P)"
+                    if [[ "$origin" != "$root"/* || "$target" != "$root"/* ]]; then
+                        echo "fmt_included: #[path] source escapes checkout: $where" >&2
+                        status=1
+                        continue
+                    fi
+                    source_tools=false; target_tools=false
+                    [[ "$origin" == "$root"/tools/* ]] && source_tools=true
+                    [[ "$target" == "$root"/tools/* ]] && target_tools=true
+                    if [[ "$source_tools" != "$target_tools" ]]; then
+                        echo "fmt_included: #[path] crosses tools formatting boundary: $where" >&2
+                        status=1
+                        continue
+                    fi
+                    printf '%s\n' "$candidate"
                 else
                     echo "fmt_included: $where declares #[path = \"$what\"], which does not exist." >&2
                     status=1
@@ -102,8 +131,44 @@ path_files() {
     return "$status"
 }
 
+# stdin formatting cannot traverse out-of-line modules. Enumerate each tracked
+# tool separately so a tracked parent cannot format an untracked child. Compare
+# bytes ourselves: rustfmt --check on stdin can report a diff with exit status 0.
+format_tracked_tools() (
+    local mode="$1" path temporary status=0 root canonical
+    root="$(pwd -P)"
+    temporary="$(mktemp -d "${TMPDIR:-/tmp}/keld-fmt-tools.XXXXXX")" || return
+    trap 'rm -rf "$temporary"' EXIT
+    git ls-files -z -- 'tools/*.rs' >"$temporary/paths" || return
+    while IFS= read -r -d '' path; do
+        if ! canonical="$(canonical_file "$path")"; then
+            echo "fmt_included: refusing symlinked or missing tracked tool $path" >&2
+            return 1
+        fi
+        case "$canonical" in
+            "$root"/tools/*) ;;
+            *) echo "fmt_included: tracked tool escapes checkout: $path" >&2; return 1 ;;
+        esac
+        # stdin resolves its normal config from cwd; use the source directory.
+        if ! (cd "$(dirname "$path")" && rustfmt --edition "$edition" \
+            <"$(basename "$path")") >"$temporary/formatted"; then
+            echo "fmt_included: cannot format tracked tool $path." >&2
+            return 1
+        fi
+        if ! cmp -s "$path" "$temporary/formatted"; then
+            if [[ "$mode" == check ]]; then
+                echo "fmt_included: formatting drift in tracked tool $path." >&2
+                status=1
+            else
+                cat "$temporary/formatted" >"$path" || return
+            fi
+        fi
+    done <"$temporary/paths"
+    return "$status"
+)
+
 run() {
-    local mode="$1" included declared
+    local mode="$1" included declared path
     cd "$(git rev-parse --show-toplevel)"
     included="$(included_files)"
     if [[ -z "$included" ]]; then
@@ -120,8 +185,25 @@ run() {
     fi
     local -a args=(--edition "$edition")
     [[ "$mode" == check ]] && args+=(--check)
-    # shellcheck disable=SC2046 -- one path per line, no spaces in tracked paths
-    rustfmt "${args[@]}" $(printf '%s\n%s\n' "$included" "$declared" | sort -u)
+    local -a files=()
+    local root resolved
+    root="$(pwd -P)"
+    while IFS= read -r path; do
+        [[ -z "$path" ]] && continue
+        if ! resolved="$(canonical_file "$path")"; then
+            echo "fmt_included: refusing indirect discovered source $path" >&2
+            return 1
+        fi
+        # Only ordinary non-tool files use recursive rustfmt; tool files
+        # are exclusively formatted by the tracked-only stdin pass.
+        case "$resolved" in
+            "$root"/tools/*) ;;
+            "$root"/*) files[${#files[@]}]="$path" ;;
+            *) echo "fmt_included: discovered source escapes checkout: $path" >&2; return 1 ;;
+        esac
+    done < <(printf '%s\n%s\n' "$included" "$declared" | sort -u)
+    if ((${#files[@]})); then rustfmt "${args[@]}" "${files[@]}" || return; fi
+    format_tracked_tools "$mode"
 }
 
 if [[ "${1:-}" == test ]]; then
@@ -153,6 +235,9 @@ items! {
 RS
     printf '#[path = "inner.rs"]\nmod inner;\nfn outer() {}\n' >crates/demo/src/native/outer.rs
     printf 'fn inner() {}\n' >crates/demo/src/native/inner.rs
+    mkdir -p tools/nested
+    printf 'fn standalone() {}\n' >tools/standalone.rs
+    printf 'fn nested_tool() {}\n' >"tools/nested/standalone tool.rs"
     git add -A >/dev/null
     cp -R crates "$temp/.pristine"
     reset() { # restore the formatted fixture, tree and index
@@ -170,6 +255,102 @@ RS
     }
 
     check || { echo "FAIL: formatted fixture was rejected" >&2; cat "$temp/out" >&2; exit 1; }
+    # A Git-tracked tool symlink must not read or change an external file.
+    printf 'fn   external(   ) {}\n' >"$temp/outside-tools.rs"
+    if ln -s "$temp/outside-tools.rs" tools/symlink_probe.rs 2>/dev/null && [[ -L tools/symlink_probe.rs ]]; then
+        git add -- tools/symlink_probe.rs
+        cp "$temp/outside-tools.rs" "$temp/outside-before"
+        expect_fail "tracked tools symlink" 'refusing symlinked or missing tracked tool'
+        if tools/fmt_included.sh >"$temp/symlink-write-error" 2>&1; then
+            echo "FAIL: tracked tool symlink was formatted" >&2; exit 1
+        fi
+        cmp -s "$temp/outside-tools.rs" "$temp/outside-before" || {
+            echo "FAIL: tracked tool symlink modified external file" >&2; exit 1;
+        }
+        git rm -q --cached tools/symlink_probe.rs
+        rm -f tools/symlink_probe.rs
+    else
+        rm -f tools/symlink_probe.rs
+        echo 'info: symlink test requires a real POSIX symlink; hosted Unix exercises it' >&2
+    fi
+    # Standalone tools are not Cargo targets and have no include/path caller.
+    printf 'fn   standalone(   ) {}\n' >tools/standalone.rs
+    expect_fail "drift in a tracked standalone tool" 'standalone.rs'
+    tools/fmt_included.sh >/dev/null
+    check || { echo "FAIL: write mode did not format the standalone tool" >&2; exit 1; }
+    # A future domain subdirectory must not need a second maintained list.
+    printf 'fn   nested_tool(   ) {}\n' >"tools/nested/standalone tool.rs"
+    expect_fail "drift in a tracked nested tool" 'standalone tool.rs'
+    tools/fmt_included.sh >/dev/null
+    check || { echo "FAIL: write mode did not format the nested tool" >&2; exit 1; }
+    # Scratch is outside the tracked contract: neither check nor write adopts it.
+    printf 'fn   scratch(   ) {}\n' >tools/untracked.rs
+    cp tools/untracked.rs "$temp/untracked-original"
+    check || { echo "FAIL: untracked tool was admitted into check scope" >&2; exit 1; }
+    tools/fmt_included.sh >/dev/null
+    cmp -s tools/untracked.rs "$temp/untracked-original" || {
+        echo "FAIL: write mode modified an untracked tool" >&2; exit 1;
+    }
+    # A tracked parent must not bring an untracked child into formatting scope.
+    printf 'mod scratch_child;\nfn standalone() {}\n' >tools/standalone.rs
+    printf 'fn   child(   ) {}\n' >tools/scratch_child.rs
+    cp tools/scratch_child.rs "$temp/child-original"
+    check || { echo "FAIL: untracked child changed tracked-only check scope" >&2; cat "$temp/out" >&2; exit 1; }
+    tools/fmt_included.sh >/dev/null
+    cmp -s tools/scratch_child.rs "$temp/child-original" || {
+        echo "FAIL: write mode modified an untracked child" >&2; exit 1;
+    }
+    # Even a tools #[path] target stays on the non-recursive route.
+    printf '#[path = "nested/standalone tool.rs"]\nmod nested;\n' >tools/standalone.rs
+    printf 'mod scratch_child;\nfn nested_tool() {}\n' >"tools/nested/standalone tool.rs"
+    cp tools/scratch_child.rs tools/nested/scratch_child.rs
+    check || { echo "FAIL: tools #[path] target traversed untracked children" >&2; cat "$temp/out" >&2; exit 1; }
+    tools/fmt_included.sh >/dev/null
+    cmp -s tools/nested/scratch_child.rs "$temp/child-original" || {
+        echo "FAIL: tools #[path] write modified an untracked child" >&2; exit 1;
+    }
+    # Cross-domain #[path] references cannot make recursive rustfmt enter tools.
+    printf '\n#[path = "../../../tools/standalone.rs"]\nmod alias_tool;\n' >>crates/demo/src/obs.rs
+    printf 'mod scratch_child;\nfn standalone() {}\n' >tools/standalone.rs
+    printf 'fn   child(   ) {}\n' >tools/scratch_child.rs
+    cp tools/scratch_child.rs "$temp/aliased-child-original"
+    expect_fail "non-tool-to-tools path alias" 'crosses tools formatting boundary'
+    if tools/fmt_included.sh >"$temp/alias-write-error" 2>&1; then
+        echo "FAIL: non-tool alias formatted a tool" >&2; exit 1
+    fi
+    cmp -s tools/scratch_child.rs "$temp/aliased-child-original" || {
+        echo "FAIL: aliased tools path modified untracked child" >&2; exit 1
+    }
+    reset
+    printf '\n#[path = "../../../../tools/standalone.rs"]\nmod nested_tool_alias;\n' >>crates/demo/src/tests/split.rs
+    expect_fail "recursive included-to-tools path" 'crosses tools formatting boundary'
+    if tools/fmt_included.sh >"$temp/recursive-write-error" 2>&1; then
+        echo "FAIL: recursive non-tool alias formatted a tool" >&2; exit 1
+    fi
+    cmp -s tools/scratch_child.rs "$temp/aliased-child-original" || {
+        echo "FAIL: recursive tool path modified untracked child" >&2; exit 1
+    }
+    reset
+    # stdin must use the source's nearest config, not only the checkout root.
+    printf 'hard_tabs = true\nnewline_style = "Unix"\n' >tools/nested/rustfmt.toml
+    printf 'fn nested_tool() {\n    let value = 1;\n}\n' >"tools/nested/standalone tool.rs"
+    expect_fail "nearest tool formatting config" 'standalone tool.rs'
+    tools/fmt_included.sh >/dev/null
+    printf 'fn nested_tool() {\n\tlet value = 1;\n}\n' >"$temp/nearest-expected"
+    cmp -s "tools/nested/standalone tool.rs" "$temp/nearest-expected" || {
+        echo "FAIL: nearest tool configuration was ignored" >&2; exit 1;
+    }
+    # Parser failure must never overwrite the original source with partial output.
+    printf 'fn broken(\n' >tools/standalone.rs
+    cp tools/standalone.rs "$temp/broken-original"
+    expect_fail "invalid tracked Rust tool" 'cannot format tracked tool'
+    if tools/fmt_included.sh >"$temp/write-error" 2>&1; then
+        echo "FAIL: malformed tool write returned success" >&2; exit 1;
+    fi
+    cmp -s tools/standalone.rs "$temp/broken-original" || {
+        echo "FAIL: malformed tool source was overwritten" >&2; exit 1;
+    }
+    printf 'fn standalone() {}\n' >tools/standalone.rs
     # Negative control 1: cargo fmt cannot see the include!d file at all.
     printf 'fn split(   ) {}\n' >>crates/demo/src/tests/split.rs
     expect_fail "drift in an include!d file"

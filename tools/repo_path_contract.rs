@@ -51,7 +51,51 @@ pub(crate) fn escapes_public_repo(candidate: &Path) -> bool {
                 Component::Prefix(_) | Component::ParentDir | Component::RootDir
             )
         })
-        || FORBIDDEN_PREFIXES
-            .iter()
-            .any(|prefix| normalized == *prefix || normalized.starts_with(&format!("{prefix}/")))
+        || FORBIDDEN_PREFIXES.iter().any(|prefix| {
+            // A doubled separator must not disguise a private namespace:
+            // `docs//research` names the same directory as `docs/research`.
+            // Compare components directly instead of allocating a normalized path.
+            let mut components = normalized
+                .split('/')
+                .filter(|component| !component.is_empty() && *component != ".");
+            prefix
+                .split('/')
+                .all(|part| components.next() == Some(part))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escapes_public_repo;
+    use std::path::Path;
+
+    #[test]
+    fn duplicate_separators_cannot_admit_private_documentation() {
+        for private in [
+            "docs/research/evidence.md",
+            "docs//research/evidence.md",
+            "docs///research/evidence.md",
+            "docs/./research/evidence.md",
+            "docs/.//research/evidence.md",
+            r"docs\research\evidence.md",
+        ] {
+            assert!(
+                escapes_public_repo(Path::new(private)),
+                "private research alias was admitted: {private:?}"
+            );
+        }
+        for public in [
+            "docs/architecture/01-intro.md",
+            "docs//architecture/01-intro.md",
+        ] {
+            assert!(
+                !escapes_public_repo(Path::new(public)),
+                "public source was incorrectly refused: {public:?}"
+            );
+        }
+        // The existing raw-dot-component restriction is independently kept.
+        assert!(escapes_public_repo(Path::new(
+            "docs/./architecture/01-intro.md"
+        )));
+    }
 }

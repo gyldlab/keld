@@ -4,6 +4,8 @@
 //! library owners. Normative boundaries are in architecture 01/06; repository maturity
 //! and evidence live in `docs/engineering/product-status.tsv`.
 
+#![forbid(unsafe_code)]
+
 use std::env;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::fs;

@@ -536,8 +536,11 @@ class ExecutorTests(SelectionTests):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, destination)
             (root / "src").mkdir()
+            # Managed TMPDIR can be inside Keld; this synthetic crate must not
+            # join an ancestor workspace whose members deliberately exclude it.
             (root / "Cargo.toml").write_bytes(
-                b'[package]\nname = "format-order-control"\nversion = "0.0.0"\nedition = "2024"\n')
+                b'[package]\nname = "format-order-control"\nversion = "0.0.0"\nedition = "2024"\n'
+                b'\n[workspace]\n')
             (root / "src/lib.rs").write_bytes(
                 b'#[path = "../crates/keld-ipc/src/echo.rs"]\nmod echo;\n'
                 b'include!("included.rs");\nmacro_rules! fixture { ($($tokens:tt)*) => {} }\n'
@@ -884,6 +887,17 @@ class ProductionConsumerTests(unittest.TestCase):
                     self.assertTrue(selected["local_js-fmt-check"])
                     self.assertTrue(selected["local_typescript"])
                     self.assertTrue(selected["local_clippy"])
+
+    def test_tool_compiler_config_selects_its_admission_checker(self):
+        source = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory(prefix="keld-tool-compiler-route-") as temporary:
+            root = Path(temporary)
+            tracked_snapshot(source, root)
+            selected = ci_inputs.classify(
+                root, ["packages/@keld/kipc/tsconfig.json"], paths_only=True)
+            self.assertFalse(selected["input_all"])
+            self.assertTrue(selected["local_hygiene"])
+            self.assertTrue(selected["input_hygiene"])
 
     def test_nested_template_ignore_changes_select_native_formatter(self):
         source = Path(__file__).resolve().parent.parent

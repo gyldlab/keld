@@ -30,6 +30,21 @@ import {
 
 type Step = Record<string, unknown>;
 
+// Keep the tooling in a real compiler gate, not only Bun's type-erasing test run.
+test("workflow tools stay in the strict no-emit compiler inputs", () => {
+  const project = JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "../packages/@keld/kipc/tsconfig.json"),
+      "utf8",
+    ),
+  );
+  expect(project.compilerOptions.strict).toBe(true);
+  expect(project.compilerOptions.noEmit).toBe(true);
+  expect(project.include).toContain("../../../tools/*.ts");
+  expect(project.extends).toBeUndefined();
+  expect(project.exclude ?? []).toEqual([]);
+});
+
 // Thirteen native Bun and six Git children share this fixture's kill switch.
 // The oracle is their effects and exit status, with no latency requirement.
 test("direct native formatter selects JS/TS, honors ignores and checks without writes", () => {

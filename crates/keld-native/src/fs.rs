@@ -1461,9 +1461,18 @@ pub fn serve_fs_session<S: Read + Write>(
     handshake_server(stream, token)?;
     let policy = ReceivePolicy::privileged_call_receiver(&channel_table::FS)?;
     loop {
-        let (header, payload) = match read_validated_frame(stream, &policy) {
+        let (received, frame_started) = {
+            let mut frame = (&mut *stream).take(u64::MAX);
+            let received = read_validated_frame(&mut frame, &policy);
+            (received, frame.limit() != u64::MAX)
+        };
+        let (header, payload) = match received {
             Ok(frame) => frame,
-            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => break,
+            Err(IpcError::Io(error))
+                if error.kind() == ErrorKind::UnexpectedEof && !frame_started =>
+            {
+                break;
+            }
             Err(error) => return Err(error),
         };
         let request: FsRequest = decode(&payload)?;
