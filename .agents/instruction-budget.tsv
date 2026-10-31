@@ -199,3 +199,5 @@ docs/agents/learnings/ci/2026-10-28-ci-claudecode-suppresses-bun-pass-lines.md	e
 docs/agents/learnings/test/2026-10-30-test-bun-file-jit-concurrent-eval.md	evidence	2048	learning-2026-10-30-test-bun-file-jit-concurrent-eval	query:test
 docs/agents/learnings/cli/2026-10-31-cli-bun-fmt-ignored-tmp-discovery.md	evidence	2048	learning-2026-10-31-cli-bun-fmt-ignored-tmp-discovery	query:cli
 .agents/learning-lifecycle.md	routed	4096	learning-lifecycle-policy	route:learning-lifecycle
+docs/agents/learnings/process/2026-10-31-process-linear-mcp-comment-pagination.md	evidence	2048	learning-2026-10-31-process-linear-mcp-comment-pagination	query:process
+docs/agents/learnings/tooling/2026-10-31-tooling-session-closeout-receipt-rejections.md	evidence	2048	learning-2026-10-31-tooling-session-closeout-receipt-rejections	query:tooling
