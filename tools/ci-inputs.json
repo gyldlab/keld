@@ -518,7 +518,7 @@
         "packages/*",
         "justfile"
       ],
-      "sha256": "4aef58aac2568625eda19780d180dd68ed79bd2eae89ab703040f5347c1b8ab8"
+      "sha256": "817c1d2c308b3f26d8dd51a5411c35092d6f2e1e91a14669b7af866912350bab"
     },
     "policy-readers": {
       "patterns": [
