@@ -100,6 +100,10 @@ const HEADER_ONLY_FIELDS: [&str; 3] = ["Tracker", "Updated", "Pin"];
 const PART_FIELDS: [&str; 2] = ["Part of", "Owns"];
 /// Marks around a field label or an ID. They change how it looks, not which one it is.
 const LABEL_MARKS: [char; 3] = ['*', '_', '`'];
+/// Characters a reader cannot see, so they cannot make a second label.
+const INVISIBLE: [char; 6] = [
+    '\u{ad}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}',
+];
 /// AC fields where a bare `none` states nothing. `Given: none` is a real statement.
 const CONTROL_FIELDS: [&str; 5] = [
     "Then",
@@ -1082,7 +1086,7 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
     if lower == "unknown" || label_tail.is_some_and(|tail| !tail.starts_with(char::is_alphanumeric))
     {
         Some(NonValue::Unknown)
-    } else if (wrapped.starts_with('<') && wrapped.ends_with('>'))
+    } else if (wrapped.starts_with('<') && wrapped.ends_with('>') && !wrapped.contains("://"))
         || !bare.contains(char::is_alphanumeric)
         || labelled
         || (control && lower == "none")
@@ -1093,30 +1097,61 @@ fn non_value(value: &str, control: bool) -> Option<NonValue> {
     }
 }
 
-/// Value of `label` on a `- **Label:** value` or `Label: value` line. Case, marks and a
-/// space before the colon spell one label, so no spelling can hide a second statement.
-fn field_value(line: &str, label: &str) -> Option<String> {
-    let mut text = line.trim_start();
-    if let Some(marker) = list_marker(text, false) {
+/// How far a line may differ from a label in case. Marks and spacing never make a second
+/// label, and only `Exact` can hold a value, so a variant alone leaves the field absent.
+#[derive(Clone, Copy)]
+enum Spelling {
+    Exact,
+    /// Any case but a lower-case start: `owner: x` in a list or a wrapped line is prose,
+    /// as in landed specs gh566 and gh527.
+    Body,
+    /// Any case: above the first `##`, every label is a statement of the spec.
+    Header,
+}
+
+impl Spelling {
+    fn matches(self, name: &str, label: &str) -> bool {
+        let lower = |text: &str| text.starts_with(|ch: char| ch.is_ascii_lowercase());
+        name == label
+            || match self {
+                Spelling::Exact => false,
+                Spelling::Body => name.eq_ignore_ascii_case(label) && !lower(name),
+                Spelling::Header => name.eq_ignore_ascii_case(label),
+            }
+    }
+}
+
+/// `text` from its first word, past every list marker, so `- - x` reads as `- x` does.
+fn without_list_markers(text: &str) -> &str {
+    let mut text = text.trim_start();
+    while let Some(marker) = list_marker(text, false) {
         text = text[marker..].trim_start();
     }
-    let text = text.trim_start_matches(LABEL_MARKS);
-    let tail = text.get(label.len()..)?;
-    if !text[..label.len()].eq_ignore_ascii_case(label) {
-        return None;
-    }
-    let tail = tail.trim_start_matches(|ch| LABEL_MARKS.contains(&ch) || " \t".contains(ch));
-    let value = tail.strip_prefix(':')?.trim_start_matches(LABEL_MARKS);
-    Some(value.trim().to_owned())
+    text
+}
+
+/// Value of `label` on a `- **Label:** value` or `Label: value` line.
+fn field_value(line: &str, label: &str, spelling: Spelling) -> Option<String> {
+    let line: String = line.chars().filter(|ch| !INVISIBLE.contains(ch)).collect();
+    let (spelled, tail) = without_list_markers(&line).split_once(':')?;
+    // A code span that runs past the colon quotes a field. `Pin:` in code only marks one.
+    let quoted = spelled.matches('`').count() % 2 == 1 && !tail.starts_with('`');
+    let plain: String = spelled
+        .chars()
+        .filter(|ch| !LABEL_MARKS.contains(ch))
+        .collect();
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    (!quoted && spelling.matches(&words.join(" "), label))
+        .then(|| tail.trim_start_matches(LABEL_MARKS).trim().to_owned())
 }
 
 /// Each line of a range that states `label`.
-fn field_lines(doc: &Doc, start: usize, end: usize, label: &str) -> Vec<usize> {
+fn field_lines(doc: &Doc, start: usize, end: usize, label: &str, spelling: Spelling) -> Vec<usize> {
     (start..end)
         .filter(|index| {
             doc.visible[*index]
                 .as_deref()
-                .is_some_and(|line| field_value(line, label).is_some())
+                .is_some_and(|line| field_value(line, label, spelling).is_some())
         })
         .collect()
 }
@@ -1124,7 +1159,7 @@ fn field_lines(doc: &Doc, start: usize, end: usize, label: &str) -> Vec<usize> {
 /// A field stated once.
 struct Stated {
     line: usize,
-    /// The value on its line, then each statement nested under it.
+    /// The value on its line, then each statement nested under it. See `field_statements`.
     statements: Vec<String>,
 }
 
@@ -1132,10 +1167,9 @@ impl Stated {
     fn read(doc: &Doc, line: usize, end: usize, label: &str) -> Stated {
         let inline = doc.visible[line]
             .as_deref()
-            .and_then(|text| field_value(text, label))
+            .and_then(|text| field_value(text, label, Spelling::Exact))
             .filter(|value| !value.is_empty());
-        let mut statements: Vec<String> = inline.into_iter().collect();
-        statements.extend(nested_statements(doc, line, end));
+        let statements = field_statements(doc, line, end, inline);
         Stated { line, statements }
     }
 
@@ -1176,12 +1210,15 @@ fn read_field(
     start: usize,
     end: usize,
     label: &str,
+    spelling: Spelling,
     slot: Option<String>,
     report: &mut Report,
 ) -> Field {
-    match field_lines(doc, start, end, label)[..] {
+    let exact = |line: usize| !field_lines(doc, line, line + 1, label, Spelling::Exact).is_empty();
+    match field_lines(doc, start, end, label, spelling)[..] {
         [] => Field::Absent,
-        [line] => Field::Once(Stated::read(doc, line, end, label)),
+        [line] if exact(line) => Field::Once(Stated::read(doc, line, end, label)),
+        [_] => Field::Absent,
         [first, second, ..] => {
             let detail = format!(
                 "`{label}:` is already stated at line {}, so neither value has authority. Keep \
@@ -1194,15 +1231,18 @@ fn read_field(
     }
 }
 
-/// Each statement nested under a field, without its list markers, so the non-value rules
-/// examine what a reader sees. A fence is one statement: its lines are code, not values.
-fn nested_statements(doc: &Doc, field: usize, end: usize) -> Vec<String> {
+/// What a field states: `inline`, then each block nested under it, without list markers,
+/// so the non-value rules examine what a reader sees. A list item or a paragraph opens a
+/// statement. A wrapped line, a table row or a fence only continues one, so `unknown.`
+/// on its own line ends a sentence and a code sample is no value.
+fn field_statements(doc: &Doc, field: usize, end: usize, inline: Option<String>) -> Vec<String> {
     let own = indent(&doc.lines[field]);
-    let mut statements: Vec<String> = Vec::new();
-    let mut in_fence = false;
+    let mut statements: Vec<String> = inline.into_iter().collect();
+    let mut open = !statements.is_empty();
     for index in field + 1..end {
         let line = &doc.lines[index];
         if line.trim().is_empty() {
+            open = false;
             continue;
         }
         if indent(line) <= own {
@@ -1214,16 +1254,15 @@ fn nested_statements(doc: &Doc, field: usize, end: usize) -> Vec<String> {
         } else {
             doc.visible[index].as_deref()
         };
-        let Some(text) = text else { continue };
-        let mut value = text.trim();
-        while let Some(marker) = list_marker(value, false) {
-            value = value[marker..].trim_start();
-        }
+        let Some(text) = text.map(str::trim) else {
+            continue;
+        };
+        let value = without_list_markers(text);
         if fenced && fence_marker(value).is_some() {
-            in_fence = false;
             continue;
         }
-        match statements.last_mut().filter(|_| fenced && in_fence) {
+        let item = value.len() < text.len();
+        match statements.last_mut().filter(|_| fenced || (open && !item)) {
             Some(statement) => {
                 statement.push(' ');
                 statement.push_str(value);
@@ -1231,7 +1270,7 @@ fn nested_statements(doc: &Doc, field: usize, end: usize) -> Vec<String> {
             None if !value.is_empty() => statements.push(value.to_owned()),
             None => {}
         }
-        in_fence = fenced;
+        open = !fenced;
     }
     statements
 }
@@ -1360,7 +1399,9 @@ fn link_destination(text: &str) -> (String, &str) {
 
 /// The label and the tail of a `[label]: tail` line.
 fn definition_parts(line: &str) -> Option<(&str, &str)> {
-    line.trim_start().strip_prefix('[')?.split_once("]:")
+    without_list_markers(line)
+        .strip_prefix('[')?
+        .split_once("]:")
 }
 
 /// The target of a `[label]: target` reference definition. `[^1]:` is a footnote.
@@ -1377,17 +1418,30 @@ fn reference_target(line: &str) -> Option<String> {
 /// The target of a `[label]:` line that leaves its target to the next line, as CommonMark
 /// allows. Prose on that line makes no definition.
 fn continued_target(line: &str, next: &str) -> Option<String> {
+    // A heading, a rule or a list ends the paragraph, so `[label]:` stays text.
+    if starts_block(next, true) || setext_level(next.trim()).is_some() {
+        return None;
+    }
     reference_target(line).filter(String::is_empty)?;
     reference_target(&format!("{line} {next}")).filter(|target| !target.is_empty())
 }
 
-/// The label a definition or footnote claims, folded as CommonMark matches labels.
-fn defined_label(line: &str) -> Option<String> {
-    let (label, _) = definition_parts(line)?;
-    (label.starts_with('^') || reference_target(line).is_some()).then(|| {
-        let words: Vec<&str> = label.split_whitespace().collect();
-        words.join(" ").to_uppercase().to_lowercase()
-    })
+/// `text` as CommonMark matches labels: only spaces and tabs collapse, and lower case comes
+/// first so `\u{1e9e}` meets `SS`. The last step only keeps a message readable.
+fn folded(text: &str) -> String {
+    let words: Vec<&str> = text
+        .split([' ', '\t'])
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.join(" ").to_lowercase().to_uppercase().to_lowercase()
+}
+
+/// The label a definition or footnote claims. `[label]:` with no target anywhere is text.
+fn defined_label(line: &str, next: Option<&str>) -> Option<String> {
+    let (label, tail) = definition_parts(line)?;
+    let whole = !tail.trim().is_empty() && reference_target(line).is_some();
+    let continued = next.is_some_and(|next| continued_target(line, next).is_some());
+    (label.starts_with('^') || whole || continued).then(|| folded(label))
 }
 
 /// Link targets on a visible line: inline links, images and reference definitions.
@@ -1512,7 +1566,8 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
     let mut labels: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in doc.visible.iter().enumerate() {
         let Some(line) = line else { continue };
-        if let Some(label) = defined_label(line) {
+        let next = doc.visible.get(index + 1).and_then(Option::as_deref);
+        if let Some(label) = defined_label(line, next) {
             if let Some(first) = labels.get(&label) {
                 report.add(
                     Rule::Link,
@@ -1526,7 +1581,6 @@ fn check_links(root: &Path, doc: &Doc, symlinks: &BTreeSet<String>, report: &mut
             }
             labels.entry(label).or_insert(index + 1);
         }
-        let next = doc.visible.get(index + 1).and_then(Option::as_deref);
         let continued = next.and_then(|next| continued_target(line, next));
         for target in link_targets(line).into_iter().chain(continued) {
             if is_external(&target) || target.is_empty() {
@@ -1634,7 +1688,7 @@ fn check_header(doc: &Doc, report: &mut Report) -> Option<String> {
     }
     let mut value = |label: &str, valid: &dyn Fn(&str) -> bool, expected: &str| {
         let slot = format!("header.{label}");
-        match read_field(doc, 0, end, label, Some(slot), report) {
+        match read_field(doc, 0, end, label, Spelling::Header, Some(slot), report) {
             Field::Once(field) if valid(&field.value()) => Some(field),
             Field::Once(field) => {
                 report.add(
@@ -1715,21 +1769,20 @@ fn header_end(doc: &Doc) -> usize {
 fn check_restated_header(index: &Doc, parts: &[Doc], report: &mut Report) {
     let mut scopes = Vec::new();
     for label in HEADER_ONLY_FIELDS {
-        scopes.push((index, header_end(index), index.lines.len(), label));
+        let start = header_end(index);
+        scopes.push((index, start, index.lines.len(), label, Spelling::Body));
     }
     for part in parts {
+        let header = header_end(part);
         for label in HEADER_FIELDS {
-            let everywhere = HEADER_ONLY_FIELDS.contains(&label);
-            let end = if everywhere {
-                part.lines.len()
-            } else {
-                header_end(part)
-            };
-            scopes.push((part, 0, end, label));
+            scopes.push((part, 0, header, label, Spelling::Header));
+        }
+        for label in HEADER_ONLY_FIELDS {
+            scopes.push((part, header, part.lines.len(), label, Spelling::Body));
         }
     }
-    for (doc, start, end, label) in scopes {
-        if let Some(line) = field_lines(doc, start, end, label).first() {
+    for (doc, start, end, label, spelling) in scopes {
+        if let Some(line) = field_lines(doc, start, end, label, spelling).first() {
             let detail = format!(
                 "`{label}:` belongs to the header of `{}` alone. Remove it here",
                 index.rel
@@ -1769,15 +1822,25 @@ fn check_tracker(doc: &Doc, stem: &str, report: &mut Report) {
     let id = stem.split('-').next().unwrap_or("");
     let digits = id.trim_start_matches(|ch: char| ch.is_ascii_alphabetic());
     let expected = format!("{}-{digits}", id[..id.len() - digits.len()].to_uppercase());
+    // `check_header` reports a repeat or a variant, which has no single value to compare.
+    let mut reported = Report::default();
     let end = header_end(doc);
-    // `check_header` refuses a repeat, which has no single value to compare.
-    if let [line] = field_lines(doc, 0, end, "Tracker")[..] {
-        let value = Stated::read(doc, line, end, "Tracker").value();
+    let read = read_field(
+        doc,
+        0,
+        end,
+        "Tracker",
+        Spelling::Header,
+        None,
+        &mut reported,
+    );
+    if let Field::Once(field) = read {
+        let value = field.value();
         if value != expected {
             report.add(
                 Rule::Fields,
                 &doc.rel,
-                line + 1,
+                field.line + 1,
                 format!("`Tracker: {value}` must be `{expected}`, the ID in the spec name"),
             );
         }
@@ -1849,7 +1912,7 @@ fn check_part_sections(parts: &[Doc], report: &mut Report) {
     for doc in parts {
         for (index, text) in section_headings(doc) {
             // Parts may split a section under subtitles, never restate one.
-            if !titles.insert(text.clone()) {
+            if !titles.insert(folded(&text)) {
                 report.add(
                     Rule::Sections,
                     &doc.rel,
@@ -1916,7 +1979,15 @@ fn check_titles(docs: &[&Doc], report: &mut Report) {
 
 fn check_part_header(doc: &Doc, report: &mut Report) {
     for label in PART_FIELDS {
-        read_field(doc, 0, header_end(doc), label, None, report);
+        read_field(
+            doc,
+            0,
+            header_end(doc),
+            label,
+            Spelling::Header,
+            None,
+            report,
+        );
     }
     let mut lines = doc.lines.iter().filter(|line| !line.trim().is_empty());
     let title = lines.next().is_some_and(|line| line.starts_with("# "));
@@ -2098,6 +2169,7 @@ fn check_definitions(
                         heading.index + 1,
                         body,
                         label,
+                        Spelling::Body,
                         Some(slot.clone()),
                         report,
                     );

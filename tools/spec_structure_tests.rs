@@ -2370,16 +2370,20 @@ fn a_field_may_use_any_list_marker_and_either_emphasis() {
         "**Then**: x",
         "Then: x",
     ] {
-        assert_eq!(field_value(line, "Then").as_deref(), Some("x"), "{line}");
+        let value = field_value(line, "Then", Spelling::Exact);
+        assert_eq!(value.as_deref(), Some("x"), "{line}");
     }
-    assert_eq!(field_value("- Thenceforth: x", "Then"), None);
-    assert_eq!(field_value("- Then you: x", "Then"), None);
+    assert_eq!(
+        field_value("- Thenceforth: x", "Then", Spelling::Header),
+        None
+    );
+    assert_eq!(field_value("- Then you: x", "Then", Spelling::Header), None);
     let doc = Doc::parse("x.md", "- **Then:**\n\n  a loose value\n- **When:** x\n");
-    assert_eq!(nested_statements(&doc, 0, 4), ["a loose value"]);
+    assert_eq!(field_statements(&doc, 0, 4, None), ["a loose value"]);
     let doc = Doc::parse("x.md", "- **Then:**\n\n- **When:** x\n");
     let none: [String; 0] = [];
     assert_eq!(
-        nested_statements(&doc, 0, 3),
+        field_statements(&doc, 0, 3, None),
         none,
         "a sibling after a blank line"
     );
@@ -2408,8 +2412,117 @@ fn no_spelling_hides_a_second_field() {
         assert_only(&fixture, Rule::FieldDuplicate, &spelled);
     }
     for line in ["pin: x", "*Pin*: x", "**Pin**: x", "`Pin`: x", "Pin : x"] {
-        assert_eq!(field_value(line, "Pin").as_deref(), Some("x"), "{line}");
+        let value = field_value(line, "Pin", Spelling::Header);
+        assert_eq!(value.as_deref(), Some("x"), "{line}");
     }
+}
+
+/// What a reader cannot tell from the label is the label, in a header and in a body.
+#[test]
+fn no_invisible_spelling_hides_a_second_field() {
+    for spelled in [
+        format!("- - Pin: {ABSENT_SHA}"),
+        format!("1. - Pin: {ABSENT_SHA}"),
+        format!("- `Pin:` {ABSENT_SHA}"),
+        format!("- Pin\u{a0}: {ABSENT_SHA}"),
+        format!("- Pi\u{200b}n: {ABSENT_SHA}"),
+        format!("\u{200b}- Pin: {ABSENT_SHA}"),
+        format!("- Pin\u{2060}: {ABSENT_SHA}"),
+    ] {
+        let fixture = Fixture::new();
+        let line = format!("- Pin: {PIN}\n");
+        fixture.replace(SINGLE, &line, &format!("{line}{spelled}\n"));
+        assert_only(&fixture, Rule::FieldDuplicate, &spelled);
+    }
+    for spelled in [
+        "**Expected  RED:** other",
+        "**Expected** RED: other",
+        "*Expected* *RED*: other",
+        "EXPECTED RED: other",
+    ] {
+        let fixture = Fixture::new();
+        let line = "  - **Expected RED:** the test fails\n";
+        fixture.replace(SINGLE, line, &format!("{line}  - {spelled}\n"));
+        assert_only(&fixture, Rule::FieldDuplicate, spelled);
+    }
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/delivery.md");
+    fixture.replace(&path, "- **n:** 3\n", "- **n:** 3\n- **N:** 4\n");
+    assert_only(
+        &fixture,
+        Rule::FieldDuplicate,
+        "a label that opens in lower case",
+    );
+}
+
+/// A variant can repeat a field, never state one: c42b0aed refused each of these alone.
+#[test]
+fn a_variant_alone_does_not_state_a_field() {
+    for (line, variant) in [
+        (format!("- Pin: {PIN}\n"), format!("- pin: {PIN}\n")),
+        (
+            "- Status: draft\n".to_owned(),
+            "- STATUS: draft\n".to_owned(),
+        ),
+        ("- Owner: owner\n".to_owned(), "- owner: owner\n".to_owned()),
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, &line, &variant);
+        assert_only(&fixture, Rule::Fields, &variant);
+    }
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "- **Given:** a state\n", "- **given:** a state\n");
+    assert_only(&fixture, Rule::AcFields, "a lower-case AC field");
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/index.md");
+    fixture.replace(&path, "- Tracker: GH-1\n", "- tracker: KEL-9\n");
+    assert_only(&fixture, Rule::Fields, "a variant tracker reports once");
+}
+
+/// gh566 line 367 and gh527 line 67 hold these shapes: a lower-case word that opens a list
+/// item or a wrapped line, then a colon.
+#[test]
+fn a_lower_case_label_in_a_body_is_prose() {
+    let path = format!("{DIR}/delivery.md");
+    let impact = "- **Impact:** blocks T-1\n";
+    for prose in [
+        "  - owner: @0monish, at this spec's approval\n",
+        "  - status: see below\n",
+        "  and its\n  check: the one mutation\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(&path, impact, &format!("{impact}{prose}"));
+        assert!(fixture.rules().is_empty(), "{prose}: {:?}", fixture.rules());
+    }
+    let fixture = Fixture::new();
+    fixture.replace(
+        SINGLE,
+        "## 5.",
+        "- updated: true when a row moves\n- pin: the Bun version\n- tracker: the object\n\n## 5.",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+}
+
+/// A code span that runs past the colon quotes a field, on a wrapped line or anywhere.
+#[test]
+fn a_quoted_field_states_nothing() {
+    assert_eq!(field_value("`Pin: x` holds", "Pin", Spelling::Header), None);
+    assert_eq!(field_value("`Pin:x`", "Pin", Spelling::Header), None);
+    let value = field_value("`Pin:` x", "Pin", Spelling::Header);
+    assert_eq!(value.as_deref(), Some("x"));
+    let fixture = Fixture::new();
+    let path = format!("{DIR}/delivery.md");
+    fixture.replace(
+        &path,
+        "- **Impact:** blocks T-1\n",
+        "- **Impact:** a spec that says\n  `Status: draft` blocks T-1\n",
+    );
+    fixture.replace(
+        &path,
+        "## 9. Perf impact\n\nnone\n",
+        "## 9. Perf impact\n\nA spec\n`Pin: x` once.\n",
+    );
+    assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }
 
 /// The checklist's "every" rule: each single-valued field, in both orders, reads one RED.
@@ -2494,15 +2607,75 @@ fn one_field_may_hold_many_nested_statements() {
 fn a_fence_is_one_statement_wherever_it_opens() {
     let statements = |text: &str| {
         let doc = Doc::parse("x.md", text);
-        nested_statements(&doc, 0, doc.lines.len())
+        field_statements(&doc, 0, doc.lines.len(), None)
     };
     assert_eq!(
         statements("- **Then:**\n  - ```\n    x\n    y\n    ```\n  - z\n"),
         ["x y", "z"]
     );
     assert_eq!(
-        statements("- **Then:** a\n  ```text\n  x\n\n  y\n  ```\n  ```text\n  z\n  ```\n"),
+        statements("- **Then:**\n  ```text\n  x\n\n  y\n  ```\n  - z\n"),
         ["x y", "z"]
+    );
+    assert_eq!(
+        statements("- **Then:**\n  ```text\n  x\n  ```\n\n  ```text\n  y\n  ```\n"),
+        ["x y"],
+        "a fence is no value, so it joins what stands before it"
+    );
+}
+
+/// A statement is a block, not a line: a wrapped word is the end of a sentence.
+#[test]
+fn a_wrapped_line_continues_its_statement() {
+    let statements = |text: &str, inline: &str| {
+        let doc = Doc::parse("x.md", text);
+        field_statements(&doc, 0, doc.lines.len(), Some(inline.to_owned()))
+    };
+    assert_eq!(statements("- Then: a\n  b\n  c\n", "a"), ["a b c"]);
+    assert_eq!(statements("- Then: a\n  - b\n    c\n", "a"), ["a", "b c"]);
+    assert_eq!(statements("- Then: a\n\n  b\n", "a"), ["a", "b"]);
+    assert_eq!(
+        statements("- Then: a\n  | x |\n  |---|\n", "a"),
+        ["a | x | |---|"]
+    );
+    assert_eq!(statements("- Then: a\n\n  ```\n  b\n  ```\n", "a"), ["a b"]);
+    assert_eq!(
+        statements("- Then: a\n  ```\n  b\n  ```\n  c\n", "a"),
+        ["a b", "c"]
+    );
+    for value in [
+        "- **Then:** the state stays\n  unknown.\n",
+        "- **Then:** the reply stays\n  pending.\n",
+        "- **Then:** the count is\n  none\n",
+        "- **Then:** a table:\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n",
+        "- **Then:** the gate prints:\n\n  ```text\n  none\n  ```\n",
+        "- **Then:** the gate prints:\n  ```text\n  TODO\n  ```\n",
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "- **Then:** a result\n", value);
+        assert!(fixture.rules().is_empty(), "{value}: {:?}", fixture.rules());
+    }
+    for (value, rule) in [
+        ("- **Then:** real\n  - TBD\n", Rule::FieldPlaceholder),
+        ("- **Then:** real\n\n  TBD\n", Rule::FieldPlaceholder),
+        ("- **Then:**\n  TBD\n", Rule::FieldPlaceholder),
+        ("- **Then:**\n  ```\n  TBD\n  ```\n", Rule::FieldPlaceholder),
+        ("- **Then:** real\n  - UNKNOWN\n", Rule::FieldUnknown),
+    ] {
+        let fixture = Fixture::new();
+        fixture.replace(SINGLE, "- **Then:** a result\n", value);
+        assert_only(&fixture, rule, value);
+    }
+}
+
+/// `<https://...>` is an autolink, the form the template's `<command or link>` asks for.
+#[test]
+fn an_autolink_is_a_value_and_a_slot_is_not() {
+    let url = "<https://github.com/gyldlab/keld/actions/runs/1>";
+    assert_eq!(non_value(url, true), None);
+    assert_eq!(
+        non_value("<command or link>", false),
+        Some(NonValue::Placeholder)
     );
 }
 
@@ -2586,6 +2759,22 @@ fn a_contradictory_row_is_refused_here_and_at_the_base() {
 
 /// A split section keeps a subtitle in each part, as KEL-142 section 4 does.
 #[test]
+fn a_split_section_cannot_restate_a_subtitle_in_another_spelling() {
+    for spelling in ["ONE", "one", " one"] {
+        let fixture = Fixture::new();
+        let path = format!("{DIR}/design.md");
+        fixture.replace(&path, "## 5. Boundaries\n", "## 5. Boundaries: one\n");
+        let delivery = format!("{DIR}/delivery.md");
+        fixture.replace(
+            &delivery,
+            "## 6. Tasks",
+            &format!("## 5. Boundaries: {spelling}\n\nnone\n\n## 6. Tasks"),
+        );
+        assert_only(&fixture, Rule::Sections, spelling);
+    }
+}
+
+#[test]
 fn parts_may_split_a_section_under_subtitles() {
     let fixture = Fixture::new();
     let path = format!("{DIR}/design.md");
@@ -2608,6 +2797,14 @@ fn a_target_may_follow_its_label_but_prose_makes_no_definition() {
     );
     assert_eq!(continued_target("[a]:", "some prose here"), None);
     assert_eq!(continued_target("[a]:", ""), None);
+    for block in ["---", "***", "===", "# a.md", "- a.md", "> a.md"] {
+        assert_eq!(continued_target("[a]:", block), None, "{block}");
+    }
+    assert_eq!(
+        continued_target("[a]:", "    b.md").as_deref(),
+        Some("b.md"),
+        "indentation continues a paragraph"
+    );
     assert_eq!(continued_target("[a]: b.md", "c.md"), None, "already whole");
     assert_eq!(
         continued_target("[a]: b.md", "'title'"),
@@ -2617,17 +2814,49 @@ fn a_target_may_follow_its_label_but_prose_makes_no_definition() {
     assert_eq!(continued_target("[^1]:", "b.md"), None, "a footnote");
     let fixture = Fixture::new();
     let path = format!("{DIR}/design.md");
-    let block = "### D-1: choice\n\n[a]:\n  index.md\n\n[note]:\nthe host owns it\n";
+    let block = "### D-1: choice\n\n[a]:\n  index.md\n\n[note]:\nthe host owns it\n\n\
+                 [note]:\nthe guest owns it\n\n[rule]:\n***\n\n[item]:\n- gone.md\n";
     fixture.replace(&path, "### D-1: choice\n", block);
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
+    let fixture = Fixture::new();
+    let block = "### D-1: choice\n\n[a]: index.md\n\n- [a]: index.md\n";
+    fixture.replace(&path, "### D-1: choice\n", block);
+    assert_only(&fixture, Rule::Link, "a repeat in a list item");
+    let fixture = Fixture::new();
+    fixture.replace(
+        &path,
+        "### D-1: choice\n",
+        "### D-1: choice\n\n- [a]: gone.md\n",
+    );
+    assert_only(&fixture, Rule::Link, "a target in a list item");
 }
 
 #[test]
 fn a_label_is_folded_as_commonmark_folds_it() {
-    let label = |line: &str| defined_label(line);
+    let label = |line: &str| defined_label(line, None);
     assert_eq!(label("[Foo  Bar]: a.md"), label("[foo bar]: b.md"));
     assert_eq!(label("  [A]: a.md"), Some("a".to_owned()));
     assert_eq!(label("[STRASSE]: a.md"), label("[stra\u{df}e]: b.md"));
+    assert_eq!(
+        label("[\u{1e9e}]: a.md"),
+        label("[SS]: b.md"),
+        "CommonMark's example"
+    );
+    assert_ne!(
+        label("[a\u{a0}b]: a.md"),
+        label("[a b]: b.md"),
+        "only ASCII space"
+    );
+    assert_eq!(
+        label("- [A]: a.md"),
+        Some("a".to_owned()),
+        "a list item holds one"
+    );
+    assert_eq!(label("[a]: <>"), Some("a".to_owned()), "an empty target");
+    assert_eq!(label("[a]:"), None, "no target");
+    assert_eq!(defined_label("[a]:", Some("prose words here")), None);
+    assert_eq!(defined_label("[a]:", Some("---")), None);
+    assert_eq!(defined_label("[A]:", Some("  b.md")), Some("a".to_owned()));
     assert_eq!(label("[^1]: a footnote"), Some("^1".to_owned()));
     assert_eq!(label("[FACT]: the host owns it"), None, "prose");
     assert_eq!(label("`[a]: b.md`"), None, "code");
@@ -3520,6 +3749,17 @@ fn a_repeated_heading_skips_a_taken_anchor() {
         BTreeSet::from(["top".to_owned(), "top-1".to_owned(), "top-1-1".to_owned()])
     );
     assert_eq!(slugs("## Top\n\n## Top\n\n## Top\n").len(), 3);
+    // GitHub's own render of these headings, through `POST /markdown`, on 2026-10-31.
+    assert_eq!(
+        slugs("## Top\n\n## Top\n\n## Top\n\n## Top-1\n\n## Top-2\n\n## Top\n"),
+        ["top", "top-1", "top-2", "top-1-1", "top-2-1", "top-3"]
+            .map(str::to_owned)
+            .into()
+    );
+    assert_eq!(
+        slugs("## a b\n\n## a-b\n\n## a  b\n\n## A B\n"),
+        ["a-b", "a-b-1", "a--b", "a-b-2"].map(str::to_owned).into()
+    );
 }
 
 #[test]
