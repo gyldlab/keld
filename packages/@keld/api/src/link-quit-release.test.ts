@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "bun:test";
-import {
-  APP_LINK_IO_DEADLINE_MS,
-  withIoDeadline,
-} from "../../kipc/src/transport.ts";
+import { APP_LINK_IO_DEADLINE_MS, withIoDeadline } from "@keld/kipc";
 
 for (const scenario of [
   "success",
