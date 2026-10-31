@@ -1,13 +1,16 @@
 # KELD VeriSentry — source-authenticated CI admission
 
-**Release state (31 October 2026, live verified):** trusted verifier and
-refresh workflow are merged into `main`. The production App-required ruleset
-**26261486 is ACTIVE** on `main`, requiring `KELD VeriSentry` specifically from
-GitHub App ID **5550363**. Two non-bypass negative canaries (#1338 and #1339)
-showed the genuine App check failing and GitHub blocking merge even though the
-three pre-existing required checks passed. Both canaries were closed unmerged.
-No new server or private repository is needed. Post-release App-key rotation
-remains an **authorized-owner operation; completion is not verified**.
+**Release state (31 October 2026, P1 still open):** the trusted verifier and
+refresh workflow are merged into `main`. Production ruleset **26261486 is
+ACTIVE** and requires `KELD VeriSentry` from App ID **5550363**. Negative
+non-bypass canaries #1338 and #1339 were correctly blocked and closed unmerged.
+**Positive merge admission is NOT qualified:** approved docs-only
+[PR #1340](https://github.com/gyldlab/keld/pull/1340) passed all three older
+required checks and received genuine App SUCCESS, but two ordinary non-bypass
+merge attempts returned HTTP 405: `Required status check "KELD VeriSentry" is
+expected`. See [P1 #1341](https://github.com/gyldlab/keld/issues/1341).
+Do NOT declare the release fully qualified or weaken the required-source rule
+to conceal this failure. App private-key rotation is also not yet verified.
 
 ## Identity and protected-main configuration
 
@@ -20,7 +23,7 @@ remains an **authorized-owner operation; completion is not verified**.
 | Expected required check | `KELD VeriSentry` from **App ID 5550363**, not any matching check name |
 | Credential | Encrypted `VERISENTRY_APP_PRIVATE_KEY` in `verisentry-publisher` GitHub Actions environment, branch rule **main** |
 | Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate** protected-main `push`/`schedule`/trusted `workflow_dispatch` workflow |
-| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **active after final qualification** |
+| Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **active; P1 #1341 positive merge admission unresolved** |
 | Native bypass actors | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
 
 The existing protected `main` status checks `gatekeeper`, `title-lint` and
@@ -179,11 +182,12 @@ confirmed security reason **not** to deploy that prototype. The native
 ruleset replaces it using GitHub's own actor identity and bypass audit trail.
 Do not reintroduce mutable manual release checks or broaden the bypass list.
 
-## Historical activation checklist (1–4 verified; key rotation pending)
+## Historical activation checklist (1–3 qualified; 4 blocked; 5 pending)
 
-The checklist below records the **pre-activation requirements**. Steps 1–4
-were qualified during the 31 October 2026 release; step 5 is an owner-only
-credential rotation action whose completion has not been independently verified.
+This checklist records the pre-activation requirements. Steps 1–3 have
+supporting evidence. Step 4's negative admission tests passed, but its positive
+non-bypass merge requirement failed (HTTP 405 on #1340; see P1 #1341).
+Step 5 is an owner-only key rotation that has not been verified.
 
 1. Preserve the current main protection snapshot and ruleset definition.
    Require the **complete** `bypass_actors` array to contain **exactly** two
@@ -217,7 +221,7 @@ credential rotation action whose completion has not been independently verified.
    private key. Replace the environment-scoped GitHub secret from the local
    file via stdin, revoke the old key, then run fresh benign/hostile checks.
 
-## Verified production release closeout — 31 October 2026
+## Production source-gate audit — 31 October 2026 (P1 open)
 
 - **Ruleset:** [26261486](https://github.com/gyldlab/keld/rules/26261486)
   confirmed `active` on `refs/heads/main`, requiring context
@@ -256,7 +260,22 @@ credential rotation action whose completion has not been independently verified.
   successful. No actual merge API operation was attempted on an intentionally
   unsafe disposable canary. This is sufficient live blocked-state evidence;
   it is not a claim that a risky merge attempt was performed.
-- **Operations left with owner:** The private-key rotation described below
+- **Positive admission is blocked:** [Docs-only PR #1340](https://github.com/gyldlab/keld/pull/1340)
+  had independent Amisha approval at head
+  `c9f204591d1404794636e4fc77d5dce38b49278a`. Its three old required
+  checks plus provenance and App publisher all succeeded. App ID **5550363**
+  signed genuine SUCCESS on synthetic test merges
+  `8684384f8dc38736dbcdbeeb61468dd3baeffbdc` and
+  `fb804034ebfc734cb57dc459dd8e561f0a41ae9b`.
+  Yet two non-bypass GitHub merge attempts returned **HTTP 405**, saying
+  `Required status check "KELD VeriSentry" is expected`. GitHub generated
+  a further test-merge SHA from identical base/head/tree with no check at the
+  observation time. The required App status is absent on the PR **head** SHA.
+  It is **not yet proven** whether GitHub checks the PR head, a newly generated
+  test-merge SHA, or both. [P1 #1341](https://github.com/gyldlab/keld/issues/1341)
+  tracks this. PR #1340 was converted to **Draft**, never merged.
+  Do not bypass this availability failure with a forged or weakly bound PASS.
+- **Operations left with owner:** After resolving #1341, the private-key rotation described below
   must be performed by an authorized App owner, with a fresh post-rotation
   benign/negative check pair. No key material is available in this public
   repository or this audit; do **not** mark rotation done without its receipt.
