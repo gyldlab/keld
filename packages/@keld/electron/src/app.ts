@@ -2,8 +2,10 @@
  * Electron app compatibility facade over @keld/api (KEL-72 / KEL-142).
  *
  * Generic lifecycle/session ownership lives in @keld/api. This file owns only
- * Electron event names, listener behavior, and the default quit on
- * window-all-closed when no user listener is registered.
+ * Electron event names, listener behavior, the default quit on
+ * window-all-closed when no user listener is registered, and the Electron
+ * member names of the GH-452 session facts (`./app-session-facts.ts` owns their
+ * fail-closed contract).
  */
 import {
   app as apiApp,
@@ -18,6 +20,8 @@ import {
   stateMapGet,
   stateMapSet,
 } from "../../kipc/src/transport.ts";
+
+import { readSessionFact, readSessionPath } from "./app-session-facts.ts";
 
 type AppListener = (...args: never[]) => void;
 
@@ -181,4 +185,37 @@ export const app = {
 
   removeListener: removeAppListener,
   off: removeAppListener,
+
+  // GH-452 session facts (docs/specs/gh452-app-session-facts.md, T1). The Host
+  // owns every value; until it delivers the payload each read fails closed with
+  // KELD-COMPAT-040 naming the missing fact. Nothing here reads the environment.
+  getPath(name: string): string {
+    return readSessionPath(name);
+  },
+
+  getVersion(): string {
+    return readSessionFact("version", "app.getVersion()");
+  },
+
+  getName(): string {
+    return readSessionFact("name", "app.getName()");
+  },
+
+  /** Electron defines `app.name` as an accessor over the app name; so does this. */
+  get name(): string {
+    return readSessionFact("name", "app.name");
+  },
+
+  getAppPath(): string {
+    return readSessionFact("appPath", "app.getAppPath()");
+  },
+
+  /** Legal only after `ready` in Electron; without a payload it fails closed at any time. */
+  getLocale(): string {
+    return readSessionFact("locale", "app.getLocale()");
+  },
+
+  get isPackaged(): boolean {
+    return readSessionFact("isPackaged", "app.isPackaged");
+  },
 };

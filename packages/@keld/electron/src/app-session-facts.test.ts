@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  type AppSessionFact,
   AppSessionFactError,
   ELECTRON_PATH_NAMES,
   SESSION_FACT_NOT_DELIVERED,
@@ -61,7 +62,7 @@ describe("getPath name validation (criterion 7)", () => {
   test("ELECTRON_PATH_NAMES equals the names listed under app.getPath(name) in the pinned v44.4.5 app.md, in order", () => {
     const pinned = pinnedPathNames();
     expect(pinned.length).toBe(17);
-    expect([...ELECTRON_PATH_NAMES]).toEqual(pinned);
+    expect(pinned).toEqual([...ELECTRON_PATH_NAMES]);
   });
 
   test("app.getPath('bogus') throws KELD-COMPAT-041 naming the bad name and listing the accepted names, not the not-delivered code", () => {
@@ -88,7 +89,7 @@ describe("getPath name validation (criterion 7)", () => {
 
 describe("fail-closed typed refusal (criteria 1–6)", () => {
   const members: ReadonlyArray<
-    readonly [call: string, fact: string, read: () => unknown]
+    readonly [call: string, fact: AppSessionFact, read: () => unknown]
   > = [
     ["app.getPath('userData')", "path.userData", () => app.getPath("userData")],
     ["app.getVersion()", "version", () => app.getVersion()],

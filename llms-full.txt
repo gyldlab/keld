@@ -6277,6 +6277,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-040
+
+- crate: @keld/electron
+- message: An `app` session fact (`getPath`, `getVersion`, `getName`/`name`, `getAppPath`, `getLocale`, `isPackaged`) was read, but the Host delivered no session facts to this role; the facade does not derive these values from HOME, APPDATA, XDG, LANG, argv, cwd, Intl or package.json
+- fix: Run the app under a Keld host that mints session facts at spawn (GH-452 T2, `docs/specs/gh452-app-session-facts.md`); code that can continue without the named fact should catch this error. Do not derive the value in the role.
+
+## KELD-COMPAT-041
+
+- crate: @keld/electron
+- message: `app.getPath(name)` was called with a name that Electron v44.4.5 does not define
+- fix: Pass one of the documented names (`home`, `appData`, `assets`, `userData`, `sessionData`, `temp`, `exe`, `module`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `recent`, `logs`, `crashDumps`).
+
 ## KELD-CORE-030
 
 - crate: keld-core
