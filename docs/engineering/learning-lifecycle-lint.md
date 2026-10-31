@@ -30,7 +30,8 @@ The implementation was hash-transferred from the original task tree into a new s
 Only owned pending files were restored in the old tree. PR1320 remains at2ed1bdff and clean.
 The lifecycle test module is admitted through the existing agent-context-test recipe using unittest discovery.
 
-Independent adversarial review is requested on the frozen combined implementation, with no author context.
+The combined6af implementation received independent review and refutation. Confirmed corrections
+are recorded in [the correction report](learning-review-corrections.md). Exact corrected-head review is pending.
 Reader fingerprints remain proposed until their independent source review; freshness/full CI is not claimed.
 Full native workspace acceptance, default-runtime memory and actual Drawio acceptance remain separate.
 No merge, ready flag, release or production change is authorized by this report.
