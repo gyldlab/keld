@@ -1,0 +1,2 @@
+path,blob_952,relation_to_949,source_review_20261019,disposition
+crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs,3fc77f68ed73e2f8f87391de515658dff200e42a,new-after-949,pending-source-review,New KGR1 terminal tests; not in historical 77; review pending
