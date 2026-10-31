@@ -43,57 +43,59 @@ pub(crate) struct CodeSpan {
     pub(crate) content: std::ops::Range<usize>,
 }
 
-/// CommonMark code spans of one line, left to right: a closing run has the opening width,
-/// a backslash escapes an opening backtick, and a run with no partner is literal.
-pub(crate) fn inline_code_spans(line: &str) -> Vec<CodeSpan> {
+/// The code span a backtick run at `at` opens, or the end of a run with no partner. A
+/// closing run has the opening width. One space each side is padding, unless the code is
+/// only spaces.
+pub(crate) fn code_span_at(line: &str, at: usize) -> Result<CodeSpan, usize> {
     fn run_width(bytes: &[u8], at: usize) -> usize {
         bytes[at..].iter().take_while(|byte| **byte == b'`').count()
     }
 
+    let bytes = line.as_bytes();
+    let width = run_width(bytes, at);
+    let body = at + width;
+    let mut scan = body;
+    let closing = loop {
+        let Some(offset) = bytes[scan..].iter().position(|byte| *byte == b'`') else {
+            return Err(body);
+        };
+        let run = scan + offset;
+        let found = run_width(bytes, run);
+        if found == width {
+            break run;
+        }
+        scan = run + found;
+    };
+    let text = &line[body..closing];
+    let padded =
+        text.len() > 2 && text.starts_with(' ') && text.ends_with(' ') && !text.trim().is_empty();
+    Ok(CodeSpan {
+        start: at,
+        end: closing + width,
+        content: if padded {
+            body + 1..closing - 1
+        } else {
+            body..closing
+        },
+    })
+}
+
+/// CommonMark code spans of one line, left to right: a backslash escapes an opening
+/// backtick, and a run with no partner is literal.
+pub(crate) fn inline_code_spans(line: &str) -> Vec<CodeSpan> {
     let bytes = line.as_bytes();
     let mut spans = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
             b'\\' => index += 2,
-            b'`' => {
-                let width = run_width(bytes, index);
-                let body = index + width;
-                let mut scan = body;
-                let closing = loop {
-                    match bytes[scan..].iter().position(|byte| *byte == b'`') {
-                        None => break None,
-                        Some(offset) => {
-                            let run = scan + offset;
-                            let found = run_width(bytes, run);
-                            if found == width {
-                                break Some(run);
-                            }
-                            scan = run + found;
-                        }
-                    }
-                };
-                let Some(closing) = closing else {
-                    index = body;
-                    continue;
-                };
-                // One space each side is padding, unless the code is only spaces.
-                let text = &line[body..closing];
-                let padded = text.len() > 2
-                    && text.starts_with(' ')
-                    && text.ends_with(' ')
-                    && !text.trim().is_empty();
-                spans.push(CodeSpan {
-                    start: index,
-                    end: closing + width,
-                    content: if padded {
-                        body + 1..closing - 1
-                    } else {
-                        body..closing
-                    },
-                });
-                index = closing + width;
-            }
+            b'`' => match code_span_at(line, index) {
+                Ok(span) => {
+                    index = span.end;
+                    spans.push(span);
+                }
+                Err(end) => index = end,
+            },
             _ => index += 1,
         }
     }

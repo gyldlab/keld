@@ -25,6 +25,8 @@ struct Table {
     symlinks: Vec<String>,
     /// The baseline at the comparison base, or why the base does not resolve.
     previous: Result<Option<String>, String>,
+    /// A sealed path Git lists and cannot show.
+    lost: Option<String>,
 }
 
 impl History for Table {
@@ -40,7 +42,8 @@ impl History for Table {
     }
     fn text_at(&self, commit: &str, path: &str) -> Option<String> {
         if commit == SEAL {
-            return self.sealed.get(path).cloned();
+            let lost = self.lost.as_deref() == Some(path);
+            return self.sealed.get(path).filter(|_| !lost).cloned();
         }
         (path == CITED_FILE && (commit == PIN || commit == FOREIGN_SHA))
             .then(|| "line\n".repeat(10))
@@ -69,6 +72,7 @@ struct Fixture {
     tracked: Vec<String>,
     symlinks: Vec<String>,
     previous: Result<Option<String>, String>,
+    lost: Option<String>,
 }
 
 impl Drop for Fixture {
@@ -175,6 +179,7 @@ impl Fixture {
             tracked: Vec::new(),
             symlinks: Vec::new(),
             previous: Ok(None),
+            lost: None,
         };
         fixture.write(SINGLE, &single_spec());
         fixture.write(&format!("{DIR}/index.md"), &index_spec());
@@ -230,6 +235,7 @@ impl Fixture {
             tracked: self.tracked.clone(),
             symlinks: self.symlinks.clone(),
             previous: self.previous.clone(),
+            lost: self.lost.clone(),
         }
     }
 
@@ -1241,12 +1247,121 @@ fn mutants() -> Vec<Mutant> {
             },
         },
         Mutant {
-            rule: Rule::IdRequired,
-            label: "a comment that opens mid-line hides the definition",
+            rule: Rule::AcFields,
+            label: "a comment across a paragraph hides a field",
             apply: |f| {
-                let block = format!("text <!--\n{}-->\n\n", ac_block(1));
-                f.replace(SINGLE, &ac_block(1), &block);
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result\n",
+                    "text <!--\nThen: a result\n-->\n",
+                );
             },
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "a blank line ends a mid-line comment, so the text after it renders",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "a <!--\n\nAC-99\n\n-->\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "a heading ends a mid-line comment, so the text after it renders",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "none\n\n## 5.",
+                    "a <!--\n\n### D-1: x\n\nAC-99\n\n-->\n\n## 5.",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "a quote ends a comment it opened",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "> <!--\n\nAC-99\n\n-->\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "a list item ends a comment it opened",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "- <!--\nAC-99\n-->\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::IdDangling,
+            label: "a lazy line after a quote opens no HTML block",
+            apply: |f| f.replace(SINGLE, "none\n\n## 5.", "> a\n<span>\nAC-99\n\n## 5."),
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a nested definition lends its parent no field",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "### AC-1: rule\n",
+                    "### AC-1: rule\n\n#### AC-2: nested\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::AcFields,
+            label: "a repeated field is empty",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result\n",
+                    "- **Then:** a result\n- **Then:**\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "a repeated field holds UNKNOWN",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result\n",
+                    "- **Then:** a result\n- **Then:** UNKNOWN\n",
+                );
+            },
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "UNKNOWN in quotes",
+            apply: |f| f.replace(SINGLE, "- **Then:** a result", "- **Then:** \"UNKNOWN\""),
+        },
+        Mutant {
+            rule: Rule::FieldUnknown,
+            label: "UNKNOWN in brackets",
+            apply: |f| f.replace(SINGLE, "- **Then:** a result", "- **Then:** [UNKNOWN]"),
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "TBD in brackets",
+            apply: |f| f.replace(SINGLE, "- **Then:** a result", "- **Then:** [TBD]"),
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "TBD with a label",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Then:** a result",
+                    "- **Then:** TBD: the owner decides",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::FieldPlaceholder,
+            label: "a bare none as the negative control",
+            apply: |f| {
+                f.replace(
+                    SINGLE,
+                    "- **Negative control:**\n",
+                    "- **Negative control:** none\n",
+                )
+            },
+        },
+        Mutant {
+            rule: Rule::Unreadable,
+            label: "a sealed path Git lists and cannot show",
+            apply: |f| f.lost = Some(BIG.to_owned()),
         },
         Mutant {
             rule: Rule::IdRequired,
@@ -1686,6 +1801,15 @@ fn a_row_above_the_count_is_refused_even_when_it_is_sealed() {
 
 /// A row that does not parse leaves its file unlisted, so more rules fire with it.
 #[test]
+fn a_metric_has_one_spelling() {
+    assert_eq!(parse_metric("600"), Some(Some(600)));
+    assert_eq!(parse_metric("-"), Some(None));
+    for text in ["0", "+600", "0600", "6e2", ""] {
+        assert_eq!(parse_metric(text), None, "{text}");
+    }
+}
+
+#[test]
 fn a_malformed_row_is_a_format_defect() {
     let fixture = Fixture::new();
     fixture.replace(BASELINE, "\t600\t", "\tmany\t");
@@ -1916,6 +2040,26 @@ fn a_nested_real_value_passes_every_empty_field() {
     assert!(fixture.rules().is_empty(), "{:?}", fixture.rules());
 }
 
+#[test]
+fn a_field_may_use_any_list_marker_and_either_emphasis() {
+    for line in [
+        "- **Then:** x",
+        "* **Then:** x",
+        "+ **Then:** x",
+        "1. **Then:** x",
+        "- **Then**: x",
+        "**Then**: x",
+        "Then: x",
+    ] {
+        assert_eq!(field_value(line, "Then").as_deref(), Some("x"), "{line}");
+    }
+    assert_eq!(field_value("- Thenceforth: x", "Then"), None);
+    let doc = Doc::parse("x.md", "- **Then:**\n\n  a loose value\n- **When:** x\n");
+    assert_eq!(nested_value(&doc, 0, 4), "a loose value");
+    let doc = Doc::parse("x.md", "- **Then:**\n\n- **When:** x\n");
+    assert_eq!(nested_value(&doc, 0, 3), "", "a sibling after a blank line");
+}
+
 /// CommonMark reads `-` under a paragraph as a setext underline, so the field line turns
 /// into a heading. It stays RED, through the field rule and the section rule.
 #[test]
@@ -2091,6 +2235,8 @@ fn real_statements_are_not_non_values() {
         "unknown channel accepted",
         "UNKNOWNS stay labelled",
         "Pending calls fail",
+        "TODO items stay in the list",
+        "NA values are refused",
         "INFERRED: a page runs",
         "a `<state>` slot in prose",
     ] {
@@ -2106,10 +2252,27 @@ fn real_statements_are_not_non_values() {
         "UNKNOWN: none named",
         "UNKNOWN (no owner)",
         "unknown.",
+        "\"UNKNOWN\"",
+        "[UNKNOWN]",
+        "'unknown'",
     ] {
         assert_eq!(non_value(value, false), Some(NonValue::Unknown), "{value}");
     }
-    for value in ["<state>", "TBD", "todo", "N/A", "-", "?", "pending"] {
+    for value in [
+        "<state>",
+        "TBD",
+        "todo",
+        "N/A",
+        "-",
+        "?",
+        "pending",
+        "[TBD]",
+        "\"TBD\"",
+        "TBD?",
+        "TBD: the owner decides",
+        "TODO (write this)",
+        "(n/a)",
+    ] {
         assert_eq!(
             non_value(value, false),
             Some(NonValue::Placeholder),
@@ -2355,6 +2518,43 @@ fn the_lexer_follows_commonmark_blocks() {
         vec![],
         "a quote ends the list"
     );
+    assert_eq!(
+        heading_levels("~~a~~ ## b"),
+        vec![],
+        "struck text is not a marker"
+    );
+    assert_eq!(heading_levels("## ~~a~~ b ##"), one(2, "b"));
+    assert_eq!(heading_levels("## a <!-- b --> ##"), one(2, "a"));
+    assert_eq!(
+        heading_levels("## a <!--\n## b\n-->\n"),
+        vec![(2, "a <!--".to_owned()), (2, "b".to_owned())],
+        "a heading is one line, so its `<!--` is literal"
+    );
+    for (text, why) in [
+        ("a <!--\n\n## b\n\n-->\n", "a blank ends the paragraph"),
+        ("a <!--\n## b\n-->\n", "a heading ends the paragraph"),
+        ("> a <!--\n\n## b\n-->\n", "a blank ends the quote"),
+        ("> <!--\n## b\n-->\n", "a heading ends the quote"),
+        ("- <!--\n## b\n-->\n", "the item ends the block"),
+        ("- <pre>\n## b\n", "the item ends the block"),
+        ("> a\n<span>\n## b\n", "lazy text opens no HTML block"),
+        ("-\ta\n\n    ## b\n", "a tab reaches the content column"),
+    ] {
+        assert_eq!(heading_levels(text), one(2, "b"), "{why}");
+    }
+    assert_eq!(
+        heading_levels("- <!--\n\n  ## a\n  -->\n## b\n"),
+        one(2, "b"),
+        "a blank line stays in the item"
+    );
+    assert!(doc("- <!--\n## b\n").unclosed_raw.is_none());
+    assert!(doc("- <!--\n\n  x\n").unclosed_raw.is_some());
+    assert_eq!(
+        heading_levels("> a\n===\n"),
+        vec![],
+        "no underline reaches a quote"
+    );
+    assert_eq!(heading_levels("> - a\n<span>\n## b\n"), one(2, "b"));
     assert_eq!(heading_levels("## a"), one(2, "a"));
     assert_eq!(heading_levels(" ## a"), one(2, "a"));
     assert_eq!(heading_levels("  ## a"), one(2, "a"));
@@ -2371,6 +2571,11 @@ fn the_lexer_follows_commonmark_blocks() {
     assert!(doc("<![CDATA[x\n").unclosed_raw.is_some());
     assert!(doc("<!DOCTYPE x\n").unclosed_raw.is_some());
     assert!(doc("<script>\n\n</SCRIPT>\n").unclosed_raw.is_none());
+    assert!(
+        doc("<pre>\n</style>\n").unclosed_raw.is_none(),
+        "any raw end closes any raw element"
+    );
+    assert_eq!(heading_levels("<pre>\n</style>\n## a\n"), one(2, "a"));
     assert!(
         doc("<https://example.com>\n").visible[0].is_some(),
         "an autolink"
@@ -2424,28 +2629,109 @@ fn an_open_list_item_decides_what_indented_text_is() {
     );
 }
 
+/// Blocks parse first, so a comment spans lines only inside one paragraph.
+#[test]
+fn a_comment_spans_lines_only_inside_its_paragraph() {
+    let visible = |text: &str| Doc::parse("x.md", text).visible;
+    let shown = |text: &str| Some(text.to_owned());
+    assert_eq!(
+        visible("a <!-- b\nc\nd --> e\n"),
+        [shown("a "), None, shown(" e")]
+    );
+    assert_eq!(
+        visible("a <!-- b\nc --> d <!-- e\nf --> g\n"),
+        [shown("a "), shown(" d "), shown(" g")]
+    );
+    assert_eq!(
+        visible("a <!-- b\nc\n"),
+        [shown("a <!-- b"), shown("c")],
+        "nothing closes it, so it is text"
+    );
+    assert_eq!(
+        visible("a <!-- b\n\nc --> d\n"),
+        [shown("a <!-- b"), shown(""), shown("c --> d")],
+        "a blank line ends the paragraph"
+    );
+    assert_eq!(
+        visible("- a\nb <!-- c\nd -->\n"),
+        [shown("- a"), shown("b "), shown("")],
+        "a lazy line is still that paragraph"
+    );
+    assert_eq!(
+        visible("> a <!-- b\nc --> d\n"),
+        [shown("> a "), shown(" d")],
+        "a lazy line after a quote too"
+    );
+    assert_eq!(
+        visible("a <!-- b\n> c --> d\n"),
+        [shown("a <!-- b"), shown("> c --> d")],
+        "a quote ends the paragraph before it"
+    );
+}
+
+/// `~~x~~ ### AC-1` renders as a paragraph, so it defines nothing and its `AC-1` dangles.
+#[test]
+fn struck_text_does_not_turn_a_line_into_a_definition() {
+    let fixture = Fixture::new();
+    fixture.replace(SINGLE, "### AC-1: rule", "~~x~~ ### AC-1: rule");
+    let expected = BTreeSet::from([Rule::IdDangling.code(), Rule::IdRequired.code()]);
+    assert_eq!(fixture.rules(), expected);
+}
+
+/// A line of list markers stays linear. A real spec never nests this deep.
+#[test]
+fn list_nesting_stops_at_the_depth_cap() {
+    let depth = MAX_LIST_DEPTH + 4;
+    let doc = Doc::parse(
+        "x.md",
+        &format!("{}x\n\n{}y\n", "- ".repeat(depth), "  ".repeat(depth)),
+    );
+    assert_eq!(doc.visible[2], None, "past the cap, the column is code");
+    let doc = Doc::parse(
+        "x.md",
+        &format!(
+            "{}x\n\n{}y\n",
+            "- ".repeat(MAX_LIST_DEPTH),
+            "  ".repeat(MAX_LIST_DEPTH)
+        ),
+    );
+    assert!(
+        doc.visible[2].is_some(),
+        "at the cap, the column is content"
+    );
+    assert!(is_thematic("- - -"));
+    assert!(is_thematic("***"));
+    assert!(!is_thematic("--"));
+    assert!(!is_thematic("- - x"));
+    assert!(!is_thematic("x"));
+    assert!(!is_thematic(""));
+}
+
 #[test]
 fn inline_comments_leave_the_line_around_them() {
     assert_eq!(
         without_comments("a <!-- b --> c"),
-        ("a  c".to_owned(), false)
+        ("a  c".to_owned(), None)
     );
-    assert_eq!(without_comments("a <!-- b"), ("a ".to_owned(), true));
-    assert_eq!(without_comments("a <!--> b"), ("a  b".to_owned(), false));
-    assert_eq!(without_comments("`<!--` a"), ("`<!--` a".to_owned(), false));
+    assert_eq!(
+        without_comments("a <!-- b"),
+        ("a <!-- b".to_owned(), Some(2))
+    );
+    assert_eq!(without_comments("a <!--> b"), ("a  b".to_owned(), None));
+    assert_eq!(without_comments("`<!--` a"), ("`<!--` a".to_owned(), None));
     assert_eq!(
         without_comments("a <!-- ` --> b `"),
-        ("a  b `".to_owned(), false)
+        ("a  b `".to_owned(), None)
     );
     assert_eq!(
         without_comments("<!--a--> <!--b-->"),
-        (" ".to_owned(), false)
+        (" ".to_owned(), None)
     );
     assert_eq!(
         without_comments(r"\<!-- a -->"),
-        (r"\<!-- a -->".to_owned(), false)
+        (r"\<!-- a -->".to_owned(), None)
     );
-    assert_eq!(without_comments(r"\\<!-- a -->"), (r"\\".to_owned(), false));
+    assert_eq!(without_comments(r"\\<!-- a -->"), (r"\\".to_owned(), None));
 }
 
 #[test]
@@ -2495,7 +2781,10 @@ fn links_parse_as_commonmark_destinations() {
     assert_eq!(targets("![a](b.png)"), ["b.png"]);
     assert_eq!(targets("[a]: b.md"), ["b.md"]);
     assert_eq!(targets("  [a]: <b c.md> 'title'"), ["b c.md"]);
+    assert_eq!(targets("[a]: b.md (title)"), ["b.md"]);
     assert!(targets("[^1]: a footnote").is_empty());
+    assert!(targets("[^1]: footnote").is_empty());
+    assert!(targets("[FACT]: the host owns it").is_empty(), "prose");
     assert!(targets("`[a](b.md)`").is_empty());
     for url in ["https://x.y/z", "git+ssh://x/y", "mailto:a@b.c"] {
         assert!(is_external(url), "{url}");
@@ -2522,7 +2811,13 @@ fn id_tokens_respect_word_boundaries() {
     let foreign = |line: &str| id_tokens(line).iter().all(|token| token.foreign);
     assert!(foreign("[#1311](https://example.com/x) AC-9"));
     assert!(foreign("[KEL-9](u), AC-9"));
+    assert!(foreign("([#1311](u) AC-9)"));
+    assert!(foreign("(#1311 AC-9)"));
+    assert!(foreign("(#1311) AC-9"));
+    assert!(foreign("**KEL-9** AC-9"));
+    assert!(foreign("`#1311` AC-9"));
     assert!(!foreign("[goal](index.md) AC-9"));
+    assert!(!foreign("(goal) AC-9"));
 }
 
 #[test]
@@ -2641,6 +2936,26 @@ fn crlf_checkouts_measure_the_same_as_lf() {
 }
 
 /// The adapter against a real repository, including the fail-closed seal.
+#[test]
+fn a_tracked_path_that_is_not_utf8_is_an_error_not_an_absent_file() {
+    let tracked = parse_tracked(b"100644 a 0\ta.md\0120000 b 0\tb.md\0").expect("UTF-8");
+    assert_eq!(
+        tracked,
+        [
+            Tracked {
+                path: "a.md".to_owned(),
+                symlink: false
+            },
+            Tracked {
+                path: "b.md".to_owned(),
+                symlink: true
+            }
+        ]
+    );
+    let error = parse_tracked(b"100644 a 0\ta.md\0100644 b 0\t\xff.md\0").expect_err("lossy");
+    assert!(error.contains("not UTF-8"), "{error}");
+}
+
 #[test]
 fn git_history_reads_a_real_repository_and_fails_closed_on_a_missing_seal() {
     let fixture = Fixture::new();
