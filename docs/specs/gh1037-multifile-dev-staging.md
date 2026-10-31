@@ -79,8 +79,13 @@ node insertion/type/owner, document readiness and actual resource effects.
 Dedicated predicates require both relative target assignments and the exact
 measured inline-document baseline, separately from inline positives. DOM
 assignment/insertion is not claimed to be a network request, and CSS pending
-remains pending. New-source pure predicates, actual one-fault rejection controls
-and external re-review remain required; the old2/2 is not their proof.
+remains pending. At source `4d929512ff972788c41d59a7ef98c42a691d85d4`,
+[R1 verification](https://github.com/gyldlab/keld/issues/1037#issuecomment-6543683166)
+passed eight pure predicate cases and the healthy native renderer. Each actual
+href/src omission failed its dedicated target oracle while inline controls and
+orderly lifecycle cleanup passed. The restored healthy-following case passed.
+These controlled failures are retained separately from the two old159 false
+passes and the earlier3fd2/2 result. External exact-head re-review remains required.
 
 ## 3. Acceptance criteria (binary, each becomes a test)
 
