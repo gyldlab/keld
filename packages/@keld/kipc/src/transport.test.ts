@@ -588,13 +588,18 @@ describe("FrameReader chunk queue", () => {
       reader.push(header.subarray(i, i + 1));
     }
     const extra = 128;
-    for (let i = 0; i < extra; i += 1) {
-      reader.push(new Uint8Array([i & 0xff]));
+    try {
+      for (let i = 0; i < extra; i += 1) {
+        reader.push(new Uint8Array([i & 0xff]));
+      }
+      expect(reader.bufferedBytes()).toBe(HEADER_LEN + extra);
+      expect(reader.pendingChunkCount()).toBe(HEADER_LEN + extra);
+      expect(reader.bufferedBytes()).toBeLessThan(MAX_FRAME_LEN);
+    } finally {
+      // Always release the reader: a leaked 5 s deadline timer would otherwise
+      // reject an unobserved promise inside a later deadline test.
+      reader.fail(new Error("test teardown: incomplete max-size frame"));
     }
-    expect(reader.bufferedBytes()).toBe(HEADER_LEN + extra);
-    expect(reader.pendingChunkCount()).toBe(HEADER_LEN + extra);
-    expect(reader.bufferedBytes()).toBeLessThan(MAX_FRAME_LEN);
-    reader.fail(new Error("test teardown: incomplete max-size frame"));
     await expect(pending).rejects.toThrow("test teardown");
   });
 
@@ -729,6 +734,9 @@ describe("FrameReader direct payload fill", () => {
     straddle.set(encodeHeader(FrameKind.Reply, 0, ECHO_CHANNEL, 2, 2), 2);
     straddle[2 + HEADER_LEN] = 0xb0;
     reader.push(straddle);
+    // The producer's buffer is reused after push returns: both the completed
+    // frame and the queued remainder must already be owned copies.
+    straddle.fill(0xff);
     const a = await first;
     expect(a.header.corr).toBe(1);
     expect(a.payload).toEqual(new Uint8Array([0xa0, 0xa1, 0xa2, 0xa3]));
