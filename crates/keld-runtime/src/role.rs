@@ -6,9 +6,7 @@
 //! breaking, output capture, shutdown and reap stay in the generic supervisor.
 
 use std::ffi::OsString;
-#[cfg(target_os = "linux")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -36,6 +34,140 @@ const RECOVERY_PENDING: u8 = 0;
 const RECOVERY_ARMED: u8 = 1;
 const RECOVERY_DENIED: u8 = 2;
 const RECOVERY_POLL: Duration = Duration::from_millis(10);
+const STAGED_LAUNCH_PHASE: &str = "staged Bun launch admission";
+
+/// Bun prepends this variable's arguments to its own, so an inherited preload
+/// would run before the qualified canonical capture. Every staged launch removes it.
+pub const BUN_OPTIONS_ENV: &str = "BUN_OPTIONS";
+
+fn staged_launch_refusal(detail: String) -> RuntimeError {
+    RuntimeError::Lifecycle {
+        phase: STAGED_LAUNCH_PHASE,
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, detail),
+    }
+}
+
+/// Whether `metadata`, read without following a link, names a symbolic link or
+/// any other reparse point. Junctions and non-link reparse tags count: a tag the
+/// owner cannot name is not proof of a plain staged file.
+fn is_link_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+/// The one staged-launch admission of every boot kind on every platform.
+///
+/// Refuses a stage root that carries `bunfig.toml` or `.bunfig.toml`, because Bun
+/// runtime config can override the CLI define and preload, sidecar or direct entry.
+/// Reads `src/kipc-transport.ts` without following a link: `Ok(None)` when it is
+/// absent (a self-contained legacy entry), `Ok(Some(path))` for a regular file, and
+/// a refusal for a symbolic link, junction, other reparse point or non-file, at
+/// either path component, so no caller can follow it out of the stage.
+///
+/// # Errors
+///
+/// Returns [`RuntimeError::Lifecycle`] carrying the `KELD-CORE-037` refusal with its
+/// restage guidance, for every refusal above and for an uninspectable path.
+pub fn admit_staged_transport_sidecar(root: &Path) -> Result<Option<PathBuf>, RuntimeError> {
+    for config in ["bunfig.toml", ".bunfig.toml"] {
+        match std::fs::symlink_metadata(root.join(config)) {
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(staged_launch_refusal(format!(
+                    "KELD-CORE-037: staged runtime config {config} can override canonical boot selection or preload. Restage through `keld dev`."
+                )));
+            }
+        }
+    }
+    // Two components, as the boot compiler probes them: a joined `src/...` component
+    // would keep its separator verbatim beneath a Windows extended-length root.
+    let directory = root.join("src");
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) if !is_link_or_reparse_point(&metadata) && metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(staged_launch_refusal(String::from(
+                "KELD-CORE-037: staged src must be a real directory, not a symbolic link or reparse point. Restage through `keld dev`.",
+            )));
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(staged_launch_refusal(format!(
+                "KELD-CORE-037: staged src cannot be inspected: {source}. Restage through `keld dev`."
+            )));
+        }
+    }
+    let sidecar = directory.join("kipc-transport.ts");
+    match std::fs::symlink_metadata(&sidecar) {
+        Ok(metadata) if is_link_or_reparse_point(&metadata) => {
+            Err(staged_launch_refusal(String::from(
+                "KELD-CORE-037: staged kipc transport must be a regular file, not a symbolic link or reparse point. Restage through `keld dev`.",
+            )))
+        }
+        Ok(metadata) if metadata.is_file() => Ok(Some(sidecar)),
+        Ok(_) => Err(staged_launch_refusal(String::from(
+            "KELD-CORE-037: staged kipc transport is not a regular file. Restage through `keld dev`.",
+        ))),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(staged_launch_refusal(format!(
+            "KELD-CORE-037: staged kipc transport cannot be inspected: {source}. Restage through `keld dev`."
+        ))),
+    }
+}
+
+/// The Bun arguments that fix one staged launch's boot mode before any app code.
+///
+/// The literal define carries `native_facade`, the validated boot kind, because the
+/// transport's mode expression is that define and never the live environment. The
+/// preload follows [`admit_staged_transport_sidecar`]. The caller also removes
+/// [`BUN_OPTIONS_ENV`] and places these arguments before Bun's `run` subcommand.
+///
+/// # Errors
+///
+/// Returns the [`admit_staged_transport_sidecar`] refusal.
+pub fn staged_bun_launch_args(
+    root: &Path,
+    native_facade: bool,
+) -> Result<Vec<OsString>, RuntimeError> {
+    let mut args = vec![OsString::from(if native_facade {
+        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
+    } else {
+        "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
+    })];
+    if let Some(sidecar) = admit_staged_transport_sidecar(root)? {
+        let mut preload = OsString::from("--preload=");
+        preload.push(strip_verbatim_prefix(&sidecar));
+        args.push(preload);
+    }
+    Ok(args)
+}
+
+/// Strips a Windows verbatim prefix (`\\\\?\\C:\\...`, `\\\\?\\UNC\\server\\share`), which
+/// `fs::canonicalize` yields. A path with no such prefix, or that is not UTF-8, is
+/// returned unchanged. Bun 1.4.4 opens a verbatim path as a `run` entry but refuses it
+/// as `--preload` (`Cannot find module`); the plain form also names the module the
+/// entry's `./kipc-transport.ts` import resolves to, so the preload is that instance.
+#[must_use]
+pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
 
 /// Host decision that gates crash recovery until initial application readiness.
 ///
@@ -371,6 +503,7 @@ pub struct RoleConfig {
     env: Vec<(OsString, OsString)>,
     env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
+    staged_bun_launch: Option<(PathBuf, bool)>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
     #[cfg(target_os = "linux")]
@@ -415,6 +548,7 @@ impl RoleConfig {
             env: Vec::new(),
             env_remove: Vec::new(),
             current_dir: None,
+            staged_bun_launch: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             #[cfg(target_os = "linux")]
@@ -469,6 +603,18 @@ impl RoleConfig {
     #[must_use]
     pub fn current_dir(mut self, current_dir: impl Into<PathBuf>) -> Self {
         self.current_dir = Some(current_dir.into());
+        self
+    }
+
+    /// Applies the one staged launch rule to every generation of this role.
+    ///
+    /// Each generation re-runs [`staged_bun_launch_args`] over `root` before anything
+    /// is provisioned, puts its result before the configured arguments and removes
+    /// [`BUN_OPTIONS_ENV`], so a stage changed between generations is refused like a
+    /// stage refused at first launch. `native_facade` is the validated boot kind.
+    #[must_use]
+    pub fn staged_bun_launch(mut self, root: impl Into<PathBuf>, native_facade: bool) -> Self {
+        self.staged_bun_launch = Some((root.into(), native_facade));
         self
     }
 
@@ -740,12 +886,21 @@ impl ChildPreparer for RolePreparer {
                 source,
             })?;
         }
+        let staged_launch = self
+            .config
+            .staged_bun_launch
+            .as_ref()
+            .map(|(root, native_facade)| staged_bun_launch_args(root, *native_facade))
+            .transpose()?;
         let provisioned = self.generation_owner.provision(attempt)?;
         #[cfg(target_os = "linux")]
         if let Some(profile) = &self.config.linux_strict {
             return prepare_linux_strict(&self.config, profile, provisioned);
         }
         let mut command = Command::new(&self.config.program);
+        if let Some(args) = staged_launch {
+            command.args(args).env_remove(BUN_OPTIONS_ENV);
+        }
         command.args(&self.config.args);
         if let Some(current_dir) = &self.config.current_dir {
             command.current_dir(current_dir);
@@ -1343,6 +1498,239 @@ mod debug_attempt_witness_tests {
         assert!(open_debug_attempt_witness(std::path::Path::new("/dev/null")).is_err());
         let dir = tempfile::tempdir().expect("scratch dir");
         assert!(open_debug_attempt_witness(dir.path()).is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
+mod staged_launch_tests {
+    use super::{admit_staged_transport_sidecar, staged_bun_launch_args};
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn staged_root(temp: &tempfile::TempDir) -> PathBuf {
+        let root = temp.path().join("stage");
+        fs::create_dir_all(root.join("src")).expect("stage src");
+        root
+    }
+
+    fn refusal(root: &Path) -> String {
+        let error = admit_staged_transport_sidecar(root).expect_err("admission must refuse");
+        let message = error.to_string();
+        assert!(message.contains("KELD-CORE-037"), "{message}");
+        message
+    }
+
+    /// `New-Item -ItemType Junction`: a reparse point needs no privilege, unlike a
+    /// Windows symbolic link, so this row runs on every Windows session.
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:KELD_TEST_LINK -Target $env:KELD_TEST_TARGET | Out-Null",
+            ])
+            .env("KELD_TEST_LINK", link)
+            .env("KELD_TEST_TARGET", target)
+            .output()
+            .expect("junction fixture command");
+        assert!(
+            output.status.success(),
+            "junction setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn staged_sidecar_admission_skips_absent_and_accepts_regular_file() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        assert_eq!(
+            admit_staged_transport_sidecar(&root).expect("absent sidecar"),
+            None,
+            "NotFound must allow self-contained entries"
+        );
+        fs::remove_dir(root.join("src")).expect("no src directory");
+        assert_eq!(
+            admit_staged_transport_sidecar(&root).expect("absent src"),
+            None,
+            "a stage whose entry sits at its root has no sidecar"
+        );
+        fs::create_dir(root.join("src")).expect("stage src");
+        fs::write(root.join("src").join("kipc-transport.ts"), "export {}\n")
+            .expect("regular sidecar");
+        assert_eq!(
+            admit_staged_transport_sidecar(&root).expect("regular sidecar"),
+            Some(root.join("src").join("kipc-transport.ts")),
+            "regular file must be eligible to preload"
+        );
+    }
+
+    #[test]
+    fn staged_sidecar_admission_rejects_directory() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        fs::create_dir(root.join("src").join("kipc-transport.ts")).expect("directory sidecar");
+        assert!(refusal(&root).contains("not a regular file"));
+    }
+
+    #[test]
+    fn staged_sidecar_admission_rejects_a_src_that_is_not_a_directory() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        fs::remove_dir(root.join("src")).expect("no src directory");
+        fs::write(root.join("src"), "not a directory\n").expect("src file");
+        assert!(refusal(&root).contains("staged src must be a real directory"));
+    }
+
+    #[test]
+    fn staged_runtime_config_is_refused_with_and_without_a_sidecar() {
+        for config in ["bunfig.toml", ".bunfig.toml"] {
+            for sidecar in [false, true] {
+                let temp = tempfile::tempdir().expect("config root");
+                let root = staged_root(&temp);
+                if sidecar {
+                    fs::write(root.join("src").join("kipc-transport.ts"), "export {}\n")
+                        .expect("regular sidecar");
+                }
+                fs::write(root.join(config), "preload = []\n").expect("runtime config");
+                assert!(
+                    refusal(&root).contains(&format!("staged runtime config {config}")),
+                    "{config} sidecar={sidecar}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn staged_launch_args_carry_the_boot_mode_and_only_an_admitted_preload() {
+        let temp = tempfile::tempdir().expect("launch root");
+        let root = staged_root(&temp);
+        assert_eq!(
+            staged_bun_launch_args(&root, false).expect("direct renderer entry"),
+            [OsString::from(
+                "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
+            )]
+        );
+        fs::write(root.join("src").join("kipc-transport.ts"), "export {}\n")
+            .expect("regular sidecar");
+        let mut preload = OsString::from("--preload=");
+        preload.push(root.join("src").join("kipc-transport.ts"));
+        assert_eq!(
+            staged_bun_launch_args(&root, true).expect("sidecar facade entry"),
+            [
+                OsString::from("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""),
+                preload
+            ]
+        );
+        fs::write(root.join("bunfig.toml"), "preload = []\n").expect("runtime config");
+        assert!(
+            staged_bun_launch_args(&root, true).is_err(),
+            "no launch argument survives a refused stage"
+        );
+    }
+
+    /// A canonical Windows root is verbatim; its preload argument never is.
+    #[test]
+    #[cfg(windows)]
+    fn staged_launch_preload_loses_the_canonical_verbatim_prefix() {
+        let temp = tempfile::tempdir().expect("launch root");
+        let root = staged_root(&temp);
+        fs::write(root.join("src").join("kipc-transport.ts"), "export {}\n")
+            .expect("regular sidecar");
+        let canonical = root.canonicalize().expect("canonical stage root");
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let args = staged_bun_launch_args(&canonical, true).expect("verbatim root");
+        let preload = args[1].to_string_lossy();
+        assert!(preload.starts_with("--preload="), "{preload}");
+        assert!(!preload.contains(r"\\?\"), "{preload}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn staged_sidecar_admission_rejects_symlink_to_regular_file() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        let outside = temp.path().join("outside.ts");
+        fs::write(&outside, "export const steal = 1;\n").expect("external target");
+        let sidecar = root.join("src").join("kipc-transport.ts");
+        std::os::unix::fs::symlink(&outside, &sidecar).expect("sidecar symlink");
+        // `metadata()` follows and would admit this as a regular file: CWE-59.
+        assert!(
+            fs::metadata(&sidecar).expect("follow").is_file(),
+            "negative control: following the symlink sees a regular file"
+        );
+        assert!(refusal(&root).contains("symbolic link"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn staged_sidecar_admission_rejects_a_src_symlink() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).expect("external directory");
+        fs::write(outside.join("kipc-transport.ts"), "export {}\n").expect("external file");
+        fs::remove_dir(root.join("src")).expect("no src directory");
+        std::os::unix::fs::symlink(&outside, root.join("src")).expect("src symlink");
+        assert!(refusal(&root).contains("symbolic link"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn staged_sidecar_admission_rejects_junction() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).expect("external directory");
+        junction(&root.join("src").join("kipc-transport.ts"), &outside);
+        assert!(refusal(&root).contains("reparse point"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn staged_sidecar_admission_rejects_a_src_junction() {
+        let temp = tempfile::tempdir().expect("sidecar root");
+        let root = staged_root(&temp);
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).expect("external directory");
+        fs::write(outside.join("kipc-transport.ts"), "export {}\n").expect("external file");
+        fs::remove_dir(root.join("src")).expect("no src directory");
+        junction(&root.join("src"), &outside);
+        assert!(
+            fs::metadata(root.join("src").join("kipc-transport.ts"))
+                .expect("follow")
+                .is_file(),
+            "negative control: following the junction sees a regular file"
+        );
+        assert!(refusal(&root).contains("reparse point"));
+    }
+
+    #[test]
+    fn staged_sidecar_admission_uses_lstat_not_follow() {
+        let source = include_str!("role.rs");
+        let start = source
+            .find("pub fn admit_staged_transport_sidecar")
+            .expect("admission helper");
+        let end = source
+            .find("/// The Bun arguments that fix one staged launch")
+            .expect("next item");
+        let body = source.get(start..end).expect("admission helper body");
+        assert!(
+            body.contains("symlink_metadata"),
+            "admission must lstat so a sidecar symlink is not followed into a preload or mount"
+        );
+        assert!(
+            !body.contains(".metadata()") && !body.contains("fs::metadata"),
+            "Path::metadata follows symlinks and would reintroduce CWE-59"
+        );
+        assert!(
+            body.contains("is_link_or_reparse_point"),
+            "admission must reject a link before any launch uses the path"
+        );
     }
 }
 

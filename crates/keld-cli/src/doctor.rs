@@ -2,13 +2,14 @@
 
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::process::Command;
 
 use keld_core::{
     DEFAULT_ENTRY, DEFAULT_RENDERER, initial_window_from_config_ts, read_config_entry,
     read_config_renderer,
 };
+use keld_runtime::primary::strip_verbatim_prefix;
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -120,26 +121,9 @@ pub fn renderer_path_problem(renderer: &str) -> Option<&'static str> {
     }
 }
 
-/// Strips a Windows verbatim prefix so displayed paths match `current_dir`.
-///
-/// `fs::canonicalize` on Windows yields `\\?\C:\...` (and `\\?\UNC\server\share`
-/// for UNC). MCP may pass that as `project_root`; CLI `doctor --json` from cwd
+/// MCP may pass a verbatim `project_root` (`\\?\C:\...`); CLI `doctor --json` from cwd
 /// does not. Doctor JSON is a human/`current_dir` path (`C:\...`), not the NT
 /// namespace prefix.
-#[must_use]
-fn strip_verbatim_prefix(path: &Path) -> PathBuf {
-    let Some(s) = path.to_str() else {
-        return path.to_path_buf();
-    };
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        path.to_path_buf()
-    }
-}
-
 #[must_use]
 fn display_project_path(path: &Path) -> String {
     strip_verbatim_prefix(path).display().to_string()
@@ -644,11 +628,11 @@ mod tests {
     fn strip_verbatim_prefix_disk_and_unc() {
         assert_eq!(
             strip_verbatim_prefix(Path::new(r"\\?\C:\foo")),
-            PathBuf::from(r"C:\foo")
+            std::path::PathBuf::from(r"C:\foo")
         );
         assert_eq!(
             strip_verbatim_prefix(Path::new(r"\\?\UNC\server\share")),
-            PathBuf::from(r"\\server\share")
+            std::path::PathBuf::from(r"\\server\share")
         );
         let ordinary = Path::new("/var/tmp/app");
         assert_eq!(strip_verbatim_prefix(ordinary), ordinary);

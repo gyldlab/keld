@@ -254,33 +254,6 @@ fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
 }
 
 #[test]
-fn kipc_transport_sidecar_admission_skips_absent_and_accepts_regular_file() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    assert!(
-        !admit_kipc_transport_sidecar(&sidecar).expect("absent sidecar"),
-        "NotFound must allow self-contained entries"
-    );
-    fs::write(&sidecar, "export {}\n").expect("regular sidecar");
-    assert!(
-        admit_kipc_transport_sidecar(&sidecar).expect("regular sidecar"),
-        "regular file must be eligible to bind"
-    );
-}
-
-#[test]
-fn kipc_transport_sidecar_admission_rejects_directory() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    fs::create_dir(&sidecar).expect("directory sidecar");
-    let error = must_err(
-        admit_kipc_transport_sidecar(&sidecar),
-        "directory sidecar must fail closed",
-    );
-    assert!(error.to_string().contains("not a regular file"), "{error}");
-}
-
-#[test]
 fn fs_route_keeps_guard_evaluation_out_of_core_production_source() {
     let source = include_str!("../../app_session.rs");
     let production = source
@@ -297,49 +270,6 @@ fn fs_route_keeps_guard_evaluation_out_of_core_production_source() {
         !production.contains(&forbidden_evaluate),
         "keld-core must never become a second guard evaluator"
     );
-}
-
-#[test]
-fn kipc_transport_sidecar_admission_uses_lstat_not_follow() {
-    let source = include_str!("../../app_session.rs");
-    let start = source
-        .find("fn admit_kipc_transport_sidecar")
-        .expect("admission helper");
-    let body = source
-        .get(start..start.saturating_add(900))
-        .expect("admission helper body");
-    assert!(
-        body.contains("symlink_metadata"),
-        "admission must lstat so a sidecar symlink is not followed into --ro-bind"
-    );
-    assert!(
-        !body.contains(".metadata()"),
-        "Path::metadata follows symlinks and would reintroduce CWE-59"
-    );
-    assert!(
-        body.contains("is_symlink()"),
-        "admission must reject a symlink before readonly_runtime"
-    );
-}
-
-#[test]
-#[cfg(unix)]
-fn kipc_transport_sidecar_admission_rejects_symlink_to_regular_file() {
-    let temp = tempfile::tempdir().expect("sidecar root");
-    let outside = temp.path().join("outside.ts");
-    fs::write(&outside, "export const steal = 1;\n").expect("external target");
-    let sidecar = temp.path().join("kipc-transport.ts");
-    std::os::unix::fs::symlink(&outside, &sidecar).expect("sidecar symlink");
-    // `metadata()` follows and would admit this as a regular file — CWE-59.
-    assert!(
-        fs::metadata(&sidecar).expect("follow").is_file(),
-        "negative control: following the symlink sees a regular file"
-    );
-    let error = must_err(
-        admit_kipc_transport_sidecar(&sidecar),
-        "symlink sidecar must fail closed before --ro-bind",
-    );
-    assert!(error.to_string().contains("symbolic link"), "{error}");
 }
 
 #[test]

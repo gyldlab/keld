@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::NSWindow;
-use tao::event::{Event, StartCause, WindowEvent};
+use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::Window;
@@ -37,7 +37,10 @@ use wry::WebViewExtMacOS;
 use crate::WebviewId;
 pub use crate::engine::AppReadyTrigger;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
-use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
+use crate::engine::{
+    DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt,
+    first_host_init_turn,
+};
 use crate::error::WvError;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
@@ -1032,16 +1035,6 @@ fn is_terminal_app_event(event: &Event<'_, WkUserEvent>) -> bool {
                 AppWindowCommand::Quit | AppWindowCommand::Fatal
             ))
     )
-}
-
-/// Tao may deliver Opened before the first NewEvents(Init). Only the genuine
-/// applicationDidFinishLaunching Init turn is a readiness milestone, once.
-fn first_host_init_turn(event: &Event<'_, WkUserEvent>, emitted: &mut bool) -> bool {
-    if *emitted || !matches!(event, Event::NewEvents(StartCause::Init)) {
-        return false;
-    }
-    *emitted = true;
-    true
 }
 
 fn mark_terminal_intent(intent: &AtomicBool, command: AppWindowCommand) -> bool {

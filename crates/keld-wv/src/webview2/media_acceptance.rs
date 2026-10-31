@@ -1164,7 +1164,12 @@ mod tests {
         commands_tx
             .send(crate::AppWindowCommand::Quit)
             .map_err(|_| failure("queue fixture Quit"))?;
-        engine.run_app_until_quit(commands_rx, mpsc::channel().0)
+        engine.run_app_until_quit(
+            commands_rx,
+            mpsc::channel().0,
+            super::AppReadyTrigger::NavigationReady,
+            || {},
+        )
     }
 
     fn assert_saved_media_state(
@@ -1529,7 +1534,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         commands_tx
             .send(crate::AppWindowCommand::Quit)
             .map_err(|_| failure("queue saved fixture Quit"))?;
-        engine.run_app_until_quit(commands_rx, mpsc::channel().0)?;
+        engine.run_app_until_quit(
+            commands_rx,
+            mpsc::channel().0,
+            super::AppReadyTrigger::NavigationReady,
+            || {},
+        )?;
         // Signed acceptance phases share the caller's run-owned profile root
         // across camera and microphone cases. Their owner purges the exact
         // authenticated identity after both cases complete.
@@ -1796,7 +1806,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             restart_tx
                 .send(crate::AppWindowCommand::Quit)
                 .map_err(|_| failure("queue seeded-profile Quit"))?;
-            engine.run_app_until_quit(restart_rx, mpsc::channel().0)?;
+            engine.run_app_until_quit(
+                restart_rx,
+                mpsc::channel().0,
+                super::AppReadyTrigger::NavigationReady,
+                || {},
+            )?;
 
             let mut engine =
                 profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
@@ -1834,7 +1849,12 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             commands_tx
                 .send(crate::AppWindowCommand::Quit)
                 .map_err(|_| failure("queue fixture Quit"))?;
-            let result = engine.run_app_until_quit(commands_rx, mpsc::channel().0);
+            let result = engine.run_app_until_quit(
+                commands_rx,
+                mpsc::channel().0,
+                super::AppReadyTrigger::NavigationReady,
+                || {},
+            );
             if result.is_ok() {
                 std::fs::remove_dir_all(&root).map_err(failure)?;
             } else {

@@ -242,7 +242,11 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 }
 
 fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
-    let checks = run_checks(Some(project_root));
+    report_checks(run_checks(Some(project_root)).into_iter())
+}
+
+fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
+    let checks: Vec<_> = checks.collect();
     if all_ok(&checks) {
         return Ok(());
     }
@@ -252,6 +256,24 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
+}
+
+/// The preflight of a launch whose stage goes to the no-flag host. On Windows the host
+/// owns a schema-2 boot's admission (GH-1188 D2), so its `KELD-CORE-034`, not a second
+/// CLI verdict, answers that project here; `keld doctor` keeps its own refusal until the
+/// host admits the boot in every build (D15), which removes this exception.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn staged_host_doctor_or_err(project_root: &Path) -> Result<(), DevError> {
+    #[cfg(windows)]
+    let facade = facade_mode_for_project(project_root).map_err(DevError::Doctor)?;
+    #[cfg(not(windows))]
+    let facade = false;
+    let checks = run_checks(Some(project_root));
+    report_checks(
+        checks
+            .into_iter()
+            .filter(|check| !(facade && check.label == "renderer")),
+    )
 }
 
 fn staged_host_launch_error(
@@ -336,7 +358,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    doctor_or_err(project_root)?;
+    staged_host_doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
