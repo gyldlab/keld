@@ -9,6 +9,7 @@
 /.agents/                              @gyldlab/keld-maintainers
 /.codex/                               @gyldlab/keld-maintainers
 /docs/agents/                          @gyldlab/keld-maintainers
+/docs/specs/.spec-baseline.tsv         @gyldlab/keld-maintainers
 /docs/engineering/keld-error-codes.md  @gyldlab/keld-maintainers
 /justfile                              @gyldlab/keld-maintainers
 /tools/                                @gyldlab/keld-maintainers
