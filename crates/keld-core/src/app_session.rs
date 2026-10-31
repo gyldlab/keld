@@ -3659,7 +3659,7 @@ fn run_direct_app_session(
     }
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let primary_owner = DirectPrimaryOwner::start(
+    let mut primary_owner = DirectPrimaryOwner::start(
         supervisor,
         recovery,
         window_commands_tx.clone(),
@@ -3792,7 +3792,7 @@ fn run_direct_app_session(
         .map(|snapshot| snapshot.verified.verified_sha256());
 
     let owner_result = match owner_result {
-        Err(primary) if primary.code == "KELD-CORE-033" => {
+        Err(primary) if owner_cause_outranks_window(&primary) => {
             return Err(append_app_cleanup(
                 primary,
                 [
@@ -3936,13 +3936,70 @@ fn linux_strict_primary_config_x86(
                 .map_err(|source| app_detail("Linux strict test control", source.to_string()))?;
             config = config.env("KELD_T1B_CONTROL", control);
         }
-        if let Some(value) = std::env::var_os("KELD_T2_EXIT_ON_LINK_EOF") {
-            config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
+        for (key, value) in linux_strict_test_flags(|key| std::env::var_os(key)) {
+            config = config.env(key, value);
+        }
+        // The inherited knob is value-only: the witness's pathname is
+        // derived exclusively from the validated private dev stage. Its
+        // descriptor is pinned before the supervisor can prepare a child.
+        if let Some(path) = create_stage_debug_attempt_witness(
+            root,
+            std::env::var_os("KELD_T3_SUPERVISOR_ATTEMPTS").as_deref(),
+        )? {
+            config = config
+                .with_debug_primary_attempt_witness(&path)
+                .map_err(|source| app_io("debug primary attempt witness", &source))?;
         }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
         config
     };
     Ok(config.linux_strict(profile))
+}
+
+/// Host-only Linux debug witness bound to the active validated dev-stage root.
+/// A path supplied through the inherited environment is never used as an I/O
+/// destination. An existing file (including a same-UID hardlink or symlink)
+/// fails the exclusive create rather than being opened for append.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn create_stage_debug_attempt_witness(
+    root: &Path,
+    requested: Option<&std::ffi::OsStr>,
+) -> Result<Option<PathBuf>, HostAppError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Some(value) = requested else {
+        return Ok(None);
+    };
+    if value != std::ffi::OsStr::new("1") {
+        return Err(app_detail(
+            "debug primary attempt witness",
+            "only the value 1 enables the stage-local witness",
+        ));
+    }
+    let path = root.join(".keld-debug-primary-attempts");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|source| app_io("debug primary attempt witness", &source))?;
+    drop(created);
+    Ok(Some(path))
+}
+
+/// Value-only harness flags a debug strict sandbox forwards past `--clearenv`.
+/// None names a path, socket or handle, so none adds sandbox authority;
+/// `KELD_T1B_CONTROL` names a socket and keeps its own bind above.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+const LINUX_STRICT_TEST_FLAGS: [&str; 2] = ["KELD_T2_EXIT_ON_LINK_EOF", "KELD_T3_EXIT_AFTER_HELLO"];
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn linux_strict_test_flags(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    LINUX_STRICT_TEST_FLAGS
+        .iter()
+        .filter_map(|key| lookup(key).map(|value| (*key, value)))
+        .collect()
 }
 
 /// Admits the staged hello sidecar before any Linux `--ro-bind`.
@@ -5398,6 +5455,7 @@ impl DirectPrimaryOwner {
                             &recovery,
                             &supervisor,
                             &window_commands,
+                            &shutdown,
                         ));
                     }
                     while let Some(bound) = supervisor.try_recv_bound_generation() {
@@ -5413,6 +5471,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         }
                         let Some(router) = router.as_ref() else {
@@ -5425,6 +5484,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         };
                         let attempt = bound.attempt();
@@ -5436,19 +5496,18 @@ impl DirectPrimaryOwner {
                             }) {
                                 continue;
                             }
-                            let _ = recovery.deny();
-                            supervisor.shutdown();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error.into());
+                            return Err(terminate_direct_primary_owner(
+                                error.into(),
+                                &recovery,
+                                &supervisor,
+                                &window_commands,
+                                &shutdown,
+                            ));
                         }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
                         let session_running = shutdown.is_running();
-                        if session_running {
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                        }
-                        forward_direct_primary_output(&supervisor)?;
-                        return match outcome {
+                        let result = match outcome {
                             keld_runtime::SupervisorOutcome::Stopped if session_running => {
                                 let ledger = supervisor.crash_ledger();
                                 ledger.last_self_termination.map_or_else(
@@ -5466,7 +5525,14 @@ impl DirectPrimaryOwner {
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
                                 Err(app_runtime_fatal("primary supervisor", &error))
                             }
-                        };
+                        }
+                        // Ranked before the Fatal that ends the window loop.
+                        .map_err(|error| owner_failure_by_causality(error, &shutdown));
+                        if session_running {
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                        }
+                        forward_direct_primary_output(&supervisor)?;
+                        return result;
                     }
                     match command_rx.recv_timeout(DIRECT_PRIMARY_OWNER_POLL) {
                         Ok(DirectPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
@@ -5491,15 +5557,7 @@ impl DirectPrimaryOwner {
                             let _ = recovery.deny();
                         }
                         Ok(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
-                            // The Supervisor is the sole process/restart owner.
-                            // Reject a reader's stale request after a natural
-                            // exit installed a successor; the worker also
-                            // matches the attempt before classifying a live
-                            // child as host-requested restart.
-                            if router
-                                .as_ref()
-                                .is_some_and(|router| router.is_current(attempt))
-                            {
+                            if direct_link_failure_restarts(router.as_ref(), attempt) {
                                 supervisor.restart_generation(attempt);
                             }
                             let _ = reply.send(Ok(()));
@@ -5570,15 +5628,35 @@ impl DirectPrimaryOwner {
         }
     }
 
-    fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
+    fn attach_router(&mut self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.command_tx
+        if self
+            .command_tx
             .send(DirectPrimaryOwnerCommand::AttachRouter(
                 Box::new(router),
                 reply_tx,
             ))
-            .map_err(|_| app_detail("primary router attachment", "owner stopped"))?;
-        receive_direct_owner_reply(&reply_rx, "primary router attachment", false)
+            .is_err()
+        {
+            // The owner already exited. Its terminal error is authoritative;
+            // a closed command channel is only a symptom of that failure.
+            return self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner stopped",
+            )));
+        }
+        match reply_rx.recv_timeout(DIRECT_PRIMARY_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("primary router attachment", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "primary router attachment",
+                "owner did not acknowledge before deadline",
+            )),
+            Err(RecvTimeoutError::Disconnected) => self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner ended before acknowledgment",
+            ))),
+        }
     }
 
     fn shutdown(mut self) -> Result<(), HostAppError> {
@@ -5640,6 +5718,64 @@ fn restart_failed_bound_generation(
         restart(attempt);
     }
     owned
+}
+
+/// The phase of the one typed startup failure for a primary generation lost
+/// before the initial window became `Ready` (GH-1182).
+const PRIMARY_PRE_READY_PHASE: &str = "primary generation before Ready";
+
+/// Whether the primary owner's terminal error outranks the window loop's own
+/// result. A terminal owner ends the loop, so its typed cause is the session's:
+/// a recovery-gate refusal (KELD-CORE-033), or a generation lost before the
+/// initial Ready.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_cause_outranks_window(owner: &HostAppError) -> bool {
+    owner.code == "KELD-CORE-033"
+        || (owner.code == "KELD-CORE-037" && owner.phase == PRIMARY_PRE_READY_PHASE)
+}
+
+/// The phase of an owner cause first reached after session teardown began.
+#[cfg(any(target_os = "linux", windows))]
+const PRIMARY_AFTER_TEARDOWN_PHASE: &str = "primary generation after teardown began";
+
+/// Ranks the owner's terminal failure by causality (PR #1300 review): only a
+/// cause the owner reached before teardown began can have ended the window
+/// loop. Teardown stops the readers (`reader_stop`) under the transition guard
+/// before it closes the app link, so a cause reached once that is set is that
+/// teardown's consequence: it keeps its text, but under a phase that
+/// [`owner_cause_outranks_window`] does not promote.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_failure_by_causality(
+    error: HostAppError,
+    shutdown: &SessionShutdownState,
+) -> HostAppError {
+    if !owner_cause_outranks_window(&error) {
+        return error;
+    }
+    let _transition = shutdown.transition_guard();
+    if shutdown.reader_stop.load(Ordering::Acquire) {
+        app_detail(PRIMARY_AFTER_TEARDOWN_PHASE, error.to_string())
+    } else {
+        error
+    }
+}
+
+/// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
+/// one does. Linux and Windows route it through the direct owner so startup
+/// fails with the recovery gate's typed cause (GH-1182). macOS keeps the
+/// reader-owned pre-Ready failure its guardian tests pin; its owner path for
+/// this case is unverified on a device.
+const PRE_READY_LINK_EOF_DEFERS_TO_OWNER: bool = cfg!(any(target_os = "linux", windows));
+
+/// Whether a reader's link failure for `attempt` asks the Supervisor (the sole
+/// process/restart owner) to restart that generation. A stale request after a
+/// natural exit installed a successor is rejected. Before the router attaches,
+/// the first reader is already running but no successor can exist (a `Bound`
+/// then is fatal), so the request stands; the worker also matches the attempt
+/// before classifying a live child as a host-requested restart (GH-1182).
+#[cfg(any(target_os = "linux", windows))]
+fn direct_link_failure_restarts(router: Option<&PrimaryRouterHandle>, attempt: u32) -> bool {
+    router.is_none_or(|router| router.is_current(attempt))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -5723,8 +5859,8 @@ fn drain_direct_primary_role_events(
         let Some(router) = router else {
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 return Err(app_detail(
-                    "primary generation update",
-                    "generation changed before the primary router attached",
+                    PRIMARY_PRE_READY_PHASE,
+                    "Bun terminated before the initial window became ready",
                 ));
             }
             continue;
@@ -5740,7 +5876,10 @@ fn terminate_direct_primary_owner(
     recovery: &PrimaryRecoveryGate,
     supervisor: &PrimaryRoleSupervisor,
     window_commands: &Sender<AppWindowCommand>,
+    shutdown: &SessionShutdownState,
 ) -> HostAppError {
+    // Ranked before the Fatal that ends the window loop.
+    let error = owner_failure_by_causality(error, shutdown);
     let _ = recovery.deny();
     supervisor.shutdown();
     let _ = window_commands.send(AppWindowCommand::Fatal);
@@ -5925,6 +6064,12 @@ struct PrimaryRouterHandle {
     windows: Option<Arc<Mutex<window_router::WindowSession>>>,
     recovery_armed: Arc<AtomicBool>,
     last_revoked_attempt: Arc<AtomicU32>,
+    /// The app link ended before the initial `Ready`. Written and read only
+    /// under the shutdown transition guard that also publishes `Ready`, so one
+    /// order holds (PR #1300 review). A flag, not an attempt: before `Ready` the
+    /// recovery gate is closed, so only the first generation can ever be
+    /// current, and a stale reader's EOF never reaches the latch.
+    pre_ready_link_failed: Arc<AtomicBool>,
     shutdown: SessionShutdownState,
     fs: Option<Weak<FsDispatchSession>>,
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
@@ -6063,6 +6208,12 @@ impl PrimaryRouterHandle {
         let arm_reply = {
             let _transition = self.shutdown.transition_guard();
             if !self.shutdown.is_running() {
+                return Ok(());
+            }
+            // The reader observed this generation's link end first: publish no
+            // `Ready` and arm no recovery. The owner's `Revoked` then meets the
+            // closed gate and fails startup with its typed pre-Ready cause.
+            if self.pre_ready_link_failed.load(Ordering::Acquire) {
                 return Ok(());
             }
             if !self.mark_window_registry_ready_guarded()? {
@@ -7207,7 +7358,7 @@ impl PrimaryRouterHandle {
                     .fetch_max(attempt, Ordering::AcqRel);
                 if !self.window_ready.load(Ordering::Acquire) {
                     return Err(app_detail(
-                        "primary generation before Ready",
+                        PRIMARY_PRE_READY_PHASE,
                         "Bun terminated before the initial window became ready",
                     )
                     .into());
@@ -7505,6 +7656,19 @@ impl PrimaryRouterHandle {
         self.guardian.fail_generation(attempt)
     }
 
+    /// Records that the current generation's app link ended before the
+    /// initial `Ready`, under the transition guard [`Self::signal_ready`]
+    /// publishes `Ready` under. A `Ready` already published keeps the
+    /// after-Ready recovery path; otherwise every later `Ready` and its
+    /// recovery arm are refused, whether or not the owner has handled the
+    /// failure yet.
+    fn latch_pre_ready_link_failure(&self) {
+        let _transition = self.shutdown.transition_guard();
+        if !self.window_ready.load(Ordering::Acquire) {
+            self.pre_ready_link_failed.store(true, Ordering::Release);
+        }
+    }
+
     fn is_current(&self, attempt: u32) -> bool {
         self.current.lock().map_or(true, |current| {
             current
@@ -7675,6 +7839,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(true)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -7792,6 +7957,7 @@ impl PrimaryRouter {
             windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
             fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -8229,7 +8395,16 @@ fn read_primary_frames(
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
-                if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                if handle.shutdown.is_running()
+                    && (PRE_READY_LINK_EOF_DEFERS_TO_OWNER
+                        || handle.window_ready.load(Ordering::Acquire))
+                {
+                    // Before the owner hears of it: the owner answers
+                    // asynchronously, and a `Ready` published meanwhile would
+                    // arm recovery for this failed generation.
+                    if PRE_READY_LINK_EOF_DEFERS_TO_OWNER {
+                        handle.latch_pre_ready_link_failure();
+                    }
                     handle.fail_pending_echo_for_attempt(
                         attempt,
                         "application call ended because the app link disconnected",
@@ -8237,7 +8412,13 @@ fn read_primary_frames(
                     // The KEL-75/KEL-78 owner decides whether this generation
                     // is recoverable. Its Revoked update retires this writer
                     // before a successor is installed; only its terminal
-                    // outcome may close the already-ready window.
+                    // outcome may close the already-ready window. Before
+                    // Ready (Linux and Windows) the latch above refuses a
+                    // later Ready, so the same update meets the closed
+                    // recovery gate and startup fails with the gate's typed
+                    // cause whether this EOF or the process exit is observed
+                    // first; a late owner acknowledgment can only add a
+                    // cleanup detail (GH-1182).
                     handle.link_failed(attempt)?;
                     return Ok(());
                 }
