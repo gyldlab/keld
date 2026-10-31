@@ -1,6 +1,12 @@
 # Spec: Windows WebView2 preload compatibility through a Host-enforced declared facade (GH-1184 W1, route D)
 
-Status: draft (revision r12 answers 0monish's OCR r11 review of `73553fc2`: a stale same-root
+Status: draft (revision r13 answers 0monish's OCR r12 review of `eae63da8`: any condition on a
+path to a sink gates, not only a page-input branch (§4.8 rule 2, AC31); attestations and verdicts
+also bind the main-process code inputs (§4.8 rule 3, AC32, §10 Q15); a forwarded message carries the
+ticket and crosses the final admission fence W3's eval result uses (§4.4, AC33, proposed, §10
+Q14); the bridge decodes before it dispatches, so a malformed value is `refused`, never
+`consumed` (§4.3, AC34); with a whole-spec sweep of those classes and of C1–C9;
+revision r12 answers 0monish's OCR r11 review of `73553fc2`: a stale same-root
 `bind` the Host cannot tell from the current document's (new blocker §10 B9), a forged `consumed`
 for a real delivery (reusable credit needs the page receipt and the Host-observed post, §4.4
 rule 4), a send stranded by a Bun role retirement and a throwing listener that skipped its
@@ -28,9 +34,15 @@ of the r7 draft found four P1s, fixed before push; r6 after isolated reviews r1�
 amendment, and rpipaliya's review of `043170ca`; r3 is `a765b4a5`, r4 is `043170ca` — rebased
 from local `2ae5aedd`/`e5870822` onto `06718ac1` — and r5 is `27d81e66`/`53ec78e8`)
 Linear: GH-1184 (GitHub tracker under #517; parent program #1182 W1; renderer epic #483) ·
-Owner: @amishabenramani (real Windows operator) · Updated: 2026-10-30
+Owner: @amishabenramani (real Windows operator) · Updated: 2026-10-31
 
-Code citations are at `origin/main` `457a9c3b37f71179f167bd1f8c706c461cc4c479`. Device
+Code citations are at `origin/main` `457a9c3b37f71179f167bd1f8c706c461cc4c479`. W2 and W3
+citations name the head each was read at; r13 re-read the task, blocker and rule citations at
+#1280 `8c5e5d74` (r18) and #1311 `fa49dcfb` (r16): they hold there except for §6 T2's W3 and W2
+task scopes, corrected in r13. Four W3 facts come from its unpushed r17 draft and are re-pinned when #1311
+pushes it: the `413`/`503` capacity refusals, the per-view policy, the failed-enqueue split and the
+shared ticket type.
+Device
 evidence is one runtime and one OS build: WebView2 Evergreen `156.0.4314.50` on Windows 11
 `10.0.26300`, `webview2-com(-sys) 0.38.2` (SDK 1.0.3650.58). Evidence runs live in
 keld-research PR [0monish/keld-research#34](https://github.com/0monish/keld-research/pull/34):
@@ -79,10 +91,11 @@ an exact literal channel grant that `keld migrate` generated into `keld.permissi
 that window and that preload digest. Navigation is a manifest-declared, Host-enforced policy
 separate from document eligibility. A preload that may narrow authority or hold
 Host-delivered data in its own JavaScript is flagged statically by `keld migrate`; its window
-receives no grants unless the developer attests, for that exact preload digest, that every
-flagged site narrows nothing. Without an attestation nothing degrades silently, provided the
-recorded verdict is current — it is bound to the preload digest and recomputed by release
-builds (§4.8 rule 3); with an attestation, a wrong attestation silently loses the narrowing.
+receives no grants unless the developer attests, for that exact preload digest and that exact
+main-code digest (§4.8 rule 3), that every flagged site narrows nothing. Without an
+attestation nothing degrades silently, provided the recorded verdict is current — it is bound
+to both digests and recomputed by release builds (§4.8 rule 3); with an attestation, a wrong
+attestation silently loses the narrowing.
 Default-deny is unchanged.
 
 Observable outcome: on a real Windows device, a migrated application's page sees its
@@ -153,7 +166,7 @@ Deviations this spec records (all land in **T0**, the PR that approves this spec
 
 | Existing owner (reuse, no duplicate) | Exactly what this spec consumes | Decision |
 | --- | --- | --- |
-| [#1191 GH-552 exact channel grants](https://github.com/gyldlab/keld/pull/1191) (**open draft**) | AC1 opt-in `"$keldWindowChannelGrants": 1`; AC2 exact decoded `el:<c>` literal; AC3 Host-bound window selection; AC4 `RendererChannelQuery`/`RendererChannelPermit`; AC5 `KELD-GUARD003`; AC6 zero-allocation Allow inside the one `dispatch_privileged`; AC8 identity refusal precedes grant miss; T4 narrow `keld-core` forwarder. | Reused unchanged. Windows supplies `Principal::Webview` and the borrowed window grants; the forwarder is #1191 T4's, not a second one. |
+| [#1191 GH-552 exact channel grants](https://github.com/gyldlab/keld/pull/1191) (**open draft**) | AC1 opt-in `"$keldWindowChannelGrants": 1`; AC2 exact decoded `el:<c>` literal; AC3 Host-bound window selection; AC4 `RendererChannelQuery`/`RendererChannelPermit`; AC5 `KELD-GUARD003`; AC6 zero-allocation Allow inside the one `dispatch_privileged`; AC8 final identity recheck, with §4.4 step 2's identity refusal before a grant miss; T4 narrow `keld-core` forwarder. | Reused unchanged. Windows supplies `Principal::Webview` and the borrowed window grants; the forwarder is #1191 T4's, not a second one. |
 | [#1192 GH-542 checked navigation binding](https://github.com/gyldlab/keld/pull/1192) (**open draft**) | §4.2 `NativeDocumentPhase` transitions and checked `u32` generation; §4.4 application-document eligibility (verified stage/package resource identity under #499/KEL-102, never URL text) and its zero-queue early `bind` ("zero queued Bind/Invoke/Send/Consumed", #1192 `cd30f997` §4.4, `docs/specs/gh542-native-document-dual-world-binding.md:133`); N11 commit tied to an allowed attempt; N15 Bun restart keeps the document; N16 one generation in stamp and principal; N21 Windows UNKNOWN. | Reused as the state and eligibility model; this spec is the Windows oracle. Divergence: one realm on Windows, so §4.3's two realm credentials do not exist; the epoch nonce is page-readable and is a correlation tag for the current document, not authentication (§4.2 rule 1, §10 Q1(c)). |
 | [#1154 GH-467 facade](https://github.com/gyldlab/keld/pull/1154) (**open draft**) | §4.5 `IpcRendererFacade`/`ContextBridgeFacade`; §4.3 graph bounds (they are the only bounds; this spec adds none); §4.7 fail-closed early-call policy: void return, **zero queued work, no replay**, one typed diagnostic (Host-private in #1154; renderer-local on route D, divergence 11); C09 emitter semantics. | Reused as the one TypeScript facade; only the transport adapter is engine-specific. Divergence: same-realm `exposeInMainWorld` (no copy/proxy). |
 | [#1190 GH-544 codec](https://github.com/gyldlab/keld/pull/1190) (**open draft**) | V1–V8; 4096-byte bound; synchronous refusal of functions before send; Host-opaque bytes. | Reused unchanged; the bytes travel as #540's `payload: JsonBytes` (a JSON array of byte values) inside the CompatV2 envelope, never base64url (§4.4). |
@@ -191,8 +204,9 @@ header-proven mode (Q22 (a), B18): a `file:` document in these rows is loaded by
 attempt (the application's `loadURL`) unless the row says otherwise, and a cell that needs a
 page-initiated `file:` commit reads blocked, never pass, until W3 Q27. (3) Every Host test hook
 named here (a replayed message, a stamped post, a reply latch's release signal, a held Host
-post (`bound` or `event`), a process termination) is a debug-only `profile-test-hooks` fixture (`keld-wv` `Cargo.toml` features;
-`src/lib.rs:3-4` refuses that feature in release builds), the class W2 D16 uses; no new hook
+post (`bound` or `event`), a held queued admission, a process termination, W3's AC31 budget barrier) is a debug-only `profile-test-hooks` fixture (`keld-wv` `Cargo.toml` features;
+`src/lib.rs:3-4` refuses that feature in release builds; `keld-core` forwards it, its
+`Cargo.toml:13`), the class W2 D16 uses; no new hook
 class.
 
 | ID | Given / when | Pass observable | Negative control (one fault → RED) |
@@ -207,26 +221,30 @@ class.
 | AC07 Not-ready refusal | A page calls an exposed method (T4) or `window.keld.invoke` (T2) before the document's epoch arrived (the AC26 recorder confirms each counted call preceded `bound`'s arrival; the at-risk count must be above 0) | Void APIs return `undefined` and emit one typed local diagnostic (#1154 §4.7's policy, renderer-local on route D, divergence 11; the bridge's typed local error never reaches the page as a throw), `invoke` rejects with the typed not-ready error, **nothing is queued or replayed**; a call after the epoch succeeds. | Buffer and flush on epoch → the early call produces a late Bun entry → RED. |
 | AC08 Renderer-side epoch check (**correctness guard, not a security control**) | A test hook posts a reply/event stamped with epoch e₁ through `PostWebMessageAsString` after document B (e₂) committed, bypassing §4.4 rule 1, which would otherwise drop it (AC21), as the E5 variant harness did | The bridge drops it (and drops anything received before its own epoch); B's facade listeners never fire. This keeps stale replies away from B's facade callbacks; it protects nothing from a hostile page, whose own raw `chrome.webview` `message` listener sees every post (AC21 is the security control). | Remove the bridge's stamp check → the stale post is delivered to B's facade listener → RED. |
 | AC09 Literal grant | Current document, matching epoch, channel `c` without `el:c` in `windows.<w>.channels`, on a route-D window | Exactly #1191 AC5, unchanged for route D: `DenyReason::ChannelForbidden`, code `KELD-GUARD003`, kind `channel_forbidden`, fix text "Add `el:c` to this principal's channels list in keld.permissions.jsonc." and the unchanged `CallError { code, message }`, whose bytes equal `keld-guard`'s rendering for the same channel (#1191 `4f246a75` `docs/specs/gh552-exact-channel-grants-guard.md:48` (AC5) and `:140`; `keld-guard` `src/lib.rs:392-394`, asserted at `tests/acl.rs:562-574`, at `457a9c3b`); zero app-link writes and zero Bun entries; a granted neighbour produces one Bun entry. Separately (T5), `keld migrate`'s report for that window says its grants are generated and that changing them means re-running `keld migrate`, not hand-editing `windows.<w>.channels` (§4.8 rule 3). | Prefix/case-fold match → `el:cX`/`EL:c` admitted → RED (#1191 `G552-P04-literal`). Separately, put the route-D guidance (`re-run keld migrate`) into the `KELD-GUARD003` fix text → the `CallError` bytes differ from `keld-guard`'s → RED. Separately, drop the regeneration line from the migrate report → the report golden lacks it → RED. |
-| AC10 Navigation policy (rule A″) | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; with an allowlist whose only `file:` form is the literal `index.html` with no query, a page navigation to another in-root `file:` document and a page link to `index.html?x=1`; with an allowlist whose only `file:` form is the literal `p.html?mode=a`, page links to `p.html?mode=A`, `p.html?` and `p.html` (empty and absent query differ); and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case | Every page-initiated top-level `NavigationStarting` whose target is off the window's allowlist under rule A″ (for `file:`, decided on the parser's components with keld-guard's one component equality, and on the query: a parser failure, or a target that matches no `file:` allow form, is off-allowlist) has `Cancel` set at generation +0, and the application document and its IPC survive (E5: 5/5 veto per arm, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). On-allowlist navigations proceed (+1 only at commit); a page-initiated `file:` target is off-allowlist under W3 B19 until W3 Q27, so its on-allowlist cells read blocked until then. For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. | Replace the allowlist with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. Separately, treat in-root membership as sufficient (proceed whenever `file_url_root_relative` succeeds) → the in-root non-entry navigation proceeds under that literal-only allowlist → RED. Separately, cut the query before page-initiated matching → the entry-with-query link replaces the document → RED. Separately, fold the query through the component equality → the `p.html?mode=A` link proceeds → RED. The three `file:` mutants are device-level rule not exercised while W3 B19 cancels every page-initiated `file:` target first; the same single faults run in W3's pure `guard_navigation_allow_forms` (#1311 `1db53482` §7, "Independent of B19's device-level cancel"), the entrypoint T2 consumes; the `about:` mutant flips on device. |
+| AC10 Navigation policy (rule A″) | Each E5 trigger (a, c, d, e1, f2, i, j, k, l, m, n) to an `about:` form and to an off-allowlist `https:` URL; with an allowlist whose only `file:` form is the literal `index.html` with no query, a page navigation to another in-root `file:` document and a page link to `index.html?x=1`; with an allowlist whose only `file:` form is the literal `p.html?mode=a`, page links to `p.html?mode=A`, `p.html?` and `p.html` (empty and absent query differ); and, **not yet run on device**, top-level navigations to `data:`, `blob:` and `javascript:` URIs in lower and upper case; and, for policy selection, two windows whose `w` bind different allowlists, one `https` target on the first's only, and a window whose `w` has no entry | Every page-initiated top-level `NavigationStarting` whose target is off the window's allowlist under rule A″ (for `file:`, decided on the parser's components with keld-guard's one component equality, and on the query: a parser failure, or a target that matches no `file:` allow form, is off-allowlist) has `Cancel` set at generation +0, and the application document and its IPC survive (E5: 5/5 veto per arm, 0/3 control, per trigger, including uppercase `ABOUT:BLANK`). On-allowlist navigations proceed (+1 only at commit); a page-initiated `file:` target is off-allowlist under W3 B19 until W3 Q27, so its on-allowlist cells read blocked until then. For `javascript:`, whether WebView2 raises `NavigationStarting` at all is UNKNOWN; if it does not, the script runs in the current document with that document's authority only, and the T2 receipt records which. Policy selection: each window decides by its own `w`'s allowlist, and the window with no entry cancels every page-initiated target at +0 (W3 AC08 (o) owns the value, this cell the selection). | Replace the allowlist with an exact denylist `["about:blank"]` → triggers k (`about:blank?`), m (`about:blank#keld`) and n (`about:blank#blocked`) replace the document → RED. Separately, treat in-root membership as sufficient (proceed whenever `file_url_root_relative` succeeds) → the in-root non-entry navigation proceeds under that literal-only allowlist → RED. Separately, cut the query before page-initiated matching → the entry-with-query link replaces the document → RED. Separately, fold the query through the component equality → the `p.html?mode=A` link proceeds → RED. Separately, select the policy by anything but the Host's `w` binding (the first entry) → the second window's off-allowlist target proceeds → RED. The three `file:` mutants are device-level rule not exercised while W3 B19 cancels every page-initiated `file:` target first; the same single faults run in W3's pure `guard_navigation_allow_forms` (#1311 `1db53482` §7, "Independent of B19's device-level cancel"), the entrypoint T2 consumes; the `about:` mutant flips on device. |
 | AC11 Runtime flag untouched | Any build | `AdditionalBrowserArguments` stays empty; no `--disable-features` naming `msWebView2CancellableAboutNavigations`; cancellable `about:` navigation is never disabled. | Add the flag → AC10's `about:blank` control replaces the document → RED. |
 | AC12 Popups | `window.open` with `_blank`/`target`, `opener` forms | `NewWindowRequested` → `SetHandled(TRUE)` (existing `guarded_navigation.rs:142-152`); no popup exists (E5 f1/f2: handled, 0 windows). | Drop the handler → unaccounted popup → RED. |
 | AC13 Generated grants | `keld migrate` sees `ipcMain.on('a')`, `ipcMain.handle('b')`, `ipcMain.once('c')`, `ipcMain.handleOnce('d')`, `ipcMain.on(dyn)` and window W's preload exposes only the fixed-channel, fully forwarding method F-B1 (`doA: (...xs) => send('a', ...xs)`) | `windows.W.channels == ["el:a"]`, with `"$keldWindowChannelGrants": 1` and `windows.W.preload.digest`; `b`, `c`, `d` and `dyn` are reported ungranted. For the page-chosen-channel pass-through F-B (`send(c, ...xs)`) the result is `["el:a","el:c"]`: `send` reaches only `on`/`once` registrations, and `b`, `d` are reported ungranted as reachable only through `ipcRenderer.invoke`, which route D does not support (§4.8, r9). A flagged method on the same channel that omits arguments (`doA: () => send('a')`) with a matching attestation yields the same `["el:a"]`, never more. With `ipcMain.on('app:x')` added, an attested F-P (`prefixed: (c, ...xs) => send('app:' + c, ...xs)`) yields exactly `["el:app:x"]`. | Grant every `ipcMain` literal regardless of the preload's reachable sinks → `el:b` appears for W → RED (over-grant). Separately, collect only `on`/`handle` registrations → F-B's result lacks `el:c` and that `once` handler is unreachable → RED (under-grant; draw.io registers ten channels with `ipcMain.once`). Separately, treat F-P's computed channel as page-chosen (`*`) → its window is granted every `on`/`once` literal, `el:a` included → RED (over-grant past the recorded prefix). **Window keys (r7):** a fixture with two sites `new BrowserWindow({ title: 'Main', webPreferences: { preload: A } })` and `… preload: B …` must make `keld migrate` fail with the typed duplicate-key diagnostic naming both sites and write no `keld.config.ts`; a third fixture whose two `Main` sites share preload, navigation and CSP must produce one `t-main` entry listing both sites. Further refusal fixtures: titles `'Main'` and `'main'` with different preloads; a title whose slug is empty (`'!!'`); a computed title (`title: app.name`). Golden vectors for the key function run through `@keld/electron` and through `keld migrate`'s call of it. Mutants: disambiguate by suffix (`t-main`, `t-main-2`) → swapping the two sites in source and regenerating moves A's digest and grants to B's window (the config diff assigns `t-main` B's digest) → RED; keep the last site → `keld migrate` writes a configuration (the test expects refusal) whose one `t-main` entry carries a single site's digest → RED; drop the class prefixes → a site titled `'a js'` with preload `b.js` and a title-less site with preload `a.js` both map to `a-js`, and `keld migrate` refuses a fixture the test expects to yield two entries (`t-a-js`, `p-a-js`) → RED. **Sinks (r8):** with `ipcMain.on('danger')`, a preload whose only exposure is `(...xs) => ipcRenderer.sendToHost('danger', ...xs)` yields no `el:danger` and a typed incompatibility line (its run-time half, zero Bun calls when the page calls it, is AC27's); the same for a `sendSync`-only and an `invoke`-only exposure while #1154 does not implement them. Mutant: count `sendToHost` as a main-IPC sink → `el:danger` is granted → RED. **Dispatch kinds (r9, 0monish 4425538678):** with `ipcMain.on('a')` and only `ipcMain.handle('danger')`, a preload exposing `(c, ...xs) => ipcRenderer.send(c, ...xs)` yields `["el:a"]` with no `el:danger` and a report line naming `danger` as `invoke`-only. AC13 checks the generated manifest and report only; the run-time refusal (`KELD-GUARD003`) and the per-kind handler counters are AC27's. Mutant: treat every `ipcMain` registration kind as reachable by `send` → `el:danger` is granted → RED. |
-| AC14 Digest binding | The admitted preload bytes' SHA-256 differs from `windows.W.preload.digest` | The Host treats W as `channels: []` and fails the window with a typed error naming the fix (`re-run keld migrate`); a matching digest loads the grants. | Ignore the digest → grants produced for another preload apply → RED (tracker negative control (b), AC22). |
-| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-Q (§4.8). Every single-rule fixture forwards all other arguments by rest/spread, so exactly one rule can flag it | F-B, F-B1, F-B2 and F-O not flagged; every other fixture flagged, and the recorded `verdict.flags` names **only** the rule its row names; F-G1 flagged although representation-only (conservative; branch and delete); F-G (the combined draw.io shape) carries three flags. | Each mutant removes one rule: drop the page-input data-flow edge → F-A passes → RED (F-D stays flagged, because its first argument is not forwarded by identity, and F-G1 by its delete); accept any argument expression as forwarded by identity → F-D passes → RED; treat a page-derived channel as pass-through → F-P passes → RED; treat omitted or truncated arguments as pass-through (the inverted former mutant) → F-C, F-J pass → RED; ignore constant arguments → F-H passes → RED; ignore writes, deletes and mutating calls on page-input values → F-I, F-Q pass → RED; ignore inbound values (rule (b)) → F-F, F-K, F-L pass → RED; flag only non-literal `process.argv` reads → F-M passes → RED; treat dynamic `require`/`eval` as resolvable → F-E passes → RED; let the analyzer "prove" F-G1 representation-only by pattern → F-G1 passes silently → RED (conservatism falsifier); F-G stays flagged under every single mutant. Over-flag falsifier: flag every outbound sink call → F-B and F-B1 flagged → RED (F-B2 makes no outbound sink call). |
-| AC19 Verdict and attestation binding | Window W's `preload.digest` is d₁ and the recorded `verdict.flags` is non-empty; the manifest holds (i) no attestation, (ii) an attestation bound to d₂ ≠ d₁, (iii) an attestation bound to d₁; separately, each with (iii)'s matching attestation so that one fault decides, (iv) `preload.verdict` is absent, (v) `channels` lists `el:x` not in `verdict.reachableSinks`, (vi) `verdict.digest` is d₀ ≠ d₁ (the developer edited the preload and hand-updated `preload.digest` and the attestation without re-running `keld migrate`), and (vii) `preload.digest == verdict.digest == d₁` but the recorded flags or sinks are stale (hand-edited, or produced by an older classifier) | (i), (ii), (iv), (vi): the Host loads W with `channels: []` and a typed error whose fix says re-run `keld migrate` (and, for (i)/(ii), attest digest d₁); (iii): W loads with exactly the §4.8 **Grants** intersection; (v): W's grants are rejected (`KELD-GUARD005`-class), not filtered; (vii): a release build re-runs the classifier on the admitted bytes, finds a different verdict and refuses to package W with a typed error. | Accept an attestation by file path or window key instead of digest → case (ii) loads → RED. Separately, skip the ⊆-reachable-sinks check → case (v) grants `el:x` → RED. Separately, treat a missing verdict as "no flags" → case (iv) passes the verdict-presence check, counted there (its typed re-run-`keld migrate` refusal is absent; with an empty default `reachableSinks` the ⊆ check rejects the grants instead) → RED. Separately, skip the `verdict.digest == preload.digest` check → case (vi) loads stale grants → RED. Separately, skip the release recompute → case (vii) is packaged → RED. |
+| AC14 Digest binding | The admitted preload bytes' SHA-256 differs from `windows.W.preload.digest` | The Host treats W as `channels: []` and fails the window with a typed error naming the fix (`re-run keld migrate`); a matching digest loads the grants. The other branches of §4.8's comparison (r13): a window that passes no preload for an entry that declares one, and one that passes a preload for an entry that declares none, are refused typed with `channels: []`; a `w` with no entry gets `channels: []`, no preload and a typed diagnostic. | Ignore the digest → grants produced for another preload apply → RED (tracker negative control (b), AC22). Separately, compare only when a preload was passed → the preload-less window on an entry that declares one keeps its grants → RED. |
+| AC15 Classifier gate | `keld migrate` over fixtures F-A..F-Z (§4.8). Every single-rule fixture forwards all other arguments by rest/spread, so exactly one rule can flag it | F-B, F-B1, F-B2 and F-O not flagged; every other fixture flagged, and the recorded `verdict.flags` names **only** the rule its row names; F-G1 flagged although representation-only (conservative; branch and delete); F-G (the combined draw.io shape) carries three flags. | Each mutant removes one rule: ignore every conditional on the path → F-A, F-R, F-S and F-Z pass → RED (F-D stays flagged, because its first argument is not forwarded by identity, and F-G1 by its delete); count only page-input-dependent branches (the r12 rule) → F-R, F-S and F-Z pass → RED, and F-A stays flagged; count only a conditional that encloses the sink → F-S passes → RED, and F-A and F-R stay flagged; count only statement conditionals → F-Z passes → RED; stop at the exposure's own body → F-Z1 passes → RED; judge each sink call alone → F-Z2 passes → RED; leave a sink with no exposure path out of the rule → F-Z3 passes → RED; ignore deferred paths → F-T and F-Y pass → RED; ignore `try`/`catch` → F-U passes → RED; ignore loops → F-V passes → RED; ignore selective exposure → F-W passes → RED; accept any argument expression as forwarded by identity → F-D passes → RED; treat a page-derived channel as pass-through → F-P passes → RED; treat omitted or truncated arguments as pass-through (the inverted former mutant) → F-C, F-J pass → RED; ignore constant arguments → F-H passes → RED; ignore writes, deletes and mutating calls on page-input values → F-I, F-Q pass → RED; ignore inbound values (rule (b)) → F-F, F-K, F-L, F-X pass → RED; count only filters that read the inbound value → F-X passes → RED; flag only non-literal `process.argv` reads → F-M passes → RED; treat dynamic `require`/`eval` as resolvable → F-E passes → RED; let the analyzer "prove" F-G1 representation-only by pattern → F-G1 passes silently → RED (conservatism falsifier); F-G stays flagged under every single mutant. Over-flag falsifier: flag every outbound sink call → F-B and F-B1 flagged → RED (F-B2 makes no outbound sink call). Separately, keep a branch the analyzer folded as a live condition → F-O flagged → RED. |
+| AC19 Verdict and attestation binding | Window W's `preload.digest` is d₁ and the recorded `verdict.flags` is non-empty; the manifest holds (i) no attestation, (ii) an attestation bound to d₂ ≠ d₁, (iii) an attestation bound to d₁; separately, each with (iii)'s matching attestation so that one fault decides, (iv) `preload.verdict` is absent, (v) `channels` lists `el:x` not in `verdict.reachableSinks`, (vi) `verdict.digest` is d₀ ≠ d₁ (the developer edited the preload and hand-updated `preload.digest` and the attestation without re-running `keld migrate`), and (vii) `preload.digest == verdict.digest == d₁` but the recorded flags or sinks are stale (hand-edited, or produced by an older classifier). Every verdict and attestation in these cases carries the same `mainDigest`; that branch is AC32's | (i), (ii), (iv), (vi): the Host loads W with `channels: []` and a typed error whose fix says re-run `keld migrate` (and, for (i)/(ii), attest digest d₁); (iii): W loads with exactly the §4.8 **Grants** intersection; (v): W's grants are rejected (`KELD-GUARD005`-class), not filtered; (vii): a release build re-runs the classifier on the admitted bytes, finds a different verdict and refuses to package W with a typed error. | Accept an attestation by file path or window key instead of digest → case (ii) loads → RED. Separately, skip the ⊆-reachable-sinks check → case (v) grants `el:x` → RED. Separately, treat a missing verdict as "no flags" → case (iv) passes the verdict-presence check, counted there (its typed re-run-`keld migrate` refusal is absent; with an empty default `reachableSinks` the ⊆ check rejects the grants instead) → RED. Separately, skip the `verdict.digest == preload.digest` check → case (vi) loads stale grants → RED. Separately, skip the release recompute → case (vii) is packaged → RED. |
 | AC16 Same-document stability | `pushState` to `?route=2#frag`, `replaceState` to `?route=3`, a hash change (`SourceChanged` with `IsNewDocument == FALSE`, source probe v2 3/3), cancelled provisional navigation | Epoch and generation unchanged; a pending granted call completes once; a new granted call after each change is admitted (its `Source` now carries the new query/fragment). | Rotate the epoch on `SourceChanged(IsNewDocument == FALSE)` → the pending call is refused → RED. |
 | AC20 Identity is decided at commit, not per Source string | After `pushState` to `?route=2#frag` the page makes a granted call; its `Source` is `file:///…/index.html?route=2#frag` (source probe v2) — and the first call posted immediately after `pushState` may still carry the pre-push `Source` (`SourceChanged` arrived after it, 3/3) | Both calls are admitted: the epoch binds the committed document; the per-call Source rule checks the scheme, then the tuple origin (`https`) or empty host plus in-root path through the one parser (`file:`), never query/fragment equality. | Compare the full `Source` URL to the committed URL → the post-`pushState` call is refused → RED. |
 | AC21 Host→renderer generation check (security control) | Document A's granted `invoke` is admitted; the Bun handler's reply is held until B's `ContentLoading` has been processed (deterministic test gate); B's first inline script installs a raw `chrome.webview` `message` listener that counts every post | The Host drops the reply because the target generation moved (§4.4 Host→renderer rule): B's raw-listener counter for posts stamped e₁ reads 0 and the Host's post counter for e₁ after B's `ContentLoading` reads 0. A reply whose target is still current is delivered once. | Remove the Host-side generation check → B's raw listener receives A's reply (counter ≥ 1) → RED (tracker negative control (e), AC22). The natural race between a post and a concurrent commit is not deterministic and is probed under §10 B7, arm H. |
 | AC22 Route-D premise mutants (the tracker negative control) | One hostile page, five single-fault Host or `keld migrate` builds, each in its own process: (a) the classifier treats omitted arguments as pass-through; (b) the Host ignores the preload digest; (c) the literal-grant check is removed; (d) admission uses `Source` + generation without the nonce; (e) the Host-side generation check on Host→renderer delivery is removed | The unmodified baseline refuses every attempt with zero effects. Each forbidden effect is counted independently of the Host's refusal log: a Bun-side handler-entry counter keyed by channel and argument list for (a)–(d), and the page's raw `message` listener counter for (e). | (a) baseline (with `ipcMain.on('open-file')` registered): F-C is flagged, no attestation exists, W has `channels: []`; mutant: F-C passes unflagged, W is granted `el:open-file`, and the page posts a raw v2 `send` on `open-file` carrying `'<page path>'` directly → an `on('open-file')` listener entry with an argument the preload never sends → RED; (b) = AC14's mutant; (c) = AC02's mutant (the literal-grant step removed; AC09's prefix/case-fold mutant is a different fault and stays in AC09); (d) = AC06's mutant (A→A2 replay reaches Bun); (e) = AC21's mutant. AC03 (top-level event), AC05 (Source rule) and AC19 (grants ⊆ reachable sinks) carry the remaining premise mutants. The bridge's epoch check (AC08) is not one of them. |
 | AC23 Isolation is never reported | (a) A fixture preload records `process.contextIsolated` and calls `contextBridge.exposeInMainWorld('probe', { isolated: process.contextIsolated })`; (b) `keld migrate` runs over F-O (§4.8), which exposes a privileged API only when `process.contextIsolated` is truthy and a limited one otherwise | (a) The first inline page script reads `window.probe.isolated === false`; the exposure succeeded (route-D divergence: in Electron, `exposeInMainWorld` throws when `contextIsolated` is false — §4.2). (b) `verdict.reachableSinks` is `["el:pub"]`: `process.contextIsolated` is constant-folded to `false`, so only the branch the application actually takes is counted; the report lists every preload read of `process.contextIsolated`, and an aliased or computed read is flagged under rule 2(d). | (a) Report `true` (the former Q3 recommendation) → the probe reads `true` → RED. (b) Count sinks from both branches → `verdict.reachableSinks` gains `el:priv` (and, with `ipcMain.on('priv')` registered, `el:priv` is granted) although the application chose the limited API → RED. |
 | AC24 In-flight hold (state machine) | Pure Rust test of the Host→renderer delivery state machine with a stub engine (its `Navigate` record counts every Host navigation call, W3's header navigation included; the stub clock reaches `NAV_TERMINAL_BOUND` only in cases (10), (12) and (13)); cases (14) and (15) also drive W2's real barrier (`ProfileReleaseWait`; its `webview2` module is Windows-only, `keld-wv/src/lib.rs:104-105`): (1) `NavigationStarting(n)` → reply due → `ContentLoading(n)`; (2) `NavigationStarting(n)` with `Cancel` → reply due → `ContentLoading(n)` (E5 trigger b shape) → `NavigationCompleted(n, IsSuccess = FALSE)`; (3) `NavigationStarting(n)` → reply due → `NavigationCompleted(n, IsSuccess = FALSE)` with no `ContentLoading(n)`; (4) `NavigationStarting(n₁)` → `NavigationStarting(n₂)` → reply due → `NavigationCompleted(n₁, IsSuccess = FALSE)` → `ContentLoading(n₂)`, then a reply due for the new epoch; (5) `NavigationStarting(n)` → reply due → `SourceChanged(IsNewDocument = TRUE)` → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)`; (6) `NavigationStarting(n)` → reply due → `SourceChanged(IsNewDocument = FALSE)` (an unrelated `pushState`) → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)`; (7) `NavigationStarting(n)` → reply due → `SourceChanged(IsNewDocument = TRUE)` → `SourceChanged(IsNewDocument = FALSE)` → `NavigationCompleted(n, IsSuccess = TRUE)` with no `ContentLoading(n)`; (8) `NavigationStarting(n)` → reply due → `NavigationCompleted(n, IsSuccess = TRUE)` with no `SourceChanged` and no `ContentLoading(n)` (a same-URL restore shape); (9) `NavigationStarting(n₁)` → `NavigationStarting(n₂)` → reply due → `SourceChanged(IsNewDocument = TRUE)` → `NavigationCompleted(n₁, IsSuccess = FALSE)` → `ContentLoading(n₂)`; (10) `NavigationStarting(n)` → reply due → no terminal event until `NAV_TERMINAL_BOUND` (stub clock) → `NavigationStarting(n₂)` → `ContentLoading(n₂)` → reply due for the new epoch; (11) `NavigationStarting(n)` → reply due → `ProcessFailed(RENDER_PROCESS_EXITED)` → `NavigationStarting(n₂)` → `ContentLoading(n₂)` → reply due; (12) `NavigationStarting(n₁)` → `NavigationStarting(n₂)` → `ContentLoading(n₂)` → reply due for the new epoch → no terminal event for `n₁` until the bound; (13) `NavigationStarting(n)` → bound → `NavigationStarting(n₂)` → `ContentLoading(n₂)` → reply due → late `ContentLoading(n)` → a second reply due for n₂'s epoch; (14) `NavigationStarting(n)` → reply due → `ProcessFailed(BROWSER_PROCESS_EXITED)`; (15) `NavigationStarting(n)` → reply due → `ProcessFailed(BROWSER_PROCESS_EXITED)` for the bound browser → a `CreateWindow` (once the fault is latched W2 answers it `WindowBuildFailed { Webview }` without a build; under the receipt-only mutant below it builds and its controller reports a new browser pid) → late abnormal `BrowserProcessExited` receipt for the old pid | (1), (2), (4): the stub engine receives **no** post for the old epoch; the old epoch is revoked; in (4) the reply for the new epoch is delivered exactly once (liveness). (3), (6): the held reply is released once to the unchanged document, after the pending set is empty. (5), (7), (8): treated as a document change — revoke, FailedClosed, `onLoss`; no held reply released. (9): `n₁`'s completion is **not** a document change (the signal is attributed to `n₂`); no FailedClosed or `onLoss` from `n₁`; `ContentLoading(n₂)` revokes the old epoch; the stub receives no old-epoch post. (10): at the bound the stub records `Stop()`, the old epoch is revoked, the held reply discarded (0 stale posts), the document FailedClosed with `onLoss` count 0; after `ContentLoading(n₂)` the new epoch's reply is delivered exactly once. (11): at `ProcessFailed` no `Stop()` is recorded; the old epoch is revoked, the held reply discarded (0 stale posts) and the document FailedClosed with `onLoss` count 1; after `ContentLoading(n₂)` the new epoch's reply is delivered exactly once. (12): 0 posts to the old epoch; at the bound the new epoch is revoked, its held reply discarded and the document FailedClosed with `onLoss` count 0 — the stated cost of §4.4 rule 2 (iii). (13): the first reply is delivered once; at the late `ContentLoading(n)` the new epoch is revoked, and the second reply, stamped with it, is never posted. (14): no `Stop()`, `Navigate` or `Reload` is recorded; the epoch is revoked, the held reply discarded (0 stale posts), `onLoss` count 0, and the barrier latches `AbnormalExit` at the first `poll` after the `ProcessFailed`, whose handler queues an abnormal receipt (#1280 r16 D8 (`be9e9e56`), its AC21 NC 4 (j)), not at the later `BrowserProcessExited` receipt: session end = 1. (15): session end = 1 from the `ProcessFailed`; the barrier's binding never moves to the new pid (no rebind; the `CreateWindow`'s answer is W2's); the late old-pid receipt changes nothing; 0 posts. | Remove the hold → the stub receives the old-epoch post between `NavigationStarting` and `ContentLoading` in (1) → RED. Separately, start the hold only for navigations the policy allowed → (2) emits the post → RED. Separately, end the hold at the first completion → (4) emits the old-epoch post after `NavigationCompleted(n₁)` → RED. Separately, release held posts on any completion without `ContentLoading` → (5) emits the post → RED. Separately, release whenever a `SourceChanged(IsNewDocument = FALSE)` arrived, ignoring `IsNewDocument = TRUE` (the r4 rule) → (7) releases the held reply to the new document → RED. Separately, release unless a `SourceChanged(IsNewDocument = TRUE)` arrived (the r5 rule) → (8) releases the held reply on a completion that raised no `SourceChanged` → RED. Separately, count every new-document signal since `NavigationStarting(n₁)` regardless of attribution (the r6 rule) → (9) raises FailedClosed and `onLoss` for a window whose successor commits → RED. Separately, remove the bound → (10) keeps the set non-empty after the stub clock passes `NAV_TERMINAL_BOUND` and the new epoch's reply is never delivered → RED. Separately, ignore `ProcessFailed` → (11) the same → RED. Separately, apply `onLoss` at the bound → (10)'s `onLoss` count is 1 → RED. Separately, let `ContentLoading(n₂)` end older pending navigations (supersession) → (12) delivers the new epoch's reply before the bound → RED. Separately, drop the expired `NavigationId` at the bound and ignore a `ContentLoading` for a navigation not pending → (13) posts the second reply, stamped with the new epoch, after the late `ContentLoading(n)` → RED. Separately, treat `BROWSER_PROCESS_EXITED` like `RENDER_PROCESS_EXITED` (the r9 rule) → (14) records a `Navigate` on the closed controller and `onLoss` count 1 → RED. Separately, end the session only on a pid-matched abnormal `BrowserProcessExited` receipt (the #1280 `95594e88` D8 (3) rule; a fault in W2's barrier, whose own control is #1280 r16 AC21 NC 4 (j), run here as an integration check) → in (15) the `CreateWindow` builds and rebinds to the new pid, the old receipt is foreign and session end stays 0 → RED. |
-| AC25 Which documents get the app preload and an epoch | Admitted root `D:/Keld Test/Ünï/`, entry `index.html`, allowlist `in-root:**` plus one remote `https://` scope. The application's `loadURL` (a Host attempt, admissible for the entry's components whatever the spelling, §4.6 item 6) loads (a) the entry `file:///D:/Keld%20Test/%C3%9Cn%C3%AF/index.html`, (b) `…/index%2Ehtml`, (c) `…/INDEX.HTML` and (d) the non-ASCII case variant `file:///D:/Keld%20Test/%C3%BCn%C3%AF/index.html`; the page then navigates top-level to (e) another in-root page `…/page2.html`, (f) a missing in-root file (Host `404`), (g) the allowlisted remote document and (h) an in-root junction (Host `403`). (e), (f) and (h) are page-initiated `file:` targets, which W3 cancels at +0 until its Q27 (B19): those cells read blocked, never pass, until then. Each document's first inline script records whether the preload's exposed keys exist (AC01's oracle) | Each cell records the committed `Uri`/`Source` bytes, `location.protocol`, the first-inline result and the Host's `bound`-post counter. T2 runs the epoch, `onLoss` and pure-Rust cells; the preload-API cells need T4's wrapper and run there. (a)–(e): the preload API is present at the first inline script. (a)–(d) receive an epoch; (e) receives one under B3's proposal (§4.5), and under B3's fallback it has the API, no epoch, every call refused not-ready and no `onLoss`. (g): the API is absent and no epoch is minted and no `bound` is posted. (f), (h): whether a Host `404`/`403` refusal commits as a Chromium error page or as an empty `file:` document is UNKNOWN (W3 Q7), so both outcomes are pre-declared and the receipt records which occurred: as an error page, the API is absent; as a `file:` document, the API is present (gate (b′)) and every call is refused not-ready. Under either outcome no epoch is minted and no `bound` is posted and the document is FailedClosed **without** `onLoss` (§4.5). Any epoch or `onLoss` in (f) or (h) is RED. In no cell does an epoch exist without the API. Pure Rust: keld-guard's one component equality holds for `index.html`/`INDEX.HTML`/`index%2Ehtml` (after the parser) and W3's allow-form matching and W1's Host-attempt admission call that same function. | Gate the preload by a `location` string (the r5 key: scheme + authority + path, ASCII-folded, against `ENTRY_KEYS`) → (d) lacks the API (and (b) too while Chromium keeps `%2E`) although it receives an epoch → RED (the defect rpipaliya reported). Separately, run the preload in every top-level document (option (b)) → (g) has the API → RED. Separately, compare components byte-exactly in W1 instead of calling the shared equality → the pure-Rust `INDEX.HTML` vector is unequal to the entry → RED. Separately, attach W3's served record regardless of its status → (f) receives an epoch → RED; while (f) is blocked on W3 Q27 this mutant is decided by `wv2_epoch_mint_predicate`'s status-`404`/`403` input (§7). |
+| AC25 Which documents get the app preload and an epoch | Admitted root `D:/Keld Test/Ünï/`, entry `index.html`, allowlist `in-root:**` plus one remote `https://` scope. The application's `loadURL` (a Host attempt, admissible for the entry's components whatever the spelling, §4.6 item 6) loads (a) the entry `file:///D:/Keld%20Test/%C3%9Cn%C3%AF/index.html`, (b) `…/index%2Ehtml`, (c) `…/INDEX.HTML` and (d) the non-ASCII case variant `file:///D:/Keld%20Test/%C3%BCn%C3%AF/index.html`; the page then navigates top-level to (e) another in-root page `…/page2.html`, (f) a missing in-root file (Host `404`), (g) the allowlisted remote document and (h) an in-root junction (Host `403`). (e), (f) and (h) are page-initiated `file:` targets, which W3 cancels at +0 until its Q27 (B19): those cells read blocked, never pass, until then. Separately, (i) the application's `loadURL` of the entry while W3's AC31 barriers hold the Host-served budget full (Host `503`), and a second run in which `onLoss: reload-entry` recovers a lost document into that full budget. Each document's first inline script records whether the preload's exposed keys exist (AC01's oracle) | Each cell records the committed `Uri`/`Source` bytes, `location.protocol`, the first-inline result and the Host's `bound`-post counter. T2 runs the epoch, `onLoss` and pure-Rust cells; the preload-API cells need T4's wrapper and run there. (a)–(e): the preload API is present at the first inline script. (a)–(d) receive an epoch; (e) receives one under B3's proposal (§4.5), and under B3's fallback it has the API, no epoch, every call refused not-ready and no `onLoss`. (g): the API is absent and no epoch is minted and no `bound` is posted. (f), (h): whether a Host `404`/`403` refusal commits as a Chromium error page or as an empty `file:` document is UNKNOWN (W3 Q7), so both outcomes are pre-declared and the receipt records which occurred: as an error page, the API is absent; as a `file:` document, the API is present (gate (b′)) and every call is refused not-ready. Under either outcome no epoch is minted and no `bound` is posted and the document is FailedClosed **without** `onLoss` (§4.5). Any epoch or `onLoss` in (f) or (h) is RED. (i): each attempt fails to its caller typed and is not re-issued, no epoch is minted and no `bound` is posted, the document stays FailedClosed, and neither `onLoss` nor the recovery count moves for it, whatever `ContentLoading` reports (W3 Q7, W3 B7 (xi)). In no cell does an epoch exist without the API. Pure Rust: keld-guard's one component equality holds for `index.html`/`INDEX.HTML`/`index%2Ehtml` (after the parser) and W3's allow-form matching and W1's Host-attempt admission call that same function. | Gate the preload by a `location` string (the r5 key: scheme + authority + path, ASCII-folded, against `ENTRY_KEYS`) → (d) lacks the API (and (b) too while Chromium keeps `%2E`) although it receives an epoch → RED (the defect rpipaliya reported). Separately, run the preload in every top-level document (option (b)) → (g) has the API → RED. Separately, compare components byte-exactly in W1 instead of calling the shared equality → the pure-Rust `INDEX.HTML` vector is unequal to the entry → RED. Separately, attach W3's served record regardless of its status → (f) receives an epoch → RED; while (f) is blocked on W3 Q27 this mutant is decided by `wv2_epoch_mint_predicate`'s status inputs (§7). Separately, count a capacity refusal as a loss → (i)'s recovery count rises and a further reload is issued → RED. |
 | AC26 One wire grammar and carriage: #540 CompatV2 over WebMessage strings (r9, 0monish 4425538690; r11, §10 Q1(a); T2) | T2's **actual** injected bridge text (§4.3) runs in a qualified document against the **actual** `keld-wv` `decode_wv_link` in CompatV2 mode behind §4.4's admission path (top-level `WebMessageReceived`, `TryGetWebMessageAsString`, strict bounded UTF-16→UTF-8), with the KEL-142 floor (`window.keld.invoke` on Echo channel `1`). A recorder in the bridge logs its listener installation, every post and every inbound message in the renderer; the Host counts decoded envelopes, `bind` receipts, `bound` posts and Echo calls. Fixture vectors (WebMessage STRING literals, ASCII byte counts, no outer JSON string wrapper at the decoder; appended to #1122 §7.1, §7): `bind`, 21 bytes, `{"v":2,"kind":"bind"}`; `bound`, 174 bytes, `{"v":2,"kind":"bound","document":"0123456789abcdef0123456789abcdef","limits":{"payload_bytes":4096,"channel_utf8_bytes":256,"send_records":1,"event_records":1},"ready":false}` | Observed in the renderer and at the Host (the order's own cells are AC29): the listener is installed before the first post; the first post is byte-equal to the 21-byte `bind` vector; the first inbound message is the one `bound` the Host posted after decoding that `bind`, whose `document` is the current epoch (32 lowercase hex characters); in pure Rust the Host's `bound` encoder, given the fixture document and `ready: false`, emits the 174-byte `bound` vector byte for byte, and `decode_wv_link` decodes the `bind` vector to exactly one `Bind`. "`bound` may arrive before `bind`" is not a success oracle (§10 Q1(b)). one floor `invoke` posts one v2 `invoke`, receives one `invoke-result` and resolves; the next floor `invoke` is issued only after that `invoke-result`. Separately, raw page posts carrying the current epoch — `{"v":2,"kind":"hello",…}` (r8's kind name in a v2 envelope), a v1 `invoke` on channel `1`, a v2 `send` whose `payload` is a base64url string, a v2 envelope of kind `epoch`, the `bound` vector carrying the current `document` (wrong direction), a v2 `send` with a duplicated `document` field, and a non-string `chrome.webview.postMessage({"v":2,"kind":"invoke",…})` object (`TryGetWebMessageAsString` fails) — are each refused, by the carriage step or by `decode_wv_link`, with a typed reason; for them the decoded-envelope, `bind`-receipt and Echo counters stay 0, and a floor `invoke` after each still resolves. | Endpoint admits v1 (a LegacyV1 fallback) → the v1 `invoke` reaches the Echo handler → RED. Separately, the decoder also accepts a base64url string payload → the decoded-envelope counter counts that `send` → RED. Separately, the decoder admits an unknown kind → the v2 `epoch` post is counted as decoded → RED. Separately, the decoder aliases `hello` to `bind` → the v2 `hello` post is counted as a `bind` receipt → RED (the LegacyV1 mutant flips neither cell: both are v2 envelopes whose kinds lie outside #540's closed union, and a v1 decoder refuses unknown kinds too, `wv_link.rs:195`). Separately, run r8's v1 bridge text → `decode_wv_link` refuses every post and the floor `invoke` never resolves → RED (fails first). Separately, read `get_WebMessageAsJson` instead of `TryGetWebMessageAsString` → every string post reaches the decoder in its JSON-quoted form and is refused, so the bridge's `bind` is never answered and the floor `invoke` never resolves → RED. Separately, the decoder accepts native-to-renderer kinds from the renderer → the page-posted `bound` vector is counted as decoded → RED. Separately, the decoder lets a duplicated key overwrite the first → the duplicated-`document` `send` is counted as decoded → RED. |
-| AC27 Facade send trace, dispatch kind and role capacity (r9; r11, §10 Q1(d); T4) | T2's bridge and admission path, T3's forwarder and T4's facade; `el:a` and `el:x` granted, `el:danger` not. Bun runs #466's `ipcMain` listener registry (`on`/`once`; #1122 §5) and #547's separate invoke-handler registry (`handle`; #466 puts `handle/handleOnce/removeHandler` out of scope as F04-T14, which #547 owns), with `ipcMain.on('a')` (its listener sends one event on `a` back), `ipcMain.on('x')` **and** `ipcMain.handle('x')`, and only `ipcMain.handle('danger')`; each listener and handler has its own counter. The page calls exposures that use `ipcRenderer.send`; the recorder of AC26 logs the renderer side. Fixture vectors (appended to #1122 §7.1, §7): `send`, 123 bytes, `{"v":2,"kind":"send","document":"0123456789abcdef0123456789abcdef","message":1,"channel":"rendererReq","payload":[0,1,255]}`; `consumed`, 120 bytes, `{"v":2,"kind":"consumed","document":"0123456789abcdef0123456789abcdef","delivery":1,"disposition":{"status":"consumed"}}`. Cross-window cell: two windows of one application on one authenticated Bun role, both granted `el:a`; `on('a')`'s completion for window 1's send is held behind a test latch, so its `send-result` is not yet posted. Restart cell (r12, 0monish 4428451737): window 1 posts message 1 (`send('a')`) and a floor `invoke`, and `on('a')`'s completion is held behind the test latch, so neither result is posted; the harness terminates the Bun role process (a `profile-test-hooks` process termination); the Host records the old role's quiescence under #540 §4.9 (old queued, active and continuation counters 0) without posting message 1's `send-result`; the supervisor's successor role becomes ready. Throwing-listener cell (r12, 0monish 4428451744): the preload registers `ipcRenderer.on('a', () => { throw Error('boom') })`, the page counts `window` `error` events, and two `send('a')` calls, each after the previous `send-result`, make `on('a')` send two events | Pure Rust: the bridge's builders emit, and `decode_wv_link` decodes to exactly one variant, the 123-byte `send` and 120-byte `consumed` vectors byte for byte. Observed in the renderer, per direction only (#1122 AC8 promises admission order per document and direction, no cross-direction order). Outbound: `bind`, `send` (message 1, channel `a`), one `consumed` for delivery 1. Inbound: `bound` (answering the `bind`), then `send-result` for message 1 and `event` delivery 1 in either order. The `on('a')` listener fires once; the #540 ledger counter records the one `consumed`. A page `send('a')` made while message 1 is outstanding is a dropped call (divergence 11): it returns `undefined`, emits exactly one typed local `recordBusy` diagnostic, posts no v2 `send`, runs no Bun handler and consumes no credit; the next one, issued after message 1's `send-result` (`bound.limits.send_records` is 1), is posted as message 2. A `bound` with `ready: false` (the fixture holds the Bun route not ready behind a test latch when the document commits) makes calls refuse not-ready with no post until `route-state: ready`; `route-state: retired` makes them refuse not-ready again. `send('x')`: the `on('x')` counter is 1 and the `handle('x')` counter is 0. `send('danger')` from the exposure, and a raw v2 `send` for `danger` with the current epoch: both `KELD-GUARD003`, every `danger` counter 0. AC13's r8 exposures (`sendToHost`, `sendSync`-only, `invoke`-only) produce zero Bun calls. Cross-window: while window 1's message 1 is outstanding, window 2's bridge is locally free (its `outstanding` bit is false) and posts its `send('a')`; the Host/role ledger (#540 §4.8: one DATA record per direction across the role) refuses that reservation: the `on('a')` counter stays 1, the outcome is #540's private terminal/diagnostic for role-global exhaustion (#1122 §4.8, §4.10), and window 2's page sees no throw. Restart: the bridge receives `route-state: retired` and no `send-result` for message 1; it emits exactly one outcome-unknown diagnostic, posts nothing, replays nothing and refunds nothing (message 1's ledger charge is released by the Host at quiescence, never by the bridge); the floor `invoke` rejects with the typed local `routeRetired` error; a `send('a')` while retired is refused not-ready with no post; after the successor's `route-state: ready` a fresh `send('a')` is posted once as message 2 and admitted exactly once under the ledger's record (the `on('a')` counter rises by 1), and a floor `invoke` resolves. Throwing listener: per event the listener runs once, the page's `error` counter rises by 1 with message `boom`, and the bridge posts exactly one `consumed` for that delivery with disposition `consumed` (#1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:317`); after both events the ledger's release counter is 2 and no event record stays charged. Refused send: after `send('danger')`'s `KELD-GUARD003` the bridge receives that message's `send-result` with the `refused` disposition, and the next `send('a')` is posted. | Merge #547's invoke-handler registry into #466's listener registry, so a `send` also reaches `handle` handlers (the case #466's registry-separation negative names) → the `handle('x')` counter is 1 → RED. Separately, the bridge skips its `outstanding` check → the early second `send('a')` is posted → RED. Separately, the bridge never clears its outstanding record on `send-result` → message 2 is never posted → RED. Separately, the bridge ignores `bound.ready` → a post appears before `route-state: ready` → RED. Separately, the bridge drops the `consumed` → the ledger counter stays 0 → RED. Separately, the Host keys the DATA ledger per document instead of per role (a per-window quota) → window 2's `send('a')` reaches `on('a')` while window 1's is outstanding (counter 2) → RED. Separately (restart), the bridge clears `outstanding` only on `send-result` → after the successor's `ready`, `send('a')` is a local `recordBusy` and no message-2 post appears: permanently busy while ready → RED. Separately (throwing listener), post `consumed` only after a normal return from the emitter → the first delivery gets no `consumed`, the release counter stays 0 and the second event is not posted while the record stays charged → RED. Separately, swallow the listener's exception → the page's `error` counter stays 0 → RED. Separately, the Host posts no `send-result` for a `send` it refused at the grant step → the next `send('a')` is a local `recordBusy` → RED. |
+| AC27 Facade send trace, dispatch kind and role capacity (r9; r11, §10 Q1(d); T4) | T2's bridge and admission path, T3's forwarder and T4's facade; `el:a` and `el:x` granted, `el:danger` not. Bun runs #466's `ipcMain` listener registry (`on`/`once`; #1122 §5) and #547's separate invoke-handler registry (`handle`; #466 puts `handle/handleOnce/removeHandler` out of scope as F04-T14, which #547 owns), with `ipcMain.on('a')` (its listener sends one event on `a` back), `ipcMain.on('x')` **and** `ipcMain.handle('x')`, and only `ipcMain.handle('danger')`; each listener and handler has its own counter. The page calls exposures that use `ipcRenderer.send`; the recorder of AC26 logs the renderer side. Fixture vectors (appended to #1122 §7.1, §7): `send`, 123 bytes, `{"v":2,"kind":"send","document":"0123456789abcdef0123456789abcdef","message":1,"channel":"rendererReq","payload":[0,1,255]}`; `consumed`, 120 bytes, `{"v":2,"kind":"consumed","document":"0123456789abcdef0123456789abcdef","delivery":1,"disposition":{"status":"consumed"}}`. Cross-window cell: two windows of one application on one authenticated Bun role, both granted `el:a`; `on('a')`'s completion for window 1's send is held behind a test latch, so its `send-result` is not yet posted. Restart cell (r12, 0monish 4428451737): window 1 posts message 1 (`send('a')`) and a floor `invoke`, and `on('a')`'s completion is held behind the test latch, so neither result is posted; the harness terminates the Bun role process (a `profile-test-hooks` process termination); the Host records the old role's quiescence under #540 §4.9 (old queued, active and continuation counters 0) without posting message 1's `send-result`; the supervisor's successor role becomes ready. Throwing-listener cell (r12, 0monish 4428451744): the preload registers `ipcRenderer.on('a', () => { throw Error('boom') })`, the page counts `window` `error` events, and two `send('a')` calls, each after the previous `send-result`, make `on('a')` send two events | Pure Rust: the bridge's builders emit, and `decode_wv_link` decodes to exactly one variant, the 123-byte `send` and 120-byte `consumed` vectors byte for byte. Observed in the renderer, per direction only (#1122 AC8 promises admission order per document and direction, no cross-direction order). Outbound: `bind`, `send` (message 1, channel `a`), one `consumed` for delivery 1. Inbound: `bound` (answering the `bind`), then `send-result` for message 1 and `event` delivery 1 in either order. The `on('a')` listener fires once; the #540 ledger counter records the one `consumed`. A page `send('a')` made while message 1 is outstanding is a dropped call (divergence 11): it returns `undefined`, emits exactly one typed local `recordBusy` diagnostic, posts no v2 `send`, runs no Bun handler and consumes no credit; the next one, issued after message 1's `send-result` (`bound.limits.send_records` is 1), is posted as message 2. A `bound` with `ready: false` (the fixture holds the Bun route not ready behind a test latch when the document commits) makes calls refuse not-ready with no post until `route-state: ready`; `route-state: retired` makes them refuse not-ready again. `send('x')`: the `on('x')` counter is 1 and the `handle('x')` counter is 0. `send('danger')` from the exposure, and a raw v2 `send` for `danger` with the current epoch: both `KELD-GUARD003`, every `danger` counter 0. AC13's r8 exposures (`sendToHost`, `sendSync`-only, `invoke`-only) produce zero Bun calls. Cross-window: while window 1's message 1 is outstanding, window 2's bridge is locally free (its `outstanding` bit is false) and posts its `send('a')`; the Host/role ledger (#540 §4.8: one DATA record per direction across the role) refuses that reservation: the `on('a')` counter stays 1, window 2's bridge receives that message's `send-result` with disposition `refused`, code `KELD-WV-011` (#540's busy row, #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:603`, §4.4), emits one typed local diagnostic and clears `outstanding`, and window 2's page sees no throw; after window 1's `send-result` window 2's next `send('a')` is admitted once. Restart: the bridge receives `route-state: retired` and no `send-result` for message 1; it emits exactly one outcome-unknown diagnostic, posts nothing, replays nothing and refunds nothing (message 1's ledger charge is released by the Host at quiescence, never by the bridge); the floor `invoke` rejects with the typed local `routeRetired` error; a `send('a')` while retired is refused not-ready with no post; after the successor's `route-state: ready` a fresh `send('a')` is posted once as message 2 and admitted exactly once under the ledger's record (the `on('a')` counter rises by 1), and a floor `invoke` resolves. Throwing listener: per event the listener runs once, the page's `error` counter rises by 1 with message `boom`, and the bridge posts exactly one `consumed` for that delivery with disposition `consumed` (#1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:317`); after both events the ledger's release counter is 2 and no event record stays charged. Refused send: after `send('danger')`'s `KELD-GUARD003` the bridge receives that message's `send-result` with the `refused` disposition, and the next `send('a')` is posted. | Merge #547's invoke-handler registry into #466's listener registry, so a `send` also reaches `handle` handlers (the case #466's registry-separation negative names) → the `handle('x')` counter is 1 → RED. Separately, the bridge skips its `outstanding` check → the early second `send('a')` is posted → RED. Separately, the bridge never clears its outstanding record on `send-result` → message 2 is never posted → RED. Separately, the bridge ignores `bound.ready` → a post appears before `route-state: ready` → RED. Separately, the bridge drops the `consumed` → the ledger counter stays 0 → RED. Separately, the Host keys the DATA ledger per document instead of per role (a per-window quota) → window 2's `send('a')` reaches `on('a')` while window 1's is outstanding (counter 2) → RED. Separately (restart), the bridge clears `outstanding` only on `send-result` → after the successor's `ready`, `send('a')` is a local `recordBusy` and no message-2 post appears: permanently busy while ready → RED. Separately (throwing listener), post `consumed` only after a normal return from the emitter → the first delivery gets no `consumed`, the release counter stays 0 and the second event is not posted while the record stays charged → RED. Separately, swallow the listener's exception → the page's `error` counter stays 0 → RED. Separately, the Host posts no `send-result` for a `send` it refused at the grant step → the next `send('a')` is a local `recordBusy` → RED. Separately, the Host refuses the role-quota reservation without a `send-result` → window 2's next `send('a')` is a local `recordBusy` → RED. |
 | AC28 Process-failure split (r10, 0monish 4427055014; T2) | A compat window holds a current epoch and one floor `invoke` reply due (T2's floor bridge). (a) The harness terminates the window's main-frame renderer process; (b) in a separate run it terminates the browser process (the pid W2's D16 `REBIND` line names); both mechanisms are T2's `profile-test-hooks` fixtures. The harness records `ProcessFailedKind`, every navigation event, every engine call the Host makes per controller, the Echo handler counter and how the session ends | (a) `RENDER_PROCESS_EXITED`: the old epoch is revoked and 0 stale posts are issued; `onLoss: reload-entry` makes exactly one trusted load on the same surviving control (for `file:`, W3's header navigation, so only in W3's header-proven mode) and `onLoss` count is 1; a new `ContentLoading` mints a new epoch, which the new document receives in the `bound` answering its `bind` (AC29 (h)); a floor `invoke` after it reaches the Echo handler once (a real reload). The runtime replaces the crashed frame's content with an error page (Microsoft, §4.5); whether that raises navigation events, and in which order against the trusted load, is UNKNOWN, so the receipt records every navigation event between the `ProcessFailed` and the new epoch, and a second `onLoss` for one exit is RED. (b) `BROWSER_PROCESS_EXITED`: every epoch is revoked; after the failure there are zero `Navigate`, `Reload` or other engine calls on the closed controller; the session ends exactly once with W2's `AbnormalExit` terminal (`KELD-WV-009`). The order of `ProcessFailed` and `BrowserProcessExited` is not guaranteed, so the receipt records which came first: `ProcessFailed` first latches the terminal at the loop's next `poll` under #1280 r16 D8 (`be9e9e56`), the receipt first latches it as on main, and the later event changes nothing. Zero Echo handler entries follow (defence in depth: a dead browser delivers no post). | Apply `onLoss` after a browser exit (the r9 rule) → a Host navigation call on the closed controller is recorded → RED whenever `ProcessFailed` reaches W1 before the session ends; the runtime picks that order and no hook forces it, so this cell is a positive control, not the decider: AC24 case 14 decides the rule. Separately, treat a renderer exit as a browser exit → (a) records no trusted load and `onLoss` count 0 → RED (W2's latch reads the kind itself, so the session need not end). |
 | AC29 Startup order: `bound` answers a verified `bind` (r11, §10 Q1(b); T2) | T2's actual bridge and admission path on the KEL-142 floor; the AC26 recorder plus Host counters for `bind` receipts (with their `Source`), `bound` posts (with their target document and the `bind` they answer), mints, typed startup failures, retries and Echo calls. Cells: (a) positive: the application's `loadURL` of the entry; (b) delayed listener: a fixture bridge build defers its start (listener, then `bind`) to a later task (`setTimeout`; the delay is recorded and the oracle is the Host's order, not the delay); (c) no listener: a fixture bridge build installs no listener and therefore never posts `bind`; (d) early `bind`: on the window's first navigation the replay hook delivers a recorded `bind` with the entry's `Source` after the entry's `NavigationStarting` and before its `ContentLoading`, and a fixture bridge build posts no `bind` of its own; (e) stale `bind`: A (an allowlisted remote `https` document) → B (the entry, by the application's `loadURL`); the replay hook delivers A's recorded `bind`, with A's `Source`, after B's `ContentLoading` and before B's own `bind`; (f) duplicate `bind`: after `bound`, the page posts the raw 21-byte `bind` vector twice; (g) navigation between `bind` and post: A = the entry, B = the entry again by the application's `loadURL`; a Host test hook holds A's `bound` after A's verified `bind` until B's `ContentLoading` has been processed, so only §4.4 rule 1 stands between it and the post (as in AC21); B's first inline script installs a raw `message` counter; (h) recovery: `ProcessFailed(RENDER_PROCESS_EXITED)` with `onLoss: reload-entry` (AC28 (a)); (i) stale same-root `bind` (r12, 0monish 4428451720), in two runs: A = the entry and B = another in-root document (eligible under B3's proposal; under its fallback a second declared entry), each loaded by the application's `loadURL`; and a same-URL reload, A = B = the entry. The replay hook holds A's recorded `bind`; B's bridge is (b)'s deferred fixture build, so B's listener does not exist yet; after B's `ContentLoading` the hook delivers A's `bind`, with A's `Source`; then B's bridge installs its listener and posts its own `bind`. Separately, without the hook, A posts `bind` at its latest points under B7 arm F's forcing (`pagehide`/`unload`, the busy-loop burst), and the receipt records the native at-risk count: how many A `bind`s the Host receives after B's `ContentLoading` (UNKNOWN; a count of 0 reads "rule not exercised") | (a) The Host posts no `bound` before it decodes the document's verified `bind`, then exactly one; the first inbound message is that `bound`; a floor `invoke` then resolves. (b) Zero `bound` posts until the deferred `bind` is decoded, then exactly one, received by the recorder; the floor `invoke` resolves. (c) Zero `bind` receipts and zero `bound` posts; at the startup deadline (§4.4) the window fails with the typed startup error exactly once; zero retries; never reported as success. (d) The early `bind` mints nothing, buffers nothing and is never answered: zero `bound` posts after `ContentLoading`; the window fails at the startup deadline with the typed startup error exactly once, no retry. (e) A's `bind` is refused by the Source rule: zero mints and zero `bound` posts until B's own `bind`, then exactly one `bound` for B. (f) Zero further `bound` posts and zero mints; the epoch and the role's #540 ledger counters are unchanged. (g) A's `bound` is dropped at the final `PostWebMessageAsString` check (B's raw counter for posts carrying A's `document` reads 0); A's startup route is retired; B receives its own `bound` only after its own `bind`. (h) The recovered document's `bind` is answered with one new `bound` whose `document` differs from the pre-crash one; a floor `invoke` after it reaches the Echo handler once. (i) A's `bind` consumes no B state: zero B-latch consumption and zero `bound` posts caused by it (under §10 B9 branch (ii) one identical re-post of B's `bound`, same `document` and `limits`, is counted and allowed), zero mints, zero replenishment and zero role change; B's own `bind` is answered, never refused as a duplicate; B's recorder receives exactly one usable `bound`, carrying B's `document`, and a floor `invoke` reaches the Echo handler once. Today's one-use latch cannot meet this, because the Host cannot tell A's `bind` from B's (§4.4), so the cell fails first and T2 stays blocked on §10 B9. | (a) Treat `bind` as a note that is never answered (the r10 rule) → no `bound` arrives and the floor `invoke` never resolves → RED. (b) Post `bound` at `ContentLoading` instead of in reply to `bind` (the r10 order) → the Host's log shows a `bound` post before any `bind` receipt for that document → RED (the receipt also records whether the recorder received that pushed `bound`; whether `chrome.webview` delivers a post to a listener added in a later task is UNKNOWN, and E5's 24/24 push deliveries do not decide it). (c) Remove the startup deadline → the window stays open with no `bound` and no typed failure → RED. (d) Hold an early `bind` and answer it at the next qualifying `ContentLoading` → a `bound` is posted with no post-qualification `bind` → RED. (e) Skip the Source check on `bind` → a `bound` is posted in reply to A's `bind` before B's own → RED. (f) Answer every verified `bind` with a fresh mint → each duplicate produces a further `bound` with a new `document` → RED. (g) Skip the final-post check for `bound` → B's raw counter for A's `bound` reads 1 → RED. (h) Keep the once-per-document `bind` latch per WebView instead of per document → the recovered document's `bind` is refused as a duplicate, no `bound` arrives and the floor `invoke` never resolves → RED. (i) Accept the old event: A's `bind` takes B's one-use latch (today's rule, so the cell fails first) → B's own `bind` is refused `DuplicateBind` (Host refusal counter 1) → RED; whether B also loses its `bound` depends on whether a post made before the listener exists is delivered (UNKNOWN, recorded). |
-| AC30 Page-readable nonce grants nothing (r11, §10 Q1(c); T4) | A hostile page reads `bound.document` and every raw Host post through its own `chrome.webview` `message` listener (route D, §4.2) and uses the current nonce in: (a) a wrong-document envelope (a nonce not byte-equal to the current one) and (b) a stale-epoch replay (both AC06); (c) a foreign-frame post (AC03); (d) raw v2 envelopes that bypass the preload (AC02; AC26's raw posts; AC27's raw `danger` `send`); (e) a grant bypass (AC09); (f) forged receipts on the AC27 harness (r12, 0monish 4428451730): (f1) a matching key before native completion: the held-post hook holds delivery 1's `PostWebMessageAsString` (the `on('a')` listener's event) after its record is reserved, the page posts a byte-valid `consumed` with the current `document`, `delivery: 1` (a predicted key, §4.4 rule 4) and disposition `consumed`, and main then sends a second event on the same role; (f2) a matching key after native completion, during dispatch: delivery 1 is posted, the page's own `message` listener posts the matching `consumed` and then runs a fixed synchronous loop (its duration recorded) before returning, and main sends a second event; (f3) a double `consumed`: in (f2), the bridge's genuine `consumed` for delivery 1 follows the page's; (f4) an unissued key: while delivery 1 is outstanding, the page posts a `consumed` for delivery 2, which was never reserved | (a)–(e): exactly the zero-effect observables of the ACs named, unchanged. (f1): the forged `consumed` releases nothing (release counter 0; delivery 1's record stays charged); the second event is not admitted while delivery 1 is held (zero posts for delivery 2; Host event-record high-water 1); after the hook releases delivery 1, the bridge's genuine `consumed` releases it once and the second event follows. (f2): the page's `consumed` arrives after the native half, so it releases the record as a legitimate immediate `consumed` would and the second event may be posted; the recorder logs delivery 1's dispatch start and end and delivery 2's dispatch start, and delivery 2's dispatch is expected to start after delivery 1's ends (JavaScript run-to-completion, INFERRED; a WebView2 nested event loop is UNKNOWN and the receipt records it). No Host rule decides (f2): it records the stated limit that no Host-observable signal shows a page listener finished (§4.4 rule 4). (f3): delivery 1's release counter is exactly 1; the bridge's later `consumed` releases nothing. (f4): the release counter is unchanged and delivery 1 stays charged until its first exact-key `consumed` after its post. Page acknowledgments are never authority. No nonce match is counted as preload provenance or an isolated world. | (a)–(e): the mutants of AC06, AC03, AC02, AC26, AC27 and AC09, each in its own process. (f1): release on an exact-key page `consumed` alone, before the Host-observed native completion → the second event is reserved while delivery 1 is still held, and after the hook's release the Host event-record high-water reads 2 and the page receives both events → RED. (f3): release on every exact-key `consumed` after the native half → the bridge's later `consumed` releases delivery 1 a second time (release counter 2; the role's event capacity reads 2) → RED. (f4): release on any `consumed` whose `document` matches, without the exact ledger key → the delivery-2 `consumed` releases delivery 1's record (release counter 1) → RED. (f2) has no single-fault Host mutant (rule not exercised by the Host). |
-| AC17 Receipt | A Windows acceptance claim | Runtime `BrowserVersionString`, OS build, head, manifest digest, preload digest, per-AC counters, each RED control's output. | Drop the runtime string → validator RED. Separately, mark `WebMessageReceived` mocked → validator RED. |
+| AC30 Page-readable nonce grants nothing (r11, §10 Q1(c); T4) | A hostile page reads `bound.document` and every raw Host post through its own `chrome.webview` `message` listener (route D, §4.2) and uses the current nonce in: (a) a wrong-document envelope (a nonce not byte-equal to the current one) and (b) a stale-epoch replay (both AC06); (c) a foreign-frame post (AC03); (d) raw v2 envelopes that bypass the preload (AC02; AC26's raw posts; AC27's raw `danger` `send`); (e) a grant bypass (AC09); (f) forged receipts on the AC27 harness (r12, 0monish 4428451730): (f1) a matching key before native completion: the held-post hook holds delivery 1's `PostWebMessageAsString` (the `on('a')` listener's event) after its record is reserved, the page posts a byte-valid `consumed` with the current `document`, `delivery: 1` (a predicted key, §4.4 rule 4) and disposition `consumed`, and main then sends a second event on the same role; (f2) a matching key after native completion, during dispatch: delivery 1 is posted, the page's own `message` listener posts the matching `consumed` and then runs a fixed synchronous loop (its duration recorded) before returning, and main sends a second event; (f3) a double `consumed`: in (f2), the bridge's genuine `consumed` for delivery 1 follows the page's; (f4) an unissued key: while delivery 1 is outstanding, the page posts a `consumed` for delivery 2, which was never reserved; (f5) a dropped post, no forgery: the held-post hook holds delivery 1's post after its record is reserved and the application's `loadURL` commits a new document before the release; (f6) a replaced document: a fixture bridge build posts no `consumed` for delivery 1 after its post, and the application's `loadURL` commits a new document | (a)–(e): exactly the zero-effect observables of the ACs named, unchanged. (f1): the forged `consumed` releases nothing (release counter 0; delivery 1's record stays charged); the second event is not admitted while delivery 1 is held (zero posts for delivery 2; Host event-record high-water 1); after the hook releases delivery 1, the bridge's genuine `consumed` releases it once and the second event follows. (f2): the page's `consumed` arrives after the native half, so it releases the record as a legitimate immediate `consumed` would and the second event may be posted; the recorder logs delivery 1's dispatch start and end and delivery 2's dispatch start, and delivery 2's dispatch is expected to start after delivery 1's ends (JavaScript run-to-completion, INFERRED; a WebView2 nested event loop is UNKNOWN and the receipt records it). No Host rule decides (f2): it records the stated limit that no Host-observable signal shows a page listener finished (§4.4 rule 4). (f3): delivery 1's release counter is exactly 1; the bridge's later `consumed` releases nothing. (f4): the release counter is unchanged and delivery 1 stays charged until its first exact-key `consumed` after its post. (f5): rule 1 drops the post, the Host ends the record through #540's own terminal (§4.4 rule 4), the release counter is 1 with no page `consumed`, and the new document's first `event` is posted. (f6): at that `ContentLoading` the Host ends the record as `route-retired`, `outcome-unknown`, the release counter is 1 and the new document's first `event` is posted. Page acknowledgments are never authority. No nonce match is counted as preload provenance or an isolated world. | (a)–(e): the mutants of AC06, AC03, AC02, AC26, AC27 and AC09, each in its own process. (f1): release on an exact-key page `consumed` alone, before the Host-observed native completion → the second event is reserved while delivery 1 is still held, and after the hook's release the Host event-record high-water reads 2 and the page receives both events → RED. (f3): release on every exact-key `consumed` after the native half → the bridge's later `consumed` releases delivery 1 a second time (release counter 2; the role's event capacity reads 2) → RED. (f4): release on any `consumed` whose `document` matches, without the exact ledger key → the delivery-2 `consumed` releases delivery 1's record (release counter 1) → RED. (f5): release a dropped post only on a page `consumed` → the record stays charged and the new document's first `event` is never posted → RED. (f6): keep the record for a page `consumed` after its document is gone → the new document's first `event` is not posted until #540's 5,000 ms missing-receipt bound retires the route → RED. (f2) has no single-fault Host mutant (rule not exercised by the Host). |
+| AC31 Private-state gate (r13, 0monish 4429155170; golden half T5, device half T6) | Fixture F-R: `unlocked` is preload-private and only a trusted `click` sets it; `ipcMain.on('delete-all')` is registered; window W has no attestation. No trusted click happens. On device the page calls `api.deleteAll()`, then posts a raw v2 `send` on `delete-all` with the current epoch after that call returned | Golden (T5, `keld migrate` output): F-R is flagged (a), `verdict.flags` names the site, `channels` is `[]` and the report names the site. Device (T6, T5's generated manifest on T4's facade): the exposed call runs 0 `delete-all` handlers; the raw `send` is denied with `KELD-GUARD003` and a `send-result` with disposition `refused`, 0 `delete-all` handlers. With an attestation for both digests W is granted `el:delete-all` and the raw `send` runs 1 handler: that is the disclosed attestation residual (§4.8), recorded in the receipt, not a pass. | Count only page-input-dependent branches (the r12 rule) → F-R passes unflagged, W is granted `el:delete-all`, and the raw `send` produces 1 Bun entry → RED. |
+| AC32 Main-code binding (r13, 0monish 4429155174; golden half T5, Host half T3, device half T6) | One preload `save: (path) => send('save', path)` (flagged (a), truncated) with a site attestation for main code digest m₁. v1 main: `ipcMain.on('save', (_e, path) => save(path))`, set digest m₁. v2 main: `(_e, path, overwrite = false) => save(path, overwrite)`, set digest m₂, preload bytes unchanged. Cells: (a) v2 packaged with the v1 manifest; (b) `keld migrate` re-run on v2 with no re-attestation; (c) the manifest of (b) with `channels` kept at `["el:save"]` (T3 fixture manifest; T6 on device), and a raw v2 `send` on `save` carrying `[path, true]`; (d) the developer re-attests for m₂; (e) pure: one byte changes in a main helper module, in a renderer bundle, in an input with no script extension (`handler.dat`), in a declared preload and in `keld.permissions.jsonc`; two listings of one set in different orders; `keld migrate` run twice over one unchanged tree | (a) A release build recomputes m₂ ≠ `verdict.mainDigest` and refuses to package W with a typed error (T5, at KEL-19's build). (b) `verdict.mainDigest` is m₂, `attestation.mainDigest` stays m₁, `channels` is `[]` and the report lists every site for review. (c) The Host loads W with `channels: []` and a typed error whose fix is to re-attest; the raw `send` is refused, the `save` handler counter and the protected overwrite counter read 0. (d) W is granted exactly `el:save`, the exposed `save` runs one handler; a raw `send` with `overwrite` then reaches it, which is what the renewed attestation asserts is safe (the residual of §4.8), recorded, not a pass. (e) The helper, the renderer bundle and `handler.dat` change `mainDigest`; the preload and `keld.permissions.jsonc` do not; neither the order nor the second run does. | The one currency predicate checks only the preload digest → in (c) W keeps `el:save` and the raw `send` causes the protected overwrite (counter 1) → RED. Separately, drop the main comparison from the release recompute → (a) is packaged → RED. Separately, `keld migrate` writes `attestation.mainDigest` by itself → (b)'s window is granted with no developer act → RED. Separately, hash only the main entry file → (e)'s helper change leaves `mainDigest` equal → RED. Separately, filter the set by file extension → (e)'s `handler.dat` change leaves `mainDigest` equal → RED. Separately, keep `keld.permissions.jsonc` in the set → (e)'s second run yields a different digest → RED. |
+| AC33 Final admission fence (r13, 0monish 4429155178; floor cells T2, `send` cells T3, (h) T4) | A granted route (T2: the floor `invoke` on Echo channel `1`; T3: `el:a`, with `el:danger` ungranted). A `profile-test-hooks` hold keeps an accepted message in Core's queue after `on_web_message` returned and before the fence. Independent counters: writes on the original and on the successor app link, each role's Bun handler, fence admissions and Guard evaluations, plus the next document's raw `message` listener. Cells: (a) positive: hold and release with document and role unchanged; (b) commit: hold A's message, the application's `loadURL` of the entry commits B, release; (c) role: hold, terminate the Bun role, start the successor, wait until the successor's main reports its `on('a')` registered (floor: its Echo handler; that report, not `route-state: ready`: #540 withholds readiness until old queued work is gone), release; (d) order, T3: hold `send('danger')` and proceed as (b); (e) late observation: the message passes the fence, its write completes, then B commits before the Bun handler returns; (f) pure Rust: the final FIFO stub answers `Full`, and separately `Disconnected`; (g) raw posts with the current epoch: a `send` while AC27's latch holds the route not ready with the role's handler registered, a `send` reusing an admitted `message` after its `send-result`, and a second `invoke` while the first is held behind the reply latch; (h) outbound: main's `event` from the old role is held, the role retires, the hold is released | (a) One fence admission, one write on the original link, one handler entry, one terminal. (b) 0 writes on any link, 0 handlers, 0 Guard evaluations; the `send` ledger records the `stale` terminal (floor: no terminal form, §4.4) and A's reservation is released once; B's raw counter for anything carrying A's `document` reads 0; B's own message is then admitted once. (c) 0 writes on either link, 0 handlers on either role; the live document gets one `send-result` with disposition `route-retired`, certainty `not-dispatched` (floor: one `invoke-result` error, ignored if the bridge already settled at `route-state: retired`, §4.3); the charge follows #540 §4.9; after `route-state: ready` a fresh message is admitted once on the successor. (d) The `stale` terminal, no `KELD-GUARD003`, 0 Guard evaluations (#1191 §4.4 step 2). (e) One handler entry on the original role, a G₁ effect only; nothing is rolled back, and B sees 0 posts for it. (f) `Full`: no write; `refused`, `KELD-WV-011`; the reservation is released once. `Disconnected`: no write; `route-retired`, `not-dispatched`; the reservation is released once; no successor write. (g) Each is refused at capture with §4.4's terminal: 0 queue entries, 0 handlers. (h) 0 posts of that `event`. | Omit the final comparison → (b) reaches the old role's handler → RED (in (c) it can only try the dead original link, so the pure interleaving decides that cell: write counter 1). Separately, compare only `G` → in the pure interleaving a role retirement wins and the stub original FIFO takes the frame (write counter 1) → RED. Separately, compare only the role → (b) reaches the handler → RED. Separately, drop the comparison before Guard → (d)'s Guard counter reads 1 → RED. Separately, select a denial's terminal without its comparison → in the pure interleaving a revocation wins during the evaluator and the terminal is `KELD-GUARD003` → RED. Separately, retarget a role mismatch to the live link → (c) writes on the successor link → RED. Separately, capture the role at dequeue instead of at admission → (c)'s ticket names the successor, the comparison passes and the successor is entered → RED. Separately, leave the fence after the comparison and before `try_send` → in the pure interleaving a revocation wins between them and the write counter reads 1 → RED. Separately, trust the bridge's `ready` bit, with no check at capture → (g)'s raw `send` reaches the handler → RED. Separately, skip the sequence check at capture → (g)'s reused `message` runs a second handler entry → RED. Separately, reserve only for `send` → (g)'s second `invoke` reaches Echo while the first is held → RED. Separately, check only the document at rule 1 → (h) posts the old role's `event` → RED. Separately, answer `Disconnected` as `Full` → (f) reports `refused` → RED. If #540's `DocumentRetired` watermark hides (b)'s flip on device, that cell is defence in depth and the pure `wv2_admission_fence` interleaving, which has no such layer, decides the rule. |
+| AC34 Event decode before dispatch (r13, 0monish 4429155182; T4) | AC27's harness. A Bun fixture issues #540's `Deliver` with payload bytes `[255]`, past #1190's encoder (the Host treats them as opaque, `gh540-compat-ipc.md:195`), so a syntactically valid `event` carries `JsonBytes` `[255]`. Cells: (a) `[255]` with a listener registered; (b) `[255]` with none; (c) a valid value with none; (d) a valid value and a listener that throws; (e) a valid value and a listener that returns. The page counts `window` `error` events | (a), (b): exactly one `consumed` with `{status:"refused", code, message}`, `code` being #1190's registered code for the failure (#1190 requires a typed rejection for golden `ff`; its class is `MalformedValue`, INFERRED from its three classes), 0 listener calls, page `error` counter 0; the record is released once and the `Deliver` REPLY carries `Refused`. (c) One `consumed` with `{status:"no-listener"}`, no future-listener queue: a listener added later is not called. (d) One `{status:"consumed"}`, the page `error` counter rises by 1 with the listener's message (AC27's cell). (e) One `{status:"consumed"}`, `error` counter 0. | Catch every failure in one `catch` as `consumed` → (a) reports `consumed` → RED. Separately, rethrow the decode error → (a)'s page `error` counter reads 1 → RED. Separately, look up listeners before decoding → (b) reports `no-listener` → RED. Separately, report every no-dispatch outcome as `consumed` → (c) reports `consumed` → RED. |
+| AC17 Receipt | A Windows acceptance claim | Runtime `BrowserVersionString`, OS build, head, manifest digest, preload digest, main-code digest, per-AC counters, each RED control's output. | Drop the runtime string → validator RED. Separately, mark `WebMessageReceived` mocked → validator RED. |
 
 ## 4. Design
 
@@ -243,18 +261,20 @@ class.
 | A7 Authorization | `keld-guard` via `dispatch_privileged` in `keld-core` (#1191 T4) | principal + borrowed window grants + `el:c` → Allow / GUARD003 | Second evaluator; over-grant at generation time | AC09, AC13, AC14 | FACT: `windows` ignored today (`lib.rs:625-628`); #1191 is an open draft. |
 | A8 Navigation authority | Host `NavigationStarting`; W3 rule A″ (§4.6) | raw `Uri` → scheme-prefix dispatch (`url_scheme_is`); `file:` → parser components (one component equality) and raw query (byte-exact) against the `file:` allow forms; any other scheme → arch 03 §2 matcher on the raw string → `SetCancel` at +0 or proceed (+1 only at commit) | in-root membership taken as allowlist membership; `about:srcdoc` and `document.open` unvetoable | AC10, AC11 | FACT (E5): b committed an error page 5/5 despite Cancel; g (`document.open`) replaced the document 5/5 with **no** `NavigationStarting`. |
 | A9 Popups | existing deny-all | handled | — | AC12 | FACT: code. |
-| A10 Static classification | `keld migrate` (`keld-cli`) | preload AST + digest → verdict (flag sites, reachable sinks) + grants | False negative (a narrowing or data-holding site passes unflagged) | AC15, AC22(a) | FACT: verb reserved (`verb.rs:24,75`). FACT (pinned draw.io blob `44f2f22f`, read directly): the rules of §4.8 flag seven sites (§4.8 table). UNKNOWN: whether rule 2 has false negatives on real preloads — T5 is not built; falsifiers are AC15's mutants and a corpus preload whose narrowing passes unflagged. |
+| A10 Static classification | `keld migrate` (`keld-cli`) | preload AST + digest, main-code digest + `ipcMain` literals → verdict (flag sites, reachable sinks) + grants | False negative (a narrowing or data-holding site passes unflagged, including a gate on state that is not page input) | AC15, AC22(a), AC31 | FACT: verb reserved (`verb.rs:24,75`). FACT (pinned draw.io blob `44f2f22f`, read directly): the rules of §4.8 flag seven sites (§4.8 table). UNKNOWN: whether rule 2 has false negatives on real preloads — T5 is not built; falsifiers are AC15's mutants and a corpus preload whose narrowing passes unflagged. |
 | A11 Evidence | this spec + keld-research#34 | hashed runs → claims | Second runtime/OS claimed; zero-failure claimed with an empty at-risk set | AC17, B7 | FACT: one runtime, one OS build, one device, `https` only; E5's attribution statistic had no at-risk messages. |
 | A12 Host→renderer delivery | `keld-wv` post path + #540 envelope | reply/event + target epoch → post or drop | A post reaches the next document's raw listener; a page `consumed` releases an event record before the Host observed its post (§4.4 rule 4) | AC21, AC24, AC22(e), AC30 | DESIGN (§4.4: generation check plus in-flight hold). FACT (E5): posts made at `NavigationStarting` reached the old document 96/96; a cancelled `about:srcdoc` navigation still raised `ContentLoading` (trigger b: `NS+Cancel > CL > NC(ok=False)`). UNKNOWN: delivery of a post handed to the engine before `NavigationStarting` and still in flight at commit (B7 arm H; non-zero with the hold is a blocker). |
 | A13 Isolation reporting | `@keld/electron` `process` subset (#1155) on Windows | → `process.contextIsolated` | Facade reports isolation it lacks | AC23 | FACT (Electron `v45.1.0` `shell/renderer/renderer_client_base.cc:236-237`): `process.contextIsolated` is the frame's `context_isolation` preference; FACT (`shell/renderer/api/electron_api_context_bridge.cc:1145-1169`; `v44.2.0` `lib/renderer/api/context-bridge.ts:3-11`): `exposeInMainWorld` throws when it is false. |
-| A14 Attestation trust | developer, recorded in `keld.permissions.jsonc` (§4.8 rule 3) | flag sites → attestation bound to digest | Wrong attestation: narrowing silently lost | AC19 (mechanism only) | DESIGN: no Keld party vouches for third-party attestations; the T6 qualification attestation is independently reviewed (§6 T6). |
-| A15 Preload gate | bridge gate (§4.3) | committed top-level document → app preload runs or not | an epoch without the preload (a spelling-sensitive gate); the preload or argv in a remote document or error page | AC25 | DESIGN: the gate tests only top-level + `file:` scheme, and every committed top-level `file:` document is Host-served in-root bytes or a Host `404`/`403` refusal (rule A″ + W3 serving), so every document §4.5 makes eligible under B3's proposal gets the preload. UNKNOWN until the T2 cell (W3 Q7): whether a Host refusal commits as an error page or as an empty `file:` document; either way it gets no epoch and no `onLoss` (AC25 (f)/(h)). |
+| A14 Attestation trust | developer, recorded in `keld.permissions.jsonc` (§4.8 rule 3) | flag sites → attestation bound to the preload and main-code digests | Wrong attestation: narrowing silently lost; a main-only change leaves it stale | AC19, AC32 (mechanism only) | DESIGN: no Keld party vouches for third-party attestations; the T6 qualification attestation is independently reviewed (§6 T6). |
+| A15 Preload gate | bridge gate (§4.3) | committed top-level document → app preload runs or not | an epoch without the preload (a spelling-sensitive gate); the preload or argv in a remote document or error page | AC25 | DESIGN: the gate tests only top-level + `file:` scheme, and every committed top-level `file:` document is Host-served in-root bytes or a Host refusal (`403`, `404`, `413`, `503`) (rule A″ + W3 serving), so every document §4.5 makes eligible under B3's proposal gets the preload. UNKNOWN until the T2 cell (W3 Q7): whether a Host refusal commits as an error page or as an empty `file:` document; either way it gets no epoch and no `onLoss` (AC25 (f)/(h)). |
 | A16 Wire grammar and carriage | #540 CompatV2 (`keld.wv-link` v2); `keld-wv`'s one `decode_wv_link`; WebView2 WebMessage strings (§10 Q1(a)) | top-level `TryGetWebMessageAsString` string → strict bounded UTF-8 → one closed v2 variant or a typed refusal | a v1, unknown-kind, wrong-direction or duplicate/extra-field envelope, a non-string message or a non-`JsonBytes` payload is admitted; `get_WebMessageAsJson` becomes a second parser; a second decoder or a fallback mode appears | AC26, AC27 | FACT: `decode_wv_link` is v1-only at `457a9c3b` (`crates/keld-wv/src/wv_link.rs:131-197`; `v != 1` refused at `:156`; kinds `bind`/`invoke` only, `:160-195`). FACT (#1122 `d9211a96` §4.5): the CompatV2 forms and "A mismatched `v` refuses, never switches the selected mode". DESIGN: the carriage is the #540 wire owner's decision (§10 Q1(a)); it changes the carrier, not the v2 schema. |
 | A17 Process-failure kind | WebView2 `ProcessFailed`, through the one per-view handler W2 r16 D8 registers (W1 adds its kind dispatch, §4.10); W2's release barrier (#1188) for the terminal | kind → reload on the surviving control, or revoke everything and end the session | a closed controller is navigated; a renderer exit ends the session | AC24 (11, 14, 15), AC28 | FACT (Microsoft Learn, process-related events, `ms.date` 2023-07-13): a browser-process exit closes every associated control, which "need to be recreated"; after a main-frame renderer exit `Reload` may be used, and the impacted frames' content "is replaced with an error page" (whether that raises navigation events is UNKNOWN, §4.5). FACT: `keld-wv` registers no `ProcessFailed` handler at `457a9c3b`. FACT (#1280 `95594e88` D8 (3)): there only a pid-matched abnormal `BrowserProcessExited` receipt latches `AbnormalExit`, and a receipt after a rebind is foreign. DESIGN: the terminal is W2's `AbnormalExit`, latched at the first `poll` after this `ProcessFailed` under #1280 r16 D8 (`be9e9e56`) (§10 Q13 (a)). |
+| A18 Final admission | `keld-core::app_session::PrimaryRouterHandle`, the one owner W3 §4.7 names; the native STA and the runtime role owner update its fence synchronously | Host ticket captured at admission + bounded message → one fence transaction (compare with live owners, final FIFO handoff), after a first comparison and Guard for a `send`, or one typed terminal | Queued work reaches a replaced document or a successor role; a second ticket or fence appears; the fence is held across I/O, Guard or a callback | AC33 | DESIGN (§4.4): the B21 owner decision covers the eval use, the renderer use is proposed (§10 Q14). FACT: no such fence exists at `457a9c3b`; `window_router::write_payload` (`app_session/window_router.rs:77`) writes the socket. |
+| A19 Event terminal | bridge (§4.3); #1190's one decoder; #1154's emitter | authentic `event` → decode → one `consumed` of three dispositions | A codec failure is labelled `consumed`; a decode error reaches the page; a record stays charged | AC27, AC34 | FACT (#1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:317-319`): the three dispositions are distinct. DESIGN (r13): decode precedes listener lookup. |
 
 Independence: A16 runs after A3 and before A4–A7: a refused envelope never reaches them, and a well-formed one has no authority until they pass; its `Bind` branch calls A5's `source_ok`. A4 (eligibility) and A8 (navigation) are separate rules with separate
 manifest keys; A5 and A6 are separate checks (only A6 separates a same-origin A→A2 pair), and
-neither has discriminating natural-timing evidence yet (B7); A7 runs only after A3–A6 pass;
+neither has discriminating natural-timing evidence yet (B7); A7 runs only after A3–A6 and A18's first comparison pass, outside A18's fence, and its Allow closure enters A18's transaction (§10 Q14);
 A10 decides the verdict, A14 only covers flagged sites and never widens A7's grants; A12 is
 independent of A6 (a renderer-side epoch check cannot stop the page's raw listener). A15
 has no authority: a document the gate wrongly selects still has every call refused without
@@ -266,7 +286,7 @@ an epoch (A4), and one it wrongly skips loses only its preload API (AC25 detects
    whatever the preload can and read whatever the preload receives; the Host grants exactly
    the literals `keld migrate` generated for this window and this preload digest. A preload
    that may narrow what the page can cause or see is flagged (§4.8) and its window receives
-   grants only with a digest-bound attestation. The epoch nonce is page-readable (§2, §10
+   grants only with an attestation bound to the preload and main-code digests. The epoch nonce is page-readable (§2, §10
    Q1(c)): a freshness/correlation tag for the current Host-qualified document, not a secret
    and not authentication; it conveys no authority. Authority comes only from the actual
    top-level event source, the current native epoch, the parsed `Source`, the Webview
@@ -349,8 +369,8 @@ capability, and that is what the classifier and attestation decide.
    #540 §4.8 keeps one DATA record per direction across the authenticated role (at most one
    per document), so the Host/role ledger refuses a second reservation from another window
    on the same role (AC27), with no per-window quota, backlog or replay. Role-global
-   exhaustion is detected only at the Host and follows #540's private terminal/diagnostic and
-   exact release; no JS throw is fabricated. Whether a real application loses required
+   exhaustion is detected only at the Host, which answers with that message's `send-result`
+   (`refused`, `KELD-WV-011`, §4.4) and #540's exact release; no JS throw is fabricated. Whether a real application loses required
    behaviour this way is T6's send-capacity qualification gate (§6). Electron's
    `ipcRenderer.send` has no such refusal in its JavaScript layer (`v44.2.0`
    `lib/renderer/api/ipc-renderer.ts` L9–11). AC27; T1 scoreboard entry.
@@ -385,18 +405,32 @@ listen("message", (e) => {
   if (epoch === null || env.document !== epoch) return;          // AC08: drop stale / pre-epoch
   switch (env.kind) {
     case "route-state":                                          // r12: a retired role may post no
+      ready = env.state === "ready";                             // r13: first; a later throw strands nothing
       if (env.state === "retired") {                             // result (#540 §4.4); settle locally:
         if (outstanding) { outstanding = false; diagnose(outcomeUnknown()); } // no replay, no refund
         rejectFloorInvoke(routeRetired());                       // KEL-142's one pending floor invoke
       }
-      ready = env.state === "ready"; return;                     // successor `ready` (#540 §4.9)
-    case "send-result": if (env.message === message) outstanding = false; return; // late: no match
+      return;                                                    // successor `ready` (#540 §4.9)
+    case "send-result":                                          // late or already settled: no match
+      if (env.message === message && outstanding) {
+        outstanding = false; diagnoseSend(env.disposition);      // r13: each disposition, below
+      }
+      return;
     case "invoke-result": settleFloorInvoke(env); return;        // KEL-142 §4.1; late result ignored
-    case "event": {                                              // r12: one terminal-disposition owner
-      let disposition: ConsumerDisposition, thrown: unknown = NONE;
-      try { disposition = deliver(env); }                        // #1154 C09 emitter, synchronous
-      catch (err) { disposition = CONSUMED; thrown = err; }      // a listener threw: dispatch happened
-      finally { post(wire.consumed(epoch, env.delivery, disposition)); } // exactly one `consumed`
+    case "event": {                                              // r13: decode BEFORE any listener
+      const value = decodeArgs(env.payload);                     // #1190's one decoder; returns, never throws
+      if (!value.ok) {                                           // codec failure: no listener ran
+        post(wire.consumed(epoch, env.delivery, refused(value.code, value.message)));
+        return;                                                  // no page exception, no rethrow
+      }
+      if (!hasListener(env.channel)) {                           // #1154 emitter; no future-listener queue
+        post(wire.consumed(epoch, env.delivery, NO_LISTENER));
+        return;
+      }
+      let thrown: unknown = NONE;
+      try { emit(env.channel, value.args); }                     // #1154 C09 emitter, synchronous
+      catch (err) { thrown = err; }                              // a listener threw: dispatch happened
+      finally { post(wire.consumed(epoch, env.delivery, CONSUMED)); } // exactly one `consumed`
       if (thrown !== NONE) later(() => { throw thrown; });       // application exception, rethrown
       return;
     }
@@ -421,7 +455,7 @@ Rules: the text holds no secret. The gate runs the app preload in every top-leve
 whose `location.protocol` is `file:` (or, if §10 B6 chooses the Keld-owned virtual host,
 whose `location.origin` is that host's one tuple origin). No path, spelling or entry set is
 compared in the page, so there is no second evaluator and no spelling mismatch: every
-committed top-level `file:` document is Host-served in-root bytes or a W3 `404`/`403` refusal by construction (rule A″
+committed top-level `file:` document is Host-served in-root bytes or a W3 refusal (`403`, `404`, `413`, `503`) by construction (rule A″
 cancels every `file:` target the parser refuses, and W3 serves only in-root regular files;
 anything else commits as an error page or as an empty `file:` document — UNKNOWN, W3 Q7,
 AC25 (f)/(h); in the latter case the gate runs the preload in a document §4.5 does not make
@@ -443,7 +477,7 @@ W1 adds no kind: the r8 `hello` is #540's `bind` and the r8 `epoch` post is #540
 and `ready` fields are #540's). The bridge dispatches by kind: `send-result` completes its
 `send` (one outstanding record, `bound.limits.send_records: 1`); `invoke-result` settles the
 floor `invoke`; each `event` is delivered once and answered by exactly one `consumed`, also
-when a listener throws (bridge terminals, below);
+when a listener throws or its value fails to decode (bridge terminals, below);
 `bound.ready` and then each `route-state` set readiness, and while not ready (`ready: false`
 or `retired`) every call refuses not-ready with no post. The bridge's typed local errors
 (`notReady`, `recordBusy`, `routeClosed`) never post anything. #1154's void
@@ -488,20 +522,33 @@ route admission and invokes retirement (`:496`). On `retired` the bridge settles
 replay, no credit refund — clears `outstanding`, and rejects a pending floor `invoke` with the
 typed local `routeRetired` error, because KEL-142's one-pending floor would otherwise block every
 later `invoke`; a late `send-result` or `invoke-result` for the settled sequence matches nothing
-and is ignored. Calls stay refused not-ready until a successor `route-state: ready`, and #540
+and is ignored. `diagnoseSend` emits nothing for `consumed` or `no-listener`, and one
+renderer-local diagnostic carrying the disposition for `refused`, `stale` or `route-retired`
+(#540: "host denial after a completed void call becomes a bounded internal diagnostic/result,
+never a retroactive throw", `:630-632`). Calls stay refused not-ready until a successor `route-state: ready`, and #540
 makes successor readiness "one atomic transition requiring old queued=0, old active=0, old
 framework continuations=0, and old producers permanently unable to enqueue" (`:559-560`).
 Neither `route-state` nor `bound.limits` is spendable credit ("`bound.limits` advertises fixed
 ceilings, not fresh spendable credit"; `bound.ready` and route-state: "Neither alone settles a
 request or proves old work never ran", `:371`): the successor's `send` is admitted only if the
 Host/role ledger holds a free record, and the old role's charges stay held until it quiesces
-(`:535-536`, `:566`). (2) Each authentic `event` is dispatched inside one terminal-disposition
-owner: the bridge calls #1154's emitter in `try`/`finally`, posts exactly one `consumed` after the
-synchronous listener dispatch — `consumed` when listeners ran, including when one threw (#540:
-"Resource release happens in finally even when an application listener throws; that exception
-retains application exception semantics", `:317`), `no-listener` when none was registered — and
-then rethrows the listener's exception asynchronously through `queueMicrotask`, captured before
-page code. #1154 states the requirement ("Exception handling must release framework-owned
+(`:535-536`, `:566`). (2) Each authentic `event` gets exactly one `consumed`, and its disposition
+says what happened (r13, 0monish 4429155182). #540 keeps three apart: `Consumed` "means the
+consumer completed synchronous dispatch" (`:317`), `NoListener` "means the endpoint found no
+listener during this dispatch and discarded the message" (`:318`), and `Refused` "from the
+consumer means the endpoint could not decode/admit the supported value envelope" (`:319`). So
+the bridge decodes and validates the payload with #1190's one decoder **before** it looks up or
+invokes a listener. A codec failure, for example the hostile golden `ff` (#1190 `115af9ac` `docs/specs/gh544-endpoint-value-codec.md:272-276`),
+posts one `consumed` with `{status:"refused", code, message}`, runs no listener and raises no
+page exception; `code` and `message` are #1190's ("Consumer Refused may carry only the endpoint
+owner's registered codec codes", `:616-617`). A valid value with no listener posts `no-listener` and
+is discarded, with no future-listener queue (`:610`); decoding first keeps one rule, so a
+malformed value with no listener is `refused`, never `no-listener`. A valid value with a listener
+enters #1154's emitter in `try`/`finally`: `consumed`, including when a listener threw ("Resource
+release happens in finally even when an application listener throws; that exception retains
+application exception semantics", `:317`), and the bridge then rethrows that exception
+asynchronously through `queueMicrotask`, captured before page code. `{status:"consumed"}` and
+the rethrow are reserved for a dispatch that entered a listener (AC34). #1154 states the requirement ("Exception handling must release framework-owned
 reservations even if an app listener throws, without claiming to catch or swallow the
 application's exception as an API semantic", #1154 `84fe903e`
 `docs/specs/gh467-contextbridge-ipcrenderer.md:527-529`) but names no wrapper, so the bridge is
@@ -516,7 +563,8 @@ report). The bridge keeps which listeners run; its report comes a microtask afte
 changes `message` or `outstanding`, so a throw leaves no stuck bit. (4) `epoch`, `ready` and
 `outstanding` are page-world state: the page can read or forge them (divergence 7), so they gate
 only the bridge's own posts and are never authority or credit; the Host revalidates document,
-epoch, `Source`, role and grant on every message (§4.4).
+epoch, `Source`, role and grant on every message and enforces readiness, the sequence and the
+quota itself, because a raw post skips these bits (§4.4 Final admission fence, AC33 (g)).
 
 Gate options. rpipaliya's review of `043170ca` showed that the r4/r5 gate (an ASCII-folded
 `location` key against `ENTRY_KEYS`) and the parser's identity class disagree on
@@ -530,8 +578,8 @@ preload. Scores 0–10; a disqualifier overrides the mean.
 | **(b′) Run it in every Host-served `file:` top-level document that is not an error page** | 10 (no string comparison; same document set as §4.5 under B3's proposal) | 10 | 9 (every app document, entry or not; remote documents and error pages differ, divergence 10) | 10 | 9 (only Host-served in-root app documents) | 9 (AC25 cells) | **9.5** | — |
 | (e) Eligibility requires the entry's one canonical spelling; the gate compares the same string | 10 (same bytes; one device fact) | 9 (one serializer, the parser's inverse) | 4 | 10 | 10 | 8 | 8.5 | page-triggerable denial of service (W3 r3 pre-PR P1-C; W3 §4.6 rule 5 at `1db53482`), once W3 Q27 lets page-initiated `file:` navigations through: a page link to `INDEX.HTML` passes W3's allowlist (one component equality ignores case), fails canonical-spelling eligibility, lands FailedClosed and triggers `onLoss`; three clicks close the window, which Electron never does |
 
-Chosen: (b′), confidence 0.8. Its residual is how a Host `404`/`403` refusal commits (AC25
-(f)/(h), W3 Q7); if it commits as a `file:` document, it gets the preload text but no epoch,
+Chosen: (b′), confidence 0.8. Its residual is how a Host refusal (`403`, `404`, `413`, `503`) commits (AC25
+(f), (h), (i), W3 Q7); if it commits as a `file:` document, it gets the preload text but no epoch,
 so no call is admitted and no `onLoss` fires.
 
 ### 4.4 Host admission and forwarding
@@ -554,8 +602,8 @@ selection"): a `v:1` envelope, an unknown kind such as `hello` or `epoch`, a mis
 field or a non-array payload is refused before any effect. Windows has no LegacyV1 mode and
 no second decoder. Today `decode_wv_link` is v1-only (`wv_link.rs:131-197`); its CompatV2
 mode is #540 work (#1122 §7.1 W1, owner #465), so T2 blocks on it (§10 Q1). Split of responsibilities per §5: **`keld-wv` authenticates identity
-(steps 1–3) and hands a stamped, bounded message to `keld-core`'s forwarder, which is the
-only caller of `dispatch_privileged` (#1191 T4).**
+(steps 1–3), captures the Host ticket and hands it with the bounded message to `keld-core`'s
+forwarder, the only caller of `dispatch_privileged` (#1191 T4).**
 
 ```rust
 // keld-wv/webview2 (STA callback): identity only; no policy, no Bun write.
@@ -595,18 +643,64 @@ fn on_web_message(view: &ViewState, args: &ICoreWebView2WebMessageReceivedEventA
     if !doc.epoch.matches(env.document()) { return refuse(Refusal::Epoch); }
     // 3. Source per call (one function, also used by step 2'):
     if !source_ok(src, &doc.entry) { return refuse(Refusal::Source); }
-    // hand-off: stamped with (WebviewId, NonZeroU32 generation, window key, grants digest-bound, §4.8).
-    view.forwarder.submit(Stamped { id: view.id, generation: doc.generation, window: view.window_key, env });
+    // `consumed` names a recorded charge: no ticket, no reservation, no live role (rule 4).
+    if let WvLinkEnvelope::Consumed(receipt) = env { return view.ledger.report(&doc, receipt); }
+    // 4. `invoke`, `send`: capture the ONE Host ticket and #540's reservation on this STA turn,
+    //    before any queue (#1191 §4.4: "at admission, not at dequeue"). No admitted role, a busy
+    //    quota or a reused sequence is answered here (terminal table, below).
+    let ticket = match view.admission.capture(&doc, &env) {
+        Ok(ticket) => ticket,
+        Err(refused) => return view.post_terminal(&doc, &env, refused),
+    };
+    // A closed queue releases the reservation and answers; nothing leaks.
+    if let Err(closed) = view.forwarder.submit(Admitted { ticket, env }) {
+        return view.post_terminal(&doc, &closed.env, view.admission.release(closed.ticket));
+    }
 }
-// keld-core app_session (#1191 T4 forwarder): the ONE evaluator call, for a v2 `Send`. An
-// `Invoke` follows KEL-142 §4.1 (below); a `Consumed` goes to #540's ledger owner.
-fn forward(stamped: Stamped) {
-    let principal = Principal::Webview { id: stamped.id.0, generation: stamped.generation.get() };
-    dispatch_privileged(manifest, principal, RendererChannelQuery {
-        channel: &stamped.env.channel,                 // "el:" prefixed exactly once (#1191)
-        current_window: grants_for(stamped.window),    // empty unless digest matched (AC14)
-        on_allow: |_permit| app_link.forward_bounded(stamped.env),
-    })
+// Host-minted, immutable, never page-supplied. W3 §4.7's eval ticket, one type: only `work` differs.
+struct AdmissionTicket {
+    view: WebviewId, lifetime: ViewLifetime,       // the native WebView instance, not a number alone
+    generation: NonZeroU32,                        // the one checked G (#1192 N16)
+    role: RoleIdentity, role_generation: RoleGeneration, link: LinkIncarnation, // authenticated, as captured
+    work: TicketWork,  // Renderer { window, sequence } here; Eval { correlation, caller, attestation } in W3
+}
+// keld-core app_session (#1191 T4 forwarder): runs at dequeue, when steps 1–3 may be stale.
+// A `Consumed` never comes here: it went to #540's ledger owner above.
+fn forward(item: Admitted) {
+    let outcome = primary_router.try_admit_renderer(item.ticket, item.env);
+    settle(outcome);                                   // one terminal (table below), posted under rule 1
+}
+impl PrimaryRouterHandle {
+    // The ONE evaluator call for a v2 `Send`. Name recorded by the first task to land it (§6). The
+    // fence is never held across Guard, a callback, socket I/O or an awaited queue slot (§10 Q14).
+    fn try_admit_renderer(&self, t: AdmissionTicket, env: RendererWork) -> Outcome {
+        // Exact original lifetime, G, role, RoleGeneration and link against the LIVE owners, before
+        // Guard and before any enqueue. A mismatch never retargets to a successor.
+        if let Err(stale) = self.fence.enter().compare(&t) { return self.not_admitted(t, stale); }
+        let TicketWork::Renderer { window, .. } = t.work else { return self.not_admitted(t, Foreign) };
+        match env {
+            RendererWork::Send(send) => {
+                let principal = Principal::Webview { id: t.view.0, generation: t.generation.get() };
+                let verdict = dispatch_privileged(manifest, principal, RendererChannelQuery {
+                    channel: &send.channel,                // "el:" prefixed exactly once (#1191)
+                    current_window: grants_for(window),    // empty unless rule 3 passed (AC14, AC19, AC32)
+                    on_allow: |_permit| self.admit(&t, send), // enters and leaves the fence inside the closure
+                });
+                match verdict {
+                    Ok(outcome) => outcome,
+                    Err(denied) => self.refuse_denied(&t, denied), // compares under the fence: stale wins
+                }
+            }
+            RendererWork::Invoke(invoke) => self.admit(&t, invoke), // Echo `1` only, no `el:` (below)
+        }
+    }
+    // W3 §4.7's one transaction, renderer use: the steps of `try_admit_eval_settle`. On `Full` a
+    // renderer message refuses (table below), where an eval value waits.
+    fn admit(&self, t: &AdmissionTicket, work: impl OwnedFrame) -> Outcome {
+        let live = self.fence.enter();
+        if let Err(stale) = live.compare(t) { return live.not_admitted(t, stale); } // the deciding one
+        live.try_send_original(t, work)    // commit + try_send, one step; t's link, its final FIFO; never `current`
+    }
 }
 // The per-call Source rule. Never a full-URL equality (Source follows pushState/replaceState/
 // hash, source probe v2) and never a comparison of opaque origins: a file: URL's origin is
@@ -647,11 +741,102 @@ goes to the parser; anything else is matched as the raw, Chromium-canonical `Uri
 arch 03 §2 scope matcher (spell destinations as the host sends them). No component
 re-serialises a URL and hands it to another. This opens the dependency gate (§8).
 
+**Final admission fence (r13, 0monish 4429155178).** Steps 1–3 run on the STA; the effect comes
+after a queue, so a document commit or a role retirement can win in between. The rule is #1191's:
+the native owner "captures an authenticated currently admitted Bun role/link generation **at
+admission**, not at dequeue", then "At final nonblocking handoff linearize native revocation
+versus forwarding, compare the captured original document **and** authenticated Bun role against
+current authority, then call `dispatch_privileged` exactly once", and "On revocation or role
+replacement first, never retarget old work to successor" (#1191 `4f246a75` `docs/specs/gh552-exact-channel-grants-guard.md:144,148-149`). #1192 names
+the stamp ("Before **every** enqueue/forward, revalidate that stamp at the final nonblocking
+#552/`dispatch_privileged` boundary", #1192 `cd30f997` `docs/specs/gh542-native-document-dual-world-binding.md:141`), and #540 the queue rule ("Revalidate
+role and document under the same queue owner on **every** enqueue, including delayed core
+results", #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:553-554`). W1 mints no second stamp, ticket type or fence. It reuses the
+ones the #1192/#540 owner set out for W3's eval result (B21 decision, [#1311 comment 6532409232](https://github.com/gyldlab/keld/pull/1311#issuecomment-6532409232); W3 §4.7 step 4
+at #1311 `fa49dcfb`). That decision names the eval use only; the renderer use is this spec's
+proposal (§10 Q14).
+
+- **Ticket.** One Host-minted immutable `AdmissionTicket`: the exact `WebviewId` and its native
+  lifetime (not a generation number alone), the one checked `G`, and the original role identity,
+  `RoleGeneration` and authenticated app-link incarnation (not numeric generation equality
+  alone). At the pin that link is `ActivePrimaryGeneration { attempt, identity, writer, .. }`
+  (`app_session.rs:5946`). `work` carries what differs by use: here the Host-bound window key
+  (#1191 AC3) and the #540 sequence, in W3 `TicketWork::Eval { correlation, caller, attestation }`.
+  The ticket is immutable, so the one-time disposition lives in the ledger, not in it. Page-supplied stamps are never accepted, and the same URL is
+  never document identity. A renderer message needs what W3's eval result is excused from: its
+  document is the current qualified one at capture, and `G` must still be live at the fence.
+- **Capture.** On the STA turn that passed steps 1–3 and before any queue, under the fence's short
+  guard, `capture` reads the live owners and reserves #540's record (the Compat DATA record of
+  #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:486`, or the `invoke` budget that shares it). This is where raw posts meet what the
+  bridge's page-world bits only suggest: a role that is not admitted and ready, a busy quota, and
+  a `message` or `request` that is not greater than the document's last admitted one (`:190`:
+  "checked, non-reusing within the document") are refused here, because a raw post skips
+  `ready`, `outstanding` and `message`.
+- **Transaction.** `PrimaryRouterHandle` (`app_session.rs:5851`) owns one short synchronized
+  transaction, the one W3 §4.7 runs for an eval result: compare the ticket with the live owners,
+  confirm the reservation, commit the one terminal disposition and `try_send` the owned frame into
+  the **original** link's final bounded per-link writer FIFO. The commit and `try_send` are one
+  step: a refused `try_send` commits the refusal instead, and nothing outside the fence sees the
+  difference. A prior Core or UI queue accepting the message does not count as admission.
+- **Guard.** A `send` also crosses Guard, and two rules set where (§10 Q14). #1191 orders it:
+  compare, then `dispatch_privileged` once, with the write only from its Allow closure. Decision 1
+  keeps the fence off Guard and callbacks. So Core compares once under the fence and leaves it, a
+  stale ticket stopping there with no Guard evaluation; calls `dispatch_privileged` with the fence
+  released; and enters the transaction inside `on_allow`, leaving it there. A denial selects its
+  terminal after one more comparison under the fence, so a revocation that won during the evaluator
+  reports its own terminal, never `KELD-GUARD003` (#1191 `4f246a75`
+  `docs/specs/gh552-exact-channel-grants-guard.md:147`: stale identity returns "**before** selecting
+  an absent-grant error"). The deciding comparison is always the one under the fence with the write
+  or the refusal; the first one only spares Guard, so this is not the "two unsynchronized prechecks"
+  B21 rules out. A revocation in the gap costs one pure evaluation and no effect. The floor `invoke`
+  has no Guard and runs the transaction alone.
+- **Revocation.** Every effective `G` change on the STA (§4.5) and the runtime owner's effective
+  role retirement update the same fence synchronously, before they report retirement; neither
+  relies on a later `DocumentRetired` or `route-state`. Admission and each revocation therefore
+  have one real total order. After admission the frame may finish on the original link and the
+  write can still fail: "no write when revocation wins" means no fresh admission after
+  revocation, not a rollback, and an already admitted message stays a G₁ effect of the original
+  role (AC33 (e)).
+- **Status.** None of this exists at `457a9c3b`: `window_router::write_payload`
+  (`app_session/window_router.rs:77`) writes the socket and is not a nonblocking gate. `keld-wv`
+  cannot name `PrimaryRouterHandle` (keld-core depends on keld-wv, `crates/keld-core/Cargo.toml:26`),
+  so keld-core lends each view an opaque fence handle at creation (`view.admission`, §4.10); W3's
+  STA update needs the same handle. The fence lands once, with the first of W1 T2 and W3 T3 to
+  merge, and the other extends it (§6); that task records one lock order with
+  `PrimaryRouterHandle.current`, the existing shutdown transition and the native view lifetime
+  (B21 decision 1). If this cross-thread gate cannot be built, B21 stays
+  blocking and W1 T2 and T3 do not merge; two unsynchronized prechecks are not a substitute.
+
+Every terminal below is #540's. `G` here means the ticket's generation against the live one.
+
+| Point | Case | `send` | floor `invoke` | Host accounting |
+| --- | --- | --- | --- | --- |
+| Capture | No admitted, ready role | `send-result`, `refused`, `KELD-WV-012` (zero attempted write, `:604`) | `invoke-result` error, same code | Nothing reserved or queued |
+| Capture | Quota busy, or a reused sequence | `send-result`, `refused`, `KELD-WV-011` (`:603`) | `invoke-result` error, same code | Nothing reserved or queued |
+| Submit | Core's queue is closed | `send-result`, `refused`, `KELD-WV-012` (zero attempted write) | `invoke-result` error, same code | Reservation released once |
+| Fence | Document replaced or view retired: lifetime or `G` differs | `stale` on the ledger (`:320`, `:603`); no post, because rule 1 has no target | No post; `invoke-result` has no `stale` form | Reservation released once: the fence proves the work never ran; 0 writes |
+| Fence | Role retired or replaced, document live | `send-result`, `route-retired`, `not-dispatched` (the fence proves no write attempt) | `invoke-result` error, `KELD-WV-012` | 0 writes on either link; the charge follows #540 §4.9 (`:535-536`) |
+| Fence | Grant miss, ticket still current at the denial's comparison | `send-result`, `refused`, `KELD-GUARD003` (#1191 AC5) | not applicable | Reservation released once; 0 writes |
+| Fence | Final FIFO answers `Full` | `send-result`, `refused`, `KELD-WV-011` (W3's eval value waits instead, §4.7) | `invoke-result` error, same code | Reservation released once; 0 writes |
+| Fence | Final FIFO answers `Disconnected`: the returned frame proves no write | `send-result`, `route-retired`, `not-dispatched` | `invoke-result` error, `KELD-WV-012` | Reservation released inside the fence; #540's fail-closed link retirement; never a successor |
+| After admission | Attempted, partial or unprovable write | `send-result`, `route-retired`, `outcome-unknown` | `invoke-result` error, `KELD-WV-013` (`:605`) | Stream retired, no replay, charge held until quiescence; never `not-dispatched` |
+| After admission | Bun's terminal | #540's `send-result` | #540's `invoke-result` | Released by #540's ReleaseConsumed path (`:455-458`) |
+
+Each `send-result` and `invoke-result` passes §4.4 rule 1 at its post. No row promises a post to a
+retired role, a dead link or a replaced document; "one terminal" means one logical terminal per
+admitted sequence and at most one post, and a refused raw duplicate gets its own bounded refusal
+and leaves the admitted record's terminal alone. A page that floods raw posts can only exhaust its own role's
+CONTROL share, which #540 fails closed by closing admission and retiring the route (`:492`): a
+self-denial for that application's role, not a widening.
+
 Refusal order, as the code above runs it: carriage (non-string message, UTF-16→UTF-8
-conversion), wire shape (`decode_wv_link`), then no-document, then epoch, then Source; all
-precede a grant miss (#1191 AC8). Before any effect the Host revalidates the current
-document and epoch, the event's `Source`, the authenticated Bun role and the literal grant
-(§10 Q1(a)). Startup deadline: when `ContentLoading` qualifies a document the Host starts
+conversion), wire shape (`decode_wv_link`), an unreadable `Source`, then no-document, then epoch
+(`bind` has no epoch: its order is no-document, Source, duplicate), then Source, then capture,
+then the fence's comparison; all precede a grant miss (#1191 §4.4 step 2). Before any effect the
+Host revalidates the current document and epoch, the event's `Source`, the authenticated Bun role
+and the literal grant (§10 Q1(a)): the role and document at the fence, the grant in
+`dispatch_privileged` just before the transaction.
+Startup deadline: when `ContentLoading` qualifies a document the Host starts
 the existing `KELD-WV-005` deadline; if no verified `bind` for that document is answered
 with its `bound` within it, the window fails with a typed startup error (code allocated by
 the error-registry owner; not `KELD-WV-012/013`) — never success, never a retry. A `bound` post
@@ -663,7 +848,8 @@ successful `bound` post; no WebView2 API reports that the bridge received it (ru
 Bind/Invoke/Send/Consumed"), so a document whose only `bind` came early fails at this
 deadline (AC29 (d)). No new wire kind.
 
-`window.keld.invoke(channel: u16, payload)` is admitted through steps 1–3 and then exactly
+`window.keld.invoke(channel: u16, payload)` is admitted through steps 1–3, the same ticket and
+fence, and then exactly
 as KEL-142 §4.1 admits it on macOS: only the declared Echo channel `1`; it is **not** routed
 through `el:` grants and no numeric channel grant grammar is introduced here. Widening it is
 KEL-142/#508's decision (§10 Q7).
@@ -679,7 +865,11 @@ guard. The Host rule:
    Host drops the post unless the window's current qualified document still has the target
    epoch (AC21). This includes `bound`: if the document was replaced between its `bind` and
    the post, the old `bound` is dropped and that startup route fails (AC29 (g)); a queued post
-   never reaches a new page (§10 Q1(a)).
+   never reaches a new page (§10 Q1(a)). It checks the role too (#540: "Revalidate role and
+   document under the same queue owner on **every** enqueue"): an `event` or `route-state: ready`
+   from a role that has retired is dropped (AC33 (h)), and a framework terminal for the original
+   document (`send-result`, `invoke-result`, `route-state: retired`) is not, the same distinction
+   W3 §4.7 records for eval.
 2. **In-flight hold.** Every top-level `NavigationStarting` — allowed **or cancelled** —
    adds its `NavigationId` to a pending set; the Host posts nothing while that set is
    non-empty (AC24). Cancelled navigations are included because a cancelled top-level
@@ -771,7 +961,7 @@ guard. The Host rule:
    `document`; it can also predict the next key (`delivery` is a per-document, nonzero, checked
    `u32`, #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:165,190`). The provenance of a same-world acknowledgment
    cannot be proven, and page acknowledgments are never authority. Reusable credit for one
-   Host→renderer `event` record needs **both** halves #540 names ("a matching consumer report
+   Host→renderer `event` record, whatever its consumer disposition, needs **both** halves #540 names ("a matching consumer report
    alone cannot release an active native evaluation", `:322`; "A forged early consumed cannot
    release active native retention", `:533-534`): (a) a `consumed` for that exact key
    (document, delivery), and (b) the Host-observed native completion of that delivery's post —
@@ -786,12 +976,18 @@ guard. The Host rule:
    (`:531-533`); the first exact-key `consumed` after (b) releases the record once; a second
    `consumed` for the same key, or one for a key never issued, releases nothing; none creates
    history. If the post fails or rule 1 drops it, the Host ends the record through #540's own
-   stale/refused terminal (`:463-464`), never through a page receipt. A forged `consumed` after
+   stale/refused terminal (`:463-464`), never through a page receipt. If the document is replaced
+   after (b) and before any `consumed`, no receipt can arrive, because step 2 refuses the old
+   document's posts: the Host ends the record at that revocation as `route-retired`,
+   `outcome-unknown` (the old page may have run it; #543 owns that `Deliver` REPLY). A forged `consumed` after
    (b) can release the record only as early as a legitimate immediate `consumed` would; the next
    event may then be posted while the page's listener for this one still runs, and it waits in
    the renderer's task queue (JavaScript run-to-completion, INFERRED; whether a WebView2 nested
    event loop could dispatch it earlier is UNKNOWN, AC30 (f2)). Host-side resources stay bounded
    by the one record (`event_records: 1`); a page can only change the pace of its own deliveries.
+   The disposition is a page claim too: a raw `consumed` can say `no-listener` or carry any bounded
+   `code`, so the Host forwards it only as the endpoint diagnostic #540 allows and infers nothing
+   from it (`:319`); the limit on codes at `:616-617` binds the bridge, which a raw post skips.
 
 ### 4.5 Per-document lifecycle (WebView2 events onto #1192 §4.2)
 
@@ -799,7 +995,7 @@ One rule for revocation: **every top-level `ContentLoading` revokes the previous
 new epoch is minted iff `IsErrorPage == FALSE`, the `NavigationId` equals that of a
 `NavigationStarting` (or its `IsRedirected` hop) that rule A″ allowed or a Host attempt
 issued, and the document has verified resource identity under #1192 §4.4: for `file:`, W3's
-served record for this `NavigationId` (status 200) names the admitted root and in-root
+served record for this `NavigationId` (status 200; a `403`, `404`, `413` or `503` credits nothing) names the admitted root and in-root
 components, with the bytes as currently present in that root (W3 §4.4 document correlation at
 #1311 `1db53482`: Host-served iff `served.status == 200 && !IsErrorPage`, credited only by the
 Host attempt's nonce, so a page-initiated `file:` document is never credited until W3 B19
@@ -831,7 +1027,7 @@ A document loaded with `NavigateToString` can never satisfy this rule (its `Sour
 | Scripts registered, controller created | Unbound(0) | Nothing admitted; a `bind` here is an early `bind`: refused with zero buffered work, zero nonce and zero authority, never held for the later `ContentLoading` (§4.4, AC29 (d)) |
 | `NavigationStarting` (top-level, each redirect hop) | +0 | Rule A″ (§4.6): off-allowlist → `Cancel`, the live document and its IPC survive; record allowed `NavigationId`; allowed or cancelled, add it to the outbound in-flight hold's pending set (§4.4); never post an epoch here |
 | `ContentLoading`, rule satisfied | +1 (checked; `MAX` → Exhausted) | Revoke; mint 128-bit nonce; **post nothing**; start the startup deadline (§4.4). No grant, role readiness or ledger reset is inferred from `ContentLoading` alone. The document's first verified `bind` is answered once with its `bound` (§4.3, AC29) |
-| `ContentLoading`, rule not satisfied (error page, remote allowlisted document, unknown `NavigationId`; under B3's fallback, a non-entry in-root document) | +1 then FailedClosed | Revoke; no epoch; apply `onLoss`, except for a page navigation to an in-root document under B3's fallback or to an in-root target W3 served as `404`/`403` (AC25 (f)/(h)) |
+| `ContentLoading`, rule not satisfied (error page, remote allowlisted document, unknown `NavigationId`; under B3's fallback, a non-entry in-root document) | +1 then FailedClosed | Revoke; no epoch; apply `onLoss`, except for a page navigation to an in-root document under B3's fallback or to an in-root target W3 refused (`403`, `404`, `413`, `503`; AC25 (f)/(h)), and for a Host attempt W3 refused for capacity (`413`, `503`): it fails to its caller typed, is never re-issued and consumes no recovery, because a `503` is transient and a page can influence it (W3 §4.5, B7 (xi); AC25 (i)) |
 | `document.open()`/`write` in the application document (E5 g: 5/5 replaced, no `NavigationStarting`, no `ContentLoading`) | +0 | **Host-unvetoable limit #2.** Same document, same epoch, same authority; the page blanked itself. Electron's `will-navigate` cannot see it either. No Host action; recorded in the report |
 | Hash / `pushState` / cancelled provisional navigation | +0 | Keep nonce and work (AC16) |
 | `NavigationCompleted(IsSuccess == TRUE)` for a pending navigation with no `ContentLoading`, unless at least one `SourceChanged(IsNewDocument == FALSE)` and no `SourceChanged(IsNewDocument == TRUE)` is attributed to it (§4.4 Attribution) (e.g. a back/forward-cache restore, if WebView2 raises no `ContentLoading` for it — UNKNOWN on 156 — or a same-URL restore that raises no `SourceChanged`) | +1 then FailedClosed | Treat as a document change: revoke; release nothing held; apply `onLoss` (AC24 cases 5, 7, 8). The same-document case releases the held posts once the pending set is empty (AC24 case 6) |
@@ -839,10 +1035,13 @@ A document loaded with `NavigateToString` can never satisfy this rule (its `Sour
 | `ProcessFailed(BROWSER_PROCESS_EXITED)` (r10, 0monish 4427055014) | +1 then terminal, for every window of that browser | Empty every pending set; revoke every epoch; discard every held post (reservations released); **no** `onLoss`, and no `Navigate`, `Reload` or other engine call on any closed controller. Microsoft (same page): "All associated WebView2 controls will be closed and your application must handle recovery from this failure. The WebView2 controls need to be recreated." The session ends through W2's `AbnormalExit` terminal, not a second one: under #1280 r16 D8 (`be9e9e56`) this `ProcessFailed`, for the bound browser instance, latches `AbnormalExit` at once (its handler queues an abnormal receipt that the loop's next `poll` latches) and no rebind is allowed after it, so the end does not wait for `BrowserProcessExited`, whose order relative to `ProcessFailed` is not guaranteed. If that receipt comes first it latches `AbnormalExit` as on main and the later `ProcessFailed` changes nothing, so either order ends the session once with nothing delivered (§10 Q13; AC24 cases 14–15, AC28 (b)) |
 | Other `ProcessFailed` kinds | +0 | No action |
 | A navigation pending for `NAV_TERMINAL_BOUND` (§4.4 rule 2 (ii)) | +1 then FailedClosed | `Stop()`; empty the pending set; revoke; discard held posts (reservations released); **no** `onLoss`; keep the expired `NavigationId` for a late `ContentLoading` (AC24 cases 10, 12, 13) |
-| Trusted Host load (`onLoss: reload-entry`) | +1 before the engine call (the window's entry is always admissible for Host attempts once W3's rule 1 attributes them, rule A″; W3's unproven mode refuses every Host `file:` attempt at +0, W3 B18) | Revoke, then navigate to the entry (for `file:`, W3's header navigation `NavigateWithWebResourceRequest`, never `Reload()`); bounded to **3 automatic recoveries per window lifetime**, then close with a typed error. A recovery W3 refuses or cannot attribute fails typed, is never re-issued and does not count toward the three (W3 §4.6 rule 1, B7 (vii)); the document stays FailedClosed |
-| App `loadURL`/reload (a #459 Host attempt) | allowlist pre-check, then +1 before the engine call | The window's entry, whatever its query, is always admissible once W3's rule 1 attributes the attempt; any other off-allowlist target is a typed refusal to the caller at +0 and the live document is untouched; a `file:` `reload()` is a typed refusal until W3 Q22 (c) |
+| Trusted Host load (`onLoss: reload-entry`) | +1 before the engine call (the window's entry is always admissible for Host attempts once W3's rule 1 attributes them, rule A″; W3's unproven mode refuses every Host `file:` attempt at +0, W3 B18) | Revoke, then navigate to the entry (for `file:`, W3's header navigation `NavigateWithWebResourceRequest`, never `Reload()`); bounded to **3 automatic recoveries per window lifetime**, then close with a typed error. A recovery W3 refuses, refuses for capacity (`413`, `503`) or cannot attribute fails typed, is never re-issued and does not count toward the three (W3 §4.6 rule 1, B7 (vii), (xi)); the document stays FailedClosed |
+| App `loadURL`/reload (a #459 Host attempt) | allowlist pre-check, then +1 before the engine call | The window's entry, whatever its query, is always admissible once W3's rule 1 attributes the attempt; any other off-allowlist target is a typed refusal to the caller at +0 and the live document is untouched; a `file:` `reload()` is a typed refusal until W3 Q22 (c). The +1 commits before a fallible call on purpose: if the attempt fails or is cancelled the old document stays revoked and FailedClosed, with no rollback, and a new trusted load is required (#1192 §4.2, `cd30f997` `docs/specs/gh542-native-document-dual-world-binding.md:112`) |
 | Bun role restart | +0 | Keep document and nonce; revoke old correlations. At `route-state: retired` the bridge settles the old role's pending `send` and floor `invoke` locally as outcome-unknown, with no replay and no refund; sends resume only at the successor's `route-state: ready`, which #540 §4.9 allows only after the old role quiesces (§4.3, AC27) |
 | Destroy | terminal | Revoke; numeric id never reused |
+
+Every row above that changes the generation or ends the view updates the final admission fence
+synchronously, before it reports retirement, and so does the Bun role row's retirement (§4.4).
 
 One generation source (#1192 N16): the Windows backend supplies this checked generation to
 **both** the media guard principal (today `0`, arch 03 §4.3) and channel queries; T2 changes
@@ -860,6 +1059,7 @@ the media principal construction accordingly with the KEL-102 owner.
         "digest": "sha256:…",                      // SHA-256 of the preload bytes (AC14)
         "verdict": {                                // recorded by keld migrate; Host reads it
           "digest": "sha256:…",                    // must equal preload.digest (AC19 case vi)
+          "mainDigest": "sha256:…",                // main-code input set (§4.8 rule 3, AC32)
           "classifier": "<keld migrate version>",   // release builds re-run it and compare
           "reachableSinks": ["el:rendererReq"],    // literal sinks reachable from exposures ("*" = page-chosen)
           "flags": [                                // §4.8 rule 2: (a) outbound, (b) inbound, (c) argv, (d) indeterminate
@@ -869,6 +1069,7 @@ the media principal construction accordingly with the KEL-102 owner.
         },
         "attestation": {                            // required iff verdict.flags is non-empty (AC19)
           "digest": "sha256:…",                    // must equal preload.digest
+          "mainDigest": "sha256:…",                // must equal verdict.mainDigest (AC32)
           "sites": [                                // must cover every flag
             { "at": "preload.js:96-100", "why": "removes a function value that cannot cross IPC" },
             { "at": "preload.js:77-85", "why": "drops events only for paths the page never registered" }
@@ -929,7 +1130,10 @@ the media principal construction accordingly with the KEL-102 owner.
      closed (#1192), a stated divergence, not an exemption.
 
   W1 applies it as follows. The one `NavigationStarting` handler and its `SetCancel` decision
-  are W3 T4's (W3 A10; W1 adds its pending-set and generation bookkeeping inside it, §4.10).
+  are W3's (W3 A10; W1 adds its pending-set and generation bookkeeping inside it, §4.10). The
+  window's allowlist is `windows.<w>.web.navigation.allow`, `<w>` being the Host's immutable
+  binding: keld-core resolves it once at view creation and passes keld-wv W3 T4's one immutable
+  per-view policy value, and a view with no bound policy matches nothing (W3 §4.6 rule 2).
   The raw `NavigationStarting` `Uri` is dispatched on its scheme
   prefix by `keld_guard::url_scheme_is` (the parser's own R1 test; §4.4 URL owner): a `file:`
   target goes to `file_url_root_relative`, and the returned components and query are matched
@@ -949,7 +1153,7 @@ the media principal construction accordingly with the KEL-102 owner.
   by W1. An app-issued
   `loadURL` is a #459 Host attempt under #1192's trusted-load row, admitted or pre-checked
   by item 6, never a replay. This answers W3's B4 and B7 (iv) for W1; §4.5 and §10 B5 answer
-  its B7 (vi)–(viii) (#1311 `1db53482`).
+  its B7 (vi)–(viii) (#1311 `1db53482`), and §4.5 with AC25 (i) its B7 (xi) (W3 r17).
 - **Navigation membership is not eligibility.** Rule A″ decides whether a navigation
   proceeds; §4.5 decides whether its document gets an epoch, and §4.3 whether it gets the
   app preload. Equivalent spellings of one in-root file are one identity under the one
@@ -1034,7 +1238,7 @@ source reorder would then move one site's grants to another silently. Sites equa
 generated field share the entry. The fix text asks for distinct literal titles, which
 changes user-visible window titles; a Keld-only key option (ignored by Electron) would avoid
 that and is parked as §10 Q2 rather than added here. At run time a `w` with no entry gets no
-channel grants and no preload (default-deny, typed diagnostic; #1191 AC1: a missing window
+channel grants, no preload and no navigation policy, so every page-initiated target is cancelled (default-deny, typed diagnostic; #1191 AC1: a missing window
 conveys zero incoming channel authority). The Host loads the bytes at the preload path the
 facade passes and compares them with the entry digest (no preload vs. an entry with a
 preload → refused); rule 3 bounds a key error's channel grants to those generated for the
@@ -1069,8 +1273,10 @@ arguments (after `event`) of an `ipcRenderer.on/once` listener (and, once implem
 settled value of an `invoke` promise). Page input =
 exposure parameters (including rest parameters and `arguments`) and values derived from them.
 
-> **Gating = narrowing.** For some page input the preload suppresses, refuses, restricts or
-> rewrites what reaches a sink — which channel, which arguments, which values — or it keeps
+> **Gating = narrowing.** For some page input, or for some other state (preload-private
+> state, `isTrusted`, a timer, a prior callback, any external input), the preload suppresses,
+> refuses, restricts or rewrites what reaches a sink — which channel, which arguments, which
+> values — or it keeps
 > from the page some Host-delivered value it received. Under route D the page posts directly
 > to every granted channel with any codec-valid arguments and reads every Host→renderer
 > post (§4.2 divergences 2 and 4), so every such narrowing is lost. A transform that only
@@ -1088,8 +1294,22 @@ rule 2 exists:
 >   page-controlled: the channel is a literal (its reach is governed by grants, below) or an
 >   unmodified exposure parameter; the argument list after the channel is exactly the
 >   exposure's remaining arguments, forwarded by identity (`(c, ...xs) => send(c, ...xs)`
->   or `arguments`); and no page-input-dependent branch lies on the path. Hence a
->   page-input-dependent branch or transform, a channel computed from page input
+>   or `arguments`); and **nothing stands between the exposure and the sink** (r13, 0monish
+>   4429155170): the sink call is the only statement on the path, reached on every call. Any
+>   other statement or call flags, because it can return or throw first: every conditional
+>   (`if`, ternary, `&&`, `||`, `??`, `?.`, `switch`, a default parameter), `throw`, early
+>   return, `try`/`catch`, loop, callback, timer, `await`, a second sink call, and a call the
+>   analyzer does not follow into (a helper, a property read on page input, a built-in). So does
+>   selective exposure: an exposure inside any of those or inside a function body, or after a
+>   top-level `return` or `throw`. The one exception is a branch constant folding removes, as for
+>   `process.contextIsolated`, the only proof of unconditional equivalence today. What a
+>   condition depends on does not matter: page arguments,
+>   preload-private state, `isTrusted`, a timer, a prior callback and external input all count,
+>   because a raw same-epoch `send` skips the exposed function and every gate inside it.
+>   Uncertain means flagged: the window then needs an attestation or stays at `channels: []`.
+>   A sink with no path from any exposure (top-level preload code, a preload-only listener) is
+>   not page-controlled either: it is flagged and adds no grant (**Grants**, below). Hence any
+>   such statement, a page-input transform, a channel computed from page input
 >   (`send('app:' + c, ...xs)`), any write, delete or mutating call on a page-input value or
 >   anything reachable from it (`m.x = …`, `delete m.x`, `Object.assign(m, …)`,
 >   `Object.defineProperty(m, …)`), a constant argument, an omitted or truncated
@@ -1098,7 +1318,9 @@ rule 2 exists:
 >   flag the call;
 > - **(b)** every inbound value that does not reach a page-facing callback (or the
 >   exposure's return value) unchanged and whole: consumed without forwarding
->   (`on('auth', (e, t) => { token = t; })`), filtered, field-selected, transformed, or
+>   (`on('auth', (e, t) => { token = t; })`), filtered on any condition (the value itself,
+>   private state, a timer, a prior callback: the same default as (a), with the listener
+>   callback itself the one path element a pass-through needs), field-selected, transformed, or
 >   truncated (`(e, a) => cb(a)` drops trailing payload arguments);
 > - **(c)** every read of `process.argv` — by literal index, search, iteration, spread, or
 >   escape of `process`/`process.argv` as a value;
@@ -1108,17 +1330,31 @@ rule 2 exists:
 >
 > A listener's `event` argument is not payload (under the facade it carries no authority),
 > so dropping it is not (b). `process.contextIsolated` is constant-folded to `false` before
-> reachable sinks are computed (§4.2 divergence 6, AC23).
+> reachable sinks are computed (§4.2 divergence 6, AC23), so F-O's branch is gone before the
+> path rule runs.
 
 Rejected narrower variants (recorded so they are not re-proposed without new evidence):
 
+- *Count only page-input-dependent branches (r12).* Rejected (r13, 0monish 4429155170): a gate on
+  private state (`if (unlocked) send('delete-all', ...xs)`) reads no parameter, so the site would
+  pass as pass-through and be granted, and a raw same-epoch `send` would reach the handler that
+  the exposed function withholds (AC31).
 - *Flag a constant, omitted or truncated argument only when the main-process handler reads
-  that position.* Rejected: (1) the verdict is bound to the preload digest only, so a later
-  main-process change could make a dropped position live without changing the digest — the
-  verdict would go stale silently; (2) finding "the handler" is cross-module data flow
+  that position.* Rejected: (1) a later main-process change could make a dropped position live,
+  and rule 3's `mainDigest` shows only that main code changed, not which position went live, so
+  the flags would have to be recomputed by the analysis reason (2) rejects; (2) finding "the handler" is cross-module data flow
   through dynamic registration, wrappers, routers keyed on payload fields (draw.io's
   `rendererReq` switch), rest/`arguments`, defaults and destructuring, where a miss is a
   silent security false negative while a false positive costs one attestation line.
+- *Bind each attestation to a slice of main-process code: the handlers it depends on.* Rejected
+  (r13): proving that slice is the data flow the previous item rejects, and a miss is silent.
+  The whole set's digest (rule 3) over-invalidates, and an over-invalidation costs a re-attestation.
+- *Enforce the attested argument template at the Host→Bun boundary (r13, the alternative in
+  0monish 4429155174).* Rejected: payload bytes are Host-opaque (#1190; #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:195`: "Contents
+  are opaque to Rust"), so a Host check needs a second value decoder in Rust, which #540 and #1190
+  forbid. It would also cover arity only: the rule (a) transforms and preload-assigned fields, and
+  the main-dependent claims of rules (b) and (c), stay attested. The Bun-side form is the
+  parked item below; neither replaces rule 3's binding.
 - *Flag only non-literal `process.argv` reads.* Rejected: argv content comes from the main
   process's `additionalArguments` and is page-visible under route D (§4.2 divergence 3); how
   the preload indexes it has no bearing on whether it is secret.
@@ -1132,8 +1368,8 @@ Rejected narrower variants (recorded so they are not re-proposed without new evi
   truncated arguments are the only flag class for at least the share of preloads the #1154
   owner sets at T0, templates become a release blocker with their own spec.
 
-Consequence, stated plainly: most real preloads declare fixed parameters, so most will be
-flagged under (a)/(b). For those applications the attestation, not the classifier, is the
+Consequence, stated plainly: most real preloads declare fixed parameters or wrap a sink in a
+condition, so most will be flagged under (a)/(b). For those applications the attestation, not the classifier, is the
 load-bearing control (rule 3 residual risk).
 
 Classifier falsifiers: a narrowing or data-holding preload MUST be flagged; a pure
@@ -1161,35 +1397,93 @@ flagged (conservative), never silently passed.
 | F-N | `const tok = process.argv.find((a) => a.startsWith('--token='));` | argv read (search) | flagged (c) |
 | F-P | `prefixed: (c, ...xs) => send('app:' + c, ...xs)` | narrowing (channel computed from page input) | flagged (a); reachable sinks = `ipcMain` literals starting `app:` |
 | F-Q | `save: (m, ...xs) => { delete m.extra; send('save', m, ...xs); }` | narrowing (delete on page input) | flagged (a) |
+| F-R | `deleteAll: (...xs) => { if (unlocked) send('delete-all', ...xs); }`, with `button.addEventListener('click', (e) => { if (e.isTrusted) unlocked = true; })` | narrowing (private-state branch; no page-input data flow) | flagged (a) (AC31) |
+| F-S | `ping: (...xs) => { if (locked) return; send('ping', ...xs); }` | narrowing (early return on private state) | flagged (a) |
+| F-T | `later: (...xs) => { setTimeout(() => send('later', ...xs), 0); }` | timer on the path; equivalence not proved | flagged (a) (conservative) |
+| F-U | `safe: (...xs) => { try { send('safe', ...xs); } catch (err) { log(err); } }` | `try`/`catch` on the path; equivalence not proved | flagged (a) (conservative) |
+| F-V | `thrice: (...xs) => { for (let i = 0; i < 3; i++) send('thrice', ...xs); }` | loop on the path | flagged (a) (conservative) |
+| F-W | `if (featureOn) contextBridge.exposeInMainWorld('api', { gated: (...xs) => send('gated', ...xs) });` | selective exposure | flagged (a) |
+| F-X | `on('evt', (e, ...v) => { if (unlocked) cb(...v); })` | narrowing (inbound filter on private state) | flagged (b) |
+| F-Y | `checked: (...xs) => { ready(() => send('checked', ...xs)); }` | callback on the path; equivalence not proved | flagged (a) (conservative) |
+| F-Z | `maybe: (...xs) => { unlocked && send('maybe', ...xs); }` | narrowing (expression condition on private state) | flagged (a) |
+| F-Z1 | `guarded: (...xs) => { check(); send('guarded', ...xs); }`, with `const check = () => { if (locked) throw Error('locked'); };` | narrowing (a helper on the path throws first) | flagged (a) |
+| F-Z2 | `pair: (...xs) => { send('audit', ...xs); send('delete', ...xs); }` | narrowing (a second sink; a raw `send` can skip the first) | flagged (a) |
+| F-Z3 | `ipcRenderer.send('boot');` at preload top level, with `ipcMain.on('boot')` registered | sink with no exposure path | flagged (a); adds no grant |
 | F-O | `if (process.contextIsolated) contextBridge.exposeInMainWorld('api', { priv: (...xs) => send('priv', ...xs) }); else window.api = { pub: (...xs) => send('pub', ...xs) };` | branch on isolation; constant-folded to `false` | not flagged; `reachableSinks == ["el:pub"]` (AC23) |
 
 F-C, F-H and F-L use the supported sink (`send`) and listener (`on`): a reachable `invoke` is
 today a typed incompatibility, not a sink (r8), so their `invoke` forms become fixtures in the
-#1154 revision that implements `invoke` (r10 sweep).
+#1154 revision that implements `invoke` (r10 sweep). Under the r13 default every rule (a)–(d)
+row keeps its outcome: F-A's branch now flags without its page-input edge, F-B, F-B1 and F-B2
+have nothing else on the path, and F-O's branch is folded away before the path rule runs.
 
 **Rule 3 — recorded verdict and attestation (trust model stated plainly).** The preload
-digest, the classifier verdict and any attestation are a **developer-declared integrity
+digest, the main-code digest, the classifier verdict and any attestation are a **developer-declared integrity
 check on `keld migrate` output**, stored in `keld.permissions.jsonc` under the window
 (`windows.<w>.preload`, §4.6) with **the same trust as the manifest itself** — they are not
 a Keld-reviewed signature and no Keld party vouches for them. The Host enforces them
 mechanically:
 
-- The verdict carries its own `digest` and the classifier version that produced it; the Host
+- The verdict carries its own `digest`, its `mainDigest` (below) and the classifier version that
+  produced it; the Host
   refuses a verdict whose `digest` differs from `preload.digest` (AC19 case vi), and a release
-  build re-runs the classifier on the admitted bytes and refuses to package a window whose
-  result differs from the recorded verdict. So a developer who edits the preload and
+  build re-runs the classifier on the admitted bytes, the main-code input set and the
+  `@keld/electron` version the build resolves (it defines the sink set) and refuses to package a
+  window whose result differs from the recorded verdict. So a developer who edits the preload and
   hand-updates `preload.digest` without re-running `keld migrate` gets no grants, not stale
   ones.
 - Route-D grants load for `w` only when `preload.digest` **and** a recorded `preload.verdict`
-  (flag sites + the reachable literal sink set) are present and the admitted preload bytes
+  (flag sites, the reachable literal sink set and `mainDigest`) are present and the admitted preload bytes
   hash to `preload.digest`; otherwise `w` gets `channels: []`.
 - The Host checks `channels(w)` ⊆ `verdict.reachableSinks` (or `reachableSinks` is `"*"`,
   the page-chosen-channel case); a grant outside that set rejects the window's grants.
 - A verdict with non-empty `flags` requires `preload.attestation` whose `digest` equals
-  `preload.digest` and whose `sites` cover every flag (AC19); an attestation bound to another
-  digest is refused. `acknowledgedBy` is a developer acknowledgement and conveys no
+  `preload.digest`, whose `mainDigest` equals `verdict.mainDigest` and whose `sites` cover every
+  flag (AC19, AC32); an attestation bound to another digest of either kind is refused. `acknowledgedBy` is a developer acknowledgement and conveys no
   authority. An attestation **never widens grants**: `channels(w)` stays exactly the §4.8 **Grants**
   intersection below.
+- **Main-code binding (r13, 0monish 4429155174).** What a flagged site can safely lose depends
+  on main-process code: an omitted argument is harmless only while no reachable handler reads it,
+  argv content comes from `additionalArguments`, and an inbound value is whatever main sends. The
+  verdict depends on it too: `channels` and F-P's `reachableSinks` come from `ipcMain` literals. A
+  site cannot be proven independent of main, and a narrower handler slice cannot be proven (above),
+  so `verdict` and `attestation` each record one `mainDigest` over the whole **main-code input
+  set**: every regular file `keld build` takes as input for the package, before the app's bundler
+  runs, whatever its extension. Main can load or read any file the package carries at run time,
+  renderer bundles included, so an extension list would be a second owner of what can run. The set
+  is inputs, not package members, because the members do not exist when `keld migrate` runs:
+  `keld build` is "app bundle via the app's bundler → `keld-pack`" and "MUST stamp the transport
+  file it stages" (arch 06 §2), and `keld-pack` adds members that are not application code
+  (`keld-host.exe`, `keld-updater-helper.exe`, `.keld/update-policy.v1`). KEL-19 owns the list
+  (§10 Q15), and the classifier reads `ipcMain` literals from the same inputs. The set excludes two
+  things: `keld.permissions.jsonc`, the only file that records a digest, and the declared preload
+  files (each has its own digest). Everything else `keld migrate` writes (`keld.config.ts`,
+  `keld.build.ts`, `keld.compat.ts`, `package.json`, `bunfig.toml`; arch 04 §1–§2) carries no digest
+  and stays in if it is an input, so `keld migrate` computes `mainDigest` after its other writes and
+  a second run over an unchanged tree reproduces it. `mainDigest` is SHA-256 over the sorted (UTF-8
+  byte order) lines of root-relative `/`-separated path and file SHA-256; one function computes it,
+  and `keld migrate` and the release recompute both call it. It is not `keld-pack`'s package
+  digest, whose input contains the manifest that would record it.
+  Enforcement reuses rule 3's two existing points and owners, the Host's digest check and the
+  release recompute, and adds no hashing at boot: (1) the one currency predicate, the Host's
+  (T3) and `keld migrate`'s (T5), refuses an attestation whose `mainDigest` differs from
+  `verdict.mainDigest`: `channels: []`, typed error, fix: re-attest; (2) the release recompute
+  (AC19 (vii)'s owner, T5, called from KEL-19's `keld build`) refuses to package a window whose
+  recorded `verdict.mainDigest` differs from the input set. It runs on `keld build`'s private
+  staged copy of the inputs, the bytes the bundler then reads, so a file edited after the check
+  cannot reach the package. Nothing after `keld build` re-checks: signing rewrites package bytes,
+  not inputs, and post-package tamper stays §10 B4's. Mismatch invalidates the attestation and the
+  grant stays off until re-attested.
+  **Cost:** any change to that set, even a renderer bundle or an unrelated handler's file, needs a
+  new attestation before a flagged window gets grants again, and a tree that hashes differently on
+  another machine (a line-ending conversion, a platform-specific dependency) fails closed at the
+  recompute. `keld migrate` **cannot renew it
+  mechanically**, not even for sites a change seems not to touch: deciding that is the
+  cross-module data flow rejected above, and a miss is a silent false negative. It re-runs the
+  verdict, keeps the site text, lists every site for review and leaves `channels: []`; only the
+  developer's explicit re-acknowledgement (its form is T5's) writes the new
+  `attestation.mainDigest`. An unflagged window has no attestation, so re-running `keld migrate`
+  renews its verdict with no review.
 - `KELD-GUARD003` stays #1191 AC5's frozen wire error for every `ChannelForbidden` denial,
   route-D windows included: same variant, code, kind, fix text ("Add `{channel}` to this
   principal's channels list in keld.permissions.jsonc.") and `CallError` mapping (r10,
@@ -1205,7 +1499,11 @@ window gets no grants and is reported unsupported for route D (route B is the do
 escalation; it has no approved spec). With an attestation, the developer asserts that every
 flagged site narrows nothing and holds nothing secret. **If that assertion is wrong, the
 narrowing is silently lost**: the page can make the calls or read the data the preload
-withheld, and nothing in Keld detects it. Keld reviews **this mechanism** under the
+withheld, and nothing in Keld detects it. The same holds for a re-attestation after a
+main-process change, and for anything `mainDigest` cannot see: data main reads at run time,
+code loaded from outside the package, what the app's bundler adds to its output (the digest binds
+the bundler's inputs), and any run outside release packaging (point (2) of the main-code binding
+does not run under `keld dev`, and the Host cannot tell whether a package went through it). Keld reviews **this mechanism** under the
 permission-model gate (§8), not each application's attestation. The single exception is
 Keld's own qualification claim: the T6 attestation for the pinned qualification application
 is authored by the W1 implementer and independently reviewed under the permission-model gate
@@ -1213,7 +1511,11 @@ as qualification evidence (§6 T6), because Keld publishes a result that rests o
 
 Qualification evidence, stated plainly. Rule 2 applied to the pinned draw.io preload
 (`jgraph/drawio-desktop@2edf9fb9`, `src/main/electron-preload.js`, blob `44f2f22f`, read
-directly) flags seven sites. Its main-process counterpart is `src/main/electron.js` (blob
+directly) flags seven sites. r13's default adds none: every extra statement on an
+exposure-to-sink path is inside `request` (L89–103, L96 among them), already flagged;
+`sendMessage` (L111–114) is the sink alone and keeps its truncation flag; both
+`exposeInMainWorld` calls (L87, L125) are unconditional, with no top-level `return` or `throw`
+before them; and L46's `if` guards no sink. Its main-process counterpart is `src/main/electron.js` (blob
 `b57b5e20`) at the same commit.
 
 | Lines | Code | Rule | What the T6 attestation must establish |
@@ -1238,7 +1540,7 @@ Promises, Symbols, WeakMaps, or WeakSets will throw an exception"
 current docs; the pinned v44 wording is INFERRED identical), and #1190 V3 refuses a nested
 Function synchronously before any send. The conservative classifier still flags it (it cannot
 prove the value is always a function). **So the pinned draw.io preload qualifies on route D
-only with an attestation for its digest covering all seven sites** — through the framework
+only with an attestation for its digest and its main-code digest covering all seven sites** — through the framework
 mechanism of rule 3, not an application exception. Whether draw.io holds any authority
 beyond `reqId` assignment depends on its main-process handlers ignoring trailing
 arguments; that is what the T6 review reads, and it is not established here.
@@ -1261,13 +1563,15 @@ sinks and grants kind-qualified (or add a Host-side kind check) and record
 `verdict.reachableSinks` per kind: today an `el:<c>` grant and a `reachableSinks` entry (or
 `"*"`) carry no kind, so neither distinguishes a `send` from an `invoke` on that channel. Dynamic
 `ipcMain` names are reported ungranted. The report also lists every preload read of
-`process.contextIsolated` (AC23). A flagged `P` **without** an attestation for its
-digest yields `channels: []` and the report line `✘ preload has N flagged sites that may
+`process.contextIsolated` (AC23). A sink reachable only from preload-private code adds no grant and the report names it, so the
+preload's own call is refused rather than a raw page post gaining it. A flagged `P`
+**without** an attestation for its
+digest and main-code digest yields `channels: []` and the report line `✘ preload has N flagged sites that may
 narrow authority or hold Host-delivered data (<file>:<line> <rule>, …) — unsupported on Windows route D without an attestation for digest
-<d>; escalation: route B (no approved spec)`. A flagged `P` **with** a matching attestation
+<d> and main digest <m>; escalation: route B (no approved spec)`. A flagged `P` **with** a matching attestation
 yields the same intersection as a pass-through `P` — never more. `keld migrate` writes
 `windows.<w>.preload.digest` (SHA-256 of `P`'s bytes, #1155 AC08 digest),
-`windows.<w>.preload.verdict` (`digest`, `classifier`, `reachableSinks`, `flags`) and, when the developer supplies
+`windows.<w>.preload.verdict` (`digest`, `mainDigest`, `classifier`, `reachableSinks`, `flags`) and, when the developer supplies
 one, `windows.<w>.preload.attestation`; the Host applies rule 3 (AC14, AC19). Before release
 reliance, run across the compat corpus (#496, #587) and record false positives/negatives.
 
@@ -1293,7 +1597,8 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
   #540 (§10 Q1, RESOLVED).
 - **Public API:** `window.keld.invoke` unchanged; `@keld/electron` renderer facade reachable
   on Windows; `keld migrate` report/manifest keys; `WebEngine`/`WebviewSpec` extension
-  (window key, navigation policy, admitted preload bytes + digest) — trait review, live
+  (window key, admitted preload bytes + digest, the lent admission-fence handle of §4.4; the
+  per-view navigation policy value is W3 T4's, and W1's window key selects it) — trait review, live
   backend in the same PR.
 - **Platform:** Windows only; macOS keeps #1155/KEL-142; Linux UNKNOWN.
 - **Runtime seam:** `create` additionally registers `WebMessageReceived` identity and the
@@ -1303,17 +1608,20 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
   owns the `SetCancel` decision: rule 1 and B19's cancel in W3 T2, rule 2's allow forms in
   W3 T4; #1311 §6, §8), and its `ProcessFailed` kind dispatch inside the
   per-view handler W2 r16 D8 registers (`be9e9e56`); W1 adds no second registration. STA thread; renderer crash ≠ Host;
-  handlers live for the WebView lifetime; manifest and policy snapshotted once (#1191 AC1).
-- **Migration unit:** `WebView2Engine::create`, `WebviewSpec`, `app_session` forwarder,
+  handlers live for the WebView lifetime; manifest and policy snapshotted once (#1191 AC1), the
+  navigation policy as W3 T4's one immutable per-view value (W3 §4.6 rule 2). W1's
+  generation bookkeeping updates the fence synchronously inside those handlers (§4.4, §4.5).
+- **Migration unit:** `WebView2Engine::create`, `WebviewSpec`, `app_session` forwarder and fence,
   `@keld/electron` facade/transport, the `WindowRequest::Create` codec (window key, preload path),
   `keld migrate`. No temporary adapter; no persisted
   state beyond the manifest. Compatibility fallback: not required.
 
 ## 5. Boundaries
 
-- Implement in: `crates/keld-wv/src/webview2/` (identity, epoch, navigation policy, script
+- Implement in: `crates/keld-wv/src/webview2/` (identity, epoch, W1's bookkeeping inside W3's navigation handlers, script
   registration; one owner for the `GuardInstalled` mint); `crates/keld-wv/src/engine.rs`;
-  `crates/keld-core/src/app_session.rs` (**the** forwarder, shared with #1191 T4; all
+  `crates/keld-core/src/app_session.rs` (**the** forwarder, shared with #1191 T4, and the
+  final admission fence on `PrimaryRouterHandle`, shared with W3 §4.7; all
   `dispatch_privileged` calls live here); `packages/@keld/electron` (facade + Windows
   transport + `BrowserWindow` window key); `crates/keld-ipc/src/window.rs` +
   `tests/fixtures/window-v0.tsv` and `packages/@keld/api/src/window-codec.ts` (window-key and
@@ -1327,43 +1635,69 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
 
 ## 6. Tasks (each ≈ one PR; ordered; owner; blocking dependency)
 
-- [ ] **T0 — this spec + architecture deviations** (owner: @amishabenramani). Blocks on
-  every §10 blocker: KEL-142 owner sign-off of the §5.1 Windows amendment (B1); tracker
-  amendment (B2); the owners' answers and dependencies of B3–B6; the discriminating admission
-  probe (B7); the OCR rerun (B8); the stale-`bind` branch (B9); and the owner answer to §10 Q2 (§10 Q1 is RESOLVED).
+- [ ] **T0 — this spec + architecture deviations** (owner: @amishabenramani). Blocks only on
+  items that can finish before implementation, each with its owner: KEL-142 owner sign-off of the
+  §5.1 Windows amendment (B1); the #1184 owner's tracker amendment (B2); the #1192 owner's answers
+  (B3); an assigned owner and named design for the trust root (B4); each draft's approval (B5);
+  the recorded loading-path decision and allow forms (B6: W3 #1185, #1192/KEL-102, #541); the
+  discriminating admission probe, on E5's probe host (B7: W1 implementer); the OCR rerun (B8);
+  the #540 wire owner's choice of B9's branch; and the owner answers to §10 Q2 and Q14 (§10 Q1 is
+  RESOLVED). **Not T0 gates:** clearing B9 (branch (i)'s evidence is a T2 cell), W3 Q22 and Q27
+  (B6's device gates) and implementing the trust root (B4). T0 → T1 → T2 is the order, so a T0 edge
+  on any of them would point backwards; each stays a pre-merge gate of T2, listed there.
 - [ ] **T1 — conformance entries first** (owner: `keld-compat` owner, #464/#567). Expected-fail
   cells and one scoreboard divergence entry per §4.2 accepted divergence (1–11), plus the
   `about:srcdoc`/`document.open` limits. Blocks on T0.
-- [ ] **T2 — loading path, navigation policy, eligibility and epoch in `keld-wv`** (owner:
-  Windows W1 implementer). Replace `NavTarget::Html` for compat windows with the decided
-  Host-identifiable URL (§4.6a); AC01 (`window.keld.invoke` half), AC03–AC06, AC07 (floor half), AC10–AC12, AC16–AC18, AC20, AC21, AC24, AC25 (epoch, `onLoss` and pure cells), AC26, AC27's restart cell (its floor-`invoke` half), AC28, AC29 (cell (i) blocked on §10 B9); one generation source
-  for media and channel principals (KEL-102 owner coordination). Blocks on: W3 #1185 +
+- [ ] **T2 — loading path, policy selection, eligibility and epoch in `keld-wv`** (owner:
+  Windows W1 implementer). Three PRs, each with its own gates, in this order: T2a, the
+  `WindowRequest::Create` fields and their Host binding (GH-531 wire gate); T2b, the final admission
+  fence, its lent handle and its pure cells, unless W3 T3 landed it first (public API gate); T2c,
+  the rest. Replace `NavTarget::Html` for compat windows with the decided
+  Host-identifiable URL (§4.6a); AC01 (`window.keld.invoke` half), AC03–AC06, AC07 (floor half), AC10–AC12, AC16–AC18, AC20, AC21, AC24, AC25 (epoch, `onLoss` and pure cells), AC26, AC27's restart cell (its floor-`invoke` half), AC28, AC29 (cell (i) blocked on §10 B9), AC33's floor cells; one generation source
+  for media and channel principals (KEL-102 owner coordination); the `WindowRequest::Create`
+  window-key and preload-path fields with the Host's immutable binding (GH-531 owner review),
+  because `w` selects W3 T4's per-view navigation policy here (W3 lands the value and its
+  fail-closed default, W1 only the selection, AC10) and T3's grants next, with fixtures
+  passing a literal `w` until T4's key function exists; the final admission fence for the floor
+  `invoke`, unless W3 T3 landed it first (§4.4); and the Windows post path with §4.4 rules 1–3.
+  The Q5 and Q11 probes run in its receipt. Blocks on: W3 #1185 +
   #1192/KEL-102 recording the loading-path decision and #541 the `file:` allow forms (B6);
   the non-entry eligibility decision (B3); #541 approving `web.navigation` and
   `preload.digest` keys (Q2); the Windows resource-identity oracle (B3); the Windows trust
-  root (B4); #540's CompatV2 mode of `decode_wv_link` landed (§10 Q1 is RESOLVED; T2 implements its bind→bound order, AC26, AC29); W3 T2 and T4 merged (#1311 `1db53482` §6: the parser, served-record credit and `file:` handler; attribution and the allowlist-first cancel) with W3 Q22 (a) and (b) passed on the supported runtime (W3 B18, B19; without them no Windows `file:` application ships, §10 B6); W2 #1280 T1 (the schema-2 Windows boot, W3 B13) and T3 (managed windows with r16 D8's browser `ProcessFailed` latch, `be9e9e56`), which AC24 cases 14–15 and AC28 need (§10 Q13 (a)); §10 B9 resolved by one of its two branches; #540's role retirement and successor-readiness transition (#1122 §4.9), which AC27's restart cell needs; and the recorded allocation exception for the per-message parse, or an allocation-free parse (§9).
+  root (B4); #540's CompatV2 mode of `decode_wv_link` landed (§10 Q1 is RESOLVED; T2 implements its bind→bound order, AC26, AC29); #540's reservation ledger (#1122 §6 T3b) and the #1095 settlement with `KELD-WV-012` and `013` (#1122 §6 T2; neither code exists at `457a9c3b`), which capture and §4.4's terminals need; W3 T2 merged (#1311 `fa49dcfb` §6: the parser, served-record credit, `file:` handler, rule 1's attribution and B19's cancel) and W3 T4 merged (rule 2's allow forms, rule 4's pre-check and the per-view policy value), W3's execution order being T2 → T4 → T3 with the numbers unchanged (a W3 author decision that `fa49dcfb` does not yet state), with W3 Q22 (a) and (b) passed on the supported runtime (W3 B18, B19; without them no Windows `file:` application ships, §10 B6); W2 #1280 T1 (Ready without a window, behind its debug test admission), T2 (the release proof and product admission of a schema-2 boot, W3 B13; #1280 `8c5e5d74` §6) and T3 (managed windows with D8's browser `ProcessFailed` latch, `be9e9e56`, unchanged at `8c5e5d74`), which AC24 cases 14–15 and AC28 need (§10 Q13 (a)); GH-531's review of the `Create` fields; §10 Q14's answer; §10 B9 resolved by one of its two branches; #540's role retirement and successor-readiness transition (#1122 §4.9), which AC27's restart cell needs; and the recorded allocation exception for the per-message parse, or an allocation-free parse (§9).
   Floor-only bridge (`window.keld.invoke`).
 - [ ] **T3 — grant and forward** (owner: `keld-core`/#1191 T4 implementer). AC02, AC09, AC14,
-  and AC19 (i)–(vi): the Host-side verdict and attestation checks of §4.8 rule 3 land with the
-  first grant (fixture manifests here; `keld migrate` output from T5 on). Route-D grants stay
-  off in release builds until T5's release-build recompute (AC19 (vii)) lands.
-  Blocks on T2, #1191 T1–T4 merged and #540's CompatV2 mode of `decode_wv_link` landed (§10
-  Q1 RESOLVED).
-- [ ] **T4 — `@keld/electron` facade on the Windows transport** (owner: #1154 implementer).
-  Wrapper execution gated on a top-level `file:` document (§4.3, option (b′)); `process.contextIsolated === false` (AC23 (a));
-  divergences wired to T1 entries; the window key and preload path in the Create request
-  (GH-531 owner review) and the one window-key function (§4.8); AC01's exposed keys, AC07's
-  void-API half, AC08, AC25's preload-API cells and gate mutants, AC27 (its cross-window, restart and throwing-listener cells included), AC30. Blocks on T3, on #540's role retirement and successor-readiness transition (#1122 §4.9) for AC27's restart cell, on #466's `ipcMain` listener registry (#1122 §5) and, for
+  AC19 (i)–(vi), AC32's Host half (c) and AC33's `send` cells: the Host-side verdict and
+  attestation checks of §4.8 rule 3 land with the first grant (fixture manifests here; `keld
+  migrate` output from T5 on), as do the Host's read of the preload bytes at the path T2 bound,
+  the `send` use of the final admission fence and the `send-result` post. Route-D grants stay
+  off in release builds until T5's release-build recompute (AC19 (vii), AC32 (a)) lands.
+  Blocks on T2, #1191 T1–T4 merged, #540's CompatV2 mode of `decode_wv_link` landed (§10
+  Q1 RESOLVED), #540's `send` slice (#1122 §6 T4: the subscribed `RendererMessage` and the
+  ReleaseConsumed path a `send-result` follows) and §10 Q12's answer.
+- [ ] **T4 — Host `event` delivery and the `@keld/electron` facade on the Windows transport**
+  (owners: W1 implementer, then #1154 implementer). Two PRs. T4a: `keld-wv`'s `event` post with
+  §4.4 rule 1's role check and rule 4's release, here because #543 is the first thing that can
+  drive them (AC33 (h)). T4b, the facade: wrapper execution gated on a top-level `file:` document (§4.3, option (b′)); `process.contextIsolated === false` (AC23 (a));
+  divergences wired to T1 entries; the facade passing the window key and preload path in the
+  Create request T2 landed, and the one window-key function (§4.8); AC01's exposed keys, AC07's
+  void-API half, AC08, AC25's preload-API cells and gate mutants, AC27 (its cross-window, restart and throwing-listener cells included), AC30, AC34. Blocks on T3, on #540's role retirement and successor-readiness transition (#1122 §4.9) for AC27's restart cell, on #543's event delivery (#1122 §6 T5) and #1190's decoder for AC27, AC30 and AC34, on #466's `ipcMain` listener registry (#1122 §5) and, for
   AC27's `handle` cells, on #547's invoke-handler registry (#466 leaves `handle`/`handleOnce`
   to F04-T14).
 - [ ] **T5 — `keld migrate` mapping, classifier, grants, digest, attestation** (owner:
-  `keld-cli`/KEL-17 owner; Host-side refusal in T3's forwarder owner). AC13, AC15, AC19 (vii) (the release-build recompute), AC23 (b), AC09's report half;
-  fixtures F-A..F-Q; corpus run reporting flags by class (§4.8 decision trigger). Blocks on KEL-17 admitting the first live `migrate` slice
-  (Q9) and on T4's window-key function, which `keld migrate` executes (§4.8).
+  `keld-cli`/KEL-17 owner; Host-side refusal in T3's forwarder owner). AC13, AC15, AC19 (vii) (the release-build recompute), AC23 (b), AC09's report half, AC31's golden half, AC32's golden half;
+  fixtures F-A..F-Z; corpus run reporting flags by class (§4.8 decision trigger). Blocks on KEL-17 admitting the first live `migrate` slice
+  (Q9), on T4's window-key function, which `keld migrate` executes (§4.8), on §10 Q15's input list
+  and, for AC19 (vii) and AC32 (a), on KEL-19's `keld build`, the recompute's call site (a reserved
+  verb at `457a9c3b`, `crates/keld-cli/src/verb.rs`; `keld-pack` alone only streams packages). That
+  recompute is its own PR at that call site; route-D grants stay off in release builds until it
+  lands (T3).
 - [ ] **T6 — Windows qualification receipt** (owner: @amishabenramani). One corpus application
-  whose preload is pass-through or carries a same-digest attestation covering every flagged
-  site (§4.8 rule 3); full RED matrix including AC22; AC17. Because this is Keld's own
-  qualification claim, its attestation (for draw.io: the seven sites of §4.8) is authored by
+  whose preload is pass-through or carries an attestation for its preload and main-code digests
+  covering every flagged
+  site (§4.8 rule 3); full RED matrix including AC22 and the device halves of AC31 and AC32; AC17. Because this is Keld's own
+  qualification claim, its attestation (for draw.io: the seven sites of §4.8, bound to the
+  pinned preload and main-code digests) is authored by
   the W1 implementer and reviewed by the independent permission-model reviewer, who reads
   each flagged site against the pinned main-process handlers; third-party attestations are
   never reviewed by Keld. **Send-capacity qualification gate (§10 Q1(d)):** trace the real
@@ -1382,7 +1716,7 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
 | `wv2_poisoned_page_no_widening` | AC02 | Poison then call granted/ungranted/forged; forwarder + fake Bun counters. |
 | `wv2_same_origin_iframe_frame2` | AC03 | An in-root iframe at the entry URL receives the current nonce from the top document by `window.postMessage` and posts a v2 floor `invoke` via its own `chrome.webview`; assert 0 top-level events and 0 Echo entries; mutant registers `Frame2`. |
 | `wv2_eligibility_matrix` | AC04 | Device: (a) the `file:` entry the Host loads; (b) a remote document and (c) an error page at an allowlisted path, both on loopback `https` (port 0), (c) from an empty-body HTTP 500 (that Chromium then commits its own error page, `IsErrorPage == TRUE`, is INFERRED; the receipt records it); (d) `about:srcdoc`; `bound`-post counter per document. The three mutants are decided by `wv2_epoch_mint_predicate`; on device they are defence in depth. |
-| `wv2_epoch_mint_predicate` (pure Rust) | AC04, AC25 | §4.5's mint predicate over stub inputs, one otherwise-qualifying input per term: `IsErrorPage == TRUE` with a status-200 record; URL text equal to the entry with no verified identity; a `NavigationId` no allowed `NavigationStarting` recorded; a W3 served record with status `404` or `403`. Baseline: no epoch for any; each single-term mutant mints one → RED. |
+| `wv2_epoch_mint_predicate` (pure Rust) | AC04, AC25 | §4.5's mint predicate over stub inputs, one otherwise-qualifying input per term: `IsErrorPage == TRUE` with a status-200 record; URL text equal to the entry with no verified identity; a `NavigationId` no allowed `NavigationStarting` recorded; a W3 served record with status `404`, `403`, `413` or `503`. Baseline: no epoch for any; each single-term mutant mints one → RED. |
 | `wv2_source_rule` + `guard_file_url_source_vectors` (pure Rust; R7/R8 vectors Windows-only, W3 #1311 `1db53482` §4.4) | AC05 | Device: calls from the app document and from documents the Host loaded at a mixed-case in-root spelling and under the non-ASCII root (admitted), and from the `about:srcdoc` error page and an allowlisted remote document (refused at `NoDocument`, defence in depth); each recorded `Source` string joins the vectors. Pure Rust (the deciding cells, each fed the current epoch): those strings, an out-of-root file URL, a UNC `file://server/share/…` URL, `about:blank`, `file://localhost/…` (Chromium likely strips `localhost`) and the controls, through `file_url_root_relative` and the https tuple check. Five mutants (serialised-origin compare, `Url::origin()` compare, scheme-only, case-sensitive, byte matcher). |
 | `wv2_epoch_rotation` | AC06, AC16 | A→B cross-origin, A→A2 by the application's `loadURL` of the entry, hash/pushState; host-replayed A envelopes after B's `ContentLoading`; mutant admits by Source + generation. |
 | `wv2_not_ready_refusal` | AC07 | Fixture calls before epoch, each confirmed by the AC26 recorder to precede `bound` (at-risk count above 0); assert `undefined` (T4)/typed rejection, 0 queued, later success; mutant buffers. |
@@ -1395,18 +1729,22 @@ reliance, run across the compat corpus (#496, #587) and record false positives/n
 | `wv2_string_load_refused` | AC18 | Device: load the fixture with `NavigateToString`; assert `Source == about:blank`, `bound`-post counter 0, calls refused not-ready, FailedClosed with the fixture's `onLoss: close`; mutant qualifies `about:blank`. |
 | `migrate_verdict_binding` | AC19 | Pure Rust over manifests for cases (i)–(vi) (the Host-side checks: fixtures in T3, generated manifests from T5) and (vii) (the release-build recompute, T5); five mutants. |
 | `wv2_identity_at_commit` | AC20 | Device: `pushState`/`replaceState`/hash then granted calls, including one posted immediately after `pushState`; mutant compares the full `Source`. |
-| `wv2_preload_document_matrix` (device) + `guard_component_equality` (pure Rust) | AC25 | Device: admitted root `D:/Keld Test/Ünï/`, allowlist `in-root:**` plus one remote scope, cells (a)–(d) loaded by the application's `loadURL`, (e)–(h) by page navigation ((e), (f) and (h) blocked until W3 Q27); per cell the committed `Uri`/`Source` bytes, `location.protocol`, AC01's first-inline oracle and the Host's `bound`-post counter; baseline first and last. Pure Rust: the shared component equality over `index.html`/`INDEX.HTML`/`index%2Ehtml` and its single call site in W1. Four mutants (location-string gate; preload in every document; byte-exact W1 comparison; served record attached regardless of status) — the last decided by `wv2_epoch_mint_predicate` while (f) is blocked. |
-| `wv2_navigation_matrix` | AC10 | E5 triggers × destinations plus `data:`/`blob:`/`javascript:` in lower and upper case, 5 veto + 3 control runs each, with/without `SendInput` activation; heartbeat oracle; four mutants (exact denylist; in-root membership treated as sufficient; query cut before page-initiated matching; query folded through the component equality); the three `file:` mutants run in W3's pure `guard_navigation_allow_forms` while W3 B19 cancels page-initiated `file:` targets on device. |
+| `wv2_preload_document_matrix` (device) + `guard_component_equality` (pure Rust) | AC25 | Device: admitted root `D:/Keld Test/Ünï/`, allowlist `in-root:**` plus one remote scope, cells (a)–(d) loaded by the application's `loadURL`, (e)–(h) by page navigation ((e), (f) and (h) blocked until W3 Q27), (i) under the held budget; per cell the committed `Uri`/`Source` bytes, `location.protocol`, AC01's first-inline oracle and the Host's `bound`-post counter; baseline first and last. Pure Rust: the shared component equality over `index.html`/`INDEX.HTML`/`index%2Ehtml` and its single call site in W1. Five mutants (location-string gate; preload in every document; byte-exact W1 comparison; served record attached regardless of status; capacity refusal counted as a loss) — the fourth decided by `wv2_epoch_mint_predicate` while (f) is blocked. |
+| `wv2_navigation_matrix` | AC10 | E5 triggers × destinations plus `data:`/`blob:`/`javascript:` in lower and upper case, 5 veto + 3 control runs each, with/without `SendInput` activation; heartbeat oracle; five mutants (exact denylist; in-root membership treated as sufficient; query cut before page-initiated matching; query folded through the component equality; policy not selected by `w`); the three `file:` mutants run in W3's pure `guard_navigation_allow_forms` while W3 B19 cancels page-initiated `file:` targets on device. |
 | `wv2_environment_args_empty` + source grep | AC11 | Unit. |
 | `wv2_popup_handled` | AC12 | Existing KEL-168 test. |
 | `migrate_grant_generation` | AC13 | Golden manifest for F-B, F-B1, attested F-C and attested F-P against a fixed `ipcMain` set, plus the window-key fixtures and shared key-function golden vectors; eight mutants (grant all literals; collect only `on`/`handle`; F-P's computed channel treated as page-chosen; suffix disambiguation; last site wins; key-class prefixes dropped; `sendToHost` counted as a main-IPC sink; every `ipcMain` registration kind treated as reachable by `send`). |
 | `wv2_bridge_wire_compat_v2` (device; T2) | AC26 | T2's actual bridge text and admission path, real `decode_wv_link` in CompatV2 mode, the KEL-142 floor; the renderer-side recorder and Host decoded/`bind`-receipt/`bound`-post/Echo counters; pure-Rust `bind`/`bound` vector checks (21/174 bytes); seven refused raw posts (v2 `hello`, v1 `invoke`, base64url `send` payload, v2 `epoch` kind, the page-posted `bound` vector, a duplicated-`document` `send`, a non-string object), each followed by a floor `invoke` issued after the previous `invoke-result`; baseline first and last; eight mutants (LegacyV1 fallback in the endpoint; base64url payload accepted; unknown kind admitted; `hello` aliased to `bind`; r8's v1 bridge text; `get_WebMessageAsJson` read; native kinds accepted from the renderer; a duplicated key overwrites), each in its own process. Runs once #540's CompatV2 mode lands and T2 implements the bind→bound order (§10 Q1 RESOLVED). |
-| `wv2_facade_send_trace` (device; T4, needs T3) | AC27 | The AC26 harness plus T3's forwarder, T4's facade and a Bun fixture on #466's listener registry and #547's invoke-handler registry with per-listener and per-handler counters and the #540 ledger counter; asserts the 123-byte `send` and 120-byte `consumed` vectors (pure Rust), the per-direction renderer traces, the early second `send` a dropped call (local `recordBusy`, no post, no Bun call, no credit), the cross-window same-role `send` refused by the Host/role ledger, `send-result` before message 2, readiness from `bound.ready`/`route-state`, `on('x')` 1 and `handle('x')` 0, and the `danger` and r8-exposure refusals, the restart cell (outcome-unknown settlement at `retired`, message 2 admitted once after the successor's `ready`, the floor `invoke` rejected and then resolved), the throwing-listener cell (one `consumed` per event, the `error` counter, no charged record left) and the refused send's `send-result`; ten mutants (#547's handler registry merged into #466's listener registry; bridge skips its `outstanding` check; bridge never clears its record on `send-result`; bridge ignores `bound.ready`; bridge drops `consumed`; DATA ledger keyed per document instead of per role; `outstanding` cleared only by `send-result`; `consumed` posted only after a normal return; listener exception swallowed; no `send-result` for a grant-refused `send`). |
+| `wv2_facade_send_trace` (device; T4, needs T3) | AC27 | The AC26 harness plus T3's forwarder, T4's facade and a Bun fixture on #466's listener registry and #547's invoke-handler registry with per-listener and per-handler counters and the #540 ledger counter; asserts the 123-byte `send` and 120-byte `consumed` vectors (pure Rust), the per-direction renderer traces, the early second `send` a dropped call (local `recordBusy`, no post, no Bun call, no credit), the cross-window same-role `send` refused by the Host/role ledger with its `send-result`, `send-result` before message 2, readiness from `bound.ready`/`route-state`, `on('x')` 1 and `handle('x')` 0, and the `danger` and r8-exposure refusals, the restart cell (outcome-unknown settlement at `retired`, message 2 admitted once after the successor's `ready`, the floor `invoke` rejected and then resolved), the throwing-listener cell (one `consumed` per event, the `error` counter, no charged record left) and the refused send's `send-result`; eleven mutants (#547's handler registry merged into #466's listener registry; bridge skips its `outstanding` check; bridge never clears its record on `send-result`; bridge ignores `bound.ready`; bridge drops `consumed`; DATA ledger keyed per document instead of per role; `outstanding` cleared only by `send-result`; `consumed` posted only after a normal return; listener exception swallowed; no `send-result` for a grant-refused `send`; no `send-result` for a role-quota refusal). |
 | `wv2_bind_bound_startup` (device; T2) | AC29 | Cells (a)–(i) on the dedicated STA harness, baseline first and last; renderer recorder plus Host counters for `bind` receipts (with `Source`), `bound` posts (with target document and the `bind` answered), mints, typed startup failures, retries and Echo calls; the replay and held-`bound` hooks are `profile-test-hooks` fixtures and the deferred, listener-less and bind-less bridges are fixture builds; cell (i) also records the native at-risk count without the hook; nine mutants (`bind` never answered; `bound` pushed at `ContentLoading`; no startup deadline; early `bind` held and answered; `bind` Source check skipped; fresh mint per `bind`; final-post check skipped for `bound`; per-WebView `bind` latch; A's stale same-root `bind` takes B's latch, today's rule, so that cell fails first until §10 B9), each in its own process. A timeout with no `bound` is a typed startup failure, never a pass. |
-| `wv2_nonce_grants_nothing` (device; T4) | AC30 | Cells (a)–(e) are the named ACs' tests, run against a page that read the nonce from its own raw listener; cells (f1)–(f4) add the forged `consumed` cases on the AC27 harness with the held-post hook, the #540 ledger release counter, the Host event-record high-water and the renderer dispatch log; three mutants (release on the page `consumed` alone before the native half; release on every exact-key `consumed`; release on a `document` match without the exact key); (f2) records the limit and has none. |
+| `wv2_nonce_grants_nothing` (device; T4) | AC30 | Cells (a)–(e) are the named ACs' tests, run against a page that read the nonce from its own raw listener; cells (f1)–(f6) add the forged `consumed`, dropped-post and replaced-document cases on the AC27 harness with the held-post hook, the #540 ledger release counter, the Host event-record high-water and the renderer dispatch log; five mutants (release on the page `consumed` alone before the native half; release on every exact-key `consumed`; release on a `document` match without the exact key; release a dropped post only on a page `consumed`; keep a replaced document's record for a page `consumed`); (f2) records the limit and has none. |
+| `wv2_private_state_gate` (device; T6, needs T4's facade and T5's manifest) + the F-R row of `migrate_classifier_fixtures` (golden; T5) | AC31 | Golden: F-R's flag, verdict, empty grants and report line. Device: no synthesized trusted input; exposed call, then a raw v2 `send` with the current epoch; Bun handler counter keyed by channel; the attested cell is recorded as the residual, not scored. One mutant (only page-input branches count), which needs `ipcMain.on('delete-all')` registered so that its grant exists: at-risk count above 0. |
+| `migrate_main_code_binding` (pure; T5; (c)'s Host check T3) + `wv2_stale_attestation_refused` (device; T6) | AC32 | Pure: v1/v2 fixture trees through the main-digest function, the currency predicate and the release recompute; digest vectors for a helper, a renderer bundle, an input with no script extension, a preload, `keld.permissions.jsonc`, listing order and a second `keld migrate` run over one tree (the input list is a fixture parameter until §10 Q15 lands). Device: cell (c) with a Bun fixture that counts the protected overwrite, then cell (d). Six mutants (preload digest only; recompute without the main comparison; `keld migrate` self-renews; entry file only; extension filter; manifest kept in the set). |
+| `wv2_admission_fence` (pure Rust; floor T2, `send` T3) + `wv2_final_fence_trace` (device; same split, (h) T4) | AC33 | Pure: the fence over stub owners and a stub FIFO, with deterministic barriers before and after the transaction and inside the stub evaluator, each revocation in both orders. Device: the held-admission hook, (a)–(e), (g) and (h), baseline first and last, independent per-link and per-role counters; (c) waits on the successor main's registration report. Thirteen mutants (no final comparison; `G` only; role only; no comparison before Guard; denial selected without a comparison; retarget to the live link; role captured at dequeue; fence left before `try_send`; bridge `ready` trusted; sequence unchecked at capture; `invoke` not reserved; rule 1 without the role; `Disconnected` answered as `Full`); the `G`-only, denial, fence-left and `Disconnected` mutants are pure only. |
+| `wv2_event_decode_terminal` (device; T4) | AC34 | AC27's harness with a Bun fixture that issues `Deliver` with raw bytes; cells (a)–(e); `consumed` recorder, listener counters, page `error` counter, ledger release counter and the `Deliver` REPLY's disposition. Four mutants (one `catch` for everything; decode error rethrown; listeners looked up before decoding; no-dispatch reported as `consumed`). |
 | `wv2_process_failure_split` (device; T2) | AC28 | Two runs per kind on the dedicated STA harness, baseline first and last; renderer and browser terminated by `profile-test-hooks` fixtures; navigation-event log, per-controller engine-call log, Echo counter, which of `ProcessFailed` and `BrowserProcessExited` came first, session-end record; two mutants (`onLoss` after browser exit, a positive control decided by AC24 case 14; renderer exit treated as browser exit), each in its own process. |
-| `wv2_digest_binding` | AC14 | Tamper one preload byte after its digest was recorded (a manifest fixture in T3; `keld migrate` output from T6 on); assert `channels: []` + typed error; mutant ignores digest. |
-| `migrate_classifier_fixtures` | AC15, AC23(b) | F-A..F-Q + pinned draw.io preload bytes (expected: exactly the seven sites of §4.8); one mutant per rule plus the over-flag and F-G conservatism mutants. |
+| `wv2_digest_binding` | AC14 | Tamper one preload byte after its digest was recorded (a manifest fixture in T3; `keld migrate` output from T6 on); assert `channels: []` + typed error; no-preload and no-entry cells; two mutants (digest ignored; comparison only when a preload was passed). |
+| `migrate_classifier_fixtures` | AC15, AC23(b) | F-A..F-Z + pinned draw.io preload bytes (expected: exactly the seven sites of §4.8); one mutant per rule plus the over-flag and F-G conservatism mutants. |
 | Receipt validator | AC17 | `tools/` check of the acceptance comment fields. |
 
 Anti-flake: device tests behind the existing Windows feature flag on the dedicated STA
@@ -1435,13 +1773,15 @@ message/effect/credit counters, the failing mutants and the native control's act
   eligibility-before-epoch rule, Source rule, navigation matcher reuse, generated grants
   (intersection + digest binding), no second evaluator, no wildcard; the **verdict/attestation
   mechanism** (§4.8 rule 3: developer-declared, manifest-trust, Host-checked ⊆ reachable
-  sinks, same-digest requirement) is reviewed here — third-party attestations are not; the
+  sinks, same-digest requirement for the preload and main-code digests) is reviewed here — third-party attestations are not; the
   T6 qualification attestation is reviewed here as qualification evidence (§6 T6); the
   Host→renderer generation check and in-flight hold (§4.4, AC21, AC24); the per-call Source
   rule's use of the shared `file:` URL parser (§4.4 step 3); rule A″ adopted from W3 (§4.6);
   the one component equality; the proposed eligibility of every Host-served in-root document
-  and the preload gate (§4.3, §4.5, AC25).
-- **Public API — mandatory:** `WebEngine`/`WebviewSpec`; `@keld/electron` facade on Windows;
+  and the preload gate (§4.3, §4.5, AC25); the classifier's any-condition default (§4.8 rule 2,
+  AC31); the final admission ticket and fence, including its Guard ordering (§4.4, AC33, §10 Q14).
+- **Public API — mandatory:** `WebEngine`/`WebviewSpec`, with the lent fence handle;
+  `@keld/electron` facade on Windows;
   `keld migrate` keys and report; KEL-142 §5.1 Windows amendment; `keld-guard` URL helpers
   `url_scheme_is` (R1's code, exported) and `https_tuple_origin` (keld-guard owner; W3 owns
   the parser, the component equality and the navigation entrypoint).
@@ -1449,7 +1789,9 @@ message/effect/credit counters, the failing mutants and the native control's act
   (no added kind, `JsonBytes` payloads, one decoder), `bound` answering a verified `bind`, the
   page-readable `document` nonce, epoch-stamped Host→renderer envelopes (§10 Q1, RESOLVED;
   the decision approves no W1 text), and, if §10 B9 takes branch (ii), the bounded idempotent
-  `bound` re-answer (open).
+  `bound` re-answer (open). The renderer use of the B21 ticket and fence (§10 Q14, open) and the
+  §4.4 terminal table add no wire form; they map onto #540's existing dispositions and need that
+  owner's reading.
 - **Wire protocol — window-payload owner (GH-531):** a window key and a preload path in `WindowRequest::Create`
   (`crates/keld-ipc/src/window.rs`, `window-v0.tsv` vectors, `@keld/api` `window-codec.ts`);
   discriminants are append-only and `Create` is `Copy`, so the key travels in a new appended
@@ -1478,12 +1820,18 @@ message/effect/credit counters, the failing mutants and the native control's act
   #1311 `1db53482` names only W3's payloads) or an allocation-free parse; T2 measures it and
   does not merge without one of the two. Report envelope parse / Source parse / decide /
   forward as separate samples.
+- Per message at the fence (r13): one short shared guard on the STA at capture and, on Core, one
+  before Guard and one at admission, so an STA G-change can briefly contend with a writer admission. No allocation is
+  added on the warmed path, the guard is held across no I/O, and T2 reports capture and fence
+  hold times as separate samples. Hot-path rules (no async, no steady-state allocation) apply.
+- `mainDigest` is computed by `keld migrate` and the release recompute only: no boot, first-paint
+  or per-message cost, and none is claimed for the release build until T5 measures it.
 - Per navigation: nonce mint + one `bound` post in reply to `bind` (at most the fixed re-answer
   count if §10 B9 takes branch (ii)); negligible, measured anyway.
 
 ## 10. Approval blockers and open questions
 
-**Blockers (must clear before `Status: approved`):**
+**Blockers (must clear before `Status: approved` as far as §6 T0 lists them; what only a later task can clear stays that task's gate):**
 
 - **B1 KEL-142 §5.1 amendment (Windows):** the page-world bridge carries the document nonce;
   KEL-142 owner sign-off required. The #540 wire owner's §10 Q1(c) decision keeps the nonce on
@@ -1502,7 +1850,7 @@ message/effect/credit counters, the failing mutants and the native control's act
 
   *Acceptance criterion 2*, replacing it:
 
-  > **(Proposed amendment for Windows route D; effective only with #1307's exact-content approval, until then the previous text below applies — see https://github.com/gyldlab/keld/issues/1184#issuecomment-6512851695.)** Prove the three route-D rules that replace world separation. **(i) No IPC authority or Host-delivered data exists only in preload code.** `keld migrate`'s conservative classifier flags every preload whose sink calls are not wholly page-controlled (page-input-dependent branches or transforms; channels computed from page input; constant, omitted, truncated or overwritten arguments; writes, deletes or mutating calls on page input, including preload-assigned fields), every inbound listener or `invoke` reply whose payload does not reach a page-facing callback unchanged (including consume-without-forward such as `on('auth', (e, t) => { token = t })`), every `process.argv` read, and indeterminate code. A flagged preload's window receives grants only with a developer attestation bound to the recorded preload digest that covers every flagged site and never widens grants; Keld reviews this mechanism, not each attestation, and a wrong attestation silently loses the narrowing. The Host loads grants only when the admitted preload bytes hash to the recorded digest (trust root: #1307 blocker B4), a verdict is recorded, and grants ⊆ `verdict.reachableSinks`. **(ii) The Host authenticates every call:** top-level `WebMessageReceived` only; the current epoch nonce of a document whose identity was decided once at commit; a browser-stamped `Source` whose scheme is that document's (so `about:`, `data:`, `javascript:` and `blob:` are refused) and which, for `https`, has that document's tuple origin and, for `file:`, has an empty host and a percent-decoded, case-folded path inside the verified package root as decided by keld-guard's one `file:` URL parser shared with W3 #1185 (never full-URL equality, never a comparison of opaque origins); and an exact literal `el:` channel grant — except `window.keld.invoke`, which routes only KEL-142's declared Echo channel `1`. The page never receives raw Host objects, and no token other than its own document epoch or an already-revoked one. **(iii) Navigation and eligibility are Host policy:** top-level navigation follows W3 #1185's rule A″, whose verbatim text #1185 owns; in substance: the allowlist governs every page-initiated top-level target, in-root `file:` included, and in-root membership is necessary, not sufficient; the query is part of page-initiated matching; the decision is taken on the original `NavigationStarting`, before any generation change — an off-allowlist target is cancelled at generation +0 and the live document and its IPC survive; `will-navigate` is a notification only, and the Host never replays a page navigation; Host attempts are checked against the same allowlist before their +1, and the window's entry is always admissible for them, whatever its query, once #1185's attribution rule binds the navigation to the attempt. Every `about:`, `data:`, `javascript:` and `blob:` URI in any letter case is off-allowlist (whether `javascript:` raises `NavigationStarting` at all is UNKNOWN, #1307 AC10); `NewWindowRequested` is denied; the runtime's cancellable-`about:` navigation is never disabled; a document receives an epoch only at `ContentLoading` with `IsErrorPage == FALSE`, an allowed `NavigationId` and verified resource identity (#1307 §4.5; never URL text, never a `NavigateToString` load). Top-level `about:srcdoc` (an error page commits despite `Cancel`; FailedClosed with bounded recovery) and `document.open()` (no navigation event; no Host action) are recorded Host-unvetoable limits.
+  > **(Proposed amendment for Windows route D; effective only with #1307's exact-content approval, until then the previous text below applies — see https://github.com/gyldlab/keld/issues/1184#issuecomment-6512851695.)** Prove the three route-D rules that replace world separation. **(i) No IPC authority or Host-delivered data exists only in preload code.** `keld migrate`'s conservative classifier flags every preload whose sink calls are not wholly page-controlled (any other statement or call on a path from the exposure to the sink, whether a conditional, early return, throw, try/catch, loop, callback, timer or helper and whatever a condition depends on, and selective exposure, unless constant folding removes it; page-input transforms; channels computed from page input; constant, omitted, truncated or overwritten arguments; writes, deletes or mutating calls on page input, including preload-assigned fields), every inbound listener or `invoke` reply whose payload does not reach a page-facing callback unchanged (including consume-without-forward such as `on('auth', (e, t) => { token = t })`), every `process.argv` read, and indeterminate code. A flagged preload's window receives grants only with a developer attestation bound to the recorded preload digest and to the recorded digest of the main-process code inputs, covering every flagged site and never widening grants; a change to either invalidates it until the developer re-attests; Keld reviews this mechanism, not each attestation, and a wrong attestation silently loses the narrowing. The Host loads grants only when the admitted preload bytes hash to the recorded digest (trust root: #1307 blocker B4), a verdict is recorded, and grants ⊆ `verdict.reachableSinks`. **(ii) The Host authenticates every call:** top-level `WebMessageReceived` only; the current epoch nonce of a document whose identity was decided once at commit; a browser-stamped `Source` whose scheme is that document's (so `about:`, `data:`, `javascript:` and `blob:` are refused) and which, for `https`, has that document's tuple origin and, for `file:`, has an empty host and a percent-decoded, case-folded path inside the verified package root as decided by keld-guard's one `file:` URL parser shared with W3 #1185 (never full-URL equality, never a comparison of opaque origins); and an exact literal `el:` channel grant — except `window.keld.invoke`, which routes only KEL-142's declared Echo channel `1`. The page never receives raw Host objects, and no token other than its own document epoch or an already-revoked one. **(iii) Navigation and eligibility are Host policy:** top-level navigation follows W3 #1185's rule A″, whose verbatim text #1185 owns; in substance: the allowlist governs every page-initiated top-level target, in-root `file:` included, and in-root membership is necessary, not sufficient; the query is part of page-initiated matching; the decision is taken on the original `NavigationStarting`, before any generation change — an off-allowlist target is cancelled at generation +0 and the live document and its IPC survive; `will-navigate` is a notification only, and the Host never replays a page navigation; Host attempts are checked against the same allowlist before their +1, and the window's entry is always admissible for them, whatever its query, once #1185's attribution rule binds the navigation to the attempt. Every `about:`, `data:`, `javascript:` and `blob:` URI in any letter case is off-allowlist (whether `javascript:` raises `NavigationStarting` at all is UNKNOWN, #1307 AC10); `NewWindowRequested` is denied; the runtime's cancellable-`about:` navigation is never disabled; a document receives an epoch only at `ContentLoading` with `IsErrorPage == FALSE`, an allowed `NavigationId` and verified resource identity (#1307 §4.5; never URL text, never a `NavigateToString` load). Top-level `about:srcdoc` (an error page commits despite `Cancel`; FailedClosed with bounded recovery) and `document.open()` (no navigation event; no Host action) are recorded Host-unvetoable limits.
 
   *Deterministic negative control*, replacing its paragraph:
 
@@ -1556,7 +1904,8 @@ message/effect/credit counters, the failing mutants and the native control's act
   full rule refuses it, or cite a documented WebView2 guarantee that a document's messages
   cannot be delivered after the next document's `ContentLoading` (none found: the
   `WebMessageReceived` reference states no cross-document ordering). Design (owner: W1
-  implementer, on the T2 device harness; results to keld-research):
+  implementer; it runs on E5's keld-research probe host, not on T2's harness, because T0 gates on
+  it and T2 follows T0; results to keld-research):
   - **Arm F, forcing (renderer→Host).** Document A runs a busy loop of T ∈ {50, 200,
     1000} ms ending in a burst of N posts, each tagged with a page-generated per-document id
     the admission rules never read; the Host navigates top-level during the loop. Variants:
@@ -1600,7 +1949,7 @@ message/effect/credit counters, the failing mutants and the native control's act
   OCR is rerun on the then-current head with every round successful and its findings are
   reconciled against the review threads. Check: the job id and a warning-free terminal status
   recorded on #1307.
-- **B9 Stale same-root `bind` (r12, 0monish 4428451720) — OPEN; blocks T2.** *What:* #540's
+- **B9 Stale same-root `bind` (r12, 0monish 4428451720) — OPEN; blocks T2, and T0 only on its branch choice (§6).** *What:* #540's
   `bind` is tokenless (`{ v: 2; kind: "bind" }`, #1122 `d9211a96` `docs/specs/gh540-compat-ipc.md:342`), and the
   `WebMessageReceived` event args expose only `Source` and the message: Microsoft Learn lists
   `get_Source` ("The URI of the document that sent this web message."), `get_WebMessageAsJson`
@@ -1657,7 +2006,7 @@ message/effect/credit counters, the failing mutants and the native control's act
    and claims no native Windows acceptance. **Still blocking W1 T2–T4** (not merge-approved
    until all pass): the bind→bound order implemented (T2); real-Windows AC26 and AC27 GREEN;
    the #540 wire vectors (§7) and the CompatV2 `decode_wv_link` integration reviewed; B1's
-   separate KEL-142 §5.1 security amendment approved; and every other W1 blocker (B2–B9, Q2,
+   separate KEL-142 §5.1 security amendment approved; and every other W1 blocker (B2–B9, Q2, Q14,
    Q12 and the per-task dependencies in §6). Staging reading (spec author, r11): the list is
    cumulative per task, not a requirement that T2 wait for T4. Each task merges when the items
    it owns pass: T2 needs the bind→bound order with AC26 and AC29 GREEN on real Windows; T3
@@ -1665,8 +2014,8 @@ message/effect/credit counters, the failing mutants and the native control's act
    a route-D grant before its own cells pass (§6). Recorded for the #540 owner to correct on
    #1307 if a stricter order was meant. Check: each item recorded on #1307.
 2. **Q2 (manifest, #541/#1191):** keys `windows.<w>.web.navigation` (`allow`, `onLoss`),
-   `windows.<w>.preload.digest`, `windows.<w>.preload.verdict` (`digest`, `classifier`, `reachableSinks`, `flags`)
-   and `windows.<w>.preload.attestation` (`digest`, `sites`, `acknowledgedBy`); non-`file:`
+   `windows.<w>.preload.digest`, `windows.<w>.preload.verdict` (`digest`, `mainDigest`, `classifier`, `reachableSinks`, `flags`)
+   and `windows.<w>.preload.attestation` (`digest`, `mainDigest`, `sites`, `acknowledgedBy`); non-`file:`
    `allow` entries as vetted URL scopes and the `file:` allow forms of rule A″ (W3 B12); all
    under #541's manifest ownership. Also for the #1191 owner: confirm that a window key
    supplied by trusted Bun main in the Create request satisfies AC3's "Host resolves one
@@ -1706,12 +2055,12 @@ message/effect/credit counters, the failing mutants and the native control's act
    approval of this spec (§10 B2):** gating is
    defined as narrowing of what the page can cause or see; the static classifier is
    conservative and flags what it cannot prove (§4.8 rule 2 (a)–(d)); a flagged preload's
-   window receives grants only with a developer attestation bound to its digest that covers every flagged
-   site and never widens grants (§4.8 rule 3, AC19). Keld does not review third-party
+   window receives grants only with a developer attestation bound to its digest and the main-code digest that covers every flagged
+   site and never widens grants (§4.8 rule 3, AC19, AC32). Keld does not review third-party
    attestations; it reviews the mechanism, and separately the T6 qualification attestation
    (§6 T6). Applied to the qualification evidence: the pinned draw.io preload has seven
    flagged sites (§4.8 table), including the representation-only `watchFile` branch, and
-   qualifies only with an attestation for its digest covering all seven. This is a framework
+   qualifies only with an attestation for its digest and main-code digest covering all seven. This is a framework
    mechanism; no application exception exists.
 9. **Q9 (`keld migrate`):** verb reserved (`verb.rs:75`, KEL-17); T5 needs KEL-17's owner to
    admit the classifier as the first live slice.
@@ -1746,3 +2095,46 @@ message/effect/credit counters, the failing mutants and the native control's act
     new controller and document, same logical window, HWND and grants only after independent
     verification) remains a possible future option owned by #1188, not a W1 promise. Check:
     #1280 r16 at `be9e9e56` carries that D8 rule; AC24 cases 14–15 and AC28 (b) GREEN.
+14. **Q14 (renderer use of the B21 ticket and fence; owner #1192/#540, 0monish) — OPEN; blocks
+    T2 and T3.** The B21 decision ([#1311 comment 6532409232](https://github.com/gyldlab/keld/pull/1311#issuecomment-6532409232)) names W3's eval result only. Its
+    transaction has five steps and no Guard call, because an eval result is "not a
+    renderer-originated privileged `el:` dispatch" (decision 2). W1 proposes the same ticket type
+    and fence for a renderer `send` and floor `invoke` (§4.4), which needs two answers. (a) May the
+    ticket's `work` carry renderer work, not only an eval correlation? (b) Is §4.4's Guard placement
+    acceptable? The facts for (b). Decision 1: "Never hold it across socket I/O, a callback,
+    blocking Guard/Bun work, or an awaited queue slot." #1191 `4f246a75`
+    `docs/specs/gh552-exact-channel-grants-guard.md`: stale identity returns its own category
+    "**before** selecting an absent-grant error" (`:147`); the comparison comes before
+    `dispatch_privileged` (`:148`); "Only the Allow closure can begin the original app-link write"
+    (`:149`); AC8 orders revocation against admission, with zero Bun writes when revocation wins
+    first (`:54`). These texts do not conflict. Neither requires one hold from the comparison
+    through the write, and that shape is the only one decision 1's sentence rules out, because
+    `on_allow` is a callback and Guard would run under the fence. §4.4 meets all of them: a
+    comparison before Guard with the fence released after it, then a fresh comparison under the
+    fence inside `on_allow`, or after a denial. Its cost is a second short fence entry on every
+    `send` and one pure Guard evaluation if a revocation lands in the gap. **Recommended: accept (a)
+    and §4.4's placement.** It needs no narrower reading of decision 1, and the `send` transaction
+    has the eval result's steps. Alternative to (b): hold the fence across one
+    `dispatch_privileged`, for one comparison and no evaluation in that gap. That needs the owner to
+    read "a callback" as excluding the fence's own `on_allow` and "blocking Guard" as excluding the
+    evaluator (#1191 AC6's warmed Allow does not allocate; that it never blocks is INFERRED, it is
+    an open draft), and the STA then waits on the fence for the evaluator's length, which #1191's
+    "Never block the UI/navigation owner under a lock while waiting on Bun, Writer queue, callback
+    or socket I/O" (`:151`) would also have to allow. AC33's cells hold under either answer; the
+    alternative merges two of its mutants. If (a) is refused, W1 needs its own ticket type over the
+    same fence. Check: the owner's answer recorded on #1307, and W3's §4.7 names the shared type.
+15. **Q15 (package inputs; owner KEL-19, with KEL-17) — OPEN; blocks T5, not T0.** `mainDigest`
+    needs one list of inputs that `keld migrate` and `keld build` both read (§4.8 rule 3). At
+    `457a9c3b` `keld build` is a reserved verb (`crates/keld-cli/src/verb.rs`), and `keld.build.ts`,
+    which `keld migrate` generates "from electron-builder config" (arch 04 §2), has no schema in
+    the repository. *Impact:* T5 can test the digest function with a fixture list, but the real
+    list, and with it every flagged window's release grants, waits on this; the Host half (T3)
+    and T4 do not. *Options:* (a) **Recommended:** `keld.build.ts` names the inputs, `keld migrate`
+    writes that list from the electron-builder configuration and `keld build` stages exactly it:
+    one owner, and a developer tree and a clean CI checkout agree, because a build's own output is
+    not an input. (b) The whole application root minus a fixed ignore list: it needs no KEL-19
+    field, but a previous build's output or a VCS directory enters the digest, so a clean checkout
+    disagrees and the recompute refuses it. Also for this owner: a preload the app's bundler emits
+    has no output bytes at migrate time, so `preload.digest` cannot name them until that flow is
+    defined; until then such a window fails closed at AC14. *Check:* KEL-19's schema names the
+    list, and T5 calls it.
