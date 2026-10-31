@@ -47,6 +47,9 @@ const SCAN_REL: &[&str] = &[
     // Public Electron facade errors must not be silently invisible just
     // because no Rust binary emits the same KELD-COMPAT identifier.
     "packages/@keld/electron/src",
+    // The inert electron-updater adapter (GH-491) emits its refusal code only
+    // from TypeScript; the registry holds that emitter the same way.
+    "packages/@keld/electron-updater/src",
     "tools",
 ];
 
