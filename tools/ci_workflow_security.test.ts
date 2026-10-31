@@ -1,3 +1,6 @@
+import "./ci_provenance.test";
+import "./ci_verisentry_publisher.test";
+import "./ci_verisentry_refresh.test";
 import { expect, test } from "bun:test";
 import {
   cpSync,

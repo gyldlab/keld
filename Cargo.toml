@@ -196,7 +196,7 @@ sha2 = "0.10"
 # pump without a second tao NSApplication.run cycle. Exact versions already
 # exist in Cargo.lock through Wry; no package/version is added.
 core-foundation = "=0.10.1"
-objc2 = { version = "=0.6.4", default-features = false }
+objc2 = { version = "=0.6.5", default-features = false }
 objc2-core-foundation = { version = "=0.3.2", default-features = false }
 objc2-foundation = { version = "=0.3.2", default-features = false }
 # Debug-only KEL-135 media sheet observer; these exact versions already enter
