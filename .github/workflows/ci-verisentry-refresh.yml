@@ -88,14 +88,15 @@ jobs:
                 pr.ref !== 'main')) {
               throw Error('VeriSentry refresh refuses malformed PR listing metadata');
             }
-            // A public repo can exceed 500 open PRs: do NOT abort every
-            // honest PR's renewal when that happens. Rotate deterministic,
-            // bounded numeric-PR-order batches daily. Trusted maintainer
-            // workflow_dispatch accepts a specific zero-based batch_index for
-            // pre-activation full backfill without waiting for several days.
+            // PR population can change daily. A variable batch-count with
+            // numeric PR rank is vulnerable to starvation: an adversary can
+            // open/close just one PR to keep another PR out of every batch.
+            // Stable numeric PR-ID modulo FIVE cannot be shifted by other PRs.
+            // For <=120 open main PRs, scan all of them every run.
+            // For a larger list, each fixed bucket is renewed every 5 UTC days;
+            // an authorized manual dispatch can target bucket 0..4 promptly.
             const allSorted = allSnapshots.slice().sort((a,b)=>a.number-b.number);
-            const batchSize = 120;
-            const batchCount = Math.max(1,Math.ceil(allSorted.length/batchSize));
+            const batchCount = allSorted.length <= 120 ? 1 : 5;
             const requestedBatch = process.env.VERISENTRY_BATCH_INDEX || 'auto';
             if (!/^(auto|0|[1-9][0-9]*)$/.test(requestedBatch))
               throw Error('VeriSentry refuses malformed batch index');
@@ -104,14 +105,22 @@ jobs:
               : Number(requestedBatch);
             if (!Number.isSafeInteger(batchIndex) || batchIndex < 0 || batchIndex >= batchCount)
               throw Error('VeriSentry batch index is out of range');
-            const snapshots = allSorted.slice(batchIndex*batchSize,(batchIndex+1)*batchSize);
+            const snapshots = allSorted.filter(pr => pr.number % batchCount === batchIndex);
             core.info(`VeriSentry current-main PR batch ${batchIndex+1}/${batchCount}; `+
               `${snapshots.length} selected of ${allSorted.length} open main PRs`);
             // Preflight any synthetic test-merge SHA collisions even when the
             // two colliding PRs fall into different daily batches.
             const hintCounts = new Map();
-            for (const item of allSnapshots) if (isSha(item.testMergeHint))
-              hintCounts.set(item.testMergeHint,(hintCounts.get(item.testMergeHint)||0)+1);
+            const parentPairCounts = new Map();
+            for (const item of allSnapshots) {
+              if (isSha(item.testMergeHint))
+                hintCounts.set(item.testMergeHint,(hintCounts.get(item.testMergeHint)||0)+1);
+              // A Git merge commit SHA contains its parent HEAD and BASE.
+              // Deny duplicate parent pairs globally, even if another PR's
+              // list-summary merge_commit_sha has not yet been calculated.
+              const pair = item.base + ':' + item.head;
+              parentPairCounts.set(pair,(parentPairCounts.get(pair)||0)+1);
+            }
             // This policy block MUST remain byte-identical to the automatic
             // protected-main ci-provenance.yml verifier; Bun tests enforce it.
             // __PROTECTED_PATH_POLICY_BEGIN__
@@ -290,7 +299,8 @@ jobs:
                   continue;
                 }
                 if (mergeCounts.get(verdict.merge) !== 1 ||
-                    (hintCounts.get(verdict.merge) || 0) > 1) {
+                    (hintCounts.get(verdict.merge) || 0) > 1 ||
+                    (parentPairCounts.get(verdict.base+':'+verdict.head)||0) > 1) {
                   counts.errors++;
                   core.warning('Two PRs share the same synthetic merge SHA; requires manual containment');
                   continue;

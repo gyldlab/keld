@@ -14,7 +14,7 @@ final deployment qualification. No new server or private repository is needed.
 | GitHub Actions App (untrusted for this gate) | App ID **15368** |
 | Expected required check | `KELD VeriSentry` from **App ID 5550363**, not any matching check name |
 | Credential | Encrypted `VERISENTRY_APP_PRIVATE_KEY` in `verisentry-publisher` GitHub Actions environment, branch rule **main** |
-| Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate**, protected-main `schedule`/trusted `workflow_dispatch` workflow |
+| Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate** protected-main `push`/`schedule`/trusted `workflow_dispatch` workflow |
 | Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **disabled until final release** |
 | Native bypass actors | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
 
@@ -80,30 +80,36 @@ SHA is a security-review error, not a shared PASS across PR identities.
 Existing same-source App checks younger than four days are reused. Older
 checks are renewed from fresh evidence before GitHub's seven-day validity
 boundary. As GitHub may return transient `mergeable: null`, the workflow
-re-fetches the same PR up to six times without inventing a source-head PASS.
+re-fetches the same PR up to three times (maximum 1.5 seconds explicit
+wait) without inventing a source-head PASS.
 Unresolved mergeability or missing Compare Commits evidence remains an error
 for retry, never a sticky App FAIL against a benign PR. A prior App FAIL is **not silently upgraded** to PASS by a periodic
 refresh; a fresh PR event or authorized review is required. Every new check
 is verified as App ID 5550363 on the current test-merge SHA.
 
-The rollout's first dry-run over **56 open `main`-targeting PRs** on 31 Oct
-2026 (not all 152 open PRs across other base branches) classified **35 PASS
-and 21 DENY**, using the exact trusted production verifier source, with no App
-key loaded and no writes. After this refresh workflow is reviewed/merged,
-run it once manually and verify signed-check coverage on open mergeable PRs
-**before** activating the production ruleset. The main-branch push trigger handles base SHA changes promptly; the daily
-schedule renews older results without bulk PR-body edits. For large public
-repositories, each trusted run processes a bounded **120 PRs**, ordered by PR
-number, and rotates batches each UTC day. If there are 501 open main PRs,
-the five batches cover them within five daily cycles, not a global failure.
-An authorized Monish/Amisha can manually dispatch each `batch_index` from
-0 through `ceil(open_main_PRs/120)-1` for initial full backfill. Six-monthly
-capacity review is appropriate if main-targeting PRs approach 840, where
-120 daily per-batch throughput would exceed a seven-day refresh window. The
-workflow has a 30-minute timeout and limits GitHub's asynchronous mergeability
-polling to three attempts (at most 1.5 seconds of explicit waits per PR). The GitHub scheduled
-job may occasionally be delayed, so maintainers can dispatch a trusted refresh
-on `main` if a PR's required check has gone stale.
+The first trusted-source dry-run over **56 open `main`-targeting PRs** on
+31 October 2026 (not all 152 open PRs across other base branches) classified
+**35 PASS and 21 DENY**. It loaded no App key and wrote no checks. Before
+activation, run this workflow on protected `main` and confirm signed-check
+coverage for current mergeable PRs. The `push` trigger refreshes base SHA
+changes, and the daily schedule renews aging results without PR-body edits.
+
+To defeat public PR open/close churn, batching is **stable by immutable PR
+number**, never by a changing rank or bucket count. With up to 120 open main
+PRs, every run processes all. Above 120, exactly five buckets are used:
+`PR.number % 5`. On each UTC day, the scheduler selects
+`floor(UTC_epoch_days) % 5`, so a given PR cannot be starved by adding or
+closing other PRs. A trusted Monish/Amisha `workflow_dispatch` can provide
+`batch_index=0` through `4` to backfill all five buckets without waiting.
+For example, **501 PRs** give about **100 per bucket**; a 20-day adversarial
+480/481 population-churn test showed PR #480 still refreshed every five days.
+A cross-bucket duplicate head/base parent pair is denied even if another
+PR's synthetic merge hint is temporarily `null`. The 30-minute GitHub-hosted
+job timeout and bounded three mergeability attempts keep normal work within
+one run. Monitor capacity when open main PRs approach **600**, especially if
+many IDs land in one modulo bucket, and adjust scheduling well before a
+seven-day check expires. GitHub cron may be delayed or dropped; use the
+trusted manual dispatch for immediate recovery, not a PR-authored fake check.
 
 ## Real hosted proof receipts
 
@@ -138,8 +144,8 @@ hosted test cases.
 
 **Use the native ruleset's audited PR-only bypass**, not an additional
 secret-owning manual workflow. Rule [26261486](https://github.com/gyldlab/keld/rules/26261486)
-allows exactly `0monish` and `amishabenramani` to request an authorized bypass
-of that **one VeriSentry required status rule when merging a PR**. Ordinary
+allows exactly `0monish` and `amishabenramani` to request an audited PR-only
+ruleset bypass for a legitimate protected-CI maintenance merge. Ordinary
 contributors cannot do so; no bypass applies to direct pushes. Existing
 branch review, CODEOWNERS and other required CI rules still apply. **Warning:**
 GitHub's PR-only bypass is an exceptional admin-merge operation and can elect
@@ -163,8 +169,12 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
 ## Before activating the required rule on main
 
 1. Preserve the current main protection snapshot and ruleset definition.
-   Check the two actor IDs, `bypass_mode: pull_request`, required context and
-   exact `integration_id: 5550363`. Ensure enforcement is still `disabled`.
+   Require the **complete** `bypass_actors` array to contain **exactly** two
+   `User` entries: `0monish` (ID `155816356`) and `amishabenramani`
+   (ID `130687844`), both with `bypass_mode: pull_request`. Reject every
+   additional actor, actor type or bypass mode. Confirm required context
+   `KELD VeriSentry` and `integration_id: 5550363` exactly, and check
+   enforcement remains `disabled` until qualification.
 2. Existing open PRs predate the workflow and may have no VeriSentry check.
    Run the protected-main scheduled/manual refresh **once** after its exact
    source and security tests land. Backfill only from trusted default-main

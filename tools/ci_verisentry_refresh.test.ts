@@ -22,6 +22,7 @@ const execute = new AsyncFunction(
   "core",
   "process",
   "setTimeout",
+  "Date",
   body,
 );
 const base = "b".repeat(40);
@@ -65,6 +66,7 @@ function scenario(
     triggeringActor?: string;
     failedCompare?: boolean;
     batchIndex?: string;
+    clockMillis?: number;
   } = {},
 ) {
   const basePR = {
@@ -139,14 +141,16 @@ function scenario(
         compareCommits: async (args: Record<string, unknown>) => {
           compareReads++;
           if (options.failedCompare) throw Error("GitHub compare HTTP 403");
-          expect(args).toEqual({
+          expect(args).toMatchObject({
             owner: "gyldlab",
             repo: "keld",
             base,
-            head,
             page: 1,
             per_page: 100,
           });
+          expect(
+            typeof args.head === "string" && /^[a-f0-9]{40}$/.test(args.head),
+          ).toBe(true);
           return {
             data: {
               base_commit: { sha: options.compareBase ?? base },
@@ -223,7 +227,10 @@ function scenario(
   };
   return {
     run: () =>
-      execute(github, context, core, process, (done: () => void) => done()),
+      execute(github, context, core, process, (done: () => void) => done(), {
+        now: () => options.clockMillis ?? Date.now(),
+        parse: Date.parse,
+      }),
     statuses,
     messages,
     warnings,
@@ -606,7 +613,7 @@ function largePRs(count: number, pending = 0): Record<string, any>[] {
   return Array.from({ length: count }, (_, i) => ({
     number: 1000 + i,
     state: "open",
-    head: { sha: head },
+    head: { sha: (i + 10000).toString(16).padStart(40, "0") },
     base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
     changed_files: 1,
     mergeable: i < pending ? null : true,
@@ -619,13 +626,13 @@ test("501 open main PRs cannot globally abort: authorized batches 0 and 4 both m
   const all = largePRs(501);
   const first = scenario({ prs: all, batchIndex: "0" });
   await expect(first.run()).resolves.toBeUndefined();
-  expect(first.statuses).toHaveLength(120);
-  expect(first.getReads()).toBe(120 * 4);
+  expect(first.statuses).toHaveLength(101);
+  expect(first.getReads()).toBe(101 * 4);
   expect(first.failures).toHaveLength(0);
   expect(first.messages.join(" ")).toContain("batch 1/5");
   const last = scenario({ prs: all, batchIndex: "4" });
   await expect(last.run()).resolves.toBeUndefined();
-  expect(last.statuses).toHaveLength(21);
+  expect(last.statuses).toHaveLength(100);
   expect(last.failures).toHaveLength(0);
   expect(last.messages.join(" ")).toContain("batch 5/5");
 });
@@ -649,3 +656,52 @@ test.each(["-1", "999", "ABC", "4.2", "1e5", "01"])(
     expect(s.getReads()).toBe(0);
   },
 );
+
+test("20 days of attacker-controlled 480/481 open PR churn cannot starve stable PR #480", async () => {
+  const start = Date.UTC(2026, 10, 7, 2);
+  const refreshedOn: number[] = [];
+  for (let day = 0; day < 20; day++) {
+    const count = day % 2 === 0 ? 480 : 481;
+    const prs = Array.from({ length: count }, (_, i) => ({
+      number: i + 1,
+      state: "open",
+      head: { sha: (i + 10000).toString(16).padStart(40, "0") },
+      base: { ref: "main", sha: base, repo: { full_name: "gyldlab/keld" } },
+      changed_files: 1,
+      mergeable: true,
+      merge_commit_sha: (i + 1).toString(16).padStart(40, "0"),
+    }));
+    const s = scenario({ prs, clockMillis: start + day * 86400000 });
+    await expect(s.run()).resolves.toBeUndefined();
+    expect(s.failures).toHaveLength(0);
+    if (
+      s.statuses.some(
+        (c) => c.details_url === "https://github.com/gyldlab/keld/pull/480",
+      )
+    )
+      refreshedOn.push(day);
+  }
+  expect(refreshedOn.length).toBeGreaterThanOrEqual(3);
+  for (let i = 1; i < refreshedOn.length; i++)
+    expect(refreshedOn[i] - refreshedOn[i - 1]).toBeLessThanOrEqual(5);
+});
+
+test("cross-batch duplicate parent commits are denied even if other PR list merge SHA is null", async () => {
+  const all = largePRs(121);
+  // PR #1000 is bucket0; PR #1001 is bucket1 and may show a null merge hint.
+  // Git identical HEAD and BASE parent pair could otherwise inherit a same
+  // App check across distinct PR identities and bypass the source binding.
+  all[1].head.sha = all[0].head.sha;
+  all[1].merge_commit_sha = null;
+  const s = scenario({ prs: all, batchIndex: "0" });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.failures).toHaveLength(1);
+  expect(s.warnings.join(" ")).toContain("same synthetic merge SHA");
+  expect(
+    s.statuses.some(
+      (check) =>
+        check.details_url === "https://github.com/gyldlab/keld/pull/1000",
+    ),
+  ).toBe(false);
+  expect(s.statuses.length).toBeGreaterThan(0);
+});
