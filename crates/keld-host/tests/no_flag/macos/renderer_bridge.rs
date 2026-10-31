@@ -277,9 +277,9 @@ pub(crate) fn bundle_public_api_entry(
     fs::remove_file(build).expect("remove bundle-only script");
 }
 
-/// Copies the ordinary package layout without bundling or transport aliases.
-/// Every source file keeps its bytes; the late import therefore owns a distinct
-/// stamped transport namespace from the optional Host-preloaded sidecar.
+/// Stages one ordinary source-package graph without bundling or copying KIPC
+/// a second time. The API's declared dependency resolves to the same staged
+/// KIPC package, distinct from the optional Host-preloaded transport sidecar.
 pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
     fn copy_directory(source: &Path, destination: &Path) {
         fs::create_dir_all(destination).expect("package source destination");
@@ -294,11 +294,41 @@ pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
         }
     }
     for package in ["api", "electron", "kipc"] {
-        copy_directory(
-            &repo.join(format!("packages/@keld/{package}/src")),
-            &destination.join(format!("@keld/{package}/src")),
-        );
+        let original = repo.join(format!("packages/@keld/{package}"));
+        let staged = destination.join(format!("@keld/{package}"));
+        copy_directory(&original.join("src"), &staged.join("src"));
+        fs::copy(original.join("package.json"), staged.join("package.json"))
+            .expect("byte-identical package manifest");
     }
+    let api: serde_json::Value = serde_json::from_slice(
+        &fs::read(destination.join("@keld/api/package.json")).expect("staged API manifest"),
+    )
+    .expect("actual API manifest JSON");
+    let kipc: serde_json::Value = serde_json::from_slice(
+        &fs::read(destination.join("@keld/kipc/package.json")).expect("staged KIPC manifest"),
+    )
+    .expect("actual KIPC manifest JSON");
+    assert_eq!(
+        api["dependencies"]["@keld/kipc"], "link:../kipc",
+        "the staged dependency must be the actual local SDK package edge"
+    );
+    assert_eq!(
+        kipc["name"], "@keld/kipc",
+        "the declared package edge must select canonical KIPC"
+    );
+    // The real package manager supplies this local, declared edge. The late
+    // source-copy fixture must do the same rather than silently depend on the
+    // caller's ambient node_modules or create another transport instance.
+    let link_parent = destination.join("@keld/api/node_modules/@keld");
+    fs::create_dir_all(&link_parent).expect("API dependency parent");
+    let linked_kipc = link_parent.join("kipc");
+    std::os::unix::fs::symlink("../../../kipc", &linked_kipc)
+        .expect("one API-to-staged-KIPC package link");
+    assert_eq!(
+        fs::canonicalize(&linked_kipc).expect("resolved API KIPC package"),
+        fs::canonicalize(destination.join("@keld/kipc")).expect("staged KIPC package"),
+        "API must reuse its one staged KIPC package"
+    );
 }
 
 /// Bundles an `@keld/api` entry with the kipc transport left external as
@@ -647,4 +677,71 @@ fn pointer_failure_evidence_fixture_process() {
         Vec::new()
     });
     let _ = finish_renderer_observation(cleanup, host_pid, Some(&click), observation);
+}
+
+#[test]
+fn staged_source_packages_resolve_one_canonical_kipc_and_refuse_a_missing_edge() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let root = tempfile::tempdir().expect("isolated staged package graph");
+    copy_public_package_sources(repo, root.path());
+    let api = root.path().join("@keld/api");
+    let probe = || {
+        let child = Command::new("bun")
+            .args(["--no-install", "--eval", r#"
+import { strict as assert } from "node:assert";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import * as declared from "@keld/kipc";
+import * as sibling from "../kipc/src/transport.ts";
+import * as apiLink from "./src/link.ts";
+assert.equal(realpathSync(fileURLToPath(import.meta.resolve("@keld/kipc"))), realpathSync("../kipc/src/transport.ts"));
+assert.equal(declared, sibling);
+assert.equal(declared.WorkerLink, sibling.WorkerLink);
+for (const name of ["FrameReader", "DrainSignal", "RECEIVE_POLICIES", "isCallError"])
+  assert.equal(apiLink[name], declared[name], "staged API must consume canonical KIPC");
+console.log("CANONICAL_STAGED_KIPC");
+"#])
+            .current_dir(&api)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("execute actual staged package imports");
+        crate::support::control::wait_child_output(child, EVENT_DEADLINE)
+    };
+    let intact = probe();
+    assert!(intact.status.success(), "staged import failed: {intact:?}");
+    assert_eq!(intact.stdout, b"CANONICAL_STAGED_KIPC\n");
+    for package in ["api", "electron", "kipc"] {
+        assert_eq!(
+            fs::read(repo.join(format!("packages/@keld/{package}/package.json")))
+                .expect("original manifest"),
+            fs::read(root.path().join(format!("@keld/{package}/package.json")))
+                .expect("staged manifest"),
+            "staging must preserve the actual source manifest"
+        );
+    }
+    // The sole mutation removes the declared dependency, leaving actual source
+    // files intact. No ambient package or alternate transport may hide it.
+    let edge = api.join("node_modules/@keld/kipc");
+    let removed = api.join("node_modules/@keld/kipc-removed");
+    fs::rename(&edge, &removed).expect("remove only the declared package link");
+    let missing = probe();
+    assert!(
+        !missing.status.success(),
+        "missing package edge was accepted"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("@keld/kipc"),
+        "missing edge failed for an unrelated reason: {missing:?}"
+    );
+    fs::rename(&removed, &edge).expect("restore original package link");
+    let restored = probe();
+    assert!(
+        restored.status.success(),
+        "restored graph failed: {restored:?}"
+    );
+    assert_eq!(restored.stdout, b"CANONICAL_STAGED_KIPC\n");
 }

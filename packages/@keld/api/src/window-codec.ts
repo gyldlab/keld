@@ -12,7 +12,7 @@ import {
   encodeU64Varint,
   encodeVarint,
   kipcError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 /** Both host-minted identity halves, compared without numeric coercion. */
 export interface WindowRef {

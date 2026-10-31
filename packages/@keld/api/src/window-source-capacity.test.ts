@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { linkError } from "../../kipc/src/transport.ts";
+import { linkError } from "@keld/kipc";
 import { encodeWindowEvent, type WindowEvent } from "./window-codec.ts";
 import {
   PROPOSED_MAX_CUMULATIVE_WINDOW_IDS,
