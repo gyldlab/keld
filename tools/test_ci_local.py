@@ -980,6 +980,7 @@ class ProductionConsumerTests(unittest.TestCase):
             "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
             "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
             "crates/keld-host/tests/no_flag/macos/facade_window.rs",
+            "crates/keld-host/tests/no_flag/macos/multifile_staging/fixture.rs",
         )
         # Model main before the facade tests land, even after this test is
         # later run in a tree that already contains those product files.
