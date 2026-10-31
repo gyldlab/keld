@@ -14,8 +14,7 @@ use crate::support::renderer::Beacon;
 use lifecycle::BoundRole;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
-use std::os::unix::process::CommandExt as _;
-use std::process::{Command, Stdio};
+use std::os::unix::net::UnixListener;
 
 fn record_stage(label: &str, stage: &keld_cli::boot::DevBootStage) {
     let descriptor =
@@ -46,13 +45,13 @@ fn shipping_stage_missing_sibling_has_an_explicit_injected_byte_counterweight() 
         "normal producer must execute the declared entry bytes"
     );
     assert!(!stage.root().join("src/sibling.ts").exists());
-    let mut host = Command::new(stage.host())
-        .process_group(0)
-        .current_dir(stage.root())
-        .env("KELD_DEV_LEASE", "stdin-v1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let control_path = missing.root.path().join("bound.sock");
+    let listener =
+        UnixListener::bind(&control_path).expect("same valid fixture control as counterweight");
+    listener
+        .set_nonblocking(true)
+        .expect("bounded control observation");
+    let mut host = lifecycle::host_command(&stage, &control_path)
         .spawn()
         .expect("shipping no-flag Host with normal missing-sibling stage");
     let lease = host.stdin.take().expect("retain dev lease through exit");
@@ -80,6 +79,10 @@ fn shipping_stage_missing_sibling_has_an_explicit_injected_byte_counterweight() 
         "Host left app-link locator"
     );
     assert!(!stage.root().exists(), "failed Host left private stage");
+    let absent_control = listener
+        .accept()
+        .expect_err("failed role must not report authenticated fixture effects");
+    assert_eq!(absent_control.kind(), std::io::ErrorKind::WouldBlock);
 
     let mut present = fixture::project("gh1037-sibling-counterweight");
     present.entry_source.clone_from(&missing.entry_source);

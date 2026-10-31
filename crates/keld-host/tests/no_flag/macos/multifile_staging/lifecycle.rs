@@ -8,6 +8,7 @@ use crate::support::product::ProductFixture;
 use std::io::{BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
+use std::path::Path;
 use std::process::{ChildStdin, Command, Stdio};
 use std::time::Instant;
 
@@ -21,6 +22,23 @@ pub(super) struct BoundRole {
     pub(super) bun_pid: u32,
 }
 
+/// Both sibling arms use this one command shape. Fresh stage/control paths
+/// differ, but no environment or lifecycle policy is added only to a control.
+pub(super) fn host_command(stage: &keld_cli::boot::DevBootStage, control_path: &Path) -> Command {
+    let mut command = Command::new(stage.host());
+    command
+        .process_group(0)
+        .current_dir(stage.root())
+        .env("KELD_DEV_LEASE", "stdin-v1")
+        .env("KELD_T1B_CONTROL", control_path)
+        .env("KELD_T4_SKIP_DESCENDANT", "1")
+        .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
 impl BoundRole {
     pub(super) fn launch(fixture: &ProductFixture, stage: &keld_cli::boot::DevBootStage) -> Self {
         let control_path = fixture.root.path().join("bound.sock");
@@ -28,16 +46,7 @@ impl BoundRole {
         listener
             .set_nonblocking(true)
             .expect("bounded fixture accept");
-        let child = Command::new(stage.host())
-            .process_group(0)
-            .current_dir(stage.root())
-            .env("KELD_DEV_LEASE", "stdin-v1")
-            .env("KELD_T1B_CONTROL", &control_path)
-            .env("KELD_T4_SKIP_DESCENDANT", "1")
-            .env("KELD_T2_EXIT_ON_LINK_EOF", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let child = host_command(stage, &control_path)
             .spawn()
             .expect("shipping no-flag Host");
         let mut cleanup = ShippingLaunchCleanup::new(child);
