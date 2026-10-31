@@ -1,6 +1,6 @@
 # KELD VeriSentry — source-authenticated CI admission rollout
 
-**Status: reviewed source-only bootstrap pending exact-head hosted CI; App-required merge admission remains NO-GO until live hostile probes and CI-maintenance acceptance pass.**
+**Status: source-only verifier/publisher merged on main (PR #1253); App-required enforcement remains OFF while manual-maintenance workflow and recovery are separately tested.**
 
 This document is for the KEL-169 reviewer and release owner. It is not permission
 for an agent to install a new credential, relax protections, or merge PR #1253.
@@ -44,16 +44,47 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
    the publisher refuses to create a stale check. Job failure alone is not sufficient; the App's check is the
    required source for merge admission.
 
-## CI authority maintenance remains fail-closed
+## CI authority maintenance: default deny + trusted manual exception
 
-Changes to `.github/`, `tools/` and other CI-authority inputs are **rejected**.
-Monish/Amisha's intentionally authorized administrative merge-bypass rights
-remain unchanged, but they are *not* converted into an automated provenance
-PASS. For a secure self-service maintenance exception, first implement and
-verify a revocation-aware trusted event channel: submitting, editing or
-dismissing a maintainer review must invalidate any previously published App
-PASS for the affected PR test-merge commit. A static approval lookup alone is
-not sufficient. Do not claim CI-authority updates are automatically admitted.
+The **automatic** verifier rejects changes to `.github/`, `tools/`, build
+configs and directly/transitively executed CI oracles. Legitimate maintenance
+of those files must not become impossible after the App status is required.
+
+Stage-2 `.github/workflows/ci-verisentry-maintenance.yml` adds a **manual**
+GitHub `workflow_dispatch` exception without introducing a server. It executes
+only protected-default-branch code (`--ref main`), never checks out PR code, and
+may issue an App-authenticated manual authorization **only** if all of these
+are true: the authenticated first-attempt trigger actor is Monish or Amisha
+(stable GitHub ID checked, including rerun actor); an independent trusted
+reviewer, different from the PR author, has approved the exact current head;
+and explicit PR number, base SHA, head SHA and test-merge SHA all match GitHub's
+live state. The latest-push and CODEOWNERS GitHub branch rules remain active.
+
+For a reviewed, current, legitimate protected CI change the maintainer may run:
+
+```sh
+gh workflow run ci-verisentry-maintenance.yml --repo gyldlab/keld --ref main \
+  -f pull_request=1234 -f expected_base=BASE_40HEX \
+  -f expected_head=HEAD_40HEX -f expected_merge=MERGE_40HEX \
+  -f decision=approve
+```
+
+Values must come from freshly inspected GitHub PR metadata, not an arbitrary
+PR comment. This is an auditable **independent release decision**, not a
+mutable review receipt: the App check records the authenticated actor, PR,
+all three SHAs and the Actions run ID. The same trusted workflow with
+`decision=revoke` overwrites the matching App check with **failure**, even
+if the PR has since closed or moved. It refuses an older decision overwriting
+a newer one, a rerun by another actor, a stale input or a different PR's
+maintenance marker. This manual override is a narrow escape route, not a
+blanket acceptance of candidate-owned CI.
+
+GitHub review dismissal still blocks normal merging through native branch
+protection; maintenance authorization is *not automatically revoked* on review
+dismissal. If a maintainer rescinds an exceptional release decision, they must
+run `revoke` promptly. Prove approve/revoke and check-source enforcement in
+real hosted probes before making VeriSentry required. Monish/Amisha's
+intentionally delegated review-bypass allowances remain unchanged.
 
 ## Credential isolation and post-test rotation
 
@@ -92,15 +123,17 @@ required checks. The new App check is NOT required yet. This deploys trusted
 base-owned verifier code so real hostile PR tests become possible; it is not
 production security admission. Do not bypass failed source checks.
 
-**Stage 2 — active admission:** Execute the full live matrix below. Before
-making the App check required, establish and test a safe authorized
-CI-maintenance path; simply rejecting all future CI config changes would
-otherwise lock out legitimate maintenance. Only enable required status once
+**Stage 2 — active admission:** Execute the full live matrix below, including
+an exact-head approved maintenance exception, denied self/replayed dispatches,
+subsequent revocation and stale App-check exclusion. Do not require this
+check until the manual trusted exception is proven live: otherwise future CI
+maintenance can be locked out. Only enable required status once
 both hostile tests and the maintenance/recovery protocol pass.
 
 ## Mandatory live qualification BEFORE enforcing a required check
 
-- Confirm the new workflow is present on protected `main` and its
+- Confirm both the automatic and the separately maintained manual-decision
+  workflows are present on protected `main` and the automatic workflow's
   `pull_request_target` event policy explicitly allows **only this workflow**.
 - Verify job source is the default branch, `GITHUB_REF` is `main`, and the
   environment's main-only restriction is effective for fork PRs.
@@ -109,6 +142,11 @@ both hostile tests and the maintenance/recovery protocol pass.
   299/300 file boundary. Confirm App check `success` only for truly admitted
   PRs and `failure` or **absent** for every hostile case. A skipped/neutral
   App check must never satisfy the required merge gate.
+- Exercise a legitimate protected-CI PR with a distinct reviewer: the
+  automatic verifier must FAIL, the audited authorized manual `approve` must
+  update exactly its App check to PASS, and manual `revoke` must return it to
+  FAIL (including after close/head drift). Wrong actors, reruns, stale inputs,
+  missing reviews and duplicate PR receipts must not mint PASS.
 - Check the published check's **App ID 5550363** and `head_sha` (the current test-merge SHA), not only its
   name or green color. Verify no PR-owned job can get the App key or publish
   with that App ID. Verify that CI-authority changes remain rejected without a separately
@@ -139,3 +177,9 @@ rotate environment secret if disclosure is suspected. Existing CI stays intact.
   https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/
 - Workflow execution event allowlist and December 2026 default policy:
   https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution
+
+- Manual `workflow_dispatch` runs originate from the default branch:
+  https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatch
+- Reruns preserve original `github.actor`; verify `github.triggering_actor` and
+  require first attempt for privileged maintenance decisions:
+  https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables
