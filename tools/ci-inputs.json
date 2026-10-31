@@ -290,6 +290,20 @@
       "reader_set": "policy-readers"
     },
     {
+      "owner": "Spec structure gate and self-tests",
+      "outputs": [
+        "local_spec-structure-test",
+        "local_spec-structure"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "*.md"
+      ],
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked Markdown file, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
+      "reader_set": "policy-readers"
+    },
+    {
       "owner": "Product status and self-tests",
       "outputs": [
         "local_product-status-test",
