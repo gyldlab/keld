@@ -1,0 +1,765 @@
+# KEL-169: trusted default-main workflow_run after existing CI on merge_group.
+# No new candidate-owned marker; no checkout or candidate execution.
+# Only restricted environment publisher may obtain App key.
+name: KELD VeriSentry queue publisher
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  admit:
+    name: Verify live singleton queue candidate
+    if: ${{ github.event.action == 'completed' && github.event.workflow_run.event == 'merge_group' && github.event.workflow_run.workflow_id == 309460818 && github.event.workflow_run.conclusion == 'success' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    outputs:
+      pr_number: ${{ steps.verify.outputs.pr_number }}
+      base_sha: ${{ steps.verify.outputs.base_sha }}
+      head_sha: ${{ steps.verify.outputs.head_sha }}
+      staged_sha: ${{ steps.verify.outputs.staged_sha }}
+      queue_ref: ${{ steps.verify.outputs.queue_ref }}
+      entry_id: ${{ steps.verify.outputs.entry_id }}
+      ci_run_id: ${{ steps.verify.outputs.ci_run_id }}
+      ci_job_id: ${{ steps.verify.outputs.ci_job_id }}
+    steps:
+      - name: Verify signed-in GitHub event, queue provenance and complete protected-file evidence
+        id: verify
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        with:
+          script: |
+            // Trusted default-main workflow_run source. Never fetch, checkout or execute PR code.
+            const owner = 'gyldlab';
+            const repo = 'keld';
+            const repoId = 1258884903;
+            const mainRef = 'refs/heads/main';
+            const ciPath = '.github/workflows/ci.yml';
+            const ciWorkflowId = 309460818;
+            const publisherRef = 'gyldlab/keld/.github/workflows/ci-verisentry-queue-publisher.yml@refs/heads/main';
+            const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+            const eventRun = context.payload?.workflow_run;
+            if (context.repo.owner !== owner || context.repo.repo !== repo ||
+                context.eventName !== 'workflow_run' || context.payload?.action !== 'completed' ||
+                context.ref !== mainRef || !isSha(context.sha) ||
+                context.sha !== process.env.GITHUB_SHA ||
+                process.env.GITHUB_RUN_ATTEMPT !== '1' ||
+                process.env.GITHUB_WORKFLOW_REF !== publisherRef ||
+                !Number.isSafeInteger(eventRun?.id) || eventRun.id < 1) {
+              throw Error('Queue verifier requires fresh protected-main workflow_run event');
+            }
+            const liveMain = async () => (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            const main = await liveMain();
+            if (!isSha(main) || main !== context.sha)
+              throw Error('Queue verifier refuses superseded protected-main source');
+            const ci = (await github.rest.actions.getWorkflow({owner,repo,workflow_id:ciWorkflowId})).data;
+            if (ci?.id !== ciWorkflowId || ci.path !== ciPath ||
+                ci.name !== 'CI' || ci.state !== 'active') {
+              throw Error('Queue CI workflow identity changed');
+            }
+            // The CI workflow is loaded from the staged merge ref, so authenticate its
+            // exact Git blob against the current protected default branch.
+            // This protects the App publisher; CI itself executes candidate tests.
+            const ciBlob = async ref => {
+              const file = (await github.rest.repos.getContent({owner,repo,path:ciPath,ref})).data;
+              if (!file || Array.isArray(file) || file.type !== 'file' ||
+                  file.path !== ciPath || !isSha(file.sha) ||
+                  !Number.isSafeInteger(file.size) || file.size < 1024 || file.size > 262144)
+                throw Error('Queue CI source is missing or malformed');
+              return file.sha;
+            };
+            const trustedCiSha = await ciBlob(main);
+            const run = (await github.rest.actions.getWorkflowRun({owner,repo,run_id:eventRun.id})).data;
+            if (run?.id !== eventRun.id || run.workflow_id !== ciWorkflowId ||
+                run.name !== ci.name || run.event !== 'merge_group' ||
+                run.status !== 'completed' || run.conclusion !== 'success' ||
+                run.run_attempt !== 1 || run.repository?.id !== repoId ||
+                run.head_repository?.id !== repoId || !isSha(run.head_sha) ||
+                run.path !== ciPath) {
+              throw Error('Queue run is not the authenticated first-attempt CI workflow');
+            }
+            const ciStarted = Date.parse(run.created_at || '');
+            const ciFinished = Date.parse(run.updated_at || '');
+            const now = Date.now();
+            // Refuse old workflow_run completions and long-delayed privileged jobs.
+            if (!Number.isFinite(ciStarted) || !Number.isFinite(ciFinished) ||
+                ciStarted > now + 120000 || ciFinished > now + 120000 ||
+                ciStarted > ciFinished || now - ciStarted > 3*60*60*1000 ||
+                now - ciFinished > 20*60*1000) {
+              throw Error('Queue CI run is stale, future-dated or malformed');
+            }
+            if (eventRun.workflow_id !== run.workflow_id || eventRun.head_sha !== run.head_sha ||
+                eventRun.event !== run.event || eventRun.run_attempt !== run.run_attempt ||
+                eventRun.conclusion !== run.conclusion || eventRun.head_branch !== run.head_branch) {
+              throw Error('Queue run event differs from authoritative REST snapshot');
+            }
+            const match = /^gh-readonly-queue\/main\/pr-([1-9][0-9]*)-([a-f0-9]{40})$/.exec(run.head_branch || '');
+            if (!match || !Number.isSafeInteger(Number(match[1])) || match[2] !== main)
+              throw Error('Queue branch is not a current GitHub-generated single-PR main ref');
+            const number = Number(match[1]);
+            const stage = run.head_sha;
+            if (await ciBlob(stage) !== trustedCiSha)
+              throw Error('Queue CI workflow source changed on staged ref');
+            const refName = 'heads/' + run.head_branch;
+            // Bind the required CI job to this exact workflow_run ID, not to a
+            // same-named job from another run or a candidate-supplied status label.
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,repo,run_id:run.id,filter:'latest',per_page:100,
+            });
+            if (!Array.isArray(jobs) || jobs.length < 1 || jobs.length > 100 ||
+                jobs.some(job => job.head_sha !== stage || job.status !== 'completed') ||
+                jobs.filter(job => job.name === 'CI required').length !== 1) {
+              throw Error('Exact CI run job census is incomplete or malformed');
+            }
+            const requiredJob = jobs.find(job => job.name === 'CI required');
+            if (!Number.isSafeInteger(requiredJob?.id) || requiredJob.id < 1 ||
+                requiredJob.workflow_name !== 'CI' ||
+                requiredJob.conclusion !== 'success') {
+              throw Error('Exact CI required job did not succeed');
+            }
+            const verifySteps = Array.isArray(requiredJob.steps)
+              ? requiredJob.steps.filter(step => step?.name === 'Verify required CI results') : [];
+            if (verifySteps.length !== 1 ||
+                !Number.isSafeInteger(verifySteps[0].number) || verifySteps[0].number < 1 ||
+                verifySteps[0].status !== 'completed' ||
+                verifySteps[0].conclusion !== 'success') {
+              throw Error('Exact CI required verification step did not complete successfully');
+            }
+            const queueRef = (await github.rest.git.getRef({owner,repo,ref:refName})).data;
+            if (queueRef?.ref !== 'refs/'+refName || queueRef.object?.sha !== stage)
+              throw Error('Queue ref no longer points to triggering staged commit');
+            const commit = (await github.rest.repos.getCommit({owner,repo,ref:stage})).data;
+            if (commit?.sha !== stage || !Array.isArray(commit.parents) ||
+                commit.parents.length !== 2 ||
+                commit.parents[0]?.sha !== main || !isSha(commit.commit?.tree?.sha))
+              throw Error('KELD queue stage must be an exact two-parent merge of current main');
+            const queueResponse = await github.graphql(`query($owner:String!, $repo:String!) {
+              repository(owner:$owner,name:$repo) {
+                mergeQueue(branch:"main") {
+                  configuration { maximumEntriesToMerge minimumEntriesToMerge }
+                  entries(first:100) {
+                    totalCount pageInfo { hasNextPage }
+                    nodes {
+                      id state baseCommit { oid } headCommit { oid }
+                      pullRequest {
+                        id number state isDraft headRefOid baseRefOid baseRefName
+                        baseRepository { nameWithOwner }
+                        mergeQueueEntry { id }
+                      }
+                    }
+                  }
+                }
+              }
+            }`, {owner,repo});
+            const queue = queueResponse?.repository?.mergeQueue;
+            const entries = queue?.entries;
+            if ((queue?.configuration && (queue.configuration.maximumEntriesToMerge !== 1 ||
+                   queue.configuration.minimumEntriesToMerge !== 1)) ||
+                !Number.isSafeInteger(entries?.totalCount) || entries.totalCount !== 1 ||
+                entries.pageInfo?.hasNextPage !== false ||
+                !Array.isArray(entries.nodes) || entries.nodes.length !== 1) {
+              throw Error('Queue configuration or live entry census is incomplete');
+            }
+            const matches = entries.nodes.filter(entry => entry?.headCommit?.oid === stage);
+            if (matches.length !== 1)
+              throw Error('Staged commit lacks one unique live queue entry');
+            const entry = matches[0];
+            const candidate = entry.pullRequest;
+            if (!entry.id || !candidate?.id || candidate.mergeQueueEntry?.id !== entry.id ||
+                !['AWAITING_CHECKS','QUEUED','LOCKED','MERGEABLE'].includes(entry.state) ||
+                entry.baseCommit?.oid !== main || candidate.number !== number ||
+                candidate.state !== 'OPEN' || candidate.isDraft !== false ||
+                candidate.baseRefName !== 'main' || candidate.baseRefOid !== main ||
+                candidate.baseRepository?.nameWithOwner !== 'gyldlab/keld' ||
+                !isSha(candidate.headRefOid)) {
+              throw Error('Live queue entry is not the singleton current-main PR');
+            }
+            const head = candidate.headRefOid;
+            if (commit.parents[1]?.sha !== head || stage === head)
+              throw Error('Queue merge commit requires distinct stage and exact PR head parent');
+            const getPR = async () => (await github.rest.pulls.get({owner,repo,pull_number:number})).data;
+            const exactPR = pr => pr?.number === number && pr.state === 'open' &&
+              pr.draft === false && pr.base?.ref === 'main' && pr.base?.repo?.full_name === 'gyldlab/keld' &&
+              pr.base?.sha === main && pr.head?.sha === head && pr.node_id === candidate.id;
+            const pr = await getPR();
+            if (!exactPR(pr) || !Number.isSafeInteger(pr.changed_files) ||
+                pr.changed_files < 1 || pr.changed_files >= 300) {
+              throw Error('Queue PR moved, changed identity or has unverifiable changed-file count');
+            }
+            // An entry is considered singleton only if the staged tree equals the
+            // current GitHub-generated standalone merge of this exact PR against main.
+            // This catches preceding/batched PR changes even when queue metadata is partial.
+            if (!isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== stage)
+              throw Error('KELD queue stage is not the current exact PR test-merge SHA');
+            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
+            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
+                preview.parents.length !== 2 || preview.parents[0]?.sha !== main ||
+                preview.parents[1]?.sha !== head ||
+                preview.commit?.tree?.sha !== commit.commit.tree.sha) {
+              throw Error('Staged queue tree differs from singleton PR test-merge tree');
+            }
+            // The staged commit MUST have exactly one parent: main. A legacy
+            // two-parent PR test-merge commit could already have an App SUCCESS from
+            // the original verifier; accepting it as a queue stage would permit replay.
+            // GitHub Compare Commits returns the *net* diff, which can hide a protected
+            // path modified and later reverted. Enumerate every bounded branch commit and
+            // compare each parent edge; this rejects transient authority modifications and
+            // stacked queue histories whose final tree alone looks benign.
+            const allHistoryPaths = new Set();
+            const seenCommits = new Set();
+            const inspectFiles = (files, name) => {
+              if (!Array.isArray(files) || files.length >= 300) {
+                throw Error('Incomplete commit-edge file census: '+name);
+              }
+              for (const file of files) {
+                if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status) ||
+                    (file.status === 'renamed' && !file.previous_filename)) {
+                  throw Error('Malformed commit-edge Git file status or rename');
+                }
+                const paths = [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])];
+                for (const path of paths) {
+                  if (protectedPath(path))
+                    throw Error('Protected CI authority touched in commit history');
+                  allHistoryPaths.add(path);
+                  if (allHistoryPaths.size >= 300)
+                    throw Error('Commit history touches >=300 distinct files');
+                }
+              }
+            };
+            const inspect = async (tip, expectedCount) => {
+              const diff = (await github.rest.repos.compareCommits({owner,repo,base:main,head:tip,page:1,per_page:100})).data;
+              if (diff?.base_commit?.sha !== main || diff?.status !== 'ahead' ||
+                  !Number.isSafeInteger(diff.ahead_by) || diff.ahead_by < 1 ||
+                  diff.behind_by !== 0 || diff.ahead_by !== diff.total_commits ||
+                  !Array.isArray(diff.files) || diff.files.length < 1 || diff.files.length >= 300 ||
+                  (expectedCount !== null && diff.files.length !== expectedCount)) {
+                throw Error('Immutable comparison file census incomplete');
+              }
+              inspectFiles(diff.files, 'net '+tip);
+              const commits = diff.commits;
+              if (!Number.isSafeInteger(diff.total_commits) || diff.total_commits < 1 ||
+                  diff.total_commits > 64 || !Array.isArray(commits) ||
+                  commits.length !== diff.total_commits ||
+                  commits[commits.length-1]?.sha !== tip) {
+                throw Error('History commit enumeration is missing, partial or exceeds 64');
+              }
+              if (tip === stage) {
+                const stagedTop = commits[commits.length-1];
+                if (!Array.isArray(stagedTop?.parents) ||
+                    stagedTop.parents.length !== commit.parents.length ||
+                    stagedTop.parents.some((parent,index) => parent?.sha !== commit.parents[index]?.sha) ||
+                    commits.length < 2) {
+                  throw Error('Staged queue history contradicts authenticated commit parents');
+                }
+              }
+              const localSeen = new Set();
+              for (const c of commits) {
+                if (!isSha(c?.sha) || localSeen.has(c.sha) || !Array.isArray(c.parents) ||
+                    c.parents.length < 1 || c.parents.length > 2 ||
+                    c.parents.some(parent => !isSha(parent?.sha))) {
+                  throw Error('History has malformed or duplicated commit parent evidence');
+                }
+                localSeen.add(c.sha);
+                // A commit can belong to both the PR and staged graph. Immutable edge
+                // proofs remain valid across those two graphs, without duplicate queries.
+                if (seenCommits.has(c.sha)) continue;
+                for (const parent of c.parents) {
+                  const edge = parent.sha === main && c.sha === tip
+                    ? diff
+                    : (await github.rest.repos.compareCommits({
+                        owner,repo,base:parent.sha,head:c.sha,page:1,per_page:100,
+                      })).data;
+                  if (edge?.base_commit?.sha !== parent.sha || edge?.status !== 'ahead' ||
+                      edge?.behind_by !== 0 || !Number.isSafeInteger(edge?.ahead_by) ||
+                      edge.ahead_by !== edge.total_commits || !Array.isArray(edge.files) ||
+                      !Number.isSafeInteger(edge.total_commits) || edge.total_commits < 1 ||
+                      edge.total_commits > 64 || !Array.isArray(edge.commits) ||
+                      edge.commits.length !== edge.total_commits ||
+                      edge.commits[edge.commits.length-1]?.sha !== c.sha) {
+                    throw Error('Commit parent-edge comparison is incomplete or wrong');
+                  }
+                  inspectFiles(edge.files, parent.sha+'..'+c.sha);
+                }
+                seenCommits.add(c.sha);
+              }
+              return {fileCount:diff.files.length,shas:commits.map(c => c.sha)};
+            };
+            // __PROTECTED_PATH_POLICY_BEGIN__
+            const protectedPath = (path) => {
+              if (typeof path !== "string" || !path || path.includes("\\") ||
+                  path.includes("\u0000")) {
+                throw new Error("CI provenance refuses malformed Git paths");
+              }
+              const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
+              // Strict first rollout: scripts and config files executed by
+              // CI are also authority, not merely the workflow YAML itself.
+              // Require a separate trusted-base review for their changes.
+              // Root workspace metadata and formatter/test configs can also
+              // suppress required test discovery without changing ci.yml.
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+                p === "package.json" || p.endsWith("/package.json") ||
+                p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
+                p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
+                p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
+                p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
+                p === "tsconfig.json" || p.endsWith("/tsconfig.json") ||
+                p.startsWith(".github/") ||
+                p === ".ci-reader-proofs" || p.startsWith(".ci-reader-proofs/") ||
+                p.startsWith(".cargo/") ||
+                p.startsWith(".config/") ||
+                p.startsWith("tools/") ||
+                p === "justfile" ||
+                p === "rust-toolchain.toml" ||
+                p === "deny.toml" ||
+                p.endsWith("/deny.toml") ||
+                p.startsWith(".gitleaks") ||
+                p === "clippy.toml" || p.endsWith("/clippy.toml") ||
+                p === ".clippy.toml" || p.endsWith("/.clippy.toml");
+            };
+            // __PROTECTED_PATH_POLICY_END__
+            const prHistory = await inspect(head, pr.changed_files);
+            const stagedHistory = await inspect(stage, null);
+            // KELD requires exact merge-stage ancestry: this PR's commits
+            // plus one distinct generated stage SHA; no stacked predecessor.
+            const prShas = new Set(prHistory.shas);
+            const queueShas = stagedHistory.shas.filter(sha => sha !== stage);
+            if (queueShas.length !== prShas.size ||
+                queueShas.some(sha => !prShas.has(sha))) {
+              throw Error('Queue stage contains commits outside this one PR');
+            }
+            // Required jobs must all be on the same staged SHA and genuinely sourced
+            // from GitHub Actions App 15368. Any missing, stale or duplicate result denies.
+            const existing = await github.paginate(github.rest.checks.listForRef, {
+              owner,repo,ref:stage,app_id:15368,filter:'all',per_page:100,
+            });
+            if (!Array.isArray(existing) || existing.length < 3 || existing.length > 1000)
+              throw Error('Queue required check inventory is incomplete');
+            for (const name of ['CI required','gatekeeper','title-lint']) {
+              const checks = existing.filter(c => c?.name === name);
+              if (checks.length !== 1 || checks[0].app?.id !== 15368 ||
+                  checks[0].head_sha !== stage || checks[0].status !== 'completed' ||
+                  checks[0].conclusion !== 'success' ||
+                  (name === 'CI required' && checks[0].id !== requiredJob.id)) {
+                throw Error('Required Actions check missing, forged, duplicated or failed: '+name);
+              }
+            }
+            if (!exactPR(await getPR()) || (await liveMain()) !== main ||
+                (await github.rest.git.getRef({owner,repo,ref:refName})).data?.object?.sha !== stage) {
+              throw Error('Main, PR or queue ref moved during immutable verification');
+            }
+            core.setOutput('pr_number',String(number));
+            core.setOutput('base_sha',main);
+            core.setOutput('head_sha',head);
+            core.setOutput('staged_sha',stage);
+            core.setOutput('queue_ref',refName);
+            core.setOutput('entry_id',entry.id);
+            core.setOutput('ci_run_id',String(run.id));
+            core.setOutput('ci_job_id',String(requiredJob.id));
+            core.info(`Verified queue PR #${number}, main=${main}, head=${head}, stage=${stage}, `+
+                      `entry=${entry.id} ci-run=${run.id}; PR paths=${prHistory.fileCount} staged paths=${stagedHistory.fileCount}`);
+
+  publish:
+    name: Publish genuine VeriSentry App check on live queue SHA
+    needs: admit
+    if: ${{ needs.admit.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: verisentry-publisher
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Revalidate exact queue binding before minting App token
+        id: fresh
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        env:
+          VERISENTRY_QUEUE_PR: ${{ needs.admit.outputs.pr_number }}
+          VERISENTRY_QUEUE_BASE: ${{ needs.admit.outputs.base_sha }}
+          VERISENTRY_QUEUE_HEAD: ${{ needs.admit.outputs.head_sha }}
+          VERISENTRY_QUEUE_STAGE: ${{ needs.admit.outputs.staged_sha }}
+          VERISENTRY_QUEUE_REF: ${{ needs.admit.outputs.queue_ref }}
+          VERISENTRY_QUEUE_ENTRY: ${{ needs.admit.outputs.entry_id }}
+          VERISENTRY_QUEUE_RUN: ${{ needs.admit.outputs.ci_run_id }}
+          VERISENTRY_QUEUE_CI_JOB: ${{ needs.admit.outputs.ci_job_id }}
+        with:
+          script: |
+            // Reconcile the live queue after the unprivileged verifier has completed.
+            const {owner,repo} = context.repo;
+            const source = process.env.GITHUB_WORKFLOW_REF;
+            const env = process.env;
+            const isSha = v => typeof v === 'string' && /^[a-f0-9]{40}$/.test(v);
+            const expected = {
+              base:env.VERISENTRY_QUEUE_BASE, head:env.VERISENTRY_QUEUE_HEAD,
+              stage:env.VERISENTRY_QUEUE_STAGE, entry:env.VERISENTRY_QUEUE_ENTRY,
+              ref:env.VERISENTRY_QUEUE_REF, run:Number(env.VERISENTRY_QUEUE_RUN),
+              number:Number(env.VERISENTRY_QUEUE_PR),
+              job:Number(env.VERISENTRY_QUEUE_CI_JOB),
+            };
+            if (owner !== 'gyldlab' || repo !== 'keld' ||
+                context.eventName !== 'workflow_run' || context.ref !== 'refs/heads/main' ||
+                source !== 'gyldlab/keld/.github/workflows/ci-verisentry-queue-publisher.yml@refs/heads/main' ||
+                env.GITHUB_RUN_ATTEMPT !== '1' || context.sha !== env.GITHUB_SHA ||
+                !isSha(expected.base) || !isSha(expected.head) || !isSha(expected.stage) ||
+                !Number.isSafeInteger(expected.run) || expected.run < 1 ||
+                !Number.isSafeInteger(expected.number) || expected.number < 1 ||
+                !Number.isSafeInteger(expected.job) || expected.job < 1 ||
+                typeof expected.entry !== 'string' || !expected.entry ||
+                !/^heads\/gh-readonly-queue\/main\/pr-[1-9][0-9]*-[a-f0-9]{40}$/.test(expected.ref || '') ||
+                expected.ref !== `heads/gh-readonly-queue/main/pr-${expected.number}-${expected.base}`) {
+              throw Error('Queue publisher received malformed or non-main admission outputs');
+            }
+            const main = (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            if (main !== expected.base || context.sha !== main)
+              throw Error('Queue main base or protected source advanced');
+            const queueRef = (await github.rest.git.getRef({owner,repo,ref:expected.ref})).data;
+            if (queueRef?.ref !== 'refs/'+expected.ref || queueRef.object?.sha !== expected.stage)
+              throw Error('Queue group was removed or rebuilt');
+            const ciPath = '.github/workflows/ci.yml';
+            const ciBlob = async ref => {
+              const file = (await github.rest.repos.getContent({owner,repo,path:ciPath,ref})).data;
+              if (!file || Array.isArray(file) || file.type !== 'file' ||
+                  file.path !== ciPath || !isSha(file.sha) ||
+                  !Number.isSafeInteger(file.size) || file.size < 1024 || file.size > 262144)
+                throw Error('Queue CI workflow source malformed at prewrite');
+              return file.sha;
+            };
+            if ((await ciBlob(expected.base)) !== (await ciBlob(expected.stage)))
+              throw Error('Queue CI source differs from protected main before token');
+            const run = (await github.rest.actions.getWorkflowRun({owner,repo,run_id:expected.run})).data;
+            if (run?.event !== 'merge_group' || run.run_attempt !== 1 ||
+                run.status !== 'completed' || run.conclusion !== 'success' ||
+                run.repository?.id !== 1258884903 || run.head_repository?.id !== 1258884903 ||
+                run.head_sha !== expected.stage || run.head_branch !== expected.ref.slice(6) ||
+                run.workflow_id !== 309460818 || run.name !== 'CI' ||
+                run.path !== ciPath || run.id !== expected.run ||
+                run.workflow_id !== context.payload?.workflow_run?.workflow_id) {
+              throw Error('Queue CI run no longer matches protected workflow identity');
+            }
+            const ciStart = Date.parse(run.created_at || '');
+            const ciFinished = Date.parse(run.updated_at || '');
+            const now = Date.now();
+            if (!Number.isFinite(ciStart) || !Number.isFinite(ciFinished) ||
+                ciStart > now + 120000 || ciFinished > now + 120000 ||
+                ciStart > ciFinished || now - ciStart > 3*60*60*1000 ||
+                now - ciFinished > 20*60*1000)
+              throw Error('Queue CI run aged out before privileged token admission');
+            const queueResponse = await github.graphql(`query($owner:String!, $repo:String!) {
+              repository(owner:$owner,name:$repo) {
+                mergeQueue(branch:"main") {
+                  configuration { maximumEntriesToMerge minimumEntriesToMerge }
+                  entries(first:100) {
+                    totalCount pageInfo { hasNextPage }
+                    nodes {
+                      id state baseCommit { oid } headCommit { oid }
+                      pullRequest {
+                        id number state isDraft headRefOid baseRefOid baseRefName
+                        baseRepository { nameWithOwner } mergeQueueEntry { id }
+                      }
+                    }
+                  }
+                }
+              }
+            }`,{owner,repo});
+            const queue = queueResponse?.repository?.mergeQueue;
+            const census = queue?.entries;
+            if ((queue?.configuration && (queue.configuration.maximumEntriesToMerge !== 1 ||
+                   queue.configuration.minimumEntriesToMerge !== 1)) ||
+                !Number.isSafeInteger(census?.totalCount) || census.totalCount !== 1 ||
+                census.pageInfo?.hasNextPage !== false ||
+                !Array.isArray(census.nodes) || census.nodes.length !== 1)
+              throw Error('Queue census became incomplete during publication');
+            const entries = census.nodes.filter(e => e?.headCommit?.oid === expected.stage);
+            if (entries.length !== 1 || entries[0]?.id !== expected.entry ||
+                !['AWAITING_CHECKS','QUEUED','LOCKED','MERGEABLE'].includes(entries[0]?.state) ||
+                entries[0].baseCommit?.oid !== expected.base ||
+                entries[0].pullRequest?.mergeQueueEntry?.id !== expected.entry ||
+                entries[0].pullRequest?.number !== expected.number ||
+                entries[0].pullRequest?.state !== 'OPEN' || entries[0].pullRequest?.isDraft !== false ||
+                entries[0].pullRequest?.baseRefName !== 'main' ||
+                entries[0].pullRequest?.baseRefOid !== expected.base ||
+                entries[0].pullRequest?.headRefOid !== expected.head ||
+                entries[0].pullRequest?.baseRepository?.nameWithOwner !== 'gyldlab/keld') {
+              throw Error('Live queue PR and staged binding changed');
+            }
+            const pr = (await github.rest.pulls.get({owner,repo,pull_number:expected.number})).data;
+            if (pr?.number !== expected.number || pr?.state !== 'open' || pr?.draft !== false ||
+                pr?.base?.sha !== expected.base || pr.base?.ref !== 'main' ||
+                pr.base?.repo?.full_name !== 'gyldlab/keld' || pr.head?.sha !== expected.head ||
+                pr.node_id !== entries[0].pullRequest.id) {
+              throw Error('Queue PR changed before privileged check publication');
+            }
+            const staged = (await github.rest.repos.getCommit({owner,repo,ref:expected.stage})).data;
+            if (!isSha(staged?.commit?.tree?.sha) || !Array.isArray(staged.parents) ||
+                staged.parents.length !== 2 ||
+                staged.parents[0]?.sha !== expected.base ||
+                staged.parents[1]?.sha !== expected.head ||
+                expected.stage === expected.head ||
+                !isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== expected.stage) {
+              throw Error('Queued commit or PR test-merge preview changed');
+            }
+            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
+            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
+                preview.parents.length !== 2 || preview.parents[0]?.sha !== expected.base ||
+                preview.parents[1]?.sha !== expected.head ||
+                preview.commit?.tree?.sha !== staged.commit.tree.sha) {
+              throw Error('Queue stage no longer matches the singleton PR preview');
+            }
+            // Repeat the exact first-attempt CI required job witness after the
+            // environment admission delay. A new failed/cancelled status cannot be green.
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,repo,run_id:expected.run,filter:'latest',per_page:100,
+            });
+            const witness = Array.isArray(jobs) ? jobs.filter(j => j.name === 'CI required') : [];
+            if (!Array.isArray(jobs) || jobs.length < 1 || jobs.length > 100 ||
+                jobs.some(j => j.head_sha !== expected.stage || j.status !== 'completed') ||
+                witness.length !== 1 || witness[0].id !== expected.job ||
+                witness[0].workflow_name !== 'CI' || witness[0].conclusion !== 'success') {
+              throw Error('Queue CI required job changed after initial admission');
+            }
+            const requiredSteps = Array.isArray(witness[0].steps)
+              ? witness[0].steps.filter(step => step?.name === 'Verify required CI results') : [];
+            if (requiredSteps.length !== 1 ||
+                !Number.isSafeInteger(requiredSteps[0].number) || requiredSteps[0].number < 1 ||
+                requiredSteps[0].status !== 'completed' ||
+                requiredSteps[0].conclusion !== 'success') {
+              throw Error('Queue CI required verification step lost its success');
+            }
+            const legacy = await github.paginate(github.rest.checks.listForRef, {
+              owner,repo,ref:expected.stage,app_id:15368,filter:'all',per_page:100,
+            });
+            if (!Array.isArray(legacy) || legacy.length < 3 || legacy.length > 1000)
+              throw Error('Queue required check inventory changed before App token');
+            for (const name of ['CI required','gatekeeper','title-lint']) {
+              const found = legacy.filter(c => c?.name === name);
+              if (found.length !== 1 || found[0].app?.id !== 15368 ||
+                  found[0].head_sha !== expected.stage || found[0].status !== 'completed' ||
+                  found[0].conclusion !== 'success' ||
+                  (name === 'CI required' && found[0].id !== expected.job)) {
+                throw Error('Queue required status changed before App token: '+name);
+              }
+            }
+            core.setOutput('ci_finished',run.updated_at);
+            core.setOutput('ready','true');
+
+      - name: Mint restricted repository-scoped VeriSentry App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # pinned v3
+        with:
+          app-id: "5550363"
+          private-key: ${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}
+          owner: gyldlab
+          repositories: keld
+          permission-checks: write
+          permission-pull-requests: read
+          permission-contents: read
+      - name: Publish App-only PASS on the current staged SHA
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        env:
+          VERISENTRY_QUEUE_PR: ${{ needs.admit.outputs.pr_number }}
+          VERISENTRY_QUEUE_BASE: ${{ needs.admit.outputs.base_sha }}
+          VERISENTRY_QUEUE_HEAD: ${{ needs.admit.outputs.head_sha }}
+          VERISENTRY_QUEUE_STAGE: ${{ needs.admit.outputs.staged_sha }}
+          VERISENTRY_QUEUE_REF: ${{ needs.admit.outputs.queue_ref }}
+          VERISENTRY_QUEUE_ENTRY: ${{ needs.admit.outputs.entry_id }}
+          VERISENTRY_QUEUE_RUN: ${{ needs.admit.outputs.ci_run_id }}
+          VERISENTRY_QUEUE_CI_JOB: ${{ needs.admit.outputs.ci_job_id }}
+          VERISENTRY_QUEUE_READY: ${{ steps.fresh.outputs.ready }}
+          VERISENTRY_QUEUE_CI_FINISHED: ${{ steps.fresh.outputs.ci_finished }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            // App credential is available only in the protected-main, environment-gated job.
+            const {owner,repo} = context.repo;
+            const env = process.env;
+            const stage = env.VERISENTRY_QUEUE_STAGE;
+            const base = env.VERISENTRY_QUEUE_BASE;
+            const head = env.VERISENTRY_QUEUE_HEAD;
+            const ref = env.VERISENTRY_QUEUE_REF;
+            const number = Number(env.VERISENTRY_QUEUE_PR);
+            const entry = env.VERISENTRY_QUEUE_ENTRY;
+            const ciRun = Number(env.VERISENTRY_QUEUE_RUN);
+            const ciJob = Number(env.VERISENTRY_QUEUE_CI_JOB);
+            const ciFinished = Date.parse(env.VERISENTRY_QUEUE_CI_FINISHED || '');
+            const age = Date.now() - ciFinished;
+            if (!Number.isFinite(ciFinished) || age < -120000 || age > 20*60*1000)
+              throw Error('App publisher refuses stale or malformed CI completion time');
+            const isSha = x => typeof x === 'string' && /^[a-f0-9]{40}$/.test(x);
+            if (owner !== 'gyldlab' || repo !== 'keld' || context.eventName !== 'workflow_run' ||
+                context.ref !== 'refs/heads/main' || context.sha !== env.GITHUB_SHA ||
+                env.GITHUB_RUN_ATTEMPT !== '1' ||
+                env.GITHUB_WORKFLOW_REF !== 'gyldlab/keld/.github/workflows/ci-verisentry-queue-publisher.yml@refs/heads/main' ||
+                env.VERISENTRY_QUEUE_READY !== 'true' ||
+                !isSha(stage) || !isSha(base) || !isSha(head) ||
+                !Number.isSafeInteger(number) || number < 1 ||
+                !Number.isSafeInteger(ciRun) || ciRun < 1 ||
+                !Number.isSafeInteger(ciJob) || ciJob < 1 ||
+                !entry || ref !== `heads/gh-readonly-queue/main/pr-${number}-${base}`) {
+              throw Error('App publisher refuses unverified protected-main queue binding');
+            }
+            const liveMain = (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            if (liveMain !== base || context.sha !== base)
+              throw Error('App publisher refuses stale protected-main policy or stage base');
+            const ciPath = '.github/workflows/ci.yml';
+            const ciBlob = async commit => {
+              const file = (await github.rest.repos.getContent({owner,repo,path:ciPath,ref:commit})).data;
+              if (!file || Array.isArray(file) || file.type !== 'file' ||
+                  file.path !== ciPath || !isSha(file.sha) ||
+                  !Number.isSafeInteger(file.size) || file.size < 1024 || file.size > 262144)
+                throw Error('Queue CI workflow source malformed at App boundary');
+              return file.sha;
+            };
+            if ((await ciBlob(base)) !== (await ciBlob(stage)))
+              throw Error('App publisher refuses candidate-mutated CI source');
+            const queueRef = (await github.rest.git.getRef({owner,repo,ref})).data;
+            if (queueRef?.ref !== 'refs/'+ref || queueRef.object?.sha !== stage)
+              throw Error('App publisher refuses rebuilt or removed staged queue ref');
+            const commit = (await github.rest.repos.getCommit({owner,repo,ref:stage})).data;
+            if (commit?.sha !== stage || !Array.isArray(commit.parents) ||
+                commit.parents.length !== 2 ||
+                commit.parents[0]?.sha !== base ||
+                commit.parents[1]?.sha !== head || stage === head ||
+                !isSha(commit.commit?.tree?.sha))
+              throw Error('App publisher refuses stage commit with mismatched parents or tree');
+            const pr = (await github.rest.pulls.get({owner,repo,pull_number:number})).data;
+            if (pr?.number !== number || pr.state !== 'open' || pr.draft !== false ||
+                pr?.base?.sha !== base || pr.base?.ref !== 'main' ||
+                pr.base?.repo?.full_name !== 'gyldlab/keld' || pr.head?.sha !== head) {
+              throw Error('App publisher refuses moved queue PR');
+            }
+            if (!isSha(pr.merge_commit_sha) || pr.merge_commit_sha !== stage)
+              throw Error('Queue PR lost its exact staged test-merge SHA');
+            const preview = (await github.rest.repos.getCommit({owner,repo,ref:pr.merge_commit_sha})).data;
+            if (preview?.sha !== pr.merge_commit_sha || !Array.isArray(preview.parents) ||
+                preview.parents.length !== 2 || preview.parents[0]?.sha !== base ||
+                preview.parents[1]?.sha !== head ||
+                preview.commit?.tree?.sha !== commit.commit.tree.sha) {
+              throw Error('App publisher refuses queue tree differing from current PR preview');
+            }
+            const q = await github.graphql(`query($owner:String!, $repo:String!) {
+              repository(owner:$owner,name:$repo) {
+                mergeQueue(branch:"main") { entries(first:100) {
+                  totalCount pageInfo { hasNextPage }
+                  nodes { id state baseCommit { oid } headCommit { oid }
+                    pullRequest { number id state isDraft headRefOid baseRefOid baseRefName
+                      baseRepository { nameWithOwner } mergeQueueEntry { id } }
+                  }
+                } }
+              }
+            }`, {owner,repo});
+            const liveEntries = q?.repository?.mergeQueue?.entries;
+            if (!Number.isSafeInteger(liveEntries?.totalCount) || liveEntries.totalCount !== 1 ||
+                liveEntries.pageInfo?.hasNextPage !== false ||
+                !Array.isArray(liveEntries.nodes) || liveEntries.nodes.length !== 1) {
+              throw Error('Queue census is missing or incomplete at App boundary');
+            }
+            const matching = liveEntries.nodes.filter(e => e?.headCommit?.oid === stage);
+            const prEntry = matching[0]?.pullRequest;
+            if (matching.length !== 1 || matching[0].id !== entry ||
+                !['AWAITING_CHECKS','QUEUED','LOCKED','MERGEABLE'].includes(matching[0].state) ||
+                matching[0].baseCommit?.oid !== base ||
+                prEntry?.mergeQueueEntry?.id !== entry || prEntry?.number !== number ||
+                prEntry?.state !== 'OPEN' || prEntry?.isDraft !== false ||
+                prEntry?.baseRefName !== 'main' || prEntry?.baseRefOid !== base ||
+                prEntry?.headRefOid !== head || prEntry?.baseRepository?.nameWithOwner !== 'gyldlab/keld') {
+              throw Error('Queue entry changed or was removed before App publication');
+            }
+            // The App token has only Checks-write, Contents-read, PR-read. It must not
+            // need Actions-read. Source-authenticate all legacy checks once more just
+            // before the genuine App publication (CI job ID comes from trusted witness).
+            const legacy = await github.paginate(github.rest.checks.listForRef, {
+              owner,repo,ref:stage,app_id:15368,filter:'all',per_page:100,
+            });
+            if (!Array.isArray(legacy) || legacy.length < 3 || legacy.length > 1000)
+              throw Error('Queue required checks unavailable at App publication boundary');
+            for (const name of ['CI required','gatekeeper','title-lint']) {
+              const selected = legacy.filter(c => c?.name === name);
+              if (selected.length !== 1 || selected[0].app?.id !== 15368 ||
+                  selected[0].head_sha !== stage || selected[0].status !== 'completed' ||
+                  selected[0].conclusion !== 'success' ||
+                  (name === 'CI required' && selected[0].id !== ciJob)) {
+                throw Error('Queue legacy required check changed at App boundary: '+name);
+              }
+            }
+            // A prior App decision on the same staged SHA must not be silently replaced.
+            const checks = await github.paginate(github.rest.checks.listForRef, {
+              owner,repo,ref:stage,check_name:'KELD VeriSentry queue',app_id:5550363,
+              filter:'all',per_page:100,
+            });
+            if (!Array.isArray(checks) || checks.length > 1000 ||
+                checks.some(c => c?.app?.id !== 5550363 || c.head_sha !== stage || c.name !== 'KELD VeriSentry queue')) {
+              throw Error('App check inventory is foreign or incomplete');
+            }
+            const proof = `PR #${number} base=${base} head=${head} stage=${stage} entry=${entry} ci-run=${ciRun}`;
+            if (checks.length) {
+              if (checks.some(c => c.status !== 'completed' || c.conclusion !== 'success' ||
+                  c.output?.summary !== proof)) {
+                throw Error('App check already exists with a conflicting or revoked binding');
+              }
+              // The CI run itself must be <=3h old. A matching prior check from this
+              // exact queue instance can only be recent; never renew a days-old receipt.
+              const agesMs = checks.map(c => Date.now() - Date.parse(c.completed_at || ''));
+              if (agesMs.some(age => !Number.isFinite(age) || age < 0 || age > 60*60*1000))
+                throw Error('App check is too old or malformed; requeue a fresh SHA');
+              core.info('Recent exact staged App SUCCESS already exists with matching queue binding');
+              return;
+            }
+            {
+              // One last ref/main read immediately before creating the source-authenticated check.
+              if ((await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha !== base ||
+                  (await github.rest.git.getRef({owner,repo,ref})).data?.object?.sha !== stage) {
+                throw Error('Queue stage changed at final check creation boundary');
+              }
+              const created = (await github.rest.checks.create({
+                owner,repo,name:'KELD VeriSentry queue',head_sha:stage,
+                status:'completed',conclusion:'success',
+                details_url:`https://github.com/gyldlab/keld/actions/runs/${env.GITHUB_RUN_ID}`,
+                output:{title:'Trusted merge queue CI admission',summary:proof},
+              })).data;
+              if (created?.app?.id !== 5550363 || created.head_sha !== stage ||
+                  created.conclusion !== 'success' || created.name !== 'KELD VeriSentry queue') {
+                throw Error('GitHub returned a check with wrong source, SHA or conclusion');
+              }
+              core.info('Created distinct queue-only staged VeriSentry App check from App ID 5550363');
+            }
