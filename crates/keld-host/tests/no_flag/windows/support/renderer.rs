@@ -1,16 +1,20 @@
 //! Renderer beacon observation, deadline activation and explicit worker completion.
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
+use std::process::Child;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::support::process::exited_child_output;
 use crate::windows_renderer_http::{
     PendingRendererRequest, RendererRequestRead, accept_renderer_connection,
     read_renderer_request_line,
 };
-use crate::{PRODUCT_DEADLINE, RENDERER_ACCEPT_POLL};
+use crate::{DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, RENDERER_ACCEPT_POLL, startup_kill_switch};
 
 pub(crate) struct RendererBeacon {
     observed: mpsc::Receiver<Result<(), String>>,
@@ -32,12 +36,17 @@ pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     }
 }
 
+/// Awaits the beacon of a renderer whose session is already `Ready`.
 pub(crate) fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
-    try_expect_renderer_beacon(beacon, context).unwrap_or_else(|error| panic!("{error}"));
+    try_expect_renderer_beacon(beacon, PRODUCT_DEADLINE, context)
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Awaits the beacon under `kill_switch`: `PRODUCT_DEADLINE` once the session is
+/// `Ready`, or `startup_kill_switch` while the beacon still waits on the startup.
 pub(crate) fn try_expect_renderer_beacon(
     beacon: RendererBeacon,
+    kill_switch: Duration,
     context: &str,
 ) -> Result<(), String> {
     let RendererBeacon {
@@ -45,7 +54,7 @@ pub(crate) fn try_expect_renderer_beacon(
         worker,
         activate_deadline,
     } = beacon;
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let deadline = Instant::now() + kill_switch;
     let _ = activate_deadline.send(deadline);
     let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -203,4 +212,87 @@ pub(crate) fn renderer_beacon_remaining(
             }
             .to_owned()
         })
+}
+
+/// A renderer subresource connection, accepted and never answered. While it is
+/// held the document's `onload` cannot run, and `WebView2` raises
+/// `NavigationCompleted` (which drives `Ready`) only after `onload`, so the
+/// initial window cannot become `Ready`. The listener lives until release, so a
+/// request on a later connection waits unanswered too.
+pub(crate) struct HeldRendererRequest {
+    pub(crate) port: u16,
+    connected: mpsc::Receiver<bool>,
+    release: mpsc::Sender<()>,
+    worker: thread::JoinHandle<()>,
+}
+
+impl HeldRendererRequest {
+    pub(crate) fn bind() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind held renderer");
+        let port = listener.local_addr().expect("held renderer address").port();
+        let (connected_tx, connected) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            let accepted = listener.accept();
+            let _ = connected_tx.send(accepted.is_ok());
+            let _ = release_rx.recv();
+            drop((accepted, listener));
+        });
+        Self {
+            port,
+            connected,
+            release,
+            worker,
+        }
+    }
+
+    /// Writes `project`'s renderer: the product page with one image on this
+    /// held listener.
+    pub(crate) fn write_index(&self, project: &Path) {
+        fs::write(
+            project.join("index.html"),
+            format!(
+                "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
+                self.port
+            ),
+        )
+        .expect("write held renderer");
+    }
+
+    /// Waits for the renderer's first connection under `startup_kill_switch`,
+    /// which bounds the `WebView2` startup that makes it, and reports the host's
+    /// output at once if the host exits first. The connection proves the window
+    /// exists and its first navigation is in flight.
+    pub(crate) fn await_connection(&self, child: &mut Child) {
+        let deadline = Instant::now() + startup_kill_switch();
+        loop {
+            match self.connected.recv_timeout(RENDERER_ACCEPT_POLL) {
+                Ok(accepted) => {
+                    assert!(accepted, "held renderer accept failed");
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("held renderer worker ended"),
+            }
+            if let Some(status) = child
+                .try_wait()
+                .expect("observe host before held connection")
+            {
+                panic!(
+                    "host exited before its renderer connected to the held resource: {status}\n{}",
+                    exited_child_output(child)
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "renderer did not connect to the held resource"
+            );
+        }
+    }
+
+    /// Answers nothing: closes the held connection and joins the worker.
+    pub(crate) fn release(self) {
+        self.release.send(()).expect("release held renderer");
+        self.worker.join().expect("held renderer worker joins");
+    }
 }

@@ -3,10 +3,10 @@
 Status: approved
 Linear: KEL-77 · Owner: GYLDLAB · Updated: 2026-08-21 (Bun 1.4.0 CI pin + kill-after-exit rebaseline)
 
-Current CI pin (KEL-194, owner-approved 2026-09-08): **Bun 1.4.2**. This supersedes
-the earlier CI-pin instructions below; Bun 1.4.0 observations remain historical
-evidence. All child-process oracles, failure semantics and revision recording stay
-unchanged. [Selected release](https://bun.com/blog/bun-v1.4.2).
+Current CI pin (GH-1091, owner-requested 2026-10-23): **Bun 1.4.4**. This supersedes
+the earlier CI-pin instructions below; Bun 1.4.0 and 1.4.2 observations remain
+historical evidence. All child-process oracles, failure semantics and revision
+recording stay unchanged. [Selected release](https://bun.sh/blog/bun-v1.4.4).
 
 ## 1. Goal & non-goals
 

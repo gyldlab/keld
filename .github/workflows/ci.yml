@@ -75,8 +75,6 @@ jobs:
           target/product-status/product-status-test
           rustc --edition=2024 -D warnings tools/product_status.rs -o target/product-status/product-status
           target/product-status/product-status check .
-      - name: Router contract tests
-        run: tools/ci_changes_test.sh
       # Enforce explicit dependencies only for newly introduced Rust test imports.
       # No legacy-only rejection or privileged pull_request_target execution.
       - name: Test module import ownership
@@ -103,6 +101,10 @@ jobs:
         run: |
           python3 -B tools/test_source_census.py
           python3 -B tools/test_source_budget_report.py
+      # Offline, read-only reporter regression suite. This never calls GitHub
+      # or treats a successful rerun as a first-attempt success.
+      - name: CI attempt timing reporter regression tests
+        run: python3 -B tools/test_ci_attempt_metrics.py
       # The agent playbook router and unsafe-coverage inventory reads crates/*.rs
       # as well as AGENTS and .agents files, so it runs here, where every diff
       # reaches it (#650; it was local-only before).
@@ -144,6 +146,24 @@ jobs:
           cat target/source-budget/brief.json >> "$GITHUB_STEP_SUMMARY"
           echo '~~~' >> "$GITHUB_STEP_SUMMARY"
 
+  # The router's full 56-second regression suite has no dependency on the
+  # selected outputs. Keep it mandatory, but do not hold all routed jobs until
+  # these tests complete. CI required rejects any missing or failing result.
+  router-contracts:
+    name: Router contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
+        with:
+          toolchain: 1.99.1
+      - name: Router contract tests
+        run: tools/ci_changes_test.sh
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -158,7 +178,6 @@ jobs:
         with:
           toolchain: 1.99.1
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --all --check
       # `cargo fmt` never visits `include!`d files, `#[path]` mods declared
       # inside macro bodies, or the `mod` files under either.
@@ -195,6 +214,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Check keld-ipc fuzz workspace
         if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.rust == 'true'
@@ -257,7 +277,7 @@ jobs:
         timeout-minutes: 15
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
-        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true' && steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        if: matrix.os == 'ubuntu-latest' && needs.changes.outputs.webkitgtk == 'true' && steps.webkitgtk-apt-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         timeout-minutes: 5
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -272,7 +292,8 @@ jobs:
       # Exact pin (KEL-194); retain KEL-77 kill-after-exit regression coverage.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
+          no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
       - name: clippy (warnings deny)
         shell: bash
         env:
@@ -295,9 +316,21 @@ jobs:
         run: |
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
           New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          tool: nextest,just@1.58.0
+          tool: nextest@0.9.149,just@1.58.0
+          fallback: none
+      - name: Verify cargo-nextest 0.9.149
+        shell: bash
+        run: cargo nextest --version | grep -E '^cargo-nextest 0[.]9[.]149 [(]'
+      - name: Run local router and formatter-order contracts with system Bash
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          export PATH="/bin:$PATH"
+          /bin/bash tools/fmt_included.sh test
+          /bin/bash tools/fmt_included.sh --check
+          just --shell /bin/bash ci-router-test
       # The rest of the `cache-check-test` ci-policy recipe, hosted on all three
       # runners: "Worktree cache tool native tests" above runs the
       # worktree_cache.rs unit tests, and this runs
@@ -323,8 +356,119 @@ jobs:
               cargo nextest run -p "$package" --profile ci --no-tests=pass
             fi
           done
+      - name: Real Linux foreign-owner refusal (KEL-167)
+        if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
+        shell: bash
+        env:
+          KELD_REAL_LINUX_OWNER_PROOF: "1"
+        run: |
+          set -euo pipefail
+          # An --exact filter with zero selected tests succeeds unless the pass count is checked.
+          if ! out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+      # KEL-19 container spec §5: AC1 on the workspace-built release host. The test
+      # fails, never skips, without KELD_PACK_REAL_HOST; Cargo runs it from the package
+      # directory, so the path is absolute.
+      - name: Real Windows release host identity container round trip (KEL-19)
+        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
+        shell: bash
+        env:
+          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-host.exe
+        run: |
+          set -euo pipefail
+          cargo build --release -p keld-host
+          # An --exact filter that matches nothing exits 0, so require the one pass.
+          if ! out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+      # KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c) on the workspace-built
+      # release helper: its import table, load flags and subsystem, and a copy started
+      # beside planted DLLs; then the KEL-19 container amendment's release-helper AC1 run
+      # of the round trip above, and its AC2 launch of the embedded unsigned helper, which
+      # needs no signature. Each test fails, never skips, without its variable.
+      - name: Real Windows release updater helper loader and container (KEL-53 T4d S9c)
+        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
+        shell: bash
+        env:
+          KELD_UPDATER_HELPER_RELEASE: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-updater-helper.exe
+          KELD_PACK_EMBEDDED_HELPER: ${{ runner.temp }}/ac2-helper/keld-updater-helper.exe
+        run: |
+          set -euo pipefail
+          cargo build --release -p keld-updater-helper
+          if ! out="$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 2 passed;' <<<"$out"
+          if ! out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+          mkdir -p "$RUNNER_TEMP/ac2-helper"
+          if ! out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          printf '%s\n' "$out"
+          grep -q 'test result: ok\. 1 passed;' <<<"$out"
+      - name: rustdoc (warnings deny)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: -D warnings
+          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
+        run: |
+          for package in $KELD_CI_UBUNTU_PACKAGES; do
+            cargo doc -p "$package" --no-deps
+          done
+
+  # The Windows WebView2 media oracle has a long bounded native lifecycle.
+  # Run it on its own hosted Windows runner, concurrently with the cross-OS
+  # Cargo check/test matrix. No test case, watchdog, grace, or receipt is removed.
+  # This is an opt-in latency experiment until comparable hosted measurements
+  # demonstrate a net win (queue and extra cold compilation count).
+  windows-media:
+    name: Windows WebView2 media acceptance
+    runs-on: windows-latest
+    timeout-minutes: 45
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master pinned commit
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Ensure cargo bin dir exists
+        shell: pwsh
+        run: |
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $HOME '.cargo' }
+          New-Item -ItemType Directory -Force -Path (Join-Path $cargoHome 'bin') | Out-Null
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: nextest@0.9.149
+          fallback: none
+      - name: Verify cargo-nextest 0.9.149
+        shell: bash
+        run: cargo nextest --version | grep -E '^cargo-nextest 0[.]9[.]149 [(]'
       - name: Windows media guard acceptance (KEL-132)
-        if: matrix.os == 'windows-latest' && contains(needs.changes.outputs.packages, 'keld-wv')
         shell: pwsh
         run: |
           cargo clippy -p keld-wv --all-targets --features media-acceptance -- -D warnings
@@ -431,61 +575,6 @@ jobs:
           }
           $invalidRows = @($result.rows | Where-Object { $_.exit_code -ne 0 -or $_.profile_removed -ne $true -or $_.registration_identity -cne $_.sender_identity -or $_.receipt -cnotlike 'KELD_MEDIA_RESULT * case_ok=true' -or $_.log_sha256 -cnotmatch $hashPattern -or $_.stderr_sha256 -cnotmatch $hashPattern })
           if ($invalidRows.Count -ne 0) { throw 'Windows media guard returned an invalid acceptance row' }
-      - name: Real Linux foreign-owner refusal (KEL-167)
-        if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
-        env:
-          KELD_REAL_LINUX_OWNER_PROOF: "1"
-        run: cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture
-      # KEL-19 container spec §5: AC1 on the workspace-built release host. The test
-      # fails, never skips, without KELD_PACK_REAL_HOST; Cargo runs it from the package
-      # directory, so the path is absolute.
-      - name: Real Windows release host identity container round trip (KEL-19)
-        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
-        shell: bash
-        env:
-          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-host.exe
-        run: |
-          set -euo pipefail
-          cargo build --release -p keld-host
-          # An --exact filter that matches nothing exits 0, so require the one pass.
-          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
-          printf '%s\n' "$out"
-          grep -q 'test result: ok\. 1 passed;' <<<"$out"
-      # KEL-53 §4 "Helper launch and self-anchor" (KEL-270 T4d S9c) on the workspace-built
-      # release helper: its import table, load flags and subsystem, and a copy started
-      # beside planted DLLs; then the KEL-19 container amendment's release-helper AC1 run
-      # of the round trip above, and its AC2 launch of the embedded unsigned helper, which
-      # needs no signature. Each test fails, never skips, without its variable.
-      - name: Real Windows release updater helper loader and container (KEL-53 T4d S9c)
-        if: matrix.os == 'windows-latest' && (contains(needs.changes.outputs.packages, 'keld-updater-helper') || contains(needs.changes.outputs.packages, 'keld-pack') || contains(needs.changes.outputs.packages, 'keld-host'))
-        shell: bash
-        env:
-          KELD_UPDATER_HELPER_RELEASE: ${{ github.workspace }}/target/release/keld-updater-helper.exe
-          KELD_PACK_REAL_HOST: ${{ github.workspace }}/target/release/keld-updater-helper.exe
-          KELD_PACK_REAL_HELPER: ${{ github.workspace }}/target/release/keld-updater-helper.exe
-          KELD_PACK_EMBEDDED_HELPER: ${{ runner.temp }}/ac2-helper/keld-updater-helper.exe
-        run: |
-          set -euo pipefail
-          cargo build --release -p keld-updater-helper
-          out="$(cargo test -p keld-updater-helper --test release_image -- --ignored 2>&1)"
-          printf '%s\n' "$out"
-          grep -q 'test result: ok\. 2 passed;' <<<"$out"
-          out="$(cargo test -p keld-pack --test real_host real_release_host_round_trip -- --ignored --exact 2>&1)"
-          printf '%s\n' "$out"
-          grep -q 'test result: ok\. 1 passed;' <<<"$out"
-          mkdir -p "$RUNNER_TEMP/ac2-helper"
-          out="$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)"
-          printf '%s\n' "$out"
-          grep -q 'test result: ok\. 1 passed;' <<<"$out"
-      - name: rustdoc (warnings deny)
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          RUSTDOCFLAGS: -D warnings
-          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
-        run: |
-          for package in $KELD_CI_UBUNTU_PACKAGES; do
-            cargo doc -p "$package" --no-deps
-          done
 
   # The local workspace tool's path and process contracts differ per OS, so this
   # stays a three-OS job. Its inputs are tools/workspace.py, its test and the
@@ -547,6 +636,8 @@ jobs:
         with:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: cargo test --doc
         shell: bash
         env:
@@ -561,10 +652,18 @@ jobs:
           done
 
   bun-test:
-    name: bun test (TypeScript)
-    runs-on: ubuntu-latest
+    name: bun test (TypeScript, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     needs: changes
+    # Every OS that runs a Bun role runs its package suites (GH-1095 AT-B1,
+    # AT-B2, AT-API2a; #1111). The matrix is static: the router owns whether
+    # the lane runs, not where. `CI required` reads the aggregate result, so a
+    # failure on any OS fails the lane.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     # This lane owns the package compiler and Bun runtime contracts. Its only
     # inputs are those package trees, so a Rust-only diff skips it and a
     # TypeScript diff runs it (tools/ci_changes.sh, `ts` output). Job-level `if`
@@ -578,7 +677,8 @@ jobs:
       # Exact pin (KEL-194); retain KEL-77 kill-after-exit regression coverage.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
+          no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
       - name: frozen install, typecheck, and bun test
         shell: bash
         env:
@@ -620,6 +720,7 @@ jobs:
           toolchain: 1.99.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       # The .deb set comes from a first-party cache keyed by the exact package
       # list and runner image (#645). tools/ci_webkitgtk_apt.sh still runs
@@ -645,7 +746,7 @@ jobs:
         timeout-minutes: 15
         run: tools/ci_webkitgtk_apt.sh install ~/.cache/keld-webkitgtk-debs
       - name: Save WebKitGTK .deb cache
-        if: steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'
+        if: steps.webkitgtk-apt-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         timeout-minutes: 5
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -687,6 +788,8 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Read MSRV from workspace metadata
         id: msrv
         run: |
@@ -714,6 +817,8 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       # #676: the upstream release binary, checksum-verified, replaces the Docker
       # cargo-deny-action whose image build pulled anonymously from Docker Hub. The
       # advisory database still comes from cargo-deny's default GitHub URL. Bump the
@@ -807,7 +912,12 @@ jobs:
           components: rustfmt, clippy
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
+          no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      - name: Native JavaScript formatting
+        run: |
+          bun packages/@keld/kipc/scripts/echo-codegen.ts check
+          bun fmt --no-script --check "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"
       # doc-placeholders scans docs/, .agents/, llms.txt, llms-full.txt, AGENTS.md
       # and README.md, every one of which selects this job; it runs whenever the
       # job does (#650; #639 merged an unknown `{A}` placeholder that only the
@@ -1026,6 +1136,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - changes
+      - router-contracts
       - fmt
       - check
       - bun-test
@@ -1041,6 +1152,7 @@ jobs:
       - dependency-review
       - workspace-contracts
       - doctest
+      - windows-media
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1081,6 +1193,9 @@ jobs:
           KELD_ROUTE_CHECK_OS: ${{ needs.changes.outputs.check_os }}
           KELD_RESULT_DOCTEST: ${{ needs.doctest.result }}
           KELD_ROUTE_DOCTEST: ${{ needs.changes.outputs.doctest }}
+          KELD_RESULT_MEDIA: ${{ needs['windows-media'].result }}
+          KELD_ROUTE_MEDIA: ${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}
+          KELD_RESULT_ROUTER_CONTRACTS: ${{ needs['router-contracts'].result }}
         run: |
           tools/ci_required.sh test
           tools/ci_required.sh check \
@@ -1115,4 +1230,7 @@ jobs:
             "$KELD_ROUTE_RUST_DOCUMENTATION_ONLY" \
             "$KELD_ROUTE_CHECK_OS" \
             "$KELD_RESULT_DOCTEST" \
-            "$KELD_ROUTE_DOCTEST"
+            "$KELD_ROUTE_DOCTEST" \
+            "$KELD_RESULT_MEDIA" \
+            "$KELD_ROUTE_MEDIA" \
+            "$KELD_RESULT_ROUTER_CONTRACTS"

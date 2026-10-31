@@ -2,3 +2,4 @@ echo 1
 fs 2
 lifecycle 3
 auth 4
+window 5
