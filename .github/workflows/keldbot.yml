@@ -9,20 +9,173 @@ on:                              # DOORBELL — kab jagana hai robot ko 🛎️
   # taur pe padhte hain, kabhi shell/script text mein interpolate nahi hote — same pattern
   # jo oven-sh/bun apne comment-cop.yml/on-slop.yml mein use karta hai.
   pull_request_target:
-    types: [opened, edited, synchronize]   # opened/edited: template; opened/synchronize: size — har job apna type khud chunta hai neeche
+    types: [opened, edited, synchronize]   # existing trusted PR metadata path
+  merge_group:
+    types: [checks_requested]
+    branches: [main] # required gatekeeper/title-lint must exist on queue HEAD
 
 concurrency:                     # ek PR pe do edits jaldi-jaldi ho toh purana run cancel, race/duplicate comment na ho
-  group: keldbot-${{ github.event.pull_request.number }}
+  group: keldbot-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
   cancel-in-progress: true
 
-permissions: {}                  # DEFAULT-DENY! Har job apna kaam ROBOKELD_TOKEN se karta hai,
-                                  # default GITHUB_TOKEN kabhi use hi nahi hota — isko koi power dene ki zaroorat nahi.
+permissions: {}                  # DEFAULT-DENY. PR label/comment steps use ROBOKELD_TOKEN.
+                                  # Merge-group metadata uses a job-scoped read-only GITHUB_TOKEN.
 
 jobs:
+  # One read-only identity owner for both required metadata checks. Resolve
+  # merge_group via GitHub's authenticated queue API, not a guessed PR title,
+  # event commit message, or PR-controlled expression in a script.
+  queue-identity:
+    name: KeldBot queue PR identity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      number: ${{ steps.resolve.outputs.number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+    steps:
+      - name: Resolve exact live singleton queue entry
+        id: resolve
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 pinned
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const {owner, repo} = context.repo;
+            if (owner !== 'gyldlab' || repo !== 'keld') {
+              throw Error('KeldBot rejects another repository');
+            }
+            if (context.eventName === 'pull_request_target') {
+              const pr = context.payload.pull_request;
+              if (!Number.isSafeInteger(pr?.number) || pr.number < 1 ||
+                  !/^[a-f0-9]{40}$/.test(pr?.head?.sha || '')) {
+                throw Error('KeldBot rejects malformed PR event');
+              }
+              core.setOutput('number', String(pr.number));
+              core.setOutput('head_sha', pr.head.sha);
+            } else if (context.eventName === 'merge_group') {
+              const event = context.payload.merge_group;
+              const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+              const ref = /^refs\/heads\/gh-readonly-queue\/main\/pr-([1-9][0-9]*)-[a-f0-9]{8,40}$/;
+              const match = ref.exec(event?.head_ref || '');
+              if (context.payload.action !== 'checks_requested' || !event ||
+                  !match || event.base_ref !== 'refs/heads/main' ||
+                  !sha(event.base_sha) || !sha(event.head_sha) ||
+                  context.ref !== event.head_ref || context.sha !== event.head_sha) {
+                throw Error('KeldBot refuses malformed merge-group provenance');
+              }
+              const number = Number(match[1]);
+              if (!Number.isSafeInteger(number)) throw Error('Invalid queue PR number');
+              const data = await github.graphql(`
+                query($owner: String!, $repo: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    mergeQueue(branch: "main") {
+                      configuration { maximumEntriesToMerge }
+                      entries(first: 100) {
+                        totalCount
+                        pageInfo { hasNextPage }
+                        nodes {
+                          headCommit { oid }
+                          state
+                          pullRequest {
+                            number headRefOid baseRefName state isDraft
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `, {owner, repo});
+              const queue = data?.repository?.mergeQueue;
+              const entries = queue?.entries;
+              if (queue?.configuration?.maximumEntriesToMerge !== 1 ||
+                  !Number.isSafeInteger(entries?.totalCount) ||
+                  entries.totalCount < 1 || entries.totalCount > 100 ||
+                  entries?.pageInfo?.hasNextPage !== false ||
+                  !Array.isArray(entries?.nodes) ||
+                  entries.nodes.length !== entries.totalCount) {
+                throw Error('KeldBot requires a complete queue and a one-PR merge limit');
+              }
+              const matches = entries.nodes.filter(e =>
+                e?.pullRequest?.number === number);
+              if (matches.length !== 1) {
+                throw Error('KeldBot cannot identify exactly one live queue PR');
+              }
+              // The queue entry identifies one live PR. Prior queued PRs may
+              // already be included in the group base; merge limits do not
+              // restrict that build content. The synthetic group SHA is tied
+              // to its live GitHub-owned ref and immutable first parent.
+              const entry = matches[0];
+              const queued = entry.pullRequest;
+              const pr = (await github.rest.pulls.get({
+                owner, repo, pull_number: number,
+              })).data;
+              const current = (await github.rest.git.getRef({
+                owner, repo, ref: event.head_ref.replace(/^refs\//, ''),
+              })).data;
+              const groupCommit = (await github.rest.repos.getCommit({
+                owner, repo, ref: event.head_sha,
+              })).data;
+              if (groupCommit?.sha !== event.head_sha ||
+                  !Array.isArray(groupCommit.parents) ||
+                  groupCommit.parents[0]?.sha !== event.base_sha) {
+                throw Error('KeldBot refuses a group commit with the wrong base parent');
+              }
+              if (pr?.number !== number || pr.state !== 'open' || pr.draft ||
+                  pr.base?.ref !== 'main' ||
+                  pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                  !sha(pr.head?.sha) || pr.head.sha !== queued.headRefOid ||
+                  pr.head.sha !== entry.headCommit?.oid ||
+                  queued.baseRefName !== 'main' || queued.state !== 'OPEN' ||
+                  queued.isDraft !== false ||
+                  !['QUEUED','AWAITING_CHECKS','LOCKED','MERGEABLE'].includes(entry.state) ||
+                  current?.object?.sha !== event.head_sha) {
+                throw Error('KeldBot refuses stale or retargeted queue PR');
+              }
+              core.setOutput('number', String(number));
+              core.setOutput('head_sha', pr.head.sha);
+            } else {
+              throw Error('KeldBot refuses unknown event');
+            }
+
   gatekeeper:                    # job ka internal naam
+
+    # Always publish an actual required result. A failed identity job must
+    # never turn a skipped required check into GitHub's green skip outcome.
+    needs: queue-identity
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest       # GitHub ki free VM — Linux box
     steps:
+      - name: Require authenticated queue identity
+        env:
+          KELD_QUEUE_RESULT: ${{ needs['queue-identity'].result }}
+          KELD_QUEUE_NUMBER: ${{ needs['queue-identity'].outputs.number }}
+          KELD_QUEUE_HEAD: ${{ needs['queue-identity'].outputs.head_sha }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 pinned
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const number = Number(process.env.KELD_QUEUE_NUMBER);
+            if (process.env.KELD_QUEUE_RESULT !== 'success' ||
+                !/^[1-9][0-9]*$/.test(process.env.KELD_QUEUE_NUMBER || '') ||
+                !Number.isSafeInteger(number) ||
+                !/^[a-f0-9]{40}$/.test(process.env.KELD_QUEUE_HEAD || '')) {
+              throw Error('KeldBot cannot admit a failed or missing queue identity');
+            }
+            if (context.eventName === 'pull_request_target' &&
+                (number !== context.payload.pull_request?.number ||
+                 process.env.KELD_QUEUE_HEAD !== context.payload.pull_request?.head?.sha)) {
+              throw Error('KeldBot PR identity changed');
+            }
+            if (context.eventName === 'merge_group' &&
+                context.sha !== context.payload.merge_group?.head_sha) {
+              throw Error('KeldBot queue commit changed');
+            }
       - name: Check PR template sections
+        if: github.event_name == 'pull_request_target'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 -- pinned SHA, not mutable tag
         with:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
@@ -96,8 +249,39 @@ jobs:
 
             core.info("Template complete ✅");
 
+      - name: Validate queued PR template (read-only)
+        if: github.event_name == 'merge_group'
+        env:
+          KELD_QUEUE_NUMBER: ${{ needs['queue-identity'].outputs.number }}
+          KELD_QUEUE_HEAD: ${{ needs['queue-identity'].outputs.head_sha }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 pinned
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const {owner,repo} = context.repo;
+            const number = Number(process.env.KELD_QUEUE_NUMBER);
+            const pr = (await github.rest.pulls.get({owner,repo,pull_number:number})).data;
+            if (!Number.isSafeInteger(number) || pr?.number !== number ||
+                pr.state !== 'open' || pr.draft ||
+                pr.base?.ref !== 'main' || pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                pr.head?.sha !== process.env.KELD_QUEUE_HEAD) {
+              throw Error('KeldBot template recheck refuses changed PR');
+            }
+            const body = pr.body || '';
+            const required = ['Summary','Spec refs','Review gates','Tests','Platforms','Perf impact'];
+            const missing = required.filter(heading => {
+              const match = new RegExp('^##\\s+' + heading + '\\s*$', 'm').exec(body);
+              if (!match) return true;
+              const remainder = body.slice(match.index + match[0].length);
+              const end = remainder.search(/^##\s+/m);
+              const raw = end < 0 ? remainder : remainder.slice(0,end);
+              return !raw.replace(/<!--[\s\S]*?-->/g, '').trim();
+            });
+            if (missing.length) throw Error('Missing queued PR template sections: ' + missing.join(', '));
+            core.info('Queued PR template complete');
+
   size-label:                    # doosra job — PR size (added+deleted lines) ke hisaab se label
-    if: github.event.action != 'edited'   # description edit se diff size nahi badalta, sirf opened/synchronize pe chalao
+    if: github.event_name == 'pull_request_target' && github.event.action != 'edited' # PR-only labels
     runs-on: ubuntu-latest
     steps:
       - name: Apply size/* label
@@ -143,9 +327,43 @@ jobs:
             core.info(`${changed} lines changed -> ${tier.name}`);
 
   title-lint:                    # teesra job — PR title ko conventional-commit format se match karo
+
+    # Always publish an actual required result. A failed identity job must
+    # never turn a skipped required check into GitHub's green skip outcome.
+    needs: queue-identity
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
+      - name: Require authenticated queue identity
+        env:
+          KELD_QUEUE_RESULT: ${{ needs['queue-identity'].result }}
+          KELD_QUEUE_NUMBER: ${{ needs['queue-identity'].outputs.number }}
+          KELD_QUEUE_HEAD: ${{ needs['queue-identity'].outputs.head_sha }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 pinned
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const number = Number(process.env.KELD_QUEUE_NUMBER);
+            if (process.env.KELD_QUEUE_RESULT !== 'success' ||
+                !/^[1-9][0-9]*$/.test(process.env.KELD_QUEUE_NUMBER || '') ||
+                !Number.isSafeInteger(number) ||
+                !/^[a-f0-9]{40}$/.test(process.env.KELD_QUEUE_HEAD || '')) {
+              throw Error('KeldBot cannot admit a failed or missing queue identity');
+            }
+            if (context.eventName === 'pull_request_target' &&
+                (number !== context.payload.pull_request?.number ||
+                 process.env.KELD_QUEUE_HEAD !== context.payload.pull_request?.head?.sha)) {
+              throw Error('KeldBot PR identity changed');
+            }
+            if (context.eventName === 'merge_group' &&
+                context.sha !== context.payload.merge_group?.head_sha) {
+              throw Error('KeldBot queue commit changed');
+            }
       - name: Check PR title format
+        if: github.event_name == 'pull_request_target'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 -- pinned SHA, not mutable tag
         with:
           github-token: ${{ secrets.ROBOKELD_TOKEN }}   # keldrobo ke naam se comment/label post ho, github-actions[bot] se nahi
@@ -221,3 +439,25 @@ jobs:
             }
 
             core.info(`Title OK -> ${typeLabel}`);
+      - name: Validate queued PR title (read-only)
+        if: github.event_name == 'merge_group'
+        env:
+          KELD_QUEUE_NUMBER: ${{ needs['queue-identity'].outputs.number }}
+          KELD_QUEUE_HEAD: ${{ needs['queue-identity'].outputs.head_sha }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9 pinned
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const {owner,repo} = context.repo;
+            const number = Number(process.env.KELD_QUEUE_NUMBER);
+            const pr = (await github.rest.pulls.get({owner,repo,pull_number:number})).data;
+            if (!Number.isSafeInteger(number) || pr?.number !== number ||
+                pr.state !== 'open' || pr.draft ||
+                pr.base?.ref !== 'main' || pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                pr.head?.sha !== process.env.KELD_QUEUE_HEAD) {
+              throw Error('KeldBot title recheck refuses changed PR');
+            }
+            const types = ['feat','fix','docs','test','chore','ci','style','build'];
+            const titleRe = new RegExp('^(' + types.join('|') + ')(\\([\\w./-]+\\))?!?: .+');
+            if (!titleRe.test(pr.title || '')) throw Error('Queued PR title is not conventional');
+            core.info('Queued PR title valid');

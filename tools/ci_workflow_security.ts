@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 
 type Mapping = Record<string, unknown>;
 const baseRef =
-  "${{ github.event.pull_request.base.sha || github.event.before }}";
-const headRef = "${{ github.event.pull_request.head.sha || github.sha }}";
+  "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}";
+const headRef =
+  "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}";
 const windowsMediaOracle = "crates/keld-wv/tests/windows_media_guard.ps1";
 const windowsMediaOracleSha256 =
   "3657f3b87a1f28f7902ba23f74b9492d9194a91b50bd2802ece9ffeab0f6ff47";
@@ -950,19 +951,28 @@ function checkWorkflowAdmission(workflow: Mapping): void {
     );
   }
   const pushTrigger = mapping(push, "workflow.on.push");
+  const groupTrigger = mapping(triggers.merge_group, "workflow.on.merge_group");
   if (
-    Object.keys(triggers).length !== 2 ||
+    Object.keys(triggers).length !== 3 ||
     !Object.hasOwn(triggers, "push") ||
     !Object.hasOwn(triggers, "pull_request") ||
+    !Object.hasOwn(triggers, "merge_group") ||
     triggers.pull_request !== null ||
     Object.keys(pushTrigger).length !== 1 ||
     !Object.hasOwn(pushTrigger, "branches") ||
     !Array.isArray(pushTrigger.branches) ||
     pushTrigger.branches.length !== 1 ||
-    pushTrigger.branches[0] !== "main"
+    pushTrigger.branches[0] !== "main" ||
+    Object.keys(groupTrigger).length !== 2 ||
+    !Array.isArray(groupTrigger.types) ||
+    groupTrigger.types.length !== 1 ||
+    groupTrigger.types[0] !== "checks_requested" ||
+    !Array.isArray(groupTrigger.branches) ||
+    groupTrigger.branches.length !== 1 ||
+    groupTrigger.branches[0] !== "main"
   ) {
     fail(
-      "CI workflow must run on main pushes and all pull requests without filters.",
+      "CI workflow must run on main pushes and all pull requests without filters, and checks_requested merge groups on main.",
     );
   }
 
@@ -1345,10 +1355,13 @@ export function checkWorkflowSecurity(source: string): void {
     mapping(classifier.env, "changes classifier env"),
     {
       KELD_CI_EVENT_NAME: "${{ github.event_name }}",
-      KELD_CI_BASE_SHA: "${{ github.event.pull_request.base.sha || '' }}",
+      KELD_CI_BASE_SHA:
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}",
       KELD_CI_HEAD_SHA:
-        "${{ github.event.pull_request.head.sha || github.sha }}",
+        "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}",
       KELD_CI_BEFORE_SHA: "${{ github.event.before || '' }}",
+      KELD_CI_GROUP_BASE_REF: "${{ github.event.merge_group.base_ref || '' }}",
+      KELD_CI_GROUP_HEAD_REF: "${{ github.event.merge_group.head_ref || '' }}",
     },
     "change router classifier must run the reviewed command and source",
   );
@@ -1856,7 +1869,7 @@ export function checkWorkflowSecurity(source: string): void {
     fail(changesContract);
   }
   const routerStepsSha256 =
-    "38cd11beea7e6a508709d8263e0ce6d8c95c0da92fd623292ca490acd8ea3cbe";
+    "a27287955c380a6f349a300a390b2eb3a545966ce7963f01890e959f2cc08d6c";
   if (
     createHash("sha256")
       .update(JSON.stringify(classifierSteps))

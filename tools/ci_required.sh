@@ -80,6 +80,21 @@ check_results() {
     require_success "dependency review" "${25}" || return 1
     require_routed_result "workspace path and process contracts" "${26}" "${27}" || return 1
     require_push_codeql "${28}" "${22}" "${23}" "${24}" || return 1
+    if [[ "${28}" == merge_group ]]; then
+        # The queue commit combines prior queued changes. Every lane must run;
+        # a green aggregator with skipped work would be false evidence.
+        local route
+        for route in "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${22}" "${23}" "${24}" "${27}" "${32}" "${34}"; do
+            if [[ "$route" != true ]]; then
+                fail "merge_group must select every CI lane, got '$route'."
+                return 1
+            fi
+        done
+        if [[ "${29}" != false || "${30}" != "$ALL_CHECK_OS" ]]; then
+            fail "merge_group must run every check OS without documentation-only narrowing."
+            return 1
+        fi
+    fi
     require_check_os "${11}" "${29}" "${30}" || return 1
     # Doctests are a Rust lane (#632): selected only within a Rust selection.
     if [[ "${32}" == true && "${11}" != true ]]; then
@@ -97,24 +112,24 @@ check_results() {
     require_routed_result "Windows WebView2 media acceptance" "${33}" "${34}" || return 1
 }
 
-# A push to main must analyse every CodeQL language; this does not trust the
-# router to have said so (#624). Only the workflow's own triggers are admitted.
+# Push and merge-group commits must analyse every CodeQL language. GitHub
+# queue groups can combine multiple PRs, so a partial route is unsafe.
 require_push_codeql() {
     local event="$1"
     shift
     case "$event" in
-        push)
+        push | merge_group)
             local route
             for route in "$@"; do
                 if [[ "$route" != true ]]; then
-                    fail "a push must select every CodeQL language, got routes '$*'. Restore the router's push selection; main needs a complete baseline."
+                    fail "a push or merge_group must select every CodeQL language, got routes '$*'. Restore the router's push selection; main needs a complete baseline."
                     return 1
                 fi
             done
             ;;
         pull_request) ;;
         *)
-            fail "unsupported event '$event' for the required result. The workflow runs on push and pull_request only; review this evaluator before adding a trigger."
+            fail "unsupported event '$event' for the required result. The workflow runs on push, pull_request and merge_group only."
             return 1
             ;;
     esac
@@ -416,6 +431,46 @@ router_contract_self_test() {
     echo "ok: independent router contract tests cannot disappear or false-green"
 }
 
+merge_group_self_test() {
+    # This group includes the whole queue candidate, not merely the last PR:
+    # even a docs-only change must not skip any lane or native OS.
+    local -a group=(
+        success success success success success success success success success success
+        true true true true true true true true
+        success success success true true true
+        success success true merge_group false "$ALL_CHECK_OS"
+        success true success true success
+    )
+    expect_pass "authenticated merge-group full matrix admits CI required" "${group[@]}"
+    local index
+    local -a mutated
+    # Each of the routes is required, including docs/Mermaid/hygiene, workspace,
+    # CodeQL, doctests and the separate WebView2 media acceptance gate.
+    for index in 11 12 13 14 15 16 17 18 22 23 24 27 32 34; do
+        mutated=("${group[@]}")
+        mutated[index - 1]=false
+        expect_fail "merge_group cannot skip required route $index" "${mutated[@]}"
+    done
+    for index in 1 2 7 10 19 25 26 31 33 35; do
+        mutated=("${group[@]}")
+        mutated[index - 1]=skipped
+        expect_fail "merge_group cannot skip required result $index" "${mutated[@]}"
+    done
+    mutated=("${group[@]}")
+    mutated[28 - 1]=pull_request
+    expect_pass "existing pull request still admits a full matrix" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[29 - 1]=true
+    expect_fail "merge_group cannot narrow rust to documentation-only" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[30 - 1]="$DOCUMENTATION_CHECK_OS"
+    expect_fail "merge_group cannot narrow native OSes" "${mutated[@]}"
+    mutated=("${group[@]}")
+    mutated[28 - 1]=workflow_dispatch
+    expect_fail "merge_group evaluator rejects unrelated event" "${mutated[@]}"
+    echo "ok: required CI aggregator refuses skipped merge-group lanes, results and OSes"
+}
+
 self_test() {
     expect_pass "all applicable jobs succeed" \
         success success success success success success success success success \
@@ -487,6 +542,7 @@ self_test() {
     doctest_self_test
     windows_media_self_test
     router_contract_self_test
+    merge_group_self_test
 
     echo "ci-required contract tests ok"
 }

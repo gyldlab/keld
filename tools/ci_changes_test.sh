@@ -741,6 +741,53 @@ expect_package_token "pull-request base/head selects changed package" keld-runti
 expect_output_package_token "pull-request base/head selects the same Ubuntu package" ubuntu_packages keld-runtime "$pr_result"
 expect_exact_output "pull-request Rust change selects the doctest lane" doctest true "$pr_result"
 expect_exact_output "pull-request Rust change doctests its library package" doctest_packages keld-runtime "$pr_result"
+
+# GitHub's merge_group event is a synthetic queue commit with a privileged
+# SHA/ref contract, not a PR diff. The router must select every actual CI
+# lane even if this particular group changes only a documentation file.
+queue_ref="refs/heads/gh-readonly-queue/main/pr-1340-$base_sha"
+group_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" \
+    KELD_CI_EVENT_NAME=merge_group KELD_CI_GROUP_BASE_REF=refs/heads/main \
+    KELD_CI_GROUP_HEAD_REF="$queue_ref" KELD_CI_BASE_SHA="$base_sha" \
+    KELD_CI_HEAD_SHA="$runtime_sha" GITHUB_SHA="$runtime_sha" "$router" github)"
+expect_flags "exact merge_group event runs every legacy CI lane" "$all_true" "$group_result"
+expect_codeql "merge_group analyses every CodeQL language" "$codeql_all" "$group_result"
+expect_exact_output "merge_group checks all three OSes" check_os "$check_os_all" "$group_result"
+expect_exact_output "merge_group includes doctests" doctest true "$group_result"
+expect_exact_output "merge_group includes WebView contract checks" workspace true "$group_result"
+expect_ubuntu_runs_every_package "merge_group includes every GTK-linked package" "$group_result"
+
+# Trust must come from the real merge-group event. A missing/mismatched SHA,
+# wrong base/queue branch or non-main group must exit non-zero without any
+# GitHub router output, including fail-open 'everything skipped' results.
+for malformed in wrong-main wrong-ref wrong-head mismatch-sha missing-base; do
+    export KELD_CI_EVENT_NAME=merge_group
+    export KELD_CI_GROUP_BASE_REF=refs/heads/main
+    export KELD_CI_GROUP_HEAD_REF="$queue_ref"
+    export KELD_CI_BASE_SHA="$base_sha"
+    export KELD_CI_HEAD_SHA="$runtime_sha"
+    export GITHUB_SHA="$runtime_sha"
+    case "$malformed" in
+        wrong-main) KELD_CI_GROUP_BASE_REF=refs/heads/develop ;;
+        wrong-ref) KELD_CI_GROUP_HEAD_REF=refs/heads/attacker/main ;;
+        wrong-head) KELD_CI_HEAD_SHA="c${runtime_sha:1}" ;;
+        mismatch-sha) GITHUB_SHA="d${runtime_sha:1}" ;;
+        missing-base) KELD_CI_BASE_SHA='' ;;
+    esac
+    export KELD_CI_GROUP_BASE_REF KELD_CI_GROUP_HEAD_REF KELD_CI_BASE_SHA KELD_CI_HEAD_SHA GITHUB_SHA
+    rm -f "$temp_dir/target/group-output"
+    if group_error="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" \
+        GITHUB_OUTPUT="$temp_dir/target/group-output" "$router" github 2>&1)"; then
+        echo "FAIL: malformed merge_group $malformed succeeded" >&2
+        exit 1
+    fi
+    if [[ -f "$temp_dir/target/group-output" ]] || grep -q '^rust=' <<<"$group_error"; then
+        echo "FAIL: malformed merge_group $malformed emitted a CI route" >&2
+        exit 1
+    fi
+    unset KELD_CI_EVENT_NAME KELD_CI_GROUP_BASE_REF KELD_CI_GROUP_HEAD_REF KELD_CI_BASE_SHA KELD_CI_HEAD_SHA GITHUB_SHA
+    echo "ok: malformed merge_group $malformed cannot publish CI routes"
+done
 # Push mode: a Rust change selects doctests; the docs-only push below is the
 # negative control, and so is this push's own no-library case further down.
 push_rust_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=push KELD_CI_BEFORE_SHA="$base_sha" GITHUB_SHA="$runtime_sha" "$router" github)"
