@@ -40,10 +40,10 @@ Before completion or handoff:
   Unresolved work requires a bounded handoff; MUST NOT label the whole session complete.
 - Run `just session-closeout <receipt>` after the final state change. Publish receipt,
   baseline and hashed evidence to the owning remote record; verify its tip before
-  local copies are disposable; no machine holds the only evidence copy.
+  local copies are disposable; no machine holds the only copy.
   `tools/session_closeout.py` owns the receipt format. Reconcile baseline with
-  conversation/tool history; the validator cannot find omitted work or authenticate an
-  agent-written remote receipt. Re-read remote state first.
+  conversation/tool history; the validator cannot discover omitted work or authenticate
+  an agent-written remote receipt. Re-read remote state.
 
 Interruptions preserve inventory/next action; refresh on resume.
 Prior receipts do not prove new-turn completion; checked handoff is not implementation.
