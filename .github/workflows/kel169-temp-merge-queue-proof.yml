@@ -1,0 +1,16 @@
+# Disposable KEL-169 merge-queue provider proof. Never merge this to main.
+name: KEL-169 temporary merge queue proof
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+permissions:
+  contents: read
+jobs:
+  queue-acceptance:
+    name: queue-acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Non-executable status marker
+        run: echo 'disposable merge-queue required check passed'
