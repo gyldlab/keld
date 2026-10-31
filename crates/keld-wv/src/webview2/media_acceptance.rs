@@ -1014,6 +1014,21 @@ mod tests {
 
     mod first_navigation;
 
+    /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
+    /// so loop entry arms no Init watch.
+    fn run_renderer_until_quit(
+        engine: WebView2Engine,
+        commands: mpsc::Receiver<crate::AppWindowCommand>,
+        events: mpsc::Sender<crate::AppWindowEvent>,
+    ) -> Result<(), WvError> {
+        engine.run_app_until_quit(
+            commands,
+            events,
+            crate::webview2::AppReadyTrigger::NavigationReady,
+            || {},
+        )
+    }
+
     #[test]
     fn media_http_idle_preconnect_cannot_block_page_and_release() {
         use std::net::TcpStream;
@@ -1164,12 +1179,7 @@ mod tests {
         commands_tx
             .send(crate::AppWindowCommand::Quit)
             .map_err(|_| failure("queue fixture Quit"))?;
-        engine.run_app_until_quit(
-            commands_rx,
-            mpsc::channel().0,
-            super::AppReadyTrigger::NavigationReady,
-            || {},
-        )
+        run_renderer_until_quit(engine, commands_rx, mpsc::channel().0)
     }
 
     fn assert_saved_media_state(
@@ -1534,12 +1544,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         commands_tx
             .send(crate::AppWindowCommand::Quit)
             .map_err(|_| failure("queue saved fixture Quit"))?;
-        engine.run_app_until_quit(
-            commands_rx,
-            mpsc::channel().0,
-            super::AppReadyTrigger::NavigationReady,
-            || {},
-        )?;
+        run_renderer_until_quit(engine, commands_rx, mpsc::channel().0)?;
         // Signed acceptance phases share the caller's run-owned profile root
         // across camera and microphone cases. Their owner purges the exact
         // authenticated identity after both cases complete.
@@ -1806,12 +1811,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             restart_tx
                 .send(crate::AppWindowCommand::Quit)
                 .map_err(|_| failure("queue seeded-profile Quit"))?;
-            engine.run_app_until_quit(
-                restart_rx,
-                mpsc::channel().0,
-                super::AppReadyTrigger::NavigationReady,
-                || {},
-            )?;
+            run_renderer_until_quit(engine, restart_rx, mpsc::channel().0)?;
 
             let mut engine =
                 profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
@@ -1849,12 +1849,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             commands_tx
                 .send(crate::AppWindowCommand::Quit)
                 .map_err(|_| failure("queue fixture Quit"))?;
-            let result = engine.run_app_until_quit(
-                commands_rx,
-                mpsc::channel().0,
-                super::AppReadyTrigger::NavigationReady,
-                || {},
-            );
+            let result = run_renderer_until_quit(engine, commands_rx, mpsc::channel().0);
             if result.is_ok() {
                 std::fs::remove_dir_all(&root).map_err(failure)?;
             } else {
