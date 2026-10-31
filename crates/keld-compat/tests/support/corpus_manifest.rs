@@ -323,8 +323,23 @@ pub const NATIVE_V1: Registration = Registration {
     ],
 };
 
+/// GH-565 (F06-T8) link-time named bindings of the pinned v44.4.5 main-process modules
+/// draw.io imports. The facade is platform-neutral and the mapped Bun cases open no Host
+/// link, so every cell declares all three lanes; member behaviour is never scored here.
+pub const MAIN_BINDINGS_V1: Registration = Registration {
+    corpus_id: "electron-main-bindings-v1",
+    fixture_dir: "fixtures/main-bindings-corpus",
+    shape: Shape::V1,
+    platforms: &[Platform::Macos, Platform::Linux, Platform::Windows],
+    targets: &[TestTarget {
+        path: "packages/@keld/electron/src/module-bindings.test.ts",
+        runner: Runner::Bun,
+    }],
+};
+
 /// Every committed corpus. A consumer appends one entry (gh566 §4.4).
-pub const REGISTRY: &[Registration] = &[LIFECYCLE_V0, WINDOW_V1, APP_V1, NATIVE_V1];
+pub const REGISTRY: &[Registration] =
+    &[LIFECYCLE_V0, WINDOW_V1, APP_V1, NATIVE_V1, MAIN_BINDINGS_V1];
 
 /// Parent of the one doc-snapshot store, relative to `crates/keld-compat`. Every v1
 /// corpus reads its cited pages from `<SNAPSHOT_ROOT>/<SNAPSHOT_DIR>/<commit>/<page>`
