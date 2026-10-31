@@ -12,6 +12,7 @@
 
 import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
+import { ipcMain } from "./ipc-main";
 
 /** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
 export const ELECTRON_VERSION_SHIM = "0.0.1";
@@ -27,6 +28,7 @@ Object.defineProperty(proc, "type", {
 });
 
 export { app, BrowserWindow };
+export { ipcMain };
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
@@ -36,6 +38,14 @@ export type {
   WebPreferences,
 } from "./browser-window";
 export { isCallError, type KeldCallError } from "./link";
+export type {
+  IpcMain,
+  IpcMainEvent,
+  IpcMainInvokeEvent,
+  IpcMainInvokeHandler,
+  IpcMainListener,
+  WebFrameMain,
+} from "./ipc-main";
 
-const electron = { app, BrowserWindow };
+const electron = { app, BrowserWindow, ipcMain };
 export default electron;
