@@ -93,11 +93,13 @@ archive; a later pass does not replace the original failed result.
    Replacing project source after capture does not re-stage or change the next
    generation. Existing fresh principal/token, stale-generation refusal and
    permission-snapshot behavior retain their separate KEL-75/KEL-78 tests.
-8. **Package identity:** when a qualified installed graph is supplied by its
+8. **Package/startup identity:** when a qualified installed graph is supplied by its
    existing owner, preserve its relative layout and actual resolver/importer
    identity. Re-run that owner's identity matrix from the produced stage before
    accepting its compatibility consumer. Missing/unqualified graphs and unsupported
    file/link kinds are blockers; copied package bytes alone never imply admission.
+   Package/configuration/environment/preload inputs that affect startup must be
+   qualified by their existing owners before evaluation; file presence is not proof.
 9. **Renderer honesty:** keep the inline renderer behavior unchanged in this Bun
    staging slice. A copied stylesheet/image is not evidence that WebView URL
    delivery works. Preserve the generic inline fixture's actual states and the
@@ -131,6 +133,11 @@ Do not invent a graph-qualified flag or approval registry for packaging.
 ### Source paths and capture
 
 The canonical project root already selected by the CLI is the source root.
+The selected tree must be qualified by the existing source/installed-graph and
+role-startup owners for any startup-affecting inputs. The exact existing
+qualification interface for that general tree remains an explicit draft
+unknown below; this text does not invent one or claim it exists. Ordinary
+relative-file verification did not exercise such configuration or package graphs.
 The configured relative entry path remains unchanged. Copy the selected tree
 beneath the random stage root with that same relative path, so an entry at
 `src/main/electron.js` and its local siblings retain their relative relationship.
@@ -155,9 +162,13 @@ Source selection has one owner in `boot.rs`:
   or other producer-created leaves as typed refusal, not overwrite.
 - Deduplicate the existing configured entry, renderer and canonical transport
   selections within that same capture/copy owner. Do not mirror three copy paths.
-- Ordinary package manifests, lockfiles and installed files are data with their
-  original bytes/layout, not new resolver configuration. This slice rejects
-  unsupported link kinds and does not upgrade an installed graph to qualified.
+- Preserve admitted package/lock bytes and layout, but do not call package
+  manifests, TypeScript path settings, Bun preloads or environment files inert:
+  they can affect resolution and execution. Their effective source/importer and
+  startup environment require the existing GH499/GH502/GH593/KEL-75 owners'
+  qualification. Do not add a competing parser, filename bypass or auto-grant.
+  This draft selects no new configuration, preload or environment-loading policy.
+  Unsupported link kinds remain refused; copying cannot upgrade qualification.
 
 Use the current new-file/0400 staged-byte rule and private nonce/cleanup owner.
 Do not make source files writable, follow an escape, auto-install dependencies,
@@ -264,13 +275,33 @@ not an application performance benchmark.
 
 ## 10. Open questions
 
-1. Exact-text approval of this bounded macOS regular-file tree contract. Rejecting
+1. **Source/startup admission interface — implementation blocker, not a fabricated
+   completed closure.** GH499/source admission, GH502 installed graph and
+   GH593/KEL-75 role-startup owners must identify the existing qualification
+   consumed by the sole stage producer, including effective package/path config,
+   preload and environment inputs before evaluation. The exact owner action is
+   to bind that input selection and refusal contract to this source-tree scope;
+   its first check substitutes a startup preload/path redirect and must refuse
+   before its sentinel executes. No such artifact is proven by this fixture.
+   Until that contract is supplied, keep this draft unapproved for general-tree
+   production implementation; do not silently copy or silently discard active
+   configuration, and do not author a second resolver or config checker.
+2. Exact-text approval of this bounded macOS regular-file tree contract. Rejecting
    all symlinks is deliberate for the first slice; a qualified installed graph
    requiring links remains blocked until its owner approves/proves a supported
    representation. Do not invent a flattening or resolver workaround.
-2. KEL-79's renderer resource/origin implementation and Linux/Windows source-tree
+3. KEL-79's renderer resource/origin implementation and Linux/Windows source-tree
    containment are separate owner decisions and unrun platform qualifications,
    not conditions this documentation may silently declare complete.
 
 No production change, Drawio attempt, installation, product score or release is
 approved by publishing this draft.
+
+Current-documentation receipt (2026-10-31): Context7 discovery
+`/oven-sh/bun` queried runtime configuration/preload/environment and path
+remapping. Official Bun1.4.4 documentation confirms
+[runtime preloads/configuration](https://bun.sh/docs/runtime/bunfig#preload),
+[automatic environment-file loading](https://bun.sh/docs/runtime/environment-variables),
+and [package/path resolution](https://bun.sh/docs/runtime/module-resolution).
+Supported claim: these are active startup/resolution inputs, not inert copied
+data. No new loader mechanism is selected; the owning qualification is unknown.
