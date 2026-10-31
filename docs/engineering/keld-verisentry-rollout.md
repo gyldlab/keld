@@ -125,6 +125,7 @@ verified through GitHub's Checks API, not just color or job name.
 | [#1329](https://github.com/gyldlab/keld/pull/1329) 300 changed files | [FAIL](https://github.com/gyldlab/keld/runs/124444421429) |
 | #1327 attempted to replace the candidate-owned `ci-provenance.yml` verifier | [FAIL](https://github.com/gyldlab/keld/runs/124445133963), proving protected-main bytes still won |
 | #1326 force-pushed A→B→A | [stale B failed](https://github.com/gyldlab/keld/actions/runs/41169908971); [restored A passed](https://github.com/gyldlab/keld/actions/runs/41169909694) |
+| [#1334](https://github.com/gyldlab/keld/pull/1334) genuine existing `amishabenramani/keld` fork PR | [PASS](https://github.com/gyldlab/keld/runs/124462984811) from source App ID 5550363 on fork PR's synthetic test-merge SHA; protected main workflow and environment ran normally |
 
 **Additional native required-source canary (no main change):** a temporary
 active ruleset required `KELD VeriSentry` from App ID 5550363 on a disposable
@@ -135,10 +136,16 @@ that temporary branch with safe [#1332](https://github.com/gyldlab/keld/pull/133
 protected `main` SHA remained unchanged. The canary ruleset and all its
 branches were deleted afterward. The production ruleset remains **disabled**.
 
-GitHub refused a literal 40-hex-only branch name with HTTP 422. A genuinely
-distinct-fork hosted probe remains unverified because the Amisha fork's
-connected integration returned write HTTP 403. Never mark these as passing
-hosted test cases.
+GitHub refused a literal 40-hex-only branch name with HTTP 422; that
+specific SHA-like-branch event cannot be tested as such. The genuine external
+fork test succeeded **without fork-write access** by opening a temporary draft
+PR from an already-existing unchanged public Amisha fork branch: [#1334](https://github.com/gyldlab/keld/pull/1334).
+Protected-main [run 41175779113](https://github.com/gyldlab/keld/actions/runs/41175779113)
+verified and published [check 124462984811](https://github.com/gyldlab/keld/runs/124462984811)
+from App ID 5550363, `conclusion=success`, on GitHub test merge
+`bdff52b5587862bf9789889a861d9e70c094b6e5` (not candidate fork HEAD).
+It was closed **without merge**, and the fork branch was not modified or
+deleted. No additional public fork, server or local worktree was created.
 
 ## Legitimate CI maintenance without a mutable App PASS
 
@@ -184,7 +191,10 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
    Confirm the protected-main `push` trigger, next daily schedule, first-run
    protection and four-day renewal threshold; test stale-workflow rerun
    rejection against a newer main commit.
-3. Qualify distinct-fork isolation when a write-enabled fork is available.
+3. Confirm the genuine existing-fork isolation [#1334](https://github.com/gyldlab/keld/pull/1334)
+   receipt, independent App source 5550363 and exact test-merge SHA. That
+   hosted security proof passed; requalify after key rotation or material
+   changes to event/environment isolation.
    Reconfirm default-main source, restricted environment, stale PR handling,
    duplicate PR head/merge identity, the forged-same-name scenario and a
    live PR-only authorized bypass. Do not claim absent evidence as verified.
