@@ -1,11 +1,13 @@
 # Spec: `app` session facts — fail-closed facade half and Host-minted delivery (GH-452)
 
-Status: draft
+Status: approved (T1, T2a and version/path T2b; locale/full T2/T3 remain pending)
 Linear: GH-452 (#517) · Owner: @0monish · Updated: 2026-11-01
-Disposition: **DRAFT / DO NOT MERGE.** Implementation commits for T1 ride behind this
-spec in the same draft PR for review only. Exact-text approval of this document is the
-gate for merging T1; T2 and T3 additionally need the KEL-96 schema owner and the KEL-75
-spawn owner decisions recorded in §10.
+Disposition: **DO NOT MERGE until independent review and all execution gates pass.**
+The owner delegated technical decisions and continuation on 2026-11-01; the bounded
+decision is recorded on GH452 comment 6549729612. That delegation approves the T1
+contract and T2a in §11, not independent review, execution evidence or full T2/T3.
+PR1362 comment 6550291308 extends the delegated decision to §12 after independent
+architecture review; exact implementation review and execution gates remain required.
 
 ## 1. Goal & non-goals
 
@@ -165,7 +167,7 @@ T3 (declared role environment; blocked on §10 Q5). Restated from the issue.
 
 | Member | Electron source of the value | Keld owner of the value | Why the Bun role cannot mint it honestly at `b72e4c19` |
 |---|---|---|---|
-| `getPath(name)` | Chromium path service; `userData` = `appData` + app name | Host: paths are grants (`03-security.md` §2); `appData` needs `HOME`, which the issue forbids the facade to read | Reading `HOME`/`XDG`/`APPDATA` mints filesystem authority outside the Host and is decoy-sensitive; `name` is itself undelivered |
+| `getPath(name)` | Chromium path service; `userData` = `appData` + app name | Host owns path provenance; a returned string is not a grant | Role-side HOME/XDG/APPDATA lookup is decoy-sensitive and violates the one-owner value contract; access authority is a separate boundary |
 | `getVersion()` | loaded app's `package.json` `version` | Host via a schema-v1 field (`version` does not exist in schema v1; adding it is a KEL-96/KEL-15 change) | `keld dev` stages only the entry and the kipc sidecar (`crates/keld-cli/src/boot.rs:475-482`); no `package.json` is staged; walking up from the staged entry crosses the launch root (a layout coincidence under dev, denied under strict `/app`) |
 | `getName()` / `name` | `package.json` `name` or `productName` | Host: the compiled descriptor `name` (issue text; `boot.rs:521`) | The role receives no descriptor value; parsing `keld.boot.json` in the role would be a duplicate parser of a Host-owned schema (GH499 A18) |
 | `getAppPath()` | app directory | Host: the launch root it staged | `dirname(Bun.main)` is `src/`, not the app directory; the launch root is not delivered |
@@ -198,7 +200,7 @@ role; no handle, queue or copy is introduced.
   exists for T3. T2 must choose one carrier (§10 Q1) and must not add a second
   environment path (issue text).
 - Rejected alternatives, each recorded with the reason: derive `userData` from
-  `~/Library/Application Support/<name>` in Bun (authority minted outside the Host;
+  `~/Library/Application Support/<name>` in Bun (wrong value-provenance owner;
   reads `HOME`; needs undelivered `name`); read `package.json` by walking up from the
   entry (not a contract; crosses the launch root; decoy-sensitive); `Intl` locale
   (Bun-process observable, not the webview locale; see the measurement above); constant
@@ -374,3 +376,99 @@ steady-state allocation.
    and `userDesktop`, which the pinned page does not document, and limits `assets` and
    `recent` by platform. T1 treats the documented list as the oracle. Should the T2
    payload carry the undocumented names, and per-platform absence?
+
+## 11. T2a — existing development-launch facts only
+
+This bounded vertical slice does not add a boot-descriptor field. It consumes the
+already validated descriptor `name`, canonical stage root, and actual development
+lease. It enables `getName`/`name`, `getAppPath` and `isPackaged` on the macOS development
+path only. Missing facts keep the T1 refusal. Version, OS paths, locale, user arguments,
+declared environment, installed launch and Windows/Linux delivery remain unimplemented.
+
+The generic Core record is closed JSON:
+`{ "schema": 1, "kind": "development", "name": string, "root": string }`.
+Only the retained validated Core selection and an admitted live dev lease mint it.
+It contains no token, principal, grant or Electron-specific routing rule. The record
+is at most 16 KiB UTF-8; name/root must be nonempty, NUL-free, each at most 4096 bytes;
+root must be absolute. A legacy launch with no dev lease has no record, not a fabricated
+packaged-state verdict. No filesystem authority is added by disclosing the stage path.
+
+Core serializes once into the existing private Guardian invocation. Guardian decodes
+with Core's closed parser, refuses duplicate/unknown/type/version errors and a root
+different from its validated stage, then retains the record across Bun generations.
+The optional eighth private argument carries this record; the seven-argument historical
+form has no facts. It is not a public CLI option or a new bootstrap environment variable.
+
+Before the entry argument, Guardian supplies one Bun parse-time constant,
+`__KELD_HOST_LAUNCH_FACTS__`, and retains the existing canonical transport preload.
+The self-contained canonical transport captures and freezes a copied four-field record
+before app imports. Absent input produces no facts; malformed present input throws
+`KELD-IPC-029`. There is no public setter and no process.env fallback. Runtime config
+refusal and BUN_OPTIONS removal remain unchanged. The installed graph must still prove
+that the facade consumes the admitted transport instance; source-only proof is scoped.
+
+Guardian explicitly defines the reserved constant as `undefined` when its private
+record is absent, including historical launches without a sidecar. An application's
+same-named global cannot turn that absence into delivered facts. A standalone Bun
+invocation without either Host-selected constants or the canonical preload is not a
+qualified launch and has no Host-provenance guarantee.
+
+The facade returns the captured name/root and maps `kind: development` to
+`isPackaged=false`. It does not infer mode from a pathname, argv or missing input.
+Other getters continue to throw 040. T1's absent-payload tests remain valid. No complete
+GH452 or Draw.io corpus cell is flipped from this partial slice.
+
+Acceptance: strict Rust producer/parser tests; pre-entry canonical capture and facade
+tests with omission, malformed and post-capture mutation controls; actual shipping
+no-flag Mac Host delivery observed before Ready, followed by authenticated Quit and
+cleanup. Synthetic define values do not prove the Host producer. Exact-tip formatting,
+Clippy, full tests, generated-doc checks and independent public-API/private-startup
+review remain merge gates. T2a changes no kipc frame/channel or permission policy.
+
+Settled decisions: Q1 uses the existing qualified constant/preload path; Q3 preserves
+the compiled name without adding productName; Q6 retains typed absence; Q7 keeps the
+already published 040–042 assignments; Q8 permits honest re-recording while verdicts
+stay fail. Q2/Q4/Q5/Q9 remain with the remaining value-producing slices, not reasons to
+fabricate a version, locale, path or declared environment in this change.
+
+## 12. T2b — explicit version and macOS directory facts
+
+The current literal template may declare one root `version` string. The existing
+root-property scanner and config capture own its extraction; no configuration code
+is evaluated. Present values must be nonempty, NUL-free UTF-8 strings of at most
+4096 bytes. Null, expressions, duplicate keys, accessors, computed keys and ambiguous
+roots are rejected. An omitted value remains omitted, not a package.json or framework
+version fallback. The compiler inserts this optional metadata into the existing boot
+descriptor and Core retains it with the admitted selection. Descriptor bytes without
+the field remain unchanged. This is additive metadata, not a new numeric schema:
+KEL78's profile schemas 3/4 and the graph owner must remain coordinated separately.
+
+Core captures Application Support and Documents through the pinned Foundation
+`NSSearchPathForDirectoriesInDomains` safe API in the user domain, with tilde expansion.
+An unavailable directory result remains absent. Present directory values must be
+bounded, NUL-free absolute paths. `userData` is the captured Application Support path
+joined with the compiled name only when that name is exactly one normal component;
+an unsafe name leaves only `userData` absent. No directory is created, no environment
+variable is consulted, and disclosing any path grants no filesystem access. Native
+references: Apple's `NSApplicationSupportDirectory`/`NSDocumentDirectory` contracts
+and the pinned objc2-foundation 0.3.2 safe wrapper; Electron v44.4.5 `app.getPath` defines
+the appData/name relationship. Permission checks remain solely with Guard.
+
+The private facts carrier uses schema 2 with the schema-1 required fields, an optional
+`version`, and a required closed `paths` object containing only optional `appData`,
+`userData`, and `documents` strings. Schema 1 remains readable and rejects those added
+fields. Present null values are invalid; absent optional fields retain typed 040.
+The existing 16 KiB record bound and 4096-byte field bounds still apply. Core captures
+once; Guardian validates and replays that same record through Bun recovery. Canonical
+transport makes a fresh immutable copy, including the nested paths object.
+Both copies have no prototype, so later application prototype writes cannot supply
+an omitted version or directory value. A present `paths` must be an own data field;
+inherited fields and getters are not startup input. Both private JSON boundaries
+require objects, not positional arrays, while retaining duplicate-key rejection.
+
+Acceptance adds literal-parser and strict-descriptor controls, real compiler output,
+native Foundation results, unsafe-name/path and partial-absence controls, malformed
+nested input, before-Ready delivery, and actual Bun restart with unchanged values.
+Q2 selects explicit version only; Q9 remains bounded to the documented three paths.
+Locale, other paths, installed delivery and declared environment remain outside this
+slice. No complete Draw.io or all-facts corpus cell may be promoted on this proof.

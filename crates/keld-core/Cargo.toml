@@ -32,6 +32,8 @@ nix = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
+# GH452 native directory data reuses the pinned safe Foundation path API; no grants.
+objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString", "NSPathUtilities"] }
 core-foundation = { workspace = true }
 getrandom = { workspace = true }
 sha2 = { workspace = true }

@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:11703ad7b5efccc74227e166d225a2628813a1c958391cc77d62547b3c8194a9
+// @keld/kipc-transport sha256:599ffeff3ce5f805a432d78f13093babe95566f7a11ea9c3b47cd0638503b84b
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -31,6 +31,119 @@ import { isProxy } from "node:util/types";
 /** @internal Host-selected launch mode captured by the qualified native preload. */
 export const nativeFacadeBootSelected =
   process.env.KELD_NATIVE_WINDOW_FACADE === "1";
+
+// A parse-time constant on the qualified Host path, not an environment carrier.
+declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
+
+/** @internal Non-authority data from a validated macOS development launch. */
+export interface HostLaunchFacts {
+  readonly schema: 1 | 2;
+  readonly kind: "development";
+  readonly name: string;
+  readonly root: string;
+  readonly version?: string;
+  readonly paths?: Readonly<
+    Partial<Record<"appData" | "userData" | "documents", string>>
+  >;
+}
+
+function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
+  if (value === undefined) return undefined;
+  const invalid = (): never => {
+    throw Object.assign(
+      new Error(
+        "KELD-IPC-029: invalid Host launch facts; restage through the qualified Host startup path",
+      ),
+      { code: "KELD-IPC-029" },
+    );
+  };
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    isProxy(value)
+  )
+    return invalid();
+  const keys = Reflect.ownKeys(value);
+  const required = ["schema", "kind", "name", "root"];
+  const allowed = [...required, "version", "paths"];
+  if (
+    required.some((key) => !keys.includes(key)) ||
+    keys.some((key) => typeof key !== "string" || !allowed.includes(key))
+  )
+    return invalid();
+  for (const key of keys) {
+    if (!Object.getOwnPropertyDescriptor(value, key)?.hasOwnProperty("value"))
+      return invalid();
+  }
+  const record = value as Record<string, unknown>;
+  const encoder = new TextEncoder();
+  const validText = (text: unknown): text is string =>
+    typeof text === "string" &&
+    text.length > 0 &&
+    !text.includes("\0") &&
+    encoder.encode(text).byteLength <= 4096;
+  if (
+    (record.schema !== 1 && record.schema !== 2) ||
+    record.kind !== "development" ||
+    !validText(record.name) ||
+    !validText(record.root) ||
+    !record.root.startsWith("/")
+  )
+    return invalid();
+  if (record.schema === 1 && keys.length !== required.length) return invalid();
+  let version: string | undefined;
+  let paths: HostLaunchFacts["paths"];
+  if (record.schema === 2) {
+    if (!keys.includes("paths")) return invalid();
+    if (keys.includes("version")) {
+      if (!validText(record.version)) return invalid();
+      version = record.version;
+    }
+    const input = record.paths;
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      isProxy(input)
+    )
+      return invalid();
+    const copied: Partial<
+      Record<"appData" | "userData" | "documents", string>
+    > = Object.create(null);
+    for (const key of Reflect.ownKeys(input)) {
+      if (key !== "appData" && key !== "userData" && key !== "documents")
+        return invalid();
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor?.hasOwnProperty("value")) return invalid();
+      const path: unknown = descriptor.value;
+      if (!validText(path) || !path.startsWith("/")) return invalid();
+      copied[key] = path;
+    }
+    paths = Object.freeze(copied);
+  }
+  const captured: HostLaunchFacts = {
+    schema: record.schema,
+    kind: "development",
+    name: record.name,
+    root: record.root,
+    ...(version === undefined ? {} : { version }),
+    ...(paths === undefined ? {} : { paths }),
+  };
+  if (encoder.encode(JSON.stringify(captured)).byteLength > 16 * 1024)
+    return invalid();
+  // Freezing own fields alone leaves omitted facts forgeable through an
+  // application's later Object.prototype writes. Absence must stay absent.
+  Object.setPrototypeOf(captured, null);
+  return Object.freeze(captured);
+}
+
+/** @internal Frozen once by the canonical preload, with no application setter. */
+export const hostLaunchFacts = captureHostLaunchFacts(
+  typeof __KELD_HOST_LAUNCH_FACTS__ === "undefined"
+    ? undefined
+    : __KELD_HOST_LAUNCH_FACTS__,
+);
 
 // The macOS guardian preloads this sidecar before application dependencies. These
 // immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers

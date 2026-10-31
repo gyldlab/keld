@@ -1,24 +1,27 @@
 /**
- * `app` session facts: the fail-closed half of GH-452
- * (`docs/specs/gh452-app-session-facts.md`, T1).
+ * `app` session facts: typed absence plus the bounded development-launch slice
+ * (`docs/specs/gh452-app-session-facts.md`, T1, T2a and version/path T2b).
  *
  * Electron reads `getPath`, `getVersion`, `getName`/`name`, `getAppPath`,
  * `getLocale` and `isPackaged` from the loaded application's package.json, from
  * Chromium's locale and from the packaging state (pinned v44.4.5
  * `docs/api/app.md`). Under Keld every one of them is a session fact the Host
- * mints at spawn: the Host owns the launch root, the compiled descriptor `name`,
- * every filesystem path grant, the webview engine whose locale the renderer sees,
+ * captures at spawn: the Host owns the launch root, the compiled descriptor metadata,
+ * native directory queries, the webview engine whose locale the renderer sees,
  * and the dev-lease versus installed-provenance distinction.
  *
- * No Host delivers a session-facts payload at this facade version (the role
- * receives only `KELD_APP_LINK` and the `KELD_NATIVE_WINDOW_FACADE` define), so
- * every read here is the contract's fail-closed branch: a typed
- * `KELD-COMPAT-040` naming the missing fact, the Electron call and the issue.
+ * The qualified macOS development Host delivers its validated name, launch root
+ * and development provenance through the canonical preloaded transport. Schema 2
+ * additionally carries explicit version metadata and available native directories. Only
+ * those captured values can satisfy reads. Missing records and unprovided facts
+ * still throw `KELD-COMPAT-040`, naming the fact, Electron call and owning issue.
  * This module never reads HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, `Intl` or
  * a package.json to invent a value; the spec records why each of those is
  * rejected, and `fixtures/app_session_facts_decoy_env.ts` watches for such reads.
- * T2 (Host delivery) replaces the throwing bodies with payload reads.
+ * Locale and paths outside the bounded native set remain undelivered. Directory
+ * values are data, not filesystem grants; Guard still owns all authorization.
  */
+import { hostLaunchFacts } from "../../kipc/src/transport.ts";
 
 /**
  * Names documented for `app.getPath(name)` in the pinned Electron v44.4.5
@@ -113,10 +116,10 @@ function notDelivered(fact: AppSessionFact, call: string): AppSessionFactError {
   return new AppSessionFactError(
     SESSION_FACT_NOT_DELIVERED,
     fact,
-    `${call} needs the app session fact "${fact}", and the Host delivered no ` +
-      `session facts to this role. GH-452 T2 will mint these facts in the Host ` +
-      `at spawn (${ISSUE_URL}); the facade does not derive them from ` +
-      `${FORBIDDEN_SOURCES}. Fix: no Keld host delivers session facts yet, so ` +
+    `${call} needs the app session fact "${fact}", and the Host did not deliver ` +
+      `that fact to this role. GH-452 owns the remaining Host delivery ` +
+      `at spawn (${ISSUE_URL}); the facade does not derive facts from ` +
+      `${FORBIDDEN_SOURCES}. Fix: use a qualified Host that delivers this fact; ` +
       `code that can continue without "${fact}" should catch this error; ` +
       `otherwise wait for GH-452 T2.`,
   );
@@ -127,10 +130,25 @@ function isElectronPathName(name: string): name is ElectronPathName {
 }
 
 /**
- * Reads one session fact for the Electron member `call`. No payload exists at
- * this facade version, so the read always fails closed; the return type says so.
+ * Reads only a captured Host fact for the Electron member `call`. A missing
+ * record or a field outside the bounded development slice stays a typed refusal.
  */
-export function readSessionFact(fact: AppSessionFact, call: string): never {
+export function readSessionFact(fact: "isPackaged", call: string): boolean;
+export function readSessionFact(
+  fact: Exclude<AppSessionFact, "isPackaged">,
+  call: string,
+): string;
+export function readSessionFact(
+  fact: AppSessionFact,
+  call: string,
+): string | boolean {
+  if (hostLaunchFacts !== undefined) {
+    if (fact === "name") return hostLaunchFacts.name;
+    if (fact === "appPath") return hostLaunchFacts.root;
+    if (fact === "isPackaged") return false; // The captured kind is explicitly development.
+    if (fact === "version" && hostLaunchFacts.version !== undefined)
+      return hostLaunchFacts.version;
+  }
   throw notDelivered(fact, call);
 }
 
@@ -139,7 +157,7 @@ export function readSessionFact(fact: AppSessionFact, call: string): never {
  * else KELD-COMPAT-041), then reads the `path.<name>` session fact
  * (KELD-COMPAT-040 until the Host delivers it).
  */
-export function readSessionPath(name: string): never {
+export function readSessionPath(name: string): string {
   const documented = `Documented names: ${ELECTRON_PATH_NAMES.join(", ")}.`;
   if (typeof name !== "string") {
     throw new AppSessionFactError(
@@ -158,6 +176,10 @@ export function readSessionPath(name: string): never {
         `Fix: pass a documented name; the undocumented names Electron's source ` +
         `also accepts (cache, userCache, userDesktop) are a GH-452 T2 decision.`,
     );
+  }
+  if (name === "appData" || name === "userData" || name === "documents") {
+    const captured = hostLaunchFacts?.paths?.[name];
+    if (captured !== undefined) return captured;
   }
   throw notDelivered(`path.${name}`, `app.getPath('${name}')`);
 }

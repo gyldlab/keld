@@ -86,6 +86,20 @@ Governing sources:
 
 ## 3. Acceptance criteria
 
+GH452 T2a (owner-delegated 2026-11-01, comment 6549729612) consumes the already validated
+name/root and live development lease as data, without extending any descriptor schema.
+The private delivery contract is `gh452-app-session-facts.md` §11. Unavailable metadata
+remains absent; this amendment does not select package.json, locale or OS-path values.
+
+GH452 T2b (delegated PR1362 comment 6550291308; independently reviewed design) adds
+one optional `version` metadata field to the existing closed descriptor shapes. The
+current literal root config supplies a nonempty, NUL-free string of at most 4096
+UTF-8 bytes through the same config capture. Absent descriptors remain byte-identical;
+present null, duplicate or invalid values fail closed. Core retains the value without
+reopening config/package files. Older Hosts reject this added field; the compiler must
+ship its matching Host. This does not allocate schema 3/4 or change profile/graph
+ownership. GH452 §12 owns the non-authority native path snapshot and delivery bounds.
+
 ### KEL-96/T1a — compiled boot descriptor contract
 
 1. A valid `keld.boot.json` is a bounded, strict schema-v1 document. Its exact

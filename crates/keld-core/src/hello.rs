@@ -618,9 +618,10 @@ mod tests {
 
 mod auth_config;
 pub use self::auth_config::{
-    AuthConfigError, InitialWindowConfigError, auth_configuration_from_config_ts,
-    initial_window_from_config_ts,
+    AppVersionConfigError, AuthConfigError, InitialWindowConfigError,
+    auth_configuration_from_config_ts, initial_window_from_config_ts, version_from_config_ts,
 };
+pub(crate) use self::auth_config::{deserialize_optional_app_version, validate_app_version};
 
 #[cfg(test)]
 mod auth_config_tests {

@@ -5605,6 +5605,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: the keld-attempt claim wait was cancelled by its owner before a claimant was accepted (the launched candidate's handle signaled, or the owner ended the wait); the endpoint is closed
 - fix: Roll the attempt back: health cannot commit, and end the candidate family if any of it still runs.
 
+## KELD-IPC-029
+
+- crate: @keld/kipc
+- message: a present Host launch-facts record is malformed, unsupported or exceeds its bound
+- fix: Restage through the qualified Host startup path. Do not supply application globals or environment values in place of the private development-launch record.
+
 ## KELD-WV-001
 
 - crate: keld-wv
@@ -6334,8 +6340,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-CORE-035
 
 - crate: keld-core
-- message: The private schema-v1 boot descriptor is invalid
-- fix: Remove duplicate or unknown fields and regenerate a bounded strict schema-v1 `keld.boot.json`.
+- message: Static application configuration or the private boot descriptor is invalid
+- fix: Correct the named literal configuration field, remove duplicate or unknown fields, and regenerate bounded `keld.boot.json` for a schema supported by the matching Host. An explicit version must be a nonempty, NUL-free string of at most 4096 UTF-8 bytes; omission does not select a fallback version.
 
 ## KELD-CORE-036
 
