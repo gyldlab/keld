@@ -1,0 +1,378 @@
+# KEL-169: trusted default-main App check refresh/backfill (zero PR code execution).
+# Required checks age out after seven days, and a base/main update can change a
+# PR's synthetic test-merge SHA without triggering pull_request_target. The
+# automatic PR event verifier remains the first-line gate; this job reconciles
+# missing/stale App checks from the same protected source policy every day.
+name: KELD VeriSentry trusted refresh
+
+on:
+  push:
+    branches: [main] # reconcile newly changed synthetic test-merge SHAs promptly
+  schedule:
+    - cron: "17 2 * * *" # backup/renew checks before seven-day expiry
+  workflow_dispatch:
+    inputs:
+      batch_index:
+        description: Zero-based stable PR batch to refresh (auto chooses a daily rotating batch)
+        required: false
+        default: auto
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  refresh:
+    name: Refresh VeriSentry App checks for open main PRs
+    if: ${{ github.ref == 'refs/heads/main' && github.run_attempt == 1 && (github.event_name == 'push' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.actor == github.triggering_actor && (github.actor == '0monish' || github.actor == 'amishabenramani'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: verisentry-publisher
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Mint restricted repository-scoped VeriSentry App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # pinned v3
+        with:
+          app-id: "5550363"
+          private-key: ${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}
+          owner: gyldlab
+          repositories: keld
+          permission-checks: write
+          permission-pull-requests: read
+          permission-contents: read # immutable Compare Commits API requires this read scope
+      - name: Reconcile exact-base/head App checks without checking out PR code
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        env:
+          VERISENTRY_BATCH_INDEX: ${{ inputs.batch_index || 'auto' }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const {owner, repo} = context.repo;
+            const maintainers = new Map([['0monish', '155816356'], ['amishabenramani', '130687844']]);
+            const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+            if (owner !== 'gyldlab' || repo !== 'keld' || context.ref !== 'refs/heads/main' ||
+                !isSha(context.sha) || context.sha !== process.env.GITHUB_SHA ||
+                process.env.GITHUB_RUN_ATTEMPT !== '1' ||
+                !process.env.GITHUB_WORKFLOW_REF?.endsWith('/.github/workflows/ci-verisentry-refresh.yml@refs/heads/main') ||
+                !['push','schedule','workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'workflow_dispatch' &&
+                  (process.env.GITHUB_ACTOR_ID !== maintainers.get(context.actor) ||
+                   process.env.GITHUB_TRIGGERING_ACTOR !== context.actor))) {
+              throw Error('VeriSentry refresh refuses non-main/non-maintainer or rerun events');
+            }
+            // An old scheduled workflow may be rerun after main tightens the
+            // protectedPath policy. Such an older workflow would otherwise
+            // mint a genuine App PASS using stale authority. Pin the executing
+            // workflow commit to the CURRENT protected main ref at startup and
+            // immediately before each signed App write (not PR source bytes).
+            const currentMain = async () =>
+              (await github.rest.git.getRef({owner,repo,ref:'heads/main'})).data?.object?.sha;
+            if (await currentMain() !== context.sha)
+              throw Error('VeriSentry refresh refuses a stale protected-main workflow SHA');
+            const list = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', base: 'main', per_page: 100,
+            });
+            if (!Array.isArray(list) || list.length > 20000 ||
+                new Set(list.map(pr => pr.number)).size !== list.length) {
+              throw Error('VeriSentry refresh refuses incomplete/duplicated PR enumeration');
+            }
+            const allSnapshots = list.map(pr => ({number:pr.number, head:pr.head?.sha,
+              base:pr.base?.sha, repo:pr.base?.repo?.full_name, ref:pr.base?.ref,
+              testMergeHint:pr.merge_commit_sha}));
+            if (allSnapshots.some(pr => !Number.isSafeInteger(pr.number) || pr.number < 1 ||
+                !isSha(pr.head) || !isSha(pr.base) || pr.repo !== 'gyldlab/keld' ||
+                pr.ref !== 'main')) {
+              throw Error('VeriSentry refresh refuses malformed PR listing metadata');
+            }
+            // PR population can change daily. A variable batch-count with
+            // numeric PR rank is vulnerable to starvation: an adversary can
+            // open/close just one PR to keep another PR out of every batch.
+            // Stable numeric PR-ID modulo FIVE cannot be shifted by other PRs.
+            // For <=120 open main PRs, scan all of them every run.
+            // For a larger list, each fixed bucket is renewed every 5 UTC days;
+            // an authorized manual dispatch can target bucket 0..4 promptly.
+            const allSorted = allSnapshots.slice().sort((a,b)=>a.number-b.number);
+            const batchCount = allSorted.length <= 120 ? 1 : 5;
+            const requestedBatch = process.env.VERISENTRY_BATCH_INDEX || 'auto';
+            if (!/^(auto|0|[1-9][0-9]*)$/.test(requestedBatch))
+              throw Error('VeriSentry refuses malformed batch index');
+            const batchIndex = requestedBatch === 'auto'
+              ? Math.floor(Date.now()/86400000) % batchCount
+              : Number(requestedBatch);
+            if (!Number.isSafeInteger(batchIndex) || batchIndex < 0 || batchIndex >= batchCount)
+              throw Error('VeriSentry batch index is out of range');
+            const snapshots = allSorted.filter(pr => pr.number % batchCount === batchIndex);
+            core.info(`VeriSentry current-main PR batch ${batchIndex+1}/${batchCount}; `+
+              `${snapshots.length} selected of ${allSorted.length} open main PRs`);
+            // Preflight any synthetic test-merge SHA collisions even when the
+            // two colliding PRs fall into different daily batches.
+            const hintCounts = new Map();
+            const parentPairCounts = new Map();
+            for (const item of allSnapshots) {
+              if (isSha(item.testMergeHint))
+                hintCounts.set(item.testMergeHint,(hintCounts.get(item.testMergeHint)||0)+1);
+              // A Git merge commit SHA contains its parent HEAD and BASE.
+              // Deny duplicate parent pairs globally, even if another PR's
+              // list-summary merge_commit_sha has not yet been calculated.
+              const pair = item.base + ':' + item.head;
+              parentPairCounts.set(pair,(parentPairCounts.get(pair)||0)+1);
+            }
+            // This policy block MUST remain byte-identical to the automatic
+            // protected-main ci-provenance.yml verifier; Bun tests enforce it.
+            // __PROTECTED_PATH_POLICY_BEGIN__
+            const protectedPath = (path) => {
+              if (typeof path !== "string" || !path || path.includes("\\") ||
+                  path.includes("\u0000")) {
+                throw new Error("CI provenance refuses malformed Git paths");
+              }
+              const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
+              // Strict first rollout: scripts and config files executed by
+              // CI are also authority, not merely the workflow YAML itself.
+              // Require a separate trusted-base review for their changes.
+              // Root workspace metadata and formatter/test configs can also
+              // suppress required test discovery without changing ci.yml.
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+                p === "package.json" || p.endsWith("/package.json") ||
+                p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
+                p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
+                p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
+                p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
+                p === "tsconfig.json" || p.endsWith("/tsconfig.json") ||
+                p.startsWith(".github/") ||
+                p === ".ci-reader-proofs" || p.startsWith(".ci-reader-proofs/") ||
+                p.startsWith(".cargo/") ||
+                p.startsWith(".config/") ||
+                p.startsWith("tools/") ||
+                p === "justfile" ||
+                p === "rust-toolchain.toml" ||
+                p === "deny.toml" ||
+                p.endsWith("/deny.toml") ||
+                p.startsWith(".gitleaks") ||
+                p === "clippy.toml" || p.endsWith("/clippy.toml") ||
+                p === ".clippy.toml" || p.endsWith("/.clippy.toml");
+            };
+            // __PROTECTED_PATH_POLICY_END__
+            const verdicts = [];
+            for (const event of snapshots) {
+              let admitted = false;
+              let verifiedDenied = false;
+              let reason = 'missing trusted proof';
+              let current;
+              const fetchPR = async () =>
+                (await github.rest.pulls.get({owner,repo,pull_number:event.number})).data;
+              const matches = pr => pr?.number === event.number && pr.state === 'open' &&
+                pr.base?.ref === 'main' && pr.base?.repo?.full_name === 'gyldlab/keld' &&
+                pr.base?.sha === event.base && pr.head?.sha === event.head;
+              try {
+                const before = await fetchPR();
+                if (!matches(before)) throw Error('PR moved before immutable comparison');
+                if (!Number.isSafeInteger(before.changed_files) ||
+                    before.changed_files < 0)
+                  throw Error('Invalid GitHub changed-file count');
+                if (before.changed_files >= 300) {
+                  // 300+ is a *verified policy DENY*, not an API outage.
+                  // It cannot be safely enumerated within Compare Commits.
+                  verifiedDenied = true;
+                  throw Error('Changed-file census >=300: trusted policy DENY');
+                }
+                const compare = (await github.rest.repos.compareCommits({
+                  owner,repo,base:event.base,head:event.head,page:1,per_page:100,
+                })).data;
+                if (compare?.base_commit?.sha !== event.base ||
+                    !Array.isArray(compare?.files) ||
+                    compare.files.length !== before.changed_files ||
+                    compare.files.length >= 300) {
+                  throw Error('Incomplete immutable Compare Commits evidence');
+                }
+                // Reuse the automatic verifier's approved protectedPath rule;
+                // reject statuses/renames that could conceal CI authority.
+                const protectedChanges = [];
+                for (const file of compare.files) {
+                  if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status))
+                    throw Error('Unknown changed-file status');
+                  if (file.status === 'renamed' && !file.previous_filename)
+                    throw Error('Rename missing source filename');
+                  if (protectedPath(file.filename) ||
+                      (file.previous_filename && protectedPath(file.previous_filename)))
+                    protectedChanges.push(file.filename);
+                }
+                if (protectedChanges.length) {
+                  verifiedDenied = true; // concrete immutable protected path evidence
+                  throw Error('Protected CI authority changed');
+                }
+                if (!matches(await fetchPR())) throw Error('PR moved after immutable comparison');
+                admitted = true;
+                reason = 'protected-main immutable CI admission passed';
+              } catch (error) {
+                admitted = false;
+                reason = error instanceof Error ? error.message.slice(0,160) : 'unknown verifier failure';
+              }
+              // A transient 403/5xx, a malformed/incomplete compare response,
+              // a stale PR or any other *unproven* error must never be turned
+              // into a durable App FAILURE for an otherwise valid PR. Missing
+              // required App check already blocks merging; surface the error
+              // for retry instead of poisoning future renewal attempts.
+              if (!admitted && !verifiedDenied) {
+                verdicts.push({...event,admitted:false,skip:'admission proof unavailable',
+                  reason,retry:true});
+                continue;
+              }
+              // GitHub calculates PR mergeability asynchronously. A fresh
+              // main/base push often returns mergeable:null on the first GET.
+              // Refetch within a bounded window before recording a permanent
+              // missing-check condition. Never fall back to the source SHA.
+              let mergeReady = false;
+              let skip = 'mergeability computation timed out';
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                  current = await fetchPR();
+                } catch {
+                  skip = 'PR API unavailable';
+                  break;
+                }
+                if (!matches(current)) {
+                  skip = 'moved or closed PR';
+                  break;
+                }
+                if (current.mergeable === false) {
+                  skip = 'unmergeable PR';
+                  break;
+                }
+                if (current.mergeable === true && isSha(current.merge_commit_sha)) {
+                  mergeReady = true;
+                  break;
+                }
+                if (attempt < 2)
+                  await new Promise(resolve => setTimeout(resolve, 500*(attempt+1)));
+              }
+              if (!mergeReady) {
+                verdicts.push({...event,admitted:false,skip,
+                  retry:skip !== 'unmergeable PR' && skip !== 'moved or closed PR'});
+                continue;
+              }
+              verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason});
+            }
+            const mergeCounts = new Map();
+            for (const v of verdicts) if (v.merge)
+              mergeCounts.set(v.merge,(mergeCounts.get(v.merge) || 0)+1);
+            const counts = {created:0,existing:0,denied:0,skipped:0,errors:0};
+            for (const verdict of verdicts) {
+              try {
+                if (!verdict.merge) {
+                  if (verdict.retry) {
+                    counts.errors++; // incomplete mergeability must not be silently green
+                    core.warning('VeriSentry mergeability pending on PR #'+verdict.number);
+                  } else counts.skipped++; // moved or genuinely unmergeable
+                  continue;
+                }
+                if (mergeCounts.get(verdict.merge) !== 1 ||
+                    (hintCounts.get(verdict.merge) || 0) > 1 ||
+                    (parentPairCounts.get(verdict.base+':'+verdict.head)||0) > 1) {
+                  counts.errors++;
+                  core.warning('Two PRs share the same synthetic merge SHA; requires manual containment');
+                  continue;
+                }
+                // Fresh state immediately before a signed App write.
+                const pr = (await github.rest.pulls.get({
+                  owner,repo,pull_number:verdict.number,
+                })).data;
+                if (pr?.state !== 'open' || pr.number !== verdict.number ||
+                    pr.base?.ref !== 'main' || pr.base?.sha !== verdict.base ||
+                    pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                    pr.head?.sha !== verdict.head || pr.merge_commit_sha !== verdict.merge) {
+                  counts.skipped++;
+                  continue;
+                }
+                if (pr.mergeable !== true) {
+                  counts.errors++; // later mergeability recalculation: fail-closed
+                  continue;
+                }
+                const checks = await github.paginate(github.rest.checks.listForRef, {
+                  owner,repo,ref:verdict.merge,check_name:'KELD VeriSentry',
+                  app_id:5550363,filter:'all',per_page:100,
+                });
+                if (!Array.isArray(checks) || checks.length > 1000 ||
+                    checks.some(c => c.app?.id !== 5550363 || c.head_sha !== verdict.merge))
+                  throw Error('Foreign or incomplete App check inventory');
+                const expected = verdict.admitted ? 'success' : 'failure';
+                const latest = checks.slice().sort((a,b) =>
+                  Date.parse(b.completed_at || '') - Date.parse(a.completed_at || ''))[0];
+                // The abandoned mutable manual-maintenance workflow was never
+                // installed. If an older signed manual receipt is encountered,
+                // stop for human review instead of overwriting an authorization
+                // or revocation the scheduler cannot independently evaluate.
+                if (checks.some(c => (c.output?.summary || '').includes('maintenance-run='))) {
+                  counts.errors++;
+                  core.warning('VeriSentry found an exceptional manual check; refusing scheduled rewrite on PR #'+verdict.number);
+                  continue;
+                }
+                const ageMs = Date.now() - Date.parse(latest?.completed_at || '');
+                if (latest && latest.status === 'completed' && latest.conclusion === expected &&
+                    Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 4*86400*1000) {
+                  counts.existing++;
+                  continue;
+                }
+                // An existing App FAIL may be a separately audited denial;
+                // NEVER upgrade it to PASS merely because a later transient
+                // verification succeeded. Request a fresh PR event/review.
+                if (latest?.conclusion === 'failure' && verdict.admitted) {
+                  counts.errors++;
+                  core.warning('VeriSentry refresh refuses to overwrite prior App FAIL on PR #'+verdict.number);
+                  continue;
+                }
+                if (await currentMain() !== context.sha)
+                  throw Error('VeriSentry refresh refuses changed main before App check creation');
+                const created = (await github.rest.checks.create({
+                  owner,repo,name:'KELD VeriSentry',head_sha:verdict.merge,
+                  status:'completed',conclusion:expected,
+                  details_url:`https://github.com/gyldlab/keld/pull/${verdict.number}`,
+                  output:{title: verdict.admitted ? 'Trusted CI admission refreshed' : 'Trusted CI admission rejected',
+                    summary:`PR #${verdict.number} base=${verdict.base} head=${verdict.head} merge=${verdict.merge} protected-main schedule verdict: ${verdict.reason}`},
+                })).data;
+                if (created?.app?.id !== 5550363 || created.head_sha !== verdict.merge)
+                  throw Error('Wrong App identity or SHA after publishing');
+                counts.created++;
+                if (!verdict.admitted) counts.denied++;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              } catch (error) {
+                counts.errors++;
+                core.warning('VeriSentry refresh could not issue trusted check for PR #'+verdict.number+': '+
+                  (error instanceof Error ? error.message.slice(0,90) : 'unknown'));
+              }
+            }
+            core.info('VeriSentry refresh outcome: '+JSON.stringify(counts));
+            if (counts.errors)
+              core.setFailed('VeriSentry refresh needs security review; failures are never published as success');
