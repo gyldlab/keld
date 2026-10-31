@@ -32,6 +32,15 @@ function invalid(detail: string): never {
   );
 }
 
+// Only reflection belongs inside this boundary; validation keeps its own reason.
+function inspectOptions<T>(inspect: () => T, detail: string): T {
+  try {
+    return inspect();
+  } catch {
+    return invalid(detail);
+  }
+}
+
 function optionValues(input: unknown): Map<string, unknown> {
   if (input === null || typeof input !== "object") {
     invalid("options must be an object");
@@ -39,17 +48,18 @@ function optionValues(input: unknown): Map<string, unknown> {
   // Do not trust inherited fields, prototype monkey-patching or accessors to
   // fabricate input at admission time. Ordinary own enumerable data fields
   // are precisely what the supported draw.io call supplies.
-  let descriptors: PropertyDescriptorMap;
-  try {
-    if (Array.isArray(input)) invalid("options must be an object");
-    const prototype = Object.getPrototypeOf(input);
-    if (prototype !== Object.prototype && prototype !== null) {
-      invalid("custom-prototype options are unsupported");
-    }
-    descriptors = Object.getOwnPropertyDescriptors(input);
-  } catch {
-    return invalid("options could not be inspected safely");
+  const detail = "options could not be inspected safely";
+  if (inspectOptions(() => Array.isArray(input), detail)) {
+    invalid("options must be an object");
   }
+  const prototype = inspectOptions(() => Object.getPrototypeOf(input), detail);
+  if (prototype !== Object.prototype && prototype !== null) {
+    invalid("custom-prototype options are unsupported");
+  }
+  const descriptors = inspectOptions(
+    () => Object.getOwnPropertyDescriptors(input),
+    detail,
+  );
   const fields = new Map<string, unknown>();
   for (const name of Reflect.ownKeys(descriptors)) {
     const descriptor = Reflect.get(descriptors, name) as
@@ -95,37 +105,39 @@ function optionalBoolean(
 
 function buttonLabels(value: unknown): string[] {
   if (value === undefined) return [];
+  const detail = "buttons could not be inspected safely";
+  if (!inspectOptions(() => Array.isArray(value), detail)) {
+    invalid("buttons must be a plain array");
+  }
+  const prototype = inspectOptions(() => Object.getPrototypeOf(value), detail);
+  if (prototype !== Array.prototype) invalid("buttons must be a plain array");
+  // Snapshot the own data length once. Never invoke Proxy get traps or
+  // enumerate an unbounded array before enforcing the native button limit.
+  const lengthDescriptor = inspectOptions(
+    () => Object.getOwnPropertyDescriptor(value, "length"),
+    detail,
+  );
+  const length: unknown = lengthDescriptor?.value;
+  if (
+    !lengthDescriptor ||
+    !("value" in lengthDescriptor) ||
+    typeof length !== "number" ||
+    !Number.isInteger(length) ||
+    length < 0 ||
+    length > MAX_BUTTONS
+  ) {
+    invalid("buttons must have a bounded own data length");
+  }
   const labels: string[] = [];
-  try {
-    if (
-      !Array.isArray(value) ||
-      Object.getPrototypeOf(value) !== Array.prototype
-    ) {
-      invalid("buttons must be a plain array");
+  for (let index = 0; index < length; index++) {
+    const descriptor = inspectOptions(
+      () => Object.getOwnPropertyDescriptor(value, String(index)),
+      detail,
+    );
+    if (!descriptor || !("value" in descriptor)) {
+      invalid("button labels must be own data values");
     }
-    // Snapshot the own data length once. Never invoke Proxy get traps or
-    // enumerate an unbounded array before enforcing the native button limit.
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-    const length: unknown = lengthDescriptor?.value;
-    if (
-      !lengthDescriptor ||
-      !("value" in lengthDescriptor) ||
-      typeof length !== "number" ||
-      !Number.isInteger(length) ||
-      length < 0 ||
-      length > MAX_BUTTONS
-    ) {
-      invalid("buttons must have a bounded own data length");
-    }
-    for (let index = 0; index < length; index++) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      if (!descriptor || !("value" in descriptor)) {
-        invalid("button labels must be own data values");
-      }
-      labels.push(boundedText(descriptor.value, "button label"));
-    }
-  } catch {
-    return invalid("buttons could not be inspected safely");
+    labels.push(boundedText(descriptor.value, "button label"));
   }
   return labels;
 }

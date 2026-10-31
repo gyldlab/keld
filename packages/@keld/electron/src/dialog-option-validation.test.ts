@@ -229,3 +229,75 @@ test("revoked and throwing inspection traps become canonical Message refusal", (
   });
   expect(healthy.buttons).toEqual(["Yes", "No"]);
 });
+
+test("validation refusals preserve their specific actionable reason", () => {
+  const cases: [unknown, string][] = [
+    [[], "options must be an object"],
+    [
+      Object.create({ message: "hi" }),
+      "custom-prototype options are unsupported",
+    ],
+    [{ message: "hi", buttons: "Yes" }, "buttons must be a plain array"],
+    [
+      { message: "hi", buttons: Array(17).fill("Yes") },
+      "buttons must have a bounded own data length",
+    ],
+    [
+      { message: "hi", buttons: Array(1) },
+      "button labels must be own data values",
+    ],
+    [
+      { message: "hi", buttons: [1] },
+      "button label must be bounded UTF-8 text",
+    ],
+    [
+      { message: "hi", buttons: ["x".repeat(16 * 1024 + 1)] },
+      "button label must be bounded UTF-8 text",
+    ],
+  ];
+  for (const [input, detail] of cases) {
+    expect(() => normalizeMessageOptions(input)).toThrow(
+      `KELD-COMPAT-010: unsupported Message dialog options: ${detail}.`,
+    );
+  }
+});
+
+test("inspection refusals never inspect an attacker-controlled thrown value", () => {
+  let thrownReads = 0;
+  const thrown = new Proxy({}, {
+    get() {
+      thrownReads++;
+      throw new Error("must not inspect thrown value");
+    },
+    getPrototypeOf() {
+      thrownReads++;
+      throw new Error("must not classify thrown value");
+    },
+  });
+  const roots = [
+    new Proxy({ message: "hi" }, {
+      getPrototypeOf() {
+        throw thrown;
+      },
+    }),
+    new Proxy({ message: "hi" }, {
+      ownKeys() {
+        throw thrown;
+      },
+    }),
+  ];
+  for (const input of roots) {
+    expect(() => normalizeMessageOptions(input)).toThrow(
+      "options could not be inspected safely",
+    );
+  }
+  const buttons = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor() {
+      throw thrown;
+    },
+  });
+  expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+    "buttons could not be inspected safely",
+  );
+  expect(thrownReads).toBe(0);
+});
