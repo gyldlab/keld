@@ -27,6 +27,12 @@ pub(super) struct GenerationRegistrationFence {
     // A complete fixed PREPARE has arrived on the actual authenticated
     // generation-control stream, before the worker acquires recovery state.
     pub(super) received_prepare: Option<mpsc::SyncSender<()>>,
+    // Test-only native receipt after an idle KGC1 poll, armed by the parent
+    // while shutdown holds recovery state. It must never block that worker.
+    pub(super) received_idle: Option<(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        mpsc::SyncSender<()>,
+    )>,
     // Independent test-only receipt after a complete authentic SPAWNED
     // record was decoded and its real OS parent/birth validated, but before
     // the host decides whether shutdown permits REGISTERED.
@@ -119,6 +125,43 @@ pub(super) fn run_generation_host(
             }
             Err(error) => return Err(error),
         };
+        #[cfg(test)]
+        if record.is_none()
+            && first_record_pending
+            && let Some((armed, idle)) =
+                registration_fence.and_then(|fence| fence.received_idle.as_ref())
+            && armed.load(std::sync::atomic::Ordering::Acquire)
+        {
+            // Repeated 20ms native polls must never wait for the observer.
+            let _ = idle.try_send(());
+        }
+        // After the retained OS Child has a terminal status, a peer that
+        // keeps KGC1 open without supplying another native record must not
+        // prevent the host from joining this worker. Drain any already-ready
+        // full control record first so queued CLEAR still gets validated.
+        // A complete control frame must reach its normal transition first.
+        // In particular the test's pre-S PREPARE receipt is emitted below
+        // while shutdown holds recovery's mutex through the actual S write.
+        // Taking that mutex for a complete record deadlocks PREPARE. Even
+        // an idle poll must not wait for the same mutex: the host can hold
+        // it while S is being committed and PREPARE can arrive next.
+        if record.is_none() && reaped_shutdown_requested_without_wait(recovery_decision) {
+            let interrupted = lifecycle_error(
+                "macOS guardian generation worker after Guardian exit",
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "original Guardian was reaped before native control peer closed",
+                ),
+            );
+            // A PREPARED but not REGISTERED lease can still own a native
+            // admission listener. Revoke it rather than detaching its worker.
+            if let Some(lease) = state.lease.take()
+                && let Err(cleanup) = lease.revoke(RevocationCause::Shutdown)
+            {
+                return Err(collapse_failures(vec![interrupted, cleanup]));
+            }
+            return Err(interrupted);
+        }
         if first_record_pending {
             if Instant::now() >= admission.first_record_deadline {
                 // A fully buffered late frame is not accepted after the
@@ -148,8 +191,11 @@ pub(super) fn run_generation_host(
                 )
             })?;
         }
-        let expected_attempt = lock_recovery(recovery_decision).expected_attempt;
         if let Some(record) = record {
+            // No recovery mutex acquisition on an idle KGC1 poll. A host
+            // holding denial through S must remain able to deliver its
+            // complete PREPARE receipt before any recovery-state read.
+            let expected_attempt = lock_recovery(recovery_decision).expected_attempt;
             if state.pending_prepare.is_some() {
                 return Err(invalid_control_transition(
                     "pending prepare",
@@ -458,6 +504,19 @@ pub(super) fn run_generation_host(
     }
 }
 
+fn reaped_shutdown_requested_without_wait(recovery: &Mutex<RecoveryState>) -> bool {
+    match recovery.try_lock() {
+        Ok(guard) => guard.guardian_reaped_shutdown_at.is_some(),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+            poisoned.into_inner().guardian_reaped_shutdown_at.is_some()
+        }
+        // An owned shutdown is performing its S/denial transaction. Let the
+        // native KGC1 reader poll again so a complete PREPARE can be handled
+        // before it attempts another recovery-state read.
+        Err(std::sync::TryLockError::WouldBlock) => false,
+    }
+}
+
 /// Typed, private evidence that initial preparation was rejected by the
 /// host's own permanent recovery denial before a generation existed. It is
 /// not a general KGC1 I/O, parser or OS-cleanup error.
@@ -479,14 +538,34 @@ fn rejected_recovery() -> RuntimeError {
     )
 }
 
+/// Typed, private evidence that the host refused an in-flight SPAWNED
+/// because its own permanent denial had already won, AFTER it took custody
+/// of the attested child group, signalled it and released custody, and
+/// revoked the prepared role lease. A failed cleanup never carries it.
+#[derive(Debug)]
+struct PostShutdownSpawnRefused;
+
+impl std::fmt::Display for PostShutdownSpawnRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .write_str("SPAWNED refused after host S; no CONTROL_REGISTERED permit was granted")
+    }
+}
+
+impl std::error::Error for PostShutdownSpawnRefused {}
+
 fn refused_post_shutdown_spawn() -> RuntimeError {
     lifecycle_error(
         "macOS guardian post-shutdown registration refusal",
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "SPAWNED refused after host S; no CONTROL_REGISTERED permit was granted",
-        ),
+        io::Error::new(io::ErrorKind::PermissionDenied, PostShutdownSpawnRefused),
     )
+}
+
+pub(super) fn is_post_shutdown_spawn_refused(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Lifecycle { source, .. }
+        if source.get_ref()
+            .and_then(|source| source.downcast_ref::<PostShutdownSpawnRefused>())
+            .is_some())
 }
 
 pub(super) fn is_initial_recovery_denied(error: &RuntimeError) -> bool {

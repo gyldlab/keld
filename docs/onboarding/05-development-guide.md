@@ -26,7 +26,7 @@ For the complete verification gate, also install:
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
 | Docker-compatible engine | Runs the digest-pinned Mermaid renderer when changed Mermaid inputs select it in `just ci`, or for `just ci-full` |
 
-Use the pinned Rust toolchain and **Bun 1.4.2 for the full workspace gate**, matching
+Use the pinned Rust toolchain and **Bun 1.4.4 for the full workspace gate**, matching
 CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
 a demo observed with Bun 1.4.2 is separate evidence. The
 [quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout
@@ -147,8 +147,8 @@ Recipes are grouped by developer task and lifecycle stage:
     follow [Run the current demo](README.md#run-the-current-demo) using
     `keld create → doctor → dev`.
 - **Fast edit loop (rapid local feedback):**
-  - `just fmt-check`: verifies Rust code formatting without touching files (fast check).
-  - `just fmt`: formats Rust files in place (**modifies tracked source files**).
+  - `just fmt-check`: verifies Rust and JS/TS formatting and generated freshness without touching files (fast check).
+  - `just fmt`: normalizes Rust, then generates, formats JS/TS and restamps transport (**modifies source files**).
   - `just clippy`: runs workspace lints with warnings treated as errors (`-D warnings`).
   - Scoped tests: `cargo nextest run -p <crate> -- <filter>` runs focused tests without
     the full suite overhead.
@@ -194,8 +194,8 @@ Recipes are grouped by developer task and lifecycle stage:
 | Recipe | Primary fallback | Filesystem impact | Cost | Notes |
 |---|---|---|---|---|
 | `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` | Writes `target/` artifacts | Moderate | Diagnostic window only; not the app-session demo |
-| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
-| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` | **Modifies tracked files** | Fast | Overwrites unformatted Rust files in place |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` | **Modifies source files** | Fast | Normalizes Rust before generation, native JS/TS formatting and final restamping |
 | `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Writes `target/` artifacts | Moderate | Warnings treated as errors |
 | `just test` | `cargo nextest run --workspace --profile ci` (Linux: `xvfb-run -a`; partial fallback: `cargo test --workspace`, on headless Linux `xvfb-run -a cargo test --workspace`) | Writes `target/` artifacts | Heavy | Nextest enforces zero retries; Linux host suite requires virtual display (`xvfb-run -a`); raw `cargo test` is partial fallback |
 | `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Writes `target/doc/` | Moderate | Builds rustdoc without dependencies |
@@ -224,8 +224,8 @@ policy statement, **not** an executable raw substitute:
 | `just` target | Raw alternative or availability |
 |---|---|
 | `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
-| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` |
-| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
 | `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `just test` | `cargo nextest run --workspace --profile ci` (Linux requires virtual display: `xvfb-run -a cargo nextest run --workspace --profile ci`) |
 | `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |
@@ -296,16 +296,17 @@ job count and trigger details. Its stable responsibilities are:
 | `rustfmt` | ubuntu | `cargo fmt --all --check`, then `tools/fmt_included.sh test` and `--check` for `include!`d and macro-body `#[path]` files `cargo fmt` never visits |
 | `clippy + test` | ubuntu **and** macos **and** windows, `fail-fast: false` | `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo nextest run --workspace --profile ci`; plus `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS: -D warnings` on ubuntu only |
 | `MSRV` | ubuntu | reads `rust_version` out of `cargo metadata` and runs `cargo check --workspace --all-targets` on that exact toolchain — so the job can never drift from `Cargo.toml` |
-| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml` |
+| `cargo-deny` | ubuntu | licenses / advisories / bans / sources per `deny.toml`, from the checksum-pinned cargo-deny 0.20.2 release binary (no Docker image) |
 | `gitleaks` | ubuntu | checksum-pinned OSS CLI 8.30.1 (`gitleaks detect`), not the org-licensed GitHub Action |
 | `CODEOWNERS + docs contracts` / `Mermaid` | ubuntu | hygiene validates workflow and renderer contracts; generated llms/audit checks use the docs route; the separate Mermaid job tests/renders all diagrams only when the Mermaid router selects it |
 
 `fail-fast: false` on the matrix is deliberate: one platform failing must not hide the
 other two, because `keld-wv` and `keld-native` diverge per platform by design. Actions
-are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
-`EmbarkStudios/cargo-deny-action`). The toolchain action requires `with: toolchain: 1.97.1`;
-it does not auto-read `rust-toolchain.toml` (that file is for local rustup). CI does not
-use an unpinned `cargo` on a random runner image.
+are SHA-pinned (`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`);
+the gitleaks and cargo-deny CLIs are release downloads pinned by SHA-256. The toolchain
+action requires `with: toolchain: 1.99.1`; it does not auto-read `rust-toolchain.toml`
+(that file is for local rustup). CI does not use an unpinned `cargo` on a random runner
+image.
 
 ---
 

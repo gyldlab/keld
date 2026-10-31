@@ -88,6 +88,7 @@ fn synthetic_guardian_without_group_authority() -> GuardedPrimary {
         worker: None,
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         shutdown_denial_fence: None,
     }

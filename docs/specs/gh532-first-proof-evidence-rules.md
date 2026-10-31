@@ -11,6 +11,9 @@ Amended by gh566 (#639), [`gh566-corpus-manifest-owner.md`](gh566-corpus-manifes
 - A3, the §4.5 migration unit.
 - A4, the §5 X01-T4 file list.
 
+Amended by #659, gh566 §4.2 D5 A5, in one place: the rule 2 snapshot location
+(one shared store), marked in the text.
+
 Amended again in rule 8, under gh566 D1:
 
 - By gh566 T2 (#640): execution admission and the censuses moved to the sibling
@@ -320,8 +323,10 @@ id, chosen by the first consumer that adds them.
 The page text at the pin is available offline from a committed snapshot. Each v1
 manifest declares `doc_snapshots` *(addition)*, a map from every cited page path
 (for example `docs/api/app.md`) to `sha256:` plus the SHA-256 of that page's exact
-bytes at the pin. The snapshot file sits beside the manifest at
-`doc-snapshots/<electron_commit>/<page path>`. The commit is part of its path, so a
+bytes at the pin. The snapshot file sits in the one store that every corpus reads,
+`crates/keld-compat/fixtures/doc-snapshots/<electron_commit>/<page path>`, so a page
+cited by two corpora at one pin is committed once (amended by #659, gh566 A5).
+The commit is part of its path, so a
 snapshot from another pin cannot satisfy this one. It holds the cited pages only, not
 the docs tree. Because `doc_snapshots` is in the manifest, AC7 binds the snapshot
 digests to the manifest bytes. The validator checks each citation in this order, with

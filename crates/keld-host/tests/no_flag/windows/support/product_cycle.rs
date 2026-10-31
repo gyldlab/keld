@@ -7,12 +7,15 @@ use std::path::Path;
 use std::process::{Child, Stdio};
 use std::time::Instant;
 
+use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+
 use super::control::{accept_control_or_host_failure, parse_descendant_pid, read_control_line};
+use super::process::{open_process_for_wait, wait_for_process_signal};
 use super::product::ProductFixture;
 use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
 use crate::{
-    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists, wait_child,
-    wait_for_host_window,
+    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
+    startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 pub(crate) struct ProductEvidence {
@@ -70,12 +73,19 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         .expect("numeric Bun pid");
     let app_link = hello_fields.next().expect("HELLO app link").to_owned();
     assert!(hello_fields.next().is_none(), "{hello}");
+    // Bun is live while it sends HELLO, so this handle pins its exact kernel process
+    // object; the bare PID names it only until it terminates.
+    let bun = open_process_for_wait(bun_pid, false);
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    if let Err(beacon_error) =
-        try_expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon")
-    {
+    // The beacon is the initial navigation's own request, so this wait spans the
+    // host's WebView2 startup (READY has not been read yet).
+    if let Err(beacon_error) = try_expect_renderer_beacon(
+        beacon,
+        startup_kill_switch(),
+        "WebView2 renderer requested the exact beacon",
+    ) {
         fail_renderer_beacon_cycle(&mut child, host_pid, bun_pid, &beacon_error);
     }
     assert_eq!(read_control_line(&mut reader), "READY");
@@ -89,10 +99,15 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     writer.flush().expect("flush lifecycle Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
     assert!(status.success(), "host exited with {status}");
-    assert!(
-        !process_exists(bun_pid),
+    // Quit kill-waits Bun before the UI loop exits (architecture 02, Quit), so the
+    // exact Bun process is already signaled when the host exit is observed. The zero
+    // timeout is that contract; any grace would also accept the host Job's
+    // kill-on-close reaping Bun only after host death.
+    assert_eq!(
+        wait_for_process_signal(&bun, 0),
+        WAIT_OBJECT_0,
         "Bun {bun_pid} survived orderly host exit"
     );
 

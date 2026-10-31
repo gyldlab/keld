@@ -96,7 +96,7 @@ tools for your operating system. The commands must be available on your shell's
 `PATH`, which is the list of directories the shell searches when you type a
 command such as `cargo` or `bun`.
 
-KELD pins **Rust 1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml).
+KELD pins **Rust 1.99.1** in [`rust-toolchain.toml`](rust-toolchain.toml).
 **rustup** is Rust's toolchain manager. It reads that file and selects the
 required Rust compiler automatically. **rustc** is the Rust compiler, and
 **Cargo** is Rust's build and package tool.
@@ -108,7 +108,7 @@ required Rust compiler automatically. **rustc** is the Rust compiler, and
    Restart your terminal after installation if the `cargo` command is not found.
 3. **Bun** — install it from the [Bun installation guide](https://bun.sh/docs/installation).
    The source-built demo needs Bun available on `PATH`. The full repository
-   verification gate, `just ci`, currently requires **Bun 1.4.2**.
+   verification gate, `just ci`, currently requires **Bun 1.4.4**.
 
 Verify the core tools:
 
@@ -121,7 +121,7 @@ bun --version
 ```
 
 After you clone the repository and enter the `keld` directory,
-`rustc --version` should use the pinned **1.97.1** toolchain.
+`rustc --version` should use the pinned **1.99.1** toolchain.
 
 ### 2. Install the platform build tools
 

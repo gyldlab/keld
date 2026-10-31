@@ -15,7 +15,6 @@ use super::sessions::{
     LifecycleObservation, ObservedSession, SeamedHost, assert_first_exited_before_second,
     engine_constructions, read_lifecycle_record,
 };
-use crate::PRODUCT_DEADLINE;
 use crate::support::control::{accept_ready_generation, try_read_control_line};
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
@@ -24,6 +23,7 @@ use crate::support::process::{
 };
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
+use crate::ui_end_kill_switch;
 use serde_json::Value;
 use std::io::BufReader;
 use std::net::{TcpListener, TcpStream};
@@ -60,12 +60,79 @@ const FORCED_END_HOST_SLACK: Duration = Duration::from_secs(1);
 const FORCED_END_TEST_SLACK: Duration = Duration::from_secs(2);
 
 /// Kill switch over each wait of a handover cell, never a synchronization wait. The
-/// longest wait is a UI end, which keld-wv bounds by its one owner of that rule,
-/// `keld_wv::webview2::WEBVIEW2_UI_END_BOUND`. The forced end adds D, and the
-/// harness's per-step `PRODUCT_DEADLINE` covers the rest of the step: the window
-/// close, the record writes and the control line.
+/// longest wait is a UI end (`ui_end_kill_switch`, which also covers the window
+/// close, the record writes and the control line); the forced end adds D.
 fn handover_kill_switch() -> Duration {
-    keld_wv::webview2::WEBVIEW2_UI_END_BOUND + QUIT_DEADLINE + PRODUCT_DEADLINE
+    ui_end_kill_switch() + QUIT_DEADLINE
+}
+
+/// The `ci` profile's per-test terminate for this binary (`period` x
+/// `terminate-after` of its `[[profile.ci.overrides]]` block in
+/// `.config/nextest.toml`), read from the file the gate runs with.
+fn nextest_ci_terminate() -> Duration {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.config/nextest.toml");
+    let config = std::fs::read_to_string(path).expect("read .config/nextest.toml");
+    let block = config
+        .split("[[profile.ci.overrides]]")
+        .find(|block| block.contains("filter = \"binary(no_flag_windows)\""))
+        .expect("no_flag_windows ci override block");
+    let line = block
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .find_map(|line| line.trim().strip_prefix("slow-timeout = "))
+        .expect("no_flag_windows override sets slow-timeout");
+    let period = slow_timeout_field(line, "period")
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix("s\""))
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .expect("slow-timeout period in whole seconds");
+    let terminate_after = slow_timeout_field(line, "terminate-after")
+        .parse::<u32>()
+        .expect("whole-number terminate-after");
+    Duration::from_secs(period) * terminate_after
+}
+
+/// The raw value of `name` in a one-line `slow-timeout = { ... }` table.
+fn slow_timeout_field<'a>(line: &'a str, name: &str) -> &'a str {
+    let start = line.find(name).expect("slow-timeout field") + name.len();
+    line[start..]
+        .trim_start()
+        .strip_prefix('=')
+        .expect("slow-timeout field assignment")
+        .split([',', '}'])
+        .next()
+        .expect("slow-timeout field value")
+        .trim()
+}
+
+/// Every kill switch in this binary is shorter than nextest's per-test terminate, so
+/// no single wait at its bound outlasts the test on its own (a test whose
+/// sequential waits all run to their bounds can still reach it; see the
+/// `.config/nextest.toml` block). The handover switch is the longest:
+/// `WEBVIEW2_TEARDOWN_BOUND` (UI end plus the post-release scavenge probe) plus the
+/// product deadline plus D.
+#[test]
+fn kill_switches_stay_below_the_nextest_terminate() {
+    let terminate = nextest_ci_terminate();
+    for (name, switch) in [
+        ("startup", crate::startup_kill_switch()),
+        ("ui_end", ui_end_kill_switch()),
+        (
+            "stalled_navigation_end",
+            crate::stalled_navigation_end_kill_switch(),
+        ),
+        ("handover", handover_kill_switch()),
+    ] {
+        assert!(
+            switch < terminate,
+            "{name} kill switch {switch:?} reaches the nextest terminate {terminate:?}"
+        );
+    }
+    assert!(
+        ui_end_kill_switch()
+            >= keld_wv::webview2::WEBVIEW2_UI_END_BOUND + keld_wv::webview2::WEBVIEW2_UI_END_BOUND,
+        "the host-exit switch covers the scavenge probe's release after the UI end"
+    );
 }
 
 /// The run-owned installation, profile root and control listener one cell uses.

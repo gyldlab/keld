@@ -1,5 +1,5 @@
 //! Exact recovery decision owner for guardian generations.
-use super::{Mutex, RuntimeError, io, lifecycle_error};
+use super::{Instant, Mutex, RuntimeError, io, lifecycle_error};
 
 #[derive(Debug)]
 pub(super) struct RecoveryState {
@@ -10,6 +10,10 @@ pub(super) struct RecoveryState {
     pub(super) release_attempt: Option<u32>,
     pub(super) expected_attempt: u32,
     pub(super) shutdown_acknowledged: bool,
+    /// Only the retained Child owner can mark this after observing terminal
+    /// Guardian status. The worker may then fail closed if the native peer
+    /// stays open past the unchanged shutdown budget.
+    pub(super) guardian_reaped_shutdown_at: Option<Instant>,
 }
 
 impl RecoveryState {
@@ -22,6 +26,7 @@ impl RecoveryState {
             release_attempt: None,
             expected_attempt: 1,
             shutdown_acknowledged: false,
+            guardian_reaped_shutdown_at: None,
         }
     }
 

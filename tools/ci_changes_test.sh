@@ -14,6 +14,9 @@ trap cleanup EXIT
 
 "$required" test
 "$repo_root/tools/dependency_review_metadata.sh" test
+# The apt archive self-test runs everywhere; it skips only unsupported
+# file/directory symlink controls in a Windows shell whose `ln -s` makes
+# copies. The mandatory Ubuntu change-router still runs all three controls.
 "$repo_root/tools/ci_webkitgtk_apt.sh" test
 "$repo_root/tools/agents_md.sh" test
 
@@ -204,7 +207,7 @@ ipc_fixture_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\nd
 # package directory (keld-compat spawns the @keld/electron fixtures). It cannot
 # change rustc, the workspace dependency policy, or the host window, so MSRV,
 # cargo-deny and GUI smoke stay off; GTK follows the selected Rust closure.
-ts_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
+ts_flags=$'rust=true\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=true'
 wv_flags=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=false\nts=false\nwebkitgtk=true'
 manifest=$'rust=true\ndocs=false\nhygiene=false\ngui=true\nmsrv=true\ndeny=true\nts=false\nwebkitgtk=true'
 # Workflow/router edits run every lane, and the Ubuntu leg installs WebKitGTK to
@@ -245,6 +248,29 @@ case "$(uname -s)" in
 esac
 "$python_command" -B "$repo_root/tools/test_ci_local.py" --tracked-snapshot "$temp_dir/bound"
 cd "$temp_dir/bound"
+
+# Each native JS/TS family member and each generator source must reach hosted formatting.
+for input in bunfig.toml .gitignore crates/keld-cli/templates/hello/.gitignore crates/keld-ipc/fuzz/.gitignore crates/keld-update/fuzz/.gitignore crates/keld-wv/fuzz/.gitignore packages/@keld/api/src/index.ts tools/example.jsx crates/keld-cli/templates/hello/keld.config.ts crates/keld-ipc/src/echo.rs crates/keld-native/src/fs.rs crates/keld-native/src/auth/mod.rs; do
+    formatted_classification="$(result_for_paths "$input")"
+    expect_exact_output "native formatting input $input selects hygiene" hygiene true "$formatted_classification"
+done
+
+# Config-only diffs must reach the hosted formatter, without a JS/TS edit.
+# The literal basenames are the immutable Bun 1.4.4 configuration contract.
+for config in .oxfmtrc.json .oxfmtrc.jsonc oxfmt.config.ts oxfmt.config.mts package.json package.yaml .prettierrc .prettierrc.json .prettierrc.yml .prettierrc.yaml .prettierrc.json5 .prettierrc.js prettier.config.js .prettierrc.ts prettier.config.ts .prettierrc.mjs prettier.config.mjs .prettierrc.mts prettier.config.mts .prettierrc.cjs prettier.config.cjs .prettierrc.cts prettier.config.cts .prettierrc.toml .editorconfig; do
+    for input in "crates/keld-cli/templates/hello/$config"; do
+        config_classification="$(result_for_paths "$input")"
+        expect_exact_output "native config input $input selects hosted formatting" hygiene true "$config_classification"
+        expect_exact_output "native config input $input selects local formatting" local_js-fmt-check true "$config_classification"
+        expect_exact_output "native config input $input selects generator tests" ts true "$config_classification"
+    done
+done
+for input in .prettierignore packages/@keld/api/package.json crates/keld-cli/templates/hello/.PRETTIERRC crates/keld-cli/templates/hello/.GITIGNORE crates/keld-cli/templates/hello/.GitIgnore; do
+    config_classification="$(result_for_paths "$input")"
+    expect_exact_output "native config input $input selects hosted formatting" hygiene true "$config_classification"
+    expect_exact_output "native config input $input selects local formatting" local_js-fmt-check true "$config_classification"
+    expect_exact_output "native config input $input selects generator tests" ts true "$config_classification"
+done
 
 empty_classification="$(printf '' | "$router" classify)"
 expect_flags "empty diff skips conditional lanes" "$all_false" "$empty_classification"
@@ -304,10 +330,17 @@ package_doc_with_source="$(result_for_paths docs/specs/kel53-full-package-activa
 expect_package_token "package documentation plus reader source still expands to keld-core" keld-core "$package_doc_with_source"
 
 # crates/keld-cli/src change: reverse-dependent expansion exactly as before.
+# The declared keld-compat observer input adds a second package root for this
+# CLI-owned stage. Its all-target Cargo reverse closure includes Core, Runtime,
+# Update, and UpdaterHelper through the registered compatibility consumer; keep
+# the complete package and Ubuntu sets exact so unrelated expansion still fails.
 cli_source="$(result_for_paths crates/keld-cli/src/lib.rs)"
 expect_package_token "CLI source change still expands to keld-host" keld-host "$cli_source"
 expect_exact_output "CLI source change keeps the Ubuntu GTK selection" webkitgtk true "$cli_source"
-expect_exact_output "CLI source change runs keld-cli and keld-host on Ubuntu" ubuntu_packages "keld-cli keld-host" "$cli_source"
+expect_exact_output "CLI source change selects exact observer dependency closure" packages \
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$cli_source"
+expect_exact_output "CLI source change runs exact observer dependency closure on Ubuntu" ubuntu_packages \
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$cli_source"
 expect_codeql "CLI source change selects CodeQL rust only" "$codeql_rust_only" "$cli_source"
 # (Negative control: reader_doc_pr above omits keld-host for the same reader.)
 
@@ -370,7 +403,7 @@ expect_flags "doc-placeholders checker edit selects every lane" "$all_true" "$(r
 # #630: an all-workspace fallback (router, workflow or ci-inputs.json edits)
 # builds and tests every package on Ubuntu, installing WebKitGTK; it never
 # narrows to the GTK-free subset. The #640 diff (a keld-compat change plus a
-# ci-inputs.json rebind) ran only keld-guard keld-ipc keld-native keld-pack.
+# ci-inputs.json policy edit) ran only keld-guard keld-ipc keld-native keld-pack.
 for input in tools/ci_changes.sh tools/ci-inputs.json .github/workflows/ci.yml; do
     fallback="$(result_for_paths "$input")"
     expect_exact_output "$input installs WebKitGTK on Ubuntu" webkitgtk true "$fallback"
@@ -443,15 +476,20 @@ expect_output_package_token "IPC source doctests keld-ipc" doctest_packages keld
 expect_output_package_token "IPC source doctests its library dependent keld-cli" doctest_packages keld-cli "$ipc_doctest"
 expect_output_package_absent "IPC source does not doctest bin-only keld-host" doctest_packages keld-host "$ipc_doctest"
 expect_package_token "IPC source still tests keld-host" keld-host "$ipc_doctest"
-expect_exact_output "CLI source doctests keld-cli alone" doctest_packages keld-cli "$cli_source"
+expect_exact_output "CLI source doctests exact selected library packages" doctest_packages \
+    "keld-cli keld-compat keld-core keld-runtime keld-update" "$cli_source"
 expect_exact_output "reader-doc PR doctests its reader" doctest_packages keld-cli "$reader_doc_pr"
 # Negative controls: a bin-only package inside the selection is dropped, and a
 # no-Rust diff selects no doctest. (Every crates/* path also reaches keld-cli
 # through the registry edge, so the all-bin-only case uses the fake metadata
 # repository below, whose packages have no library target.)
 host_source="$(result_for_paths crates/keld-host/src/main.rs)"
-expect_exact_output "keld-host change still tests keld-cli and keld-host" packages "keld-cli keld-host" "$host_source"
-expect_exact_output "keld-host change doctests only the library keld-cli" doctest_packages keld-cli "$host_source"
+expect_exact_output "keld-host source selects exact observer dependency closure" packages \
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+expect_exact_output "keld-host source runs exact observer dependency closure on Ubuntu" ubuntu_packages \
+    "keld-cli keld-compat keld-core keld-host keld-runtime keld-update keld-updater-helper" "$host_source"
+expect_exact_output "keld-host source doctests exact selected library packages" doctest_packages \
+    "keld-cli keld-compat keld-core keld-runtime keld-update" "$host_source"
 expect_exact_output "docs-only PR skips the doctest lane" doctest false "$docs_only_pr"
 expect_empty_output "docs-only PR doctests nothing" doctest_packages "$docs_only_pr"
 # Fallbacks doctest every library package.
@@ -462,7 +500,9 @@ for selection in "$unknown_codeql" "$workflow_codeql"; do
 done
 
 audit_docs_classification="$(result_for_paths docs/audits/verify.py docs/audits/evidence/example.json)"
-expect_flags "audit documentation without a Rust reader omits Rust" "$docs_only" "$audit_docs_classification"
+expect_flags "audit checker selects documentation and policy-reader hygiene without Rust" "$docs_hygiene" "$audit_docs_classification"
+audit_prose_classification="$(result_for_paths docs/audits/README.md docs/audits/evidence/example.json)"
+expect_flags "audit prose and evidence without a checker change select only documentation" "$docs_only" "$audit_prose_classification"
 
 hygiene_classification="$(result_for_paths .github/CODEOWNERS)"
 expect_flags "hygiene input runs only hygiene contract" "$hygiene_only" "$hygiene_classification"
@@ -506,8 +546,12 @@ compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
 expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"
 expect_package_token "compat-only change includes its owner package" keld-compat "$compat_classification"
 
-compat_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
+compat_test_classification="$(result_for_paths crates/keld-compat/tests/support/corpus_error.rs)"
 expect_flags "Rust-only change does not select the TypeScript lane" "$compat_flags" "$compat_test_classification"
+# GH-1275: a registered Rust reader (tools/ci-inputs.json rust-readers) that changes
+# in the diff widens to every lane for that change; no digest is recorded or rebound.
+reader_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
+expect_flags "registered Rust reader change selects every lane" "$all_true" "$reader_test_classification"
 expect_empty_output "Rust-only change selects no Bun suite" ts_packages "$compat_test_classification"
 
 ipc_fixture_classification="$(result_for_paths crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv)"
@@ -619,16 +663,33 @@ echo "ok: cargo metadata derives current keld-host closure"
 
 cd "$repo_root"
 git -C "$temp_dir" init -q
+# No detached `git maintenance` child may outlive a command and race cleanup (#670).
+git -C "$temp_dir" config maintenance.auto false
 git -C "$temp_dir" config user.email ci-router@example.invalid
 git -C "$temp_dir" config user.name ci-router-test
 mkdir -p "$temp_dir/crates/keld-runtime/src" "$temp_dir/fake-bin" "$temp_dir/tools"
-printf '%s\n' '{"schema":"keld.ci-inputs/v1","known_inputs":["*"],"reader_sets":{},"consumers":[]}' >"$temp_dir/tools/ci-inputs.json"
 mkdir -p "$temp_dir/packages/@fake/bootstrap/src"
 printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/package.json"
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json packages
+# Keep the real shared native policy in this minimal graph fixture with its real
+# reader pattern, so TS selects hygiene through the edge and not an all-gate rescue.
+"$python_command" -B - "$repo_root" "$temp_dir" <<'PY'
+import json, shutil, sys
+from pathlib import Path
+source, fixture = map(Path, sys.argv[1:])
+sys.path.insert(0, str(source / "tools"))
+import ci_inputs
+native = next(consumer for consumer in ci_inputs.load(source)["consumers"]
+              if consumer["owner"] == "Native JavaScript formatting")
+shutil.copyfile(source / "tools/ci_inputs.py", fixture / "tools/ci_inputs.py")
+reader = {"patterns": ["tools/ci_inputs.py"]}
+contract = {"schema": ci_inputs.SCHEMA, "known_inputs": ["*"],
+            "reader_sets": {native["reader_set"]: reader}, "consumers": [native]}
+(fixture / "tools/ci-inputs.json").write_text(json.dumps(contract) + "\n", encoding="utf-8")
+PY
+git -C "$temp_dir" add README.md .gitignore tools/ci-inputs.json tools/ci_inputs.py packages
 git -C "$temp_dir" commit -qm base
 base_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 real_jq="$(command -v jq)"
@@ -930,7 +991,7 @@ git -C "$temp_dir" add packages
 git -C "$temp_dir" commit -qm packages
 ts_sha="$(git -C "$temp_dir" rev-parse HEAD)"
 ts_pr_result="$(cd "$temp_dir" && PATH="$temp_dir/fake-bin:$PATH" KELD_CI_EVENT_NAME=pull_request KELD_CI_BASE_SHA="$untested_sha" KELD_CI_HEAD_SHA="$ts_sha" "$router" github)"
-fake_ts_flags=$'rust=false\ndocs=false\nhygiene=false\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=false'
+fake_ts_flags=$'rust=false\ndocs=false\nhygiene=true\ngui=false\nmsrv=false\ndeny=false\nts=true\nwebkitgtk=false'
 expect_flags "pull-request TypeScript-only diff runs the Bun lane with no Rust consumer" "$fake_ts_flags" "$ts_pr_result"
 expect_output_package_token "pull-request TypeScript-only diff selects the changed Bun suite" ts_packages 'packages/@fake/pkg' "$ts_pr_result"
 expect_empty_packages "pull-request TypeScript-only diff selects no workspace package" "$ts_pr_result"
@@ -1019,4 +1080,4 @@ case "$(uname -s)" in
     MINGW* | MSYS*) python_command=python ;;
     *) python_command=python3 ;;
 esac
-"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests FreshnessGateTests RouterFailureBoundaryTests SelectionTests
+"$python_command" -B "$repo_root/tools/test_ci_local.py" InputContractTests ProductionConsumerTests RouterFailureBoundaryTests SelectionTests TempRepositoryMaintenanceTests FmtIncludedBashCompatibilityTests

@@ -1,6 +1,8 @@
 //! Legacy one-group Guardian execution with crash-closed authenticated custody.
 //! No Bun image executes before the host has accepted and retained its group.
-use super::process_group::{GroupIdentity, LocalGroupWitness, terminate_attested_group};
+use super::process_group::{
+    GroupIdentity, LocalGroupWitness, retire_own_child_group, terminate_attested_group,
+};
 use super::{
     AwaitHostGroupRetention, Command, CommandExt, GuardianReport, Read, RuntimeError,
     SpawnAdmission, Stdio, await_host_death, collapse_failures, fail_before_child, io,
@@ -105,7 +107,8 @@ where
     run_live_group(child, verified_group, liveness, revoke_registered_resources)
 }
 
-fn reject_spawn(
+// pub(super) only so the per-caller D1 contract tests can drive it.
+pub(super) fn reject_spawn(
     primary: RuntimeError,
     admission_error: Option<RuntimeError>,
     group: Option<GroupIdentity>,
@@ -122,20 +125,36 @@ fn reject_spawn(
             source,
         ));
     }
-    if let Some(group) = group
-        && let Err(error) = terminate_attested_group(group)
-    {
-        failures.push(error);
-    }
-    if let Some(child) = child.as_mut()
-        && let Err(source) = child.wait()
-    {
-        failures.push(lifecycle_error("macOS guardian direct-child wait", source));
+    match (group, child.as_mut()) {
+        // This Guardian is the leader's OS parent: decide the group only
+        // after reaping its exact unreaped Child.
+        (Some(group), Some(own)) => {
+            let (retired, reaped) = retire_own_child_group(group, |_| {
+                own.wait()
+                    .map(|_| ())
+                    .map_err(|source| lifecycle_error("macOS guardian direct-child wait", source))
+            });
+            failures.extend(retired.err());
+            failures.extend(reaped.err());
+        }
+        (group, own) => {
+            if let Some(group) = group
+                && let Err(error) = terminate_attested_group(group)
+            {
+                failures.push(error);
+            }
+            if let Some(own) = own
+                && let Err(source) = own.wait()
+            {
+                failures.push(lifecycle_error("macOS guardian direct-child wait", source));
+            }
+        }
     }
     collapse_failures(failures)
 }
 
-fn run_live_group<R: Read + AsFd>(
+// pub(super) only so the per-caller D1 contract tests can drive it.
+pub(super) fn run_live_group<R: Read + AsFd>(
     mut child: Child,
     group: GroupIdentity,
     mut liveness: R,
@@ -152,15 +171,28 @@ fn run_live_group<R: Read + AsFd>(
             source,
         ));
     }
-    if let Err(error) = terminate_attested_group(group) {
+    // This Guardian is the leader's OS parent: the group is decided only
+    // after it reaps its exact unreaped Child.
+    let mut leader_status = None;
+    let (retired, reaped) = retire_own_child_group(group, |_| {
+        leader_status = Some(
+            child
+                .wait()
+                .map_err(|source| lifecycle_error("macOS guardian direct-child wait", source))?,
+        );
+        Ok(())
+    });
+    failures.extend(retired.err());
+    if let Err(error) = reaped {
         failures.push(error);
+        return Err(collapse_failures(failures));
     }
-    let leader_status = match child.wait() {
-        Ok(status) => status,
-        Err(source) => {
-            failures.push(lifecycle_error("macOS guardian direct-child wait", source));
-            return Err(collapse_failures(failures));
-        }
+    let Some(leader_status) = leader_status else {
+        failures.push(lifecycle_error(
+            "macOS guardian direct-child wait",
+            io::Error::other("direct child reap reported no status"),
+        ));
+        return Err(collapse_failures(failures));
     };
     if failures.is_empty() {
         Ok(GuardianReport {
