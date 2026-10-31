@@ -409,9 +409,10 @@ pub fn write_frame<S: Write>(
 ) -> Result<(), IpcError>
 ```
 
-`write_frame` flushes after every frame, so a header and its payload always reach the peer
-together. `read_frame` does a `read_exact` of 16 bytes, decodes, then a `read_exact` of `len`
-bytes.
+`write_frame` writes the header and payload separately, then flushes. Flushing does not make
+delivery atomic: the peer can receive a partial frame if a write fails or the link closes.
+`read_frame` uses `read_exact` for the 16-byte header and then for the declared `len` bytes;
+an incomplete header or payload is an I/O error.
 
 **Know what this is not.** `crates/keld-ipc/AGENTS.md` requires the eventual implementation to be a
 state machine with no steady-state allocation, and says so bluntly: "State-machine readers/writers.
@@ -5458,7 +5459,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: Frame payload exceeds MAX_FRAME_LEN
-- fix: Shrink the payload or move large transfers to the bulk plane (shm / keld://).
+- fix: Shrink the payload to at most MAX_FRAME_LEN (16 MiB). The shared-memory and `keld://` bulk planes are future designs, not available transports in the current implementation.
 
 ## KELD-IPC-005
 
@@ -6503,7 +6504,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The verified executable image does not carry exactly one readable, canonical expected-identity container
-- fix: Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container.
+- fix: Reinstall the signed package if its executable image is damaged. For a new image, the packaging integration must embed one valid expected-identity container before signing; `keld build` is reserved (`KELD-CLI-045`) and cannot perform this repair today. The installed image refuses to run until it carries a valid container.
 
 ## KELD-UPDATE-020
 
@@ -6557,7 +6558,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The executable image carries no `.keldeai` expected-identity container
-- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity into `keld-host.exe` or `keld-updater-helper.exe` before signing.
+- fix: The packaging integration must use `keld-pack` to embed the expected identity into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing. `keld build` is reserved (`KELD-CLI-045`) and is not an available packaging command.
 
 ## KELD-PACK-008
 
@@ -6581,7 +6582,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The expected-identity container is not canonical
-- fix: The image's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
+- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image; `keld build` is reserved (`KELD-CLI-045`) and is not implemented.
 
 ## KELD-PACK-012
 
@@ -7620,8 +7621,10 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    must not name any one record's profile for it. The claim (rule 4) names no
    profile. Labelling rules per run are in
    `docs/specs/gh532-first-proof-evidence-rules.md` rule 6. The KEL-237
-   lifecycle report still prints its harness label as a literal until X01-T4
-   (#566) migrates `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
+   lifecycle report now derives its authority line from all platform boards'
+   `Scoreboard::authority_profile()` values, rendered with
+   `AuthorityProfile::as_str`. If they have no one shared profile, the report
+   refuses to render; it never substitutes a literal harness label.
 
 Until a product denominator is committed, this page stays a narrative API
 board (✔/▲/✘). Installer size/RSS stays on

@@ -156,9 +156,10 @@ pub fn write_frame<S: Write>(
 ) -> Result<(), IpcError>
 ```
 
-`write_frame` flushes after every frame, so a header and its payload always reach the peer
-together. `read_frame` does a `read_exact` of 16 bytes, decodes, then a `read_exact` of `len`
-bytes.
+`write_frame` writes the header and payload separately, then flushes. Flushing does not make
+delivery atomic: the peer can receive a partial frame if a write fails or the link closes.
+`read_frame` uses `read_exact` for the 16-byte header and then for the declared `len` bytes;
+an incomplete header or payload is an I/O error.
 
 **Know what this is not.** `crates/keld-ipc/AGENTS.md` requires the eventual implementation to be a
 state machine with no steady-state allocation, and says so bluntly: "State-machine readers/writers.

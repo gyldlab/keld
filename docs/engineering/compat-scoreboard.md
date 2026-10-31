@@ -68,8 +68,10 @@ Rules that keep a partial corpus from becoming a “100% compatible” claim:
    must not name any one record's profile for it. The claim (rule 4) names no
    profile. Labelling rules per run are in
    `docs/specs/gh532-first-proof-evidence-rules.md` rule 6. The KEL-237
-   lifecycle report still prints its harness label as a literal until X01-T4
-   (#566) migrates `crates/keld-compat/tests/lifecycle_evidence_report.rs`.
+   lifecycle report now derives its authority line from all platform boards'
+   `Scoreboard::authority_profile()` values, rendered with
+   `AuthorityProfile::as_str`. If they have no one shared profile, the report
+   refuses to render; it never substitutes a literal harness label.
 
 Until a product denominator is committed, this page stays a narrative API
 board (✔/▲/✘). Installer size/RSS stays on
