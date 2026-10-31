@@ -57,9 +57,8 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch shipping keld dev helper");
-    let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "shipping renderer beacon");
     let window = wait_for_host_window(host_pid, Instant::now() + PRODUCT_DEADLINE);
@@ -128,8 +127,8 @@ fn shipping_windows_cli_death_reaps_the_delegated_host_and_bun() {
         .expect("launch leased keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
     let (mut reader, _writer, bun_pid, _, lease_handle) =
         accept_ready_generation_with_lease(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "lease renderer beacon");
@@ -204,8 +203,8 @@ fn shipping_windows_host_death_reaps_bun_descendant_deletes_stage_and_relaunches
         .expect("launch host-death keld dev helper");
     let cli_pid = cli.id();
     let host_pid =
-        wait_for_child_process(cli_pid, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
-    let cleanup_pid = wait_for_cleanup_sentinel(cli_pid, Instant::now() + PRODUCT_DEADLINE);
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let cleanup_pid = wait_for_cleanup_sentinel(&mut cli, Instant::now() + PRODUCT_DEADLINE);
     let (reader, _writer, bun_pid, _, descendant_pid) =
         accept_ready_generation_with_descendant(&control_listener, &mut cli);
     expect_renderer_beacon(beacon, "host-death renderer beacon");

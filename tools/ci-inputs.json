@@ -1,6 +1,6 @@
 {
-  "schema": "keld.ci-inputs/v1",
-  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh)",
+  "schema": "keld.ci-inputs/v2",
+  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh); stateless schema v2, GH-1275",
   "known_inputs": [
     "AGENTS.md",
     "CLAUDE.md",
@@ -93,6 +93,7 @@
         "crates/keld-ipc/src/echo.rs",
         "crates/keld-ipc/src/lifecycle.rs",
         "crates/keld-ipc/src/channel_table.rs",
+        "crates/keld-core/src/app_session/window_registry.rs",
         "crates/keld-native/src/fs.rs",
         "crates/keld-native/src/auth/mod.rs",
         "crates/keld-native/tests/fixtures/fs-payload-v0.tsv",
@@ -487,6 +488,10 @@
         "crates/keld-host/tests/no_flag/windows/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/support/product.rs",
         "crates/keld-host/tests/no_flag/macos/renderer_bridge.rs",
+        "crates/keld-host/tests/no_flag_macos.rs",
+        "crates/keld-host/tests/no_flag/macos/module_process.rs",
+        "crates/keld-compat/tests/module_process_corpus.rs",
+        "crates/keld-compat/tests/module_process_reference.rs",
         "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
         "crates/keld-host/tests/no_flag/macos/facade_window.rs",
         "crates/keld-update/src/windows_extraction/tests.rs",
@@ -502,16 +507,16 @@
         "crates/keld-cli/tests/support/rust_source_scan.rs",
         "tools/llms_docs.rs",
         "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
-        "crates/keld-host/tests/no_flag/macos/public_fs.rs"
-      ],
-      "sha256": "c558dcb29467d4839ce1db51c60df8f2e95e44a282d3dfae2ba83c2bf829accc"
+        "crates/keld-host/tests/no_flag/macos/public_fs.rs",
+        "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
+        "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
+      ]
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
-      ],
-      "sha256": "9e6bc69ece8c4b1684278dcb71be202c6c96e3eceb529184e1b1de4c19c1ace8"
+      ]
     },
     "policy-readers": {
       "patterns": [
@@ -520,15 +525,13 @@
         "docs/audits/*.py",
         ".githooks/*",
         "rust-toolchain.toml"
-      ],
-      "sha256": "d7dbe414292daccd95b853c96717d2b72d46e5367598f1a5b57db666efdec877"
+      ]
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
-      ],
-      "sha256": "c6cce75a623d58b34bad6dfee029df324f89ab50b33fab38a088c927a5165afb"
+      ]
     },
     "rustdoc-readers": {
       "patterns": [
@@ -537,14 +540,12 @@
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/*"
-      ],
-      "sha256": "acc919ce13e5b409e83ac7db9dd431049dff087ca1969eb682d085bb373c6691"
+      ]
     },
     "dependency-command": {
       "patterns": [
         "justfile"
-      ],
-      "sha256": "02490bed88d548cf5e279cf2b7f188725c963ecbdad75b7df42678d3e31d4386"
+      ]
     },
     "status-test-readers": {
       "patterns": [
@@ -553,8 +554,7 @@
         "tools/repo_path_contract.rs",
         "rust-toolchain.toml",
         "justfile"
-      ],
-      "sha256": "1e1e4310793453bdccee8b20fbd9795fee790f680baf860907d8b4705345f34e"
+      ]
     }
   },
   "live_inputs": {
@@ -567,8 +567,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "d82949d8f0b4882c4a1471fc5a5e73d12d52f6abb8336834c6f80b334ff57126",
-    "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
+    "contract": "Broad census compares path membership against the comparison base: a crate path that the base did not track, or that the change removes, selects every lane. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; a change that touches a registered reader runs every consumer behind it. Nothing is recorded between changes (GH-1275)."
   },
   "rust_package_inputs": {
     "keld-runtime": [
@@ -584,7 +583,9 @@
       "packages/@keld/electron/*",
       "packages/@keld/api/*",
       "packages/@keld/kipc/src/transport.ts",
-      "crates/keld-compat/fixtures/lifecycle-corpus/*"
+      "crates/keld-compat/fixtures/lifecycle-corpus/*",
+      "crates/keld-host/**",
+      "crates/keld-cli/src/**"
     ],
     "keld-update": [
       "crates/keld-pack/tests/fixtures/windows-v0-content.tar"

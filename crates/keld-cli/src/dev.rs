@@ -32,7 +32,9 @@ use keld_runtime::windows_job::{
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
-use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
+use crate::doctor::{
+    all_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
 
@@ -210,6 +212,11 @@ pub fn hello_title_for_project(project_root: &Path) -> String {
 /// Returns [`DevError::Renderer`] (`KELD-CLI-035`) for a missing file or unsafe
 /// path, or [`DevError::Io`] when the file exists but cannot be read.
 pub fn load_dev_window_html(project_root: &Path) -> Result<String, DevError> {
+    if facade_mode_for_project(project_root).map_err(DevError::Doctor)? {
+        return Err(DevError::Doctor(String::from(
+            "KELD-CLI-047: initialWindow: 'none' has no initial renderer. Use `keld dev` with the staged Host; the retained hello-window loader cannot create a facade-owned first window.",
+        )));
+    }
     let renderer =
         read_config_renderer(project_root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
     let rel = validate_renderer_relpath(&renderer)?;
@@ -739,6 +746,10 @@ where
     W: FnOnce(&str, &str) -> Result<(), DevError>,
 {
     doctor_or_err(project_root)?;
+    // Retained diagnostic/test seam can construct only a hello window. A
+    // facade app owns its first window after Host Ready; reject before Bun
+    // spawn instead of inventing one via the legacy hello window callback.
+    let html = load_dev_window_html(project_root)?;
     let ready = format!(
         "{}: main process ready (IPC echo ok)",
         hello_title_for_project(project_root)
@@ -768,7 +779,6 @@ where
 
     // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
-    let html = load_dev_window_html(project_root)?;
     let window_result = window(&title, &html);
     // Window returned (tao `run_return`) — reap Bun, stop the listener, and
     // read how supervision actually ended across the window phase (KEL-105).
@@ -1178,6 +1188,22 @@ mod tests {
         .expect("html");
         let html = load_dev_window_html(dir.path()).expect("renderer");
         assert!(html.contains("default-index"), "{html}");
+    }
+
+    #[test]
+    fn legacy_window_loader_refuses_facade_instead_of_inventing_an_index_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none' } as const;",
+        )
+        .expect("facade config");
+        fs::write(dir.path().join("index.html"), "<p>must not load</p>").expect("index");
+        let error = load_dev_window_html(dir.path())
+            .expect_err("facade has no initial renderer, even if index exists");
+        let text = error.to_string();
+        assert!(text.contains("KELD-CLI-047"), "{text}");
+        assert!(text.contains("no initial renderer"), "{text}");
     }
 
     #[test]

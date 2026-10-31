@@ -135,6 +135,10 @@ struct ServerInner {
     /// stream refuses to start new I/O once it is set, and a waiter that
     /// re-arms after a refusal reads it before it waits again.
     cancelled: AtomicBool,
+    /// Set once by [`WindowsNamedPipeStream::shutdown`] before it retires the
+    /// HANDLE, and never cleared. A later read then reports end of file, as a
+    /// read after a socket's `shutdown` does, instead of a closed-handle error.
+    shut_down: AtomicBool,
     #[cfg(test)]
     accept_pending: AtomicBool,
     #[cfg(test)]
@@ -379,6 +383,7 @@ impl WindowsNamedPipeServer {
                 connected: AtomicBool::new(false),
                 consumed: AtomicBool::new(false),
                 cancelled: AtomicBool::new(false),
+                shut_down: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
@@ -708,6 +713,7 @@ impl WindowsNamedPipeServer {
                 connected: AtomicBool::new(true),
                 consumed: AtomicBool::new(true),
                 cancelled: AtomicBool::new(false),
+                shut_down: AtomicBool::new(false),
                 #[cfg(test)]
                 accept_pending: AtomicBool::new(false),
                 #[cfg(test)]
@@ -1116,24 +1122,51 @@ impl WindowsNamedPipeStream {
             inner: Arc::clone(&self.inner),
         };
         let _lifecycle = server.lock_lifecycle();
+        // As in `close_terminal`: a read or write past its final check
+        // finishes issuing before the cancel, and none issues after the
+        // HANDLE is retired. Lock order lifecycle -> io_issue -> pipe.
+        let _io_issue = self
+            .inner
+            .io_issue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let cancel_error = server.cancel_pending_io().err();
-        // SAFETY: this is the live server pipe handle. Cancelling does not
-        // free another operation's OVERLAPPED or buffer; each operation owner
-        // retains and observes its own state. Disconnect only breaks the pipe
-        // connection so peer and local waiters can finish.
-        let disconnect_error = if self.inner.connected.swap(false, Ordering::AcqRel) {
-            match server.raw_pipe() {
-                Ok(pipe) if unsafe { DisconnectNamedPipe(pipe) } == 0 => {
-                    let error = io::Error::last_os_error();
-                    (!matches!(error.raw_os_error(), Some(109 | 232 | 233))).then_some(error)
-                }
-                Ok(_) => None,
-                Err(error) => Some(error),
-            }
-        } else {
-            None
-        };
-        disconnect_error.or(cancel_error).map_or(Ok(()), Err)
+        self.inner.connected.store(false, Ordering::Release);
+        self.inner.shut_down.store(true, Ordering::Release);
+        if cancel_error.is_some()
+            && let Ok(pipe) = server.raw_pipe()
+        {
+            // SAFETY: this is the live pipe handle still owned by `inner.pipe`.
+            // An unconfirmed cancel can leave I/O pending, whose pin would keep
+            // the HANDLE open until that I/O's own deadline. Disconnect forces
+            // it to complete, at the cost of the peer's unread bytes. A client
+            // handle refuses it, and the cancel error is reported either way.
+            let _ = unsafe { DisconnectNamedPipe(pipe) };
+        }
+        // Otherwise retire the HANDLE rather than call DisconnectNamedPipe,
+        // which discards every byte the peer has not read yet (#1073 W2).
+        // Each pending operation keeps its own pin until it has observed the
+        // cancel above, so this end closes only after that; the peer then
+        // reads everything written before the close, then ERROR_BROKEN_PIPE.
+        drop(
+            self.inner
+                .pipe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+        cancel_error.map_or(Ok(()), Err)
+    }
+
+    /// Test seam for a faulty owner: the instance's abortive
+    /// [`WindowsNamedPipeServer::close_terminal`], which discards bytes the
+    /// peer has not read yet, unlike [`Self::shutdown`].
+    #[cfg(test)]
+    pub(crate) fn close_terminal_for_test(&self) -> io::Result<()> {
+        WindowsNamedPipeServer {
+            inner: Arc::clone(&self.inner),
+        }
+        .close_terminal()
     }
 
     #[cfg(test)]
@@ -1200,7 +1233,11 @@ impl Read for WindowsNamedPipeStream {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.refuse_if_cancelled()?;
-        let pinned_pipe = self.pinned_pipe()?;
+        let pinned_pipe = match self.pinned_pipe() {
+            Ok(pipe) => pipe,
+            Err(_) if self.inner.shut_down.load(Ordering::Acquire) => return Ok(0),
+            Err(error) => return Err(error),
+        };
         #[cfg(test)]
         wait_at_test_consume_gate(&self.inner.after_raw_pipe_borrow);
         let result = overlapped_io(
@@ -2231,6 +2268,320 @@ mod cancellation_tests {
             process_handle_count().expect("final native handle count"),
             baseline,
             "terminal close and a pending read must not leak any pipe/event handle"
+        );
+    }
+
+    /// The peer's view of its end without reading: `Ok` while the server end
+    /// is open, the Win32 error (109 or 233) once it is closed or disconnected.
+    fn peer_end_open(client: &super::WindowsNamedPipeStream) -> std::io::Result<u32> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+        client.inspect_owned_pipe(|owned| {
+            let mut available = 0_u32;
+            // SAFETY: `owned` is the live client HANDLE held for this call;
+            // null buffers request no data and `available` is writable.
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    owned.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &raw mut available,
+                    std::ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(available)
+            }
+        })
+    }
+
+    /// GH-1073: after `shutdown` retires the HANDLE, a read reports end of
+    /// file, as a read after a socket's shutdown does, and a write fails.
+    /// One-fault control: without the `shut_down` arm in `read`, the read
+    /// returns the closed-handle `NotConnected` error instead.
+    #[test]
+    fn shutdown_then_read_reports_end_of_file_and_write_fails() {
+        use std::io::{Read as _, Write as _};
+
+        let (_baseline, server, client, mut stream) = warmed_silent_server_stream("eof");
+        let mut reader = stream.try_clone().expect("second stream on the instance");
+        stream.shutdown().expect("shutdown with no pending I/O");
+        let mut byte = [0_u8; 1];
+        let read = reader.read(&mut byte);
+        let write = stream.write(b"x");
+        drop(client);
+        drop(server);
+
+        assert_eq!(read.expect("a read after shutdown is end of file"), 0);
+        let error = write.expect_err("a write after shutdown must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotConnected, "{error}");
+    }
+
+    /// GH-1073: `shutdown` waits for a read that passed its final check under
+    /// `io_issue`, then cancels the `ReadFile` that read issued. One-fault
+    /// control: without `shutdown`'s `io_issue` guard the close finishes
+    /// first, the read issues on its pinned HANDLE after the cancel, and it
+    /// waits out its own deadline instead of reporting the abort.
+    #[test]
+    fn shutdown_waits_for_an_issuing_read_and_then_cancels_it() {
+        use std::io::Read as _;
+        use std::sync::{PoisonError, mpsc};
+        use std::thread;
+
+        use crate::bootstrap::TestConsumeGate;
+
+        use super::process_handle_count;
+
+        let (baseline, server, mut client, mut stream) = warmed_silent_server_stream("issue");
+        // Kill switch only: the shutdown aborts the read long before.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bounded native read");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        *server
+            .inner
+            .after_raw_pipe_borrow
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(TestConsumeGate { entered, release });
+        let (read_tx, read_rx) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut byte = [0_u8; 1];
+            read_tx
+                .send(stream.read(&mut byte))
+                .expect("send native read observation");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reader holds io_issue past its final check");
+
+        let closing = server.stream().expect("second stream on the instance");
+        let (close_tx, close_rx) = mpsc::sync_channel(1);
+        let closer = thread::spawn(move || {
+            close_tx
+                .send(closing.shutdown())
+                .expect("report shutdown result");
+        });
+        // The reader still holds io_issue, so a correct shutdown cannot finish.
+        let early = match close_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(result) => Some(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(error) => panic!("shutdown reporter disconnected: {error}"),
+        };
+        let finished_early = early.is_some();
+        release_tx.send(()).expect("release the issuing reader");
+        let observation = read_rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("native read has a finite outcome");
+        reader.join().expect("native reader joined");
+        let shutdown = match early {
+            Some(result) => result,
+            None => close_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("shutdown finishes after the read issued"),
+        };
+        closer.join().expect("shutdown owner joined");
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("bounded peer read");
+        let mut byte = [0_u8; 1];
+        let peer = client.read(&mut byte);
+        drop(client);
+        drop(server);
+
+        assert!(
+            !finished_early,
+            "shutdown finished while a read held io_issue past its final check"
+        );
+        shutdown.expect("shutdown succeeds");
+        assert!(
+            matches!(&observation, Err(error) if error.raw_os_error() == Some(995)),
+            "the issued read must be aborted by the shutdown, not wait out its deadline: {observation:?}"
+        );
+        assert_eq!(peer.expect("peer reads end of file"), 0);
+        assert_eq!(
+            process_handle_count().expect("final native handle count"),
+            baseline,
+            "shutdown and an issuing read must not leak any pipe/event handle"
+        );
+    }
+
+    /// GH-1073: once `ReadFile` is pending, `shutdown` cancels it and retires
+    /// the server's reference, yet the HANDLE the read still uses stays valid
+    /// and the peer stays connected until that read observes its completion;
+    /// then the peer reads end of file. One-fault control: a shutdown that
+    /// keeps its HANDLE reference never gives the peer end of file.
+    #[test]
+    fn shutdown_after_pending_read_issue_keeps_the_read_handle_until_observed() {
+        use std::io::Read as _;
+        use std::os::windows::io::AsRawHandle as _;
+        use std::sync::{PoisonError, mpsc};
+        use std::thread;
+
+        use crate::bootstrap::TestConsumeGate;
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+
+        use super::{AFTER_PENDING_IO_ISSUE, process_handle_count};
+
+        let (baseline, server, mut client, mut stream) = warmed_silent_server_stream("shutpend");
+        // Kill switch only: the shutdown cancels the read long before.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bounded native read");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            AFTER_PENDING_IO_ISSUE.with(|gate| {
+                *gate.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(TestConsumeGate { entered, release });
+            });
+            let mut byte = [0_u8; 1];
+            read_tx
+                .send(stream.read(&mut byte))
+                .expect("send native read observation");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the silent peer's ReadFile is pending with io_issue released");
+
+        let raw = server
+            .inspect_owned_pipe(|owned| Ok(owned.as_raw_handle()))
+            .expect("native handle identity before shutdown");
+        let shutdown = server
+            .stream()
+            .expect("second stream on the instance")
+            .shutdown();
+        let server_released = server
+            .inspect_owned_pipe(|owned| Ok(owned.as_raw_handle()))
+            .is_err();
+        let mut flags = 0_u32;
+        // SAFETY: GetHandleInformation only queries the exact captured HANDLE
+        // value and writes the live `flags`; a freed, not yet reused value fails
+        // with ERROR_INVALID_HANDLE. No ownership transfer or dereference occurs.
+        let valid_while_pending = unsafe { GetHandleInformation(raw.cast(), &raw mut flags) } != 0;
+        let peer_while_pinned = peer_end_open(&client);
+
+        release_tx
+            .send(())
+            .expect("release the pending reader after the shutdown completed");
+        let observation = read_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("native read has a finite terminal outcome");
+        reader.join().expect("native reader joined");
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("bounded peer read");
+        let mut byte = [0_u8; 1];
+        let peer = client.read(&mut byte);
+        drop(client);
+        drop(server);
+
+        shutdown.expect("shutdown completes while the read is pending");
+        assert!(
+            server_released,
+            "shutdown must drop the instance's own HANDLE reference"
+        );
+        assert!(
+            valid_while_pending,
+            "shutdown freed the HANDLE a pending ReadFile still uses"
+        );
+        assert!(
+            peer_while_pinned.is_ok(),
+            "the peer stays connected while the pending read pins the HANDLE: {peer_while_pinned:?}"
+        );
+        match observation {
+            Ok(0) => {}
+            Err(error) if error.raw_os_error() == Some(995) => {}
+            other => panic!("pending read used a disposed/wrong HANDLE: {other:?}"),
+        }
+        assert_eq!(
+            peer.expect("peer reads end of file once the pin is released"),
+            0
+        );
+        assert_eq!(
+            process_handle_count().expect("final native handle count"),
+            baseline,
+            "shutdown and a pending read must not leak any pipe/event handle"
+        );
+    }
+
+    /// GH-1073: when `shutdown` cannot confirm its cancel, it falls back to
+    /// the abortive disconnect, so I/O that still pins the HANDLE cannot keep
+    /// the peer connected until that I/O's own deadline. One-fault control:
+    /// without the fallback the peer stays connected while the read is parked.
+    #[test]
+    fn shutdown_with_a_failed_cancel_still_forces_the_peer_off() {
+        use std::io::Read as _;
+        use std::sync::atomic::Ordering;
+        use std::sync::{PoisonError, mpsc};
+        use std::thread;
+
+        use crate::bootstrap::TestConsumeGate;
+
+        use super::{AFTER_PENDING_IO_ISSUE, process_handle_count};
+
+        let (baseline, server, client, mut stream) = warmed_silent_server_stream("cancelfail");
+        // Kill switch only: the disconnect ends the read long before.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bounded native read");
+        let (entered, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            AFTER_PENDING_IO_ISSUE.with(|gate| {
+                *gate.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(TestConsumeGate { entered, release });
+            });
+            let mut byte = [0_u8; 1];
+            read_tx
+                .send(stream.read(&mut byte))
+                .expect("send native read observation");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the silent peer's ReadFile is pending with io_issue released");
+
+        server
+            .inner
+            .force_cancel_error
+            .store(true, Ordering::Release);
+        let shutdown = server
+            .stream()
+            .expect("second stream on the instance")
+            .shutdown();
+        let peer_after_shutdown = peer_end_open(&client);
+
+        release_tx
+            .send(())
+            .expect("release the parked reader after the shutdown");
+        let observation = read_rx
+            .recv_timeout(Duration::from_secs(8))
+            .expect("native read has a finite outcome");
+        reader.join().expect("native reader joined");
+        drop(client);
+        drop(server);
+
+        let error = shutdown.expect_err("the injected cancel failure is reported");
+        assert_eq!(error.raw_os_error(), Some(5), "{error}");
+        assert!(
+            peer_after_shutdown.is_err(),
+            "a failed cancel must still force the peer off: {peer_after_shutdown:?}"
+        );
+        match observation {
+            Ok(0) => {}
+            Err(error) if matches!(error.raw_os_error(), Some(995 | 109 | 232 | 233)) => {}
+            other => panic!("the disconnect must end the pending read: {other:?}"),
+        }
+        assert_eq!(
+            process_handle_count().expect("final native handle count"),
+            baseline,
+            "a failed-cancel shutdown must not leak any pipe/event handle"
         );
     }
 

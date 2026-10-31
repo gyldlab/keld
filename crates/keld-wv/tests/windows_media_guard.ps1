@@ -99,12 +99,15 @@ function Invoke-MediaWatchdogProbe {
 }
 
 function Invoke-MediaOuterDeadlineProbe {
-    param([string]$EvidenceRoot)
+    param([string]$Binary, [string]$EvidenceRoot)
     $stdoutPath = Join-Path $EvidenceRoot 'outer-deadline-probe.log'
     $stderrPath = Join-Path $EvidenceRoot 'outer-deadline-probe.stderr.log'
     $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    $start.Arguments = '-NoProfile -Command "[Console]::Out.WriteLine(''KELD_MEDIA_PHASE outer-probe-block''); [Console]::Out.Flush(); $gate = [Threading.ManualResetEventSlim]::new($false); $gate.Wait()"'
+    # Reuse the warmed, hash-bound native libtest, not a cold Windows PowerShell 5.1 child.
+    # The independent outer watchdog remains exactly five seconds.
+    $start.FileName = $Binary
+    $start.Arguments = 'webview2::media_acceptance::tests::windows_media_acceptance_subprocess --ignored --exact --nocapture --test-threads=1'
+    $start.EnvironmentVariables['KELD_MEDIA_WATCHDOG_PROBE'] = 'outer'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -187,7 +190,7 @@ if ($binaryHash -ne $sourceBinaryHash) {
     throw "Fixture executable copy mismatch: source=$sourceBinaryHash evidence=$binaryHash"
 }
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
-$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot
+$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
 if ($profileRegressionCount -ne 8) {
     throw "Expected eight Windows profile regressions, observed $profileRegressionCount"
