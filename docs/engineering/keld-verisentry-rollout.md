@@ -14,7 +14,7 @@ final deployment qualification. No new server or private repository is needed.
 | GitHub Actions App (untrusted for this gate) | App ID **15368** |
 | Expected required check | `KELD VeriSentry` from **App ID 5550363**, not any matching check name |
 | Credential | Encrypted `VERISENTRY_APP_PRIVATE_KEY` in `verisentry-publisher` GitHub Actions environment, branch rule **main** |
-| Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed |
+| Actions execution policy | Repository policy **10173**, active, `.github/workflows/ci-provenance.yml` with only `pull_request_target` allowed; refresh is a **separate**, protected-main `schedule`/trusted `workflow_dispatch` workflow |
 | Native App ruleset | [**26261486**](https://github.com/gyldlab/keld/rules/26261486), `KELD VeriSentry trusted App admission`, branch `main`, **disabled until final release** |
 | Native bypass actors | `0monish` ID **155816356** and `amishabenramani` ID **130687844**, both `User` with `bypass_mode: pull_request` (never exempt/direct-push) |
 
@@ -48,6 +48,43 @@ the current GitHub-generated PR **test-merge SHA**, never an arbitrary
 candidate-supplied SHA. It refuses stale, closed, moved, invalid and
 unmergeable PRs, incomplete evidence and API failures rather than publishing a
 false PASS. The key is never stored in Git, a candidate PR, caches or logs.
+
+## Trusted periodic backfill and aging protection
+
+The source-only `pull_request_target` workflow runs when the PR changes, not
+necessarily when the base `main` branch advances. GitHub required checks can
+also become too old after seven days. A **daily, protected-default-main-only**
+`.github/workflows/ci-verisentry-refresh.yml` (cron **02:17 UTC**) is used to
+re-evaluate open PRs without creating another server or private repository.
+Authorized Monish/Amisha may also use `workflow_dispatch` on `main` for an
+urgent refresh; other actors and non-main refs are refused **before the App key
+is minted**. It reads GitHub API metadata only, without `actions/checkout`,
+PR file execution, caches, shell steps or candidate-controlled workflows.
+
+The refresh holds a repository-scoped App token with Checks write,
+Pull requests read and **Contents read** (required for the immutable Compare
+Commits API). The direct event publisher's token remains more narrowly scoped
+without Contents read. It reuses the automatic verifier's protected-path
+classifier byte-for-byte, enforced by hosted Bun negative tests. It verifies
+PR number, exact base/head, current synthetic test-merge SHA, full 1–299 file
+comparison, rename/status syntax and protected CI authority, then refetches
+live PR state **before publishing**. Missing, unmergeable, stale, 300+ and
+API-failing PRs never get a fabricated PASS. Any duplicated synthetic merge
+SHA is a security-review error, not a shared PASS across PR identities.
+
+Existing same-source App checks younger than four days are reused. Older
+checks are renewed from fresh evidence, before GitHub's seven-day validity
+boundary. A prior App FAIL is **not silently upgraded** to PASS by a periodic
+refresh; a fresh PR event or authorized review is required. Every new check
+is verified as App ID 5550363 on the current test-merge SHA.
+
+The rollout's first dry-run over **56 open `main`-targeting PRs** on 31 Oct
+2026 (not all 152 open PRs across other base branches) classified **35 PASS
+and 21 DENY**, using the exact trusted production verifier source, with no App
+key loaded and no writes. After this refresh workflow is reviewed/merged,
+run it once manually and verify signed-check coverage on open mergeable PRs
+**before** activating the production ruleset. The scheduled run keeps them
+refreshed and handles later main-base changes without bulk PR-body edits.
 
 ## Real hosted proof receipts
 
@@ -85,7 +122,14 @@ secret-owning manual workflow. Rule [26261486](https://github.com/gyldlab/keld/r
 allows exactly `0monish` and `amishabenramani` to request an authorized bypass
 of that **one VeriSentry required status rule when merging a PR**. Ordinary
 contributors cannot do so; no bypass applies to direct pushes. Existing
-branch review, CODEOWNERS and other required CI rules still apply.
+branch review, CODEOWNERS and other required CI rules still apply. **Warning:**
+GitHub's PR-only bypass is an exceptional admin-merge operation and can elect
+to bypass other branch protections in that PR, not *only* the VeriSentry
+check. Before any bypass, document the independent reviewer, current PR
+base/head and why it is a legitimate CI maintenance change; verify
+`gatekeeper`, `title-lint`, `CI required` and security review evidence.
+Inspect GitHub's rule suite bypass audit and PR merge actor/commit afterward.
+Never use bypass for routine green application changes.
 
 An earlier Stage-2 prototype, [#1330](https://github.com/gyldlab/keld/pull/1330),
 is deliberately **closed and unmerged**. Independent adversarial proof showed
@@ -103,10 +147,12 @@ Do not reintroduce mutable manual release checks or broaden the bypass list.
    Check the two actor IDs, `bypass_mode: pull_request`, required context and
    exact `integration_id: 5550363`. Ensure enforcement is still `disabled`.
 2. Existing open PRs predate the workflow and may have no VeriSentry check.
-   Backfill **only from trusted default-main verifier bytes**, not PR code.
-   Re-fetch PR head/base/test-merge SHA before a signed App check. Reject
-   unknown/300+ file lists, protected authority edits and failed APIs.
-   Exclude closed/moved PRs; leave unmergeable PRs blocked, never fabricate PASS.
+   Run the protected-main scheduled/manual refresh **once** after its exact
+   source and security tests land. Backfill only from trusted default-main
+   verifier bytes, not PR code. Re-fetch head/base/test merge before the App
+   check; reject unknown/300+ file lists, protected authority and failed APIs.
+   Exclude closed/moved PRs; leave unmergeable PRs blocked, never fake PASS.
+   Confirm the next daily schedule and the four-day renewal threshold.
 3. Qualify distinct-fork isolation when a write-enabled fork is available.
    Reconfirm default-main source, restricted environment, stale PR handling,
    duplicate PR head/merge identity, the forged-same-name scenario and a
@@ -142,6 +188,8 @@ gh secret set VERISENTRY_APP_PRIVATE_KEY --repo gyldlab/keld \
 - [Creating branch rulesets and PR-only bypass permissions](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository)
 - [Required status check App source identity](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 - [GitHub Check Runs REST API and required App scopes](https://docs.github.com/en/rest/checks/runs)
+- [GitHub seven-day required-check freshness and test-merge precedence](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+- [GitHub scheduled default-branch workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 - [Trusted `pull_request_target` source semantics](https://docs.github.com/en/actions/reference/security/securely-using_pull_request_target)
 - [App installation token inputs](https://github.com/actions/create-github-app-token/blob/main/README.md)
 - [GitHub Actions concurrency behavior and cancellation risks](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)

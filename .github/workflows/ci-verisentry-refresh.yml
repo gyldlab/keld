@@ -1,0 +1,261 @@
+# KEL-169: trusted default-main App check refresh/backfill (zero PR code execution).
+# Required checks age out after seven days, and a base/main update can change a
+# PR's synthetic test-merge SHA without triggering pull_request_target. The
+# automatic PR event verifier remains the first-line gate; this job reconciles
+# missing/stale App checks from the same protected source policy every day.
+name: KELD VeriSentry trusted refresh
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  refresh:
+    name: Refresh VeriSentry App checks for open main PRs
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.actor == '0monish' || github.actor == 'amishabenramani'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: verisentry-publisher
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Mint restricted repository-scoped VeriSentry App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # pinned v3
+        with:
+          app-id: "5550363"
+          private-key: ${{ secrets.VERISENTRY_APP_PRIVATE_KEY }}
+          owner: gyldlab
+          repositories: keld
+          permission-checks: write
+          permission-pull-requests: read
+          permission-contents: read # immutable Compare Commits API requires this read scope
+      - name: Reconcile exact-base/head App checks without checking out PR code
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # pinned v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const {owner, repo} = context.repo;
+            const maintainers = new Map([['0monish', '155816356'], ['amishabenramani', '130687844']]);
+            if (owner !== 'gyldlab' || repo !== 'keld' || context.ref !== 'refs/heads/main' ||
+                !['schedule','workflow_dispatch'].includes(context.eventName) ||
+                (context.eventName === 'workflow_dispatch' &&
+                  process.env.GITHUB_ACTOR_ID !== maintainers.get(context.actor))) {
+              throw Error('VeriSentry refresh refuses non-main/non-maintainer events');
+            }
+            const isSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+            const list = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', base: 'main', per_page: 100,
+            });
+            if (!Array.isArray(list) || list.length > 500 ||
+                new Set(list.map(pr => pr.number)).size !== list.length) {
+              throw Error('VeriSentry refresh refuses incomplete/duplicated PR enumeration');
+            }
+            const snapshots = list.map(pr => ({number:pr.number, head:pr.head?.sha,
+              base:pr.base?.sha, repo:pr.base?.repo?.full_name, ref:pr.base?.ref}));
+            if (snapshots.some(pr => !Number.isSafeInteger(pr.number) || pr.number < 1 ||
+                !isSha(pr.head) || !isSha(pr.base) || pr.repo !== 'gyldlab/keld' ||
+                pr.ref !== 'main')) {
+              throw Error('VeriSentry refresh refuses malformed PR listing metadata');
+            }
+            // This policy block MUST remain byte-identical to the automatic
+            // protected-main ci-provenance.yml verifier; Bun tests enforce it.
+            // __PROTECTED_PATH_POLICY_BEGIN__
+            const protectedPath = (path) => {
+              if (typeof path !== "string" || !path || path.includes("\\") ||
+                  path.includes("\u0000")) {
+                throw new Error("CI provenance refuses malformed Git paths");
+              }
+              const p = path.toLowerCase();
+              const basename = p.slice(p.lastIndexOf("/") + 1);
+              // Bun's native formatter can hide tracked sources via ignores
+              // or change accepted formatting through per-directory configs.
+              // These inputs are CI authority even when no workflow changes.
+              const formatterPolicy =
+                basename === ".gitignore" ||
+                basename === ".prettierignore" ||
+                basename === ".editorconfig" ||
+                basename === ".prettierrc" ||
+                basename.startsWith(".prettierrc.") ||
+                basename.startsWith("prettier.config.") ||
+                basename === ".oxfmtrc" ||
+                basename.startsWith(".oxfmtrc.") ||
+                basename.startsWith("oxfmt.config.") ||
+                basename === "biome.json" ||
+                basename === "biome.jsonc" ||
+                basename === "package.yaml" ||
+                basename === "package.yml";
+              // Strict first rollout: scripts and config files executed by
+              // CI are also authority, not merely the workflow YAML itself.
+              // Require a separate trusted-base review for their changes.
+              // Root workspace metadata and formatter/test configs can also
+              // suppress required test discovery without changing ci.yml.
+              return formatterPolicy ||
+                p === "cargo.toml" || p.endsWith("/cargo.toml") ||
+                p === "package.json" || p.endsWith("/package.json") ||
+                p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                // Protect direct and transitive WebView test harness inputs;
+                // e.g. linux_gui_smoke.sh -> linux_media_guard.sh ->
+                // linux_media_checkout.sh, plus C interposers and Windows ps1.
+                (p.startsWith("crates/keld-wv/tests/") &&
+                  [".sh", ".ps1", ".c", ".bat", ".cmd"].some((ext) => p.endsWith(ext))) ||
+                p === "crates/keld-wv/examples/linux_media_guard.rs" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
+                p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
+                p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
+                p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||
+                p === "tsconfig.json" || p.endsWith("/tsconfig.json") ||
+                p.startsWith(".github/") ||
+                p === ".ci-reader-proofs" || p.startsWith(".ci-reader-proofs/") ||
+                p.startsWith(".cargo/") ||
+                p.startsWith(".config/") ||
+                p.startsWith("tools/") ||
+                p === "justfile" ||
+                p === "rust-toolchain.toml" ||
+                p === "deny.toml" ||
+                p.endsWith("/deny.toml") ||
+                p.startsWith(".gitleaks") ||
+                p === "clippy.toml" || p.endsWith("/clippy.toml") ||
+                p === ".clippy.toml" || p.endsWith("/.clippy.toml");
+            };
+            // __PROTECTED_PATH_POLICY_END__
+            const verdicts = [];
+            for (const event of snapshots) {
+              let admitted = false;
+              let reason = 'missing trusted proof';
+              let current;
+              const fetchPR = async () =>
+                (await github.rest.pulls.get({owner,repo,pull_number:event.number})).data;
+              const matches = pr => pr?.number === event.number && pr.state === 'open' &&
+                pr.base?.ref === 'main' && pr.base?.repo?.full_name === 'gyldlab/keld' &&
+                pr.base?.sha === event.base && pr.head?.sha === event.head;
+              try {
+                const before = await fetchPR();
+                if (!matches(before)) throw Error('PR moved before immutable comparison');
+                if (!Number.isSafeInteger(before.changed_files) ||
+                    before.changed_files < 0 || before.changed_files >= 300) {
+                  throw Error('Incomplete changed-file census (300+ denied)');
+                }
+                const compare = (await github.rest.repos.compareCommits({
+                  owner,repo,base:event.base,head:event.head,page:1,per_page:100,
+                })).data;
+                if (compare?.base_commit?.sha !== event.base ||
+                    !Array.isArray(compare?.files) ||
+                    compare.files.length !== before.changed_files ||
+                    compare.files.length >= 300) {
+                  throw Error('Incomplete immutable Compare Commits evidence');
+                }
+                // Reuse the automatic verifier's approved protectedPath rule;
+                // reject statuses/renames that could conceal CI authority.
+                const protectedChanges = [];
+                for (const file of compare.files) {
+                  if (!file || !['added','removed','modified','renamed','changed','copied'].includes(file.status))
+                    throw Error('Unknown changed-file status');
+                  if (file.status === 'renamed' && !file.previous_filename)
+                    throw Error('Rename missing source filename');
+                  if (protectedPath(file.filename) ||
+                      (file.previous_filename && protectedPath(file.previous_filename)))
+                    protectedChanges.push(file.filename);
+                }
+                if (protectedChanges.length) throw Error('Protected CI authority changed');
+                if (!matches(await fetchPR())) throw Error('PR moved after immutable comparison');
+                admitted = true;
+                reason = 'protected-main immutable CI admission passed';
+              } catch (error) {
+                admitted = false;
+                reason = error instanceof Error ? error.message.slice(0,160) : 'unknown verifier failure';
+              }
+              try {
+                current = await fetchPR();
+              } catch {
+                verdicts.push({...event,admitted:false,skip:'PR API unavailable'});
+                continue;
+              }
+              if (!matches(current) || current.mergeable !== true ||
+                  !isSha(current.merge_commit_sha)) {
+                verdicts.push({...event,admitted:false,skip:'moved/unmergeable/test merge unavailable'});
+                continue;
+              }
+              verdicts.push({...event,merge:current.merge_commit_sha,admitted,reason});
+            }
+            const mergeCounts = new Map();
+            for (const v of verdicts) if (v.merge)
+              mergeCounts.set(v.merge,(mergeCounts.get(v.merge) || 0)+1);
+            const counts = {created:0,existing:0,denied:0,skipped:0,errors:0};
+            for (const verdict of verdicts) {
+              try {
+                if (!verdict.merge) {
+                  counts.skipped++; // closed, moved or unmergeable PR; never mint PASS
+                  continue;
+                }
+                if (mergeCounts.get(verdict.merge) !== 1) {
+                  counts.errors++;
+                  core.warning('Two PRs share the same synthetic merge SHA; requires manual containment');
+                  continue;
+                }
+                // Fresh state immediately before a signed App write.
+                const pr = (await github.rest.pulls.get({
+                  owner,repo,pull_number:verdict.number,
+                })).data;
+                if (pr?.state !== 'open' || pr.number !== verdict.number ||
+                    pr.base?.ref !== 'main' || pr.base?.sha !== verdict.base ||
+                    pr.base?.repo?.full_name !== 'gyldlab/keld' ||
+                    pr.head?.sha !== verdict.head ||
+                    pr.mergeable !== true || pr.merge_commit_sha !== verdict.merge) {
+                  counts.skipped++;
+                  continue;
+                }
+                const checks = await github.paginate(github.rest.checks.listForRef, {
+                  owner,repo,ref:verdict.merge,check_name:'KELD VeriSentry',
+                  app_id:5550363,filter:'all',per_page:100,
+                });
+                if (!Array.isArray(checks) || checks.length > 1000 ||
+                    checks.some(c => c.app?.id !== 5550363 || c.head_sha !== verdict.merge))
+                  throw Error('Foreign or incomplete App check inventory');
+                const expected = verdict.admitted ? 'success' : 'failure';
+                const latest = checks.slice().sort((a,b) =>
+                  Date.parse(b.completed_at || '') - Date.parse(a.completed_at || ''))[0];
+                const ageMs = Date.now() - Date.parse(latest?.completed_at || '');
+                if (latest && latest.status === 'completed' && latest.conclusion === expected &&
+                    Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 4*86400*1000) {
+                  counts.existing++;
+                  continue;
+                }
+                // An existing App FAIL may be a separately audited denial;
+                // NEVER upgrade it to PASS merely because a later transient
+                // verification succeeded. Request a fresh PR event/review.
+                if (latest?.conclusion === 'failure' && verdict.admitted) {
+                  counts.errors++;
+                  core.warning('VeriSentry refresh refuses to overwrite prior App FAIL on PR #'+verdict.number);
+                  continue;
+                }
+                const created = (await github.rest.checks.create({
+                  owner,repo,name:'KELD VeriSentry',head_sha:verdict.merge,
+                  status:'completed',conclusion:expected,
+                  details_url:`https://github.com/gyldlab/keld/pull/${verdict.number}`,
+                  output:{title: verdict.admitted ? 'Trusted CI admission refreshed' : 'Trusted CI admission rejected',
+                    summary:`PR #${verdict.number} base=${verdict.base} head=${verdict.head} merge=${verdict.merge} protected-main schedule verdict: ${verdict.reason}`},
+                })).data;
+                if (created?.app?.id !== 5550363 || created.head_sha !== verdict.merge)
+                  throw Error('Wrong App identity or SHA after publishing');
+                counts.created++;
+                if (!verdict.admitted) counts.denied++;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              } catch (error) {
+                counts.errors++;
+                core.warning('VeriSentry refresh could not issue trusted check for PR #'+verdict.number+': '+
+                  (error instanceof Error ? error.message.slice(0,90) : 'unknown'));
+              }
+            }
+            core.info('VeriSentry refresh outcome: '+JSON.stringify(counts));
+            if (counts.errors)
+              core.setFailed('VeriSentry refresh needs security review; failures are never published as success');
