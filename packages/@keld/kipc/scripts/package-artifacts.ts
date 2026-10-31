@@ -79,13 +79,23 @@ try {
     ],
     kipc,
   );
-  const built = await Bun.build({
-    entrypoints: [join(kipc, "src/transport.ts")],
-    target: "node",
-    format: "esm",
-    minify: { syntax: true },
-    define: { KELD_KIPC_RELEASE: "true" },
-  });
+  // Bun emits caller-relative source comments. Fix the cold build context so
+  // identical source and toolchain inputs produce the same stamped Worker.
+  const built = await (async () => {
+    const callerCwd = process.cwd();
+    try {
+      process.chdir(kipc);
+      return await Bun.build({
+        entrypoints: [join(kipc, "src/transport.ts")],
+        target: "node",
+        format: "esm",
+        minify: { syntax: true },
+        define: { KELD_KIPC_RELEASE: "true" },
+      });
+    } finally {
+      process.chdir(callerCwd);
+    }
+  })();
   if (!built.success || built.outputs.length !== 1)
     throw new Error(`KIPC release build failed: ${built.logs}`);
   const transport = stampTransport(await built.outputs[0].text());
