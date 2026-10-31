@@ -1,22 +1,17 @@
-#[test]
-fn prepared_delivery_zero_bytes_retires_exact_unclaimed_host_lease() {
-    run_delivery_cut(DeliveryCut::Zero);
-}
+use std::io;
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex, TryLockError, mpsc};
+use std::thread::{self, JoinHandle};
 
-#[test]
-fn prepared_delivery_partial_prefix_keeps_framing_clock_and_typed_timeout() {
-    run_delivery_cut(DeliveryCut::Partial);
-}
-
-#[test]
-fn prepared_delivery_full_before_lease_uses_normal_supervisor_revoke() {
-    run_delivery_cut(DeliveryCut::FullBeforeLease);
-}
-
-#[test]
-fn prepared_delivery_post_lease_pre_spawn_uses_normal_supervisor_revoke() {
-    run_delivery_cut(DeliveryCut::LeaseBeforeSpawn);
-}
+use super::{
+    COLLECTION, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED, CONTROL_REVOKE,
+    CONTROL_REVOKED, GenerationControlRecord, GenerationProvisionFence, GuardedPrimaryUpdate,
+    RecoveryState, RevocationCause, RoleEvent, RuntimeError, lifecycle_error, lock_recovery,
+    parse_app_link, receive_record, run_generation_host, runtime_io_kind, timed_pair,
+    write_generation_control,
+};
 
 struct RetiredOwner {
     guardian: Option<UnixStream>,
@@ -67,7 +62,18 @@ fn prepare_retired_owner(fence: Option<GenerationProvisionFence>) -> RetiredOwne
     lock_recovery(&recovery).arm();
     let state = Arc::clone(&recovery);
     let worker = thread::spawn(move || {
-        run_generation_host(host, &updates_tx, &current, &state, fence.as_ref())
+        run_generation_host(
+            super::super::super::generation_host::GenerationHostAdmission::new(
+                std::process::id(),
+                std::time::Instant::now() + super::GUARDIAN_SHUTDOWN_DEADLINE,
+            ),
+            host,
+            &updates_tx,
+            &current,
+            &state,
+            fence.as_ref(),
+            None,
+        )
     });
     let mut owner = RetiredOwner {
         guardian: Some(guardian),

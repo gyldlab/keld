@@ -1097,7 +1097,7 @@ fn parse_lifecycle_id(name: &str) -> [u8; 32] {
         "{name} must be a 32-byte lowercase hex digest"
     );
     let mut decoded = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(pair).expect("hex pair is UTF-8");
         decoded[index] = u8::from_str_radix(pair, 16).expect("hex pair is valid");
     }

@@ -19,7 +19,7 @@ wrapper or packaged application release to install yet.
 - Git and Rust installed through rustup. The checked-in
   [rust-toolchain.toml](../../rust-toolchain.toml) selects the compiler and components;
   Cargo uses the committed lockfile in the commands below.
-- Bun on `PATH`. **Use CI-pinned Bun 1.4.2 for `just ci` and the full workspace test
+- Bun on `PATH`. **Use CI-pinned Bun 1.4.4 for `just ci` and the full workspace test
   gate.** The [Linux strict fixture](../../crates/keld-runtime/tests/linux_strict_boundary.rs)
   asserts that exact version. Record `bun --version` and `bun --revision` before a
   run. Some earlier demo observations used Bun 1.4.2; the newer
@@ -200,14 +200,25 @@ the same output directory. A successful `doctor` alone is not a desktop acceptan
 Start with [CONTRIBUTING.md](../../CONTRIBUTING.md). Install the verification tools
 listed in the [development guide](05-development-guide.md#1-prerequisites), including
 Python and a running Docker-compatible engine. The exact gate inventory belongs to the
-[justfile](../../justfile). Put the CI-pinned Bun 1.4.2 binary on this shell's `PATH`
+[justfile](../../justfile). Put the CI-pinned Bun 1.4.4 binary on this shell's `PATH`
 without replacing another project's global runtime, then verify the selected version:
 
 ```bash
-bun --version   # must report 1.4.2 for the full gate
+bun --version   # must report 1.4.4 for the full gate
 bun --revision
 just ci
 ```
+
+`just js-fmt` formats JavaScript/TypeScript (including nonignored untracked files),
+using root `bunfig.toml` and Bun's native ignore rules, and refreshes generated bindings
+and transport stamps through their generator. `just js-fmt-check` checks without
+writing; it is included in `just ci` and the hosted hygiene check. `just fmt` also
+normalizes Rust first, then runs JS/TS generation, native formatting and restamping.
+
+New `keld create` applications include `bun run format` and `bun run format:check`
+for their JavaScript/TypeScript, with no formatter package to install. Use native
+`bun fmt` directly for other supported file kinds. Native lint remains tracked on
+[issue 1091](https://github.com/gyldlab/keld/issues/1091) until Bun ships it in stable.
 
 On Windows, run the shell-based full gate from Git Bash or another environment with
 the required GNU tools. Keep the interactive PowerShell session for the separate
@@ -640,15 +651,17 @@ proves nor claims default denial for those cases; they block full KEL-132
 closure until the approved [KEL-135 profile lifecycle](../specs/kel135-persistent-profile-identity.md)
 and oldest-supported-macOS evidence land.
 
-**The FS library is gated but not shipping-routed.** `FS_CHANNEL`
+**The guarded FS route is implemented on the app link.** `FS_CHANNEL`
 (`keld-native::fs`, KEL-130) runs every admitted `fs.read` / `fs.write` `Call`
 through `keld_ipc::guard_dispatch::dispatch_privileged`, borrows its first-match
 permit, and uses the matching retained `FsBroker` scope before touching disk.
 A deny or broker failure is a `FrameKind::Err` carrying a postcard
 `CallError { code, message }` (spec 02 §2) whose `code` is the guard's
 `KELD-GUARD*` or one of `KELD-NATIVE-001..008` — read as a field, never parsed
-out of the text. The no-flag host does not register this channel yet;
-KEL-102/T3 owns reachable routing and in-flight lifecycle. Echo remaining
+out of the text. The guarded app-link filesystem route is implemented
+(KEL-102/T3 landed); macOS project-policy verification and absent-policy broker-deny
+fallback are verified, while non-macOS policy producers, renderer forwarding, and
+full hostile/deadline/quiescence qualification remain incomplete. Echo remaining
 ungated does not mean privileged frames skip the guard.
 
 **Lifecycle is session control, not an OS grant.** `LIFECYCLE_CHANNEL` (KEL-72)
@@ -1552,10 +1565,30 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
-  locator is gone. A supervised app child that dies and is restarted therefore
-  cannot re-enter the session: its `connect` fails at the OS
-  (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
-  not at the handshake. `keld dev` does not paper over that. It reports the death
+  locator is gone. A successor of a supervised app child that dies after
+  authenticating therefore cannot re-enter the session: its `connect` would fail
+  at the OS (`ErrorKind::NotFound`, asserted by
+  `authenticated_bind_unlinks_stale_locator`), not at the handshake. The session
+  therefore provisions no crash successor once its one admission is used
+  (GH-674): `HostOwnedHelloSession` gates the supervisor's successor boundary on
+  the echo server's single accept, so a crash before authentication still
+  restarts (KEL-70 AC1/AC3) and a crash after it ends supervision as
+  `SupervisorOutcome::Stopped` with the crash in the ledger, so a host never
+  reads that `Stopped` as a clean exit without `Supervisor::crash_ledger`. Two
+  bounded cases still differ, and both fail the run. The echo worker records its
+  admission only after `accept_authenticated` returns, so a client that dies
+  between its HELLO reply and that record, while the worker is descheduled past
+  the restart backoff (`backoff_delay` of the window's crash count: 20 ms for a
+  first crash, longer after earlier pre-authentication crashes), gets one
+  successor; that successor's failed connect
+  becomes `ledger.last`, and the gate, closed by then, stops supervision at its
+  crash. Closing this exactly needs kipc to publish admission before
+  `write_hello`. The crash-loop breaker runs before the gate, so two crashes
+  before authentication and one after it, inside the breaker window, end as
+  `KELD-RUNTIME-002`: three crashes really happened. A crash after any echo REPLY
+  is strictly after the record. Before GH-674 those successors were restarted, failed to
+  connect, and tripped the crash-loop breaker whenever teardown came late.
+  `keld dev` does not paper over the death. It reports it
   rather than pretending the app is alive: teardown reads the supervisor's
   `CrashLedger`, which records unrequested self-termination independently of exit
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
@@ -1575,7 +1608,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -1667,10 +1705,13 @@ schema language, ship `@keld/schema` or live `keld gen`, or replace runtime vali
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
-since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3
-and the KEL-89 auth allocation = 4,
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
-region of `transport.ts`, and the wire is unchanged. Handshake-time name resolution and
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry remains a held implementation
+until validated facade boot and native acceptance are complete. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 
@@ -1829,8 +1870,10 @@ each absolute filesystem scope anchor, and resolves bounded per-call traversal
 relative to the guard-selected retained grant. It rejects unserviceable scopes,
 snapshot mismatches, final exact-scope aliases, escapes, mount/volume crossings,
 non-regular objects, and fixed path/content/component/link limits before exposing
-bytes. The shipping no-flag host still does not register `FS_CHANNEL`; KEL-102/T3
-owns that later route and in-flight lifecycle integration.
+bytes. The guarded app-link filesystem route is implemented (KEL-102/T3), with macOS
+project-policy verification and absent-policy broker-deny fallback; incomplete non-macOS
+policy producers, renderer forwarding, and full hostile/deadline/quiescence qualification
+remain bounded and open.
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.
@@ -2216,9 +2259,10 @@ export default defineConfig({
 `keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
 `Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
 crate version, not an Electron release) and `process.type` is `"browser"`
-in this main-process package. `@keld/api` does not exist yet; the shim
-speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
-`keld build` is not live.
+in this main-process package. The Electron `app` facade delegates to
+`@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
+Worker-owned transport; the shim does not open a second link. Bundler-side
+alias (`keld build`) is deferred because `keld build` is not live.
 
 Match (scoreboard ✔): with no `window-all-closed` listener, a host
 `LastWindowClosed` event quits the app — Electron's documented default
@@ -2252,8 +2296,12 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
-preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
+defect. This slice adds an exported `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux and Windows
+currently refuse facade-window subscription; this is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 
@@ -2416,7 +2464,17 @@ while the expected browser process handle, opened before `Close`, is unsignaled,
 there only by a measured shutdown hang guard (240 s) that fails closed while the browser
 stays alive; a measured 85 s post-exit grace bounds the event once the process is gone,
 because WebView2 raises it after the collection has released the user-data folder. A launch
-deadline bounds environment and controller creation only. A predecessor dev-ephemeral
+deadline bounds environment and controller creation only. Three `keld-wv` constants own the
+sums of these bounds: `keld_wv::webview2::WEBVIEW2_UI_END_BOUND` (the hang guard plus the
+grace) bounds a healthy UI end; `keld_wv::webview2::WEBVIEW2_TEARDOWN_BOUND` bounds a
+healthy teardown after a terminal command, which is that UI end and then, on a dev-ephemeral
+profile, one exclusive-UDF probe (launch deadline and release barrier) for each predecessor
+leaf that the post-release scavenge may try; and `keld_wv::webview2::WEBVIEW2_STARTUP_BOUND`
+bounds a healthy startup to `Ready` as its sequential phases (a quarantined profile's
+recovery probe launch and release barrier, environment and controller creation, and the
+initial-navigation deadline of `KELD-WV-005`). A caller that must outlast one of these
+phases, such as a test harness kill switch, reads the constant rather than restating its
+parts. A predecessor dev-ephemeral
 leaf whose exclusive-UDF probe is busy or cannot prove release is retained for a later
 pass and never fails the current host's own release.
 
@@ -2598,9 +2656,14 @@ report any cancellation, deadline, or I/O failure after create/truncate as
 `KELD-NATIVE-007` with acknowledged content-byte counts. The five-second clock is a
 cooperative progress budget, not a promise to preempt a wedged kernel call. `FsBroker`
 alone owns the roots; calls and `serve_fs_session` borrow it, and dropping a wrapper is
-not broker destruction while another owner remains. The channel is library-tested but
-remains unreachable from the shipping no-flag host until KEL-102/T3 supplies admission,
-in-flight cancellation/drain, and ordered broker destruction.
+not broker destruction while another owner remains. The retained filesystem broker and
+guarded production host route are implemented (KEL-102/T3), exposing a public Bun
+`fs.read`/`write` slice on the canonical app link with macOS explicit project-policy
+capture and absent-policy all-denied fallback. This manifest guard applies strictly
+to brokered app-link calls; direct Bun `node:fs` calls do not pass through this broker
+and are not denied by it, as OS sandbox containment remains a separate, not-yet-fully-qualified
+guarantee. Renderer-action forwarding, non-macOS project-policy producers, and full
+hostile/deadline/quiescence qualification remain open.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
 `process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must
@@ -2857,6 +2920,47 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   does not create a second restart loop. Other named roles and unproved profile
   or artifact combinations remain fail-closed.
 
+### 1.0 Platform-scoped runtime unsafe contracts
+
+This section is conditional guidance for native runtime owners. Read it when editing
+the named Windows Job/LPAC, macOS Guardian registration/pre-exec, or Linux strict
+paths. The always-loaded [crate AGENTS.md](../../crates/keld-runtime/AGENTS.md) is the
+sole exact-path/operation production `unsafe` allowlist (root AGENTS.md); this section
+adds no sanction and owns only rationale, resource and native-proof details.
+
+**Windows Job Win32 FFI and KEL-270 scope.** The exact file list and KEL-270 Win32 API whitelist live only in the crate AGENTS.md; change them there with independent `unsafe` gate evidence.
+
+**macOS Guardian pre-exec/host-retention seam.** `macos_guardian/spawn_admission.rs` only. Before fork, the parent creates the pipes, owns their exact descriptor identities and starts the reporter; the pre-exec closure may use only fixed-stack `close`, `getpid`, `write`, `poll`, `read` and `_exit` with no heap allocation, Rust locks or general I/O. The child closes every inherited parent-only permit writer **before** waiting, and runs no Bun code without an authenticated host-retention response. Reporter registration errors send explicit denial, never a release byte. Guard with real macOS/Bun crash-and-denial tests, exact test discovery, and warning-denied Clippy. This is not proof of cleanup for a SIGSTOP-suspended pre-exec child or detached descendants; those require a separately owned containment design.
+
+**macOS registered-child kernel proof.** `macos_guardian/process_group.rs` uses read-only, exact-size `proc_pidinfo(PROC_PIDTBSDINFO)` to verify a reported KGR1/KGC1 group leader is the retained Guardian's actual direct child before the host's exec-retention ACK. The host retains the kernel process-start seconds/microseconds and real UID with that group; before a host-side fail-safe `killpg`, it rechecks the leader's PID, PGID and birth. A live leader with a changed birth refuses the signal. If the original leader is gone and no group exists, cleanup is already satisfied. If that original leader is reaped but the group still contains descendants, the host preserves group-wide cleanup: Darwin's PID allocator retains an occupied PGID while members exist. An inaccessible live leader or mismatched identity still fails closed. Pre-registration rejection never accepts arbitrary numeric kill authority. Real macOS adversarial tests cover birth mismatch with outsider survival, original leader reaped with descendant cleanup, authenticated malformed/zero-byte KGR1 and initial KGC1, and pre-/post-ACK Bun processes.
+
+**Guardian-side birth-attested group custody and native retirement.** The one-group, supervised and generation leases independently retain a `LocalGroupWitness` (original macOS kernel child PID, real UID and birth time) sampled by the Guardian's parent-side pre-exec reporter **before** it sends authenticated KGR1/KGC1 group records. The Guardian consumes this witness on local revoke rather than trusting a stale numeric `group_pid`; a discovered but unproven PID fails closed and cannot authorize a group signal. Existing test-only synthetic control fixtures have an explicitly cfg(test)-limited legacy raw-PGID path, not a shipping bypass. The host's KGC1 `CONTROL_CLEARED` cannot discard its birth-attested group custody merely because a Guardian reported `CONTROL_REVOKED` and claimed `CLEAR`: the host independently retires the still-enrolled group **before** publishing CLEARED and allowing successor preparation. Native real Bun + same-PGID descendant tests prove the wrong-order CLEAR no longer silently strands the group, and a Guardian-local corrupted birth witness cannot kill another test-owned group. These checks remain read-then-signal observations, not kernel-pinned atomic group handles.
+
+**macOS live-generation shutdown: reap before `CONTROL_CLEAR`.** A native CI failure on `dev_lifecycle::dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host` exposed a distinct kernel scheduling cut. After the Guardian performs an authorized birth-attested `SIGKILL` on the actual Bun group, the original leader can remain as an *unreaped zombie* owned by the Guardian's retained `Child`. Darwin may then report no inspectable leader through `proc_pidinfo`/`getpgid` while `killpg(group, 0)` yields `EPERM` rather than `ESRCH`. The host **must** reject that ambiguous group state, not falsely claim a clear or relax its outsider-signal protections. Guardian KGC1 now uses a private spawned-child revocation path: revoke the exact role/IPC lease, signal only the originally attested group, wait/reap the **same owned direct `Child`** within the existing shutdown deadline, and only then request host `CONTROL_CLEAR`. The host still independently retires the enrolled group before sending `CONTROL_CLEARED`, and failed original-child reaping prevents that ACK. Today that host retirement is a birth-attested `killpg(SIGKILL)` whose success means the signal was delivered, not that the group is gone: after a delivered `killpg` the host does not wait for `kill(-pgid, 0)` to report `ESRCH`, so a signalled member can still be exiting when `CONTROL_CLEARED` is sent. A bounded wait for `ESRCH` exists only on the path where the original leader is no longer inspectable and the group probe returns `EPERM` (at most a quarter of the shutdown deadline); `EPERM` alone never certifies absence. The post-kill absence wait is not implemented and remains open on #947 / review thread r4308763083. Other supervisor leases retain their existing default revocation behavior, and pre-spawn error paths retain ordinary lease-only cleanup. A real macOS test with authenticated KGC1, Bun and a same-PGID `/bin/sleep` descendant reproduced the original `UnexpectedEof` plus unproven-leader error **before** the change, passed afterward, and returned to red when the exact post-signal original-child reap was deliberately removed. This is a bounded cleanup-order repair, not a lifetime-pinned PGID handle, process-escape guarantee or wider timeout.
+
+**Authenticated Guardian startup versus host shutdown.** Guarded Guardian validates the host-only liveness descriptor **before** establishing authenticated KGC1 control. A legitimate immediate `S` after authentication but before a first supervisor generation receives exactly one `KSA`, then requires bounded host EOF; an early `Q` or duplicate/conflicting shutdown byte is rejected without a forged acknowledgment. Native subprocess cuts after private authentication **and** immediately after the no-pending-S probe (before synchronous first-PREPARE startup) prove that a real S write/flush receives KSA and the Guardian exits without executing Bun. The post-probe case first failed because host recovery denial rejected initial PREPARE before the Guardian could read S. On that exact startup-failure path, the Guardian now distinguishes authenticated S from bare EOF, sends KSA only after real S, and requires bounded host EOF. The host accepts only its privately typed first-PREPARE recovery-denial result after verified KSA, permanent initial denial, and absence of a registered group. The host retains its original recovery mutex through the physical S write/flush so a control worker cannot observe denied recovery before the actual orderly byte is queued; it drops the lock before reading KSA or joining the worker. A Guardian that has already received an authentic initial `CONTROL_PREPARED` stores that admission fact and cannot reinterpret a later local factory/spawn/codec error—even `UnexpectedEof`—as the host denying initial PREPARE. Native adversarial tests exercise a held real after-PREPARED failing factory and a complete first KGC1 PREPARE decoded by the host while its denial-before-S mutex remains held; mutation controls independently demonstrate false-clean startup failure and early denial exposure when each check is removed. No new timeout, privilege, wire record or public API was introduced. These exercised cuts do not establish every later shutdown interleaving. The no-flag host therefore cancels an unbound startup after dev-lease loss with that orderly S, never Q; a real host test with the lease closed before Bound failed with the Guardian's missing KQA and passes with S. When a stop arrives after a successor was prepared but before it was spawned, the Supervisor drops the unspawned command (and with it the only child-side pre-exec PID writer) before revoking its lease, so revoke proceeds at pipe EOF instead of waiting out the PID-receipt deadline that would overrun the host's own Guardian-exit deadline.
+
+**Post-shutdown `CONTROL_SPAWNED` admission.** An already minted `CONTROL_PREPARED` locator does not grant future execution. The host now holds the same recovery decision mutex across native `SPAWNED` lineage/birth validation, registered-generation retention and the complete `CONTROL_REGISTERED` write. The physical host `S` is serialized against that release: if permanent denial wins first, no `REGISTERED` or Bun pre-exec permit may be emitted. A late, real Guardian-child `SPAWNED` takes temporary birth-attested host custody, terminates that native group and revokes its prepared role lease before returning its private refused-registration result (fatal unless reconciled as below). Unexpected, malformed or foreign-PID records never gain signal authority. A failure-first real macOS test stops the Guardian reporter before its KGC1 `SPAWNED`, flushes the host's actual S, and independently witnesses the host decoding the full post-S SPAWNED record, verifying the original Guardian-child kernel birth, refusing the corresponding REGISTERED gate, retiring the group and observing no Bun JavaScript marker. The pre-fix host wrongly reached REGISTERED; after the fix the native denied child does not receive an exec permit. A refused in-flight spawn is an **orderly cancellation only after both sides prove retirement** (GH-824: CLI lease loss before the first Bound sends S at any startup stage, so a spawn can already be in flight). The host's refusal carries a private type only after its attested custody signal succeeded and released and the prepared lease was revoked; the host reconciles that type only with an actual KSA, permanent denial and no registered group. The Guardian's reporter marks the host's control close in place of `CONTROL_REGISTERED`; because no exec permit was written, the direct pre-exec child is the whole group, so the lease skips REVOKE/CLEAR on the closed control and retires that exact unreaped Child (kill, then reap) instead of probing its zombie group, which Darwin reports as ambiguous `EPERM` until the parent reaps it. The Guardian exits successfully only for that retired refusal plus an authenticated S with KSA (read after the failure, followed by the bounded host-EOF wait, if the liveness loop had not yet consumed it; if the loop already sent KSA the Guardian exits without that wait, which containment does not need because the refused child was already reaped). The host's reconcile requires the orderly KSA specifically, not the KQA of an accepted Quit, behind its single acknowledgment check. A denial without S, a Q, a bare EOF, a failed host cleanup or a missing KSA stays fatal. Native negative controls deny recovery without S, or through an accepted Quit with a genuine KQA, and require the refusal to stay fatal; mutation controls remove each reconciliation, the exact-child retirement and the closed-control skip in turn. A separate real-process KGC1 state regression proves that after `REVOKE` consumes the prepared lease, a later `SPAWNED` cannot use even a genuine test-owned live child as a native signaling target; removing the missing-lease guard makes the test fail. This latter test exercises host recovery state, not a physical S writer. Existing read-then-signal PGID limitations remain; no kernel-pinned group handle or outside-process custody was introduced.
+
+**macOS reaped-member ambiguity after Guardian CLEAR.** The later hosted macOS `dev_lifecycle::dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host` run exposed another kernel timing cut even with the original Bun `Child` reaped: a killed same-group descendant can temporarily remain a zombie under a different parent. The registered leader then yields `getpgid(leader) == ESRCH`, while `kill(-PGID, 0)` yields `EPERM` until that member is itself reaped. The previous host fail-closed path returned immediately, closed authenticated KGC1, and made the Guardian's orderly shutdown fatal. The host now retries **only that ambiguous, read-only absence probe** for at most one quarter of the existing five-second shutdown deadline, using the existing control polling interval. It accepts retirement only on genuine `ESRCH`; if a signallable group is observed at the FIRST probe with the original leader already missing, the original retained-group kill path still applies; after any EPERM ambiguity, only ESRCH can succeed and a newly signallable group fails closed. No EPERM is accepted as absence, no unknown group gains kill authority, and the shipping timeout remains unchanged. A deterministic macOS test with two real test-owned same-group children, the original leader reaped and the killed second member temporarily left as a zombie, reproduced the exact previous `registered group identity unavailable` fault before the patch and passed after it. That local proof does not yet imply a green hosted macOS rerun or atomic kernel custody.
+
+**macOS last-member exit between the check and the one group signal (GH-824).** Hosted and local macOS no-flag runs intermittently hung the Host after an accepted Quit with `macOS guardian process-group signal — Operation not permitted`. XNU `killpg1` (`bsd/kern/kern_sig.c`) counts an *exiting* member as found but skips `SZOMB` members, and with POSIX semantics returns `EPERM` when the group still exists but it found no member. The host link-failure fail-safe and the Guardian's own revoke signal the same group within milliseconds of each other. So whichever signal comes second can meet a group whose last member finishes exiting between the kernel check that authorized the signal and the single birth-attested `killpg(SIGKILL)`. That check is either the zero-signal probe that finds the original leader reaped and the group live, or the birth-matched `proc_pidinfo` read of a live leader. The signal then returns `EPERM`. That is the same zombie-only state as the paragraph above, not a refused signal and not proof of absence. `terminate_attested_group` previously failed straight away. On the `CONTROL_CLEAR` path that closed authenticated KGC1, the Guardian exited 1, and `shutdown_and_wait` failed. Both arms now hand exactly that denied signal (`EPERM`, with a follow-up probe that is not `ESRCH`) to `reconcile_denied_signal_after_reap`. That function is a bounded, read-only reconciliation: it never signals, and only `require_attested_group_absence` certifies retirement. **Within that call** the group is never signalled again. Retirement is certified only when the original leader PID and the whole group both read `ESRCH` inside the same quarter-deadline budget. If the group stays zombie-only past that budget, or a live, reused or newly signallable member appears, the call fails closed with the one signal's typed signal-phase `EPERM` (`macOS guardian process-group signal — Operation not permitted`). **Guardian side.** The Guardian (and the supervised and legacy authenticated runners) is the Bun leader's own OS parent and holds that `Child` unreaped. While it does, its zombie keeps the group zombie-only, so an in-call absence wait could never succeed. If the host's fail-safe lands just before the Guardian's revoke, that wait would burn its quarter-deadline and fail the revoke. These callers therefore use `retire_own_child_group`. It makes at most one group-signal decision with no in-call wait, then reaps the exact own `Child`, and only then proves absence read-only within the existing post-signal `GUARDIAN_SHUTDOWN_DEADLINE`. The Guardian and supervised leases bound that reap by the same deadline. The legacy authenticated runner keeps its existing unbounded blocking `wait()` on its own child, which the group SIGKILL has normally already hit; only its absence proof is bounded. A denied signal goes through the same `reconcile_denied_signal_after_reap`, so its error is the same typed signal-phase `EPERM`. A zombie-only group found before any signal keeps the existing `registered group identity unavailable` error. A zombie the Guardian does not parent still fails closed. This is a per-call rule. After a failed call, a later call on the same retained birth (a later `CONTROL_CLEAR`, `shutdown`/Drop or `fail_current_generation`) starts its own decision and can signal again, exactly as before this change. At most one host-side signal per *generation* is the separate owner rule tracked on #947, and is not enforced here. Native tests place the exit exactly in that window through test-only fault points, for both the reaped-leader and the birth-matched-leader arms. Further tests show retirement after the parent reaps, the typed signal-phase `EPERM` while the zombie is held, and no second signal (and the same typed `EPERM`) when a fresh process joins the group after the denial, in both arms. Guardian-side tests run the real lease revoke, or `retire_own_child_group`, sequentially on one thread with no concurrent reaper:
+
+- In the first, the host's signal lands before the revoke; in the second, it lands between the Guardian's birth check and its signal. Both retire after the Guardian's own reap with no in-call wait.
+- In two negative controls, a zombie the Guardian does not parent keeps the revoke failing closed, on both the ambiguous and the denied path.
+- In two more, a fresh process that joins the group during the reap is never signalled; the oracle is that it dies from the test's own `SIGTERM`, not a product `SIGKILL`.
+
+The host-side tests fail with the hosted error text, or with a second signal, when the change is reverted. With the Guardian change reverted, the first two Guardian tests fail after the 1.25 s in-call wait, and the controls pass either way. Mutants that take post-reap `EPERM` as absence, or send a second signal after the reap, turn the matching control or joiner test red. Separately, Core's accepted-Quit `finish_tail` now sends `Fatal` to the UI loop when the owner shutdown fails, and only for a lifecycle Quit, because CLI lease loss and handover keep their own terminal paths. So any remaining owner fault ends the Host with a typed error instead of a silent hang.
+
+**macOS containment limit and stronger packaged owner.** The birth check is a point-in-time observation, **not** an atomic kernel-bound signal handle: there remains a check-to-`killpg` race, and a denied unknown group may contain legitimate escaped descendants. A process group alone cannot prevent a Bun child calling `setsid`/changing groups, guarantee that a `SIGSTOP`-suspended pre-exec child promptly processes pipe EOF, or clean up when both the host and Guardian are killed after Bun exec. macOS offers no portable unprivileged parent-death kill primitive in this raw executable-adjacent stage. Apple's app-bundled XPC/launchd custody and `AbandonProcessGroup` rules are a distinct packaged, independently validated candidate (KEL-78 primary-source ledger M13), not an authorized implicit dependency of the raw-stage Guardian. Do not admit a `strict` containment state or claim universal descendant cleanup until that separate lifecycle, signing/sandbox and adversarial OS evidence exists.
+
+Native negative controls explicitly demonstrate both unsolved schedules: a real Bun + same-group descendant remains live when **host and Guardian** are killed together after exec, and a real Bun `detached: true` child moves to a separate process group/session and survives ordinary Guardian cleanup. Each test observes the escape before its separate birth-attested test-only rescue. Neither test is evidence of universal containment. Launchd/XPC requires a new signed packaged-owner design with explicit lifecycle, app-sandbox and installation approvals; no raw-stage fallback may silently register a persistent OS service.
+
+The platform-scoped rules above do not waive the common default-deny host
+contract. Native acceptance must exercise real process-group, FD inheritance and
+cleanup behavior. Test-layout and OS evidence are owned by .agents/test-layout.md
+and .agents/testing.md, respectively.
+
 ### 1.1 Named role and lifecycle contract (destination, KEL-75)
 
 The runtime accepts only host-declared roles. A role declaration names a trusted bundled
@@ -3035,7 +3139,7 @@ crash-loop budget or restart. Non-zero and signal terminations still follow
 `RestartPolicy`, so one crash or crashes spaced beyond the window do not by themselves
 mean no app is running. Every unrequested termination remains durable even when the
 breaker does not trip. Under a strict post-ready liveness policy, an unrecovered
-termination under a clean `Stopped` outcome surfaces `KELD-RUNTIME-012`; completed
+termination under a `Stopped` outcome (no restart-policy error) surfaces `KELD-RUNTIME-012`; completed
 windowless work accepts status-zero termination after its reply is captured. The host
 reads both decisions from ledger state it never has to drain.
 
@@ -3056,12 +3160,26 @@ breaker terminal. The windowless echo path has completed its observable work aft
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
 self-termination; non-zero and terminal lifecycle failures still fail.
 
-Whether the breaker also trips depends on how the restarted generation fails, which
-is not something the host should have to predict. In the retained legacy diagnostic
-run, restarted children cannot re-enter the session at all — the v0 echo listener admits exactly
-one authenticated session (`crates/keld-core/src/echo_link.rs`) and their `connect`
-failed outright — so they crashed fast enough to trip the breaker. The ledger makes
-the verdict independent of that timing.
+Whether the breaker also trips must not depend on how fast restarted generations
+fail or on when the caller tears down. In the retained legacy diagnostic run,
+restarted children cannot re-enter the session at all: the v0 echo listener admits
+exactly one authenticated session (`crates/keld-core/src/echo_link.rs`), and a
+successor's `connect` fails outright. Such successors used to be provisioned anyway,
+so two of them tripped the breaker whenever teardown came late, and the nested code
+was `002` or `012` by timing alone (GH-674). The session therefore provisions no
+successor after its one admission, except in the two bounded cases that
+`docs/architecture/02-ipc.md` §2 records: the admission record trails the HELLO reply,
+and the crash-loop breaker runs before the gate. Both still fail the run. The
+supervisor's one successor gate
+(`Supervisor::start_with_stdout_markers_and_successor_gate`, at its existing
+post-revocation boundary) stops supervision at the recorded crash, and the ledger
+decides the verdict. That stop is reported as `SupervisorEvent::Stopped` and
+`SupervisorOutcome::Stopped`, the same value an exit-zero child or a requested
+shutdown produces, so `Stopped` is not a clean-exit claim: for this supervisor it covers a
+zero exit, a requested shutdown and a gate refusal after a recorded crash. A primary
+role's denied recovery is another such gate and can also follow a host-requested
+generation restart that records no crash (`SupervisorEvent::Stopped` lists every case),
+so every caller reads `Supervisor::crash_ledger` before treating it as clean.
 
 A crash the supervisor *recovered* from before the app reported ready stays a
 success (KEL-70 AC1/AC3). Separating the two cases cannot be done by counting
@@ -4285,7 +4403,7 @@ This ledger owns repository **Current/Target/Evidence** facts. Architecture owns
 
 | Surface | Platform | Current | Evidence | Target | Issues | Verified at |
 |---|---|---|---|---|---|---|
-| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3); the wider Electron module surface is absent. | [code](../../packages/@keld/electron/src/index.ts), [test](../../packages/@keld/electron/src/app.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
+| `package.keld-electron` | All | **Partial** — The Electron facade implements lifecycle and the app-link client on @keld/api's link, which the GH-527 transport Worker owns (#528 T3), and exports a macOS-only host-backed BrowserWindow subset over the Host-owned native window registry: create/adopt, selected geometry and state, close/destroy, and recovery events. Linux/Windows have no facade window session: the Host refuses window subscription as NotSubscribable and direct window calls fail with KELD-CORE-045. Unsafe webPreferences fail closed; preload and selected options remain unapplied. Bun facade/recovery tests use a controlled Host-call seam and do not establish native per-OS acceptance. Other Electron surfaces remain absent. | [code](../../packages/@keld/electron/src/index.ts), [code](../../packages/@keld/electron/src/browser-window.ts), [test](../../packages/@keld/electron/src/app.test.ts), [test](../../packages/@keld/electron/src/browser-window.test.ts), [test](../../packages/@keld/electron/src/browser-window-recovery.test.ts) | [Specified](../../docs/architecture/04-electron-compat.md) | KEL-72 | `effb47412c6f8d60b6a8c63aaac939759f7b2948` |
 | `package.keld-kipc` | All | **Partial** — The canonical TypeScript app-link transport is live. Its GH-527 WorkerLink owns each Bun role's link in a transport Worker, and the hello scaffold and @keld/api use it, with the main-thread client path removed (#528 T1-T3); a release build strips its test hooks, and bounded cold tooling derives checked-in echo payload declarations from the Rust structs. The GRANT credit lane (T4), Linux and Windows qualification (T5), general schema codegen and bulk lanes remain absent. | [code](../../packages/@keld/kipc/src/transport.ts), [test](../../packages/@keld/kipc/scripts/echo-codegen.test.ts) | [Specified](../../docs/architecture/02-ipc.md) | KEL-98, KEL-136 | `e328446f54424cd7848ad8b580cc24af19cd0004` |
 | `package.keld-api` | All | **Partial** — The @keld/api package implements the application lifecycle (whenReady, quit, last-window-closed) and the Echo channel over the role's app-link, which runs on the GH-527 WorkerLink from #528 T3; general typed channels and schema codegen remain absent. | [code](../../packages/@keld/api/src/index.ts), [test](../../packages/@keld/api/src/app.test.ts) | [Specified](../../docs/architecture/01-overview.md) | KEL-142 | `0768d11a6d6b9dc43e1e991be700db8d1ce555a6` |
 | `package.keld-web` | All | **Specified only** — The renderer bridge and polyfill package are specified but no package is tracked. | — | [Specified](../../docs/architecture/01-overview.md) | — | `43cab25dd13b3d7379e03c4662482d3f40ea1a40` |
@@ -4442,15 +4560,21 @@ disk — the first production capability to use it. Cross-platform by constructi
 architecture 05 §3's "all three OS implementations" without per-platform code.
 `..` traversal denial falls out of `keld-guard::evaluate` for free (already rejects any
 `..` segment) — proved with a real OS oracle (`dotdot_segment_is_denied_even_inside_a_granted_scope`,
-removed by b4634076. CI now runs only the `evaluate`-level `keld-guard` `tests/acl.rs` case
-`slash traversal`; the real-OS proof is the ignored macOS device acceptance
-`macos_retained_filesystem_acceptance_emitter`, case `path-parent-component`: `KELD-GUARD002`
-with zero traversal, open or content I/O),
+removed by b4634076. Since #673, CI runs the real-OS proof on macOS, Linux and Windows:
+`crates/keld-native/tests/retained_fs.rs`
+`parent_component_inside_a_granted_scope_never_reaches_the_outside` asserts `KELD-GUARD002`
+from the dispatch boundary and an untouched sentinel outside the scope, a 15-form table
+covers every climbing spelling and permanent fixtures cover links that climb out. The `evaluate`-level
+`keld-guard` `tests/acl.rs` case `slash traversal` and the ignored macOS device acceptance
+(`path-parent-component`, zero traversal/open/content I/O counters) remain),
 not re-implemented here. Verified end-to-end over a real kipc session
 (`crates/keld-native/tests/fs_session.rs`): allow writes-then-reads-back identical bytes
-on disk; deny (empty manifest, out-of-scope path, `..`, or a non-`AppProcess` principal)
-leaves the file completely unwritten, each checked with a real `std::path::Path::exists()`
-stat, not a stub return. Negative control verified manually twice: bypassing
+on disk, and a deny under an empty manifest leaves the file unwritten, checked with a
+real `std::path::Path::exists()` stat, not a stub return. (Correction, #673 review: that
+file never sent an out-of-scope, `..` or non-`AppProcess` request over kipc. Those
+denials are proved below the wire instead: out-of-scope in `keld-guard` `tests/acl.rs`,
+non-`AppProcess` in `keld-guard`'s unit tests, and `..` at the broker in
+`crates/keld-native/tests/retained_fs.rs`.) Negative control verified manually twice: bypassing
 `dispatch_privileged` inside `fs_write` made three fs-specific tests fail; separately,
 temporarily adding a `node:fs` import to the hello template made the new
 `template_never_imports_node_fs` static check fail (`crates/keld-cli/src/template.rs`) —
@@ -4662,7 +4786,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace --profile ci
 ```
 
-Toolchain pin: `rust-toolchain.toml` (`1.97.1`, rustfmt + clippy). Nextest CI
+Toolchain pin: `rust-toolchain.toml` (`1.99.1`, rustfmt + clippy). Nextest CI
 profile: `.config/nextest.toml`, deliberately empty — the mandated gate MUST NOT
 retry, because a retry reports a flaky test green and hides its first failure
 (KEL-112). Workspace clippy is already pedantic; do not re-enable it per crate
@@ -4677,11 +4801,21 @@ composition test exceeded its fixed five-second deadline under the policy batch'
 load and passed in 0.687 seconds alone, so it has its own serial phase. Direct
 recipe invocations retain their prerequisites. `ci-full` additionally forces Mermaid.
 
-`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`.
-Each consumer binds its reader/helper source inventory and contents by digest. A new,
-removed or changed reader invalidates its exclusions until the input scope is reviewed
-and rebound; unknown, deleted, untracked or unavailable comparison inputs select all.
-This fallback intentionally costs more work. `ci_inputs.py --check`, run by the router contract tests, fails on a stale digest so the fallback cannot persist unnoticed; `just ci-inputs-rebind` renews digests after the readers are reviewed. It avoids guessing dependencies from
+`tools/ci_inputs.py` owns the reviewed consumer scopes in `tools/ci-inputs.json`
+(schema `keld.ci-inputs/v2`, GH-1275). Each consumer names its input edges and the
+reader-source patterns that implement it. Routing is stateless: a change that touches a
+reader source runs every consumer behind it, and a Rust reader change selects all lanes;
+a `crates/*` path that the comparison base did not track, or that the change removes,
+selects all lanes; unknown, deleted, untracked or unavailable comparison inputs select
+all. A reader that gains a new cross-tree read registers its input edge in the same
+change; the router prints that review prompt whenever a reader changes. Nothing is
+recorded between changes. Rejected alternative: schema v1 recorded a SHA-256 of every
+reader set and of `crates/*` membership and failed `--check` until a `just
+ci-inputs-rebind` commit renewed it. On a protected base the digest was therefore
+always fresh at merge time and never widened a later change, while October 2026 saw 346
+commits touch the file, 318 of them digest-only, plus repeated merge conflicts on the
+digest lines and every such diff forced all lanes. The v1 cross-change widening test is
+replaced by the explicit stateless contract test. It avoids guessing dependencies from
 filename extensions or source-text mentions. Rust's cross-tree readers and Bun's reads
 of IPC constants and CLI templates are included. Live workspace, audit-history,
 product-status and advisory checks still run with an empty Git diff; their expensive
@@ -5487,7 +5621,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: Webview creation failed
-- fix: On macOS ensure WKWebView is available (10.13+); on Windows ensure the WebView2 runtime is installed.
+- fix: On macOS ensure WKWebView is available (10.13+); on Windows inspect the WebView2 HRESULT, profile permissions and controller state.
 
 ## KELD-WV-004
 
@@ -5534,8 +5668,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-WV-011
 
 - crate: keld-wv
-- message: Renderer bridge request rejected before application dispatch
-- fix: Reload the current main-frame document and invoke only the declared Keld renderer API; do not supply stale document state, undeclared channels, oversized payloads, or page-selected authority.
+- message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
+- fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
 
 ## KELD-CLI-010
 
@@ -5662,6 +5796,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-cli
 - message: Owner-private staged host could not be launched
 - fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
+
+## KELD-CLI-051
+
+- crate: keld-core
+- message: A process argument is not valid Unicode
+- fix: Pass every argument, including the program path, as valid Unicode text; rename or re-quote the offending path or name.
 
 ## KELD-MCP001
 
@@ -6119,6 +6259,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -6172,6 +6330,66 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
+
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
+## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
 
 ## KELD-UPDATE-001
 

@@ -63,7 +63,10 @@ const firstErr = await ready.then(
   (err: unknown) => err,
 );
 
-if (!(firstErr instanceof Error) || !String(firstErr).includes("KELD-IPC-001")) {
+if (
+  !(firstErr instanceof Error) ||
+  !String(firstErr).includes("KELD-IPC-001")
+) {
   writeSync(2, `KEL72_DEATH_SHOULD_REJECT=${String(firstErr)}\n`);
   process.exit(1);
 }
@@ -85,7 +88,10 @@ if (again !== firstErr) {
   process.exit(1);
 }
 if (connectCalls !== afterHelloCalls) {
-  writeSync(2, `KEL72_CONNECT_RETRIED calls=${connectCalls} afterHello=${afterHelloCalls}\n`);
+  writeSync(
+    2,
+    `KEL72_CONNECT_RETRIED calls=${connectCalls} afterHello=${afterHelloCalls}\n`,
+  );
   process.exit(1);
 }
 marker("KEL72_DEATH_STICKY");

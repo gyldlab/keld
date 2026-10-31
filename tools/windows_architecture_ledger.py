@@ -22,11 +22,21 @@ FIELDS = (
     "proposed_owner", "risk_signal", "review_status", "evidence_required",
 )
 PATH_SIGNAL = re.compile(r"windows|win32|win64|webview2|lpac|authenticode", re.I)
+# Boundaries are per alternative: `windows[_\-\s]` already ends on a separator, and
+# a trailing \b after `windows_` never matches `windows_job`, `windows_fs`, ...
+# (`_` then a letter is word-to-word). `windows-latest`, `windows_server` and
+# `windows server` are covered by that same prefix.
 TEXT_SIGNAL = re.compile(
-    rb"(?i)\b(?:cfg\s*\(\s*windows|target_os\s*=\s*[\"']windows|"
-    rb"windows[_\-\s]|Win32|WebView2|LPAC|Authenticode|"
-    rb"windows-latest|windows_server|windows server)\b"
+    rb"(?i)(?:\bwindows[_\-\s]|"
+    rb"\b(?:target_os\s*=\s*[\"']windows|Win32|WebView2|LPAC|Authenticode)\b)"
 )
+# `windows` as a token anywhere inside the balanced argument list of cfg(...),
+# cfg_attr(...) or cfg!(...): cfg(all(test, windows)), cfg(any(windows, test)),
+# cfg(not(windows)), cfg_attr(windows, ...), target_family = "windows".
+CFG_OPEN = re.compile(rb"(?i)\bcfg(?:_attr)?\s*!?\s*\(")
+CFG_PAREN = re.compile(rb"[()]")
+WINDOWS_TOKEN = re.compile(rb"(?i)\bwindows\b")
+CFG_SCAN_LIMIT = 4096  # bytes scanned past `cfg(` when the parentheses never balance
 AUTHORITY = re.compile(
     rb"(?i)\b(?:unsafe|WinVerifyTrust|GetTokenInformation|"
     rb"CreateProcess|OpenProcess|CreateFileW|DeleteFileW|"
@@ -37,6 +47,29 @@ AUTHORITY = re.compile(
 EXCLUDE = {".lock", ".png", ".jpg", ".ico", ".gitobj", ".jsonl"}
 SUFFIXES = {".rs", ".py", ".ps1", ".sh", ".yml", ".yaml", ".toml", ".md", ".json"}
 MANDATORY_CI_INPUTS = {"justfile", ".config/nextest.toml", ".agents/test-layout.md", ".agents/testing.md"}
+
+
+def cfg_mentions_windows(blob: bytes) -> bool:
+    """True when `windows` appears inside any cfg-style attribute's argument list."""
+    for opener in CFG_OPEN.finditer(blob):
+        start = opener.end()
+        window = blob[start:start + CFG_SCAN_LIMIT]
+        depth = 1
+        end = len(window)
+        for paren in CFG_PAREN.finditer(window):
+            depth += 1 if paren.group() == b"(" else -1
+            if depth == 0:
+                end = paren.start()
+                break
+        if WINDOWS_TOKEN.search(window, 0, end):
+            return True
+    return False
+
+
+def is_candidate(path: str, blob: bytes) -> bool:
+    """The one inclusion rule: forced CI inputs, a Windows-looking path, or Windows text."""
+    return (path in MANDATORY_CI_INPUTS or bool(PATH_SIGNAL.search(path))
+            or bool(TEXT_SIGNAL.search(blob)) or cfg_mentions_windows(blob))
 
 
 def git(root: Path, *args: str, data: bytes | None = None) -> bytes:
@@ -89,7 +122,7 @@ def render(root: Path, ref: str) -> tuple[str, dict[str, object]]:
     for item in entries(root, ref):
         path, oid = item["path"], item["oid"]
         blob = git(root, "cat-file", "blob", oid)
-        if path not in MANDATORY_CI_INPUTS and not PATH_SIGNAL.search(path) and not TEXT_SIGNAL.search(blob):
+        if not is_candidate(path, blob):
             continue
         signal = []
         if AUTHORITY.search(blob):

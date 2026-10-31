@@ -1,8 +1,10 @@
 //! Single-group supervised preparation and resource revocation.
+use super::guarded_lease::reap_guarded_child_before_clear;
+use super::process_group::{LocalGroupWitness, retire_own_child_group, terminate_attested_group};
 use super::{
-    ChildPreparer, Command, CommandExt, GenerationLease, PreparedChild, REGISTRATION_ENV,
-    RevocationCause, RuntimeError, Stdio, Write, collapse_failures, io, lifecycle_error,
-    terminate_registered_group, validate_group_leader, write_group_registration,
+    Child, ChildPreparer, Command, CommandExt, GenerationLease, PreparedChild, REGISTRATION_ENV,
+    RevocationCause, RuntimeError, SpawnAdmission, Stdio, Write, collapse_failures, io,
+    lifecycle_error, write_group_registration,
 };
 
 pub(super) struct SupervisedGuardianPreparer<C, W, S, F: FnOnce() -> io::Result<()>> {
@@ -24,12 +26,13 @@ where
     }
 }
 
-pub(super) struct SupervisedGuardianLease<W, S, F> {
-    registration: W,
+pub(super) struct SupervisedGuardianLease<S, F> {
+    admission: Option<SpawnAdmission>,
     child_spawned: Option<S>,
     revoke_registered_resources: Option<F>,
     pid_tx: std::sync::mpsc::SyncSender<u32>,
     group_pid: Option<u32>,
+    group_witness: LocalGroupWitness,
 }
 
 impl<C, W, S, F> ChildPreparer for SupervisedGuardianPreparer<C, W, S, F>
@@ -39,7 +42,7 @@ where
     S: FnOnce(u32) -> io::Result<()> + Send + 'static,
     F: FnOnce() -> io::Result<()> + Send + 'static,
 {
-    type Lease = SupervisedGuardianLease<W, S, F>;
+    type Lease = SupervisedGuardianLease<S, F>;
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
         if attempt != 1 {
@@ -73,34 +76,52 @@ where
             .env_remove(REGISTRATION_ENV)
             .process_group(0)
             .stdin(Stdio::null());
+        let mut registration = self.registration.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian supervisor preparation",
+                io::Error::other("authenticated registration writer is missing"),
+            )
+        })?;
+        let group_witness = LocalGroupWitness::default();
+        let reporter_group_witness = group_witness.clone();
+        let admission = SpawnAdmission::install(&mut command, move |pid| {
+            reporter_group_witness.register_child(pid)?;
+            write_group_registration(&mut registration, pid)
+        })?;
         Ok(PreparedChild {
             command: command.into(),
             lease: SupervisedGuardianLease {
-                registration: self.registration.take().ok_or_else(|| {
-                    lifecycle_error(
-                        "macOS guardian supervisor preparation",
-                        io::Error::other("authenticated registration writer is missing"),
-                    )
-                })?,
+                admission: Some(admission),
                 child_spawned: self.child_spawned.take(),
                 revoke_registered_resources: self.revoke_registered_resources.take(),
                 pid_tx: self.pid_tx.clone(),
                 group_pid: None,
+                group_witness,
             },
         })
     }
 }
 
-impl<W, S, F> GenerationLease for SupervisedGuardianLease<W, S, F>
+impl<S, F> GenerationLease for SupervisedGuardianLease<S, F>
 where
-    W: Write + Send + 'static,
     S: FnOnce(u32) -> io::Result<()> + Send + 'static,
     F: FnOnce() -> io::Result<()> + Send + 'static,
 {
     fn child_spawned(&mut self, pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
-        validate_group_leader(pid)?;
-        self.group_pid = Some(pid);
-        write_group_registration(&mut self.registration, pid)?;
+        let admission = self.admission.take().ok_or_else(|| {
+            lifecycle_error(
+                "macOS guardian supervised-child registration",
+                io::Error::other("pre-exec registration gate is missing"),
+            )
+        })?;
+        let (group_pid, registered) = admission.finish();
+        self.group_pid = group_pid;
+        if registered? != pid {
+            return Err(lifecycle_error(
+                "macOS guardian supervised-child registration",
+                io::Error::new(io::ErrorKind::InvalidData, "pre-exec PID changed at spawn"),
+            ));
+        }
         if let Some(observer) = self.child_spawned.take() {
             observer(pid).map_err(|source| {
                 lifecycle_error("macOS guardian supervised-child observer", source)
@@ -114,7 +135,55 @@ where
         })
     }
 
-    fn revoke(mut self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+    fn revoke(self, _cause: RevocationCause) -> Result<(), RuntimeError> {
+        self.revoke_group(None)
+    }
+
+    fn revoke_with_child(
+        self,
+        _cause: RevocationCause,
+        child: &mut Child,
+    ) -> Result<(), RuntimeError> {
+        // The supervisor is the leader's OS parent and still holds it
+        // unreaped: decide the group only after reaping this exact Child.
+        self.revoke_group(Some(child))
+    }
+}
+
+#[cfg(test)]
+type TestObserver = fn(u32) -> io::Result<()>;
+#[cfg(test)]
+type TestRevoke = fn() -> io::Result<()>;
+
+#[cfg(test)]
+impl SupervisedGuardianLease<TestObserver, TestRevoke> {
+    /// A lease after a successful pre-exec registration: the original kernel
+    /// child birth is enrolled, admission is finished and no host link exists.
+    pub(super) fn locally_enrolled_for_test(pid: u32, group_witness: LocalGroupWitness) -> Self {
+        let (pid_tx, _) = std::sync::mpsc::sync_channel(1);
+        Self {
+            admission: None,
+            child_spawned: None,
+            revoke_registered_resources: Some(|| Ok(())),
+            pid_tx,
+            group_pid: Some(pid),
+            group_witness,
+        }
+    }
+}
+
+impl<S, F> SupervisedGuardianLease<S, F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    fn revoke_group(mut self, child: Option<&mut Child>) -> Result<(), RuntimeError> {
+        if let Some(admission) = self.admission.take() {
+            let (group_pid, result) = admission.finish();
+            self.group_pid = group_pid;
+            // A failed admission does not grant execution; its typed failure
+            // is already owned by the supervisor's spawn/registration path.
+            let _ = result;
+        }
         let mut failures = Vec::new();
         if let Some(revoke) = self.revoke_registered_resources.take()
             && let Err(source) = revoke()
@@ -124,10 +193,27 @@ where
                 source,
             ));
         }
-        if let Some(group_pid) = self.group_pid.take()
-            && let Err(error) = terminate_registered_group(group_pid)
-        {
-            failures.push(error);
+        let verified_group = self.group_witness.take();
+        if let Some(group) = verified_group {
+            match child {
+                Some(own) => {
+                    let (retired, reaped) = retire_own_child_group(group, |deadline| {
+                        reap_guarded_child_before_clear(own, deadline)
+                    });
+                    failures.extend(retired.err());
+                    failures.extend(reaped.err());
+                }
+                None => failures.extend(terminate_attested_group(group).err()),
+            }
+        }
+        if verified_group.is_none() && self.group_pid.is_some() {
+            failures.push(lifecycle_error(
+                "macOS Guardian supervised local group custody",
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "discovered process group has no verified original kernel child birth",
+                ),
+            ));
         }
         if failures.is_empty() {
             Ok(())

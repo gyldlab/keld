@@ -1,15 +1,36 @@
-struct CutFixture {
-    supervisor: Option<Supervisor>,
-    plane: ControlPlane,
-    phase_entered: Receiver<()>,
-    phase_release: Sender<()>,
-    cancelled: Arc<AtomicBool>,
-    no_effect: tempfile::TempDir,
-    initial_pid: u32,
+//! Process fixture and unwind-safe owner for four native Prepared2 delivery cuts.
+use std::io::{Read as _, Write as _};
+use std::os::unix::net::UnixStream;
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Instant;
+
+use super::control_plane::{ControlPlane, await_initial_registration};
+use super::records_and_cut_types::{
+    COLLECTION, DeliveryCut, PhaseGate, RelayCommand, RelayReceipt, ReturnedLeasePreparer,
+    timed_pair,
+};
+use super::{
+    GenerationControlPeer, GenerationControlReader, GenerationControlRecord,
+    GuardedPrimaryPreparer, RestartPolicy, SUPERVISED_QUIT_ACCEPTED, Supervisor, liveness_pipe,
+    lock_generation, lock_recovery, observe_guarded_liveness, parse_app_link,
+    set_liveness_nonblocking, validate_liveness_bootstrap,
+};
+
+pub(super) struct CutFixture {
+    pub(super) supervisor: Option<Supervisor>,
+    pub(super) plane: ControlPlane,
+    pub(super) phase_entered: Receiver<()>,
+    pub(super) phase_release: Sender<()>,
+    pub(super) cancelled: Arc<AtomicBool>,
+    pub(super) no_effect: tempfile::TempDir,
+    pub(super) initial_pid: u32,
 }
 
 impl CutFixture {
-    fn start(cut: DeliveryCut) -> Self {
+    pub(super) fn start(cut: DeliveryCut) -> Self {
         let mut plane = ControlPlane::start(cut);
         let guardian_control = plane
             .guardian_control
@@ -74,6 +95,8 @@ impl CutFixture {
                     })),
                     host_unavailable: Arc::new(AtomicBool::new(false)),
                     preparation_cancelled: Arc::clone(&cancelled),
+                    initial_prepared: Arc::new(AtomicBool::new(false)),
+                    refused_registration_retired: Arc::new(AtomicBool::new(false)),
                 },
                 gate: lease_gate,
             },
@@ -94,7 +117,7 @@ impl CutFixture {
         }
     }
 
-    fn release_after_clear(&self) -> GenerationControlRecord {
+    pub(super) fn release_after_clear(&self) -> GenerationControlRecord {
         assert!(matches!(
             self.plane
                 .receipts
@@ -115,7 +138,7 @@ impl CutFixture {
         }
     }
 
-    fn accept_actual_q(&self) {
+    pub(super) fn accept_actual_q(&self) {
         lock_recovery(&self.plane.recovery).deny();
         let (mut reader, mut writer) = liveness_pipe();
         validate_liveness_bootstrap(&mut reader).expect("owned validated liveness pipe");
@@ -145,17 +168,52 @@ impl CutFixture {
         assert!(quit && !orderly);
         lock_recovery(&self.plane.recovery).shutdown_acknowledged = true;
     }
+}
 
-    fn collect(
-        mut self,
-        cut: DeliveryCut,
-        response: &GenerationControlRecord,
-        began: Option<Instant>,
-    ) {
+pub(super) struct CutObservation {
+    pub(super) terminal: crate::SupervisorEvent,
+    /// Receipt time of the terminal event, after every lease revocation.
+    pub(super) terminal_at: Instant,
+    pub(super) started_two: bool,
+    pub(super) outcome: crate::SupervisorOutcome,
+    pub(super) current_pid: Option<u32>,
+    pub(super) ledger: crate::CrashLedger,
+    pub(super) output: crate::CapturedOutput,
+    pub(super) relay: Result<(), super::RuntimeError>,
+    pub(super) host: Result<(), super::RuntimeError>,
+    pub(super) updates: Vec<super::GuardedPrimaryUpdate>,
+    pub(super) receipts: Vec<super::records_and_cut_types::RelayReceipt>,
+    pub(super) endpoint_gone: bool,
+    pub(super) no_effect: bool,
+    pub(super) current_group_pid: Option<u32>,
+    pub(super) initial_pid: u32,
+}
+
+fn collect_terminal_event(supervisor: &Supervisor) -> (crate::SupervisorEvent, Instant, bool) {
+    let deadline = Instant::now() + COLLECTION;
+    let mut started_two = false;
+    let terminal = loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .expect("bounded terminal event collection");
+        match supervisor.recv_event(remaining) {
+            Some(crate::SupervisorEvent::Started { attempt: 2, .. }) => started_two = true,
+            Some(
+                event @ (crate::SupervisorEvent::Stopped | crate::SupervisorEvent::Failed { .. }),
+            ) => break event,
+            Some(_) => {}
+            None => panic!("actual Supervisor terminal event absent"),
+        }
+    };
+    (terminal, Instant::now(), started_two)
+}
+
+impl CutFixture {
+    pub(super) fn collect(&mut self, response: &GenerationControlRecord) -> CutObservation {
         // All releases/joins precede assertions. The fixture Drop also
         // releases every fence on failed collection or an unwind.
         let supervisor = self.supervisor.as_ref().expect("Supervisor owner");
-        let (terminal, started_two) = collect_terminal_event(supervisor);
+        let (terminal, terminal_at, started_two) = collect_terminal_event(supervisor);
         let outcome = supervisor.wait_for_outcome();
         let current_pid = supervisor.current_pid();
         let ledger = supervisor.crash_ledger();
@@ -184,49 +242,38 @@ impl CutFixture {
                 .expect("actual minted locator");
         let endpoint_gone = UnixStream::connect(endpoint).is_err();
         let no_effect = !self.no_effect.path().join("unexpected-g2-effect").exists();
-        relay.expect("real control EOF forwarded after guardian-side owner drop");
-        host.expect("actual exact host lease cleanup completed before EOF success");
-        assert!(!started_two && current_pid.is_none());
-        assert!(lock_generation(&self.plane.current).is_none());
-        assert_eq!(ledger.self_termination_count, 1);
-        assert_eq!(
-            ledger.last_self_termination.map(|entry| entry.pid),
-            Some(self.initial_pid)
-        );
-        assert_gone(Some(self.initial_pid));
-        assert!(
-            ledger
-                .last_self_termination
-                .is_some_and(|entry| entry.exit_code == Some(1))
-        );
-        assert!(output.stdout.contains("KEL143_RACE_G1"));
-        assert!(!output.stdout.contains("KEL143_RACE_BAD_G2") && no_effect);
-        assert!(updates.iter().any(|update| matches!(
-            update,
-            GuardedPrimaryUpdate::Role(RoleEvent::Provisioned { attempt: 2, .. })
-        )));
-        assert!(updates.iter().any(|update| matches!(
-            update,
-            GuardedPrimaryUpdate::Role(RoleEvent::Revoked {
-                attempt: 2,
-                cause: crate::role::RoleRevocationCause::Shutdown,
-                ..
-            })
-        )));
-        assert!(!updates.iter().any(
-            |update| matches!(update, GuardedPrimaryUpdate::Bound(bound) if bound.attempt() == 2)
-        ));
-        assert!(!updates.iter().any(|update| matches!(
-            update,
-            GuardedPrimaryUpdate::Role(
-                RoleEvent::Spawned { attempt: 2, .. } | RoleEvent::LinkBound { attempt: 2, .. }
-            )
-        )));
-        assert!(endpoint_gone, "exact minted successor listener survived");
-        assert_cleanup_route(cut, &cleanup_receipts);
-        assert_cut_outcome(cut, &terminal, &outcome, began);
-        println!(
-            "KEL143_PREPARED_CUT cut={cut:?} actual_mint=true q_ack=true exact_revoked=2 listener_absent={endpoint_gone} g2_effect_absent={no_effect} direct_child_reaped=true"
-        );
+        let current_group_pid =
+            lock_generation(&self.plane.current).map(|generation| generation.group_pid);
+        CutObservation {
+            terminal,
+            terminal_at,
+            started_two,
+            outcome,
+            current_pid,
+            ledger,
+            output,
+            relay,
+            host,
+            updates,
+            receipts: cleanup_receipts,
+            endpoint_gone,
+            no_effect,
+            current_group_pid,
+            initial_pid: self.initial_pid,
+        }
+    }
+}
+
+impl Drop for CutFixture {
+    fn drop(&mut self) {
+        lock_recovery(&self.plane.recovery).deny();
+        self.plane.consumption_probe.take();
+        if let Some(supervisor) = &self.supervisor {
+            supervisor.shutdown();
+        }
+        self.cancelled.store(true, Ordering::Release);
+        let _ = self.phase_release.send(());
+        let _ = self.plane.commands.send(RelayCommand::AwaitClosure);
+        drop(self.supervisor.take());
     }
 }

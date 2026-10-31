@@ -1,3 +1,66 @@
+use std::io;
+use std::os::unix::process::CommandExt as _;
+use std::process::Command;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use super::super::{
+    CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED, CONTROL_REGISTERED,
+    CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED, GenerationControlRecord,
+    GuardedPrimaryUpdate, RecoveryState, RestartPolicy, RevocationCause, RoleEvent, RuntimeError,
+    Supervisor, SupervisorOutcome, handshake_client, interrupted_successor_preparation,
+    is_owned_preparation_interruption, lock_recovery, parse_app_link, read_generation_control,
+    run_generation_host, terminate_registered_group, write_generation_control,
+};
+use super::preparation_fixture::GatedUnmarkedFailurePreparer;
+use super::test_support::long_running_command;
+
+mod clear_authority;
+mod invalid_spawn_after_revoke;
+
+#[derive(Debug, Clone, Copy)]
+enum PreparationAttribution {
+    Accepted,
+    Requested,
+    Unattributed,
+}
+
+fn guardian_exchange(
+    guardian: &mut std::os::unix::net::UnixStream,
+    request: &GenerationControlRecord,
+    expected: u8,
+) -> GenerationControlRecord {
+    write_generation_control(guardian, request).expect("write guardian control request");
+    let response = read_generation_control(guardian).expect("read guardian control response");
+    assert_eq!(response.kind, expected);
+    assert_eq!(response.attempt, request.attempt);
+    response
+}
+
+// Native generation-host fixture: group leaders below are real direct children
+// of this test process, which is the deliberately retained host/Guardian owner.
+fn start_generation_host_fixture(
+    host: std::os::unix::net::UnixStream,
+    updates_tx: mpsc::Sender<GuardedPrimaryUpdate>,
+    current: Arc<Mutex<Option<super::super::RegisteredPrimaryGeneration>>>,
+    recovery: Arc<Mutex<RecoveryState>>,
+) -> std::thread::JoinHandle<Result<(), RuntimeError>> {
+    std::thread::spawn(move || {
+        run_generation_host(
+            super::super::generation_host::GenerationHostAdmission::new(
+                std::process::id(),
+                Instant::now() + super::super::GUARDIAN_SHUTDOWN_DEADLINE,
+            ),
+            host,
+            &updates_tx,
+            &current,
+            &recovery,
+            None,
+            None,
+        )
+    })
+}
+
 #[test]
 fn generation_host_rejects_out_of_order_revoke_before_prepare() {
     let (host, mut guardian) = std::os::unix::net::UnixStream::pair().expect("KGC1 pair");
@@ -9,10 +72,15 @@ fn generation_host_rejects_out_of_order_revoke_before_prepare() {
     )
     .expect("write out-of-order revoke");
     let error = run_generation_host(
+        super::super::generation_host::GenerationHostAdmission::new(
+            std::process::id(), // unit peer: direct child groups belong to this harness
+            Instant::now() + super::super::GUARDIAN_SHUTDOWN_DEADLINE,
+        ),
         host,
         &updates_tx,
         &current,
         &Mutex::new(RecoveryState::new()),
+        None,
         None,
     )
     .expect_err("revoke before prepare must fail");
@@ -36,9 +104,7 @@ fn generation_host_revokes_and_clears_before_preparing_successor() {
     lock_recovery(&recovery_armed).arm();
     let host_current = Arc::clone(&current);
     let host_recovery = Arc::clone(&recovery_armed);
-    let host_thread = std::thread::spawn(move || {
-        run_generation_host(host, &updates_tx, &host_current, &host_recovery, None)
-    });
+    let host_thread = start_generation_host_fixture(host, updates_tx, host_current, host_recovery);
 
     let prepared_one = guardian_exchange(
         &mut guardian,

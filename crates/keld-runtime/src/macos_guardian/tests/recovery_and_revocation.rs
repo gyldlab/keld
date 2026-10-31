@@ -1,3 +1,20 @@
+use std::io;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use nix::errno::Errno;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
+
+use super::super::{
+    BootstrapListener, DEFAULT_ADMISSION_TIMEOUT, GUARDIAN_SHUTDOWN_DEADLINE, GuardedPrimary,
+    GuardianBootstrap, HostGenerationState, RecoveryState, RegisteredPrimaryGeneration, RoleEvent,
+    RoleGenerationOwner, RoleOwner, check_initial_recovery_decision, finish_generation_control_eof,
+    handshake_client, lifecycle_error, lock_recovery, parse_app_link, require_close_on_exec,
+    runtime_io_kind,
+};
+
 #[test]
 fn guarded_primary_rejects_non_supervised_bootstrap_before_generation() {
     let registration = BootstrapListener::bind().expect("guarded registration");
@@ -154,6 +171,7 @@ fn attributed_control_eof_keeps_partial_and_registered_failures_fatal() {
             Some(RegisteredPrimaryGeneration {
                 attempt: 2,
                 group_pid: 42,
+                group_identity: None, // inert EOF-state fixture, never signal this numeric PID
             }),
         ),
     ] {
@@ -198,6 +216,11 @@ fn denied_recovery_cannot_be_rearmed_by_late_ready() {
         updates_rx,
         worker: None,
         shutdown_attributed: false,
+        shutdown_failed: false,
+        orderly_acknowledged: false,
+        shutdown_sent: None,
+        #[cfg(test)]
+        shutdown_denial_fence: None,
     };
     primary.deny_recovery();
     primary.arm_recovery();

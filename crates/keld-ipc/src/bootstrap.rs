@@ -2621,7 +2621,7 @@ mod named_pipe_tests {
         assert_ne!(peer.process_id(), rejected_id);
         assert_eq!(peer.session_id(), server_session);
         assert_eq!(peer.token_facts().session_id, server_session);
-        assert!(!peer.token_facts().user_sid.is_empty());
+        assert_ne!(peer.token_facts().user_sid.len(), 0);
         assert!(
             !peer
                 .process_pin()

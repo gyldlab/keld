@@ -1,4 +1,14 @@
-fn assert_cleanup_route(cut: DeliveryCut, receipts: &[RelayReceipt]) {
+//! Pure comparison oracles for Prepared2 admission and cleanup receipts.
+use std::io;
+use std::time::Instant;
+
+use super::records_and_cut_types::{ControlFields, DeliveryCut, RelayReceipt};
+use super::{
+    GUARDIAN_SHUTDOWN_DEADLINE, SupervisorOutcome, is_owned_preparation_interruption,
+    runtime_io_kind,
+};
+
+pub(super) fn assert_cleanup_route(cut: DeliveryCut, receipts: &[RelayReceipt]) {
     let revokes: Vec<_> = receipts
         .iter()
         .enumerate()
@@ -93,26 +103,7 @@ fn assert_cleanup_route(cut: DeliveryCut, receipts: &[RelayReceipt]) {
     }
 }
 
-fn collect_terminal_event(supervisor: &Supervisor) -> (crate::SupervisorEvent, bool) {
-    let deadline = Instant::now() + COLLECTION;
-    let mut started_two = false;
-    let terminal = loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .expect("bounded terminal event collection");
-        match supervisor.recv_event(remaining) {
-            Some(crate::SupervisorEvent::Started { attempt: 2, .. }) => started_two = true,
-            Some(
-                event @ (crate::SupervisorEvent::Stopped | crate::SupervisorEvent::Failed { .. }),
-            ) => break event,
-            Some(_) => {}
-            None => panic!("actual Supervisor terminal event absent"),
-        }
-    };
-    (terminal, started_two)
-}
-
-fn assert_cut_outcome(
+pub(super) fn assert_cut_outcome(
     cut: DeliveryCut,
     terminal: &crate::SupervisorEvent,
     outcome: &SupervisorOutcome,
@@ -136,94 +127,4 @@ fn assert_cut_outcome(
         assert!(matches!(terminal, crate::SupervisorEvent::Stopped));
         assert!(matches!(outcome, SupervisorOutcome::Stopped));
     }
-}
-
-impl Drop for CutFixture {
-    fn drop(&mut self) {
-        lock_recovery(&self.plane.recovery).deny();
-        self.plane.consumption_probe.take();
-        if let Some(supervisor) = &self.supervisor {
-            supervisor.shutdown();
-        }
-        self.cancelled.store(true, Ordering::Release);
-        let _ = self.phase_release.send(());
-        let _ = self.plane.commands.send(RelayCommand::AwaitClosure);
-        drop(self.supervisor.take());
-    }
-}
-
-fn run_delivery_cut(cut: DeliveryCut) {
-    let mut fixture = CutFixture::start(cut);
-    let response = fixture.release_after_clear();
-    let mut began = None;
-    match cut {
-        DeliveryCut::Zero => {
-            fixture.accept_actual_q();
-            fixture
-                .plane
-                .commands
-                .send(RelayCommand::AwaitClosure)
-                .expect("zero-byte closure collection");
-        }
-        DeliveryCut::Partial => {
-            fixture
-                .plane
-                .commands
-                .send(RelayCommand::Prefix)
-                .expect("one canonical prefix");
-            began = match fixture
-                .plane
-                .receipts
-                .recv_timeout(COLLECTION)
-                .expect("actual prefix write receipt")
-            {
-                RelayReceipt::PrefixSent(time) => Some(time),
-                _ => panic!("unexpected prefix receipt"),
-            };
-            let deadline = Instant::now() + COLLECTION;
-            loop {
-                if rustix::io::ioctl_fionread(
-                    fixture
-                        .plane
-                        .consumption_probe
-                        .as_ref()
-                        .expect("observation alias"),
-                )
-                .expect("existing safe available-byte primitive")
-                    == 0
-                {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "valid prefix not consumed by sole control reader"
-                );
-                thread::yield_now();
-            }
-            drop(fixture.plane.consumption_probe.take());
-            fixture.accept_actual_q();
-            fixture
-                .plane
-                .commands
-                .send(RelayCommand::AwaitClosure)
-                .expect("partial suffix remains withheld until actual failure/EOF");
-        }
-        DeliveryCut::FullBeforeLease | DeliveryCut::LeaseBeforeSpawn => {
-            fixture
-                .plane
-                .commands
-                .send(RelayCommand::Full)
-                .expect("full canonical Prepared2 release");
-            fixture
-                .phase_entered
-                .recv_timeout(COLLECTION)
-                .expect("exact factory/returned-lease boundary");
-            fixture.accept_actual_q();
-            fixture
-                .phase_release
-                .send(())
-                .expect("release only after actual Q ACK");
-        }
-    }
-    fixture.collect(cut, &response, began);
 }
