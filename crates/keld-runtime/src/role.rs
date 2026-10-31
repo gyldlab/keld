@@ -150,7 +150,7 @@ pub fn staged_bun_launch_args(
     Ok(args)
 }
 
-/// Strips a Windows verbatim prefix (`\\\\?\\C:\\...`, `\\\\?\\UNC\\server\\share`), which
+/// Strips a Windows verbatim prefix (`\\?\C:\...`, `\\?\UNC\server\share`), which
 /// `fs::canonicalize` yields. A path with no such prefix, or that is not UTF-8, is
 /// returned unchanged. Bun 1.4.4 opens a verbatim path as a `run` entry but refuses it
 /// as `--preload` (`Cannot find module`); the plain form also names the module the
