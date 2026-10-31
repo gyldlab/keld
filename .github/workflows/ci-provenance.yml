@@ -112,6 +112,13 @@ jobs:
                 p === "cargo.toml" || p.endsWith("/cargo.toml") ||
                 p === "package.json" || p.endsWith("/package.json") ||
                 p === "packages/@keld/kipc/scripts/echo-codegen.ts" ||
+                // Directly executed native CI validation/harness sources. A
+                // candidate must not replace a smoke/registry gate with echo 0.
+                p === "crates/keld-wv/tests/linux_gui_smoke.sh" ||
+                p === "crates/keld-wv/tests/windows_media_guard.ps1" ||
+                p === "crates/keld-wv/tests/fixtures/linux_media_interpose.c" ||
+                p === "docs/audits/verify.py" ||
+                p === "docs/audits/test_verify.py" ||
                 p === "bunfig.toml" || p.endsWith("/bunfig.toml") ||
                 p === "rustfmt.toml" || p.endsWith("/rustfmt.toml") ||
                 p === ".rustfmt.toml" || p.endsWith("/.rustfmt.toml") ||

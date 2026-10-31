@@ -199,6 +199,12 @@ test.each([
   ["tools/dependency_review_metadata.sh", "modified"],
   ["tools/repo_path_contract.rs", "modified"],
   ["tools/windows_signed_installed_acceptance.ps1", "modified"],
+  ["crates/keld-wv/tests/linux_gui_smoke.sh", "modified"],
+  ["crates/keld-wv/tests/windows_media_guard.ps1", "modified"],
+  ["crates/keld-wv/tests/fixtures/linux_media_interpose.c", "modified"],
+  ["docs/audits/verify.py", "modified"],
+  ["docs/audits/test_verify.py", "modified"],
+  ["docs/audits/VERIFY.PY", "added"],
   [".config/nextest.toml", "modified"],
   // All three are real authority paths, not benign source/document content.
   ["crates/keld-updater-helper/clippy.toml", "modified"],

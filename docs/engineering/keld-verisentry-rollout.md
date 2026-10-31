@@ -25,7 +25,8 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
 
 1. `provenance` executes protected-default-branch workflow bytes using only a
    read-only `GITHUB_TOKEN`. It checks the immutable base/head comparison, refuses
-   incomplete (>299) file lists, and refuses ALL changes to CI authority. An authorized maintenance
+   incomplete (>299) file lists, and refuses ALL changes to CI authority,
+   including directly executed Linux/Windows media harnesses and audit scripts. An authorized maintenance
    exception is **not** active because GitHub review revocation does not
    automatically trigger a protected verifier rerun.
    It never checks out or executes untrusted PR code.
