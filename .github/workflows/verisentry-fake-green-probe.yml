@@ -1,0 +1,10 @@
+name: Unauthorized same-name check proof
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  forged:
+    name: KELD VeriSentry
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "untrusted Actions app, not VeriSentry"
