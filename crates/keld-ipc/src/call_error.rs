@@ -25,17 +25,25 @@ use crate::link::write_frame;
 
 /// Application-level failure of one privileged `Call`.
 ///
-/// `code` is the registered `KELD-*` code from
-/// `docs/engineering/keld-error-codes.md`, owned by the crate that produced
-/// the failure — `keld_guard::DenyReason::code()` for a policy denial,
-/// the broker's own code (e.g. `KELD-NATIVE-001`) for a post-allow OS
-/// failure. Peers match on `code`; they MUST NOT parse `message`.
+/// `code` is registered in `docs/engineering/keld-error-codes.md` and
+/// ordinarily owned by the crate that produced the failure:
+/// `keld_guard::DenyReason::code()` for a policy denial, or the broker's own
+/// code (e.g. `KELD-NATIVE-001`) for a post-allow OS failure. The approved
+/// `auth.token` exception is `docs/specs/keld-auth.md` §3 AC13(c,d): actual
+/// denials keep the guard code; only Allow with no resolved session synthesizes
+/// `KELD-GUARD002` from `keld-native`, which separately reports its origin
+/// host-side. The registry's `keld-guard` ownership is unchanged.
 ///
-/// `message` is that error's full `Display` text, which by
-/// `docs/architecture/07-agent-experience.md` §2 already begins with `code`
-/// and ends with the imperative fix sentence. Splitting the fix into its own
-/// field would require `DenyReason` to expose a code-free body, so v0 keeps
-/// the two fields and carries the fix inside `message`.
+/// `message` ordinarily copies the failure's full `Display`, beginning with
+/// `code` and ending with its imperative fix (architecture 07 §2). For
+/// `auth.token`, the single private Native auth `TokenDenial::parts` renderer
+/// owns the resource-free constants for `KELD-GUARD001` / `KELD-GUARD002`,
+/// used by actual denial and AC13(d)'s synthesis. The private denial's
+/// `Display` carries that constant, never the guard's requested resource,
+/// scope list or account id. All other capabilities keep ordinary rendering.
+/// Peers match `code`, never parse `message`; both paths keep these two fields.
+/// If a second capability needs this treatment, move the shared renderer
+/// beside `From<&DenyReason>` instead of duplicating it (AC13(c)).
 ///
 /// Wire note: postcard encodes a struct as its concatenated fields and
 /// [`crate::codec::decode`] rejects trailing bytes, so adding a field changes
@@ -51,7 +59,8 @@ use crate::link::write_frame;
 pub struct CallError {
     /// Stable registered `KELD-*` code (e.g. `KELD-GUARD001`).
     pub code: String,
-    /// Full `Display` text of the failure, including the fix sentence.
+    /// Failure rendering with code and fix: ordinarily full `Display`,
+    /// with only the approved `auth.token` per-code constant exception.
     pub message: String,
 }
 
@@ -74,6 +83,20 @@ impl core::fmt::Display for CallError {
 impl core::error::Error for CallError {}
 
 impl CallError {
+    /// `KELD-IPC-005`: a valid guarded CALL exceeded its owner's admission capacity.
+    ///
+    /// The receiver consumed the complete bounded frame but admitted no work.
+    /// Write this correlated `ERR` only on an ERR-declaring guarded channel;
+    /// the link remains usable. Duplicate/invalid correlations remain terminal.
+    #[must_use]
+    pub fn admission_capacity() -> Self {
+        Self {
+            code: "KELD-IPC-005".to_owned(),
+            message: "KELD-IPC-005: guarded call capacity is exhausted; this call was not admitted. Wait for admitted work to finish before issuing new work; the link remains usable."
+                .to_owned(),
+        }
+    }
+
     /// `KELD-IPC-023`: the host retired the caller's role generation before
     /// this call's handler finished (GH-527 spec §4.4, criterion 6). Like
     /// `KELD-IPC-022`, the call's host effect is unknown. The host writes it
@@ -108,12 +131,14 @@ impl CallError {
 }
 
 impl From<&DenyReason> for CallError {
-    /// The single owner of the guard-denial → wire mapping.
+    /// The ordinary guard-denial → wire mapping owner.
     ///
-    /// It has no per-variant knowledge: `keld-guard` owns the variant → code
-    /// table (`DenyReason::code()`) and the actionable text (`Display`), both
-    /// of which are copied through unchanged. A new `DenyReason` variant
-    /// needs no edit here, and no broker may re-derive this mapping.
+    /// `keld-guard` owns the variant → code table (`DenyReason::code()`) and
+    /// actionable `Display`, copied unchanged here without variant knowledge.
+    /// Only the approved `auth.token` AC13(c,d) renderer in the Native auth
+    /// module uses resource-free per-code constants and its bounded synthesis.
+    /// Every other capability uses this mapping; brokers MUST NOT duplicate it.
+    /// New guard variants need no change to this ordinary conversion.
     fn from(reason: &DenyReason) -> Self {
         Self {
             code: reason.code().to_owned(),

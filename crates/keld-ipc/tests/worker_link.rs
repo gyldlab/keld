@@ -8,18 +8,27 @@
 //! timeout. The role prints `KELD_WL key=value` observations; both halves are
 //! asserted here.
 //!
+//! The role imports `packages/@keld/api/src/mirror.ts` for GH-531/GH-1142's
+//! internal decode/apply/dispatch primitive. The `mirror_*` scenarios below
+//! assert that actual helper's identity, order, retention and failure behavior
+//! through this same BootstrapListener/host-writer harness.
+//! Its narrow cold heap-edge observer is `packages/@keld/kipc/test/mirror-retention.ts`.
+//!
 //! Anti-flake (spec §7): the only sleep is the arm-B 100 EVENT/s pacing, which is
 //! load generation. Every wait is on an observable (a frame, a role line, a
 //! process exit) with a kill-switch bound, and no assertion is a duration.
 //!
-//! macOS only: T1 is the first proof (spec §6). T5 qualifies Linux and Windows.
-#![cfg(target_os = "macos")]
+//! Every OS with an app link (spec §6 T5): macOS, Linux and Windows run the
+//! same cases against the platform's `BootstrapStream` (a Unix socket, or the
+//! KEL-101 named pipe on Windows). The host closes a link the way the
+//! production router does, with `AppLinkDeadlines::shutdown_app_link`. A real
+//! platform difference is an explicit per-OS expectation that cites its OS
+//! fact, never a skip.
+#![cfg(any(unix, windows))]
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are the assertion oracles
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::Shutdown;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -30,8 +39,9 @@ use keld_ipc::frame::FLAG_RAW;
 use keld_ipc::link::{read_frame, write_frame};
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, AppLinkDeadlines, BootstrapAdmission, BootstrapListener,
-    BootstrapRejection, BootstrapRejectionObserver, CallError, ChannelId, CorrelationId,
-    ECHO_CHANNEL, FrameHeader, FrameKind, IpcError, LIFECYCLE_CHANNEL, write_call_error,
+    BootstrapRejection, BootstrapRejectionObserver, BootstrapStream, CallError, ChannelId,
+    CorrelationId, ECHO_CHANNEL, FrameHeader, FrameKind, IpcError, LIFECYCLE_CHANNEL,
+    write_call_error,
 };
 
 /// #418 arm-B load: a 10,000-EVENT burst, then 1,000 EVENTs at 100 per second.
@@ -95,10 +105,23 @@ impl RoleOutput {
 impl Role {
     fn spawn(scenario: &str, app_link: &str) -> Self {
         let mut child = Command::new("bun")
-            .arg(role_script())
+            .arg(if scenario.starts_with("source-") {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../packages/@keld/api/src/window-source-link.test-role.ts")
+            } else {
+                role_script()
+            })
             .arg(scenario)
             .env("KELD_APP_LINK", app_link)
             .env("KELD_KIPC_TEST_HOOKS", "1")
+            .env(
+                "KELD_NATIVE_WINDOW_FACADE",
+                if scenario.starts_with("source-") {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -210,9 +233,16 @@ impl Drop for Role {
 }
 
 /// Binds a fresh bootstrap listener, spawns the role, and authenticates it.
-fn start(scenario: &str) -> (UnixStream, Role) {
+fn start(scenario: &str) -> (BootstrapStream, Role) {
+    let (stream, role, _link) = start_with_link(scenario);
+    (stream, role)
+}
+
+/// [`start`], also returning the role's `KELD_APP_LINK`.
+fn start_with_link(scenario: &str) -> (BootstrapStream, Role, String) {
     let listener = BootstrapListener::bind().expect("bind bootstrap listener");
-    let role = Role::spawn(scenario, &listener.app_link());
+    let link = listener.app_link();
+    let role = Role::spawn(scenario, &link);
     let deadline = Instant::now() + Duration::from_secs(20);
     let stream = match listener
         .accept_authenticated_until(deadline, &IgnoreRejections)
@@ -228,7 +258,7 @@ fn start(scenario: &str) -> (UnixStream, Role) {
         stream.set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE)),
         "host app-link deadlines",
     );
-    (stream, role)
+    (stream, role, link)
 }
 
 fn arm_b_payload(seq: u32) -> [u8; ARM_B_PAYLOAD_LEN] {
@@ -246,7 +276,7 @@ struct WriteOutcome {
 /// Writes the arm-B EVENT load on `channel`, then `reply` for `corr`, through
 /// the real writer. Stops at the first writer error.
 fn write_arm_b_load(
-    stream: &mut UnixStream,
+    stream: &mut BootstrapStream,
     channel: ChannelId,
     corr: CorrelationId,
     reply: &[u8],
@@ -295,7 +325,7 @@ fn write_arm_b_load(
 }
 
 /// Reads the role's next frame and requires it to be a CALL.
-fn read_call(stream: &mut UnixStream) -> (FrameHeader, Vec<u8>) {
+fn read_call(stream: &mut BootstrapStream) -> (FrameHeader, Vec<u8>) {
     let (header, payload) = read_frame(stream).expect("read the role's CALL");
     assert_eq!(
         header.kind,
@@ -307,14 +337,14 @@ fn read_call(stream: &mut UnixStream) -> (FrameHeader, Vec<u8>) {
 }
 
 /// Reads the role's next CALL and requires its payload text.
-fn read_call_named(stream: &mut UnixStream, name: &str) -> FrameHeader {
+fn read_call_named(stream: &mut BootstrapStream, name: &str) -> FrameHeader {
     let (header, payload) = read_call(stream);
     assert_eq!(String::from_utf8_lossy(&payload), name, "{header:?}");
     header
 }
 
 /// Reads the role's next EVENT on the lifecycle channel and requires its text.
-fn read_role_event(stream: &mut UnixStream, name: &str) {
+fn read_role_event(stream: &mut BootstrapStream, name: &str) {
     let (header, payload) = read_frame(stream).expect("read the role's EVENT");
     assert_eq!(header.kind, FrameKind::Event, "{header:?}");
     assert_eq!(header.channel, LIFECYCLE_CHANNEL, "{header:?}");
@@ -322,7 +352,7 @@ fn read_role_event(stream: &mut UnixStream, name: &str) {
 }
 
 fn host_write(
-    stream: &mut UnixStream,
+    stream: &mut BootstrapStream,
     kind: FrameKind,
     channel: ChannelId,
     corr: CorrelationId,
@@ -331,7 +361,7 @@ fn host_write(
     write_frame(stream, kind, 0, channel, corr, payload).expect("host write");
 }
 
-fn host_reply(stream: &mut UnixStream, call: FrameHeader, payload: &[u8]) {
+fn host_reply(stream: &mut BootstrapStream, call: FrameHeader, payload: &[u8]) {
     host_write(stream, FrameKind::Reply, call.channel, call.corr, payload);
 }
 
@@ -344,7 +374,7 @@ fn seq_payload(seq: u32, len: usize) -> Vec<u8> {
     payload
 }
 
-fn host_event(stream: &mut UnixStream, seq: u32, len: usize) {
+fn host_event(stream: &mut BootstrapStream, seq: u32, len: usize) {
     host_write(
         stream,
         FrameKind::Event,
@@ -356,7 +386,7 @@ fn host_event(stream: &mut UnixStream, seq: u32, len: usize) {
 
 /// Lets the host wait for the role across quiet phases; writes keep
 /// `APP_LINK_IO_DEADLINE`, so criterion 1's writer contract is unchanged.
-fn long_reads(stream: &UnixStream) {
+fn long_reads(stream: &BootstrapStream) {
     peer_fact(
         stream.set_app_link_read_deadline(Some(Duration::from_mins(1))),
         "host read deadline",
@@ -377,7 +407,7 @@ fn peer_fact(result: std::io::Result<()>, what: &str) {
 
 /// Reads until the link is lost; returns the frames read first. Link loss is
 /// EOF or a reset, which `read_frame` reports as `KELD-IPC-001`.
-fn read_until_link_loss(stream: &mut UnixStream) -> Vec<(FrameHeader, Vec<u8>)> {
+fn read_until_link_loss(stream: &mut BootstrapStream) -> Vec<(FrameHeader, Vec<u8>)> {
     let mut frames = Vec::new();
     loop {
         match read_frame(stream) {
@@ -482,8 +512,261 @@ fn criterion4_facts_apply_before_return_and_listeners_run_after_continuation() {
     );
 }
 
+/// GH-531/GH-1142 generic mirror proof on the fixture lifecycle channel;
+/// no production window channel or source is enabled.
+fn mirror_values(scenario: &str, reentrant: bool, duplicate: bool) {
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "mirror-values");
+    for seq in 0..3 {
+        // Equal bytes are distinct records: each needs its own decoded value.
+        let payload_seq = if scenario == "mirror-identity" {
+            0
+        } else {
+            seq
+        };
+        host_event(&mut stream, payload_seq, 8);
+    }
+    host_reply(&mut stream, call, b"mirror-values-reply");
+    if reentrant {
+        let nested = read_call_named(&mut stream, "mirror-nested");
+        for seq in 3..6 {
+            host_event(&mut stream, seq, 8);
+        }
+        host_reply(&mut stream, nested, b"nested-reply");
+    }
+    let healthy = read_call_named(&mut stream, "mirror-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    let output = role.finish();
+    let count = if reentrant { "6" } else { "3" };
+    expect_report(
+        &output,
+        &[
+            ("mirror-reply", "mirror-values-reply"),
+            ("mirror-applies-at-return", "3"),
+            ("mirror-dispatches-at-return", "0"),
+            ("mirror-receiver-exact", "true"),
+            ("mirror-object-exact", "true"),
+            ("mirror-primitive-exact", "true"),
+            ("mirror-bound-valid", "true"),
+            ("mirror-callbacks-captured", "true"),
+            ("mirror-payloads-exact", "true"),
+            ("mirror-events", count),
+            ("mirror-in-order", "true"),
+            ("mirror-gaps", "0"),
+            ("mirror-dups", "0"),
+            ("mirror-decodes", count),
+            ("mirror-applies", count),
+            ("mirror-dispatches", count),
+            ("mirror-pending-values", "0"),
+            ("mirror-in-flight", "0"),
+            ("mirror-bound-checked", "true"),
+            ("mirror-second-dispatches", "0"),
+            ("mirror-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+    let observed = match scenario {
+        "mirror-identity" => "object:0,object:0,object:0",
+        "mirror-primitives" => "undefined,null,0",
+        "mirror-reentrant" => "object:0,object:1,object:2,object:3,object:4,object:5",
+        _ => "object:0,object:1,object:2",
+    };
+    expect_report(&output, &[("mirror-observed-values", observed)]);
+    if reentrant {
+        expect_report(
+            &output,
+            &[
+                ("mirror-nested-reply", "nested-reply"),
+                ("mirror-nested-held", "6"),
+                ("mirror-nested-retained", "6"),
+            ],
+        );
+    }
+    if duplicate {
+        expect_report(
+            &output,
+            &[
+                ("mirror-duplicate-code", "KELD-IPC-005"),
+                ("mirror-duplicate-returned", "false"),
+            ],
+        );
+    }
+}
+
+/// One decode per record; exact object identity and captured source receiver.
+#[test]
+fn mirror_decodes_once_and_dispatches_the_exact_applied_object() {
+    mirror_values("mirror-identity", false, false);
+}
+
+/// Undefined, null and zero are real facts, never empty-slot sentinels.
+#[test]
+fn mirror_preserves_undefined_null_and_zero_facts() {
+    mirror_values("mirror-primitives", false, false);
+}
+
+/// A nested park applies more facts while the current callback remains in flight.
+#[test]
+fn mirror_reentrant_dispatch_keeps_facts_subordinate_to_retained_records() {
+    mirror_values("mirror-reentrant", true, false);
+}
+
+/// Duplicate attachment fails before any second event callback is registered.
+#[test]
+fn mirror_duplicate_attachment_preserves_the_first_source() {
+    mirror_values("mirror-duplicate", false, true);
+}
+
+/// All facts stay intentionally alive in plain-object anchors; only the actual
+/// mirror's pending Array edges disappear after consumption. Correct-order
+/// append-only/read-head history must fail this physical-reference oracle.
+#[test]
+fn mirror_releases_consumed_fact_array_references() {
+    let (mut stream, role) = start("mirror-release");
+    long_reads(&stream);
+    let call = read_call_named(&mut stream, "mirror-release");
+    for seq in 0..3 {
+        host_event(&mut stream, seq, 8);
+    }
+    host_reply(&mut stream, call, b"release-reply");
+    let healthy = read_call_named(&mut stream, "mirror-release-healthy");
+    host_reply(&mut stream, healthy, b"healthy-reply");
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("mirror-release-reply", "release-reply"),
+            ("mirror-release-getter", "2"),
+            ("mirror-release-listeners-at-return", "0"),
+            ("mirror-release-before-facts", "3"),
+            ("mirror-release-before-indexed", "3"),
+            ("mirror-release-after-facts", "3"),
+            ("mirror-release-after-indexed", "0"),
+            ("mirror-release-anchors", "0,1,2"),
+            ("mirror-release-decodes", "3"),
+            ("mirror-release-applies", "3"),
+            ("mirror-release-events", "3"),
+            ("mirror-release-in-order", "true"),
+            ("mirror-release-gaps", "0"),
+            ("mirror-release-dups", "0"),
+            ("mirror-release-healthy", "healthy-reply"),
+            ("done", "true"),
+        ],
+    );
+}
+
+fn mirror_source_failure(scenario: &str, earlier_answer: bool, prior_close: bool) {
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let answer = read_call_named(&mut stream, "mirror-answer");
+    read_call_named(&mut stream, "mirror-unanswered");
+    let parked = read_call_named(&mut stream, "mirror-fault");
+    if earlier_answer {
+        host_reply(&mut stream, answer, b"earlier-answer");
+    }
+    for seq in 0..3 {
+        host_event(&mut stream, seq, 8);
+    }
+    host_reply(&mut stream, parked, b"must-not-return");
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("mirror-parked-code", "KELD-IPC-022"),
+            ("mirror-parked-returned", "false"),
+            ("mirror-unanswered-code", "KELD-IPC-022"),
+            ("mirror-unanswered-returned", "false"),
+            ("mirror-decodes", "2"),
+            ("mirror-applies", "1"),
+            ("mirror-events", "1"),
+            ("mirror-in-order", "true"),
+            ("mirror-pending-values", "0"),
+            ("mirror-retained-records", "0"),
+            ("mirror-later-code", "KELD-IPC-022"),
+            ("mirror-later-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+    if prior_close {
+        expect_report(
+            &output,
+            &[
+                ("mirror-end-code", "KELD-IPC-022"),
+                ("mirror-end-cause-005", "false"),
+            ],
+        );
+        let report = output.report();
+        assert!(!report.contains_key("mirror-parked-cause-005"));
+        assert!(!report.contains_key("mirror-unanswered-cause-005"));
+    } else {
+        expect_report(
+            &output,
+            &[
+                ("mirror-parked-cause-005", "true"),
+                ("mirror-unanswered-cause-005", "true"),
+                ("mirror-end-code", "KELD-IPC-005"),
+                ("mirror-end-cause-005", "true"),
+                ("mirror-listeners-at-throw", "0"),
+            ],
+        );
+    }
+    if earlier_answer {
+        expect_report(&output, &[("mirror-answer", "earlier-answer")]);
+    } else {
+        expect_report(&output, &[("mirror-answer-code", "KELD-IPC-022")]);
+    }
+    let attempts = if scenario == "mirror-apply-failure" {
+        "2"
+    } else {
+        "1"
+    };
+    expect_report(&output, &[("mirror-apply-attempts", attempts)]);
+    let (facts, anchors) = if scenario == "mirror-apply-failure" {
+        ("2", "0,1")
+    } else {
+        ("1", "0")
+    };
+    expect_report(
+        &output,
+        &[
+            ("mirror-terminal-facts", facts),
+            ("mirror-terminal-indexed", "0"),
+            ("mirror-terminal-anchors", anchors),
+        ],
+    );
+}
+
+/// Decoder003 becomes source close cause005; only the earlier fact drains.
+#[test]
+fn mirror_decode_failure_ends_delivery_at_the_bad_record() {
+    mirror_source_failure("mirror-decode-failure", false, false);
+}
+
+/// A failed apply is never retained or dispatched; later facts are not served.
+#[test]
+fn mirror_apply_failure_does_not_retain_or_dispatch_the_failed_fact() {
+    mirror_source_failure("mirror-apply-failure", false, false);
+}
+
+/// A retained answer preceding the fault still settles its pending call.
+#[test]
+fn mirror_source_failure_preserves_an_earlier_pending_answer() {
+    mirror_source_failure("mirror-earlier-answer", true, false);
+}
+
+/// The first terminal recorder keeps priority over a later source failure.
+#[test]
+fn mirror_source_failure_cannot_replace_a_prior_terminal_cause() {
+    mirror_source_failure("mirror-prior-close", false, true);
+}
+
 /// Criterion 5: a host close without an `ERR` throws `KELD-IPC-022`, returns no
 /// value, and the records that preceded the close are still delivered in order.
+///
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` every busy-CPU run lost the records (#1073 W2).
 #[test]
 fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     let (mut stream, role) = start("close-wake");
@@ -491,9 +774,7 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     for seq in 0..3 {
         host_event(&mut stream, seq, 8);
     }
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -516,6 +797,9 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
 /// throwing one is isolated (reported once as uncaught) without stopping the
 /// others. *Negative control:* notifying before the ring is drained puts
 /// `end:` ahead of the events.
+///
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` every busy-CPU run lost `event:1` (#1073 W2).
 #[test]
 fn on_end_reports_the_close_after_retained_records() {
     let (mut stream, role) = start("on-end");
@@ -524,9 +808,7 @@ fn on_end_reports_the_close_after_retained_records() {
     for seq in 0..2 {
         host_event(&mut stream, seq, 8);
     }
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -731,21 +1013,57 @@ fn criterion10_record_bound_overflow_fails_closed_with_026() {
 /// Criterion 11: a second `open` in the realm is `KELD-IPC-005` before any
 /// connect; a second connect to the consumed locator is refused by the OS;
 /// the first link keeps working.
+///
+/// The role-visible code, `KELD-IPC-005` for the second `open`, is asserted
+/// on every OS. How the OS refuses the second connect is per OS (#528 T5):
+/// - Unix: the bootstrap listener unlinks its one-use socket path once it
+///   has accepted, so the role's second connect fails at once with `ENOENT`.
+/// - Windows: the pipe has one instance (`nMaxInstances` is 1), and that
+///   instance is the connected first link. So `CreateFileW` refuses any other
+///   client at once with `ERROR_PIPE_BUSY` (231). The host opens the pipe
+///   itself while the first link is up, and that refusal is the oracle. The
+///   role makes no raw second connect on Windows: Bun's connect to a busy
+///   pipe waits about 30 s (libuv's fixed `WaitNamedPipeW` wait) before it
+///   reports `ECONNREFUSED`, as `windows-latest` showed on #666.
 #[test]
 fn criterion11_second_open_and_second_connect_are_refused() {
-    let (mut stream, role) = start("second-link");
+    let scenario = if cfg!(windows) {
+        "second-open"
+    } else {
+        "second-link"
+    };
+    let (mut stream, role, link) = start_with_link(scenario);
+    #[cfg(windows)]
+    {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let (endpoint, _) = keld_ipc::parse_app_link(&link).expect("parse the role's app link");
+        let refused = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(endpoint)
+            .expect_err("the consumed pipe must refuse a second client");
+        assert_eq!(refused.raw_os_error(), Some(ERROR_PIPE_BUSY), "{refused}");
+    }
+    #[cfg(not(windows))]
+    let _ = link;
     let call = read_call_named(&mut stream, "still-up");
     host_reply(&mut stream, call, b"first-link-up");
     let output = role.finish();
-    expect_report(
-        &output,
-        &[
-            ("second-open", "KELD-IPC-005"),
-            ("second-connect", "refused:ENOENT"),
-            ("first-link", "first-link-up"),
-            ("done", "true"),
-        ],
-    );
+    let mut expected = vec![
+        ("second-open", "KELD-IPC-005"),
+        ("first-link", "first-link-up"),
+        ("done", "true"),
+    ];
+    if cfg!(windows) {
+        assert!(
+            !output.report().contains_key("second-connect"),
+            "the Windows role makes no raw second connect: {}",
+            output.diagnostics()
+        );
+    } else {
+        expected.push(("second-connect", "refused:ENOENT"));
+    }
+    expect_report(&output, &expected);
 }
 
 /// Criterion 12: a REPLY for another live id never satisfies the blocking
@@ -836,7 +1154,7 @@ fn criterion13_every_call_needs_a_finite_deadline() {
 /// Criteria 14 and 21 harness: one inbound frame the selected policy rejects.
 /// The link closes before any append; the parked call throws 022 whose detail
 /// names the KELD-IPC-005 cause; no listener, waiter or applier sees it.
-fn inbound_violation(write_bad: impl FnOnce(&mut UnixStream, FrameHeader)) {
+fn inbound_violation(write_bad: impl FnOnce(&mut BootstrapStream, FrameHeader)) {
     let (mut stream, role) = start("inbound-violation");
     long_reads(&stream);
     let call = read_call_named(&mut stream, "violation");
@@ -1146,7 +1464,7 @@ fn criterion21_admitted_frames_and_ping_echo() {
         (ping.channel, ping.corr),
         (ChannelId::for_test(42), CorrelationId(9))
     );
-    assert!(ping_payload.is_empty());
+    assert_eq!(ping_payload, Vec::<u8>::new());
     let (answer, answer_payload) = answer.expect("echo CALL answer");
     assert_eq!(
         (answer.channel, answer.corr),
@@ -1447,14 +1765,15 @@ fn criterion27_host_call_without_a_handler_closes_the_link() {
 /// closes; a test hook holds main between its `REPLY_READY` and `STATE` loads
 /// until the Worker has published and recorded the close. The real reply
 /// returns and the slot is emptied, never `KELD-IPC-022`.
+///
+/// On Windows this holds only while the host's close keeps unread pipe data;
+/// with `DisconnectNamedPipe` a busy-CPU run lost the REPLY (#1073 W2).
 #[test]
 fn review_reply_published_before_the_close_wins() {
     let (mut stream, role) = start("reply-then-close");
     let call = read_call_named(&mut stream, "reply-then-close");
     host_reply(&mut stream, call, b"real-reply");
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -1604,9 +1923,7 @@ fn expiry_after_the_link_ended_rejects_with_the_recorded_code() {
     // Load shaping, not synchronization: keep the park past the async call's
     // 200 ms deadline before the host closes without answering either call.
     thread::sleep(Duration::from_millis(600));
-    stream
-        .shutdown(Shutdown::Both)
-        .expect("host closes the link");
+    stream.shutdown_app_link().expect("host closes the link");
     drop(stream);
     let output = role.finish();
     expect_report(
@@ -1615,6 +1932,226 @@ fn expiry_after_the_link_ended_rejects_with_the_recorded_code() {
             ("park-code", "KELD-IPC-022"),
             ("early-code", "KELD-IPC-022"),
             ("early-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+}
+
+/// GH1149 Source consumer regressions reuse the actual authenticated writer and
+/// role owner above. This fixture adds no Host registry or native implementation.
+fn source_replay(scenario: &str) -> (BootstrapStream, Role, keld_ipc::window::WindowRef) {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::lifecycle::{LifecycleEvent, LifecycleRequest, LifecycleResponse};
+    use keld_ipc::window::{Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowState};
+    let (mut stream, role) = start(scenario);
+    long_reads(&stream);
+    let (subscribe, bytes) = read_call(&mut stream);
+    assert_eq!(subscribe.channel, LIFECYCLE_CHANNEL);
+    assert_eq!(
+        decode::<LifecycleRequest>(&bytes).expect("Subscribe codec"),
+        LifecycleRequest::Subscribe {
+            channel: keld_ipc::channel_table::WINDOW.wire_id()
+        }
+    );
+    let window = WindowRef {
+        id: WindowId(7),
+        incarnation: WindowGeneration(300),
+    };
+    for pair in [
+        window,
+        WindowRef {
+            id: WindowId(8),
+            incarnation: WindowGeneration(301),
+        },
+    ] {
+        let fact = WindowEvent::Created {
+            window: pair,
+            state: WindowState {
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 480,
+                },
+                focused: false,
+                maximized: false,
+                full_screen: false,
+            },
+            pending_close: Some(300),
+        };
+        host_write(
+            &mut stream,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            &encode(&fact).expect("Created codec"),
+        );
+    }
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(0),
+        &encode(&LifecycleEvent::Ready).expect("Ready codec"),
+    );
+    host_reply(
+        &mut stream,
+        subscribe,
+        &encode(&LifecycleResponse::Subscribed).expect("Subscribed codec"),
+    );
+    (stream, role, window)
+}
+
+#[test]
+fn source_close_before_deferred_dispatch_drains_before_end() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, window) = source_replay("source-close-drain");
+    let (call, bytes) = read_call(&mut stream);
+    assert_eq!(call.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("Destroy codec"),
+        WindowRequest::Destroy { window }
+    );
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Destroyed { window }).expect("Destroyed codec"),
+    );
+    host_reply(
+        &mut stream,
+        call,
+        &encode(&WindowResponse::Destroyed).expect("reply codec"),
+    );
+    assert!(
+        read_until_link_loss(&mut stream).is_empty(),
+        "close admits no more calls"
+    );
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("order", "Created:7,Created:8,return,Destroyed:7,end"),
+            ("ordinary-callback-root", "true"),
+            ("callback-throws", "0"),
+            ("done", "true"),
+        ],
+    );
+}
+
+#[test]
+fn source_nested_destroy_keeps_each_terminal_until_its_own_throwing_dispatch() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, _) = source_replay("source-nested-destroy");
+    for expected in [7, 8] {
+        let (call, bytes) = read_call(&mut stream);
+        assert_eq!(call.channel, keld_ipc::channel_table::WINDOW.id());
+        let WindowRequest::Destroy { window } = decode(&bytes).expect("Destroy codec") else {
+            panic!("expected Destroy");
+        };
+        assert_eq!(window.id.0, expected);
+        host_write(
+            &mut stream,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            &encode(&WindowEvent::Destroyed { window }).expect("Destroyed codec"),
+        );
+        host_reply(
+            &mut stream,
+            call,
+            &encode(&WindowResponse::Destroyed).expect("reply codec"),
+        );
+    }
+    let after = read_until_link_loss(&mut stream);
+    assert!(
+        after.is_empty(),
+        "nested terminal dispatch admits no further role calls: {after:?}"
+    );
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            (
+                "order",
+                "Created:7,Created:8,return,Destroyed:7,Destroyed:8,end",
+            ),
+            ("ordinary-callback-root", "true"),
+            ("callback-throws", "1"),
+            ("done", "true"),
+        ],
+    );
+}
+
+#[test]
+fn source_earlier_reply_applied_survives_later_bad_fact_in_fenced_drain() {
+    use keld_ipc::codec::{decode, encode};
+    use keld_ipc::window::{CloseVerdict, WindowEvent, WindowRequest, WindowResponse};
+    let (mut stream, role, window) = source_replay("source-earlier-answer");
+    let (answer, bytes) = read_call(&mut stream);
+    assert_eq!(answer.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("CloseReply codec"),
+        WindowRequest::CloseReply {
+            window,
+            close_seq: 300,
+            verdict: CloseVerdict::Veto
+        }
+    );
+    let (fence, bytes) = read_call(&mut stream);
+    assert_eq!(fence.channel, keld_ipc::channel_table::WINDOW.id());
+    assert_eq!(
+        decode::<WindowRequest>(&bytes).expect("fence codec"),
+        WindowRequest::SetMaximized {
+            window,
+            maximized: true
+        }
+    );
+    host_reply(
+        &mut stream,
+        answer,
+        &encode(&WindowResponse::ReplyApplied).expect("ReplyApplied codec"),
+    );
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Focus {
+            window,
+            focused: true,
+        })
+        .expect("Focus codec"),
+    );
+    let mut wrong = window;
+    wrong.incarnation.0 += 1;
+    host_write(
+        &mut stream,
+        FrameKind::Event,
+        keld_ipc::channel_table::WINDOW.id(),
+        CorrelationId(0),
+        &encode(&WindowEvent::Focus {
+            window: wrong,
+            focused: false,
+        })
+        .expect("bad-pair codec"),
+    );
+    host_reply(
+        &mut stream,
+        fence,
+        &encode(&WindowResponse::Accepted).expect("fence reply codec"),
+    );
+    read_until_link_loss(&mut stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("answer", "ReplyApplied"),
+            ("facts", "Created,Created,Focus"),
+            ("sticky-source", "KELD-IPC-005"),
             ("done", "true"),
         ],
     );

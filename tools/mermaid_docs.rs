@@ -739,12 +739,15 @@ fn main() {
 mod tests {
     use std::fs;
     use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         Path, PathBuf, changed_diagram_blocks, changed_mermaid_inputs, changed_mermaid_worktree,
         check, diagram_blocks, manifest, validate_markdown,
     };
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
     const VALID: &str = r#"# Diagram
 
@@ -898,15 +901,79 @@ flowchart LR
             .to_owned()
     }
 
+    fn create_fixture_root(
+        prefix: &str,
+        nonce: u128,
+        next: &AtomicU64,
+    ) -> std::io::Result<PathBuf> {
+        let sequence = next.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root)?;
+        Ok(root)
+    }
+
+    #[test]
+    fn fixture_roots_are_isolated_when_the_clock_nonce_repeats() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock must be after Unix epoch")
+            .as_nanos();
+        let next = AtomicU64::new(0);
+        let first = create_fixture_root("keld-mermaid-isolation", nonce, &next)
+            .expect("create first fixture");
+        fs::write(first.join("namespace-marker"), b"first-owner")
+            .expect("write first owner marker");
+        let second = create_fixture_root("keld-mermaid-isolation", nonce, &next)
+            .expect("create second fixture at identical clock nonce");
+        let same_path = first == second;
+        let first_marker = fs::read(first.join("namespace-marker")).expect("read first marker");
+        let second_has_marker = second.join("namespace-marker").exists();
+        fs::remove_dir_all(&first).expect("remove first owned fixture");
+        if !same_path {
+            fs::remove_dir_all(&second).expect("remove second owned fixture");
+        }
+        assert!(!same_path, "same-clock allocations reused the fixture namespace");
+        assert_eq!(first_marker, b"first-owner");
+        assert!(!second_has_marker, "second fixture inherited the first owner's marker");
+    }
+
+    #[test]
+    fn fixture_root_refuses_an_existing_namespace() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock must be after Unix epoch")
+            .as_nanos();
+        let next = AtomicU64::new(0);
+        let first = create_fixture_root("keld-mermaid-exclusive", nonce, &next)
+            .expect("create fixture owner");
+        fs::write(first.join("namespace-marker"), b"first-owner")
+            .expect("write owner marker");
+        // This counter belongs only to this test. Force the actual allocator's
+        // next candidate to be the already-owned directory, without a race.
+        next.store(0, Ordering::Relaxed);
+        let repeated = create_fixture_root("keld-mermaid-exclusive", nonce, &next);
+        let marker = fs::read(first.join("namespace-marker")).expect("read owner marker");
+        fs::remove_dir_all(&first).expect("remove owned fixture");
+        assert!(
+            matches!(repeated, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists),
+            "existing namespace was accepted as a fresh fixture"
+        );
+        assert_eq!(marker, b"first-owner");
+    }
+
     fn git_change_fixture() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock must be after Unix epoch")
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("keld-mermaid-route-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(&root).expect("create route fixture");
+        let root = create_fixture_root("keld-mermaid-route", nonce, &NEXT_FIXTURE)
+            .expect("create route fixture");
         git_fixture(&root, &["init", "--quiet"]);
+        // No detached `git maintenance` child may race fixture cleanup (#670).
+        git_fixture(&root, &["config", "maintenance.auto", "false"]);
         git_fixture(&root, &["config", "user.name", "Mermaid route test"]);
         git_fixture(
             &root,
@@ -1072,8 +1139,8 @@ flowchart LR
             .duration_since(UNIX_EPOCH)
             .expect("test clock must be after Unix epoch")
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("keld-mermaid-docs-{}-{nonce}", std::process::id()));
+        let root = create_fixture_root("keld-mermaid-docs", nonce, &NEXT_FIXTURE)
+            .expect("create docs fixture root");
         fs::create_dir_all(root.join("docs")).expect("create docs fixture");
         fs::create_dir_all(root.join(".agents/skills/vendor")).expect("create skill fixture");
         fs::write(root.join("README.md"), VALID).expect("write root Markdown");
@@ -1083,12 +1150,9 @@ flowchart LR
             "```mermaid\narchitecture-beta\n```\n",
         )
         .expect("write ignored skill Markdown");
-        let init = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .expect("run git init");
-        assert!(init.success(), "git init must succeed");
+        git_fixture(&root, &["init", "--quiet"]);
+        // No detached `git maintenance` child may race fixture cleanup (#670).
+        git_fixture(&root, &["config", "maintenance.auto", "false"]);
         let add = Command::new("git")
             .args(["add", "README.md", "docs/architecture.md"])
             .current_dir(&root)

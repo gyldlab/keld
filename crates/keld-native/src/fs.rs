@@ -30,6 +30,35 @@ use keld_ipc::link::{handshake_server, read_validated_frame, write_frame};
 use keld_ipc::{IpcError, SessionToken};
 use serde::{Deserialize, Serialize};
 
+/// Explicit debug/macOS acceptance support; absent from normal and release libraries.
+#[doc(hidden)]
+#[cfg(all(keld_native_fs_observer_eligible, debug_assertions))]
+#[path = "fs/acceptance_observer.rs"]
+pub mod acceptance_observer;
+
+/// Includes proof items only when the native owner admits observer support.
+#[doc(hidden)]
+#[cfg(all(
+    feature = "fs-acceptance-observer",
+    keld_native_fs_observer_eligible,
+    debug_assertions
+))]
+#[macro_export]
+macro_rules! keld_native_fs_observer_items {
+    ($($item:item)*) => { $($item)* };
+}
+
+/// Omits proof items in feature-enabled builds without native observer support.
+#[doc(hidden)]
+#[cfg(all(
+    feature = "fs-acceptance-observer",
+    not(all(keld_native_fs_observer_eligible, debug_assertions))
+))]
+#[macro_export]
+macro_rules! keld_native_fs_observer_items {
+    ($($item:item)*) => {};
+}
+
 /// Capability id for a scoped read (`keld_guard::capability::FS_READ`).
 pub const FS_READ_CAPABILITY: &str = keld_guard::capability::FS_READ;
 /// Capability id for a scoped write (`keld_guard::capability::FS_WRITE`).
@@ -441,14 +470,19 @@ impl FsBroker {
         request: FsRequest,
         cancelled: &AtomicBool,
     ) -> Result<FsResponse, FsError> {
-        match request {
+        #[cfg(all(keld_native_fs_observer_eligible, debug_assertions))]
+        acceptance_observer::request_entered();
+        let result = match request {
             FsRequest::Read { path } => self
                 .read(verified, principal, &path, cancelled)
                 .map(|bytes| FsResponse::Read { bytes }),
             FsRequest::Write { path, bytes } => self
                 .write(verified, principal, &path, &bytes, cancelled)
                 .map(|()| FsResponse::Write),
-        }
+        };
+        #[cfg(all(keld_native_fs_observer_eligible, debug_assertions))]
+        acceptance_observer::request_returned();
+        result
     }
 
     fn verify_snapshot(&self, verified: &VerifiedManifest) -> Result<(), FsError> {
@@ -501,7 +535,7 @@ impl FsBroker {
             progress.check_read()?;
             let remaining = MAX_FS_CONTENT_BYTES + 1 - output.len();
             let read_length = remaining.min(chunk.len());
-            #[cfg(test)]
+            #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
             fs_test_update_counters(|counters| counters.content_reads += 1);
             let count = progress.finish_read_io(file.read(&mut chunk[..read_length]))?;
             if count == 0 {
@@ -529,7 +563,7 @@ impl FsBroker {
         progress.check_write(false, 0, bytes.len(), None)?;
         let grant = selected_grant(&self.write_grants, permit, path)?;
         let resolved = walk(grant, path, OpenPurpose::Write, progress)?;
-        #[cfg(test)]
+        #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
         run_after_walk_test_hook();
         progress.check_write(false, 0, bytes.len(), None)?;
 
@@ -538,7 +572,7 @@ impl FsBroker {
                 let metadata = progress.finish_read_io(file.metadata())?;
                 ensure_regular_and_device(&metadata, grant, path)?;
                 progress.check_write(false, 0, bytes.len(), None)?;
-                #[cfg(test)]
+                #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
                 fs_test_update_counters(|counters| counters.truncate_calls += 1);
                 let result = file.set_len(0);
                 progress.check_write(true, 0, bytes.len(), result.err())?;
@@ -548,7 +582,7 @@ impl FsBroker {
                 progress.check_write(false, 0, bytes.len(), None)?;
                 let mut options = write_options();
                 options.create_new(true);
-                #[cfg(test)]
+                #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
                 fs_test_update_counters(|counters| counters.create_calls += 1);
                 let result = create_new_file(&parent, &leaf, &options);
                 match result {
@@ -590,7 +624,7 @@ impl FsBroker {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
 std::thread_local! {
     static AFTER_WALK_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -598,7 +632,7 @@ std::thread_local! {
         const { std::cell::Cell::new(FsTestCounters::new()) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FsTestCounters {
     walk_entries: usize,
@@ -611,7 +645,7 @@ struct FsTestCounters {
     selected_grant_index: Option<usize>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
 impl FsTestCounters {
     const fn new() -> Self {
         Self {
@@ -637,7 +671,7 @@ fn fs_test_counters() -> FsTestCounters {
     FS_TEST_COUNTERS.with(std::cell::Cell::get)
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
 fn fs_test_update_counters(update: impl FnOnce(&mut FsTestCounters)) {
     FS_TEST_COUNTERS.with(|slot| {
         let mut counters = slot.get();
@@ -646,7 +680,7 @@ fn fs_test_update_counters(update: impl FnOnce(&mut FsTestCounters)) {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
 fn run_after_walk_test_hook() {
     if let Some(hook) = AFTER_WALK_TEST_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook();
@@ -663,7 +697,7 @@ fn write_content<W: Write>(
     while offset < bytes.len() {
         progress.check_write(true, committed, bytes.len(), None)?;
         let end = (offset + FS_IO_CHUNK_BYTES).min(bytes.len());
-        #[cfg(test)]
+        #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
         fs_test_update_counters(|counters| counters.content_writes += 1);
         match writer.write(&bytes[offset..end]) {
             Ok(0) => {
@@ -804,7 +838,7 @@ fn selected_grant<'a>(
             requested: requested.to_owned(),
             detail: "matched guard grant has no retained resource".to_owned(),
         })?;
-    #[cfg(test)]
+    #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
     fs_test_update_counters(|counters| {
         counters.selected_grant_index = Some(grant.grant_index);
     });
@@ -873,7 +907,7 @@ fn walk_with_observer(
     progress: &Progress<'_>,
     mut after_metadata: impl FnMut(&str, bool),
 ) -> Result<WalkResult, FsError> {
-    #[cfg(test)]
+    #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
     fs_test_update_counters(|counters| counters.walk_entries += 1);
     let relative = relative_request(grant, requested)?;
     let mut pending = relative
@@ -925,7 +959,7 @@ fn walk_with_observer(
                         requested: requested.to_owned(),
                         detail: "retained directory stack became empty".to_owned(),
                     })?;
-                #[cfg(test)]
+                #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
                 fs_test_update_counters(|counters| counters.metadata_probes += 1);
                 let metadata_result = current.symlink_metadata(&name);
                 progress.check_read()?;
@@ -985,7 +1019,7 @@ fn walk_with_observer(
                         OpenPurpose::Read => read_options(),
                         OpenPurpose::Write => write_options(),
                     };
-                    #[cfg(test)]
+                    #[cfg(any(test, all(keld_native_fs_observer_eligible, debug_assertions)))]
                     fs_test_update_counters(|counters| counters.target_opens += 1);
                     let file_result = open_existing_file(current, &name, purpose, &options);
                     progress.check_read()?;
@@ -1463,10 +1497,10 @@ pub fn serve_fs_session<S: Read + Write>(
 mod tests {
     use super::*;
     use keld_guard::parse_manifest;
-    #[cfg(windows)]
+    #[cfg(any(windows, all(keld_native_fs_observer_eligible, debug_assertions)))]
     use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
-    #[cfg(windows)]
-    use sha2::{Digest as _, Sha256};
+    #[cfg(any(windows, all(keld_native_fs_observer_eligible, debug_assertions)))]
+    use sha2::Sha256;
 
     std::thread_local! {
         static TEST_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
@@ -1499,8 +1533,10 @@ mod tests {
         TEST_NOW.with(|clock| clock.set(Some(now)));
     }
 
-    #[cfg(windows)]
-    fn test_verified_manifest(fixture: &Path, root: &Path) -> VerifiedManifest {
+    #[cfg(any(windows, all(keld_native_fs_observer_eligible, debug_assertions)))]
+    pub(super) fn test_verified_manifest(fixture: &Path, root: &Path) -> VerifiedManifest {
+        use sha2::Digest as _;
+
         let scope = root.to_str().expect("UTF-8 fixture").replace('\\', "/");
         let text =
             format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
@@ -1820,7 +1856,7 @@ mod tests {
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    fn race_owned_root(case: &str) -> std::path::PathBuf {
+    pub(super) fn race_owned_root(case: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
             "keld-kel130-linux-race-{case}-{}-{}",
             std::process::id(),

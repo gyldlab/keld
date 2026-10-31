@@ -20,6 +20,7 @@ use crate::support::process::signal_process_group;
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
 use crate::support::renderer::Beacon;
+use crate::support::signal_wait::signal_group_and_await_exit;
 use crate::support::unix_descriptors::unix_sockets_not_inherited_from_harness;
 use std::fs;
 use std::io::BufRead;
@@ -198,7 +199,7 @@ impl ShippingDevCycle {
         assert_eq!(read_control_line(&mut cycle.control_reader), "ECHO2");
         beacon.assert_exact();
         assert_eq!(presentation.expect_initial(cycle.host_pid, name).len(), 1);
-        assert!(native_windows(cli_pid, TITLE).is_empty());
+        assert_eq!(native_windows(cli_pid, TITLE), [] as [u32; 0]);
         assert!(
             !unix_sockets_not_inherited_from_harness(cycle.host_pid).is_empty(),
             "host owns no Unix app-link descriptor of its own"
@@ -225,6 +226,13 @@ impl ShippingDevCycle {
             "{}/{}/{}/{}/{}",
             self.cli_pid, self.host_pid, self.guardian_pid, self.bun_pid, self.descendant_pid
         )
+    }
+
+    fn trace_phase(&self, action: &str, signal: Option<&str>) {
+        eprintln!(
+            "KELD_DEV_CYCLE_ACTION action={action} signal={signal:?} roles={}",
+            self.evidence()
+        );
     }
 
     pub(crate) fn crash_and_recover(&mut self) {
@@ -281,6 +289,7 @@ impl ShippingDevCycle {
     }
 
     pub(crate) fn kill_cli_and_expect_lease_shutdown(&mut self) {
+        self.trace_phase("kill-cli", Some("KILL"));
         let cli = self.cli.as_mut().expect("live shipping CLI");
         cli.kill().expect("SIGKILL only the shipping CLI");
         let status = cli.wait().expect("wait killed shipping CLI");
@@ -322,14 +331,13 @@ impl ShippingDevCycle {
         signal_name: &str,
         number: i32,
     ) {
-        signal_process_group(&format!("-{signal_name}"), self.cli_pid)
-            .unwrap_or_else(|error| panic!("group {signal_name} failed: {error}"));
-        let status = self
-            .cli
-            .as_mut()
-            .expect("live shipping CLI")
-            .wait()
-            .expect("wait signaled shipping CLI");
+        self.trace_phase("signal-cli-group", Some(signal_name));
+        let status = signal_group_and_await_exit(
+            self.cli.as_mut().expect("live shipping CLI"),
+            self.cli_pid,
+            signal_name,
+            Instant::now() + EVENT_DEADLINE,
+        );
         assert_eq!(status.signal(), Some(number));
         assert!(
             process_exists(self.host_pid),
@@ -344,6 +352,7 @@ impl ShippingDevCycle {
     }
 
     pub(crate) fn self_terminate_and_expect_verbatim_error(&mut self) {
+        self.trace_phase("app-self-terminate", None);
         self.control_writer
             .write_all(b"EXIT0\n")
             .expect("request unrequested status-zero exit");
@@ -359,6 +368,7 @@ impl ShippingDevCycle {
     }
 
     pub(crate) fn quit_and_expect_success(&mut self) {
+        self.trace_phase("orderly-quit", None);
         self.control_writer
             .write_all(b"QUIT\n")
             .expect("request T2 relaunch Quit");
@@ -379,11 +389,31 @@ impl ShippingDevCycle {
     }
 
     pub(crate) fn assert_group_gone(&mut self) {
+        eprintln!(
+            "KELD_DEV_AWAIT_GONE role=host pid={} roles={}",
+            self.host_pid,
+            self.evidence()
+        );
         await_process_gone(self.host_pid);
+        eprintln!(
+            "KELD_DEV_AWAIT_GONE role=guardian pid={} roles={}",
+            self.guardian_pid,
+            self.evidence()
+        );
         await_process_gone(self.guardian_pid);
+        eprintln!(
+            "KELD_DEV_AWAIT_GONE role=bun pid={} roles={}",
+            self.bun_pid,
+            self.evidence()
+        );
         await_process_gone(self.bun_pid);
+        eprintln!(
+            "KELD_DEV_AWAIT_GONE role=descendant pid={} roles={}",
+            self.descendant_pid,
+            self.evidence()
+        );
         await_process_gone(self.descendant_pid);
-        assert!(native_windows(self.host_pid, TITLE).is_empty());
+        assert_eq!(native_windows(self.host_pid, TITLE), [] as [u32; 0]);
         self.group_gone = true;
     }
 }

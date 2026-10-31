@@ -96,10 +96,10 @@ fn provision_and_qualify_committed_baseline(root: &std::path::Path) -> crate::Wi
     drop(receipt);
     let loaded = load_windows_baseline(&trust).expect("fresh production read-only load");
     assert_eq!(loaded.version_floor(), "1.0.0");
-    assert!(
+    assert_eq!(
         fs::read(trust.installation.update_root.join("activation.lock"))
-            .expect("persistent activation lock")
-            .is_empty()
+            .expect("persistent activation lock"),
+        Vec::<u8>::new()
     );
     let update = loaded
         .roots

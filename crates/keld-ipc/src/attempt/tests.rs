@@ -16,13 +16,16 @@
 //! claimant side (rendezvous-name shape, server session, exact-form admission,
 //! identification level and squatted descriptor facts), `claim` the owner's
 //! admission of a claim (refusal and re-arm, the one-shot, a failed revert),
-//! `deadline` the per-connection and claim deadlines, `claimant` the claim's
-//! binding and the claimant's checks (the name from the IDs, the locator and
-//! server-process checks before `KELD-AA1`, the receipt), `health` the records
-//! and the window at the owner, and `outcome` `KELD-AK1`, the close wait and
-//! the rollback. `oracle` is the shared independent Win32 oracle and `peer`
-//! the exchange fixtures; the scenarios depend on them, never the reverse.
+//! `deadline` the per-connection and claim deadlines, `cancel` the claim
+//! wait's early end through the endpoint's claim canceller, `claimant` the
+//! claim's binding and the claimant's checks (the name from the IDs, the
+//! locator and server-process checks before `KELD-AA1`, the receipt),
+//! `health` the records and the window at the owner, and `outcome`
+//! `KELD-AK1`, the close wait and the rollback. `oracle` is the shared
+//! independent Win32 oracle and `peer` the exchange fixtures; the scenarios
+//! depend on them, never the reverse.
 
+mod cancel;
 mod claim;
 mod claimant;
 mod client;

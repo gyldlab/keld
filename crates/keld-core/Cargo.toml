@@ -11,6 +11,12 @@ authors.workspace = true
 [features]
 # Test-owned metadata root and fault controls for signed KEL-135 fixtures.
 profile-test-hooks = ["keld-wv/profile-test-hooks"]
+# Only signed, debug KEL-135 acceptance hosts enable this downstream root hook.
+kel135-profile-test-root = ["keld-wv/profile-test-root"]
+# Explicit proof support only; ordinary debug/release tests do not enable it.
+fs-acceptance-observer = ["keld-native/fs-acceptance-observer"]
+# Opt-in test packaging only; no shipping API, permission or provider.
+native-renderer-acceptance = ["fs-acceptance-observer"]
 
 [dependencies]
 keld-ipc = { workspace = true }
@@ -25,6 +31,7 @@ serde_json = { workspace = true }
 nix = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
 core-foundation = { workspace = true }
 getrandom = { workspace = true }
 sha2 = { workspace = true }
@@ -41,6 +48,10 @@ windows-permissions = { workspace = true }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+# #528 T5: the guarded router tests digest their permissions manifest on every
+# OS. `sha2` is already in each OS's build graph (keld-guard, keld-ipc), and is
+# a normal dependency only on macOS above.
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 # Enables only KEL-135 fault injection in the signed core test fixture; this
 # feature is absent from the normal release dependency above.
@@ -50,3 +61,11 @@ keld-ipc = { workspace = true, features = ["test-channel-ids"] }
 
 [lints]
 workspace = true
+
+# The separate process-main test compiles the same private Core owner source.
+# A checked target-only cfg selects its fixture graph; ordinary libtest stays whole.
+[[test]]
+name = "native_renderer_joint_main"
+path = "src/native_renderer_joint_main.rs"
+harness = false
+required-features = ["native-renderer-acceptance"]

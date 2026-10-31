@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+fs-acceptance-observer = []
+
 [dependencies]
 cap-fs-ext = { workspace = true }
 cap-std = { workspace = true }
@@ -15,12 +19,28 @@ keld-guard = { workspace = true }
 keld-ipc = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true }
+getrandom = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-authentication-services = { workspace = true, features = ["std", "ASFoundation", "ASWebAuthenticationSession", "ASWebAuthenticationSessionCallback", "block2"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSWindow"] }
+# KEL-89 token HTTP uses only existing exact workspace pins; independent edge/unsafe gates required.
+objc2 = { workspace = true, features = ["std"] }
+objc2-foundation = { workspace = true, features = ["std", "NSObject", "NSString", "NSData", "NSDate", "NSError", "NSValue", "NSURL", "NSURLRequest", "NSURLResponse", "NSURLSession", "NSOperation", "block2"] }
+block2 = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Actual Foundation metadata fixtures reuse the existing workspace pin; test-only constructor feature.
+objc2-foundation = { workspace = true, features = ["NSDictionary"] }
 
 [lints]
 workspace = true

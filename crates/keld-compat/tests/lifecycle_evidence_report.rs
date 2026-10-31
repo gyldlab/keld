@@ -396,10 +396,10 @@ fn assert_receipt(corpus: &Corpus, published: PublishedPlatform, receipt: &Recei
 
     assert_eq!(receipt.runner.platform, platform_token(published.platform));
     assert_eq!(receipt.runner.arch, arch_token(published.arch));
-    assert!(!receipt.runner.runner_arch.is_empty());
-    assert!(!receipt.runner.os.is_empty());
-    assert!(!receipt.runner.image.is_empty());
-    assert!(!receipt.runner.image_version.is_empty());
+    assert_ne!(receipt.runner.runner_arch, "");
+    assert_ne!(receipt.runner.os, "");
+    assert_ne!(receipt.runner.image, "");
+    assert_ne!(receipt.runner.image_version, "");
 
     assert_eq!(receipt.runtime.bun_version, "1.4.2");
     assert_eq!(

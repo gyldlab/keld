@@ -12,6 +12,10 @@ mod descriptor_attribution;
 mod descriptor_liveness;
 #[path = "no_flag/macos/dev_lifecycle.rs"]
 mod dev_lifecycle;
+#[path = "no_flag/macos/facade_ready.rs"]
+mod facade_ready;
+#[path = "no_flag/macos/facade_window.rs"]
+mod facade_window;
 #[path = "no_flag/macos/lifecycle.rs"]
 mod lifecycle;
 #[cfg(feature = "profile-test-hooks")]
@@ -20,6 +24,8 @@ mod media;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/profiles/mod.rs"]
 mod profiles;
+#[path = "no_flag/macos/public_fs.rs"]
+mod public_fs;
 #[path = "no_flag/macos/recovery.rs"]
 mod recovery;
 #[path = "no_flag/macos/renderer_bridge.rs"]

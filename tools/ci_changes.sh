@@ -169,8 +169,9 @@ emit() {
 }
 
 # The same reviewed reader/input contract supplements both local and hosted
-# selections. A stale reader binding enables its consumers; malformed contracts
-# fail before any selection is published. No source-text inference is involved.
+# selections. A reader source changed in the diff widens its consumers for that
+# change; malformed contracts fail before any selection is published. No
+# source-text inference is involved.
 apply_consumer_contract() {
     local source_root python_command
     source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -193,6 +194,9 @@ apply_consumer_contract() {
     fi
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
+    fi
+    if grep -Fxq 'input_hygiene=true' <<<"$consumer_contract"; then
+        hygiene="$TRUE"
     fi
 }
 
@@ -754,6 +758,15 @@ classify_path() {
             ;;
     esac
 
+    # KEL-270 F56: tools/ci_workflow_security.ts pins the reviewed SHA-256 of the
+    # Windows media oracle, and the hosted bun "Contract tests" step that checks
+    # that pin runs only when hygiene is true. Additive: owners below still apply.
+    case "$changed_file" in
+        crates/keld-wv/tests/windows_media_guard.ps1)
+            hygiene="$TRUE"
+            ;;
+    esac
+
     case "$changed_file" in
         # Agent instruction and assembly changes must run both generated-doc
         # freshness and the merge-blocking instruction-context/hygiene gates.
@@ -944,11 +957,15 @@ classify_stream() {
     local -a contract_options=()
     if [[ "$mode" == paths ]]; then
         contract_options+=(--paths-only)
+    else
+        # Membership (a crate path the base did not track) is read from the base
+        # tree; nothing about reader bytes is recorded between changes (GH-1275).
+        contract_options+=(--base "$base")
     fi
     if [[ ${#changed_files[@]} -gt 0 ]]; then
-        apply_consumer_contract "${contract_options[@]}" < <(printf '%s\0' "${changed_files[@]}")
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} < <(printf '%s\0' "${changed_files[@]}")
     else
-        apply_consumer_contract "${contract_options[@]}" </dev/null
+        apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} </dev/null
     fi
     finalize_selection
     if [[ "$mode" == worktree && "$markdown_changed" != "$TRUE" ]]; then

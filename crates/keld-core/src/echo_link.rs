@@ -42,6 +42,10 @@ pub struct EchoServer {
     bootstrap: Arc<BootstrapListener>,
     /// Stops an authenticated idle reader before joining its worker thread.
     stop: Arc<AtomicBool>,
+    /// True until the worker's one `accept_authenticated` returns. The worker
+    /// never accepts again, so a client started after that cannot be served:
+    /// on success the locator is consumed (`docs/architecture/02-ipc.md`).
+    accepting: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<Result<(), keld_ipc::IpcError>>>,
 }
 
@@ -55,14 +59,18 @@ impl EchoServer {
     /// Returns [`io::Error`] if the bootstrap endpoint cannot be bound.
     pub fn start(ready: &mpsc::Sender<()>) -> io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
+        let accepting = Arc::new(AtomicBool::new(true));
         let bootstrap = Arc::new(BootstrapListener::bind()?);
         ready.send(()).ok();
         let acceptor = Arc::clone(&bootstrap);
         let stop_for_worker = Arc::clone(&stop);
+        let accepting_for_worker = Arc::clone(&accepting);
         #[cfg(all(test, target_os = "macos"))]
         let probe = ac9_macos_tests::take_probe();
         let handle = thread::spawn(move || {
-            let Some(stream) = acceptor.accept_authenticated()? else {
+            let accepted = acceptor.accept_authenticated();
+            accepting_for_worker.store(false, Ordering::Release);
+            let Some(stream) = accepted? else {
                 return Err(keld_ipc::IpcError::Io(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "echo bootstrap listener stopped before authentication",
@@ -77,6 +85,7 @@ impl EchoServer {
         Ok(Self {
             bootstrap,
             stop,
+            accepting,
             handle: Some(handle),
         })
     }
@@ -85,6 +94,23 @@ impl EchoServer {
     #[must_use]
     pub fn link(&self) -> String {
         self.bootstrap.app_link()
+    }
+
+    /// Whether a client that connects from now on can still be admitted.
+    ///
+    /// `false` once the worker's single accept has returned, whether it
+    /// admitted a client, was stopped or failed. The returned closure is the
+    /// supervisor's crash-successor gate (GH-674).
+    ///
+    /// The worker records the return before it serves the session, so a
+    /// client that received any echo REPLY died after the record. A client
+    /// that dies between its `HELLO` reply and its first REPLY races the
+    /// record: if the worker is descheduled past the restart backoff, a
+    /// successor can be provisioned, its connect fails, and the gate is
+    /// consulted again after that crash.
+    pub(crate) fn admits_new_client(&self) -> impl FnMut() -> bool + Send + 'static {
+        let accepting = Arc::clone(&self.accepting);
+        move || accepting.load(Ordering::Acquire)
     }
 
     /// Waits for the server thread.

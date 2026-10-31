@@ -403,7 +403,7 @@ pub(crate) fn parse_digest(field: &str, text: &str) -> Result<[u8; 32], UpdateEr
         )));
     }
     let mut digest = [0_u8; 32];
-    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(pair[0])
             .ok_or_else(|| invalid(format!("{field} contains a non-hexadecimal character")))?;
         let low = hex_nibble(pair[1])

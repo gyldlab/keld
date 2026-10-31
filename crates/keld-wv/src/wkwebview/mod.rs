@@ -25,17 +25,20 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tao::event::{Event, WindowEvent};
+use objc2::MainThreadMarker;
+use objc2::rc::Retained;
+use objc2_app_kit::NSWindow;
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::window::{Window, WindowBuilder};
+use tao::window::Window;
 use wry::WebViewExtMacOS;
 
 use crate::WebviewId;
+pub use crate::engine::AppReadyTrigger;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
 use crate::engine::{DevtoolsAction, NavTarget, Rect, WebEngine, WebviewSpec, WkWebViewEngineExt};
 use crate::error::WvError;
-use crate::media::guarded_default_media_builder;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
 };
@@ -43,6 +46,7 @@ use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
 
 mod macos_bridge;
 mod macos_profile;
+mod managed_windows;
 
 use macos_bridge::{BridgeNavigationHandle, MacRendererBridge};
 pub use macos_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest};
@@ -56,6 +60,9 @@ use macos_profile::MacProfileOwner;
 struct View {
     webview: wry::WebView,
     window: Window,
+    // Build provenance only: legacy initial renderers remain outside the Core
+    // registry, and must retain their existing LastWindowClosed close path.
+    registry_managed: bool,
 }
 
 enum WkUserEvent {
@@ -296,15 +303,67 @@ impl WkWebViewEngine {
     ///
     /// Returns [`WvError::EventLoop`] if the loop already ran, the bridge/UI
     /// reports a fatal session command, or tao exits non-zero.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one UI-loop owner keeps terminal, window, and renderer wake ordering contiguous"
-    )]
     pub fn run_app_until_quit(
         &mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
     ) -> Result<(), WvError> {
+        let mut unproved = false;
+        self.run_app_until_quit_with_main_owner(
+            commands,
+            events,
+            None,
+            AppReadyTrigger::NavigationReady,
+            &mut |_, _, _| Ok((true, None)),
+            (&mut unproved, || {}),
+        )
+    }
+
+    /// Runs the same application loop with a main-owned native presentation service.
+    ///
+    /// `anchor` is the host-created view, never a caller-supplied selector.
+    /// The resolver returns its actual `AppKit` window through wry's safe accessor.
+    /// `service` receives the main-thread marker, resolver, and stop intent; it
+    /// returns (actual owner drained, next original absolute deadline), or an
+    /// owned-custody failure. `retains_main_custody` is set on that failed cut,
+    /// requiring the caller to retain this engine and the concrete service.
+    /// A pending
+    /// owner keeps its view and the main loop alive through terminal commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing typed loop/navigation/profile errors. Native owner
+    /// faults remain with Core's existing fatal owner; they do not authorize
+    /// view destruction or create a successful drain receipt.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one UI-loop owner keeps terminal, window, and renderer wake ordering contiguous"
+    )]
+    pub fn run_app_until_quit_with_main_owner<F>(
+        &mut self,
+        commands: Receiver<AppWindowCommand>,
+        events: Sender<AppWindowEvent>,
+        anchor: Option<WebviewId>,
+        ready_trigger: AppReadyTrigger,
+        service: &mut F,
+        // Keep the main-custody result paired with the loop-entry clock handoff.
+        // Neither moves its underlying AppKit/profile owner to another thread.
+        startup: (&mut bool, impl FnOnce()),
+    ) -> Result<(), WvError>
+    where
+        F: FnMut(
+            MainThreadMarker,
+            &mut dyn FnMut() -> Option<Retained<NSWindow>>,
+            bool,
+        ) -> Result<(bool, Option<Instant>), WvError>,
+    {
+        let (retains_main_custody, on_loop_entry) = startup;
+        *retains_main_custody = false;
+        let Some(main_thread) = MainThreadMarker::new() else {
+            return Err(WvError::EventLoop(String::from(
+                "presentation requires the main thread",
+            )));
+        };
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; call run_app_until_quit once",
@@ -339,93 +398,389 @@ impl WkWebViewEngine {
         let fatal_in_loop = Arc::clone(&fatal_outcome);
         let mut views = std::mem::take(&mut self.views);
         let mut renderer_bridges = std::mem::take(&mut self.renderer_bridges);
-        let code = event_loop.run_return(move |event, _, control_flow| {
-            let terminal =
-                is_terminal_app_event(&event) || terminal_intent_in_loop.load(Ordering::Acquire);
-            if navigation_finished(&startup_in_loop) {
-                *control_flow = ControlFlow::Wait;
-            } else if navigation_deadline_expired(&startup_in_loop, navigation_deadline, terminal) {
-                navigation_timed_out_in_loop.store(true, Ordering::Release);
+        let mut terminal_requested = false;
+        let mut closing = Vec::new();
+        let mut main_owner_failure = None;
+        let mut host_init_emitted = false;
+        let profile = &self.profile;
+        let next_id = &mut self.next_id;
+        let media_seed_allow = self.profile_test_media_seed_allow;
+        // Arm the host's external Init watchdog only after loop setup has succeeded.
+        // The watchdog is independent of Tao's pre-Init proxy/waker availability.
+        on_loop_entry();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if ready_trigger == AppReadyTrigger::HostInitialized
+            && std::env::var_os("KELD_T1B_STALL_BEFORE_INIT").is_some()
+        {
+            // Private child-only failure control. The coordinator must terminate
+            // this process: the main thread cannot service a proxy or unwind.
+            std::thread::park();
+        }
+        let code = event_loop.run_return(|event, target, control_flow| {
+            // The existing bridge accepts terminal intent before its proxy event.
+            // One terminal state closes renderer dispatch and Native main admission.
+            if terminal_intent_in_loop.load(Ordering::Acquire) {
+                terminal_requested = true;
                 destroy_renderer_bridges(&mut renderer_bridges);
+            }
+            if ready_trigger == AppReadyTrigger::HostInitialized
+                && !terminal_requested
+                && first_host_init_turn(&event, &mut host_init_emitted)
+            {
+                // Capture on the native UI owner before enqueueing: the Core
+                // receiver may be descheduled past the absolute first-Init
+                // deadline even when this genuine event happened on time.
+                let observed_at = Instant::now();
+                if events
+                    .send(AppWindowEvent::HostInitialized { observed_at })
+                    .is_err()
+                {
+                    fatal_in_loop.store(true, Ordering::Release);
+                    terminal_requested = true;
+                    destroy_renderer_bridges(&mut renderer_bridges);
+                }
+            }
+            let terminal = is_terminal_app_event(&event) || terminal_requested;
+            let live_navigation = views.iter().any(|(id, view)| {
+                crate::engine::initial_renderer_pending(view.registry_managed, closing.contains(id))
+            });
+            if crate::navigation_deadline_expired(
+                navigation_finished(&startup_in_loop),
+                live_navigation,
+                terminal,
+                Instant::now(),
+                navigation_deadline,
+            ) {
+                navigation_timed_out_in_loop.store(true, Ordering::Release);
+                terminal_requested = true;
+                destroy_renderer_bridges(&mut renderer_bridges);
+            }
+            if !terminal_requested || is_terminal_app_event(&event) {
+                match event {
+                    Event::LoopDestroyed => {
+                        if !terminal_requested {
+                            fatal_in_loop.store(true, Ordering::Release);
+                        }
+                        terminal_requested = true;
+                        destroy_renderer_bridges(&mut renderer_bridges);
+                    }
+                    Event::UserEvent(WkUserEvent::App(AppWindowCommand::Quit)) => {
+                        terminal_requested = true;
+                        destroy_renderer_bridges(&mut renderer_bridges);
+                    }
+                    Event::UserEvent(WkUserEvent::App(AppWindowCommand::Fatal)) => {
+                        fatal_in_loop.store(true, Ordering::Release);
+                        terminal_requested = true;
+                        destroy_renderer_bridges(&mut renderer_bridges);
+                    }
+                    Event::UserEvent(WkUserEvent::App(command)) => {
+                        // Debug+feature-gated real-main-thread hostile fixture:
+                        // a test-controlled maximization request instead calls
+                        // AppKit's genuine `NSWindow.close()` (NOT Tao's
+                        // cancelable `performClose:` / AX red-button path).
+                        // Default/shipping builds compile out this injection,
+                        // and only the dedicated test host opts into it.
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        let test_external_close = if let AppWindowCommand::SetMaximized {
+                            view,
+                            ..
+                        } = command
+                        {
+                            if std::env::var_os("KELD_T1B_UNEXPECTED_NATIVE_CLOSE").is_some() {
+                                if let Some(window) = views
+                                    .get(&view.0)
+                                    .filter(|view| view.registry_managed)
+                                    .and_then(|view| view.webview.webview().window())
+                                {
+                                    window.close();
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+                        let test_external_close = false;
+                        let native = managed_windows::NativeBuild {
+                            target,
+                            profile,
+                            startup: &startup_in_loop,
+                            media_seed_allow,
+                        };
+                        if !test_external_close
+                            && let Err(error) = managed_windows::command(
+                                command,
+                                &native,
+                                next_id,
+                                &mut views,
+                                &mut renderer_bridges,
+                                &events,
+                            )
+                        {
+                            main_owner_failure.get_or_insert(error);
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                        }
+                    }
+                    Event::UserEvent(WkUserEvent::Renderer(outcome)) => {
+                        let id = outcome.webview().0;
+                        let delivered =
+                            renderer_bridges
+                                .get(&id)
+                                .zip(views.get(&id))
+                                .map(|(bridge, view)| {
+                                    let native = view.webview.webview();
+                                    bridge.deliver(&native, outcome)
+                                });
+                        if delivered.is_some_and(|result| result.is_err()) {
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                            destroy_renderer_bridges(&mut renderer_bridges);
+                        }
+                    }
+                    Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::CloseRequested,
+                        ..
+                    } => {
+                        let requested: Vec<u32> = views
+                            .iter()
+                            .filter_map(|(id, view)| (view.window.id() == window_id).then_some(*id))
+                            .collect();
+                        let mut legacy_closed = false;
+                        for id in requested {
+                            if views.get(&id).is_some_and(|view| view.registry_managed) {
+                                // Core owns the sole T1 teardown decision. A
+                                // late build may already have a DestroyWindow
+                                // queued after role retirement; dropping here
+                                // as well would race that legitimate command.
+                                let close = managed_windows::send(
+                                    &events,
+                                    AppWindowEvent::WindowCloseRequested {
+                                        view: WebviewId(id),
+                                    },
+                                );
+                                if let Err(error) = close {
+                                    main_owner_failure.get_or_insert(error);
+                                    fatal_in_loop.store(true, Ordering::Release);
+                                    terminal_requested = true;
+                                }
+                                continue;
+                            }
+                            legacy_closed = true;
+                            if let Some(bridge) = renderer_bridges.remove(&id) {
+                                bridge.destroy();
+                            }
+                            if anchor.is_some_and(|view| view.0 == id) {
+                                if !closing.contains(&id) {
+                                    closing.push(id);
+                                }
+                            } else {
+                                views.remove(&id);
+                            }
+                        }
+                        if legacy_closed && views.is_empty() {
+                            let _ = events.send(AppWindowEvent::LastWindowClosed);
+                        }
+                    }
+                    Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::Destroyed,
+                        ..
+                    } => {
+                        // Tao 0.35.3 can report `windowWillClose:` as Destroyed
+                        // after an out-of-band NSWindow.close(), *without* a
+                        // preceding cancelable CloseRequested. Ordinary Keld
+                        // DestroyWindow removes the owned view from `views`
+                        // BEFORE its NSWindow drops, so that path is not here.
+                        // An observed Destroyed while this registry-managed
+                        // view is still present means physical release has
+                        // bypassed Core's close veto and T11 tombstone order.
+                        // No caller or renderer may fabricate a successful
+                        // Released reply or keep a ghost BrowserWindow alive.
+                        if let Some((id, _)) = views.iter().find(|(_, view)| {
+                            view.registry_managed && view.window.id() == window_id
+                        }) {
+                            main_owner_failure.get_or_insert_with(|| {
+                                WvError::EventLoop(format!(
+                                    "unexpected out-of-band native NSWindow close for registry view {id}; fail-closed Host shutdown instead of a ghost window or forged close veto"
+                                ))
+                            });
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                            destroy_renderer_bridges(&mut renderer_bridges);
+                        }
+                    }
+                    Event::WindowEvent {
+                        window_id,
+                        event:
+                            WindowEvent::Moved(_)
+                            | WindowEvent::Resized(_)
+                            | WindowEvent::Focused(_)
+                            | WindowEvent::ScaleFactorChanged { .. },
+                        ..
+                    } => {
+                        for (id, view) in &views {
+                            if view.registry_managed
+                                && view.window.id() == window_id
+                                && let Err(error) =
+                                    managed_windows::emit_state(&events, WebviewId(*id), view)
+                            {
+                                main_owner_failure.get_or_insert(error);
+                                fatal_in_loop.store(true, Ordering::Release);
+                                terminal_requested = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let stopping = terminal_requested || anchor.is_some_and(|id| closing.contains(&id.0));
+            let (drained, owner_deadline) = {
+                let mut resolve = || {
+                    anchor
+                        .and_then(|id| views.get(&id.0))
+                        .and_then(|view| view.webview.webview().window())
+                };
+                match service(main_thread, &mut resolve, stopping) {
+                    Ok(progress) => progress,
+                    Err(error) => {
+                        main_owner_failure.get_or_insert(error);
+                        fatal_in_loop.store(true, Ordering::Release);
+                        *control_flow = ControlFlow::Exit;
+                        return;
+                    }
+                }
+            };
+            if drained && !closing.is_empty() {
+                for id in closing.drain(..) {
+                    views.remove(&id);
+                }
+                if views.is_empty() {
+                    let _ = events.send(AppWindowEvent::LastWindowClosed);
+                }
+            }
+            if terminal_requested && drained {
+                destroy_renderer_bridges(&mut renderer_bridges);
+                if let Err(error) =
+                    managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
+                {
+                    main_owner_failure.get_or_insert(error);
+                    fatal_in_loop.store(true, Ordering::Release);
+                }
                 views.clear();
                 *control_flow = ControlFlow::Exit;
                 return;
-            } else {
-                *control_flow = ControlFlow::WaitUntil(navigation_deadline);
             }
-            match event {
-                Event::UserEvent(WkUserEvent::App(AppWindowCommand::Quit)) => {
-                    destroy_renderer_bridges(&mut renderer_bridges);
-                    views.clear();
-                    *control_flow = ControlFlow::Exit;
-                }
-                Event::UserEvent(WkUserEvent::App(AppWindowCommand::Fatal)) => {
-                    fatal_in_loop.store(true, Ordering::Release);
-                    destroy_renderer_bridges(&mut renderer_bridges);
-                    views.clear();
-                    *control_flow = ControlFlow::Exit;
-                }
-                Event::UserEvent(WkUserEvent::Renderer(outcome)) => {
-                    let id = outcome.webview().0;
-                    let delivered =
-                        renderer_bridges
-                            .get(&id)
-                            .zip(views.get(&id))
-                            .map(|(bridge, view)| {
-                                let native = view.webview.webview();
-                                bridge.deliver(&native, outcome)
-                            });
-                    if delivered.is_some_and(|result| result.is_err()) {
-                        fatal_in_loop.store(true, Ordering::Release);
-                        destroy_renderer_bridges(&mut renderer_bridges);
-                        views.clear();
-                        *control_flow = ControlFlow::Exit;
-                    }
-                }
-                Event::WindowEvent {
-                    window_id,
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    let closing: Vec<u32> = views
-                        .iter()
-                        .filter_map(|(id, view)| (view.window.id() == window_id).then_some(*id))
-                        .collect();
-                    for id in closing {
-                        if let Some(bridge) = renderer_bridges.remove(&id) {
-                            bridge.destroy();
-                        }
-                        views.remove(&id);
-                    }
-                    if views.is_empty() {
-                        let _ = events.send(AppWindowEvent::LastWindowClosed);
-                    }
-                }
-                _ => {}
-            }
+            let navigation_wake = (!terminal
+                && !navigation_finished(&startup_in_loop)
+                && views.iter().any(|(id, view)| {
+                    crate::engine::initial_renderer_pending(
+                        view.registry_managed,
+                        closing.contains(id),
+                    )
+                }))
+            .then_some(navigation_deadline);
+            let wake = match (navigation_wake, owner_deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            *control_flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         });
+        // Tao drops its stored callback on every return, including external
+        // NSApp.run termination. The callback only borrowed these real owners.
+        let mut tail_failure = main_owner_failure;
+        let mut drained;
+        loop {
+            let progress = {
+                let mut resolve = || {
+                    anchor
+                        .and_then(|id| views.get(&id.0))
+                        .and_then(|view| view.webview.webview().window())
+                };
+                service(main_thread, &mut resolve, true)
+            };
+            let progress = match progress {
+                Ok(progress) => progress,
+                Err(error) => {
+                    tail_failure.get_or_insert(error);
+                    drained = false;
+                    break;
+                }
+            };
+            drained = progress.0;
+            if drained {
+                break;
+            }
+            let Some(original_deadline) = progress.1 else {
+                tail_failure = Some(WvError::EventLoop(String::from(
+                    "native main tail custody remains unproved",
+                )));
+                break;
+            };
+            if let Err(error) =
+                macos_bridge::service_main_tail_before(main_thread, original_deadline)
+            {
+                tail_failure = Some(error);
+                break;
+            }
+        }
+        if drained {
+            destroy_renderer_bridges(&mut renderer_bridges);
+            if let Err(error) =
+                managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
+            {
+                tail_failure.get_or_insert(error);
+            }
+            views.clear();
+        } else {
+            *retains_main_custody = true;
+            self.views = views;
+            self.renderer_bridges = renderer_bridges;
+        }
         stop_bridge.store(true, Ordering::Release);
         let _ = bridge.join();
         if let Some(renderer_bridge) = renderer_bridge {
             let _ = renderer_bridge.join();
+        }
+        if !drained {
+            // Returning this failure is not a drain receipt. Core still owns
+            // the borrowed service and this engine's retained actual views.
+            return Err(tail_failure.unwrap_or_else(|| {
+                WvError::EventLoop(String::from(
+                    "UI loop returned while the native presentation owner remains active",
+                ))
+            }));
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let Some(probe) = self.media_prompt_probe.take() {
             probe.finish();
         }
         let profile_result = self.profile.clean_shutdown();
-        let loop_result = app_loop_result(
-            navigation_timed_out.load(Ordering::Acquire),
-            fatal_outcome.load(Ordering::Acquire),
-            code,
+        let loop_result = tail_failure.map_or_else(
+            || {
+                app_loop_result(
+                    navigation_timed_out.load(Ordering::Acquire),
+                    fatal_outcome.load(Ordering::Acquire),
+                    code,
+                )
+            },
+            Err,
         );
-        match (loop_result, profile_result) {
+        let result = match (loop_result, profile_result) {
             (Ok(()), result) => result,
             (Err(primary), Ok(())) => Err(primary),
             (Err(primary), Err(cleanup)) => Err(WvError::EventLoop(format!(
                 "{primary}; profile cleanup failed: {cleanup}"
             ))),
-        }
+        };
+        // Consume the owned event sender at the original method-return boundary.
+        drop(events);
+        result
     }
 
     fn create_internal(
@@ -435,13 +790,15 @@ impl WkWebViewEngine {
         renderer_endpoint: Option<RendererBridgeEndpoint>,
     ) -> Result<WebviewId, WvError> {
         let result = self.create_internal_inner(spec, app_events, renderer_endpoint);
-        if result.is_err()
-            && self.views.is_empty()
-            && let Err(cleanup) = self.profile.clean_shutdown()
-        {
-            return Err(WvError::EventLoop(format!(
-                "initial WebView creation failed; profile rollback failed: {cleanup}"
-            )));
+        if let Err(primary) = result {
+            if self.views.is_empty()
+                && let Err(cleanup) = self.profile.clean_shutdown()
+            {
+                return Err(WvError::EventLoop(format!(
+                    "{primary}; profile rollback failed: {cleanup}"
+                )));
+            }
+            return Err(primary);
         }
         result
     }
@@ -457,44 +814,20 @@ impl WkWebViewEngine {
                 "run loop already started; create webviews before running it",
             )));
         };
-        let window = WindowBuilder::new()
-            .with_title(&spec.title)
-            .with_inner_size(tao::dpi::LogicalSize::new(
-                spec.size.width,
-                spec.size.height,
-            ))
-            .with_resizable(true)
-            .with_minimizable(true)
-            .with_closable(true)
-            .build(event_loop)
-            .map_err(|error| WvError::Window(error.to_string()))?;
-        mark_startup(&self.startup, StartupPhase::WindowCreated);
-        let id = self.next_id;
-        let webview_id = WebviewId(id);
-        let configuration = self.profile.configuration_for_view()?;
-        let installed = renderer_endpoint
-            .map(|endpoint| MacRendererBridge::install(webview_id, &configuration, endpoint))
-            .transpose()?;
-        let navigation = installed
-            .as_ref()
-            .map(|installed| installed.bridge.navigation_handle());
-        let builder = guarded_default_media_builder(
-            webview_id,
-            page_load_trace_handler(Arc::clone(&self.startup), app_events, navigation),
-            self.profile_test_media_seed_allow,
-        )
-        .with_webview_configuration(configuration);
-        let webview = builder.build_initial_window(&spec.initial, &window)?;
-        let native_webview = webview.webview();
-        self.profile.verify_webview(&native_webview)?;
-        if let Some(installed) = installed {
-            installed.bridge.verify_webview(&native_webview)?;
-            self.renderer_outcomes = Some(installed.outcomes);
-            self.renderer_bridges.insert(id, installed.bridge);
+        let webview_id = managed_windows::next_view_id(&mut self.next_id)?;
+        let (view, installed) = managed_windows::NativeBuild {
+            target: event_loop,
+            profile: &self.profile,
+            startup: &self.startup,
+            media_seed_allow: self.profile_test_media_seed_allow,
         }
-        mark_startup(&self.startup, StartupPhase::WebviewAttached);
-        self.next_id += 1;
-        self.views.insert(id, View { webview, window });
+        .build(webview_id, spec, app_events, renderer_endpoint)
+        .map_err(|failure| failure.source)?;
+        if let Some(installed) = installed {
+            self.renderer_outcomes = Some(installed.outcomes);
+            self.renderer_bridges.insert(webview_id.0, installed.bridge);
+        }
+        self.views.insert(webview_id.0, view);
         Ok(webview_id)
     }
 
@@ -590,30 +923,53 @@ fn spawn_app_wake_bridge(
     thread::Builder::new()
         .name("keld-wv-macos-app-wake".to_owned())
         .spawn(move || {
-            loop {
-                match commands.recv_timeout(Duration::from_millis(100)) {
-                    Ok(command) => {
-                        let terminal = mark_terminal_intent(&terminal_intent, command);
-                        if command == AppWindowCommand::Fatal {
-                            fatal_outcome.store(true, Ordering::Release);
-                        }
-                        let _ = proxy.send_event(WkUserEvent::App(command));
-                        if terminal {
-                            return;
-                        }
-                    }
-                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => {
-                        mark_terminal_intent(&terminal_intent, AppWindowCommand::Fatal);
-                        fatal_outcome.store(true, Ordering::Release);
-                        let _ = proxy.send_event(WkUserEvent::App(AppWindowCommand::Fatal));
-                        return;
-                    }
-                }
-            }
+            run_app_wake_bridge(
+                &commands,
+                &stop,
+                &terminal_intent,
+                &fatal_outcome,
+                |command| {
+                    let _ = proxy.send_event(WkUserEvent::App(command));
+                },
+            );
         })
         .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
+}
+
+fn run_app_wake_bridge(
+    commands: &Receiver<AppWindowCommand>,
+    stop: &AtomicBool,
+    terminal_intent: &AtomicBool,
+    fatal_outcome: &AtomicBool,
+    mut forward: impl FnMut(AppWindowCommand),
+) {
+    let mut terminal_forwarded = false;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        match commands.recv_timeout(Duration::from_millis(100)) {
+            Ok(command) => {
+                terminal_forwarded |= mark_terminal_intent(terminal_intent, command);
+                if command == AppWindowCommand::Fatal {
+                    fatal_outcome.store(true, Ordering::Release);
+                }
+                forward(command);
+                // Terminal intent closes normal admission; the same bridge
+                // continues delivering main-owner stop/callback wakes until
+                // the UI loop observes its physical owner drained.
+            }
+            Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) if terminal_forwarded => return,
+            Err(RecvTimeoutError::Disconnected) => {
+                mark_terminal_intent(terminal_intent, AppWindowCommand::Fatal);
+                fatal_outcome.store(true, Ordering::Release);
+                forward(AppWindowCommand::Fatal);
+                return;
+            }
+        }
+    }
 }
 
 fn spawn_renderer_outcome_bridge(
@@ -625,6 +981,9 @@ fn spawn_renderer_outcome_bridge(
         .name("keld-wv-macos-renderer-wake".to_owned())
         .spawn(move || {
             loop {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
                 match outcomes.recv_timeout(Duration::from_millis(100)) {
                     Ok(outcome) => {
                         let _ = proxy.send_event(WkUserEvent::Renderer(outcome));
@@ -668,10 +1027,21 @@ fn app_loop_result(navigation_timed_out: bool, fatal: bool, code: i32) -> Result
 fn is_terminal_app_event(event: &Event<'_, WkUserEvent>) -> bool {
     matches!(
         event,
-        Event::UserEvent(WkUserEvent::App(
-            AppWindowCommand::Quit | AppWindowCommand::Fatal
-        ))
+        Event::LoopDestroyed
+            | Event::UserEvent(WkUserEvent::App(
+                AppWindowCommand::Quit | AppWindowCommand::Fatal
+            ))
     )
+}
+
+/// Tao may deliver Opened before the first NewEvents(Init). Only the genuine
+/// applicationDidFinishLaunching Init turn is a readiness milestone, once.
+fn first_host_init_turn(event: &Event<'_, WkUserEvent>, emitted: &mut bool) -> bool {
+    if *emitted || !matches!(event, Event::NewEvents(StartCause::Init)) {
+        return false;
+    }
+    *emitted = true;
+    true
 }
 
 fn mark_terminal_intent(intent: &AtomicBool, command: AppWindowCommand) -> bool {
@@ -680,14 +1050,6 @@ fn mark_terminal_intent(intent: &AtomicBool, command: AppWindowCommand) -> bool 
         intent.store(true, Ordering::Release);
     }
     terminal
-}
-
-fn navigation_deadline_expired(
-    startup: &Mutex<StartupTrace>,
-    deadline: Instant,
-    terminal_command: bool,
-) -> bool {
-    !terminal_command && !navigation_finished(startup) && Instant::now() >= deadline
 }
 
 /// wry `PageLoadEvent::Finished` → navigation completion (`nav_finished`).
@@ -742,8 +1104,30 @@ mod startup_tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{page_load_trace_handler, wry_page_load};
+    use super::{
+        WkUserEvent, first_host_init_turn, page_load_trace_handler, run_app_wake_bridge,
+        wry_page_load,
+    };
+    use crate::AppWindowCommand;
     use crate::startup::{PageLoad, StartupPhase, StartupTrace, phase_for_page_load};
+    use tao::event::{Event, StartCause};
+
+    #[test]
+    fn facade_ready_is_only_the_first_real_tao_init_turn() {
+        let mut emitted = false;
+        let opened: Event<'_, WkUserEvent> = Event::Opened { urls: vec![] };
+        assert!(!first_host_init_turn(&opened, &mut emitted));
+        assert!(!emitted, "Opened can precede applicationDidFinishLaunching");
+
+        // StartCause::WaitCancelled is non-exhaustive outside Tao; an
+        // independently constructible non-Init turn checks the same boundary.
+        let later = Event::MainEventsCleared;
+        assert!(!first_host_init_turn(&later, &mut emitted));
+        let init = Event::NewEvents(StartCause::Init);
+        assert!(first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&later, &mut emitted));
+    }
 
     #[test]
     fn wry_finished_maps_to_nav_finished_started_does_not() {
@@ -830,17 +1214,25 @@ mod startup_tests {
         let expired = Instant::now()
             .checked_sub(Duration::from_millis(1))
             .expect("one millisecond before now");
-        assert!(super::navigation_deadline_expired(&startup, expired, false));
+        assert!(crate::navigation_deadline_expired(
+            super::navigation_finished(&startup),
+            true,
+            false,
+            Instant::now(),
+            expired,
+        ));
         let terminal_intent = std::sync::atomic::AtomicBool::new(false);
         assert!(super::mark_terminal_intent(
             &terminal_intent,
             super::AppWindowCommand::Quit
         ));
         assert!(
-            !super::navigation_deadline_expired(
-                &startup,
+            !crate::navigation_deadline_expired(
+                super::navigation_finished(&startup),
+                true,
+                terminal_intent.load(std::sync::atomic::Ordering::Acquire),
+                Instant::now(),
                 expired,
-                terminal_intent.load(std::sync::atomic::Ordering::Acquire)
             ),
             "a queued terminal UI command must win at the navigation deadline"
         );
@@ -848,8 +1240,12 @@ mod startup_tests {
             .lock()
             .expect("startup lock")
             .on_page_load(PageLoad::Finished);
-        assert!(!super::navigation_deadline_expired(
-            &startup, expired, false
+        assert!(!crate::navigation_deadline_expired(
+            super::navigation_finished(&startup),
+            true,
+            false,
+            Instant::now(),
+            expired,
         ));
     }
 
@@ -864,6 +1260,53 @@ mod startup_tests {
             super::app_loop_result(true, false, 0),
             Err(super::WvError::Navigate(_))
         ));
+    }
+
+    #[test]
+    fn app_wake_bridge_disconnect_after_quit_does_not_emit_fatal() {
+        let (commands, receiver) = std::sync::mpsc::channel();
+        commands
+            .send(AppWindowCommand::Quit)
+            .expect("receiver is still live");
+        drop(commands);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let terminal_intent = std::sync::atomic::AtomicBool::new(false);
+        let fatal_outcome = std::sync::atomic::AtomicBool::new(false);
+        let mut forwarded = Vec::new();
+        run_app_wake_bridge(
+            &receiver,
+            &stop,
+            &terminal_intent,
+            &fatal_outcome,
+            |command| {
+                forwarded.push(command);
+            },
+        );
+        assert_eq!(forwarded, [AppWindowCommand::Quit]);
+        assert!(terminal_intent.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!fatal_outcome.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn app_wake_bridge_disconnect_before_terminal_remains_fatal() {
+        let (commands, receiver) = std::sync::mpsc::channel();
+        drop(commands);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let terminal_intent = std::sync::atomic::AtomicBool::new(false);
+        let fatal_outcome = std::sync::atomic::AtomicBool::new(false);
+        let mut forwarded = Vec::new();
+        run_app_wake_bridge(
+            &receiver,
+            &stop,
+            &terminal_intent,
+            &fatal_outcome,
+            |command| {
+                forwarded.push(command);
+            },
+        );
+        assert_eq!(forwarded, [AppWindowCommand::Fatal]);
+        assert!(terminal_intent.load(std::sync::atomic::Ordering::Acquire));
+        assert!(fatal_outcome.load(std::sync::atomic::Ordering::Acquire));
     }
 }
 

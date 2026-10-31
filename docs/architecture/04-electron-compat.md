@@ -87,9 +87,10 @@ export default defineConfig({
 `keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
 `Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
 crate version, not an Electron release) and `process.type` is `"browser"`
-in this main-process package. `@keld/api` does not exist yet; the shim
-speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
-`keld build` is not live.
+in this main-process package. The Electron `app` facade delegates to
+`@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
+Worker-owned transport; the shim does not open a second link. Bundler-side
+alias (`keld build`) is deferred because `keld build` is not live.
 
 Match (scoreboard ✔): with no `window-all-closed` listener, a host
 `LastWindowClosed` event quits the app — Electron's documented default
@@ -123,8 +124,12 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. Other Tier 1 surfaces (`BrowserWindow`, `ipcMain`,
-preload/`contextBridge`, …) are later slices. `keld migrate` is not live.
+defect. This slice adds an exported `BrowserWindow` subset backed by the
+macOS Host-owned native window registry for creation/adoption, selected
+geometry and state, close/destroy, and recovery events. Linux and Windows
+currently refuse facade-window subscription; this is not a cross-platform
+native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 

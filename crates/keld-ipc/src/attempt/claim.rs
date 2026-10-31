@@ -82,6 +82,9 @@ enum Connection<P> {
     Refused(ClaimRefusal),
     /// The claim deadline passed during this connection.
     Expired,
+    /// The canceller acted before the one-shot, which was refused: no
+    /// `KELD-AR1` was sent.
+    Cancelled,
 }
 
 impl WindowsAttemptEndpoint {
@@ -104,10 +107,26 @@ impl WindowsAttemptEndpoint {
     /// accepted claimant consumes the instance's one-shot, which happens
     /// before `KELD-AR1` is sent, and no refusal extends `deadline`.
     ///
+    /// The wait ends early when the handle that [`Self::claim_canceller`]
+    /// returned is cancelled (KEL-53 §4 *Margin and deadlines*: the owner's
+    /// watcher on its retained launch handle). Wherever the cancel lands, it
+    /// is observed without a lost wake-up: before this call, at the next wait;
+    /// during the connect wait, at once; during a connection's record I/O, at
+    /// that operation, which is aborted or refused, after which the instance
+    /// re-arms once and reads the cancel before it waits again. The cancel and
+    /// the one-shot are serialised on the instance: a cancel that acts before
+    /// the one-shot is taken, including one already in flight when the owner
+    /// reaches it, refuses it, so no `KELD-AR1` is sent, the claimant reads
+    /// end of file and the wait ends with `ClaimCancelled`; a cancel that
+    /// lands after the one-shot was consumed is a no-op: the accepted channel
+    /// is returned untouched and none of its I/O is aborted.
+    ///
     /// # Errors
     ///
     /// - [`WindowsAttemptExchangeError::ClaimDeadline`] when `deadline` passes
     ///   first; the endpoint is closed;
+    /// - [`WindowsAttemptExchangeError::ClaimCancelled`] when the canceller
+    ///   ends the wait first; the endpoint is closed;
     /// - [`WindowsAttemptExchangeError::Endpoint`] when a Windows call that no
     ///   client caused fails (waiting, re-arming, a nonce draw);
     /// - [`WindowsAttemptExchangeError::Record`] when sending `KELD-AR1` fails
@@ -139,8 +158,15 @@ impl WindowsAttemptEndpoint {
         seams: &mut ClaimSeams<'_>,
     ) -> Result<WindowsAttemptOwnerChannel<P>, WindowsAttemptExchangeError> {
         loop {
+            // The cancel is read before the deadline, so a candidate whose
+            // handle signaled as the deadline passed reports the cause that
+            // the watcher saw. It is read before each wait because a connect
+            // that completes synchronously bypasses the cancel event.
+            if self.server.is_cancelled() {
+                return Err(self.end(WindowsAttemptExchangeError::ClaimCancelled));
+            }
             if Instant::now() >= deadline {
-                return Err(self.expire());
+                return Err(self.end(WindowsAttemptExchangeError::ClaimDeadline));
             }
             match self
                 .server
@@ -153,7 +179,10 @@ impl WindowsAttemptEndpoint {
                     continue;
                 }
                 // The wait closed the instance itself.
-                WaitOutcome::Cancelled | WaitOutcome::DeadlineElapsed => {
+                WaitOutcome::Cancelled => {
+                    return Err(WindowsAttemptExchangeError::ClaimCancelled);
+                }
+                WaitOutcome::DeadlineElapsed => {
                     return Err(WindowsAttemptExchangeError::ClaimDeadline);
                 }
             }
@@ -163,7 +192,12 @@ impl WindowsAttemptEndpoint {
                     (seams.refused)(refusal);
                     self.rearm()?;
                 }
-                Connection::Expired => return Err(self.expire()),
+                Connection::Expired => {
+                    return Err(self.end(WindowsAttemptExchangeError::ClaimDeadline));
+                }
+                Connection::Cancelled => {
+                    return Err(self.end(WindowsAttemptExchangeError::ClaimCancelled));
+                }
             }
         }
     }
@@ -250,7 +284,12 @@ impl WindowsAttemptEndpoint {
         if Instant::now() >= deadline {
             return Ok(Connection::Expired);
         }
-        self.server.consume();
+        // The one-shot is serialised with the canceller: a cancel that acted
+        // first refuses it, and one that comes later finds the instance
+        // consumed and leaves the accepted channel untouched.
+        if !self.server.consume() {
+            return Ok(Connection::Cancelled);
+        }
         AttemptRecord::Receipt(transcript).write_to(&mut stream)?;
         stream.set_absolute_deadline(None);
         Ok(Connection::Accepted(Box::new(
@@ -265,11 +304,12 @@ impl WindowsAttemptEndpoint {
             .map_err(|source| os("disconnect a refused claimant", source))
     }
 
-    /// Closes the instance at the claim deadline.
-    fn expire(&self) -> WindowsAttemptExchangeError {
+    /// Closes the instance and reports `ended`, the claim deadline or the
+    /// cancel, unless the close itself fails.
+    fn end(&self, ended: WindowsAttemptExchangeError) -> WindowsAttemptExchangeError {
         match self.server.close_terminal() {
-            Ok(()) => WindowsAttemptExchangeError::ClaimDeadline,
-            Err(source) => os("close the endpoint at its deadline", source),
+            Ok(()) => ended,
+            Err(source) => os("close the endpoint at the end of its claim wait", source),
         }
     }
 }

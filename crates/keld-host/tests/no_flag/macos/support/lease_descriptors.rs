@@ -11,7 +11,9 @@ pub(crate) fn lsof_stdin(pid: u32) -> String {
 
 pub(crate) fn lsof_all(pid: u32) -> String {
     let output = Command::new("/usr/sbin/lsof")
-        .args(["-a", "-p", &pid.to_string(), "-FDifnat"])
+        // Numeric names plus TCP state make the same independent descriptor
+        // observer usable for loopback-listener attribution without a connect.
+        .args(["-nP", "-a", "-p", &pid.to_string(), "-FDifnatT"])
         .output()
         .expect("inspect process descriptors with lsof");
     assert!(output.status.success(), "lsof process failed: {output:?}");

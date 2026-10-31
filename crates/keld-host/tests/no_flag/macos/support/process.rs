@@ -230,7 +230,11 @@ pub(crate) fn process_exists(pid: u32) -> bool {
 pub(crate) fn await_process_gone(pid: u32) {
     let deadline = Instant::now() + PROCESS_DEADLINE;
     while process_exists(pid) {
-        assert!(Instant::now() < deadline, "process {pid} survived cleanup");
+        assert!(
+            Instant::now() < deadline,
+            "process {pid} survived cleanup; observed_state={}",
+            process_state(pid)
+        );
         thread::yield_now();
     }
 }
@@ -266,4 +270,201 @@ pub(crate) fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
     .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
     .map(|entry| entry.path())
     .collect()
+}
+
+// SDK sys/event.h ABI and constants, local to this independent macOS test census.
+#[repr(C)]
+#[derive(Default)]
+struct ProcessKevent {
+    ident: u64,
+    filter: i16,
+    flags: u16,
+    fflags: u32,
+    data: i64,
+    udata: u64,
+    ext: [u64; 2],
+}
+
+#[repr(C)]
+struct ProcessKeventTimeout {
+    seconds: std::os::raw::c_long,
+    nanoseconds: std::os::raw::c_long,
+}
+
+unsafe extern "C" {
+    fn kqueue() -> i32;
+    fn kevent64(
+        queue: i32,
+        changes: *const ProcessKevent,
+        change_count: i32,
+        events: *mut ProcessKevent,
+        event_count: i32,
+        flags: u32,
+        timeout: *const ProcessKeventTimeout,
+    ) -> i32;
+    #[link_name = "fcntl"]
+    fn process_observer_fcntl(fd: i32, command: i32, ...) -> i32;
+}
+
+/// Observes one PID's kernel exit status without reaping it; `OwnedFd` closes
+/// this census. For a fixture-admitted process ([`Self::arm`]) the guardian
+/// remains the sole parent/reaper. For a test-owned child
+/// ([`Self::arm_own_child`]) the test is the parent and reaps it after the
+/// census. The evidence line records which relationship applies.
+pub(crate) struct ProcessExitObserver {
+    pid: u32,
+    queue: std::os::fd::OwnedFd,
+    observer_is_parent: bool,
+}
+
+impl ProcessExitObserver {
+    const FILTER: i16 = -5; // EVFILT_PROC
+    const EXIT_FLAGS: u32 = 0x8000_0000 | 0x0400_0000; // NOTE_EXIT | NOTE_EXITSTATUS
+    const ERROR_FLAG: u16 = 0x4000; // EV_ERROR
+
+    pub(crate) fn arm(pid: u32) -> Self {
+        Self::arm_with_parent(pid, false)
+    }
+
+    /// Arm the census for a child this test spawned and will reap itself.
+    pub(crate) fn arm_own_child(child: &std::process::Child) -> Self {
+        Self::arm_with_parent(child.id(), true)
+    }
+
+    fn arm_with_parent(pid: u32, observer_is_parent: bool) -> Self {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _};
+        assert!(pid > 1 && pid != std::process::id(), "fixture-admitted PID");
+        assert_eq!(std::mem::size_of::<ProcessKevent>(), 48, "SDK kevent64 ABI");
+        assert_eq!(
+            std::mem::align_of::<ProcessKevent>(),
+            8,
+            "SDK kevent64 alignment"
+        );
+        assert_eq!(
+            std::mem::size_of::<ProcessKeventTimeout>(),
+            16,
+            "SDK timespec ABI"
+        );
+        // SAFETY: kqueue takes no arguments and returns a new owned descriptor.
+        let fd = unsafe { kqueue() };
+        assert!(fd >= 0, "kqueue: {}", std::io::Error::last_os_error());
+        // SAFETY: successful kqueue returned a valid descriptor owned only here.
+        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        // SAFETY: variadic fcntl receives this valid owned fd, F_SETFD=2 and the
+        // promoted integer FD_CLOEXEC=1. No other owner's descriptor is changed.
+        let cloexec = unsafe { process_observer_fcntl(queue.as_raw_fd(), 2, 1_i32) };
+        assert_eq!(
+            cloexec,
+            0,
+            "observer CLOEXEC: {}",
+            std::io::Error::last_os_error()
+        );
+        let change = ProcessKevent {
+            ident: u64::from(pid),
+            filter: Self::FILTER,
+            flags: 0x0001 | 0x0004 | 0x0040, // EV_ADD | EV_ENABLE | EV_RECEIPT
+            fflags: Self::EXIT_FLAGS,
+            ..ProcessKevent::default()
+        };
+        let mut receipt = ProcessKevent::default();
+        // SAFETY: SDK-matched repr(C) values live for this call. Counts are one;
+        // queue is owned/live. KEVENT_FLAG_IMMEDIATE=1 obtains a registration
+        // receipt without waiting. No ptrace, signal, waitpid or target mutation.
+        let registered = unsafe {
+            kevent64(
+                queue.as_raw_fd(),
+                &raw const change,
+                1,
+                &raw mut receipt,
+                1,
+                1,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(
+            registered,
+            1,
+            "exit watcher receipt: {}",
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(receipt.ident, u64::from(pid));
+        assert_eq!(receipt.filter, Self::FILTER);
+        assert_ne!(receipt.flags & Self::ERROR_FLAG, 0, "EV_RECEIPT missing");
+        assert_eq!(receipt.data, 0, "exit watcher registration errno for {pid}");
+        Self {
+            pid,
+            queue,
+            observer_is_parent,
+        }
+    }
+
+    pub(crate) fn wait(self) -> std::process::ExitStatus {
+        self.wait_before(Instant::now() + PROCESS_DEADLINE)
+    }
+
+    /// Wait for the kernel exit status until the caller's original deadline.
+    pub(crate) fn wait_before(self, deadline: Instant) -> std::process::ExitStatus {
+        use std::os::fd::AsRawFd as _;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no kernel exit status for PID {}",
+                self.pid
+            );
+            let timeout = ProcessKeventTimeout {
+                seconds: remaining.as_secs().try_into().expect("bounded seconds"),
+                nanoseconds: remaining.subsec_nanos().into(),
+            };
+            let mut event = ProcessKevent::default();
+            // SAFETY: the owned queue, writable one-event repr(C) buffer and
+            // SDK-matched timespec stay live. Null changelist/count zero makes
+            // this a read-only wait for an already registered PID event. This
+            // consumes a census event, never the guardian's child wait status.
+            let observed = unsafe {
+                kevent64(
+                    self.queue.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &raw mut event,
+                    1,
+                    0,
+                    &raw const timeout,
+                )
+            };
+            if observed < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                panic!("kernel exit census for {} failed: {error}", self.pid);
+            }
+            // The kevent wait itself reached the deadline: same outcome.
+            assert!(observed != 0, "no kernel exit status for PID {}", self.pid);
+            assert_eq!(
+                observed, 1,
+                "kernel exit census event count for {}",
+                self.pid
+            );
+            assert_eq!(event.ident, u64::from(self.pid));
+            assert_eq!(event.filter, Self::FILTER);
+            assert_eq!(
+                event.flags & Self::ERROR_FLAG,
+                0,
+                "exit event errno {}",
+                event.data
+            );
+            assert_eq!(event.fflags & Self::EXIT_FLAGS, Self::EXIT_FLAGS);
+            let raw = i32::try_from(event.data).expect("kernel wait status fits i32");
+            let status = std::process::ExitStatus::from_raw(raw);
+            eprintln!(
+                "KEL143_RETIRED_OS_STATUS pid={} raw={raw} exit_code={:?} signal={:?} observer_is_parent={}",
+                self.pid,
+                status.code(),
+                status.signal(),
+                self.observer_is_parent
+            );
+            return status;
+        }
+    }
 }

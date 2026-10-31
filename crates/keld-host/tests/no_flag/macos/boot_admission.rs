@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 #[test]
 fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing() {
@@ -32,10 +32,14 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
         .arg("entry.ts")
         .arg("1")
         .arg("1")
+        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
         .env(
             "KELD_APP_LINK",
             "/tmp/forged#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
+        // Prove that a forged private argv discriminator supplies neither
+        // the actual OS handoff nor an authentic registration environment.
+        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
         .stdin(Stdio::null())
         .output()
         .expect("invoke private discriminator without bootstrap");
@@ -47,7 +51,69 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
     assert!(!marker.exists(), "private argv discriminator spawned Bun");
     let stderr = String::from_utf8(output.stderr).expect("private-role stderr UTF-8");
     assert!(stderr.contains("KELD-RUNTIME-003"), "{stderr}");
-    assert!(stderr.contains("registration bootstrap"), "{stderr}");
+    // Since #833, the live/empty host-exclusive pipe is validated BEFORE
+    // establishing the private authenticated Guardian control. /dev/null is
+    // not a pipe; the exact failure phase changed without admitting a child.
+    assert!(
+        stderr.contains("liveness descriptor validation"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("host-liveness descriptor is not a pipe"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_spawns_nothing() {
+    let temp = tempfile::tempdir().expect("private valid-pipe fixture");
+    let marker = temp.path().join("must-not-spawn");
+    let entry = temp.path().join("entry.ts");
+    fs::write(
+        &entry,
+        format!(
+            "await Bun.write({}, 'spawned');\n",
+            serde_json::to_string(&marker).expect("marker JSON")
+        ),
+    )
+    .expect("write forbidden child entry");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
+        .arg(temp.path())
+        .arg("entry.ts")
+        .arg("1")
+        .arg("1")
+        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
+        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
+        .env(
+            "KELD_APP_LINK",
+            "/tmp/forged#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("invoke private discriminator with live host pipe only");
+    // The parent exclusively holds the real pipe writer THROUGH child exit.
+    // Dropping it early would change the tested error to a dead-liveness EOF.
+    let liveness_owner = child.stdin.take().expect("native live pipe owner");
+    let output = wait_child_output(child, EVENT_DEADLINE);
+    drop(liveness_owner);
+    assert!(
+        !output.status.success(),
+        "forged private role became success"
+    );
+    assert!(!marker.exists(), "unregistered private role spawned Bun");
+    let stderr = String::from_utf8(output.stderr).expect("private-role stderr UTF-8");
+    assert!(stderr.contains("KELD-RUNTIME-003"), "{stderr}");
+    assert!(
+        stderr.contains("private registration bootstrap"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("liveness descriptor validation"),
+        "valid inherited pipe was not actually accepted before auth denial: {stderr}"
+    );
 }
 
 #[test]
@@ -71,7 +137,7 @@ fn invalid_dev_lease_contract_fails_before_app_resources() {
         let stderr = String::from_utf8(output.stderr).expect("invalid lease stderr UTF-8");
         assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
         assert!(stderr.contains(expected), "{stderr}");
-        assert!(native_windows(pid, TITLE).is_empty());
+        assert_eq!(native_windows(pid, TITLE), [] as [u32; 0]);
         assert!(
             session_dirs_for(pid).is_empty(),
             "invalid lease created an app-link session"
@@ -86,7 +152,7 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
     for invalid in InvalidBoot::ALL {
         let stage = fixture.stage();
         invalid.apply(stage.root(), fixture.root.path());
-        assert_invalid_stage_is_resource_free(
+        let output = assert_invalid_stage_is_resource_free(
             &stage,
             &watcher,
             &fixture
@@ -96,7 +162,15 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
             invalid.name(),
             invalid.expected_code(),
             None,
+            false,
         );
+        if let InvalidBoot::Version = invalid {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("unsupported schema 255"),
+                "the version negative control must reach version admission, not field validation: {stderr}"
+            );
+        }
     }
 }
 
@@ -117,6 +191,7 @@ fn every_invalid_policy_class_fails_before_transient_window_listener_or_bun() {
             invalid.name(),
             invalid.expected_code(),
             None,
+            false,
         );
     }
 }
@@ -134,6 +209,7 @@ fn retained_policy_read_failure_is_guard004_and_resource_free() {
         "retained-read-failure",
         "KELD-GUARD004",
         Some(&fault),
+        false,
     );
     assert!(
         fault.marker.exists(),
@@ -141,14 +217,15 @@ fn retained_policy_read_failure_is_guard004_and_resource_free() {
     );
 }
 
-fn assert_invalid_stage_is_resource_free(
+pub(crate) fn assert_invalid_stage_is_resource_free(
     stage: &keld_cli::boot::DevBootStage,
     watcher: &NativeAbsenceWatcher,
     control_path: &Path,
     case: &str,
     expected_code: &str,
     read_fault: Option<&PolicyReadFault>,
-) {
+    dev_lease: bool,
+) -> Output {
     let listener = UnixListener::bind(control_path).expect("bind invalid control observer");
     listener
         .set_nonblocking(true)
@@ -173,7 +250,17 @@ fn assert_invalid_stage_is_resource_free(
         .env("KELD_T1B_CONTROL", control_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command.spawn().expect("start suspended invalid host");
+    if dev_lease {
+        command
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .stdin(Stdio::piped());
+    } else {
+        command.env_remove("KELD_DEV_LEASE");
+    }
+    let mut child = command.spawn().expect("start suspended invalid host");
+    // Retain the valid lease writer until the real host has exited. Legacy
+    // callers still select the lease-less invalid-stage path above.
+    let _dev_lease = child.stdin.take();
     let host_pid = child.id();
     await_process_state(host_pid, 'T');
     let native = watcher.spawn(host_pid);
@@ -205,7 +292,7 @@ fn assert_invalid_stage_is_resource_free(
         observations, "READY\nDONE\n",
         "{case}: transient resource: {observations}"
     );
-    let stderr = String::from_utf8(output.stderr).expect("typed stderr UTF-8");
+    let stderr = std::str::from_utf8(&output.stderr).expect("typed stderr UTF-8");
     assert!(stderr.contains(expected_code), "{case}: {stderr}");
     assert!(
         stderr.contains("[startup-resource-attempts listener=0 child=0 window=0]"),
@@ -227,4 +314,5 @@ fn assert_invalid_stage_is_resource_free(
         "{case}: app-link directory remains"
     );
     let _ = fs::remove_file(control_path);
+    output
 }

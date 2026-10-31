@@ -775,9 +775,9 @@ fn differential_report_pins_revision_platform_and_oracle_for_every_cell() {
             );
             // Every cell carries the five data points KEL-77 requires: runtime
             // revision, platform, arch, oracle identity, and a three-state verdict.
-            assert!(!revision.is_empty());
+            assert_ne!(revision, "");
             assert!(!platform.is_empty() && !arch.is_empty());
-            assert!(!case.oracle_id.is_empty());
+            assert_ne!(case.oracle_id, "");
             assert!(matches!(
                 verdict,
                 Verdict::Pass | Verdict::Fail | Verdict::Unknown

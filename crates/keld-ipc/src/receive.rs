@@ -340,6 +340,16 @@ impl ReceivePolicy {
         }
     }
 
+    /// Host-side window CALL receiver (GH-449). The owning Core router checks
+    /// trusted link identity and subscription before decoding or performing work.
+    /// This does not add a third channel to the baseline primary policy.
+    #[must_use]
+    pub const fn window_receiver() -> Self {
+        let mut policy = Self::lifecycle_receiver();
+        policy.channel = crate::channel_table::WINDOW.id();
+        policy
+    }
+
     /// The live primary app-link receiver: the one v0 session that
     /// multiplexes spec-table rows 3 and 5 — authenticated echo and
     /// lifecycle `CALL`s — plus the `PING` probe on a single stream.
@@ -523,8 +533,23 @@ pub(crate) fn validate_primary_app_header_with_privileged_call(
     privileged_call: Option<&'static ChannelEntry>,
     header: FrameHeader,
 ) -> Result<ValidatedFrameHeader, IpcError> {
-    match (header.kind, privileged_call) {
-        (FrameKind::Reply | FrameKind::Err, _) => {
+    match privileged_call {
+        Some(entry) => {
+            validate_primary_app_header_with_privileged_calls(pending_echo_reply, &[entry], header)
+        }
+        None => validate_primary_app_header_with_privileged_calls(pending_echo_reply, &[], header),
+    }
+}
+
+// The same KEL-133 owner and policy constructors for every trusted guarded entry.
+// The host chooses this slice; a raw incoming channel id cannot construct it.
+pub(crate) fn validate_primary_app_header_with_privileged_calls(
+    pending_echo_reply: Option<CorrelationId>,
+    privileged_calls: &[&'static ChannelEntry],
+    header: FrameHeader,
+) -> Result<ValidatedFrameHeader, IpcError> {
+    match header.kind {
+        FrameKind::Reply | FrameKind::Err => {
             let Some(corr) = pending_echo_reply else {
                 return Err(IpcError::Protocol {
                     detail: "frame kind is not declared by the session policy",
@@ -532,8 +557,19 @@ pub(crate) fn validate_primary_app_header_with_privileged_call(
             };
             validate_received_header(&ReceivePolicy::primary_echo_reply_waiter(corr), header)
         }
-        (FrameKind::Call, Some(entry)) if header.channel == entry.id() => {
-            validate_received_header(&ReceivePolicy::privileged_call_receiver(entry)?, header)
+        FrameKind::Call => {
+            if header.channel == crate::channel_table::WINDOW.id() {
+                return validate_received_header(&ReceivePolicy::window_receiver(), header);
+            }
+            if let Some(entry) = privileged_calls
+                .iter()
+                .copied()
+                .find(|entry| header.channel == entry.id())
+            {
+                validate_received_header(&ReceivePolicy::privileged_call_receiver(entry)?, header)
+            } else {
+                validate_received_header(&ReceivePolicy::primary_app_receiver(), header)
+            }
         }
         _ => validate_received_header(&ReceivePolicy::primary_app_receiver(), header),
     }
@@ -757,6 +793,52 @@ impl AbsoluteDeadline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_call_uses_its_named_policy_without_widening_baseline_primary() {
+        let window = crate::channel_table::WINDOW.wire_id();
+        let valid = header(FrameKind::Call, 0, window, 7, 8);
+        assert!(validate_received_header(&ReceivePolicy::primary_app_receiver(), valid).is_err());
+        validate_primary_app_header_with_privileged_calls(None, &[], valid)
+            .expect("fixed primary dispatcher selects the named window policy");
+        let policy = ReceivePolicy::window_receiver();
+        assert_eq!(policy.channel(), crate::channel_table::WINDOW.id());
+        assert_eq!(policy.also_channel(), None);
+        for bad in [
+            header(FrameKind::Call, 0, window, 0, 8),
+            header(FrameKind::Call, FLAG_RAW, window, 7, 8),
+            header(FrameKind::Event, 0, window, 0, 8),
+            header(FrameKind::Reply, 0, window, 7, 8),
+            header(FrameKind::Call, 0, u16::MAX, 7, 8),
+        ] {
+            assert!(
+                validate_primary_app_header_with_privileged_calls(None, &[], bad).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn window_receiver_rejects_oversized_payload_before_body_read() {
+        // Frame size belongs to the shared reader, separately from the named
+        // header policy. No body exists, so removing its bound yields EOF.
+        let oversized = header(
+            FrameKind::Call,
+            0,
+            crate::channel_table::WINDOW.wire_id(),
+            7,
+            u32::try_from(crate::MAX_FRAME_LEN + 1).expect("frame limit fits u32"),
+        );
+        let mut input = std::io::Cursor::new(oversized.encode());
+        assert!(matches!(
+            crate::link::read_validated_frame(&mut input, &ReceivePolicy::window_receiver()),
+            Err(IpcError::PayloadTooLarge)
+        ));
+        assert_eq!(
+            input.position(),
+            u64::try_from(crate::HEADER_LEN).expect("fixed header length")
+        );
+    }
     use crate::frame::FLAG_RAW;
     use crate::{ECHO_CHANNEL, LIFECYCLE_CHANNEL};
 

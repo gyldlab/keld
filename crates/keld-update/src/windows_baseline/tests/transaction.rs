@@ -17,6 +17,13 @@ use crate::windows_baseline::{
 };
 use crate::{ActivationEffect, ActivationFailureClass, UpdateError};
 
+mod attempt_mint;
+pub(super) use attempt_mint::downgrade_journal_to_v1;
+mod per_user_outcomes;
+use attempt_mint::lost_first_attempt;
+mod receipt_identity;
+mod record_preparations;
+
 /// The owner facts every fixture owner journals.
 const OWNERSHIP: AttemptOwnership = AttemptOwnership {
     initiating_logon: INITIATING_LOGON,
@@ -290,382 +297,6 @@ fn assert_refusal(
         } => assert_eq!((refused, observed), (step, effect)),
         other => panic!("expected a {step} refusal with {effect:?}, got {other:?}"),
     }
-}
-
-#[test]
-fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
-    use crate::windows_fs::{RecordSlot, replace_record_slot};
-    let fixture = tempfile::tempdir().expect("record slot fixture");
-    let path = fixture.path();
-    let pending = format!("pending-{}", "a".repeat(64));
-    std::fs::write(path.join("current"), b"previous").expect("existing slot");
-    std::fs::write(path.join("last-known-good"), b"known-good").expect("another slot");
-    std::fs::write(path.join("install-provenance"), b"protected").expect("provenance");
-    std::fs::write(path.join(&pending), b"replacement").expect("prepared sibling");
-    std::fs::create_dir(path.join("version-floor")).expect("directory at a slot name");
-    let parent = support::directory(path);
-
-    for source in ["last-known-good", "install-provenance", "pending-short"] {
-        assert!(
-            replace_record_slot(&parent, source, RecordSlot::Current).is_err(),
-            "{source} is not a generated pending sibling"
-        );
-    }
-    assert!(
-        replace_record_slot(&parent, &pending, RecordSlot::Floor).is_err(),
-        "MOVEFILE_REPLACE_EXISTING refuses a directory destination"
-    );
-    for (leaf, bytes) in [
-        ("current", &b"previous"[..]),
-        ("last-known-good", b"known-good"),
-        ("install-provenance", b"protected"),
-        (pending.as_str(), b"replacement"),
-    ] {
-        assert_eq!(
-            std::fs::read(path.join(leaf)).expect("record after refusals"),
-            bytes,
-            "{leaf} is untouched by every refused replacement"
-        );
-    }
-    assert!(path.join("version-floor").is_dir());
-
-    replace_record_slot(&parent, &pending, RecordSlot::Current)
-        .expect("a generated sibling replaces an existing fixed file slot");
-    assert_eq!(
-        std::fs::read(path.join("current")).expect("replaced slot"),
-        b"replacement"
-    );
-    assert!(!path.join(&pending).exists());
-}
-
-/// The admission refusals and removal are observable; binding admission and deletion to
-/// one handle is a construction property, because no deterministic swap fits between them.
-#[test]
-fn stale_record_preparations_refuse_links_and_directories_and_remove_genuine_files() {
-    let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
-    for case in ["genuine", "linked", "directory"] {
-        let fixture = tempfile::tempdir().expect("stale preparation fixture");
-        let elsewhere = tempfile::tempdir().expect("same-volume link fixture");
-        let trust = seed_per_user_baseline(fixture.path());
-        let update = trust.installation.update_root.clone();
-        let leaf = format!("pending-{}", "b".repeat(64));
-        if case == "directory" {
-            std::fs::create_dir(update.join(&leaf)).expect("directory at a pending name");
-        } else {
-            let parent = support::directory(&update);
-            let mut file =
-                crate::windows_fs::create_file_relative_with_profile(&parent, &leaf, profile)
-                    .expect("profiled preparation");
-            file.write_all(b"prepared").expect("prepared bytes");
-            drop(file);
-            if case == "linked" {
-                std::fs::hard_link(update.join(&leaf), elsewhere.path().join("second-link"))
-                    .expect("second link outside the update root");
-            }
-        }
-        let result = crate::repair_windows_unjournaled_versions(&trust, &verifier(&trust));
-        if case == "genuine" {
-            result.expect("a genuine preparation is removed");
-            assert!(!update.join(&leaf).exists());
-        } else {
-            let error = result.expect_err("a non-genuine preparation must refuse");
-            assert!(
-                format!("{error:?}").contains("stale record admission"),
-                "{case} refuses at admission, not elsewhere: {error:?}"
-            );
-            assert!(
-                update.join(&leaf).exists(),
-                "{case} preparation stays for manual recovery"
-            );
-        }
-    }
-}
-
-#[test]
-fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versions() {
-    support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("per-user activation fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let verifier = verifier(&trust);
-
-    let attempt = begin(&trust, "2.0.0");
-    let awaiting = observe(&trust);
-    assert_eq!(awaiting.floor, "2.0.0", "floor advances before selection");
-    assert_eq!(awaiting.current, "2.0.0");
-    assert_eq!(
-        awaiting.last_known_good, "1.0.0",
-        "the prior known-good stays until exact health"
-    );
-    let journal = awaiting.journal.expect("live attempt is journaled");
-    assert_eq!(journal.phase, ActivationPhase::AwaitingHealth);
-    assert_eq!(&journal.attempt_id, attempt.attempt_id());
-    assert_eq!(&journal.health_channel_id, attempt.health_channel_id());
-    assert_eq!(
-        &journal.lifecycle_channel_id,
-        attempt.lifecycle_channel_id()
-    );
-    assert_eq!(
-        journal.helper_image_blake3,
-        support::COORDINATOR_IMAGE_BLAKE3
-    );
-    assert_eq!(journal.rollback_target.version, "1.0.0");
-    assert_eq!(journal.prior_floor, "1.0.0");
-    assert_eq!(
-        attempt.lifecycle_installation_id(),
-        &trust
-            .lifecycle_installation_id()
-            .expect("trusted lifecycle installation ID")
-    );
-    assert!(
-        load_windows_activation_write_snapshot(&trust, &verifier).is_err(),
-        "the live attempt keeps the share-zero writer lease through health"
-    );
-    assert!(
-        load_windows_recovery_inspection(&trust, &verifier).is_err(),
-        "recovery cannot race a live owner"
-    );
-
-    let health = receipt(&attempt);
-
-    let accepted = attempt
-        .accept_health(&health)
-        .expect("exact health is durably accepted");
-    let durable = observe(&trust);
-    assert!(
-        matches!(
-            durable.journal.as_ref().map(|journal| &journal.phase),
-            Some(ActivationPhase::HealthAccepted { .. })
-        ),
-        "the first health step returns at the durable HealthAccepted record: {durable:?}"
-    );
-    assert_eq!(
-        (durable.current.as_str(), durable.last_known_good.as_str()),
-        ("2.0.0", "1.0.0"),
-        "the first health step commits nothing"
-    );
-    let resolution = accepted
-        .complete()
-        .expect("exact health commits the first update");
-    assert_eq!(resolution.outcome(), WindowsActivationOutcome::Committed);
-    assert!(resolution.cleanup_error().is_none());
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-
-    commit(&trust, "3.0.0");
-    assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
-}
-
-#[test]
-fn per_user_rollback_restores_the_target_retires_the_candidate_and_keeps_the_floor() {
-    support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("per-user rollback fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-
-    let attempt = begin(&trust, "2.0.0");
-    let proof = retirement(&attempt);
-    let resolution = attempt
-        .roll_back(ActivationFailureClass::HealthRejected, &proof)
-        .expect("bound failure rolls back");
-    assert_eq!(resolution.outcome(), WindowsActivationOutcome::RolledBack);
-    assert_eq!(resolution.current().version, "1.0.0");
-    assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
-
-    let verifier = verifier(&trust);
-    let admitted = verifier
-        .admit(&crate::ProvenanceObservation::Protected {
-            record: crate::InstallProvenance {
-                identity: trust.installation.clone(),
-                owner: crate::InstallOwner::Direct,
-            },
-            version_floor: Some(observe(&trust).floor),
-        })
-        .expect("admit the rolled-back installation");
-    let manifest = crate::tests::manifest_json(&crate::tests::release_json(
-        "2.0.0",
-        "1",
-        &crate::tests::digest_hex(b"x"),
-        "1",
-        &crate::tests::digest_hex(b"x"),
-        "",
-    ));
-    assert!(
-        matches!(
-            admitted
-                .verify_manifest(&manifest, &crate::tests::sign(&manifest))
-                .expect("authentic replayed manifest"),
-            crate::ManifestDecision::NoUpdate
-        ),
-        "the failed signed version is never automatically reselected"
-    );
-
-    commit(&trust, "3.0.0");
-    assert_resolved(&trust, "3.0.0", Some("1.0.0"), "3.0.0", &["1.0.0", "3.0.0"]);
-}
-
-#[test]
-fn substituted_health_receipts_refuse_before_any_write_and_leave_recovery_authoritative() {
-    for substitution in ["attempt", "channel", "candidate"] {
-        let fixture = tempfile::tempdir().expect("receipt falsifier fixture");
-        let trust = seed_per_user_baseline(fixture.path());
-        let attempt = begin(&trust, "2.0.0");
-        let before = observe(&trust);
-        let mut attempt_id = *attempt.attempt_id();
-        let mut health_channel_id = *attempt.health_channel_id();
-        let mut candidate = attempt.candidate().clone();
-        match substitution {
-            "attempt" => attempt_id[0] ^= 1,
-            // A real identity from the same attempt, but not its health channel.
-            "channel" => health_channel_id = *attempt.lifecycle_channel_id(),
-            _ => candidate.content_blake3[0] ^= 1,
-        }
-        let substituted = ActivationHealthReceipt::new(attempt_id, health_channel_id, candidate);
-        assert_refusal(
-            attempt.accept_health(&substituted),
-            "health receipt binding",
-            ActivationEffect::JournalBoundRecoveryRequired,
-        );
-        assert_eq!(
-            observe(&trust),
-            before,
-            "{substitution}: a substituted receipt writes nothing"
-        );
-        assert_eq!(
-            recover_exact(&trust).expect("exact recovery of the unresolved attempt"),
-            WindowsActivationOutcome::RolledBack,
-            "{substitution}: health that never matched the attempt is never committed"
-        );
-        assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
-    }
-}
-
-#[test]
-fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_and_candidate() {
-    support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("expected digest fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let attempt = begin(&trust, "2.0.0");
-    let expected = *attempt.health_receipt_digest();
-    let journal = observe(&trust).journal.expect("live attempt is journaled");
-    let digest = |channel: &[u8; 32]| {
-        crate::records::activation_health_receipt_digest(
-            &journal.attempt_id,
-            channel,
-            &journal.candidate,
-        )
-        .expect("digest of a journaled attempt")
-    };
-    // The protected record, read back from disk, names the inputs; the accessor must
-    // bind exactly the health channel, never the lifecycle channel that the same
-    // journal also carries.
-    assert_eq!(expected, digest(&journal.health_channel_id));
-    assert_ne!(expected, digest(&journal.lifecycle_channel_id));
-
-    let health = receipt(&attempt);
-    // Dropping the accepted attempt releases the lease without completing.
-    drop(
-        attempt
-            .accept_health(&health)
-            .expect("exact health is durably accepted"),
-    );
-    assert_eq!(
-        observe(&trust).journal.map(|journal| journal.phase),
-        Some(ActivationPhase::HealthAccepted {
-            health_receipt_digest: expected
-        }),
-        "HealthAccepted records the digest the owner compared with KELD-AB1"
-    );
-    // Recovery recomputes the digest from the journal and finishes the commit.
-    assert_eq!(
-        recover_exact(&trust).expect("recovery finishes an accepted attempt"),
-        WindowsActivationOutcome::Committed
-    );
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-}
-
-#[test]
-fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
-    let fixture = tempfile::tempdir().expect("retirement falsifier fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let verifier = verifier(&trust);
-    let attempt = begin(&trust, "2.0.0");
-    let before = observe(&trust);
-    let installation = *attempt.lifecycle_installation_id();
-    let attempt_id = *attempt.attempt_id();
-    let channel = *attempt.lifecycle_channel_id();
-    let flip = |mut value: [u8; 32]| {
-        value[31] ^= 1;
-        value
-    };
-    let substituted = [
-        ProcessFamilyRetirement::from_exact_zero_observation(
-            flip(installation),
-            attempt_id,
-            channel,
-        ),
-        ProcessFamilyRetirement::from_exact_zero_observation(
-            installation,
-            flip(attempt_id),
-            channel,
-        ),
-        ProcessFamilyRetirement::from_exact_zero_observation(
-            installation,
-            attempt_id,
-            flip(channel),
-        ),
-    ];
-    assert_refusal(
-        attempt.roll_back(ActivationFailureClass::ProcessCrash, &substituted[0]),
-        "process-family retirement binding",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(
-        observe(&trust),
-        before,
-        "live rollback writes nothing without exact proof"
-    );
-
-    let image = coordinator_image(&trust);
-    for wrong in &substituted {
-        let inspection =
-            load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
-        assert_refusal(
-            inspection.recover_with_image_file(wrong, &image),
-            "process-family retirement binding",
-            ActivationEffect::JournalBoundRecoveryRequired,
-        );
-        assert_eq!(observe(&trust), before);
-    }
-    let exact =
-        ProcessFamilyRetirement::from_exact_zero_observation(installation, attempt_id, channel);
-    let inspection =
-        load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
-    assert_refusal(
-        inspection.recover_with_image_file(
-            &exact,
-            &support::other_coordinator_image(fixture_root(&trust)),
-        ),
-        "coordinator identity",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(observe(&trust), before);
-    let inspection =
-        load_windows_recovery_inspection(&trust, &verifier).expect("inspect the lost attempt");
-    assert_refusal(
-        inspection.resume_unlaunched_with_image_file(&image),
-        "unlaunched resume",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(
-        observe(&trust),
-        before,
-        "a launched attempt is never resumed without a retirement binding"
-    );
-
-    assert_eq!(
-        recover_exact(&trust).expect("exact retirement recovers the lost attempt"),
-        WindowsActivationOutcome::RolledBack,
-        "an attempt that lost its owner during health rolls back"
-    );
-    assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
 }
 
 #[test]
@@ -962,7 +593,7 @@ fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
     );
     commit(&trust, "3.0.0");
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
-    assert!(incomplete_stages(&trust).is_empty());
+    assert_eq!(incomplete_stages(&trust).len(), 0);
 }
 
 #[test]
@@ -1215,7 +846,7 @@ fn recovery_replaces_a_damaged_copy_with_the_next_exact_stage() {
         WindowsActivationOutcome::Committed
     );
     assert_resolved(&trust, "3.0.0", Some("2.0.0"), "3.0.0", &["2.0.0", "3.0.0"]);
-    assert!(incomplete_stages(&trust).is_empty());
+    assert_eq!(incomplete_stages(&trust).len(), 0);
 }
 
 #[test]
@@ -1458,6 +1089,53 @@ fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename()
 }
 
 #[test]
+fn referenced_case_alias_admission_skips_pinned_tree_and_admits_real_orphan() {
+    use cap_fs_ext::DirExt as _;
+
+    support::assert_user_principal_token();
+    let fixture = tempfile::tempdir().expect("retirement case guard fixture");
+    let trust = seed_per_user_baseline(fixture.path());
+    commit(&trust, "2.0.0-rc.1");
+    let orphan = legacy_orphan(&trust, "3.0.0");
+    let before = observe(&trust);
+
+    // Exercise the retirement admission owner directly: the higher-level exact-name
+    // census rejects case aliases before this guard can observe them.
+    let roots = super::super::open_roots(&trust, false).expect("protected roots");
+    let _lease = super::super::open_activation_lease(&roots.update, roots.profile(), true)
+        .expect("hold the exclusive writer lease");
+    let _pinned = roots
+        .versions
+        .open_dir_nofollow("2.0.0-rc.1")
+        .expect("retain the referenced current version");
+    let current = crate::records::decode_pointer(
+        PointerKind::Current,
+        &std::fs::read(trust.installation.update_root.join("current"))
+            .expect("read protected current pointer"),
+    )
+    .expect("decode current pointer");
+    assert_eq!(current.version, "2.0.0-rc.1");
+
+    let referenced = names(&["1.0.0", "2.0.0-RC.1"]);
+    assert!(
+        !referenced.contains(&current.version),
+        "the alias differs in case"
+    );
+    let admitted = super::super::activate::admit_unreferenced_versions(&roots, &referenced)
+        .expect("admit only the genuine orphan");
+    assert_eq!(
+        admitted,
+        vec![orphan.version],
+        "the case-alias referenced tree must never be admitted for retirement"
+    );
+    assert_eq!(
+        observe(&trust),
+        before,
+        "admission must not mutate protected state"
+    );
+}
+
+#[test]
 fn the_unjournaled_repair_never_retires_a_case_variant_of_a_referenced_tree() {
     let fixture = tempfile::tempdir().expect("case variant fixture");
     let trust = seed_per_user_baseline(fixture.path());
@@ -1481,437 +1159,6 @@ fn the_unjournaled_repair_never_retires_a_case_variant_of_a_referenced_tree() {
         "the referenced tree is never renamed: {observed:?}"
     );
     assert_eq!(observed.current, "2.0.0-rc.1");
-}
-
-#[test]
-fn an_unlaunched_attempt_resumes_under_the_lease_with_fresh_channels() {
-    let fixture = tempfile::tempdir().expect("unlaunched resume fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let stdout = support::child(
-        CRASH_HELPER,
-        fixture.path(),
-        "first-commit",
-        "floor-advanced",
-        CRASH_EXIT,
-    );
-    assert!(
-        stdout.contains("KELD_ACTIVATION_CUT=floor-advanced"),
-        "{stdout}"
-    );
-    let journal_path = trust.installation.update_root.join("activation-journal");
-    let lost_bytes = std::fs::read(&journal_path).expect("the lost attempt is journaled");
-    let lost = observe(&trust)
-        .journal
-        .expect("the lost attempt is journaled");
-    assert_eq!(lost.phase, ActivationPhase::PublishPending);
-
-    let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
-        .expect("inspect the unlaunched attempt");
-    let minted = inspection
-        .resume_unlaunched_with_image_file(&coordinator_image(&trust))
-        .expect("a never-launched attempt resumes under the writer lease alone");
-    assert_eq!(minted.attempt_id(), &lost.attempt_id);
-    assert_ne!(minted.health_channel_id(), &lost.health_channel_id);
-    assert_eq!(
-        std::fs::read(&journal_path).expect("journal after minting"),
-        lost_bytes,
-        "re-minting writes nothing until the resumed owner journals its facts"
-    );
-    let minted_health = *minted.health_channel_id();
-    let attempt = awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON));
-    assert_eq!(attempt.attempt_id(), &lost.attempt_id);
-    assert_eq!(attempt.health_channel_id(), &minted_health);
-    assert_ne!(attempt.lifecycle_channel_id(), &lost.lifecycle_channel_id);
-    let resumed = observe(&trust)
-        .journal
-        .expect("the resumed attempt stays journaled");
-    assert_eq!(resumed.phase, ActivationPhase::AwaitingHealth);
-    assert_eq!(resumed.health_channel_id, minted_health);
-    assert_eq!(
-        &resumed.lifecycle_channel_id,
-        attempt.lifecycle_channel_id()
-    );
-    assert_eq!(resumed.ownership, Some(OWNERSHIP));
-
-    let stale = ProcessFamilyRetirement::from_exact_zero_observation(
-        *attempt.lifecycle_installation_id(),
-        lost.attempt_id,
-        lost.lifecycle_channel_id,
-    );
-    assert_refusal(
-        attempt.roll_back(ActivationFailureClass::ProcessCrash, &stale),
-        "process-family retirement binding",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(
-        recover_exact(&trust).expect("the re-minted channel binds recovery"),
-        WindowsActivationOutcome::RolledBack
-    );
-    assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
-}
-
-/// Plants a genuine stale `pending-*` record sibling, which only a journal step removes.
-fn plant_stale_record_preparation(trust: &WindowsBaselineTrust) {
-    let parent = support::directory(&trust.installation.update_root);
-    let mut file = crate::windows_fs::create_file_relative_with_profile(
-        &parent,
-        &format!("pending-{}", "d".repeat(64)),
-        keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
-    )
-    .expect("profiled stale preparation");
-    file.write_all(b"prepared").expect("prepared bytes");
-}
-
-/// Crashes a child first update of 2.0.0 at `cut` and returns the lost journal's bytes.
-fn lost_first_attempt(
-    fixture: &std::path::Path,
-    trust: &WindowsBaselineTrust,
-    cut: &str,
-) -> Vec<u8> {
-    let stdout = support::child(CRASH_HELPER, fixture, "first-commit", cut, CRASH_EXIT);
-    assert!(
-        stdout.contains(&format!("KELD_ACTIVATION_CUT={cut}")),
-        "{stdout}"
-    );
-    std::fs::read(trust.installation.update_root.join("activation-journal"))
-        .expect("the lost attempt is journaled")
-}
-
-#[test]
-fn minting_writes_nothing_until_the_owner_journals_its_facts() {
-    let fixture = tempfile::tempdir().expect("mint-then-journal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    plant_stale_record_preparation(&trust);
-    let (root, stage) = complete(&trust, "2.0.0");
-    let before = observe(&trust);
-    assert_eq!((before.journal.as_ref(), before.pending_records), (None, 1));
-
-    let minted = root
-        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
-        .expect("mint the attempt identities");
-    assert_eq!(
-        observe(&trust),
-        before,
-        "minting writes no journal, renames no stage and removes no record sibling"
-    );
-    let attempt_id = *minted.attempt_id();
-    let health_channel_id = *minted.health_channel_id();
-    assert_ne!(attempt_id, health_channel_id);
-    assert_eq!(
-        minted.lifecycle_installation_id(),
-        &trust
-            .lifecycle_installation_id()
-            .expect("trusted installation ID")
-    );
-
-    let attempt = awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON));
-    assert_eq!(attempt.attempt_id(), &attempt_id);
-    assert_eq!(attempt.health_channel_id(), &health_channel_id);
-    let journaled = observe(&trust);
-    assert_eq!(
-        journaled.pending_records, 0,
-        "the journal step removes stale siblings before its first record"
-    );
-    let journal = journaled.journal.expect("the attempt is journaled");
-    assert_eq!(
-        (journal.attempt_id, journal.health_channel_id),
-        (attempt_id, health_channel_id),
-        "the first record reveals exactly the minted identities"
-    );
-    assert_eq!(journal.ownership, Some(OWNERSHIP));
-    assert_eq!(journal.phase, ActivationPhase::AwaitingHealth);
-    assert!(
-        std::fs::read(trust.installation.update_root.join("activation-journal"))
-            .expect("journal bytes")
-            .starts_with(br#"{"schema":"keld.activation-journal/v2","#)
-    );
-    let health = receipt(&attempt);
-    assert_eq!(
-        attempt
-            .accept_health(&health)
-            .and_then(WindowsHealthAcceptedAttempt::complete)
-            .expect("exact health commits")
-            .outcome(),
-        WindowsActivationOutcome::Committed
-    );
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-}
-
-#[test]
-fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
-    let fixture = tempfile::tempdir().expect("recovery re-mint fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
-    plant_stale_record_preparation(&trust);
-    let before = observe(&trust);
-    assert_eq!(before.pending_records, 1);
-    let lost_journal = before
-        .journal
-        .clone()
-        .expect("the lost attempt is journaled");
-    assert_eq!(lost_journal.phase, ActivationPhase::PublishPending);
-
-    let inspection = load_windows_recovery_inspection(&trust, &verifier(&trust))
-        .expect("inspect the unlaunched attempt");
-    let retirement = ProcessFamilyRetirement::from_exact_zero_observation(
-        *inspection.lifecycle_installation_id(),
-        *inspection.attempt_id(),
-        *inspection.lifecycle_channel_id(),
-    );
-    let WindowsRecoveryOutcome::Reminted(minted) = inspection
-        .recover_with_image_file(&retirement, &coordinator_image(&trust))
-        .expect("an exact binding admits journal-bound recovery")
-    else {
-        panic!("a publish-pending journal re-mints its channels");
-    };
-    assert_eq!(
-        observe(&trust),
-        before,
-        "re-minting through recovery writes no record and removes no record sibling"
-    );
-    assert_eq!(
-        std::fs::read(trust.installation.update_root.join("activation-journal"))
-            .expect("journal after re-minting"),
-        lost,
-        "the lost owner's journal stays byte-identical until the resumed owner journals"
-    );
-    assert_eq!(minted.attempt_id(), &lost_journal.attempt_id);
-    assert_ne!(minted.health_channel_id(), &lost_journal.health_channel_id);
-    let minted_health = *minted.health_channel_id();
-
-    let attempt = awaiting_health(minted.journal(ATTEMPT_OWNER, INITIATING_LOGON));
-    let resumed = observe(&trust);
-    assert_eq!(
-        resumed.pending_records, 0,
-        "the journal step removes stale siblings before its first record"
-    );
-    let journal = resumed.journal.expect("the resumed attempt is journaled");
-    assert_eq!(
-        (journal.attempt_id, journal.health_channel_id),
-        (lost_journal.attempt_id, minted_health),
-        "the re-mint record reveals the kept attempt and the freshly minted channel"
-    );
-    assert_ne!(
-        journal.lifecycle_channel_id,
-        lost_journal.lifecycle_channel_id
-    );
-    assert_eq!(journal.ownership, Some(OWNERSHIP));
-    let health = receipt(&attempt);
-    assert_eq!(
-        attempt
-            .accept_health(&health)
-            .and_then(WindowsHealthAcceptedAttempt::complete)
-            .expect("exact health commits")
-            .outcome(),
-        WindowsActivationOutcome::Committed
-    );
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-}
-
-#[test]
-fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
-    let fixture = tempfile::tempdir().expect("fresh endpoint refusal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let (root, stage) = complete(&trust, "2.0.0");
-    let before = observe(&trust);
-    let minted = root
-        .begin_activation_with_image_file(stage, &coordinator_image(&trust))
-        .expect("mint the attempt identities");
-    // Seam-injected: the owner found its endpoint name already present.
-    assert_refusal(
-        Err::<(), _>(minted.refuse("attempt endpoint", "the endpoint name already exists")),
-        "attempt endpoint",
-        ActivationEffect::ProtectedStateUnchanged,
-    );
-    assert_eq!(
-        observe(&trust),
-        before,
-        "a fresh refusal leaves only the stage"
-    );
-    commit(&trust, "2.0.0");
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-
-    let fixture = tempfile::tempdir().expect("resumed endpoint refusal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
-    let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
-        .expect("inspect the unlaunched attempt")
-        .resume_unlaunched_with_image_file(&coordinator_image(&trust))
-        .expect("re-mint the channels");
-    assert_refusal(
-        Err::<(), _>(minted.refuse("attempt endpoint", "the endpoint name already exists")),
-        "attempt endpoint",
-        ActivationEffect::JournalBoundRecoveryRequired,
-    );
-    assert_eq!(
-        std::fs::read(trust.installation.update_root.join("activation-journal"))
-            .expect("journal after the refusal"),
-        lost,
-        "a resumed refusal leaves the journal unchanged"
-    );
-    assert_eq!(
-        recover_exact(&trust).expect("the journal stays authoritative"),
-        WindowsActivationOutcome::Committed
-    );
-}
-
-/// Asserts an owner-fact refusal at `step` with `effect` whose detail names `reason`.
-fn assert_owner_fact_refusal(
-    result: Result<crate::WindowsJournaledAttempt, UpdateError>,
-    step: &str,
-    effect: ActivationEffect,
-    reason: &str,
-) {
-    match result.expect_err(reason) {
-        UpdateError::Activation {
-            step: refused,
-            effect: observed,
-            detail,
-        } => {
-            assert_eq!((refused, observed), (step, effect), "{reason}");
-            assert!(
-                detail.contains(reason),
-                "refused for `{detail}`, not `{reason}`"
-            );
-        }
-        other => panic!("expected a {step} refusal for `{reason}`, got {other:?}"),
-    }
-}
-
-#[test]
-fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
-    const ZERO_PROCESS_ID: &str = "attempt owner process ID must be in 1..=4294967295";
-    const ZERO_LOGON_TIME: &str = "initiating logon time must be positive";
-    // KEL-53 §4, owner decision 2026-10-06 (zero LUID refused).
-    const ZERO_LUID: &str = "initiating logon authentication ID must be nonzero";
-    let zero_luid = crate::InitiatingLogon::new(0, 0x01dd_5568_af7a_c000);
-
-    for (attempt_owner, initiating_logon, reason) in [
-        (
-            crate::AttemptOwner::new(0, 1),
-            INITIATING_LOGON,
-            ZERO_PROCESS_ID,
-        ),
-        (ATTEMPT_OWNER, zero_luid, ZERO_LUID),
-    ] {
-        let fixture = tempfile::tempdir().expect("fresh owner-fact refusal fixture");
-        let trust = seed_per_user_baseline(fixture.path());
-        plant_stale_record_preparation(&trust);
-        let (root, stage) = complete(&trust, "2.0.0");
-        let before = observe(&trust);
-        let minted = root
-            .begin_activation_with_image_file(stage, &coordinator_image(&trust))
-            .expect("mint the attempt identities");
-        assert_owner_fact_refusal(
-            minted.journal(attempt_owner, initiating_logon),
-            "start",
-            ActivationEffect::ProtectedStateUnchanged,
-            reason,
-        );
-        assert_eq!(
-            observe(&trust),
-            before,
-            "{reason}: a refused owner fact writes no journal and removes no record sibling"
-        );
-    }
-
-    let fixture = tempfile::tempdir().expect("resumed owner-fact refusal fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
-    for (initiating_logon, reason) in [
-        (crate::InitiatingLogon::new(1, 0), ZERO_LOGON_TIME),
-        (zero_luid, ZERO_LUID),
-    ] {
-        let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
-            .expect("inspect the unlaunched attempt")
-            .resume_unlaunched_with_image_file(&coordinator_image(&trust))
-            .expect("re-mint the channels");
-        assert_owner_fact_refusal(
-            minted.journal(ATTEMPT_OWNER, initiating_logon),
-            "local record",
-            ActivationEffect::JournalBoundRecoveryRequired,
-            reason,
-        );
-        assert_eq!(
-            std::fs::read(trust.installation.update_root.join("activation-journal"))
-                .expect("journal after the refusal"),
-            lost,
-            "{reason}: a resumed refusal leaves the journal unchanged"
-        );
-    }
-}
-
-/// Replaces the protected journal with the landed v1 encoding of the same attempt, which
-/// carries no owner facts.
-pub(super) fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
-    let path = trust.installation.update_root.join("activation-journal");
-    let mut journal = crate::records::decode_activation_journal(
-        &std::fs::read(&path).expect("protected journal bytes"),
-    )
-    .expect("canonical v2 journal");
-    journal.ownership = None;
-    let bytes = crate::records::encode_activation_journal(&journal).expect("v1 encoding");
-    assert!(bytes.starts_with(br#"{"schema":"keld.activation-journal/v1","#));
-    std::fs::remove_file(&path).expect("remove the v2 journal");
-    let parent = support::directory(&trust.installation.update_root);
-    let mut file = crate::windows_fs::create_file_relative_with_profile(
-        &parent,
-        "activation-journal",
-        keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate,
-    )
-    .expect("profiled v1 journal");
-    file.write_all(&bytes).expect("v1 journal bytes");
-    file.sync_all().expect("flush the v1 journal");
-}
-
-#[test]
-fn a_landed_v1_journal_finishes_and_its_re_mint_record_is_v2() {
-    support::assert_user_principal_token();
-    // An unlaunched v1 attempt resumes; its re-mint record supplies the owner facts.
-    let fixture = tempfile::tempdir().expect("v1 publish-pending fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    lost_first_attempt(fixture.path(), &trust, "floor-advanced");
-    downgrade_journal_to_v1(&trust);
-    assert_eq!(
-        recover_exact(&trust).expect("a v1 publish-pending attempt resumes"),
-        WindowsActivationOutcome::Committed,
-        "recovery asserts the resumed journal carries the owner facts"
-    );
-    assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
-
-    // A launched v1 attempt rolls back; its phase writes keep the v1 encoding.
-    let fixture = tempfile::tempdir().expect("v1 awaiting-health fixture");
-    let trust = seed_per_user_baseline(fixture.path());
-    lost_first_attempt(fixture.path(), &trust, "awaiting-health");
-    downgrade_journal_to_v1(&trust);
-    let stdout = support::child(
-        CRASH_HELPER,
-        fixture.path(),
-        "recover",
-        "rollback-pending",
-        CRASH_EXIT,
-    );
-    assert!(
-        stdout.contains("KELD_ACTIVATION_CUT=rollback-pending"),
-        "{stdout}"
-    );
-    let bytes = std::fs::read(trust.installation.update_root.join("activation-journal"))
-        .expect("rollback-pending journal");
-    assert!(bytes.starts_with(br#"{"schema":"keld.activation-journal/v1","#));
-    let journal = crate::records::decode_activation_journal(&bytes).expect("v1 journal");
-    assert_eq!(
-        journal.ownership, None,
-        "a v1 attempt never gains claimable facts"
-    );
-    assert!(matches!(
-        journal.phase,
-        ActivationPhase::RollbackPending { .. }
-    ));
-    assert_eq!(
-        recover_exact(&trust).expect("a v1 rollback finishes"),
-        WindowsActivationOutcome::RolledBack
-    );
-    assert_resolved(&trust, "1.0.0", None, "2.0.0", &["1.0.0"]);
 }
 
 /// First regular file below `tree/` that sits inside at least one subdirectory.

@@ -12,42 +12,37 @@
 //! (KEL-53 §4 "Candidate release after commit"), so the committed candidate
 //! outlives it.
 //!
-//! The module also holds the updater helper's System32-only DLL search and its
-//! elevated `runas` launch (KEL-53 §4 "Helper launch and self-anchor"), because
-//! it owns the crate's KEL-270 FFI whitelist.
+//! The module's private updater-helper child owns System32-only DLL search and
+//! elevated `runas` launch (KEL-53 §4 "Helper launch and self-anchor") within
+//! the existing crate's KEL-270 FFI whitelist.
 
 #![allow(unsafe_code)] // isolated Win32 Job/loader/shell ABI; every call has a local handle/pointer proof
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::ffi::OsStr;
 use std::io;
 use std::io::{Read as _, Write as _};
-use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-use std::os::windows::io::{
-    AsHandle, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
-};
-use std::path::{Component, Path, PathBuf, Prefix};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
 use keld_ipc::{
     WindowsLifecycleBinding, WindowsLifecyclePurpose, WindowsLifecycleRendezvousClient,
-    WindowsLifecycleRendezvousPeer, WindowsNamedPipeBootstrapStream,
+    WindowsLifecycleRendezvousPeer,
 };
 
 use crate::windows_lpac::{WindowsLpacError, WindowsSuspendedChild, nul_terminated_wide};
 
 use windows_sys::Win32::Foundation::{
-    CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_CANCELLED,
-    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NOT_SAME_OBJECT, FILETIME,
-    GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, S_FALSE, S_OK,
-    SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    DUPLICATE_SAME_ACCESS, DuplicateHandle, FILETIME, GetHandleInformation, HANDLE,
+    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
+#[cfg(test)]
+use windows_sys::Win32::Foundation::{ERROR_CANCELLED, S_FALSE, S_OK};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType, ReadFile,
 };
+#[cfg(test)]
 use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
 };
@@ -57,26 +52,20 @@ use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
-    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject,
-};
-use windows_sys::Win32::System::LibraryLoader::{
-    LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE};
 use windows_sys::Win32::System::Threading::{
     CreateWaitableTimerW, GetCurrentProcess, GetProcessId, GetProcessTimes, OpenProcess,
     OpenProcessToken, PROCESS_DUP_HANDLE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROCESS_TERMINATE, QueryFullProcessImageNameW, SetWaitableTimer, TerminateProcess,
-    WaitForSingleObject,
+    PROCESS_TERMINATE, SetWaitableTimer, TerminateProcess, WaitForSingleObject,
 };
-use windows_sys::Win32::UI::Shell::{
-    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-    ShellExecuteExW,
-};
+
+#[cfg(test)]
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 
 const HOST_START_TOKEN_V1: &[u8; 10] = b"KELDHOST/1";
 /// Fixed one-shot stage-cleanup signal written by a live `keld dev` launcher.
@@ -84,6 +73,12 @@ pub const WINDOWS_DEV_STAGE_CLEANUP_RELEASE_V1: &[u8; 14] = b"KELD-CLEANUP/1";
 const LIFECYCLE_ATTEMPT_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8 + 8;
 const LIFECYCLE_ATTEMPT_ACK_LEN: usize = 8 + 32 + 32 + 4;
 const LIFECYCLE_QUERY_HANDOFF_LEN: usize = 8 + 1 + 32 + 32 + 8;
+
+mod lifecycle_frames;
+use lifecycle_frames::{
+    encode_lifecycle_attempt_ack, encode_lifecycle_attempt_handoff, encode_lifecycle_query_handoff,
+    encode_lifecycle_query_receipt,
+};
 
 /// Result of the cleanup helper's private launcher pipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -865,233 +860,8 @@ impl WindowsLifecycleRetirementPending {
     }
 }
 
-/// Retained process-object identity observed from a connected Windows pipe peer.
-///
-/// The retained handle prevents PID reuse from changing this observation. The
-/// caller still compares `image_path` against a trusted installed-image digest;
-/// a PID or pipe DACL alone is not executable authentication.
-#[derive(Debug)]
-pub struct WindowsProcessPeer {
-    process: OwnedHandle,
-    process_id: u32,
-    session_id: u32,
-    token_facts: keld_ipc::WindowsPeerTokenFacts,
-    creation_time: u64,
-    image_path: PathBuf,
-}
-
-impl WindowsProcessPeer {
-    /// Opens and pins the exact PID and session reported by the connected pipe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the process exits before observation, its PID/session
-    /// differs from the pipe report, or its image/creation time cannot be read.
-    pub fn open(process_id: u32, pipe_session_id: u32) -> Result<Self, WindowsHostJobError> {
-        // SAFETY: the PID came from the OS pipe endpoint query; only identity
-        // query and synchronization rights are requested.
-        let raw_process = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-                0,
-                process_id,
-            )
-        };
-        if raw_process.is_null() {
-            return Err(WindowsHostJobError::new("keeper peer process open"));
-        }
-        // SAFETY: OpenProcess returned one fresh non-null owning process handle.
-        let process = unsafe { OwnedHandle::from_raw_handle(raw_process.cast()) };
-        // SAFETY: the retained process handle is live; GetProcessId is read-only.
-        let observed_id = unsafe { GetProcessId(process.as_raw_handle().cast()) };
-        if observed_id != process_id {
-            return Err(WindowsHostJobError::contract(
-                "keeper peer process identity",
-                "opened process ID differs from the connected pipe peer ID",
-            ));
-        }
-        let token_facts = process_token_facts(process.as_raw_handle().cast())?;
-        let observed_session = token_facts.session_id;
-        if observed_session != pipe_session_id {
-            return Err(WindowsHostJobError::contract(
-                "keeper peer session identity",
-                "process session differs from the connected pipe session",
-            ));
-        }
-        let mut image = vec![0_u16; 32_768];
-        let mut image_units = u32::try_from(image.len()).map_err(|_| {
-            WindowsHostJobError::contract(
-                "keeper peer image path",
-                "image buffer exceeds the Win32 size bound",
-            )
-        })?;
-        // SAFETY: process is retained, image is writable for image_units UTF-16
-        // code units, and image_units is writable length storage.
-        if unsafe {
-            QueryFullProcessImageNameW(
-                process.as_raw_handle().cast(),
-                0,
-                image.as_mut_ptr(),
-                &raw mut image_units,
-            )
-        } == 0
-        {
-            return Err(WindowsHostJobError::new("keeper peer image query"));
-        }
-        let image_units = usize::try_from(image_units).map_err(|_| {
-            WindowsHostJobError::contract(
-                "keeper peer image path",
-                "returned image path length exceeds usize",
-            )
-        })?;
-        if image_units == 0 || image_units > image.len() {
-            return Err(WindowsHostJobError::contract(
-                "keeper peer image path",
-                "returned image path length is invalid",
-            ));
-        }
-        let image_path = PathBuf::from(std::ffi::OsString::from_wide(&image[..image_units]));
-        let creation_time = process_creation_time(
-            process.as_raw_handle().cast(),
-            "keeper peer creation-time query",
-        )?;
-        // A process can exit after the pipe reports its PID. Refuse a stale
-        // process object before returning this connected-peer observation.
-        // The protocol challenge/ack must still bind the live connection.
-        // SAFETY: `process` owns the exact process handle from `OpenProcess`
-        // throughout this zero-time, read-only signal query.
-        match unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 0) } {
-            WAIT_TIMEOUT => {}
-            WAIT_OBJECT_0 => {
-                return Err(WindowsHostJobError::contract(
-                    "keeper peer process state query",
-                    "pipe peer exited before its identity was fully observed",
-                ));
-            }
-            _ => return Err(WindowsHostJobError::new("keeper peer process state query")),
-        }
-        Ok(Self {
-            process,
-            process_id,
-            session_id: observed_session,
-            token_facts,
-            creation_time,
-            image_path,
-        })
-    }
-
-    /// Duplicates this exact retained process-object observation for an independent
-    /// keeper owner; it does not reopen by PID or mint a new peer identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Windows cannot duplicate the retained process handle.
-    pub fn try_clone(&self) -> Result<Self, WindowsHostJobError> {
-        let mut duplicate = std::ptr::null_mut();
-        // SAFETY: `self.process` is an owned live process handle; SAME_ACCESS
-        // creates a second handle to that exact kernel object in this process.
-        if unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                self.process.as_raw_handle().cast(),
-                GetCurrentProcess(),
-                &raw mut duplicate,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            )
-        } == 0
-        {
-            return Err(WindowsHostJobError::new(
-                "keeper peer process pin duplication",
-            ));
-        }
-        // SAFETY: successful DuplicateHandle returned one fresh owning handle.
-        let process = unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) };
-        Ok(Self {
-            process,
-            process_id: self.process_id,
-            session_id: self.session_id,
-            token_facts: self.token_facts.clone(),
-            creation_time: self.creation_time,
-            image_path: self.image_path.clone(),
-        })
-    }
-
-    /// PID reported by the connected pipe and pinned by the process handle.
-    #[must_use]
-    pub const fn process_id(&self) -> u32 {
-        self.process_id
-    }
-
-    /// Session reported by the connected pipe and re-read from the process.
-    #[must_use]
-    pub const fn session_id(&self) -> u32 {
-        self.session_id
-    }
-
-    /// User SID, session and integrity facts queried from this exact process token.
-    #[must_use]
-    pub const fn token_facts(&self) -> &keld_ipc::WindowsPeerTokenFacts {
-        &self.token_facts
-    }
-
-    /// Process creation time in Windows FILETIME units.
-    #[must_use]
-    pub const fn creation_time(&self) -> u64 {
-        self.creation_time
-    }
-
-    /// Full image path reported by Windows for the retained process object.
-    #[must_use]
-    pub fn image_path(&self) -> &std::path::Path {
-        &self.image_path
-    }
-
-    /// Reports whether this exact process object has exited.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Windows cannot query the retained process handle.
-    pub fn has_exited(&self) -> Result<bool, WindowsHostJobError> {
-        // SAFETY: this owner retains the exact process object during the query.
-        match unsafe { WaitForSingleObject(self.process.as_raw_handle().cast(), 0) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(WindowsHostJobError::new("keeper peer process state query")),
-        }
-    }
-
-    /// Waits on this retained exact process object for a bounded duration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if Windows cannot wait on the retained process handle.
-    pub fn wait_until_exited(&self, timeout: Duration) -> Result<bool, WindowsHostJobError> {
-        let millis = finite_wait_millis(timeout);
-        // SAFETY: `self.process` is a retained process handle with synchronize
-        // rights; the timeout is finite and never uses INFINITE.
-        match unsafe { WaitForSingleObject(self.process.as_raw_handle().cast(), millis) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            _ => Err(WindowsHostJobError::new("keeper peer process wait")),
-        }
-    }
-}
-
-impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
-    fn process_id(&self) -> u32 {
-        self.process_id
-    }
-
-    fn session_id(&self) -> u32 {
-        self.session_id
-    }
-
-    fn has_exited(&self) -> io::Result<bool> {
-        WindowsProcessPeer::has_exited(self).map_err(|error| io::Error::other(error.to_string()))
-    }
-}
+mod process_peer;
+pub use process_peer::WindowsProcessPeer;
 
 /// One process that an attempt owner launched suspended, retained with the
 /// creation time recorded at launch.
@@ -1100,7 +870,8 @@ impl keld_ipc::WindowsLifecyclePeerPin for WindowsProcessPeer {
 /// connect-back", *Acceptance*): only the exact process object that the owner
 /// launched and still retains may claim. A process ID identifies a process only
 /// until that process exits, so the binding compares kernel objects. Dropping
-/// this value drops the child, which terminates a process it has not reaped.
+/// this value drops the child, which terminates a process it has neither reaped
+/// nor detached ([`Self::detach`]).
 ///
 /// The record pairs the child with its creation time, so the child is never lent
 /// mutably: [`Self::child`] is a shared borrow of a type without interior
@@ -1195,6 +966,52 @@ impl WindowsLaunchedProcess {
         self.child.terminate(exit_code)
     }
 
+    /// Keeps the released candidate: step 8 of the `PerUserDirect` accept order
+    /// (KEL-53 §4 "Candidate release after commit", *Order* and *Launch-record
+    /// detach*). Closes the record's process handle without terminating the
+    /// child and returns its identity for the exit log; the record and the
+    /// census are consumed.
+    ///
+    /// `census` is the witness that [`WindowsHostDeathJob::release_for_exit`]
+    /// returned, which is callable only with a [`WindowsReleasedAttempt`]: by
+    /// type the detach follows both clears, and because the census is neither
+    /// `Clone` nor `Copy` nor constructible outside this crate, one census
+    /// admits one detach. The witness is consumed, not read: its proof is the
+    /// two clears that produced it. Only the host's census is accepted; the
+    /// Machine-UAC helper, which releases the attempt Job alone, has no detach
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// Refuses, at run time, a child that was never resumed: it is not a
+    /// released candidate but a suspended process this record still owns, so
+    /// the record drops with the refusal and terminates it, as it does on every
+    /// other unwind today. That check reads the spent resume, not the type.
+    #[allow(clippy::needless_pass_by_value)] // the witness is spent by the move: through a reference one census would admit any number of detaches
+    pub fn detach(
+        self,
+        census: WindowsExitCensus,
+    ) -> Result<WindowsDetachedLaunch, WindowsHostJobError> {
+        // Spent, not read: the witness proves the two clears that produced it.
+        let WindowsExitCensus { .. } = census;
+        if !self.child.is_resumed() {
+            return Err(WindowsHostJobError::contract(
+                "launch record detach",
+                "the child was never resumed, so it is a suspended process this record owns, not a released candidate; terminated",
+            ));
+        }
+        let Self {
+            child,
+            creation_time,
+        } = self;
+        let process_id = child.id();
+        child.detach();
+        Ok(WindowsDetachedLaunch {
+            process_id,
+            creation_time,
+        })
+    }
+
     /// Binds a connected claimant to this exact launch.
     ///
     /// `claimant` is the process that the connected pipe's client process ID
@@ -1237,6 +1054,95 @@ impl WindowsLaunchedProcess {
                 source,
             }
         })
+    }
+
+    /// Waits on the retained launch handle for at most `timeout` and reports
+    /// whether it signaled, so the launched process has exited (KEL-53 §4
+    /// *Margin and deadlines*: the claim wait is bounded by the deadline and by
+    /// the launch handle). This is the watcher's primitive: a thread that holds
+    /// a shared borrow of the record waits here while the record's owner runs
+    /// the claim wait, and on `true` drives the attempt endpoint's claim
+    /// canceller.
+    ///
+    /// Like [`Self::has_exited`] it consumes nothing: it neither reaps nor
+    /// terminates the child, leaves the retained handle open, and may be asked
+    /// any number of times, from any thread, through the shared borrow; the
+    /// record is `Sync`:
+    ///
+    /// ```
+    /// fn is_sync<T: Sync>() {}
+    /// is_sync::<keld_runtime::windows_job::WindowsLaunchedProcess>();
+    /// ```
+    ///
+    /// It waits on the kernel object the record retains, never on a process
+    /// ID, so a reused ID cannot be observed; and it borrows the record, so a
+    /// watcher cannot outlive the record's detach or drop and holds no handle
+    /// of its own:
+    ///
+    /// ```compile_fail,E0521
+    /// fn watch(launched: &keld_runtime::windows_job::WindowsLaunchedProcess) {
+    ///     std::thread::spawn(move || {
+    ///         launched.wait_until_exited(std::time::Duration::from_millis(50))
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// The wait is bounded and finite, never `INFINITE`, and nothing but the
+    /// handle or the timeout ends it: a watcher that must also end when the
+    /// wait it serves has ended loops on short slices and reads its stop
+    /// condition between them, so it outlives that end by at most one slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `timeout` does not fit the monotonic clock or
+    /// Windows cannot wait on the retained launch handle.
+    pub fn wait_until_exited(&self, timeout: Duration) -> Result<bool, WindowsHostJobError> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            WindowsHostJobError::contract(
+                "launch handle wait",
+                "the timeout does not fit the monotonic clock",
+            )
+        })?;
+        wait_handle_bounded(
+            self.child.process_handle().as_raw_handle().cast(),
+            deadline,
+            "launch handle wait",
+        )
+    }
+}
+
+/// The released candidate by identity only, after
+/// [`WindowsLaunchedProcess::detach`] (KEL-53 §4 "Candidate release after
+/// commit", *Launch-record detach*): the process ID and creation time for the
+/// exit log. It holds no handle, so dropping it ends nothing, and nothing can
+/// wait on, bind or terminate the candidate through it:
+///
+/// ```compile_fail,E0599
+/// use std::os::windows::io::AsRawHandle as _;
+/// fn raw(detached: &keld_runtime::windows_job::WindowsDetachedLaunch) {
+///     let _ = detached.as_raw_handle();
+/// }
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub struct WindowsDetachedLaunch {
+    process_id: u32,
+    creation_time: u64,
+}
+
+impl WindowsDetachedLaunch {
+    /// The process ID that process creation reported for the candidate. It
+    /// names the candidate only until it exits (see
+    /// [`WindowsSuspendedChild::id`]); the host holds no handle to pin it.
+    #[must_use]
+    pub const fn process_id(&self) -> u32 {
+        self.process_id
+    }
+
+    /// The creation time read from the launch handle when the candidate was
+    /// recorded, which with the process ID identifies the exact process.
+    #[must_use]
+    pub const fn creation_time(&self) -> u64 {
+        self.creation_time
     }
 }
 
@@ -1292,153 +1198,13 @@ impl std::error::Error for WindowsClaimantRefusal {
     }
 }
 
-/// Process-object identity compared by the claimant binding. The lifetime keeps
-/// the raw handle's owner alive while the observation is in use.
-#[derive(Clone, Copy)]
-struct ProcessObservation<'a> {
-    handle: HANDLE,
-    process_id: u32,
-    creation_time: u64,
-    _owner: std::marker::PhantomData<&'a OwnedHandle>,
-}
-
-impl<'a> ProcessObservation<'a> {
-    fn of_peer(peer: &'a WindowsProcessPeer) -> Self {
-        Self {
-            handle: peer.process.as_raw_handle().cast(),
-            process_id: peer.process_id,
-            creation_time: peer.creation_time,
-            _owner: std::marker::PhantomData,
-        }
-    }
-
-    fn of_launch(launch: &'a WindowsLaunchedProcess) -> Self {
-        Self {
-            handle: launch.child.process_handle().as_raw_handle().cast(),
-            process_id: launch.child.id(),
-            creation_time: launch.creation_time,
-            _owner: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Requires the three acceptance facts in their specified order.
-fn bind_observed_claimant(
-    claimant: ProcessObservation<'_>,
-    launch: ProcessObservation<'_>,
-) -> Result<(), WindowsClaimantRefusal> {
-    match same_kernel_object(claimant.handle, launch.handle) {
-        Ok(true) => {}
-        Ok(false) => return Err(WindowsClaimantRefusal::NotLaunchedProcess),
-        Err(source) => {
-            return Err(WindowsClaimantRefusal::Unverifiable {
-                phase: "claimant process-object comparison",
-                source,
-            });
-        }
-    }
-    // The launch observation borrows its owner, which retains the launch handle
-    // through this query.
-    match process_signaled(launch.handle) {
-        Ok(false) => {}
-        Ok(true) => return Err(WindowsClaimantRefusal::LaunchExited),
-        Err(source) => {
-            return Err(WindowsClaimantRefusal::Unverifiable {
-                phase: "launch handle state query",
-                source,
-            });
-        }
-    }
-    if claimant.process_id != launch.process_id || claimant.creation_time != launch.creation_time {
-        return Err(WindowsClaimantRefusal::LaunchIdentityMismatch);
-    }
-    Ok(())
-}
-
-/// Reports whether a process handle is signaled, with a zero-time wait that
-/// consumes nothing. The caller retains the handle through the call.
-fn process_signaled(process: HANDLE) -> io::Result<bool> {
-    // SAFETY: WaitForSingleObject reads no caller memory and resolves `process`
-    // only through this process's handle table, so no value makes the call
-    // unsound. That the caller retains this handle through the call is a
-    // correctness precondition: a closed value that was reused would name another
-    // object and would not fail.
-    match unsafe { WaitForSingleObject(process, 0) } {
-        WAIT_OBJECT_0 => Ok(true),
-        WAIT_TIMEOUT => Ok(false),
-        _ => Err(io::Error::last_os_error()),
-    }
-}
-
-/// Reports whether one process is a member of one Job hierarchy, by the handles
-/// their owners retain through the call. A null `job` asks whether the process
-/// belongs to any Job.
-fn process_in_job(
-    process: HANDLE,
-    job: HANDLE,
-    phase: &'static str,
-) -> Result<bool, WindowsHostJobError> {
-    let mut in_job = 0;
-    // SAFETY: the callers retain both handles through this synchronous call,
-    // IsProcessInJob resolves them only through this process's handle table, and
-    // `in_job` is writable BOOL storage.
-    if unsafe { IsProcessInJob(process, job, &raw mut in_job) } == 0 {
-        return Err(WindowsHostJobError::new(phase));
-    }
-    Ok(in_job != 0)
-}
-
-/// Reports whether two handles name one kernel object.
-///
-/// `CompareObjectHandles` requires no access right on either handle. Its
-/// reference page documents only the return value: `TRUE` for one object,
-/// otherwise `FALSE`. Its example names `ERROR_NOT_SAME_OBJECT` only for two
-/// objects of different types, an event and a process. That two different
-/// process objects leave `ERROR_NOT_SAME_OBJECT`, and that a null, out-of-range
-/// or closed handle leaves `ERROR_INVALID_HANDLE`, is observed only on Windows 11
-/// build 26300, pinned by
-/// `compare_object_handles_classifies_same_different_and_invalid_handles` and
-/// `compare_object_handles_refuses_a_closed_handle`. So `FALSE` with
-/// `ERROR_NOT_SAME_OBJECT` is the only different-object verdict, and any other
-/// `FALSE` is an error. Every non-`TRUE` result refuses the claimant: the verdict
-/// as [`WindowsClaimantRefusal::NotLaunchedProcess`], an error as
-/// [`WindowsClaimantRefusal::Unverifiable`].
-fn same_kernel_object(first: HANDLE, second: HANDLE) -> io::Result<bool> {
-    // SAFETY: CompareObjectHandles only resolves the two handle values through
-    // this process's handle table and dereferences no caller memory; an unusable
-    // value makes it fail without touching any object.
-    if unsafe { CompareObjectHandles(first, second) } != 0 {
-        return Ok(true);
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(ERROR_NOT_SAME_OBJECT.cast_signed()) {
-        return Ok(false);
-    }
-    Err(error)
-}
-
-/// Reads one retained process object's creation time in FILETIME units.
-fn process_creation_time(process: HANDLE, phase: &'static str) -> Result<u64, WindowsHostJobError> {
-    let mut creation = FILETIME::default();
-    let mut exit = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    // SAFETY: the caller retains the process handle and all four FILETIME outputs
-    // are writable.
-    if unsafe {
-        GetProcessTimes(
-            process,
-            &raw mut creation,
-            &raw mut exit,
-            &raw mut kernel,
-            &raw mut user,
-        )
-    } == 0
-    {
-        return Err(WindowsHostJobError::new(phase));
-    }
-    Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
-}
+mod claimant_identity;
+#[cfg(test)]
+use claimant_identity::same_kernel_object;
+use claimant_identity::{
+    ProcessObservation, bind_observed_claimant, process_creation_time, process_in_job,
+    process_signaled,
+};
 
 /// One live process that an attempt Job admits as its direct host, borrowed
 /// from the owner that retains it.
@@ -2915,120 +2681,15 @@ fn query_job_active_processes(raw_job: HANDLE) -> Result<u32, WindowsHostJobErro
     Ok(accounting.ActiveProcesses)
 }
 
-/// Initial capacity, in process IDs, of one Job process-ID snapshot. A host, its
-/// Bun primary, its `WebView2` processes and a candidate family fit; a larger Job
-/// grows the buffer.
-const JOB_PROCESS_ID_LIST_INITIAL_IDS: usize = 32;
-/// IDs added beyond the reported count when a snapshot buffer grows, for members
-/// that join between the report and the next query.
-const JOB_PROCESS_ID_LIST_GROWTH_SLACK: usize = 16;
-/// Bound on buffer growth within one snapshot; a Job whose member count outruns
-/// it that often is refused rather than queried without end.
-const JOB_PROCESS_ID_LIST_GROWTH_LIMIT: u32 = 8;
-
-/// Lists the IDs of the live processes in one Job hierarchy: the process-ID
-/// lister of KEL-53 §5 (slice S6b3), which the host-death census uses and the
-/// Machine-UAC census of S12 reuses.
-///
-/// The list is a snapshot. A member can exit, and its ID be reused, after the
-/// call returns, so callers bind each ID to a process handle and check that
-/// process's Job membership before acting on it. A list shorter than the
-/// assigned count is retaken with a larger buffer.
-fn list_job_process_ids(
-    raw_job: HANDLE,
-    phase: &'static str,
-) -> Result<Vec<u32>, WindowsHostJobError> {
-    list_job_process_ids_from(raw_job, JOB_PROCESS_ID_LIST_INITIAL_IDS, phase)
-}
-
-/// [`list_job_process_ids`] from a caller-chosen initial capacity, so the growth
-/// path is reachable with a small Job.
-fn list_job_process_ids_from(
-    raw_job: HANDLE,
-    initial_ids: usize,
-    phase: &'static str,
-) -> Result<Vec<u32>, WindowsHostJobError> {
-    // The record is two u32 counts followed by the ULONG_PTR ID array, so a
-    // usize buffer holds it at the alignment it requires and the IDs start at a
-    // whole-word offset.
-    const HEADER_WORDS: usize =
-        std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
-            / std::mem::size_of::<usize>();
-    const _: () = assert!(
-        std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
-            % std::mem::size_of::<usize>()
-            == 0
-    );
-    let mut capacity = initial_ids.max(1);
-    for _ in 0..JOB_PROCESS_ID_LIST_GROWTH_LIMIT {
-        let mut buffer = vec![0_usize; HEADER_WORDS + capacity];
-        let bytes = u32::try_from(std::mem::size_of_val(buffer.as_slice())).map_err(|_| {
-            WindowsHostJobError::contract(phase, "process-ID list buffer exceeds u32")
-        })?;
-        // SAFETY: the caller retains the live Job handle; `buffer` is writable,
-        // usize-aligned storage of exactly `bytes`, which holds the record header
-        // and `capacity` IDs; the API writes within that size and retains no
-        // pointer.
-        let queried = unsafe {
-            QueryInformationJobObject(
-                raw_job,
-                JobObjectBasicProcessIdList,
-                buffer.as_mut_ptr().cast(),
-                bytes,
-                std::ptr::null_mut(),
-            )
-        };
-        let short_buffer = if queried == 0 {
-            let source = io::Error::last_os_error();
-            if source.raw_os_error() != Some(ERROR_MORE_DATA.cast_signed()) {
-                return Err(WindowsHostJobError { phase, source });
-            }
-            true
-        } else {
-            false
-        };
-        // SAFETY: `buffer` starts with at least the record's size in initialized
-        // bytes at the alignment the record requires; the read copies the header
-        // out and keeps no pointer into the buffer.
-        let header = unsafe {
-            buffer
-                .as_ptr()
-                .cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()
-                .read()
-        };
-        let assigned = usize::try_from(header.NumberOfAssignedProcesses).map_err(|_| {
-            WindowsHostJobError::contract(phase, "assigned-process count exceeds usize")
-        })?;
-        let listed = usize::try_from(header.NumberOfProcessIdsInList).map_err(|_| {
-            WindowsHostJobError::contract(phase, "listed-process count exceeds usize")
-        })?;
-        if listed > capacity {
-            return Err(WindowsHostJobError::contract(
-                phase,
-                "the Job reported more process IDs than the snapshot buffer holds",
-            ));
-        }
-        if short_buffer || listed < assigned {
-            capacity = assigned
-                .max(capacity.saturating_mul(2))
-                .saturating_add(JOB_PROCESS_ID_LIST_GROWTH_SLACK);
-            continue;
-        }
-        return buffer
-            .iter()
-            .skip(HEADER_WORDS)
-            .take(listed)
-            .map(|&id| {
-                u32::try_from(id)
-                    .map_err(|_| WindowsHostJobError::contract(phase, "process ID exceeds u32"))
-            })
-            .collect();
-    }
-    Err(WindowsHostJobError::contract(
-        phase,
-        "the Job's process list outgrew the snapshot buffer at every retake",
-    ))
-}
+mod process_id_snapshot;
+#[cfg(test)]
+use self::process_id_snapshot::{
+    JOB_PROCESS_ID_LIST_GROWTH_LIMIT, JOB_PROCESS_ID_LIST_HEADER_WORDS,
+    JOB_PROCESS_ID_LIST_INITIAL_IDS,
+};
+use self::process_id_snapshot::{WindowsJobProcessIdSnapshot, list_job_process_ids};
+#[cfg(test)]
+use self::process_id_snapshot::{list_job_process_ids_from, list_job_process_ids_with};
 
 fn open_lifecycle_transfer_target(
     target: &WindowsProcessPeer,
@@ -3126,70 +2787,11 @@ fn open_lifecycle_transfer_target(
     }
 }
 
-fn encode_lifecycle_attempt_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_job: usize,
-    remote_lease: usize,
-) -> Result<[u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_job = u64::try_from(remote_job).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote Job handle exceeds the wire integer width",
-        )
-    })?;
-    let remote_lease = u64::try_from(remote_lease).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle attempt handoff record",
-            "remote lease handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_ATTEMPT_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-HO1");
-    record[8] = WindowsLifecyclePurpose::CoordinatorToKeeper as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_job.to_le_bytes());
-    record[81..89].copy_from_slice(&remote_lease.to_le_bytes());
-    Ok(record)
-}
-
 fn terminate_incomplete_lifecycle_keeper(reason: &str) -> ! {
     eprintln!(
         "KELD-RUNTIME-014: malformed or incomplete one-shot keeper handoff ({reason}); terminating so unknown remote handles close"
     );
     std::process::abort();
-}
-
-fn encode_lifecycle_query_handoff(
-    binding: WindowsLifecycleBinding,
-    remote_query: usize,
-) -> Result<[u8; LIFECYCLE_QUERY_HANDOFF_LEN], WindowsHostJobError> {
-    let remote_query = u64::try_from(remote_query).map_err(|_| {
-        WindowsHostJobError::contract(
-            "lifecycle successor query offer",
-            "remote query handle exceeds the wire integer width",
-        )
-    })?;
-    let mut record = [0_u8; LIFECYCLE_QUERY_HANDOFF_LEN];
-    record[..8].copy_from_slice(b"KELD-QO1");
-    record[8] = WindowsLifecyclePurpose::KeeperToSuccessor as u8;
-    record[9..41].copy_from_slice(binding.attempt_id());
-    record[41..73].copy_from_slice(binding.lifecycle_channel_id());
-    record[73..81].copy_from_slice(&remote_query.to_le_bytes());
-    Ok(record)
-}
-
-fn encode_lifecycle_query_receipt(
-    magic: [u8; 8],
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut receipt = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    receipt[..8].copy_from_slice(&magic);
-    receipt[8..40].copy_from_slice(binding.attempt_id());
-    receipt[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    receipt[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    receipt
 }
 
 fn terminate_lifecycle_transfer_target(
@@ -3357,18 +2959,6 @@ fn attenuate_keeper_activation_lease(
     Ok(reduced)
 }
 
-fn encode_lifecycle_attempt_ack(
-    binding: WindowsLifecycleBinding,
-    active_processes: u32,
-) -> [u8; LIFECYCLE_ATTEMPT_ACK_LEN] {
-    let mut acknowledgement = [0_u8; LIFECYCLE_ATTEMPT_ACK_LEN];
-    acknowledgement[..8].copy_from_slice(b"KELD-HR1");
-    acknowledgement[8..40].copy_from_slice(binding.attempt_id());
-    acknowledgement[40..72].copy_from_slice(binding.lifecycle_channel_id());
-    acknowledgement[72..76].copy_from_slice(&active_processes.to_le_bytes());
-    acknowledgement
-}
-
 fn process_token_facts(
     process: HANDLE,
 ) -> Result<keld_ipc::WindowsPeerTokenFacts, WindowsHostJobError> {
@@ -3445,6 +3035,10 @@ impl std::error::Error for WindowsHostJobError {
         Some(&self.source)
     }
 }
+
+mod host_death_census;
+pub use host_death_census::WindowsExitCensus;
+use host_death_census::{exit_census, open_census_member};
 
 /// The host's own host-death Job, held as a capability (KEL-53 §4 "Candidate
 /// release after commit", *Handle ownership*; Architecture 06 §1).
@@ -3545,166 +3139,11 @@ impl WindowsHostDeathJob {
             raw_job,
             released.handle.as_raw_handle().cast(),
             deadline,
+            || list_job_process_ids(raw_job, "host-death census snapshot"),
             open_member,
         )?;
         clear_job_kill_on_close(raw_job, "host-death Job release")?;
         Ok(census)
-    }
-}
-
-/// Witness of one host-death census (KEL-53 §4 "Candidate release after
-/// commit", *Census and policy*): what the final clean snapshot showed and what
-/// the census did on the way there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowsExitCensus {
-    /// Members of the released family in the final snapshot: processes in both
-    /// the host-death Job and the released attempt Job, the host excluded.
-    pub family: u32,
-    /// Members outside the family that the census terminated through the handles
-    /// it opened, over every snapshot. A member found already exited is not
-    /// counted; the next snapshot no longer lists it.
-    pub terminated: u32,
-    /// Snapshots of the host-death Job's process-ID list, the final clean one
-    /// included.
-    pub snapshots: u32,
-}
-
-/// The rights the census needs on one listed member: classification through
-/// `IsProcessInJob`, the exit wait and, outside the family, termination.
-const CENSUS_MEMBER_RIGHTS: u32 =
-    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
-/// Bound on one wait for a member whose termination was denied, before the
-/// next snapshot. The deadline refusal covers a member that never exits.
-const CENSUS_DENIED_MEMBER_WAIT: Duration = Duration::from_millis(25);
-
-/// Opens one member of the host-death Job by the ID a snapshot listed, with
-/// exactly the census rights. This is the census's only lookup of that reusable
-/// ID: it classifies, waits and terminates through the handle returned here.
-///
-/// An ID that names no process object fails with `ERROR_INVALID_PARAMETER`, the
-/// status the census reads as "exited after the snapshot". An exited member
-/// whose object another open handle still keeps alive opens like a live one;
-/// its handle is signaled, and the census classifies it as any other member.
-/// Which of the two an exited ID shows depends on handles other processes
-/// hold, so the census relies on both.
-fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
-    // SAFETY: OpenProcess reads no caller memory; a numeric ID that names no
-    // process object makes it fail. A non-null result is one fresh owning
-    // handle, converted exactly once below.
-    let raw = unsafe { OpenProcess(CENSUS_MEMBER_RIGHTS, 0, process_id) };
-    if raw.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: `raw` is the fresh non-null owning handle returned above.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
-}
-
-/// The host-death census of [`WindowsHostDeathJob::release_for_exit`]. The
-/// Jobs' owners retain both handles through the call.
-fn exit_census(
-    host_death_job: HANDLE,
-    attempt_job: HANDLE,
-    deadline: Instant,
-    mut open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
-) -> Result<WindowsExitCensus, WindowsHostJobError> {
-    let own_process_id = std::process::id();
-    let mut terminated = 0_u32;
-    let mut snapshots = 0_u32;
-    loop {
-        snapshots = snapshots.saturating_add(1);
-        let listed = list_job_process_ids(host_death_job, "host-death census snapshot")?;
-        let mut family = 0_u32;
-        let mut clean = true;
-        let mut terminating = Vec::new();
-        let mut denied = Vec::new();
-        for process_id in listed {
-            if process_id == own_process_id {
-                continue;
-            }
-            let member = match open_member(process_id) {
-                Ok(member) => member,
-                Err(source)
-                    if source.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) =>
-                {
-                    // The member exited after the snapshot; the next one omits it.
-                    clean = false;
-                    continue;
-                }
-                Err(source) => {
-                    return Err(WindowsHostJobError {
-                        phase: "host-death census member open",
-                        source,
-                    });
-                }
-            };
-            let raw = member.as_raw_handle().cast();
-            if !process_in_job(raw, host_death_job, "host-death census Job membership")? {
-                // The listed ID was reused by a process outside the Job.
-                clean = false;
-                continue;
-            }
-            if process_in_job(raw, attempt_job, "host-death census family membership")? {
-                family = family.saturating_add(1);
-                continue;
-            }
-            clean = false;
-            if process_signaled(raw).map_err(|source| WindowsHostJobError {
-                phase: "host-death census member state query",
-                source,
-            })? {
-                // Already terminated; the list removes it on its own.
-                continue;
-            }
-            // SAFETY: `member` is the live handle this census opened with
-            // PROCESS_TERMINATE; the call reads no caller memory. The member is a
-            // process of the host's own Job outside the released family, which
-            // closing that Job at exit would terminate in the same way.
-            if unsafe { TerminateProcess(raw, 1) } == 0 {
-                // Denied, as for a protected process: it stays in the next
-                // snapshot and the deadline refusal covers it.
-                denied.push(member);
-                continue;
-            }
-            terminated = terminated.saturating_add(1);
-            terminating.push(member);
-        }
-        for member in &terminating {
-            wait_handle_until(
-                member.as_raw_handle().cast(),
-                deadline,
-                "host-death census member exit",
-            )?;
-        }
-        if clean {
-            return Ok(WindowsExitCensus {
-                family,
-                terminated,
-                snapshots,
-            });
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(WindowsHostJobError::contract(
-                "host-death census",
-                format!(
-                    "the deadline passed with a member outside the released family still in the \
-                     host-death Job after {snapshots} snapshot(s); not released"
-                ),
-            ));
-        }
-        if let Some(member) = denied.first() {
-            // A member the census could not terminate paces the next snapshot
-            // through a bounded wait on its own handle, in case it exits on its
-            // own; nothing here waits for a member that is already signaled.
-            let bound = now
-                .checked_add(CENSUS_DENIED_MEMBER_WAIT)
-                .map_or(deadline, |bound| bound.min(deadline));
-            wait_handle_bounded(
-                member.as_raw_handle().cast(),
-                bound,
-                "host-death census denied-member wait",
-            )?;
-        }
     }
 }
 
@@ -3770,669 +3209,17 @@ pub fn install_host_death_job() -> Result<WindowsHostDeathJob, WindowsHostJobErr
     })
 }
 
-/// Failure to restrict this process's DLL search to System32
-/// (`KELD-RUNTIME-018`).
-#[derive(Debug)]
-pub struct WindowsDllSearchError {
-    source: io::Error,
-}
+mod helper_path;
+pub use helper_path::WindowsUpdaterHelperPath;
 
-impl std::fmt::Display for WindowsDllSearchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-RUNTIME-018: restricting this process's DLL search to System32 failed: {}. \
-             Exit before loading any library or doing protected work; never continue on the \
-             standard search path, which includes the current directory and PATH.",
-            self.source
-        )
-    }
-}
-
-impl std::error::Error for WindowsDllSearchError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-/// Restricts every later DLL search of this process to System32.
-///
-/// This is the updater helper's first statement (KEL-53 §4 "Helper launch and
-/// self-anchor"): `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`.
-/// Microsoft documents the resulting search path as process-wide, lasting for
-/// the life of the process and impossible to revert to the standard search
-/// path. Afterwards a `LoadLibraryW` by module name searches none of the
-/// application directory, the current directory and `PATH`. It does not cover
-/// the static imports that the loader resolved before `main`.
-///
-/// # Errors
-///
-/// Returns [`WindowsDllSearchError`] when Windows refuses the call; the caller
-/// must then exit without loading anything.
-pub fn restrict_dll_search_to_system32() -> Result<(), WindowsDllSearchError> {
-    // SAFETY: SetDefaultDllDirectories takes one flags value and no pointer;
-    // LOAD_LIBRARY_SEARCH_SYSTEM32 is a documented flag, and the call changes
-    // only this process's loader search path.
-    if unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) } == 0 {
-        return Err(WindowsDllSearchError {
-            source: io::Error::last_os_error(),
-        });
-    }
-    Ok(())
-}
-
-/// The updater helper's fixed recovery-role selector (KEL-53 §4 "Helper launch
-/// and self-anchor"; Coordination record, Linear KEL-270 comment
-/// `7905ec8a-2529-4c23-90f4-878d315bc0e5`, 2026-10-07).
-///
-/// Exact ASCII and case-sensitive. It is the helper's only accepted argument
-/// besides an attempt rendezvous name, and the helper's argument parser imports
-/// this constant rather than restating it. It is a cross-version argument
-/// contract: a host may start an older tree's helper for recovery.
-pub const WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR: &str = "--recovery-role";
-
-/// The updater helper's single argument, from a closed set (KEL-53 §4
-/// "Machine-UAC bootstrap" items 1 and 3).
-///
-/// It is either the activation role's bootstrap rendezvous name, exactly
-/// `\\.\pipe\keld-attempt-<64 lowercase hex>`, or
-/// [`WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR`]. Neither conveys authority.
-/// Both are a single command-line token, because neither contains whitespace
-/// or a quotation mark.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsUpdaterHelperArgument {
-    role: UpdaterHelperRole,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum UpdaterHelperRole {
-    Activation { rendezvous: String },
-    Recovery,
-}
-
-impl WindowsUpdaterHelperArgument {
-    /// The activation role's argument: the name of the bootstrap endpoint that
-    /// the host created before the launch.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WindowsUpdaterHelperLaunchError::ArgumentShape`] unless
-    /// `rendezvous` passes keld-ipc's
-    /// [`WindowsNamedPipeBootstrapStream::is_attempt_endpoint`], the one owner
-    /// of that shape.
-    pub fn activation(rendezvous: &str) -> Result<Self, WindowsUpdaterHelperLaunchError> {
-        if !WindowsNamedPipeBootstrapStream::is_attempt_endpoint(rendezvous) {
-            return Err(WindowsUpdaterHelperLaunchError::ArgumentShape);
-        }
-        Ok(Self {
-            role: UpdaterHelperRole::Activation {
-                rendezvous: rendezvous.to_owned(),
-            },
-        })
-    }
-
-    /// The recovery role's argument,
-    /// [`WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR`].
-    #[must_use]
-    pub const fn recovery() -> Self {
-        Self {
-            role: UpdaterHelperRole::Recovery,
-        }
-    }
-
-    /// The exact argument text the helper receives.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match &self.role {
-            UpdaterHelperRole::Activation { rendezvous } => rendezvous,
-            UpdaterHelperRole::Recovery => WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR,
-        }
-    }
-}
-
-/// A Win32-canonical drive-letter `.exe` path for
-/// [`launch_elevated_updater_helper`].
-///
-/// `SHELLEXECUTEINFO` resolves a file name without a path against the current
-/// directory, and hands a document file to its associated application. This
-/// type admits a path only when all of these hold:
-/// - it starts at a drive root (`C:\...`): no UNC, `\\?\` or `\\.\` prefix,
-///   and no relative or drive-relative form;
-/// - it names an `.exe`;
-/// - Win32 would not rewrite it: no `.` or `..` component, only single `\`
-///   separators, and `GetFullPathNameW` (through `std::path::absolute`)
-///   returns it unchanged;
-/// - no component ends in `.` or a space, which Win32 strips;
-/// - no component holds `<>:"|?*`, NUL or another character below 0x20
-///   (`:` would name an alternate data stream);
-/// - no component is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
-///   `COM1`-`COM9`, `LPT1`-`LPT9` and their superscript-digit forms), with or
-///   without an extension.
-///
-/// So the shell receives exactly the spelling the caller derived. The type
-/// checks spelling only. It does not decide whether the drive is local (a
-/// `subst` or mapped drive letter passes), resolve 8.3 aliases or reparse
-/// points, or prove which file runs. The host's derivation from admitted
-/// provenance (KEL-53 §6 S9a) and the helper's self-anchor (S9c) own those
-/// facts (KEL-53 §4 "Helper launch and self-anchor").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsUpdaterHelperPath {
-    path: PathBuf,
-    file: Vec<u16>,
-    directory: Vec<u16>,
-}
-
-impl WindowsUpdaterHelperPath {
-    /// Admits `path` if it is a Win32-canonical drive-letter `.exe` path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WindowsUpdaterHelperLaunchError::HelperPath`] naming the first
-    /// rule that `path` breaks.
-    pub fn new(path: &Path) -> Result<Self, WindowsUpdaterHelperLaunchError> {
-        let refuse = |rule| Err(WindowsUpdaterHelperLaunchError::HelperPath { rule });
-        let mut components = path.components();
-        let Some(Component::Prefix(prefix)) = components.next() else {
-            return refuse("it does not start with a drive letter");
-        };
-        if !matches!(prefix.kind(), Prefix::Disk(_)) {
-            return refuse("its prefix is not a plain drive letter");
-        }
-        if components.next() != Some(Component::RootDir) {
-            return refuse("it is not absolute from the drive root");
-        }
-        let mut names = Vec::new();
-        for component in components {
-            let Component::Normal(name) = component else {
-                return refuse("it has a `..` component");
-            };
-            if name.encode_wide().any(|unit| unit == u16::from(b':')) {
-                return refuse("it names an alternate data stream");
-            }
-            if name.encode_wide().any(is_forbidden_name_unit) {
-                return refuse("it holds a character that Win32 forbids in a name");
-            }
-            // Checked before the full-path check: Microsoft documents that
-            // before Windows 11 that normalization turns a path naming a legacy
-            // device into a `\\.\` device path, which would change the rule.
-            if is_reserved_device_name(name) {
-                return refuse("a component is a reserved device name");
-            }
-            names.push(name);
-        }
-        let Some(file_name) = names.last() else {
-            return refuse("it names no file");
-        };
-        if !Path::new(file_name)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-        {
-            return refuse("it does not name an `.exe` image");
-        }
-        // Component parsing drops `.` components and repeated or trailing
-        // separators and reads `/` as a separator, so a path is canonical
-        // exactly when its components rebuild the same text.
-        if path.components().collect::<PathBuf>().as_os_str() != path.as_os_str() {
-            return refuse(
-                "it is not canonical: a `.` component or a `/`, doubled or trailing separator",
-            );
-        }
-        // Win32's own normalization (GetFullPathNameW) also removes a single
-        // trailing `.` from an inner component.
-        if std::path::absolute(path)
-            .ok()
-            .as_deref()
-            .map(Path::as_os_str)
-            != Some(path.as_os_str())
-        {
-            return refuse("Win32 rewrites it to a different full path");
-        }
-        // GetFullPathNameW keeps an inner trailing space and a run of periods,
-        // but Win32 file names must not end in either.
-        for name in &names {
-            if name
-                .encode_wide()
-                .last()
-                .is_some_and(|unit| unit == u16::from(b'.') || unit == u16::from(b' '))
-            {
-                return refuse("a component ends in `.` or a space");
-            }
-        }
-        let (Some(file), Some(directory)) = (
-            nul_terminated_wide(path.as_os_str()),
-            path.parent()
-                .and_then(|parent| nul_terminated_wide(parent.as_os_str())),
-        ) else {
-            return refuse("it contains a NUL");
-        };
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
-            directory,
-        })
-    }
-
-    /// The admitted path, unchanged.
-    #[must_use]
-    pub fn as_path(&self) -> &Path {
-        &self.path
-    }
-}
-
-/// Whether `unit` is one of the characters that Microsoft's "Naming Files,
-/// Paths, and Namespaces" forbids in a file or directory name: `<>"/\|?*` or
-/// a value from 0 through 31. `:` is checked separately, and the separators
-/// never reach a component.
-fn is_forbidden_name_unit(unit: u16) -> bool {
-    unit < 0x20
-        || b"<>\"|?*"
-            .iter()
-            .any(|forbidden| unit == u16::from(*forbidden))
-}
-
-/// Whether `name` is a reserved device name, alone or followed by an
-/// extension: `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `COM¹`-`COM³`,
-/// `LPT1`-`LPT9` or `LPT¹`-`LPT³`, in any case ("Naming Files, Paths, and
-/// Namespaces": "NUL.txt and NUL.tar.gz are both equivalent to NUL"). Spaces
-/// before the first `.` are ignored, so a spelling such as `NUL .exe` is also
-/// refused.
-fn is_reserved_device_name(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end_matches(' ')
-        .to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || stem
-            .strip_prefix("COM")
-            .or_else(|| stem.strip_prefix("LPT"))
-            .is_some_and(|digit| {
-                matches!(
-                    digit,
-                    "1" | "2"
-                        | "3"
-                        | "4"
-                        | "5"
-                        | "6"
-                        | "7"
-                        | "8"
-                        | "9"
-                        | "\u{b9}"
-                        | "\u{b2}"
-                        | "\u{b3}"
-                )
-            })
-}
-
-/// Why an elevated updater-helper launch refused or failed
-/// (`KELD-RUNTIME-019`).
-///
-/// No variant retains a helper process handle. [`Self::HelperPath`],
-/// [`Self::ArgumentShape`] and [`Self::ComInitialization`] refuse before the
-/// shell is called, and [`Self::Declined`] means the user refused consent, so
-/// no helper started. After [`Self::NoProcessHandle`] or
-/// [`Self::ProcessIdentity`] an elevated helper may already be running, unbound
-/// to this launch: the caller must close its bootstrap endpoint, so that the
-/// helper's server check refuses and it exits without a protected write
-/// (KEL-53 §4 "Machine-UAC bootstrap" item 3; S11 composes this).
-#[derive(Debug)]
-pub enum WindowsUpdaterHelperLaunchError {
-    /// The helper path is not a Win32-canonical drive-letter `.exe` path.
-    HelperPath {
-        /// The first rule the path breaks.
-        rule: &'static str,
-    },
-    /// The rendezvous argument is not an exact `keld-attempt` name.
-    ArgumentShape,
-    /// The dedicated launch thread could not start, or ended without a result.
-    LaunchThread {
-        /// What the thread reported.
-        source: io::Error,
-    },
-    /// `CoInitializeEx` refused the launch thread's single-threaded apartment.
-    ComInitialization {
-        /// The `HRESULT` it returned.
-        hresult: i32,
-    },
-    /// The user declined the UAC prompt: `ShellExecuteExW` failed with
-    /// `ERROR_CANCELLED`.
-    Declined,
-    /// `ShellExecuteExW` failed with another error.
-    ShellExecute {
-        /// The Windows error.
-        source: io::Error,
-        /// The `hInstApp` value, an `SE_ERR_*` code or `0`, kept as a
-        /// diagnostic.
-        inst_app: usize,
-    },
-    /// `ShellExecuteExW` succeeded without returning a process handle, so no
-    /// launched process can be bound to the launch. A helper may still be
-    /// running.
-    NoProcessHandle,
-    /// The returned handle could not report its process ID; it was closed. The
-    /// helper may still be running.
-    ProcessIdentity {
-        /// The Windows error.
-        source: io::Error,
-    },
-}
-
-impl std::fmt::Display for WindowsUpdaterHelperLaunchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("KELD-RUNTIME-019: elevated updater-helper launch refused: ")?;
-        match self {
-            Self::HelperPath { rule } => write!(
-                f,
-                "the helper path is not a Win32-canonical drive-letter `.exe` path: {rule}. \
-                 Derive it again \
-                 from the selected tree's admitted provenance; never pass a searched, relative \
-                 or caller-supplied name."
-            ),
-            Self::ArgumentShape => f.write_str(
-                "the rendezvous argument is not exactly `\\\\.\\pipe\\keld-attempt-<64 \
-                 lowercase hex>`. Pass the name of the bootstrap endpoint this host created, \
-                 unchanged.",
-            ),
-            Self::LaunchThread { source } => write!(
-                f,
-                "the dedicated launch thread failed: {source}. Free process resources and \
-                 offer the elevated action again only on a new user request."
-            ),
-            Self::ComInitialization { hresult } => write!(
-                f,
-                "COM refused the launch thread's single-threaded apartment (HRESULT \
-                 {hresult:#010x}). No consent was requested; report the HRESULT and never \
-                 launch the helper without COM initialized."
-            ),
-            Self::Declined => f.write_str(
-                "the user declined the UAC prompt. Nothing was launched and no protected state \
-                 changed; offer the elevated action again only on a new user request.",
-            ),
-            Self::ShellExecute { source, inst_app } => write!(
-                f,
-                "ShellExecuteExW failed: {source} (hInstApp {inst_app}). No helper process is \
-                 retained; if the image is missing, repair the installation rather than \
-                 searching for another helper."
-            ),
-            Self::NoProcessHandle => f.write_str(
-                "ShellExecuteExW returned no process handle, so no connecting client can be \
-                 bound to the launch. A helper may already be running: close the bootstrap \
-                 endpoint so that its server check refuses and it exits without a protected \
-                 write, and report the detail.",
-            ),
-            Self::ProcessIdentity { source } => write!(
-                f,
-                "the returned process handle could not report its process ID: {source}. The \
-                 handle was closed, so no connecting client can be bound to the launch. A \
-                 helper may already be running: close the bootstrap endpoint so that its server \
-                 check refuses and it exits without a protected write, and report the detail."
-            ),
-        }
-    }
-}
-
-impl std::error::Error for WindowsUpdaterHelperLaunchError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LaunchThread { source }
-            | Self::ShellExecute { source, .. }
-            | Self::ProcessIdentity { source } => Some(source),
-            _ => None,
-        }
-    }
-}
-
-/// The elevated updater helper that [`launch_elevated_updater_helper`]
-/// started.
-///
-/// It owns the process handle that `ShellExecuteExW` returned under
-/// `SEE_MASK_NOCLOSEPROCESS` and closes it on drop; dropping it does not
-/// terminate the helper. Microsoft does not document which access rights that
-/// handle carries after a `runas` elevation; KEL-53 §6 S1 qualifies them.
-#[derive(Debug)]
-pub struct WindowsElevatedUpdaterHelper {
-    process: OwnedHandle,
-    process_id: u32,
-}
-
-impl WindowsElevatedUpdaterHelper {
-    /// The helper's process ID, read from the retained handle at launch.
-    #[must_use]
-    pub const fn id(&self) -> u32 {
-        self.process_id
-    }
-
-    /// Retains `process` with the process ID it reports, or closes it when it
-    /// cannot report one.
-    fn identify(process: OwnedHandle) -> Result<Self, WindowsUpdaterHelperLaunchError> {
-        // SAFETY: `process` owns a live handle for the duration of this call.
-        let process_id = unsafe { GetProcessId(process.as_raw_handle().cast()) };
-        if process_id == 0 {
-            return Err(WindowsUpdaterHelperLaunchError::ProcessIdentity {
-                source: io::Error::last_os_error(),
-            });
-        }
-        Ok(Self {
-            process,
-            process_id,
-        })
-    }
-}
-
-impl AsHandle for WindowsElevatedUpdaterHelper {
-    fn as_handle(&self) -> BorrowedHandle<'_> {
-        self.process.as_handle()
-    }
-}
-
-/// Starts `path` elevated through the UAC `runas` verb with exactly one
-/// argument (KEL-53 §4 "Helper launch and self-anchor").
-///
-/// The call runs on a dedicated thread that first enters a COM single-threaded
-/// apartment with `COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE`, as the
-/// `ShellExecuteEx` remarks recommend, and leaves it on that thread before the
-/// thread ends. `ShellExecuteExW` receives:
-/// - `SEE_MASK_NOCLOSEPROCESS`, so it returns the process handle that the
-///   result owns;
-/// - `SEE_MASK_NOASYNC`, which the `SHELLEXECUTEINFO` remarks require when the
-///   calling thread has no message loop or ends soon after the call;
-/// - `SEE_MASK_FLAG_NO_UI`, so a failure returns its error instead of showing
-///   an error dialog; the UAC prompt is a security prompt and is still shown;
-/// - the helper's own directory as `lpDirectory`, because a null value passes
-///   on this process's current directory, which an ordinary user may choose;
-/// - no owner window and an `nShow` of `0` (`SW_HIDE`): the helper shows no
-///   window.
-///
-/// The call blocks until the user answers the prompt. It searches for nothing:
-/// the path and the argument are closed types.
-///
-/// # Errors
-///
-/// - [`WindowsUpdaterHelperLaunchError::Declined`] when the user declines;
-/// - [`WindowsUpdaterHelperLaunchError::ComInitialization`] before the shell
-///   is called, when the launch thread's apartment is refused;
-/// - [`WindowsUpdaterHelperLaunchError::ShellExecute`],
-///   [`WindowsUpdaterHelperLaunchError::NoProcessHandle`] and
-///   [`WindowsUpdaterHelperLaunchError::ProcessIdentity`] when the launch
-///   cannot produce one identified process handle;
-/// - [`WindowsUpdaterHelperLaunchError::LaunchThread`] when the thread cannot
-///   start or ends without a result.
-pub fn launch_elevated_updater_helper(
-    path: &WindowsUpdaterHelperPath,
-    argument: &WindowsUpdaterHelperArgument,
-) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
-    launch_updater_helper(path, argument, ShellVerb::RunAs)
-}
-
-/// The launch with its verb as a parameter. Production builds have only
-/// [`ShellVerb::RunAs`]; a unit test drives the same block with `open`, which
-/// needs no consent prompt.
-fn launch_updater_helper(
-    path: &WindowsUpdaterHelperPath,
-    argument: &WindowsUpdaterHelperArgument,
-    verb: ShellVerb,
-) -> Result<WindowsElevatedUpdaterHelper, WindowsUpdaterHelperLaunchError> {
-    let file = path.file.clone();
-    let directory = path.directory.clone();
-    let parameters = nul_terminated_wide(OsStr::new(argument.as_str()))
-        .ok_or(WindowsUpdaterHelperLaunchError::ArgumentShape)?;
-    let launch = std::thread::Builder::new()
-        .name("keld-updater-helper-launch".to_owned())
-        .spawn(move || shell_execute_on_this_thread(&file, &parameters, &directory, verb))
-        .map_err(|source| WindowsUpdaterHelperLaunchError::LaunchThread { source })?;
-    let process = launch
-        .join()
-        .map_err(|_| WindowsUpdaterHelperLaunchError::LaunchThread {
-            source: io::Error::other("the launch thread ended without a result"),
-        })??;
-    WindowsElevatedUpdaterHelper::identify(process)
-}
-
-/// Makes the one `ShellExecuteExW` call inside a COM apartment that the
-/// current thread enters first and leaves after the call, and returns the
-/// process handle.
-fn shell_execute_on_this_thread(
-    file: &[u16],
-    parameters: &[u16],
-    directory: &[u16],
-    verb: ShellVerb,
-) -> Result<OwnedHandle, WindowsUpdaterHelperLaunchError> {
-    let _apartment = ComApartment::enter()?;
-    let verb: Vec<u16> = verb
-        .name()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let size = u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).map_err(|_| {
-        WindowsUpdaterHelperLaunchError::ShellExecute {
-            source: io::Error::other("SHELLEXECUTEINFOW does not fit its u32 size field"),
-            inst_app: 0,
-        }
-    })?;
-    let mut info = SHELLEXECUTEINFOW {
-        cbSize: size,
-        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpVerb: verb.as_ptr(),
-        lpFile: file.as_ptr(),
-        lpParameters: parameters.as_ptr(),
-        lpDirectory: directory.as_ptr(),
-        // 0 is SW_HIDE (WinUser.h); windows-sys names it only behind
-        // Win32_UI_WindowsAndMessaging, which this crate does not enable.
-        nShow: 0,
-        ..SHELLEXECUTEINFOW::default()
-    };
-    // SAFETY: `info` is a live, writable SHELLEXECUTEINFOW whose cbSize is its
-    // exact size. Its four string fields point at NUL-terminated UTF-16 buffers
-    // (`verb` here; `file`, `parameters` and `directory` borrowed from the
-    // caller) that live until this function returns; SEE_MASK_NOASYNC makes the
-    // call finish its work before it returns, so nothing reads them later.
-    // Every other field is zero: no owner window, ID list, class or hot key.
-    let succeeded = unsafe { ShellExecuteExW(&raw mut info) } != 0;
-    // Read at once: nothing may run between the call and its last-error value.
-    let error = io::Error::last_os_error();
-    let process = shell_execute_outcome(succeeded, error, info.hInstApp.addr(), info.hProcess)?;
-    // SAFETY: `shell_execute_outcome` admits only a successful call's non-null
-    // hProcess, which SEE_MASK_NOCLOSEPROCESS makes this caller's to close;
-    // nothing else holds it, so it moves into exactly one owner here.
-    Ok(unsafe { OwnedHandle::from_raw_handle(process.cast()) })
-}
-
-/// Classifies one finished `ShellExecuteExW` call: a failure with
-/// `ERROR_CANCELLED` is the user's decline, any other failure is reported with
-/// its `hInstApp` diagnostic, and a success counts only with a process handle.
-fn shell_execute_outcome(
-    succeeded: bool,
-    error: io::Error,
-    inst_app: usize,
-    process: HANDLE,
-) -> Result<HANDLE, WindowsUpdaterHelperLaunchError> {
-    if !succeeded {
-        return Err(
-            if error.raw_os_error() == Some(ERROR_CANCELLED.cast_signed()) {
-                WindowsUpdaterHelperLaunchError::Declined
-            } else {
-                WindowsUpdaterHelperLaunchError::ShellExecute {
-                    source: error,
-                    inst_app,
-                }
-            },
-        );
-    }
-    if process.is_null() {
-        return Err(WindowsUpdaterHelperLaunchError::NoProcessHandle);
-    }
-    Ok(process)
-}
-
-/// The current thread's COM apartment, entered as `COINIT_APARTMENTTHREADED |
-/// COINIT_DISABLE_OLE1DDE`.
-///
-/// A value exists only after `CoInitializeEx` returned `S_OK` or `S_FALSE`,
-/// each of which Microsoft requires to be balanced by one `CoUninitialize` on
-/// the same thread; dropping the value makes that call. It is neither `Send`
-/// nor `Sync`, so it is dropped on the thread that entered. After
-/// `RPC_E_CHANGED_MODE` or any other failure there is nothing to balance and no
-/// value exists.
-#[derive(Debug)]
-struct ComApartment {
-    _thread_bound: PhantomData<*const ()>,
-}
-
-impl ComApartment {
-    fn enter() -> Result<Self, WindowsUpdaterHelperLaunchError> {
-        // SAFETY: the reserved first argument is null, as CoInitializeEx
-        // requires, the flags are documented COINIT values, and the call reads
-        // no caller memory.
-        let hresult = unsafe {
-            CoInitializeEx(
-                std::ptr::null(),
-                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).cast_unsigned(),
-            )
-        };
-        if hresult == S_OK || hresult == S_FALSE {
-            Ok(Self {
-                _thread_bound: PhantomData,
-            })
-        } else {
-            Err(WindowsUpdaterHelperLaunchError::ComInitialization { hresult })
-        }
-    }
-}
-
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        // SAFETY: this value exists only after a successful CoInitializeEx on
-        // this thread, cannot leave the thread, and is dropped once, so this is
-        // that call's single balancing CoUninitialize.
-        unsafe { CoUninitialize() };
-    }
-}
-
-/// The `ShellExecuteExW` verb. Production builds have only `runas`, so no
-/// public path can select another verb.
-#[derive(Debug, Clone, Copy)]
-enum ShellVerb {
-    /// UAC elevation: the only production verb.
-    RunAs,
-    /// Ordinary activation without a consent prompt, for the unit test that
-    /// executes the launch block.
-    #[cfg(test)]
-    Open,
-}
-
-impl ShellVerb {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::RunAs => "runas",
-            #[cfg(test)]
-            Self::Open => "open",
-        }
-    }
-}
+mod updater_helper;
+#[cfg(test)]
+use updater_helper::{ComApartment, ShellVerb, launch_updater_helper, shell_execute_outcome};
+pub use updater_helper::{
+    WINDOWS_UPDATER_HELPER_RECOVERY_SELECTOR, WindowsDllSearchError, WindowsElevatedUpdaterHelper,
+    WindowsUpdaterHelperArgument, WindowsUpdaterHelperLaunchError, launch_elevated_updater_helper,
+    restrict_dll_search_to_system32,
+};
 
 #[cfg(test)]
 #[allow(unsafe_code)] // test-only Job, COM, loader and process-handle probes, each with a local ABI proof
@@ -4443,15 +3230,21 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::io::{BufRead as _, BufReader};
     use std::net::{TcpListener, TcpStream};
+    use std::os::windows::io::AsHandle as _;
     use std::os::windows::process::CommandExt as _;
-    use std::path::Path;
+    use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE};
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-    use windows_sys::Win32::System::Threading::{DETACHED_PROCESS, PROCESS_CREATE_PROCESS};
+    use windows_sys::Win32::System::Threading::{
+        DETACHED_PROCESS, GetProcessHandleCount, PROCESS_CREATE_PROCESS,
+    };
+
+    mod com_apartment;
+    mod updater_helper_launch;
 
     const HELPER_ENV: &str = "KELD_WINDOWS_JOB_ASSIGNMENT_HELPER";
     const QF1_HELPER_ENDPOINT_ENV: &str = "KELD_TEST_QF1_ENDPOINT";
@@ -5083,6 +3876,23 @@ mod tests {
         query_job_limit_flags(query.as_raw_handle().cast()).expect("read Job limit flags back")
     }
 
+    /// The number of handles in this process's own table: the handle census of
+    /// §7 d5, taken on each side of the one detach.
+    fn own_handle_count() -> u32 {
+        let mut count = 0_u32;
+        // SAFETY: the pseudo-handle from `GetCurrentProcess` is always valid and
+        // carries full access, which covers the `PROCESS_QUERY_INFORMATION`
+        // right `GetProcessHandleCount` needs; the count is writable storage
+        // for the call.
+        assert_ne!(
+            unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) },
+            0,
+            "count this process's handles: {}",
+            io::Error::last_os_error()
+        );
+        count
+    }
+
     /// Opens one process as the census does but without `PROCESS_TERMINATE`: the
     /// straggler seam of §7 r5, a member whose termination is denied and whose
     /// handle therefore stays unsignaled.
@@ -5359,7 +4169,9 @@ mod tests {
     /// suspended and assigned before its first instruction, then takes the §4
     /// release path or one of the row's controls, reporting every flag read-back
     /// over the test's listener. It exits through `process::exit`, as no
-    /// destructor may terminate a released candidate.
+    /// destructor may terminate a released candidate, except in the two
+    /// `orderly-exit` modes, which `return` so that every local, the launch
+    /// record included, drops.
     #[test]
     #[ignore = "private subprocess entry point"]
     #[allow(clippy::too_many_lines)] // one host fixture whose modes share launch and reporting
@@ -5540,7 +4352,9 @@ mod tests {
                 writeln!(
                     report,
                     "CENSUS family={} terminated={} snapshots={}",
-                    census.family, census.terminated, census.snapshots
+                    census.family(),
+                    census.terminated(),
+                    census.snapshots()
                 )
                 .expect("report the census");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
@@ -5572,6 +4386,48 @@ mod tests {
                 // holds only while this host is alive: wait for the go-ahead.
                 await_go(&mut report);
             }
+            "orderly-exit" | "orderly-exit-undetached" => {
+                // §7 "8, 9 (launch-record detach)": the §4 order through both
+                // clears, then step 8, the detach, and step 9 as a return, not
+                // `process::exit`: every local of this fixture drops. The
+                // undetached variant is the row's d2 control: it skips step 8,
+                // so the record's drop terminates the released candidate.
+                let released = attempt.release_family().expect("release the attempt Job");
+                let census = host_job
+                    .release_for_exit(&released, Instant::now() + RELEASE_WAIT)
+                    .expect("release the host-death Job after the census");
+                writeln!(
+                    report,
+                    "CENSUS family={} terminated={} snapshots={}",
+                    census.family(),
+                    census.terminated(),
+                    census.snapshots()
+                )
+                .expect("report the census");
+                writeln!(report, "{}", flags("FLAGS")).expect("report flags");
+                if mode == "orderly-exit" {
+                    let creation_time = launched.creation_time;
+                    // §7 d5: the handle census of this host's own table on each
+                    // side of the one detach; nothing else opens or closes a
+                    // handle between the two counts.
+                    let handles_before = own_handle_count();
+                    let detached = launched
+                        .detach(census)
+                        .expect("detach the released candidate");
+                    let handles_after = own_handle_count();
+                    assert_eq!(
+                        detached.creation_time(),
+                        creation_time,
+                        "the detached identity is the launch record's"
+                    );
+                    writeln!(
+                        report,
+                        "DETACHED pid={} handles_before={handles_before} handles_after={handles_after}",
+                        detached.process_id()
+                    )
+                    .expect("report the detach");
+                }
+            }
             _ => {
                 let released = attempt.release_family().expect("release the attempt Job");
                 writeln!(report, "{}", flags("RELEASED_ATTEMPT")).expect("report flags");
@@ -5581,7 +4437,9 @@ mod tests {
                 writeln!(
                     report,
                     "CENSUS family={} terminated={} snapshots={}",
-                    census.family, census.terminated, census.snapshots
+                    census.family(),
+                    census.terminated(),
+                    census.snapshots()
                 )
                 .expect("report the census");
                 writeln!(report, "{}", flags("FLAGS")).expect("report flags");
@@ -5593,6 +4451,11 @@ mod tests {
         let _ = report.shutdown(std::net::Shutdown::Both);
         drop(report);
         drop(reaped_primary);
+        if mode.starts_with("orderly-exit") {
+            // The exit in order: the remaining locals drop here, and the test
+            // harness ends the process as any orderly host would end.
+            return;
+        }
         std::process::exit(0);
     }
 
@@ -6024,6 +4887,107 @@ mod tests {
         drop(candidate);
     }
 
+    // KEL-270 T4d S6b4: the launch-record detach (KEL-53 §4 "Candidate release
+    // after commit", *Launch-record detach*; §7 row "8, 9 (launch-record
+    // detach)"), in the same stand-in processes.
+
+    #[test]
+    fn a_released_candidate_survives_the_launcher_dropping_its_record_in_an_orderly_exit() {
+        // §7 d1: after both clears the host exits in order, every local dropped,
+        // the launch record included, and the released candidate's handle stays
+        // unsignaled. Regression for S6b3 review P2-2 (design item F50): the
+        // record's drop terminated the candidate the two clears had released.
+        let (mut host, candidate, mut candidate_report) = start_release_cell("orderly-exit");
+        let census = host.report.next("CENSUS ");
+        assert!(report_count(&census, "family") >= 1, "{census}");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        let detached = host.report.next("DETACHED ");
+        assert_eq!(report_count(&detached, "pid"), candidate.pid, "{detached}");
+        host.wait();
+        assert!(
+            !candidate.exited_now(),
+            "the released candidate's handle is signaled: the launcher's exit in order ended it"
+        );
+        assert!(
+            candidate_report.ping(),
+            "the released candidate must answer after the launcher's orderly exit"
+        );
+    }
+
+    #[test]
+    fn dropping_an_undetached_record_after_both_clears_still_ends_the_candidate() {
+        // §7 d2, negative control: the same orderly exit without step 8 leaves
+        // the candidate's handle signaled, so the row detects a build that drops
+        // the record without `detach`, and the undetached Drop still terminates.
+        let (mut host, candidate, _report) = start_release_cell("orderly-exit-undetached");
+        let flags = host.report.next("FLAGS ");
+        assert_eq!(report_flags(&flags, "attempt"), 0, "{flags}");
+        assert_eq!(report_flags(&flags, "host"), 0, "{flags}");
+        host.wait();
+        candidate.assert_exited_within(
+            RELEASE_WAIT,
+            "candidate whose record was dropped undetached after both clears",
+        );
+    }
+
+    #[test]
+    fn detach_refuses_a_never_resumed_child_and_terminates_it_as_today() {
+        // §7 d3: the refusal is a run-time check of the spent resume, not of the
+        // witness, which this module can forge and which nothing outside the
+        // crate can (d4). A suspended process ends only by termination, so its
+        // signaled handle is the refusal's termination: the record's drop, as
+        // today.
+        let launched =
+            WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the launch");
+        let child = ObservedProcess::open(launched.child().id());
+        assert!(
+            !child.exited_now(),
+            "the suspended child is alive before the refusal"
+        );
+        let refusal = launched
+            .detach(WindowsExitCensus {
+                family: 1,
+                terminated: 0,
+                snapshots: 1,
+            })
+            .expect_err("a never-resumed child has no detach");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("KELD-RUNTIME-014")
+                && text.contains("launch record detach")
+                && text.contains("never resumed"),
+            "{text}"
+        );
+        child.assert_exited_within(RELEASE_WAIT, "the refused never-resumed child");
+    }
+
+    #[test]
+    fn after_the_detach_the_host_holds_no_handle_to_the_candidate() {
+        // §7 d5: a handle census of the host's own table on each side of the one
+        // detach shows exactly one handle fewer, the record's process handle
+        // (the thread handle closed at the resume), and the detached identity
+        // names the candidate. The type supplies the rest: `WindowsDetachedLaunch`
+        // has no handle to yield (its `compile_fail` doctest), so after this
+        // point nothing in the host can wait on, bind or terminate the candidate.
+        let (mut host, candidate, mut candidate_report) = start_release_cell("orderly-exit");
+        let detached = host.report.next("DETACHED ");
+        assert_eq!(report_count(&detached, "pid"), candidate.pid, "{detached}");
+        let before = report_count(&detached, "handles_before");
+        let after = report_count(&detached, "handles_after");
+        assert_eq!(
+            after + 1,
+            before,
+            "the detach must close exactly the record's process handle: {detached}"
+        );
+        host.wait();
+        assert!(
+            candidate_report.ping(),
+            "the candidate must outlive the host that detached it"
+        );
+    }
+
     #[test]
     fn release_family_refuses_an_attempt_job_without_an_admitted_host() {
         let attempt = WindowsProcessJob::create().expect("create the attempt Job");
@@ -6051,51 +5015,95 @@ mod tests {
         assert!(again.to_string().contains("not released"), "{again}");
     }
 
-    #[test]
-    fn the_process_id_lister_grows_from_a_short_buffer_to_the_full_list() {
-        // The Job's members are exactly the occupants: `spawn_blocking_descendant`
-        // creates them with no console, so no console host joins the Job behind
-        // the test's back. Its end is the kernel's own notice: the completion
-        // port is associated while the Job is empty, so the active-process-zero
-        // message cannot be lost, and the empty list is asserted only after Job
-        // accounting read zero, through the crate's `wait_for_active_zero`, with
-        // the deadline as a kill switch. When an exited member leaves the list
-        // relative to its handle's signal is the kernel's ordering, not this
-        // test's, so a list taken straight after `wait` proves nothing.
-        let job = WindowsProcessJob::create().expect("create a kill-on-close Job");
-        let raw = job.handle.as_raw_handle().cast();
-        let completion_port = create_job_completion_port(raw)
-            .expect("associate a completion port with the empty Job");
-        let mut occupants: Vec<Child> = (0..3).map(|_| spawn_blocking_descendant()).collect();
+    mod process_id_list;
+
+    /// Two plain Jobs, `outer` standing for the host-death Job and `inner` for the
+    /// released attempt Job nested under it, and two occupants assigned to `outer`
+    /// and then to `inner`: a released family of two, with no console host
+    /// behind the test's back.
+    fn nested_family_of_two() -> (WindowsProcessJob, WindowsProcessJob, Vec<Child>) {
+        let outer = WindowsProcessJob::create().expect("create the host-death stand-in Job");
+        let inner = WindowsProcessJob::create().expect("create the attempt stand-in Job");
+        let occupants: Vec<Child> = (0..2).map(|_| spawn_blocking_descendant()).collect();
         for occupant in &occupants {
-            // SAFETY: both handles are live; the occupant is a test-owned fixture
-            // assigned to a test-owned Job for the duration of this test.
-            assert_ne!(
-                unsafe { AssignProcessToJobObject(raw, occupant.as_raw_handle().cast()) },
-                0,
-                "assign an occupant: {}",
-                io::Error::last_os_error()
-            );
+            for job in [&outer, &inner] {
+                // SAFETY: both handles are live; the occupant is a test-owned
+                // fixture assigned to test-owned Jobs for the duration of the test.
+                assert_ne!(
+                    unsafe {
+                        AssignProcessToJobObject(
+                            job.handle.as_raw_handle().cast(),
+                            occupant.as_raw_handle().cast(),
+                        )
+                    },
+                    0,
+                    "assign an occupant: {}",
+                    io::Error::last_os_error()
+                );
+            }
         }
-        let mut expected: Vec<u32> = occupants.iter().map(Child::id).collect();
-        expected.sort_unstable();
-        for initial in [1, 2, JOB_PROCESS_ID_LIST_INITIAL_IDS] {
-            let mut listed =
-                list_job_process_ids_from(raw, initial, "test list").expect("list the Job");
-            listed.sort_unstable();
-            assert_eq!(listed, expected, "initial capacity {initial}");
-        }
+        (outer, inner, occupants)
+    }
+
+    #[test]
+    fn a_snapshot_whose_count_and_list_disagree_is_retaken_not_refused() {
+        // KEL-270 F54: a snapshot whose assigned count exceeds its list names a
+        // member still leaving the Job. It is not clean, and the census retakes it
+        // under the deadline; the next snapshot, in which count and list agree, is
+        // the clean one.
+        let (outer, inner, mut occupants) = nested_family_of_two();
+        let mut ids = vec![std::process::id()];
+        ids.extend(occupants.iter().map(Child::id));
+        let mut taken = 0_u32;
+        let census = exit_census(
+            outer.handle.as_raw_handle().cast(),
+            inner.handle.as_raw_handle().cast(),
+            Instant::now() + RELEASE_WAIT,
+            || {
+                taken += 1;
+                Ok(WindowsJobProcessIdSnapshot {
+                    ids: ids.clone(),
+                    assigned: if taken == 1 { 4 } else { 3 },
+                })
+            },
+            open_census_member,
+        )
+        .expect("a member in transition must not refuse the census");
+        assert_eq!(census.snapshots(), 2, "{census:?}");
+        assert_eq!(census.family(), 2, "{census:?}");
+        assert_eq!(census.terminated(), 0, "{census:?}");
         for occupant in &mut occupants {
             occupant.kill().expect("end an occupant");
             occupant.wait().expect("reap an occupant");
         }
-        job.wait_for_active_zero(&completion_port, Instant::now() + RELEASE_WAIT)
-            .expect("the Job reaches zero active processes once its occupants exited");
-        assert_eq!(
-            list_job_process_ids(raw, "test list").expect("list the empty Job"),
-            Vec::<u32>::new(),
-            "a Job at zero active processes lists no process"
-        );
+    }
+
+    #[test]
+    fn a_job_that_never_settles_is_refused_at_the_deadline_naming_the_transition() {
+        // Negative control for the cell above: with every snapshot reporting one
+        // more assigned process than it lists, the cross-check alone keeps the
+        // census from a clean snapshot, and the deadline is the only refusal.
+        let (outer, inner, mut occupants) = nested_family_of_two();
+        let mut ids = vec![std::process::id()];
+        ids.extend(occupants.iter().map(Child::id));
+        let refusal = exit_census(
+            outer.handle.as_raw_handle().cast(),
+            inner.handle.as_raw_handle().cast(),
+            Instant::now() + Duration::from_millis(200),
+            || {
+                Ok(WindowsJobProcessIdSnapshot {
+                    ids: ids.clone(),
+                    assigned: 4,
+                })
+            },
+            open_census_member,
+        )
+        .expect_err("a Job that never settles must be refused at the deadline");
+        assert!(refusal.to_string().contains("in transition"), "{refusal}");
+        for occupant in &mut occupants {
+            occupant.kill().expect("end an occupant");
+            occupant.wait().expect("reap an occupant");
+        }
     }
 
     #[test]
@@ -6372,582 +5380,8 @@ mod tests {
             && io::Error::last_os_error().raw_os_error() == Some(ERROR_INVALID_HANDLE.cast_signed())
     }
 
-    #[test]
-    fn claimant_binding_accepts_the_exact_launched_process_before_and_after_resume() {
-        let mut launch = recorded_launch(Some(blocking_stdio()));
-        let process_id = launch.launched.child().id();
-        let claimant = claimant_by_pid(process_id);
-        assert_eq!(
-            launch.launched.creation_time,
-            claimant.creation_time(),
-            "the launch record equals the creation time read through a second handle"
-        );
-        launch
-            .launched
-            .bind_claimant(&claimant)
-            .expect("the exact suspended launch binds");
+    mod claimant_binding;
 
-        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
-        let membership = job
-            .assign_child(launch.launched.child())
-            .expect("assign the launch before its resume");
-        launch
-            .launched
-            .resume(&membership)
-            .expect("resume the launch once");
-        assert!(
-            !claimant
-                .has_exited()
-                .expect("query the resumed launch through the claimant handle"),
-            "the resumed interpreter waits on its stdin pipe"
-        );
-        launch
-            .launched
-            .bind_claimant(&claimant)
-            .expect("the retained launch handle still binds after resume");
-        launch
-            .launched
-            .bind_claimant(&claimant_by_pid(process_id))
-            .expect("a claimant handle opened after resume binds");
-
-        launch
-            .launched
-            .terminate(0)
-            .expect("terminate the resumed launch");
-        launch
-            .launched
-            .wait(10_000)
-            .expect("reap the resumed launch");
-    }
-
-    #[test]
-    fn claimant_binding_refuses_a_second_instance_of_the_launched_image() {
-        let launch = recorded_launch(None);
-        let mut copy = Command::new(system32().join("cmd.exe"))
-            .arg("/d")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("start a same-user copy of the launched image");
-        let claimant = claimant_by_pid(copy.id());
-        let refusal = launch.launched.bind_claimant(&claimant);
-        copy.kill().expect("terminate the same-image copy");
-        let _ = copy.wait().expect("reap the same-image copy");
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
-            "{refusal:?}"
-        );
-    }
-
-    #[test]
-    fn claimant_binding_refuses_a_forged_peer_carrying_the_launched_identity() {
-        // Seam-injected: a peer whose process ID and creation time equal the
-        // launch record but whose process object differs. Windows cannot give two
-        // live processes one PID, so another real process handle carries the
-        // launched identity numbers.
-        let launch = recorded_launch(None);
-        let other = claimant_by_pid(std::process::id());
-        let recorded = ProcessObservation::of_launch(&launch.launched);
-        let forged = ProcessObservation {
-            process_id: recorded.process_id,
-            creation_time: recorded.creation_time,
-            ..ProcessObservation::of_peer(&other)
-        };
-        let refusal = bind_observed_claimant(forged, recorded);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
-            "{refusal:?}"
-        );
-    }
-
-    #[test]
-    fn claimant_binding_refuses_once_the_launch_handle_is_signaled() {
-        let mut launch = recorded_launch(None);
-        let claimant = claimant_by_pid(launch.launched.child().id());
-        launch
-            .launched
-            .bind_claimant(&claimant)
-            .expect("the live launch binds before termination");
-        signal_launch(&mut launch.launched);
-        let refusal = launch.launched.bind_claimant(&claimant);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
-            "{refusal:?}"
-        );
-    }
-
-    /// Terminates a recorded launch and waits until its retained handle is
-    /// signaled with the exit code the termination set.
-    fn signal_launch(launched: &mut WindowsLaunchedProcess) {
-        launched.terminate(7).expect("terminate the launch");
-        assert_eq!(
-            launched
-                .wait(10_000)
-                .expect("observe the signaled launch handle"),
-            7
-        );
-    }
-
-    // Fact order (KEL-53 §4 "Candidate connect-back", *Acceptance*: "in order").
-    // Each cell fails more than one fact, so a reordered binding reports a
-    // different refusal.
-
-    #[test]
-    fn claimant_binding_compares_the_process_object_before_launch_liveness() {
-        // Every fact fails: another process object, a signaled launch handle and
-        // a different process ID. Only the comparison-first order reports
-        // NotLaunchedProcess.
-        let mut launch = recorded_launch(None);
-        signal_launch(&mut launch.launched);
-        let other = claimant_by_pid(std::process::id());
-        assert_ne!(other.process_id, launch.launched.child().id());
-        let refusal = launch.launched.bind_claimant(&other);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::NotLaunchedProcess)),
-            "{refusal:?}"
-        );
-    }
-
-    #[test]
-    fn claimant_binding_checks_launch_liveness_before_the_recorded_identity() {
-        // Seam-injected: the compared handles are one process object, opened
-        // before the launch exits, while the launch handle is signaled and the
-        // recorded creation time is wrong. Only liveness-before-identity reports
-        // LaunchExited.
-        let mut launch = recorded_launch(None);
-        let peer = claimant_by_pid(launch.launched.child().id());
-        signal_launch(&mut launch.launched);
-        let claimant = ProcessObservation::of_peer(&peer);
-        let recorded = ProcessObservation::of_launch(&launch.launched);
-        assert!(
-            same_kernel_object(claimant.handle, recorded.handle).expect("compare two live handles"),
-            "the claimant handle still names the exited launch object"
-        );
-        let wrong_time = ProcessObservation {
-            creation_time: claimant.creation_time + 1,
-            ..recorded
-        };
-        let refusal = bind_observed_claimant(claimant, wrong_time);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::LaunchExited)),
-            "{refusal:?}"
-        );
-    }
-
-    #[test]
-    fn claimant_binding_refuses_a_wrong_recorded_creation_time_or_process_id() {
-        // Seam-injected: the recorded values differ from the kernel's while the
-        // compared handles are one live process object.
-        let launch = recorded_launch(None);
-        let peer = claimant_by_pid(launch.launched.child().id());
-        let claimant = ProcessObservation::of_peer(&peer);
-        let recorded = ProcessObservation::of_launch(&launch.launched);
-        bind_observed_claimant(claimant, recorded).expect("the unaltered record binds");
-        let wrong_time = ProcessObservation {
-            creation_time: recorded.creation_time + 1,
-            ..recorded
-        };
-        let refusal = bind_observed_claimant(claimant, wrong_time);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::LaunchIdentityMismatch)),
-            "{refusal:?}"
-        );
-        let wrong_pid = ProcessObservation {
-            process_id: recorded.process_id ^ 4,
-            ..recorded
-        };
-        let refusal = bind_observed_claimant(claimant, wrong_pid);
-        assert!(
-            matches!(refusal, Err(WindowsClaimantRefusal::LaunchIdentityMismatch)),
-            "{refusal:?}"
-        );
-    }
-
-    #[test]
-    fn claimant_binding_refuses_an_invalid_claimant_handle_with_a_typed_error() {
-        // Seam-injected: safe callers cannot hold an invalid owned handle, so the
-        // observation carries a null handle with the launched identity.
-        let launch = recorded_launch(None);
-        let recorded = ProcessObservation::of_launch(&launch.launched);
-        let invalid = ProcessObservation {
-            handle: std::ptr::null_mut(),
-            ..recorded
-        };
-        match bind_observed_claimant(invalid, recorded) {
-            Err(WindowsClaimantRefusal::Unverifiable { phase, source }) => {
-                assert_eq!(phase, "claimant process-object comparison");
-                assert_eq!(
-                    source.raw_os_error(),
-                    Some(ERROR_INVALID_HANDLE.cast_signed())
-                );
-            }
-            other => panic!("an invalid claimant handle must refuse as unverifiable: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn claimant_refusals_render_runtime_017_with_fix_guidance() {
-        let refusal = WindowsClaimantRefusal::NotLaunchedProcess;
-        assert_eq!(
-            refusal.to_string(),
-            "KELD-RUNTIME-017: connect-back claimant refused: the connected process is not \
-             the launched and retained process object. Disconnect this client and re-arm \
-             the endpoint without consuming its one-shot; only the exact launched process \
-             can claim, and the health deadline is not extended."
-        );
-        for refusal in [
-            WindowsClaimantRefusal::LaunchExited,
-            WindowsClaimantRefusal::LaunchIdentityMismatch,
-            WindowsClaimantRefusal::Unverifiable {
-                phase: "claimant process-object comparison",
-                source: io::Error::from_raw_os_error(ERROR_INVALID_HANDLE.cast_signed()),
-            },
-        ] {
-            let text = refusal.to_string();
-            assert!(text.starts_with("KELD-RUNTIME-017: "), "{text}");
-            assert!(text.contains("re-arm the endpoint"), "{text}");
-        }
-    }
-
-    /// A same-token `cmd.exe /d /c exit 7`, created suspended and not recorded.
-    fn same_token_exit_command() -> WindowsSuspendedChild {
-        let system32 = system32();
-        let environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR"]
-            .into_iter()
-            .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
-            .collect();
-        WindowsSuspendedChild::spawn_same_token(
-            &system32.join("cmd.exe"),
-            &[
-                OsString::from("/d"),
-                OsString::from("/c"),
-                OsString::from("exit 7"),
-            ],
-            &environment,
-            &system32,
-        )
-        .expect("create a same-token child suspended")
-    }
-
-    #[test]
-    fn a_membership_proof_must_name_both_the_process_id_and_the_creation_time() {
-        // Seam-injected: forged proofs that each match one of the two facts.
-        let mut launched =
-            WindowsLaunchedProcess::record(same_token_exit_command()).expect("record the launch");
-        let process_id = launched.child().id();
-        let creation_time = launched.creation_time;
-        for forged in [
-            WindowsJobMembership {
-                process_id,
-                creation_time: creation_time ^ 1,
-            },
-            WindowsJobMembership {
-                process_id: process_id ^ 4,
-                creation_time,
-            },
-        ] {
-            let refusal = launched
-                .resume(&forged)
-                .expect_err("a proof that matches only one fact refuses");
-            assert!(
-                refusal
-                    .to_string()
-                    .contains("the attempt-Job membership proof names another process"),
-                "{forged:?}: {refusal}"
-            );
-            assert!(
-                !launched.has_exited().expect("query the launch"),
-                "{forged:?}: the refused launch stays suspended"
-            );
-        }
-        let mut job = WindowsProcessJob::create().expect("create an attempt Job");
-        let membership = job
-            .assign_child(launched.child())
-            .expect("assign the launch");
-        launched
-            .resume(&membership)
-            .expect("the real proof resumes the launch");
-        assert_eq!(launched.wait(10_000).expect("the launch exits"), 7);
-    }
-
-    #[test]
-    fn a_launch_record_names_only_a_never_resumed_child() {
-        let mut child = same_token_exit_command();
-        child
-            .resume_held()
-            .expect("spend the resume below the launch record");
-        let refusal = WindowsLaunchedProcess::record(child)
-            .expect_err("a resumed child has no launch record");
-        assert!(
-            refusal.to_string().contains(
-                "the child was already resumed, so its Job membership can no longer precede its first instruction"
-            ),
-            "{refusal}"
-        );
-    }
-
-    #[test]
-    fn suspended_child_owns_the_sole_resume_thread_call() {
-        // KEL-53 §5 reuse decision: one suspended-child type owns the only
-        // primary-thread resume, so a later launch path cannot add a second one.
-        // It counts the identifier, not one call spelling: an alias or a
-        // qualified path must still name it, so the import and the one call
-        // are the only two occurrences.
-        let needle = concat!("Resume", "Thread");
-        let mut calls = Vec::new();
-        let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).expect("list a source directory") {
-                let path = entry.expect("read a source entry").path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "rs") {
-                    let source = std::fs::read_to_string(&path).expect("read a source file");
-                    let count = source.matches(needle).count();
-                    if count != 0 {
-                        let name = path.file_name().expect("file name").to_string_lossy();
-                        calls.push((name.into_owned(), count));
-                    }
-                }
-            }
-        }
-        assert_eq!(calls, vec![("windows_lpac.rs".to_owned(), 2)]);
-    }
-
-    #[test]
-    fn dll_search_refusal_names_its_code_cause_and_exit_guidance() {
-        let error = WindowsDllSearchError {
-            source: io::Error::from_raw_os_error(87),
-        };
-        let rendered = error.to_string();
-        assert!(
-            rendered.starts_with("KELD-RUNTIME-018: restricting this process's DLL search"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("(os error 87)"), "{rendered}");
-        assert!(
-            rendered.contains("Exit before loading any library"),
-            "{rendered}"
-        );
-        assert_eq!(
-            std::error::Error::source(&error)
-                .and_then(|source| source.downcast_ref::<io::Error>())
-                .and_then(io::Error::raw_os_error),
-            Some(87)
-        );
-    }
-
-    #[test]
-    fn shell_execute_outcome_separates_decline_failure_and_a_missing_process_handle() {
-        // Only compared, never used as a handle.
-        let returned: HANDLE = std::ptr::without_provenance_mut(0x1234);
-        let cancelled = || io::Error::from_raw_os_error(ERROR_CANCELLED.cast_signed());
-        assert!(matches!(
-            shell_execute_outcome(false, cancelled(), 5, std::ptr::null_mut()),
-            Err(WindowsUpdaterHelperLaunchError::Declined)
-        ));
-        match shell_execute_outcome(
-            false,
-            io::Error::from_raw_os_error(2),
-            2,
-            std::ptr::null_mut(),
-        ) {
-            Err(WindowsUpdaterHelperLaunchError::ShellExecute { source, inst_app }) => {
-                assert_eq!((source.raw_os_error(), inst_app), (Some(2), 2));
-            }
-            other => panic!("expected a ShellExecute failure, got {other:?}"),
-        }
-        // A failed call is a failure even if a handle value is present.
-        assert!(matches!(
-            shell_execute_outcome(false, io::Error::from_raw_os_error(5), 5, returned),
-            Err(WindowsUpdaterHelperLaunchError::ShellExecute { .. })
-        ));
-        assert!(matches!(
-            shell_execute_outcome(true, cancelled(), 42, std::ptr::null_mut()),
-            Err(WindowsUpdaterHelperLaunchError::NoProcessHandle)
-        ));
-        assert_eq!(
-            shell_execute_outcome(true, cancelled(), 42, returned)
-                .expect("a success with a handle"),
-            returned
-        );
-    }
-
-    #[test]
-    fn launched_process_is_retained_only_with_the_id_its_handle_reports() {
-        // SAFETY: OpenProcess dereferences no caller memory.
-        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, std::process::id()) };
-        assert!(!raw.is_null(), "open this test process");
-        // SAFETY: OpenProcess succeeded, so this is the handle's sole owner.
-        let process = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
-        let helper =
-            WindowsElevatedUpdaterHelper::identify(process).expect("a process handle has an ID");
-        assert_eq!(helper.id(), std::process::id());
-
-        let not_a_process = OwnedHandle::from(std::fs::File::open("NUL").expect("open NUL"));
-        match WindowsElevatedUpdaterHelper::identify(not_a_process) {
-            Err(WindowsUpdaterHelperLaunchError::ProcessIdentity { source }) => {
-                assert!(source.raw_os_error().is_some(), "{source}");
-            }
-            other => panic!("a file handle has no process ID, got {other:?}"),
-        }
-    }
-
-    /// Runs the production `ShellExecuteExW` block with the `open` verb, which
-    /// needs no consent prompt. The image is a `.cmd` script that the shell
-    /// starts through its association (`cmd.exe`): it records the arguments and
-    /// working directory it received, then exits 7. The closed path type admits
-    /// only `.exe`, so this test builds the path value directly.
-    #[test]
-    fn shell_launch_owns_the_process_handle_and_passes_the_argument_and_directory() {
-        let fixture = tempfile::tempdir().expect("launch fixture");
-        let directory = fixture.path().join("helper dir");
-        std::fs::create_dir(&directory).expect("helper directory");
-        let script = directory.join("probe.cmd");
-        std::fs::write(
-            &script,
-            "@echo off\r\n>\"%~dp0observed.txt\" (\r\n echo ARG1=%~1\r\n echo ALL=%*\r\n \
-             echo CWD=%CD%\r\n)\r\nexit /b 7\r\n",
-        )
-        .expect("probe script");
-        let path = WindowsUpdaterHelperPath {
-            path: script.clone(),
-            file: nul_terminated_wide(script.as_os_str()).expect("script path"),
-            directory: nul_terminated_wide(directory.as_os_str()).expect("script directory"),
-        };
-        let rendezvous = format!(r"\\.\pipe\keld-attempt-{}", "0123456789abcdef".repeat(4));
-        let argument = WindowsUpdaterHelperArgument::activation(&rendezvous).expect("rendezvous");
-
-        let launched =
-            launch_updater_helper(&path, &argument, ShellVerb::Open).expect("open-verb launch");
-        let handle: HANDLE = launched.as_handle().as_raw_handle().cast();
-        // SAFETY: `launched` retains `handle` for each call below.
-        assert_eq!(unsafe { GetProcessId(handle) }, launched.id());
-        // SAFETY: as above; the wait is bounded.
-        assert_eq!(
-            unsafe { WaitForSingleObject(handle, 60_000) },
-            WAIT_OBJECT_0
-        );
-        let mut exit_code = u32::MAX;
-        // SAFETY: as above; `exit_code` is writable.
-        assert_ne!(
-            unsafe {
-                windows_sys::Win32::System::Threading::GetExitCodeProcess(
-                    handle,
-                    &raw mut exit_code,
-                )
-            },
-            0
-        );
-        assert_eq!(
-            exit_code, 7,
-            "the retained handle is the launched script's process"
-        );
-
-        let observed =
-            std::fs::read_to_string(directory.join("observed.txt")).expect("the script's record");
-        let lines: Vec<&str> = observed.lines().collect();
-        assert_eq!(
-            lines.first().copied(),
-            Some(format!("ARG1={rendezvous}").as_str())
-        );
-        assert_eq!(
-            lines.get(1).copied(),
-            Some(format!("ALL={rendezvous}").as_str()),
-            "the argument arrives as exactly one token"
-        );
-        let cwd = lines
-            .get(2)
-            .and_then(|line| line.strip_prefix("CWD="))
-            .expect("the working-directory record");
-        assert_eq!(
-            std::fs::canonicalize(cwd).expect("canonical working directory"),
-            std::fs::canonicalize(&directory).expect("canonical helper directory"),
-            "lpDirectory is the launched process's working directory"
-        );
-    }
-
-    /// Enters COM's multithreaded apartment directly, as an independent probe of
-    /// the thread's COM state, and returns the raw `HRESULT`.
-    fn enter_multithreaded_apartment() -> i32 {
-        // SAFETY: the reserved argument is null and the flag is a documented
-        // COINIT value; the caller balances every success on this thread.
-        unsafe {
-            CoInitializeEx(
-                std::ptr::null(),
-                windows_sys::Win32::System::Com::COINIT_MULTITHREADED.cast_unsigned(),
-            )
-        }
-    }
-
-    #[test]
-    fn launch_apartment_is_left_on_its_own_thread_when_dropped() {
-        std::thread::spawn(|| {
-            let apartment = ComApartment::enter().expect("a fresh thread enters an STA");
-            drop(apartment);
-            // Microsoft: once COM is uninitialized on a thread it may be
-            // reinitialized in any mode. While the STA were still entered, this
-            // multithreaded request would fail with RPC_E_CHANGED_MODE.
-            assert_eq!(enter_multithreaded_apartment(), S_OK);
-            // SAFETY: balances the successful probe above on this thread.
-            unsafe { CoUninitialize() };
-        })
-        .join()
-        .expect("apartment thread");
-    }
-
-    #[test]
-    fn launch_apartment_reentered_on_an_sta_thread_balances_only_its_own_entry() {
-        std::thread::spawn(|| {
-            // SAFETY: the reserved argument is null and the flags are documented
-            // COINIT values; the success is balanced below on this thread.
-            let outer = unsafe {
-                CoInitializeEx(
-                    std::ptr::null(),
-                    (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).cast_unsigned(),
-                )
-            };
-            assert_eq!(outer, S_OK);
-            // Microsoft: a repeated compatible call returns S_FALSE and still
-            // needs its own CoUninitialize.
-            let apartment = ComApartment::enter().expect("S_FALSE is an entered apartment");
-            drop(apartment);
-            // The outer entry is still open, so the thread is still an STA.
-            assert_eq!(
-                enter_multithreaded_apartment(),
-                windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE
-            );
-            // SAFETY: balances the outer entry on this thread.
-            unsafe { CoUninitialize() };
-            assert_eq!(enter_multithreaded_apartment(), S_OK);
-            // SAFETY: balances the successful probe above on this thread.
-            unsafe { CoUninitialize() };
-        })
-        .join()
-        .expect("apartment thread");
-    }
-
-    #[test]
-    fn launch_apartment_refuses_a_thread_in_another_apartment_and_leaves_it_entered() {
-        std::thread::spawn(|| {
-            assert_eq!(enter_multithreaded_apartment(), S_OK);
-            match ComApartment::enter() {
-                Err(WindowsUpdaterHelperLaunchError::ComInitialization { hresult }) => {
-                    assert_eq!(hresult, windows_sys::Win32::Foundation::RPC_E_CHANGED_MODE);
-                }
-                other => panic!("expected RPC_E_CHANGED_MODE, got {other:?}"),
-            }
-            // The refusal made no CoUninitialize: the thread's own MTA is still
-            // entered, so a repeated request reports S_FALSE, not S_OK.
-            assert_eq!(enter_multithreaded_apartment(), S_FALSE);
-            // SAFETY: balances the two successful probes on this thread.
-            unsafe {
-                CoUninitialize();
-                CoUninitialize();
-            }
-        })
-        .join()
-        .expect("apartment thread");
-    }
+    mod suspended_launch;
+    use suspended_launch::same_token_exit_command;
 }

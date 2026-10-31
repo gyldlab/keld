@@ -111,6 +111,9 @@ impl ServerHandler for KeldMcpServer {
     }
 
     /// Fixed order for prompt-cache stability (spec AC2) — router sorts alphabetically.
+    // Preserve the async handler's evaluation timing: the body runs when rmcp polls the
+    // returned future, not when the trait method is called.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,

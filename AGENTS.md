@@ -148,12 +148,13 @@ Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
 ## Rust, TypeScript, and naming
 
 - Rust lints are workspace-owned. A new `allow` needs inline justification.
-- Production `unsafe` is limited to the exact sanctioned paths and operations owned by
-  the nearest crate `AGENTS.md`; that owner is the single allowlist, not a crate-wide
-  permission. Each denies `unsafe_op_in_unsafe_fn` and
-  carries local `// SAFETY:` proofs. A new production path requires an issue-scoped
-  root/nested owner update plus independent `unsafe` gate evidence on the exact
-  final diff; tests follow their nearest owner.
+- Production `unsafe`: exact paths/operations sanctioned by the nearest crate
+  `AGENTS.md` only; sole allowlist, no crate-wide grant. KEL-89:
+  [Native T3/T4](crates/keld-native/AGENTS.md).
+  Each denies `unsafe_op_in_unsafe_fn` and carries local `// SAFETY:` proofs.
+  New production paths require issue-scoped root/nested owner updates plus
+  independent `unsafe` gate evidence on the exact final diff; tests follow their
+  nearest owner.
 - Libraries MUST NOT add `unwrap`/`expect`/`panic!`. Typed errors are hand-written
   `Display` + `KELD-*` fix guidance; test and `keld-cli` top-level invariants may expect.
 - Hot kipc/event-loop/guard paths use callbacks/state machines: no async runtime or

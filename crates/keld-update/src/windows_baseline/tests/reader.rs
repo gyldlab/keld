@@ -119,9 +119,8 @@ fn ordinary_user_reads_but_cannot_mutate_committed_baseline() {
 }
 
 fn assert_activation_lock_is_readable(update: &Path) {
-    assert!(
-        fs::read(update.join("activation.lock"))
-            .expect("ordinary user reads the activation lock")
-            .is_empty()
+    assert_eq!(
+        fs::read(update.join("activation.lock")).expect("ordinary user reads the activation lock"),
+        Vec::<u8>::new()
     );
 }

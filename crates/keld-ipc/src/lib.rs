@@ -27,6 +27,7 @@ pub mod link;
 pub mod receive;
 pub mod session;
 pub mod token;
+pub mod window;
 #[cfg(windows)]
 mod windows_named_pipe;
 
@@ -37,11 +38,11 @@ pub use attempt::fuzz_attempt_records;
 #[cfg(windows)]
 pub use attempt::{
     ATTEMPT_HEALTH_WINDOW, AttemptFailureClass, AttemptHealthWindowFailure, AttemptReadPosition,
-    AttemptRecordError, AttemptRecordKind, AttemptTranscript, WindowsAttemptClaimantChannel,
-    WindowsAttemptClient, WindowsAttemptCloseWait, WindowsAttemptEndpoint,
-    WindowsAttemptEndpointError, WindowsAttemptEndpointSecurity, WindowsAttemptExchangeError,
-    WindowsAttemptLocatorError, WindowsAttemptLocatorInput, WindowsAttemptOwnerChannel,
-    WindowsAttemptRollBack, windows_attempt_connect_back_endpoint,
+    AttemptRecordError, AttemptRecordKind, AttemptTranscript, WindowsAttemptClaimCanceller,
+    WindowsAttemptClaimantChannel, WindowsAttemptClient, WindowsAttemptCloseWait,
+    WindowsAttemptEndpoint, WindowsAttemptEndpointError, WindowsAttemptEndpointSecurity,
+    WindowsAttemptExchangeError, WindowsAttemptLocatorError, WindowsAttemptLocatorInput,
+    WindowsAttemptOwnerChannel, WindowsAttemptRollBack, windows_attempt_connect_back_endpoint,
 };
 #[cfg(any(unix, windows))]
 pub use bootstrap::{
@@ -60,7 +61,9 @@ pub use bootstrap::{
 pub use call_error::{CallError, write_call_error};
 pub use echo::{ECHO_CHANNEL, EchoRequest, EchoResponse};
 pub use frame::{ChannelId, CorrelationId, FrameHeader, FrameKind, HeaderError};
-pub use lifecycle::{LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse};
+pub use lifecycle::{
+    LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse, SubscribeRefusal,
+};
 pub use link::AppLinkDeadlines;
 pub use receive::{AbsoluteDeadline, ReceivePolicy, ValidatedFrameHeader};
 pub use session::{

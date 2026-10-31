@@ -264,7 +264,13 @@ cleanup() {
   local cleanup_failed=0
   trap - EXIT
   if [[ -n "$active_container" ]]; then
-    docker rm --force "$active_container" >/dev/null 2>&1 || true
+    if run_with_timeout 8 docker rm --force "$active_container" >/dev/null 2>&1; then
+      :
+    else
+      local removal_status=$?
+      cleanup_failed=1
+      echo "KELD-DOCS006: container cleanup incomplete for '$active_container' (exit $removal_status); absence is unverified. Check Docker health, inspect that exact container, and remove it when available." >&2
+    fi
   fi
   if [[ -n "$render_dir" ]]; then
     if [[ "$render_succeeded" == 1 && "$keep_output" == 0 ]]; then

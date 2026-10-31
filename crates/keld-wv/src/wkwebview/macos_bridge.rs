@@ -895,6 +895,43 @@ fn report_admission(call: &RendererBridgeRequest) {
     }
 }
 
+/// Service one source on the same process main run loop before an original
+/// Native absolute bound. This is a servicing result, never a drain receipt.
+#[allow(
+    unsafe_code,
+    reason = "sanctioned CoreFoundation default-mode constant read on the main thread"
+)]
+pub(super) fn service_main_tail_before(
+    _main_thread: MainThreadMarker,
+    original_deadline: std::time::Instant,
+) -> Result<(), WvError> {
+    let Some(remaining) = original_deadline.checked_duration_since(std::time::Instant::now())
+    else {
+        return Err(WvError::EventLoop(String::from(
+            "native main tail original bound expired",
+        )));
+    };
+    if remaining.is_zero() {
+        return Err(WvError::EventLoop(String::from(
+            "native main tail original bound expired",
+        )));
+    }
+    // SAFETY: exported CoreFoundation process-constant default mode; the marker
+    // proves this service runs on the current process main thread. No raw handle
+    // is adopted and no SDK object leaves its owner.
+    let mode = unsafe { objc2_core_foundation::kCFRunLoopDefaultMode };
+    let result = objc2_core_foundation::CFRunLoop::run_in_mode(mode, remaining.as_secs_f64(), true);
+    if result == objc2_core_foundation::CFRunLoopRunResult::HandledSource
+        || result == objc2_core_foundation::CFRunLoopRunResult::TimedOut
+    {
+        Ok(())
+    } else {
+        Err(WvError::EventLoop(String::from(
+            "native main tail run-loop service unavailable",
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

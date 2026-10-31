@@ -294,12 +294,13 @@ fn named_criterion_six_controls_fail_on_real_sources() {
         "{}\n#[cfg(test)]\nmod probe {{\n    const P: crate::ChannelId = crate::ChannelId(9);\n}}\n",
         source(&sources, echo)
     );
-    assert!(
+    assert_eq!(
         hits_in(
             &channel_hits(&with_file(sources.clone(), echo, gated.clone())),
             echo
         )
-        .is_empty()
+        .len(),
+        0
     );
     let any = replace_once(
         &gated,
@@ -407,12 +408,13 @@ fn criterion_fifteen_controls_fail_on_real_sources() {
         "{}\n/// Evaluates `\"fs.read\"`.\n#[cfg(test)]\nmod probe {{\n    const P: &str = \"fs.read\";\n}}\n",
         source(&sources, dispatch)
     );
-    assert!(
+    assert_eq!(
         hits_in(
             &capability_hits(&with_file(sources, dispatch, mutated)),
             dispatch
         )
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -482,7 +484,10 @@ fn only_the_table_constructs_channel_entries() {
     let sources = real_sources();
     let table = source(&sources, TABLE);
     assert!(scan::entry_constructor_is_private(table));
-    assert!(scan::entry_construction_hits(&sources, Path::new(TABLE)).is_empty());
+    assert_eq!(
+        scan::entry_construction_hits(&sources, Path::new(TABLE)).len(),
+        0
+    );
 
     let public = replace_once(table, "    const fn new(", "    pub const fn new(");
     assert!(!scan::entry_constructor_is_private(&public));
@@ -509,14 +514,17 @@ const BRIDGE_ID_CALLS: &[(&str, usize)] = &[
 #[test]
 fn bridge_admitted_id_is_never_a_positional_literal() {
     let sources = real_sources();
-    assert!(scan::positional_literal_hits(&sources, BRIDGE_ID_CALLS).is_empty());
+    assert_eq!(
+        scan::positional_literal_hits(&sources, BRIDGE_ID_CALLS).len(),
+        0
+    );
     let session = "crates/keld-core/src/app_session.rs";
     let bridge = "crates/keld-wv/src/wkwebview/macos_bridge.rs";
     for (file, from, to) in [
         (
             session,
-            "renderer_outcomes_rx,\n        keld_ipc::channel_table::ECHO.wire_id(),",
-            "renderer_outcomes_rx,\n        1,",
+            "renderer_outcomes_rx,\n            keld_ipc::channel_table::ECHO.wire_id(),",
+            "renderer_outcomes_rx,\n            1,",
         ),
         (
             bridge,

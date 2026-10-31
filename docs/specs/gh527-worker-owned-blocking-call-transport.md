@@ -126,7 +126,8 @@ negative control: the one mutation that MUST make the test fail.
    (amended by #528 T3, coordinator decision on #636) The role's `Quit` is its last
    call. It never parks the caller (PANEL-P2, #419). The link closes the moment the
    Quit REPLY settles (`quitAndCloseLink`), so a call still pending then throws
-   `KELD-IPC-022`, which the caller treats as `KELD-IPC-024` (§4.4). The host's drain
+   `KELD-IPC-022`, whose outcome is unknown (§4.4, as corrected by GH-1095): the host may
+   have run a call the role wrote before its `Quit`. The host's drain
    ends at that EOF, not at a backstop.
    *Negative controls:* a host that closes without writing the Quit REPLY makes (a)
    throw `KELD-IPC-022`, so a client-synthesized Quit success fails (a); a drain that
@@ -416,7 +417,11 @@ no claim is made (§9).
 - Every main-thread frame passes through the Worker: blocking calls, asynchronous
   calls, outbound EVENTs and every inbound frame. There is no side channel. The two
   directions use different paths. Outbound, main posts each frame to the Worker with
-  `postMessage`, in send order, and the Worker writes it with its one `WriteQueue`.
+  native `MessagePort.postMessage`, in send order, using the existing owned
+  cause/control port in the main-to-Worker direction. The Worker-to-main direction
+  of that port still carries terminal causes; open/kick notifications retain the
+  parent port. No second outbound frame queue or admission owner is introduced.
+  The Worker writes each outbound frame with its one `WriteQueue`.
   The ring does not bound or order outbound frames: they keep KEL-136's per-frame
   `MAX_FRAME_LEN` bound and write order. Inbound, the Worker appends each frame to the
   ring, except the blocking reply, which goes to the reply slot (§4.3).
@@ -519,9 +524,17 @@ and updates this table in the same PR.
 `KELD-IPC-024` for every CALL it receives behind an accepted `Quit` while the link can
 carry it. A role whose `Quit` closes the link on its REPLY (#528 T3, §4.9) reads none of
 those answers: its calls still pending then end as `KELD-IPC-022`, as does a call that a
-§4.9 liveness backstop overtakes. Behind an accepted `Quit` the two codes mean the same:
-the call is terminal and the host ran none of it. Callers MUST treat `KELD-IPC-024` and
-`KELD-IPC-022` alike there.
+§4.9 liveness backstop overtakes. The two codes do not mean the same (corrected by
+GH-1095 §4.5, owner decision 2026-10-23).
+
+- Only `KELD-IPC-024` proves non-execution. The host writes it for a CALL it read
+  behind the accepted `Quit`, and it ran none of it. That is a host-side proof.
+- A role-observed `KELD-IPC-022` at the close does not prove it. The call may have
+  been written before the `Quit` and run by the host, and the role cannot tell which.
+
+Callers MUST treat that `KELD-IPC-022` as outcome unknown and MUST NOT replay it.
+This holds unless GH-1095's AT-B3 proves that the host runs no call written before an
+accepted `Quit`.
 
 Reused codes: `KELD-IPC-005` for a second `WorkerLink.open`, invalid open bounds or
 an invalid `receive` table (§4.5), an outbound frame on channel 0, a listener or state
@@ -802,12 +815,26 @@ After the batch's `KICK = 0` store and re-check (step 3), it rethrows the first 
 error in a new `setImmediate` task, so the error reaches the role's uncaught-error
 handling and no record or `KICK` state is left behind (criterion 19).
 
-The ring is therefore also the listener FIFO. No second queue exists, and memory held
-for undispatched listeners stays inside the ring bound. An applier MUST be synchronous
-and MUST NOT call user code. A throwing applier makes the link terminal with
-`KELD-IPC-005`: a mirror that cannot apply a fact must not serve stale state. #449
-(F02-T2) owns the mirror; its zero-round-trip getters rely on step 1, and its sequence
-test lands with #528.
+**Scoped mirror amendment approved — 2026-10-24:** [GH-1142's exact-content
+owner approval](https://github.com/gyldlab/keld/issues/1142#issuecomment-6374810328)
+binds [technical proposal `ad857aa3`](https://github.com/gyldlab/keld/blob/ad857aa3e26b42ff9ffc7d22c6449d8ebe99c588/docs/specs/gh1142-mirror-fact-retention.md),
+file SHA-256 `5fa690e57feafdf238ca16240b86242c9ab1ecdb76df65aab41b841f4d63fdd1`.
+The following retention/source-failure correction preserves the existing ring,
+terminal-cause and earlier-answer owners; production sources still need heap/alias qualification.
+
+The ring remains the sole inbound-frame admission, issue-order and release owner
+and the listener schedule. GH-531's mirror may retain exactly one successfully
+decoded/applied fact per corresponding retained event until dispatch, removing its
+entry before user callbacks and retaining no helper-held values at terminal
+finalization after earlier-record delivery. This is an explicit physical heap-retention exception,
+not a second frame queue or independent backlog. Its count follows retained records;
+its bytes require source-specific shape, heap-budget and alias/lifetime proof before
+production attachment. An applier is synchronous and calls no user code. Source
+decode/apply failure that wins the existing first-terminal-recorder transition has
+cause `KELD-IPC-005`. Earlier retained answers still settle their pending calls;
+parked or still-unanswered pending callers report the existing recorded terminal
+code/cause. A prior terminal cause keeps priority. GH-531 §4.d owns the
+derived facts; this section keeps the two-cursor order, listener isolation and release.
 
 ### 4.7 Bounded ordered ring and overflow
 
@@ -986,7 +1013,15 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     fails or times out marks the link lost: no later answer is attempted, the link
     closes as before, and the role sees `KELD-IPC-022`. Failed-write retirements send
     nothing.
-  - *Quit* (macOS and Linux). The FS drain stays unbounded, so every admitted
+  - KEL-89 auth pending calls admitted before accepted Quit may already have
+    entered Native work: the host attempts `generation_retired` IPC023, whose
+    host effect is unknown. Delivery remains best effort: a public WorkerLink
+    closes on the Quit REPLY and may observe IPC022 if the answer is not retained
+    before that close. The existing generation lock orders this against any real
+    reply; only still-pending calls are answered. Physical Native owners/leases
+    remain until Drained. IPC024 is reserved for calls newly read by the post-Quit
+    drain, which are never executed.
+  - *Quit* (macOS, Linux and Windows). The FS drain stays unbounded, so every admitted
     handler finishes and sends its real reply (KEL-130 durability). After the real
     `Quit` REPLY and that drain, the reader reads on until the role ends the link:
     the role's EOF is the drain's normal end. Each CALL received on
@@ -1006,14 +1041,20 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     the caller (PANEL-P2, #419: `app.quit` returns immediately). It resolves only on
     `LifecycleResponse::Quit`; any other REPLY rejects with `KELD-IPC-003`. A call
     answered by a record delivered before the close keeps that answer. A call still
-    pending at the close ends as `KELD-IPC-022`, which callers treat as `KELD-IPC-024`
-    (§4.4; both terminal, neither ran). The host reads EOF at once, so its drain ends there without waiting
+    pending at the close ends as `KELD-IPC-022`: terminal, with an unknown outcome (§4.4,
+    as corrected by GH-1095). The host reads EOF at once, so its drain ends there without waiting
     on a backstop (`QuitDrainEnd::PeerClosed`), and an answer it still writes to a
     CALL the role left behind the `Quit` fails (`EPIPE`, a reset or `NotConnected`)
     and ends the drain quietly as a lost link (`AnswerLost`): no error, no link-failure
     report, and the Quit tail goes on to the guardian and the UI Quit. *Falsifier:* a
     caller or contract that needs data after the Quit REPLY, or that must tell
-    `KELD-IPC-024` apart from `KELD-IPC-022`. The rejected alternative, a write
+    `KELD-IPC-024` apart from `KELD-IPC-022`. **Status (2026-10-23): the second
+    limb is met.** GH-1095 §4.5 (owner decision Q3) requires callers to tell
+    `KELD-IPC-024` (the host ran none of the call) from a role-observed
+    `KELD-IPC-022` (outcome unknown). The close-on-REPLY design is unchanged. Its
+    cost is that a call the host answered `KELD-IPC-024` reaches the role as
+    `KELD-IPC-022`, which is Unknown. Whether to revisit this is a decision for
+    the owner of this spec. The rejected alternative, a write
     half-close, needed `node:net` beside `Bun.connect` (FACT, Bun 1.4.2 macOS:
     `Bun.connect`'s `shutdown(true)` and `end()` close both directions of a Unix
     socket) and would only have turned `KELD-IPC-022` into `KELD-IPC-024`. A role that
@@ -1024,8 +1065,7 @@ passed 3/3; the bound moved to the host producer, which deferred 9,976 EVENTs.
     `ENOTCONN` before reaching the write half and sends no FIN (XNU
     `soshutdownlock_final`, `bsd/kern/uipc_socket.c` at `f6217f89`), which is why
     the halves are shut separately.
-    Windows keeps its existing post-`Quit` peer-close check, which treats bytes after
-    the REPLY as an error, until T5 qualifies the same rule there.
+    Windows runs the same drain since the W1 fix (#1073, §10).
 
 ### 4.10 Platform notes and runtime seam
 
@@ -1283,6 +1323,20 @@ liveness test passes the code check whatever the wake latency, because a missing
 surfaces as `KELD-IPC-006`. Unix socket paths stay under 104 bytes. Each platform-only
 path is marked in T5.
 
+T5 (#528, amended by #666): `crates/keld-ipc/tests/worker_link.rs` runs on macOS, Linux
+and Windows against the platform's `BootstrapStream` (a Unix socket, or the KEL-101
+named pipe), and the host closes with the production `shutdown_app_link`. The keld-core
+router cases (criteria 6, 7 and the host half of 8) run on every OS on the shared
+`primary_test_stream_pair`, except the Unix cases recorded in §10. A real platform
+difference is a per-OS expectation that cites its OS fact, never a skip. Findings W2
+and W1 are fixed (#1073): the Windows close keeps the bytes written before it, and
+Windows runs the same post-Quit drain (§10 states what was measured). No case is gated
+for either any more, and the write-then-close and criterion 7 cases run on Windows with
+the Unix expectation. The CI `ubuntu-latest`
+and `windows-latest` legs are the Linux and Windows evidence; a write-then-close case
+is Windows evidence only together with its native every-CPU-busy record (§10), because
+two or three green runs of it would prove nothing.
+
 ## 8. Review gates triggered
 
 unsafe: none. **public API**: the new `@keld/kipc` exports (`WorkerLink`,
@@ -1318,8 +1372,12 @@ and the kipc small-message round trip (one extra thread hop). Bench to run: the 
 - census: one role, one link, arm-B load;
 - work: one copy from socket chunk to ring (or to the reply slot), and one copy out
   for the reply;
-- queue and copy: the ring is the only inbound queue, bounded in bytes and records;
-  the reply slot holds at most one reply;
+- queue and copy: the ring is the only inbound-frame queue, bounded in bytes and
+  records; the reply slot holds at most one reply. GH-531 permits additional physical
+  heap retention of derived decoded facts until their existing record is dispatched.
+  Their count/lifetime follows retained records; source-specific maximum shape,
+  heap-budget and alias accounting is required before each production attachment.
+  The ring's byte bound does not bound arbitrary decoded heap graphs.
 - clock: none is asserted;
 - statistic: none is claimed;
 - artifact: `s0-link-drain.json` (#418) is prototype evidence only. Any later figure
@@ -1341,10 +1399,130 @@ the `WriteQueue` promise chain are as unbounded as today's main-thread `WriteQue
    FACT (#528 T1, Bun 1.4.2, macOS arm64): `terminate()` of a Worker wedged in
    `Atomics.wait` closes its socket and the host observes link loss (criterion 8c);
    a busy-loop wedge behaved the same in a scratch probe that is not a committed test.
-   Linux and Windows stay UNKNOWN until T5.
+   T5 (#666): criterion 8c passes on `ubuntu-latest` and `windows-latest` too, so
+   `terminate()` closes the wedged Worker's link there as well.
    Recommendation: yes. Exit the role process right after surfacing the error, since a
    role without a link cannot recover in place.
 3. Confirm `MAX_ABANDONED_CALLS = 256`. Recommendation: keep it; a host that leaves
    that many calls unanswered is stuck, and criterion 22 proves the typed failure.
 4. Confirm the liveness constants (100 ms heartbeat, 1 s window). Recommendation:
    keep them. Criterion 9 falsifies the window if it is too tight under load.
+
+**T5 qualification record (#528 T5, #666).** CI's `ubuntu-latest`
+and `windows-latest` legs are the real hosts.
+
+| Criterion | Linux | Windows |
+|---|---|---|
+| 1–4, 8–10, 12–14, 18–20 (T1 harness) | pass | pass |
+| 5 (a close without `ERR` throws 022 and keeps prior records) | pass | pass since the W2 fix (#1073), with every CPU busy (below) |
+| 6 (retire answers pending calls with `KELD-IPC-023`) | pass | pass since the W2 fix (#1073): the non-reading router peer reads both 023s, and the Bun end-to-end case asserts the 023 only, with every CPU busy (below) |
+| 7 (post-Quit calls get `KELD-IPC-024`, none run) | pass | pass since the W1 fix (#1073): the router case reads the Quit REPLY then the 024 and the router joins cleanly; the 7(a) Bun case's trailing CALL is drained, with every CPU busy (below) |
+| 8, host half (Worker death fails the generation) | pass | pass |
+| 11 (second open and second connect refused) | pass (`KELD-IPC-005`; role sees `ENOENT`) | pass (`KELD-IPC-005`; host-side open gets `ERROR_PIPE_BUSY`) |
+
+The extra harness cases for criteria 21, 22 and 25–27 and the T3 cases also pass on
+both OSes. Before the W2 fix, three cases that write and then close, and the
+end-to-end criterion 6 case, rested on the role already having a read pending when the
+host called `DisconnectNamedPipe`, and that inference failed under load. Native
+Windows 11 runs, idle and then with one busy loop per logical CPU, gave these results
+before the fix (2026-10-21, #666 low-finding follow-up) and after it (#1073):
+
+| Case | Before: idle | Before: every CPU busy | After the W2 fix: every CPU busy |
+|---|---|---|---|
+| `bun_role_parked_on_fs_throws_023_when_the_host_retires` | 100/100 got the 023 | 5 of 60 got only the close (`KELD-IPC-022`) | 60 of 60 got the 023 |
+| `criterion5_close_without_err_throws_022_and_keeps_prior_records` | pass | 10 of 10 lost the records (`EPIPE` on read); the role then waited for them until the kill switch | 20 of 20 pass |
+| `on_end_reports_the_close_after_retained_records` | pass | 6 of 6 lost `event:1` (`EPIPE` on read) | 20 of 20 pass |
+| `review_reply_published_before_the_close_wins` | pass | 1 of 6 lost the REPLY (`call-returned=false`) | 40 of 40 pass |
+| `retire_answers_pending_fs_and_quit_calls_with_023_before_close` | read only the close (deterministic) | same | 20 of 20 read both 023s |
+
+The after-fix column ran on 2026-10-28 on Windows 11 build 26300 with 16 logical CPUs.
+With the old `DisconnectNamedPipe` restored as a temporary mutation, the same busy runs
+failed again: criterion 5 failed 5 of 5, `onEnd` failed 5 of 5, retirement failed 5 of 5,
+the REPLY case failed 1 of 10 and the end-to-end 023 case failed 2 of 15.
+
+So W2 also lost data that a reading role should get, whenever its transport Worker
+was late to read: the effect was not limited to a non-reading peer.
+
+W1 and W2 were Windows production defects tracked by #1073; both are fixed (below).
+
+- **Finding W1 (criterion 7, Windows) — fixed (#1073).** Windows had no post-Quit drain. After the
+  Quit REPLY, its tail waited for the peer's close, and any byte was a fault ("app sent
+  bytes after the terminal Quit reply", `await_windows_quit_peer_close_until`). So a
+  CALL the role wrote before it ended the link fails the tail instead of getting
+  `KELD-IPC-024`. Since T3 made `quit()` asynchronous, app code can write calls behind
+  the Quit, so this affects real Windows apps, not only tests. Evidence before the fix:
+  `quit_drain_answers_received_calls_with_024_and_runs_none` asserted the old Windows
+  behaviour on `windows-latest`: the client reads the Quit REPLY but no
+  `KELD-IPC-024`, the FS CALL never runs, and the router's join reports that fault as
+  `KELD-CORE-037`. The
+  criterion 7(a) end-to-end case
+  `bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes` meets W1 the
+  same way: the role's echo CALL after its Quit fails the Windows tail, so its join
+  also reports `KELD-CORE-037`, while the role still sees the real Quit REPLY and then
+  `KELD-IPC-022`. Both cases shared one helper that asserted this on Windows (first
+  observed natively on a Windows 11 host, 2026-10-21).
+  - *Fix:* Windows runs `answer_calls_after_quit` and `drain_calls_after_quit`, and
+    the Windows peer-close wait is deleted. `read_quit_drain_frame` is generic over
+    `Read`, and the Windows stream already has the `HOST_ANSWER_BUDGET` write deadline.
+    W1 needed W2, because the drain's 024 answers are also followed by the close.
+  - *Check:* with the tests flipped and the host unfixed, three cases fail on Windows:
+    `quit_drain_answers_received_calls_with_024_and_runs_none` reads no 024, and both
+    `quit_drain_answers_are_bounded_when_the_peer_stops_reading` and
+    `bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes` report
+    `KELD-CORE-037`. With the fix, they pass with the Unix expectation, as do
+    `quit_drain_ends_quietly_when_its_answer_finds_the_role_gone` and
+    `bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof`; every CPU busy:
+    20 of 20 runs of all five cases pass (Windows 11 build 26300,
+    16 busy loops on 16 logical CPUs).
+- **Finding W2 (criterion 6, Windows) — fixed (#1073).** The Windows host close
+  (`shutdown_app_link` calling `DisconnectNamedPipe`) discarded a pipe's unread data,
+  which Microsoft documents for `DisconnectNamedPipe`. So `KELD-IPC-023` answers
+  written just before the close reached only a role that already had a read pending
+  (CI run 37984265844: the non-reading criterion 6 case read no frame, `left: []`), and
+  under load a reading role lost them too (table above).
+  - *Fix:* the stream shutdown cancels its own pending I/O and retires the shared pipe
+    HANDLE instead of disconnecting; each in-flight operation keeps its pin until it
+    observes the cancel, so the HANDLE closes right after. If the cancel itself reports
+    an error, the shutdown falls back to `DisconnectNamedPipe`, so I/O it could not
+    cancel cannot keep the peer connected until that I/O's own deadline; that rare path
+    discards unread bytes as before. A native probe with the
+    production pipe flags (#1073, 1,380 runs, idle and every CPU busy, Rust and Bun 1.4.4
+    clients) delivered every written byte with this close and none with
+    `DisconnectNamedPipe` for a late reader; the peer then reads `ERROR_BROKEN_PIPE`
+    (Bun: `close` without `EPIPE`). `CloseHandle` never waited (70 µs maximum). Not
+    measured: data survival when the host process exits right after the close, and
+    client read delays longer than about 0.6 s. The
+    rejected route, a flush bounded by `HOST_ANSWER_BUDGET`, needs a thread to cancel a
+    synchronous `FlushFileBuffers`. Admission-time closes of rejected or expired peers
+    still disconnect, because discarding is their intent.
+  - *Check:* `retire_answers_pending_fs_and_quit_calls_with_023_before_close` asserts
+    the Unix expectation on Windows (deterministic: the test thread issues no read
+    until the retirement has returned), the three write-then-close cases run on Windows
+    again, and the end-to-end criterion 6 case asserts only the 023, each passing with
+    every CPU busy (table above).
+- **Unix by OS fact.** `quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it`
+  and `quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof`: a named pipe
+  has no half-close. On Windows, `quit_drain_ends_quietly_when_its_answer_finds_the_role_gone`
+  covers a host stall with a buffered CALL read after the role's full close.
+- **Windows case (#1073).** `retire_answers_are_bounded_when_the_peer_stops_reading` has
+  a Windows case of the same name. The Unix oracle does not carry over, for two reasons.
+  The standard library has no nonblocking named pipe. And an app-link deadline is per
+  handle on Windows, so a getter on a clone is not an oracle (`AppLinkDeadlines`).
+  The Windows case therefore works as follows:
+  - It fills the host-to-role direction with pattern bytes, under a short write
+    deadline, until a write cannot complete while nothing reads.
+  - A test-only witness in `write_best_effort_answers` (`cfg(all(test, windows))`) reads
+    the deadline on the writer itself before each answer. A duration assertion would
+    break the anti-flake rule in §7.
+  - It asserts that the one 023 ran under `HOST_ANSWER_BUDGET`, that retirement
+    succeeds and closes the link, and that the role reads exactly the accepted pattern
+    bytes (65,536, the pipe quota), then the close.
+
+  Negative controls, each applied alone:
+  - Leaving the writer's deadline in place records `APP_LINK_IO_DEADLINE`, and the
+    retirement is held for about 5 s.
+  - The old `DisconnectNamedPipe` close delivers 0 of the 65,536 queued bytes.
+  - A fill that stops at 32,769 bytes lets the 023 fit, and the role reads its 313
+    bytes after the pattern.
+
+  Native Windows 11 build 26300 with 16 busy loops on 16 logical CPUs: 20 of 20 pass.

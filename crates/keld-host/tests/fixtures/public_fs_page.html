@@ -1,0 +1,178 @@
+<!doctype html><html><head><meta charset="utf-8"><title>KEL140 Public FS Acceptance</title>
+<style>html,body{margin:0;width:100%;height:100%;background:#111;color:#eee}#go{position:fixed;inset:0;border:0;background:#163;color:white;font:28px system-ui}#result{font:18px system-ui;padding:24px}</style>
+</head><body>__JOINT_BUTTON__<pre id="result"></pre>
+<script>
+"use strict";
+const base = "http://127.0.0.1:__PORT__";
+const nonce = () => Array.from(crypto.getRandomValues(new Uint32Array(4)),
+  value => value.toString(16).padStart(8, "0")).join("");
+const documentNonce = nonce();
+const javascriptToken = nonce();
+const initial = { bridge: typeof window.keld?.invoke === "function",
+  frozen: Object.isFrozen(window.keld),
+  nativeHidden: window.webkit?.messageHandlers?.__keld_wv_link_v1 === undefined };
+const requests = [];
+const outcomes = [];
+const recoveryMode = __RECOVERY_MODE__;
+const nativeJoint = __NATIVE_JOINT__;
+const go = document.getElementById("go");
+const pendingRecovery = __PENDING_RECOVERY__ || nativeJoint;
+const terminals = [];
+const invokeNonces = new Map();
+const resultEnvelopes = new Map();
+const terminalWaiters = new Map();
+function captureTerminal(requestId) {
+  if (!invokeNonces.has(requestId) || !resultEnvelopes.has(requestId)) return;
+  const requestNonce = invokeNonces.get(requestId);
+  const rows = resultEnvelopes.get(requestId);
+  resultEnvelopes.delete(requestId);
+  for (const value of rows) {
+    terminals.push({ nonce: requestNonce, ok: value.ok,
+      code: value.code ?? null, detail: value.detail ?? null });
+  }
+  const waiter = terminalWaiters.get(requestNonce);
+  if (waiter) { terminalWaiters.delete(requestNonce); waiter(); }
+}
+function awaitPassiveTerminal(requestNonce) {
+  if (terminals.some(terminal => terminal.nonce === requestNonce)) return Promise.resolve();
+  return new Promise(resolve => { terminalWaiters.set(requestNonce, resolve); });
+}
+// Passive existing-bridge observations only; never post a bridge message.
+window.addEventListener("message", event => {
+  if (!pendingRecovery || event.source !== window) return;
+  const value = event.data;
+  if (value?.__keldRelay === "invoke-v1" && value.channel === 1 && Array.isArray(value.payload)) {
+    const request = requests.find(request => {
+      const bytes = encodeRequest(JSON.stringify({ action: request.action, nonce: request.nonce }), request.count);
+      return bytes.length === value.payload.length && bytes.every((byte, index) => byte === value.payload[index]);
+    });
+    if (request) {
+      invokeNonces.set(value.request, request.nonce);
+      captureTerminal(value.request);
+    }
+  } else if (value?.__keldRelay === "result-v1") {
+    const rows = resultEnvelopes.get(value.request) ?? [];
+    rows.push({ ok: value.ok, code: value.code ?? null, detail: value.detail ?? null });
+    resultEnvelopes.set(value.request, rows);
+    captureTerminal(value.request);
+  }
+});
+function encodeRequest(message, count) {
+  const bytes = new TextEncoder().encode(message);
+  if (bytes.length >= 128 || count >= 128) throw new Error("bounded sample request encoding");
+  const payload = new Uint8Array([bytes.length, ...bytes, count]);
+  if (payload.length > 4096) throw new Error("sample request exceeds renderer budget");
+  return payload;
+}
+function decodeResponse(bytes, expectedCount) {
+  // This sample admits at most a two-byte string length and a one-byte count.
+  let offset = 1;
+  let length = bytes[0];
+  if (length >= 128) {
+    if (bytes.length < 3 || bytes[1] >= 128) throw new Error("sample response length encoding");
+    length = (length & 127) | (bytes[1] << 7);
+    offset = 2;
+  }
+  if (bytes.length > 4096 || bytes.length !== offset + length + 1 ||
+      bytes[offset + length] !== expectedCount) throw new Error("sample response bounds/count");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(offset, offset + length)));
+}
+async function report(phase, extra) {
+  // The facade may settle its Promise before this later passive listener runs.
+  // Fence the actual matching result event, not a timer or an invented result.
+  if (pendingRecovery) {
+    await Promise.all(outcomes.map((_outcome, index) => awaitPassiveTerminal(requests[index].nonce)));
+  }
+  const value = { phase, documentNonce, javascriptToken, initial, requests, outcomes, ...(pendingRecovery ? { terminals } : {}), ...extra };
+  result.textContent = JSON.stringify(value);
+  const response = await fetch(base + "/observe", { method: "POST",
+    headers: { "Content-Type": "text/plain" }, body: JSON.stringify(value) });
+  if (!response.ok) throw new Error("public FS page observation refused");
+}
+go?.addEventListener("click", async event => {
+  try {
+    await report("page-click-start", { trusted: event.isTrusted });
+    for (const [index, action] of ["roundtrip", "deny", "unknown"].entries()) {
+      const request = { action, nonce: nonce(), count: index + 1 };
+      requests.push(request);
+      const payload = encodeRequest(JSON.stringify({ action, nonce: request.nonce }), request.count);
+      try {
+        const outcome = decodeResponse(await window.keld.invoke(1, payload), request.count);
+        outcomes.push({ action, outcome });
+      } catch (error) {
+        outcomes.push({ action, error: error.message, code: error.code ?? null });
+      }
+    }
+    await report("page-result", { trusted: event.isTrusted });
+    go.remove();
+  } catch (error) { await report("error", { error: String(error) }); }
+}, { once: true });
+async function runNativeJointConsumer() {
+  go?.remove();
+  await report("joint-page-ready", { automaticRecovery: true });
+  const held = { action: "native-hold", nonce: nonce(), count: 1 };
+  requests.push(held);
+  await report("joint-pending-start", { automaticRecovery: true });
+  try {
+    const payload = encodeRequest(JSON.stringify({ action: held.action, nonce: held.nonce }), held.count);
+    const outcome = decodeResponse(await window.keld.invoke(1, payload), held.count);
+    outcomes.push({ action: held.action, outcome });
+  } catch (error) {
+    outcomes.push({ action: held.action, name: error.name,
+      error: error.message, code: error.code ?? null });
+  }
+  await report("joint-pending-settled", { automaticRecovery: true });
+  const command = await fetch(base + "/recovery-page");
+  if (!command.ok || await command.text() !== "after") {
+    throw new Error("invalid joint G2 page command");
+  }
+  for (const [index, action] of ["roundtrip", "deny"].entries()) {
+    const request = { action, nonce: nonce(), count: index + 1 };
+    requests.push(request);
+    const payload = encodeRequest(JSON.stringify({ action: request.action, nonce: request.nonce }), request.count);
+    const outcome = decodeResponse(await window.keld.invoke(1, payload), request.count);
+    outcomes.push({ action: request.action, outcome });
+  }
+  await report("joint-final", { automaticRecovery: true });
+}
+async function runRecoveryConsumer() {
+  go.remove();
+  await report("page-ready", { automaticRecovery: true });
+  for (const phase of ["before", "after"]) {
+    const command = await fetch(base + "/recovery-page");
+    if (!command.ok || await command.text() !== phase) throw new Error("invalid recovery page command");
+    for (const [index, action] of ["recovery-" + phase, "deny"].entries()) {
+      const request = { action, nonce: nonce(), count: index + 1 };
+      requests.push(request);
+      const payload = encodeRequest(JSON.stringify({ action, nonce: request.nonce }), request.count);
+      const outcome = decodeResponse(await window.keld.invoke(1, payload), request.count);
+      outcomes.push({ action, outcome });
+    }
+    await report("recovery-" + phase, { automaticRecovery: true });
+    if (pendingRecovery && phase === "before") {
+      const command = await fetch(base + "/recovery-page");
+      if (!command.ok || await command.text() !== "pending") throw new Error("invalid pending page command");
+      const request = { action: "recovery-pending", nonce: nonce(), count: 3 };
+      requests.push(request);
+      await report("recovery-pending-start", { automaticRecovery: true });
+      try {
+        const payload = encodeRequest(JSON.stringify({ action: request.action, nonce: request.nonce }), request.count);
+        const outcome = decodeResponse(await window.keld.invoke(1, payload), request.count);
+        outcomes.push({ action: request.action, outcome });
+      } catch (error) {
+        outcomes.push({ action: request.action, name: error.name, error: error.message, code: error.code ?? null });
+      }
+      await report("recovery-pending-settled", { automaticRecovery: true });
+    }
+  }
+}
+// Recovery uses the real renderer dataplane and no DOM or OS input action.
+if (nativeJoint) {
+  runNativeJointConsumer().catch(error => report("error", { error: String(error) }));
+} else if (recoveryMode) {
+  runRecoveryConsumer().catch(error => report("error", { error: String(error) }));
+} else {
+  // The parent sees this only after the actual listener is installed.
+  report("page-ready", { button: go?.id ?? null }).catch(error => { result.textContent = String(error); });
+}
+</script></body></html>

@@ -26,7 +26,19 @@ Principal identity is authenticated **link metadata**, not a frame payload field
 destination supervisor mints a role principal, creates the listener/token, spawns that
 role and binds the accepted link to the principal before dispatch. A frame cannot select,
 forge or upgrade its role. KEL-70's live generic supervisor does not yet perform this
-binding; v0's token proves possession only.
+binding; the `HELLO` token itself proves possession only.
+
+**Current primary app-link identity (KEL-97):** Runtime's authenticated
+`BoundRoleGeneration` retains its canonical owner and generation; Core keeps
+that principal in the accepted primary row and reader context. Primary admission
+rejects another role owner. Before decoding a Bun-to-Host unprivileged Echo
+request, Core requires the current attempt and principal, the same reader-stop
+instance, and a running session and reader. A retired or mismatched context is
+inert before decoding or replying. macOS qualification exercises actual guardian
+retirement and a G2 public-FS successor result, with exact bytes and a scoped
+Guard denial that leaves the outside file unchanged. That successor proof does
+not claim an outbound app Echo result, renderer continuity, OS containment or
+role grants; the full named-role `RoleRegistry` composition remains Target.
 
 **Destination role-instance contract (KEL-75):** a role instance is the host-owned
 pair `(declared role, fresh generation)`. It is never inferred from a PID, listener
@@ -131,8 +143,21 @@ connection, under the landed per-connection deadline clamped to the claim deadli
 reads the client's process ID and session, `KELD-AH1`, the claim writer's
 identification-level token and the retained process pin that the caller's claimant
 policy returns, disconnects and re-arms on any refusal, and consumes its one-shot
-before `KELD-AR1`. After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by
-position, decides the health window (30 seconds plus a margin G, which the caller
+before `KELD-AR1`. The claim wait ends without a claimant at the claim deadline
+(`KELD-IPC-018`) or when the endpoint's claim canceller, a `Send` handle taken before
+the wait that the owner's watcher on its retained launch handle drives, ends it
+(`KELD-IPC-028`); both close the endpoint. The cancel and the one-shot are serialised
+on the instance:
+- A cancel that acts before the one-shot is taken refuses it. This includes a cancel
+  already in flight when the owner reaches the one-shot. No `KELD-AR1` is then sent,
+  and the claimant reads end of file.
+- A cancel after the one-shot is a no-op that aborts none of the accepted channel's
+  I/O.
+- The app-link bootstrap listener follows the same rule. A `shutdown` in flight at
+  admission's one-shot yields `Cancelled`, never an authenticated stream that has been
+  aborted.
+
+After `KELD-AR1` the owner reads `KELD-AB1` and `KELD-AY1` by position, decides the health window (30 seconds plus a margin G, which the caller
 passes until KEL-53 §6 S6c fixes it from its measurement) as a state machine over an
 injected clock, and then either writes `KELD-AK1` accepted and waits for the
 candidate's end of file before it closes, or writes `KELD-AK1` rolled back once without
@@ -245,10 +270,30 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
 - **Legacy/diagnostic v0 app link is one session, not one endpoint.** On successful authentication
   `BootstrapListener` unlinks the Unix socket path or closes the Windows listener immediately
   (`crates/keld-ipc/src/bootstrap.rs`), so the accepted stream stays live but the
-  locator is gone. A supervised app child that dies and is restarted therefore
-  cannot re-enter the session: its `connect` fails at the OS
-  (`ErrorKind::NotFound`, asserted by `authenticated_bind_unlinks_stale_locator`),
-  not at the handshake. `keld dev` does not paper over that. It reports the death
+  locator is gone. A successor of a supervised app child that dies after
+  authenticating therefore cannot re-enter the session: its `connect` would fail
+  at the OS (`ErrorKind::NotFound`, asserted by
+  `authenticated_bind_unlinks_stale_locator`), not at the handshake. The session
+  therefore provisions no crash successor once its one admission is used
+  (GH-674): `HostOwnedHelloSession` gates the supervisor's successor boundary on
+  the echo server's single accept, so a crash before authentication still
+  restarts (KEL-70 AC1/AC3) and a crash after it ends supervision as
+  `SupervisorOutcome::Stopped` with the crash in the ledger, so a host never
+  reads that `Stopped` as a clean exit without `Supervisor::crash_ledger`. Two
+  bounded cases still differ, and both fail the run. The echo worker records its
+  admission only after `accept_authenticated` returns, so a client that dies
+  between its HELLO reply and that record, while the worker is descheduled past
+  the restart backoff (`backoff_delay` of the window's crash count: 20 ms for a
+  first crash, longer after earlier pre-authentication crashes), gets one
+  successor; that successor's failed connect
+  becomes `ledger.last`, and the gate, closed by then, stops supervision at its
+  crash. Closing this exactly needs kipc to publish admission before
+  `write_hello`. The crash-loop breaker runs before the gate, so two crashes
+  before authentication and one after it, inside the breaker window, end as
+  `KELD-RUNTIME-002`: three crashes really happened. A crash after any echo REPLY
+  is strictly after the record. Before GH-674 those successors were restarted, failed to
+  connect, and tripped the crash-loop breaker whenever teardown came late.
+  `keld dev` does not paper over the death. It reports it
   rather than pretending the app is alive: teardown reads the supervisor's
   `CrashLedger`, which records unrequested self-termination independently of exit
   status, and the window path exits 1 with `KELD-CORE-033` quoting the nested
@@ -268,7 +313,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -360,9 +410,13 @@ schema language, ship `@keld/schema` or live `keld gen`, or replace runtime vali
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
-since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2 and lifecycle = 3,
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
-region of `transport.ts`, and the wire is unchanged. Handshake-time name resolution and
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry remains a held implementation
+until validated facade boot and native acceptance are complete. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 

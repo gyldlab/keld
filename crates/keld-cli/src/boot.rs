@@ -109,15 +109,9 @@ impl std::error::Error for ProjectOwnershipError {}
 pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOwnershipError> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
-
         let metadata = fs::metadata(path)
             .map_err(|source| ProjectOwnershipError::inspection(path.to_owned(), source))?;
-        let invoking_uid = rustix::process::geteuid().as_raw();
-        if metadata.uid() != invoking_uid {
-            return Err(ProjectOwnershipError::foreign(path.to_owned()));
-        }
-        Ok(())
+        ensure_unix_metadata_owned_by(path, &metadata, rustix::process::geteuid().as_raw())
     }
     #[cfg(windows)]
     {
@@ -141,6 +135,20 @@ pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOw
             "this platform has no implemented project-owner identity check",
         ))
     }
+}
+
+#[cfg(unix)]
+fn ensure_unix_metadata_owned_by(
+    path: &Path,
+    metadata: &fs::Metadata,
+    invoking_uid: u32,
+) -> Result<(), ProjectOwnershipError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if metadata.uid() != invoking_uid {
+        return Err(ProjectOwnershipError::foreign(path.to_owned()));
+    }
+    Ok(())
 }
 
 /// Failure while compiling the non-release boot stage.
@@ -204,6 +212,103 @@ impl Drop for StageGuard {
             self.launch_guards.clear();
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+}
+
+/// Owns the selected project directory and fixed policy leaf until capture ends.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct ProjectPermissionsSource {
+    root: File,
+    policy: Option<File>,
+    display_path: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl ProjectPermissionsSource {
+    fn open(project_root: &Path) -> Result<Self, BootCompileError> {
+        let invoking_uid = rustix::process::geteuid().as_raw();
+        Self::open_with_owner_check(project_root, |path, metadata| {
+            ensure_unix_metadata_owned_by(path, metadata, invoking_uid)
+        })
+    }
+
+    fn open_with_owner_check<F>(
+        project_root: &Path,
+        mut owner_check: F,
+    ) -> Result<Self, BootCompileError>
+    where
+        F: FnMut(&Path, &fs::Metadata) -> Result<(), ProjectOwnershipError>,
+    {
+        use rustix::fs::{Mode, OFlags, open, openat};
+
+        let root = File::from(
+            open(
+                project_root,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|source| {
+                BootCompileError::new("permissions source root", source.to_string())
+            })?,
+        );
+        let root_metadata = root.metadata().map_err(|source| {
+            BootCompileError::new("permissions source root", source.to_string())
+        })?;
+        if !root_metadata.is_dir() {
+            return Err(BootCompileError::new(
+                "permissions source root",
+                "selected root is not a directory",
+            ));
+        }
+        owner_check(project_root, &root_metadata)?;
+        let display_path = project_root.join(PERMISSIONS_FILE);
+        // Open the leaf itself without following links. NONBLOCK prevents a
+        // FIFO from waiting for a writer before retained-metadata validation.
+        let policy = match openat(
+            &root,
+            PERMISSIONS_FILE,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => Some(File::from(fd)),
+            Err(source) if source == rustix::io::Errno::NOENT => None,
+            Err(source) => {
+                return Err(BootCompileError::new(
+                    "permissions source",
+                    source.to_string(),
+                ));
+            }
+        };
+        if let Some(file) = &policy {
+            let metadata = file.metadata().map_err(|source| {
+                BootCompileError::new("permissions source", source.to_string())
+            })?;
+            if !metadata.is_file() {
+                return Err(BootCompileError::new(
+                    "permissions source",
+                    "selected source is not a regular file",
+                ));
+            }
+            owner_check(&display_path, &metadata)?;
+        }
+        Ok(Self {
+            root,
+            policy,
+            display_path,
+        })
+    }
+
+    fn capture(self) -> Result<Vec<u8>, BootCompileError> {
+        let result = match self.policy {
+            Some(file) => keld_guard::read_manifest_bytes(file, &self.display_path)
+                .map_err(|source| BootCompileError::new("permissions source", source.to_string())),
+            None => Ok(PERMISSIONS_BYTES.to_vec()),
+        };
+        // Keep the selected directory object alive through the entire read,
+        // including a bounded-read failure, then release both source handles.
+        drop(self.root);
+        result
     }
 }
 
@@ -272,15 +377,41 @@ where
         .unwrap_or_else(|| keld_core::DEFAULT_HELLO_TITLE.to_owned());
     let entry = keld_core::entry_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
-    let renderer = keld_core::renderer_from_config_ts(&config)
-        .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned());
+    let facade = keld_core::initial_window_from_config_ts(&config)
+        .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
+    // macOS owns the initial facade implementation; Linux and Windows must
+    // refuse an unsupported declaration before staging a bootable descriptor.
+    #[cfg(not(target_os = "macos"))]
+    if facade {
+        return Err(BootCompileError::new(
+            "project config",
+            "initialWindow: \"none\" requires macOS facade boot support; remove initialWindow for renderer boots",
+        ));
+    }
+    let renderer = (!facade).then(|| {
+        keld_core::renderer_from_config_ts(&config)
+            .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())
+    });
+    // The reviewed Core extractor reads the same already-open project config.
+    // It returns the shared Native type without filtering profiles or requiring clientId.
+    let auth_configuration =
+        keld_core::auth_configuration_from_config_ts(&config).map_err(|source| {
+            BootCompileError::new("project auth configuration", source.to_string())
+        })?;
     validate_relative("entry", &entry)?;
-    validate_relative("renderer", &renderer)?;
+    if let Some(renderer) = &renderer {
+        validate_relative("renderer", renderer)?;
+    }
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
-    let renderer_source = contained_source(&project_root, &renderer, "renderer")?;
+    let renderer_source = renderer
+        .as_deref()
+        .map(|relative| contained_source(&project_root, relative, "renderer"))
+        .transpose()?;
     owner_check(&entry_source)?;
-    owner_check(&renderer_source)?;
+    if let Some(source) = &renderer_source {
+        owner_check(source)?;
+    }
     let (developer_host_path, mut host_source, host_source_metadata) =
         open_developer_executable(developer_host, "developer host")?;
     #[cfg(not(target_os = "linux"))]
@@ -342,7 +473,9 @@ where
     )?;
 
     stage_project_file(&root, &entry, &entry_source, "entry")?;
-    stage_project_file(&root, &renderer, &renderer_source, "renderer")?;
+    if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+        stage_project_file(&root, renderer, source, "renderer")?;
+    }
     // Probe with two Path components. `join("src/kipc-transport.ts")` then
     // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
     // separator); `contained_source` still uses the same relative string as
@@ -370,14 +503,20 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
+    #[cfg(target_os = "macos")]
+    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
+    #[cfg(target_os = "macos")]
+    let permissions_bytes = permissions_snapshot.as_slice();
+    #[cfg(not(target_os = "macos"))]
+    let permissions_bytes = PERMISSIONS_BYTES;
     write_new_file(
         &root.join(PERMISSIONS_FILE),
-        PERMISSIONS_BYTES,
+        permissions_bytes,
         0o400,
         "permissions",
     )?;
-    let digest = Sha256::digest(PERMISSIONS_BYTES);
-    let descriptor = serde_json::to_vec(&serde_json::json!({
+    let digest = Sha256::digest(permissions_bytes);
+    let mut descriptor = serde_json::json!({
         "schema": 1,
         "name": name,
         "entry": entry,
@@ -386,8 +525,35 @@ where
             "file": PERMISSIONS_FILE,
             "content_sha256": format!("sha256:{digest:x}"),
         }
-    }))
-    .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?;
+    });
+    if facade {
+        let object = descriptor.as_object_mut().ok_or_else(|| {
+            BootCompileError::new("boot descriptor", "generated root is not an object")
+        })?;
+        object.insert(String::from("schema"), serde_json::Value::from(2));
+        object.remove("renderer");
+    }
+    // Preserve the byte shape of legacy stages when no auth profile is configured.
+    // A configured-but-incomplete profile is nonempty and must be carried unchanged;
+    // Native owns the post-Allow missing-client decision.
+    if !auth_configuration.is_empty() {
+        let auth = serde_json::to_value(&auth_configuration).map_err(|source| {
+            BootCompileError::new("boot auth configuration", source.to_string())
+        })?;
+        match &mut descriptor {
+            serde_json::Value::Object(object) => {
+                object.insert(String::from("auth"), auth);
+            }
+            _ => {
+                return Err(BootCompileError::new(
+                    "boot descriptor",
+                    "generated descriptor root is not an object",
+                ));
+            }
+        }
+    }
+    let descriptor = serde_json::to_vec(&descriptor)
+        .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?;
     write_new_file(
         &root.join("keld.boot.json"),
         &descriptor,
@@ -854,7 +1020,7 @@ mod tests {
 
     use super::*;
 
-    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    pub(super) fn fixture() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let temp = tempfile::tempdir().expect("temp root");
         let project = temp.path().join("project");
         fs::create_dir_all(project.join("src")).expect("project src");
@@ -958,7 +1124,12 @@ mod tests {
             assert_ne!(staged_metadata.permissions().mode() & 0o100, 0);
             assert_eq!(staged_metadata.permissions().mode() & 0o222, 0);
         }
+    }
 
+    #[test]
+    fn renderer_declared_stage_preserves_schema_one_descriptor_bytes() {
+        let (_temp, project, source_host) = fixture();
+        let staged = stage_dev_boot(&project, &source_host).expect("stage renderer boot");
         let descriptor: serde_json::Value = serde_json::from_slice(
             &fs::read(staged.root().join("keld.boot.json")).expect("boot descriptor"),
         )
@@ -967,12 +1138,204 @@ mod tests {
         assert_eq!(descriptor["name"], "Stage Fixture");
         assert_eq!(descriptor["entry"], "src/main.ts");
         assert_eq!(descriptor["renderer"], "index.html");
+        assert!(
+            descriptor.get("auth").is_none(),
+            "empty auth preserves legacy shape"
+        );
         assert_eq!(descriptor["permissions"]["file"], "keld.permissions.jsonc");
         let digest = Sha256::digest(b"{}\n");
         assert_eq!(
             descriptor["permissions"]["content_sha256"],
             format!("sha256:{digest:x}")
         );
+        // Contract regression: the shipping renderer-declared descriptor is
+        // byte-identical, including the existing JSON map key order.
+        let expected = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "name": "Stage Fixture",
+            "entry": "src/main.ts",
+            "renderer": "index.html",
+            "permissions": {
+                "file": "keld.permissions.jsonc",
+                "content_sha256": format!("sha256:{digest:x}"),
+            }
+        }))
+        .expect("expected schema-one bytes");
+        assert_eq!(
+            fs::read(staged.root().join("keld.boot.json")).expect("schema-one bytes"),
+            expected,
+            "a facade-only change must preserve the existing schema-one bytes"
+        );
+    }
+
+    #[test]
+    fn stage_dev_boot_roundtrips_auth_into_schema_one_descriptor() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            r#"export default {
+  name: "Stage Fixture",
+  entry: "src/main.ts",
+  renderer: "index.html",
+  auth: { "entra-common": { clientId: "public-client", fixedRedirect: "http://localhost:53161/callback" } },
+} as const;
+"#,
+        )
+        .expect("auth config");
+        let staged = stage_dev_boot(&project, &source_host).expect("stage auth config");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(staged.root().join("keld.boot.json")).expect("boot descriptor"),
+        )
+        .expect("parse descriptor");
+        let expected_auth: serde_json::Value = serde_json::from_str(
+            r#"{"entra-common":{"clientId":"public-client","fixedRedirect":"http://localhost:53161/callback"}}"#,
+        )
+        .expect("independent auth JSON literal");
+        assert_eq!(descriptor["schema"], 1);
+        assert_eq!(descriptor.get("auth"), Some(&expected_auth));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn facade_stage_has_closed_schema_two_and_no_renderer_file() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default {\n  name: \"Stage Fixture\",\n  entry: \"src/main.ts\",\n  initialWindow: \"none\",\n} as const;\n",
+        )
+        .expect("facade config");
+        fs::remove_file(project.join("index.html")).expect("no renderer source");
+        let stage = stage_dev_boot(&project, &source_host).expect("stage facade descriptor");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(stage.root().join("keld.boot.json")).expect("descriptor bytes"),
+        )
+        .expect("descriptor JSON");
+        assert_eq!(descriptor["schema"], 2);
+        assert_eq!(descriptor["name"], "Stage Fixture");
+        assert_eq!(descriptor["entry"], "src/main.ts");
+        assert_eq!(descriptor["permissions"]["file"], "keld.permissions.jsonc");
+        assert_eq!(descriptor.as_object().expect("closed object").len(), 4);
+        assert!(descriptor.get("renderer").is_none());
+        assert!(descriptor.get("auth").is_none());
+        assert!(!stage.root().join("index.html").exists());
+        assert_eq!(
+            fs::read(stage.root().join("src/main.ts")).expect("real staged entry"),
+            b"console.log('fixture');\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parenthesized_facade_stage_still_emits_schema_two_without_renderer() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default ({ name: 'Stage Fixture', entry: 'src/main.ts', initialWindow: 'none' }) as const;",
+        )
+        .expect("parenthesized facade config");
+        fs::remove_file(project.join("index.html")).expect("no renderer source");
+        let stage = stage_dev_boot(&project, &source_host).expect("facade stage");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(stage.root().join("keld.boot.json")).expect("boot descriptor"),
+        )
+        .expect("JSON descriptor");
+        assert_eq!(descriptor["schema"], 2);
+        assert!(descriptor.get("renderer").is_none());
+        assert_eq!(descriptor.as_object().expect("object").len(), 4);
+        assert!(!stage.root().join("index.html").exists());
+    }
+
+    #[test]
+    fn facade_stage_refuses_conflicting_renderer_before_creating_stage() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default { initialWindow: \"none\", renderer: \"index.html\" } as const;",
+        )
+        .expect("conflicting config");
+        let error = stage_dev_boot(&project, &source_host)
+            .expect_err("schema two with a renderer declaration must refuse");
+        assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+        assert!(error.to_string().contains("initialWindow"), "{error}");
+        assert!(error.to_string().contains("renderer"), "{error}");
+        assert!(!project.join(".keld/dev").exists());
+    }
+
+    #[test]
+    fn ambiguous_facade_root_refuses_before_staging_on_every_platform() {
+        let (_temp, project, source_host) = fixture();
+        for source in [
+            "export default { ['initial' + 'Window']: 'none' } as const;",
+            "export default { ...{ initialWindow: 'none' } } as const;",
+            "export default { initialWindow: 'none', ...{ renderer: 'index.html' } } as const;",
+            "export default { initialWindow: 'none', [dynamicKey]: 'renderer' } as const;",
+        ] {
+            fs::write(project.join("keld.config.ts"), source).expect("ambiguous config");
+            let error = stage_dev_boot(&project, &source_host)
+                .expect_err("ambiguous root must refuse before staging");
+            assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+            assert!(error.to_string().contains("initialWindow"), "{error}");
+            assert!(!project.join(".keld/dev").exists(), "{source}");
+        }
+    }
+
+    #[test]
+    fn hidden_reserved_root_keys_fail_before_stage_allocation() {
+        let (_temp, project, source_host) = fixture();
+        for source in [
+            "export default { initialWindow: 'none', async renderer() {} } as const;",
+            "export default { initialWindow: 'none', *auth() {} } as const;",
+            r"export default { initialWindow: 'none', 'ren\x64erer': 'index.html' } as const;",
+            r"export default { initia\u006cWindow: 'none' } as const;",
+        ] {
+            fs::write(project.join("keld.config.ts"), source).expect("config");
+            let error = stage_dev_boot(&project, &source_host)
+                .expect_err("ambiguous root requires refusal before staging");
+            assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+            assert!(!project.join(".keld/dev").exists(), "{source}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unsupported_facade_target_refuses_before_stage_allocation() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default { initialWindow: 'none' } as const;",
+        )
+        .expect("facade config");
+        let error = stage_dev_boot(&project, &source_host)
+            .expect_err("Linux facade runtime is not implemented");
+        assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+        assert!(error.to_string().contains("macOS"), "{error}");
+        assert!(!project.join(".keld/dev").exists());
+    }
+
+    #[test]
+    fn stage_dev_boot_carries_missing_client_without_pre_allow_refusal() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            r#"export default {
+  name: "Stage Fixture",
+  entry: "src/main.ts",
+  renderer: "index.html",
+  auth: { "entra-common": {} },
+} as const;
+"#,
+        )
+        .expect("incomplete auth config");
+        let staged = stage_dev_boot(&project, &source_host)
+            .expect("missing clientId is carried, not rejected by the producer");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(staged.root().join("keld.boot.json")).expect("boot descriptor"),
+        )
+        .expect("parse descriptor");
+        let expected_auth: serde_json::Value = serde_json::from_str(r#"{"entra-common":{}}"#)
+            .expect("independent missing-client JSON literal");
+        assert_eq!(descriptor["schema"], 1);
+        assert_eq!(descriptor.get("auth"), Some(&expected_auth));
     }
 
     #[test]
@@ -1002,6 +1365,19 @@ mod tests {
         let first = stage_dev_boot(&project, &source_host).expect("first");
         let second = stage_dev_boot(&project, &source_host).expect("second");
         assert_ne!(first.root(), second.root());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_project_policy_does_not_change_historical_staged_policy() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(project.join(PERMISSIONS_FILE), b"explicit project bytes\n")
+            .expect("unselected Linux project policy");
+        let stage = stage_dev_boot(&project, &source_host).expect("unchanged Linux stage");
+        assert_eq!(
+            fs::read(stage.root().join(PERMISSIONS_FILE)).expect("fixed Linux policy"),
+            b"{}\n"
+        );
     }
 
     #[test]
@@ -1107,3 +1483,8 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::expect_used, clippy::panic)]
+// test fixture failures are assertion oracles, as in the sibling unit-test module
+mod permissions_tests;

@@ -52,7 +52,7 @@
 //! assert_eq!((waiter.channel(), events.channel()), (channel_table::FS.id(), channel_table::LIFECYCLE.id()));
 //! ```
 
-use keld_guard::capability::{FS_READ, FS_WRITE};
+use keld_guard::capability::{AUTH_BEGIN, AUTH_TOKEN, FS_READ, FS_WRITE};
 
 use crate::frame::ChannelId;
 
@@ -190,8 +190,24 @@ pub const LIFECYCLE: ChannelEntry = ChannelEntry::new(
     Authority::HostInternal,
 );
 
+/// Host-owned authentication (KEL-89).
+pub const AUTH: ChannelEntry = ChannelEntry::new(
+    "auth",
+    4,
+    ReceiveClass::GuardedCall,
+    Authority::Guarded(&[AUTH_BEGIN, AUTH_TOKEN]),
+);
+
+/// Host-owned window facts and commands (GH-449). Events require subscription.
+pub const WINDOW: ChannelEntry = ChannelEntry::new(
+    "window",
+    5,
+    ReceiveClass::HostCallWithEvents,
+    Authority::HostInternal,
+);
+
 /// Every allocated channel, in strictly increasing id order.
-pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE];
+pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW];
 
 // An invalid table does not build (spec §3 criteria 2-5).
 const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());
@@ -360,8 +376,8 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        Authority, CHANNEL_TABLE, ChannelEntry, ECHO, FS, HANDSHAKE_CHANNEL, LIFECYCLE,
-        ReceiveClass, TableDefect, entry, validate_table,
+        AUTH, AUTH_BEGIN, AUTH_TOKEN, Authority, CHANNEL_TABLE, ChannelEntry, ECHO, FS,
+        HANDSHAKE_CHANNEL, LIFECYCLE, ReceiveClass, TableDefect, entry, validate_table,
     };
     use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
     use crate::link::read_validated_frame;
@@ -446,7 +462,7 @@ mod tests {
         Ok(())
     }
 
-    /// Criterion 1: the table lists exactly the three live channels, with the
+    /// Criterion 1: the table lists exactly the five allocated channels, with the
     /// spec §4.2 classes and authorities.
     #[test]
     fn table_lists_exactly_echo_fs_and_lifecycle() {
@@ -467,6 +483,18 @@ mod tests {
                 (
                     "lifecycle",
                     3,
+                    ReceiveClass::HostCallWithEvents,
+                    Authority::HostInternal,
+                ),
+                (
+                    "auth",
+                    4,
+                    ReceiveClass::GuardedCall,
+                    Authority::Guarded(&["auth.begin", "auth.token"]),
+                ),
+                (
+                    "window",
+                    5,
                     ReceiveClass::HostCallWithEvents,
                     Authority::HostInternal,
                 ),
@@ -580,7 +608,7 @@ mod tests {
     /// Criterion 3a: the real table matches the committed baseline.
     #[test]
     fn real_table_matches_the_committed_allocation_baseline() {
-        assert_eq!(BASELINE, "echo 1\nfs 2\nlifecycle 3\n");
+        assert_eq!(BASELINE, "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\n");
         assert_eq!(check_allocations(CHANNEL_TABLE, BASELINE), Ok(()));
     }
 
@@ -620,11 +648,14 @@ mod tests {
                 table: 3
             })
         );
+        let next = CHANNEL_TABLE.last().expect("allocated channels").wire_id() + 1;
+        let mut unrecorded = CHANNEL_TABLE.to_vec();
+        unrecorded.push(fixture("probe", next));
         assert_eq!(
-            check_allocations(&appended, BASELINE),
+            check_allocations(&unrecorded, BASELINE),
             Err(AllocationDefect::Unrecorded {
                 name: "probe",
-                id: 4
+                id: next
             })
         );
         for (malformed, line) in [
@@ -654,6 +685,12 @@ mod tests {
             (crate::ECHO_CHANNEL.0, FS.id().0, crate::LIFECYCLE_CHANNEL.0),
             (1, 2, 3)
         );
+        assert_eq!(AUTH.wire_id(), 4);
+        assert_eq!(AUTH.class(), ReceiveClass::GuardedCall);
+        assert_eq!(
+            AUTH.authority(),
+            Authority::Guarded(&[AUTH_BEGIN, AUTH_TOKEN])
+        );
         assert_eq!(PROTOCOL_VERSION, 2);
     }
 
@@ -663,7 +700,7 @@ mod tests {
         for allocated in CHANNEL_TABLE {
             assert_eq!(entry(allocated.id()), Some(allocated));
         }
-        for unallocated in [0, 4, 9, u16::MAX] {
+        for unallocated in [0, 6, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
     }
@@ -671,9 +708,11 @@ mod tests {
     /// Criterion 10: only a `GuardedCall` entry admits the privileged policy.
     #[test]
     fn privileged_policy_requires_a_guarded_call_entry() {
-        let fs =
-            ReceivePolicy::privileged_call_receiver(&FS).expect("fs is a guarded CALL channel");
-        assert_eq!(fs.channel(), FS.id());
+        for guarded in [&FS, &AUTH] {
+            let policy =
+                ReceivePolicy::privileged_call_receiver(guarded).expect("guarded CALL channel");
+            assert_eq!(policy.channel(), guarded.id());
+        }
         for host_internal in [&ECHO, &LIFECYCLE] {
             let Err(IpcError::Protocol { detail }) =
                 ReceivePolicy::privileged_call_receiver(host_internal)
@@ -709,6 +748,8 @@ mod tests {
         let corr = CorrelationId(7);
         let fs = ReceivePolicy::privileged_call_receiver(&FS).expect("fs policy");
         let fs_waiter = ReceivePolicy::reply_waiter(&FS, corr).expect("fs waiter");
+        let auth = ReceivePolicy::privileged_call_receiver(&AUTH).expect("auth policy");
+        let auth_waiter = ReceivePolicy::reply_waiter(&AUTH, corr).expect("auth waiter");
         let lifecycle_waiter = ReceivePolicy::reply_waiter(&LIFECYCLE, corr).expect("waiter");
         let events = ReceivePolicy::event_receiver(&LIFECYCLE).expect("lifecycle events");
         vec![
@@ -777,6 +818,8 @@ mod tests {
             ),
             ("privileged-fs-receiver", fs, FrameKind::Call, 7, 4),
             ("reply-waiter:fs", fs_waiter, FrameKind::Reply, 7, 4),
+            ("privileged-auth-receiver", auth, FrameKind::Call, 7, 4),
+            ("reply-waiter:auth", auth_waiter, FrameKind::Reply, 7, 4),
             (
                 "reply-waiter:lifecycle",
                 lifecycle_waiter,
@@ -788,13 +831,13 @@ mod tests {
         ]
     }
 
-    /// Criterion 10: a frame on unallocated id 4, otherwise exactly what each
+    /// Criterion 10: a frame on the next unallocated id, otherwise exactly what each
     /// live policy admits, is `KELD-IPC-005` from the header alone. The reader
     /// rejects it with no payload bytes present, so nothing was read or
     /// allocated for the payload.
     #[test]
     fn unallocated_channel_is_rejected_by_every_live_policy_before_payload() {
-        let unallocated = 4;
+        let unallocated = CHANNEL_TABLE.last().expect("allocated channels").wire_id() + 1;
         assert_eq!(entry(ChannelId(unallocated)), None);
         let live = live_policies();
         for (label, policy, kind, frame_corr, len) in live {
@@ -849,11 +892,11 @@ mod tests {
         }
         assert_eq!(
             waiters,
-            ["fs", "lifecycle"],
+            ["fs", "lifecycle", "auth", "window"],
             "echo keeps its REPLY-only waiter"
         );
-        assert_eq!(receivers, ["lifecycle"]);
-        for unallocated in [0, 4, 9, u16::MAX] {
+        assert_eq!(receivers, ["lifecycle", "window"]);
+        for unallocated in [0, 6, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
         assert!(ReceiveClass::HostCallWithEvents.carries_host_events());

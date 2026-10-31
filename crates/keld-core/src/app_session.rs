@@ -1,5 +1,40 @@
 //! Validated no-flag application boot and host-owned primary session (KEL-96).
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+mod boot_contract;
+mod error;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod window_registry;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+mod window_router;
+pub use self::error::HostAppError;
+#[cfg(all(test, any(target_os = "macos", windows)))]
+use self::error::startup_resource_snapshot;
+
+#[cfg(all(test, windows))]
+use self::boot_contract::decode_digest;
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+use self::boot_contract::{InitialWindow, boot_error, parse_boot_bytes, target_error};
+
+#[cfg(target_os = "macos")]
+mod macos_profile_selection;
+#[cfg(all(test, target_os = "macos"))]
+use self::macos_profile_selection::MacValidatedAppIdentity;
+#[cfg(target_os = "macos")]
+use self::macos_profile_selection::macos_profile_selection;
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+use self::macos_profile_selection::verified_macos_app_identity;
+#[cfg(all(
+    target_os = "macos",
+    any(test, all(feature = "profile-test-hooks", debug_assertions))
+))]
+use self::macos_profile_selection::{macos_identity_error, select_macos_profile_mode_with};
+
+#[cfg(target_os = "macos")]
+mod auth_router;
+#[cfg(target_os = "macos")]
+use auth_router::{AuthSession, AuthWork, AuthWorker};
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::collections::HashMap;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -30,6 +65,10 @@ use std::process::ExitStatus;
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use std::sync::OnceLock;
+#[cfg(any(target_os = "linux", windows))]
+use std::sync::atomic::AtomicU64;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -40,23 +79,18 @@ use std::thread::{self, JoinHandle};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-use serde::Deserialize;
-
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use nix::sys::stat::{SFlag, fstat};
 
-#[cfg(target_os = "macos")]
-use crate::macos_profile_identity::verified_current_process_signing_info;
-#[cfg(target_os = "macos")]
-use getrandom::fill as fill_os_random;
+#[cfg(test)]
+use keld_guard::ManifestError;
+use keld_guard::Principal;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::VerifiedManifest;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_guard::verified_manifest::load_verified_manifest;
-use keld_guard::{ManifestError, Principal};
 #[cfg(windows)]
 use keld_guard::{VerifiedWindowsImage, WindowsAuthenticodeError, WindowsAuthenticodeImage};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -65,19 +99,23 @@ use keld_ipc::CallError;
 use keld_ipc::codec::{decode, encode};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::frame::{CorrelationId, FrameKind};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use keld_ipc::link::read_quit_drain_frame;
+#[cfg(all(test, target_os = "macos"))]
+use keld_ipc::link::read_primary_app_frame_interruptible_with_privileged_call;
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use keld_ipc::link::read_quit_drain_frame_with_privileged_calls;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::link::{
-    AppLinkDeadlines, read_primary_app_frame_interruptible,
-    read_primary_app_frame_interruptible_with_privileged_call, write_frame,
+    AppLinkDeadlines, GuardedCallAdmission, read_primary_app_frame_interruptible_with_admission,
+    write_frame,
 };
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_ipc::{
     APP_LINK_IO_DEADLINE, APP_LINK_READER_POLL, BootstrapStream, ECHO_CHANNEL, IpcError,
     LIFECYCLE_CHANNEL, LifecycleEvent, LifecycleRequest, LifecycleResponse,
 };
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+use keld_native::auth::AuthConfiguration;
+#[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
 use keld_native::fs::FsResponse;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_native::fs::{FS_CHANNEL, FsBroker, FsPrepareError, FsRequest};
@@ -86,30 +124,28 @@ use keld_runtime::linux_strict::LinuxStrictProfile;
 #[cfg(target_os = "macos")]
 use keld_runtime::macos_guardian::{GuardedPrimary, GuardedPrimaryUpdate, GuardianBootstrap};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent};
+use keld_runtime::primary::{BoundPrimaryGeneration, PrimaryRoleEvent, RoleOwner, RolePrincipal};
 #[cfg(windows)]
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
 #[cfg(target_os = "linux")]
 use keld_runtime::primary::{PrimaryRecoveryGate, PrimaryRoleConfig, PrimaryRoleSupervisor};
-#[cfg(target_os = "macos")]
-use keld_wv::profile::EphemeralProfile;
+#[cfg(windows)]
+use keld_wv::ProfileIdentity;
+#[cfg(any(windows, all(test, target_os = "macos")))]
+use keld_wv::WebProfileSelection;
 #[cfg(target_os = "linux")]
 use keld_wv::webkitgtk::WebKitGtkEngine;
 #[cfg(windows)]
 use keld_wv::webview2::WebView2Engine;
 #[cfg(target_os = "macos")]
 use keld_wv::wkwebview::{
-    AppWindowCommand, AppWindowEvent, RendererBridgeEndpoint, RendererBridgeOutcome,
-    RendererBridgeRequest, WkWebViewEngine,
+    AppReadyTrigger, AppWindowCommand, AppWindowEvent, RendererBridgeEndpoint,
+    RendererBridgeOutcome, RendererBridgeRequest, WkWebViewEngine,
 };
 #[cfg(any(target_os = "linux", windows))]
 use keld_wv::{AppWindowCommand, AppWindowEvent};
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 use keld_wv::{NavTarget, WebviewSpec, WvError};
-#[cfg(any(target_os = "macos", windows))]
-use keld_wv::{ProfileIdentity, WebProfileSelection};
-#[cfg(target_os = "macos")]
-use sha2::{Digest as _, Sha256};
 #[cfg(all(test, windows))]
 use windows_sys::Win32::Foundation::GetHandleInformation;
 #[cfg(windows)]
@@ -141,6 +177,8 @@ const DIGEST_PREFIX: &str = "sha256:";
 const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
+#[cfg(any(target_os = "macos", windows))]
+const NATIVE_WINDOW_FACADE_ENV: &str = "KELD_NATIVE_WINDOW_FACADE";
 #[cfg(windows)]
 const WINDOWS_DEV_STAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
@@ -159,6 +197,44 @@ const SESSION_RUNNING: u8 = 0;
 const SESSION_LIFECYCLE_QUIT: u8 = 1;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const SESSION_CLI_LEASE_LOST: u8 = 2;
+/// The profile handover ended the session without the application's `Quit`: the quit
+/// deadline [`HANDOVER_QUIT_DEADLINE`] passed after `LastWindowClosed` (KEL-53 §4
+/// "Profile handover", step 3c). Claimed only by the handover, on the main thread.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const SESSION_HANDOVER: u8 = 3;
+
+/// The quit deadline D of KEL-53 §4 *Margin and deadlines*: how long the application
+/// has, after the host wrote `LastWindowClosed` at a profile handover, to request
+/// `Quit` before the session is ended under [`SESSION_HANDOVER`].
+///
+/// Rule: the larger of 10 s and four times the maximum the reference application was
+/// measured to take from the return of the host's `LastWindowClosed` write to the
+/// lifecycle-Quit handler's entry for the frame, recorded only for the `Quit` that
+/// claims the session, on the host's monotonic clock, through the §7 h11 cell on the
+/// KEL-254/KEL-135 signed fixture host. A D that is too small force-ends an application still persisting its
+/// state; one that is too large only delays an update whose application ignores
+/// `LastWindowClosed`, so the rule errs large and the floor rules.
+///
+/// Measured 2026-10-14, Windows 11 10.0.26300 (RAMANI, Ryzen 7 5800H, 16 logical
+/// cores), the S6c2a debug host of <https://github.com/gyldlab/keld/pull/722> (built at
+/// that pull request's handover commit; its later commits leave the measured path
+/// unchanged), Bun 1.4.2, `WebView2` runtime 155.0.4283.45:
+/// - idle: 30 runs, median 0.6 ms, max 1.1 ms;
+/// - full-core load (16 busy-loop burners on 16 logical cores, the F55 method): 30 runs,
+///   median 1.0 ms, max 218.5 ms.
+///
+/// 4 x 218.5 ms is below the 10 s floor, so D is the floor (source: the samples and
+/// run logs in the keld-benches artifact named by
+/// <https://github.com/gyldlab/keld/pull/722>).
+#[cfg(any(target_os = "linux", windows))]
+const HANDOVER_QUIT_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The forced tail runs under CLI lease loss or the handover: the two causes the host
+/// claims itself, without the application's `Quit`.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const fn is_forced_cause(cause: u8) -> bool {
+    cause == SESSION_CLI_LEASE_LOST || cause == SESSION_HANDOVER
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 static LISTENER_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
@@ -176,10 +252,129 @@ struct DevHostLease {
 #[derive(Clone)]
 struct SessionShutdownState {
     cause: Arc<AtomicU8>,
+    reserved_cause: Arc<AtomicU8>,
     transition: Arc<Mutex<()>>,
+    /// Paired with `transition`: notified on every successful reserve and at the end of
+    /// a claimant's tail, for the handover's bounded waits on the main thread.
+    changed: Arc<Condvar>,
     reader_stop: Arc<AtomicBool>,
     generation_reader_stops: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     tail_started: Arc<AtomicBool>,
+    /// A profile handover has ended the UI loop (KEL-53 §4 "Profile handover", step
+    /// 3a). Set in the same `transition` hold as the handover's `Quit` send, after that
+    /// send succeeds (the loop's wake bridge drops its command receiver on the first
+    /// terminal command), and read under `transition` by `finish_tail`, whose UI step is
+    /// then a no-op.
+    handover_requested: Arc<AtomicBool>,
+    /// The claimant's tail has ended, with or without success. Cleared by the reserve
+    /// that starts a tail; the main thread awaits it after the loop has returned.
+    tail_ended: Arc<AtomicBool>,
+    /// The direct path's handover instants; macOS runs no handover.
+    #[cfg(any(target_os = "linux", windows))]
+    handover_clock: Arc<HandoverClock>,
+    /// The session runs under a CLI dev lease: set when `start_direct_dev_lease_tail`
+    /// attaches the lease tail to the session's router, before the session's window and
+    /// event coordinator exist, and read by `request_handover`, which refuses such a
+    /// session because its lease tail would run beside the handover's teardown.
+    #[cfg(any(target_os = "linux", windows))]
+    under_dev_lease: Arc<AtomicBool>,
+    /// The lifecycle-Quit handler of one generation entered for a `Quit` while the
+    /// session ran and has neither claimed the session cause nor given up: `0`, or
+    /// [`quit_admission_tag`] of that generation's attempt. Written and read only under
+    /// `transition`; a [`QuitAdmission`] clears it on every path that does not claim,
+    /// and the generation's retirement clears it because a retired generation's `Quit`
+    /// can no longer claim. While it is set, the handover's deadline claim waits
+    /// (`await_quit_or_claim_handover`), so a `Quit` whose handler entered inside D
+    /// keeps its claim through its filesystem drain (KEL-53 §4 "Profile handover",
+    /// steps 3b and 3c).
+    #[cfg(any(target_os = "linux", windows))]
+    quit_admission: Arc<AtomicU64>,
+}
+
+/// The [`SessionShutdownState::quit_admission`] value of `attempt`'s admitted `Quit`;
+/// never `0`, which means none.
+#[cfg(any(target_os = "linux", windows))]
+fn quit_admission_tag(attempt: u32) -> u64 {
+    (1 << 32) | u64::from(attempt)
+}
+
+/// One lifecycle-Quit handler's admitted `Quit` (`SessionShutdownState::quit_admission`).
+/// The handler releases it under `transition` in the hold that decides its claim; every
+/// other return path, including an error or an unwind out of the filesystem drain,
+/// releases it on drop. Either release wakes the handover's wait.
+#[cfg(any(target_os = "linux", windows))]
+struct QuitAdmission<'a> {
+    shutdown: &'a SessionShutdownState,
+    attempt: u32,
+    released: bool,
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl QuitAdmission<'_> {
+    /// Caller holds `transition`.
+    fn release_guarded(mut self) {
+        self.shutdown.clear_quit_admission_guarded(self.attempt);
+        self.released = true;
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+impl Drop for QuitAdmission<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            let _transition = self.shutdown.transition_guard();
+            self.shutdown.clear_quit_admission_guarded(self.attempt);
+        }
+    }
+}
+
+/// The handover's instants on the host's monotonic clock, each set once: the request,
+/// the UI loop's return, the handover's own `LastWindowClosed` write (D runs from it; a
+/// window's earlier close of the last window is not recorded here), the
+/// lifecycle-Quit handler's entry for the `Quit` frame that claims the session (the D
+/// sample) and the forced claim at D.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Default)]
+struct HandoverClock {
+    #[cfg_attr(
+        not(any(all(debug_assertions, windows), test)),
+        expect(
+            dead_code,
+            reason = "read by the debug evidence seam; the PerUserDirect coordinator (S6c2e) is the production reader"
+        )
+    )]
+    requested: OnceLock<Instant>,
+    ui_returned: OnceLock<Instant>,
+    last_window_closed_written: OnceLock<Instant>,
+    quit_frame: OnceLock<Instant>,
+    forced: OnceLock<Instant>,
+}
+
+/// Ends the claimant's tail on drop, so every return path of the tail, including a
+/// failed step, releases the main thread's wait.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct TailRun<'a> {
+    shutdown: &'a SessionShutdownState,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl Drop for TailRun<'_> {
+    fn drop(&mut self) {
+        self.shutdown.end_tail();
+    }
+}
+
+/// What the main thread found when its bounded wait for the application's `Quit` ended
+/// (KEL-53 §4 "Profile handover", step 3b).
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoverWait {
+    /// Another claimant (the application's `Quit`) reserved the session cause; its
+    /// tail runs on its own thread.
+    ClaimedByOther,
+    /// D passed with the session still running and this thread claimed
+    /// [`SESSION_HANDOVER`] under the same guard hold; it runs the forced tail.
+    ClaimedHandover,
 }
 /// Opaque host-owned selection minted only from a validated owner-private dev stage
 /// or, on Windows, from the authenticated installed package that holds the host.
@@ -203,9 +398,16 @@ struct AppBootSelection {
     name: String,
     entry_path: PathBuf,
     entry_file: File,
-    renderer_html: Vec<u8>,
+    initial_window: ValidatedInitialWindow,
+    auth_configuration: AuthConfiguration,
     #[cfg(windows)]
     mode: WindowsBootMode,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+enum ValidatedInitialWindow {
+    Renderer(Vec<u8>),
+    None,
 }
 
 /// Which of the two admitted Windows boot states minted the selection (KEL-254 A3 AC2).
@@ -227,11 +429,13 @@ enum WindowsBootMode {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct GuardSnapshot {
-    // T2 retains the verified policy for the whole app session. T3 prepares
+    // T2 retains the verified policy for the whole host process. T3 prepares
     // the sole native FS broker from the same immutable snapshot before any
-    // child/listener/window resource exists.
+    // child/listener/window resource exists; `prepare_next_session` does the
+    // same for each later application session of the process.
     verified: VerifiedManifest,
     fs: Arc<FsDispatchSession>,
+    initial_broker: Mutex<Option<FsBroker>>,
     #[cfg(all(test, target_os = "macos"))]
     drop_observer: Option<Arc<AtomicBool>>,
 }
@@ -240,10 +444,11 @@ struct GuardSnapshot {
 impl GuardSnapshot {
     fn prepare(verified: VerifiedManifest) -> Result<Self, FsPrepareError> {
         let broker = FsBroker::prepare(&verified)?;
-        let fs = Arc::new(FsDispatchSession::new(verified.clone(), broker));
+        let fs = Arc::new(FsDispatchSession::new(verified.clone()));
         Ok(Self {
             verified,
             fs,
+            initial_broker: Mutex::new(Some(broker)),
             #[cfg(all(test, target_os = "macos"))]
             drop_observer: None,
         })
@@ -252,11 +457,53 @@ impl GuardSnapshot {
     fn fs_weak(&self) -> Weak<FsDispatchSession> {
         Arc::downgrade(&self.fs)
     }
+
+    fn take_initial_broker(&self) -> Result<FsBroker, HostAppError> {
+        self.initial_broker
+            .lock()
+            .map_err(|_| app_detail("filesystem worker startup", "broker transfer lock poisoned"))?
+            .take()
+            .ok_or_else(|| {
+                app_detail(
+                    "filesystem worker startup",
+                    "initial broker already transferred",
+                )
+            })
+    }
+
+    /// Prepares the filesystem state of the next application session from the
+    /// immutable policy, before that session creates any child, listener or
+    /// window (KEL-53 §5 `run_app_direct`): the dispatch session returns to its
+    /// initial shape and a fresh sole broker replaces the one the previous
+    /// session's worker consumed and dropped. Fails closed when the previous
+    /// session never transferred its broker, which means it never ran its router.
+    #[cfg(any(target_os = "linux", windows))]
+    fn prepare_next_session(&self) -> Result<(), HostAppError> {
+        let mut slot = self.initial_broker.lock().map_err(|_| {
+            app_detail(
+                "filesystem session preparation",
+                "broker transfer lock poisoned",
+            )
+        })?;
+        if slot.is_some() {
+            return Err(app_detail(
+                "filesystem session preparation",
+                "the previous session never transferred its broker",
+            ));
+        }
+        self.fs.reset_for_next_session()?;
+        *slot = Some(
+            FsBroker::prepare(&self.verified)
+                .map_err(|source| HostAppError::fs_prepare(&source))?,
+        );
+        Ok(())
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsDispatchState {
     accepting: bool,
+    prepared_attempt: Option<u32>,
     in_flight: usize,
     call_outstanding: bool,
     pending_call: Option<PendingFsCall>,
@@ -273,39 +520,67 @@ struct PendingFsCall {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct FsDispatchSession {
     verified: VerifiedManifest,
-    broker: FsBroker,
     state: Mutex<FsDispatchState>,
     handler_transition: Mutex<()>,
     drained: Condvar,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     drain_wait_observer: Mutex<Option<SyncSender<()>>>,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     terminal_write_hold: Mutex<Option<(SyncSender<()>, Receiver<()>)>>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl FsDispatchState {
+    /// The state of a session whose first generation's broker is prepared and
+    /// accepting, with nothing admitted.
+    const fn initial() -> Self {
+        Self {
+            accepting: true,
+            prepared_attempt: Some(1),
+            in_flight: 0,
+            call_outstanding: false,
+            pending_call: None,
+            failed_write_attempt: None,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl FsDispatchSession {
-    fn new(verified: VerifiedManifest, broker: FsBroker) -> Self {
+    fn new(verified: VerifiedManifest) -> Self {
         Self {
             verified,
-            broker,
-            state: Mutex::new(FsDispatchState {
-                accepting: true,
-                in_flight: 0,
-                call_outstanding: false,
-                pending_call: None,
-                failed_write_attempt: None,
-            }),
+            state: Mutex::new(FsDispatchState::initial()),
             handler_transition: Mutex::new(()),
             drained: Condvar::new(),
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             drain_wait_observer: Mutex::new(None),
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             terminal_write_hold: Mutex::new(None),
         }
     }
 
+    /// Returns the dispatch state to its initial shape for the next application
+    /// session of this process. Refuses while a call is admitted, outstanding or
+    /// pending: the previous session's router must have quiesced and drained.
+    #[cfg(any(target_os = "linux", windows))]
+    fn reset_for_next_session(&self) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem session reset", "in-flight lock poisoned"))?;
+        if state.in_flight != 0 || state.call_outstanding || state.pending_call.is_some() {
+            return Err(app_detail(
+                "filesystem session reset",
+                "the previous session's filesystem calls have not drained",
+            ));
+        }
+        *state = FsDispatchState::initial();
+        Ok(())
+    }
+
     #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn admit(self: &Arc<Self>) -> Result<Option<FsInFlight>, HostAppError> {
         self.admit_with_pending(None)
     }
@@ -427,6 +702,21 @@ impl FsDispatchSession {
         Ok(())
     }
 
+    fn install_prepared_attempt(&self, attempt: u32) -> Result<(), HostAppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem generation", "in-flight lock poisoned"))?;
+        if state.prepared_attempt != Some(attempt) || state.in_flight != 0 {
+            return Err(app_detail(
+                "filesystem generation",
+                "generation broker is not prepared",
+            ));
+        }
+        state.accepting = true;
+        Ok(())
+    }
+
     fn wait_for_handler_transition(&self) -> Result<(), HostAppError> {
         let _transition = self.handler_transition.lock().map_err(|_| {
             app_detail(
@@ -444,7 +734,8 @@ impl FsDispatchSession {
         self.wait_for_handler_transition()
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn observe_next_drain_wait(&self, observer: SyncSender<()>) {
         *self
             .drain_wait_observer
@@ -455,7 +746,8 @@ impl FsDispatchSession {
     /// Test hook: holds the next successful FS terminal write after it
     /// releases the generation lock and before its lease drops, until the
     /// test resumes it.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn hold_next_terminal_write(&self, written: SyncSender<()>, resume: Receiver<()>) {
         *self
             .terminal_write_hold
@@ -463,7 +755,7 @@ impl FsDispatchSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((written, resume));
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
     fn hold_after_terminal_write(&self) {
         let hold = self
             .terminal_write_hold
@@ -482,7 +774,7 @@ impl FsDispatchSession {
             .lock()
             .map_err(|_| app_detail("filesystem drain", "in-flight lock poisoned"))?;
         while state.in_flight != 0 {
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             if let Some(observer) = self
                 .drain_wait_observer
                 .lock()
@@ -518,17 +810,298 @@ struct FsWorkItem {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 enum FsWorkerCommand {
     Work(FsWorkItem),
+    #[cfg(target_os = "macos")]
+    Retire(u32, SyncSender<FsWorkerCompletion>),
+    #[cfg(target_os = "macos")]
+    Prepare {
+        retired: u32,
+        attempt: u32,
+        reply: SyncSender<FsWorkerCompletion>,
+    },
     Stop,
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+enum FsWorkerCompletion {
+    Retired(u32),
+    Prepared {
+        retired: u32,
+        attempt: u32,
+        result: Result<(), HostAppError>,
+    },
+}
+
+#[cfg(target_os = "macos")]
+impl FsWorkerNativeState {
+    fn handle_generation_command(
+        &mut self,
+        session: &FsDispatchSession,
+        command: FsWorkerCommand,
+        retiring: &mut Option<(u32, SyncSender<FsWorkerCompletion>)>,
+    ) -> Result<(), HostAppError> {
+        match command {
+            FsWorkerCommand::Retire(attempt, reply) => {
+                if self.attempt != attempt || retiring.is_some() {
+                    return Err(app_detail(
+                        "filesystem retirement",
+                        "unexpected retired broker attempt",
+                    ));
+                }
+                session.close_admission()?;
+                *retiring = Some((attempt, reply));
+                Ok(())
+            }
+            FsWorkerCommand::Prepare {
+                retired,
+                attempt,
+                reply,
+            } => {
+                let result = if retiring.is_some() {
+                    Err(app_detail(
+                        "filesystem preparation",
+                        "old generation broker has not retired",
+                    ))
+                } else {
+                    self.prepare_generation(session, retired, attempt)
+                };
+                let _ = reply.send(FsWorkerCompletion::Prepared {
+                    retired,
+                    attempt,
+                    result,
+                });
+                Ok(())
+            }
+            FsWorkerCommand::Work(_) | FsWorkerCommand::Stop => Err(app_detail(
+                "filesystem generation command",
+                "work and stop commands belong to the worker loop",
+            )),
+        }
+    }
+
+    fn prepare_generation(
+        &mut self,
+        session: &FsDispatchSession,
+        retired: u32,
+        attempt: u32,
+    ) -> Result<(), HostAppError> {
+        if self.attempt != retired || self.broker.is_some() {
+            return Err(app_detail(
+                "filesystem preparation",
+                "old generation broker has not retired",
+            ));
+        }
+        let fresh = FsBroker::prepare(&session.verified)
+            .map_err(|error| HostAppError::fs_prepare(&error))?;
+        let mut state = session
+            .state
+            .lock()
+            .map_err(|_| app_detail("filesystem preparation", "in-flight lock poisoned"))?;
+        self.broker = Some(fresh);
+        self.attempt = attempt;
+        state.prepared_attempt = Some(attempt);
+        state.accepting = false;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct FsRecoveryAttempt {
+    retired: u32,
+    prepared: u32,
+    pending: Option<FsWorkerCommand>,
+    completion: Option<Receiver<FsWorkerCompletion>>,
+    ready: bool,
+    preparing: bool,
+    released: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl FsRecoveryAttempt {
+    fn retire(router: &PrimaryRouterHandle, retired: u32) -> Result<Self, HostAppError> {
+        let prepared = retired
+            .checked_add(1)
+            .ok_or_else(|| app_detail("filesystem recovery", "generation counter overflow"))?;
+        let mut recovery = Self {
+            retired,
+            prepared,
+            pending: None,
+            completion: None,
+            ready: router.fs.is_none(),
+            preparing: false,
+            released: false,
+        };
+        if let Some(session) = router.fs.as_ref().and_then(Weak::upgrade) {
+            let _transition = router.shutdown.transition_guard();
+            session.close_admission()?;
+            let (reply, completion) = mpsc::sync_channel(1);
+            recovery.pending = Some(FsWorkerCommand::Retire(retired, reply));
+            recovery.completion = Some(completion);
+        } else if router.fs.is_some() {
+            return Err(app_detail(
+                "filesystem recovery",
+                "dispatch metadata disappeared",
+            ));
+        }
+        Ok(recovery)
+    }
+
+    fn poll(&mut self, router: &PrimaryRouterHandle) -> Result<(), HostAppError> {
+        if !router.shutdown.is_running() {
+            self.pending.take();
+            self.completion.take();
+            return Ok(());
+        }
+        if let Some(command) = self.pending.take() {
+            let sender = router
+                .fs_worker_commands
+                .as_ref()
+                .ok_or_else(|| app_detail("filesystem recovery", "native worker is unavailable"))?;
+            match sender.try_send(command) {
+                Ok(()) => {}
+                Err(TrySendError::Full(command)) => self.pending = Some(command),
+                Err(TrySendError::Disconnected(_)) => {
+                    return Err(app_detail("filesystem recovery", "native worker stopped"));
+                }
+            }
+        }
+        let Some(receiver) = self.completion.as_ref() else {
+            return Ok(());
+        };
+        let completion = match receiver.try_recv() {
+            Ok(completion) => completion,
+            Err(mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(app_detail(
+                    "filesystem recovery",
+                    "native completion owner stopped",
+                ));
+            }
+        };
+        match completion {
+            FsWorkerCompletion::Retired(attempt)
+                if attempt == self.retired && !self.ready && !self.preparing =>
+            {
+                self.preparing = true;
+                let (reply, completion) = mpsc::sync_channel(1);
+                self.pending = Some(FsWorkerCommand::Prepare {
+                    retired: self.retired,
+                    attempt: self.prepared,
+                    reply,
+                });
+                self.completion = Some(completion);
+            }
+            FsWorkerCompletion::Prepared {
+                retired,
+                attempt,
+                result,
+            } if retired == self.retired
+                && attempt == self.prepared
+                && !self.ready
+                && self.preparing =>
+            {
+                result?;
+                self.completion = None;
+                self.ready = true;
+            }
+            _ => {
+                return Err(app_detail(
+                    "filesystem recovery",
+                    "unexpected native completion attempt",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Clone, Copy)]
+enum RecoveryArm {
+    Initial(u32),
+    #[cfg(target_os = "macos")]
+    Retired {
+        retired: u32,
+        prepared: u32,
+    },
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct FsWorkerNativeState {
+    broker: Option<FsBroker>,
+    attempt: u32,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct PendingFsWriteFailure {
+    attempt: u32,
+    session: Arc<FsDispatchSession>,
+    primary: HostAppError,
+    reply: Receiver<Result<Instant, String>>,
+    deadline: Instant,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl PendingFsWriteFailure {
+    fn complete(
+        self,
+        observed: Result<Result<Instant, String>, RecvTimeoutError>,
+    ) -> Result<(), HostAppError> {
+        let acknowledged = match observed {
+            Ok(Ok(received)) if received <= self.deadline => {
+                self.session.clear_failed_write_attempt(self.attempt)
+            }
+            Ok(Ok(_)) | Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "filesystem reply recovery",
+                "guardian owner did not acknowledge retired generation",
+            )),
+            Ok(Err(detail)) => Err(app_detail("filesystem reply recovery", detail)),
+            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
+                "filesystem reply recovery",
+                "guardian owner ended before acknowledging retired generation",
+            )),
+        };
+        acknowledged.map_err(|cleanup| append_app_cleanup(self.primary, [Err(cleanup)]))
+    }
+
+    fn poll(self) -> Result<Option<Self>, HostAppError> {
+        match self.reply.try_recv() {
+            Ok(reply) => self.complete(Ok(reply)).map(|()| None),
+            Err(mpsc::TryRecvError::Disconnected) => self
+                .complete(Err(RecvTimeoutError::Disconnected))
+                .map(|()| None),
+            Err(mpsc::TryRecvError::Empty) if Instant::now() >= self.deadline => {
+                self.complete(Err(RecvTimeoutError::Timeout)).map(|()| None)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(Some(self)),
+        }
+    }
+}
+
+#[cfg(test)]
+type FsWorkerTestInitializer =
+    Box<dyn FnOnce() -> Result<Box<dyn std::any::Any>, HostAppError> + Send>;
+
+#[cfg(test)]
 struct FsWorkerTestGate {
     taken: SyncSender<()>,
     release: Mutex<Receiver<()>>,
+    // The historical gate still follows accepted entry. This fence precedes it.
+    before_entry: Option<Arc<Self>>,
+    // The erased, possibly !Send guard is created and dropped on the FS worker.
+    initializer: Mutex<Option<FsWorkerTestInitializer>>,
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
 impl FsWorkerTestGate {
+    fn initialize_worker(&self) -> Result<Option<Box<dyn std::any::Any>>, HostAppError> {
+        let initialize = self
+            .initializer
+            .lock()
+            .map_err(|_| app_detail("filesystem worker fixture", "initializer lock poisoned"))?
+            .take();
+        initialize.map_or(Ok(None), |initialize| initialize().map(Some))
+    }
+
     fn wait_after_take(&self) -> Result<(), HostAppError> {
         self.taken
             .send(())
@@ -691,301 +1264,89 @@ fn validate_current_exe_stage() -> Result<ValidatedBootSelection, HostAppError> 
     validate_from_root(root)
 }
 
-/// Typed no-flag host boot/session failure.
-pub struct HostAppError {
-    code: &'static str,
-    phase: &'static str,
-    detail: String,
-    fix: &'static str,
-    resources: StartupResourceSnapshot,
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    manifest_source: Option<Box<ManifestError>>,
+/// Top-level host-run failure. Worker failures remain the Send-compatible
+/// `HostAppError`; this wrapper can retain main-thread-only macOS custody.
+///
+/// An owned unproved failure is fatal: the shipping Host reports it by borrow
+/// and retains the payload through its existing failed-process exit. It is not
+/// a completed app session and must not be flattened, sent to another thread,
+/// discarded, or used to start another application session.
+#[must_use = "retain unproved main-thread custody through the fatal Host outcome"]
+pub struct HostRunFailure {
+    error: HostAppError,
+    #[cfg(target_os = "macos")]
+    retained: Option<Box<RetainedMacSession>>,
 }
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct StartupResourceSnapshot {
-    listener: u32,
-    child: u32,
-    window: u32,
-}
-
-impl HostAppError {
-    fn new(
-        code: &'static str,
-        phase: &'static str,
-        detail: impl Into<String>,
-        fix: &'static str,
-    ) -> Self {
-        Self {
-            code,
-            phase,
-            detail: detail.into(),
-            fix,
-            resources: startup_resource_snapshot(),
-            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-            manifest_source: None,
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn manifest(source: ManifestError) -> Self {
-        let code = source.code();
-        let detail = source.to_string();
-        Self {
-            code,
-            phase: "permissions manifest preflight",
-            detail,
-            fix: "Apply the keld-guard correction above, rebuild the staged boot artifact, and relaunch.",
-            resources: startup_resource_snapshot(),
-            manifest_source: Some(Box::new(source)),
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn fs_prepare(source: &FsPrepareError) -> Self {
-        Self::new(
-            source.code(),
-            "filesystem broker preflight",
-            source.to_string(),
-            "Correct the filesystem scopes in keld.permissions.jsonc, rebuild the staged boot artifact, and relaunch.",
-        )
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn io(code: &'static str, phase: &'static str, source: &io::Error, fix: &'static str) -> Self {
-        Self::new(code, phase, source.to_string(), fix)
-    }
-
-    /// Stable registered diagnostic code.
+impl HostRunFailure {
+    /// Whether this failed run still owns unresolved main-thread resources.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
-        self.code
+    pub fn retains_main_custody(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.retained.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
     }
 }
-
-impl fmt::Display for HostAppError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: no-flag host failed during {} — {}. {} \
-             [startup-resource-attempts listener={} child={} window={}]",
-            self.code,
-            self.phase,
-            self.detail,
-            self.fix,
-            self.resources.listener,
-            self.resources.child,
-            self.resources.window,
-        )
+impl From<HostAppError> for HostRunFailure {
+    fn from(error: HostAppError) -> Self {
+        Self {
+            error,
+            #[cfg(target_os = "macos")]
+            retained: None,
+        }
     }
 }
-
-impl fmt::Debug for HostAppError {
+impl std::ops::Deref for HostRunFailure {
+    type Target = HostAppError;
+    fn deref(&self) -> &Self::Target {
+        &self.error
+    }
+}
+impl fmt::Display for HostRunFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HostAppError")
-            .field("code", &self.code)
-            .field("phase", &self.phase)
-            .field("detail", &self.detail)
-            .field("resources", &self.resources)
-            .field("manifest_source", &{
-                #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-                {
-                    self.manifest_source.as_ref()
-                }
-                #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-                {
-                    Option::<&ManifestError>::None
-                }
-            })
+        fmt::Display::fmt(&self.error, f)
+    }
+}
+impl fmt::Debug for HostRunFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostRunFailure")
+            .field("error", &self.error)
+            .field("retained_main_custody", &self.retains_main_custody())
             .finish_non_exhaustive()
     }
 }
-
-impl std::error::Error for HostAppError {
+impl std::error::Error for HostRunFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-        {
-            self.manifest_source
-                .as_ref()
-                .map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-        {
-            None
-        }
+        std::error::Error::source(&self.error)
     }
 }
-
-fn startup_resource_snapshot() -> StartupResourceSnapshot {
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    {
-        StartupResourceSnapshot {
-            listener: LISTENER_ATTEMPTS.load(Ordering::Acquire),
-            child: CHILD_ATTEMPTS.load(Ordering::Acquire),
-            window: WINDOW_ATTEMPTS.load(Ordering::Acquire),
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        StartupResourceSnapshot::default()
-    }
+#[cfg(target_os = "macos")]
+struct RetainedMacSession {
+    _presentation: keld_native::auth::AsMainOwner,
+    _engine: WkWebViewEngine,
+    _router: PrimaryRouter,
+    _guardian: GuardianOwner,
+    _coordinator: JoinHandle<Result<(), HostAppError>>,
+    _renderer: RendererDispatch,
+    _commands: Sender<AppWindowCommand>,
+    guard: Option<GuardSnapshot>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BootDocument {
-    schema: u8,
-    name: String,
-    entry: String,
-    renderer: String,
-    permissions: PermissionsDocument,
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PermissionsDocument {
-    file: String,
-    content_sha256: String,
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-struct ParsedBoot {
-    name: String,
-    entry: PathBuf,
-    renderer: PathBuf,
-    permissions_digest: [u8; 32],
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
-    if bytes.len() > MAX_BOOT_BYTES {
-        return Err(boot_error(
-            "keld.boot.json exceeds the 64 KiB limit",
-            "Regenerate a bounded schema-v1 boot descriptor.",
+#[cfg(any(target_os = "linux", windows))]
+fn ensure_initial_window_supported(initial: &InitialWindow) -> Result<(), HostAppError> {
+    if matches!(initial, InitialWindow::None) {
+        return Err(HostAppError::new(
+            "KELD-CORE-034",
+            "facade boot platform",
+            "schema 2 is supported on macOS only",
+            "Remove initialWindow from keld.config.ts to use a renderer-declared boot on this platform.",
         ));
     }
-    let text = std::str::from_utf8(bytes).map_err(|source| {
-        boot_error(
-            format!("keld.boot.json is not UTF-8: {source}"),
-            "Write the descriptor as strict UTF-8 JSON.",
-        )
-    })?;
-    let document: BootDocument = serde_json::from_str(text).map_err(|source| {
-        boot_error(
-            format!("strict schema-v1 JSON was rejected: {source}"),
-            "Remove duplicate/unknown fields and regenerate keld.boot.json schema 1.",
-        )
-    })?;
-    if document.schema != 1 {
-        return Err(boot_error(
-            format!("unsupported schema {}", document.schema),
-            "Regenerate keld.boot.json with schema 1.",
-        ));
-    }
-    if document.name.is_empty() {
-        return Err(boot_error(
-            "name must be a non-empty string",
-            "Set the reviewed project name before compiling the boot descriptor.",
-        ));
-    }
-    let entry = validate_relative_path("entry", &document.entry)?;
-    let renderer = validate_relative_path("renderer", &document.renderer)?;
-    if document.permissions.file != PERMISSIONS_FILE {
-        return Err(boot_error(
-            format!(
-                "permissions.file must be the literal {PERMISSIONS_FILE}, found {}",
-                document.permissions.file
-            ),
-            "Regenerate the descriptor with the fixed permissions filename.",
-        ));
-    }
-    let permissions_digest = decode_digest(&document.permissions.content_sha256)?;
-    Ok(ParsedBoot {
-        name: document.name,
-        entry,
-        renderer,
-        permissions_digest,
-    })
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-fn boot_error(detail: impl Into<String>, fix: &'static str) -> HostAppError {
-    HostAppError::new("KELD-CORE-035", "boot descriptor validation", detail, fix)
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-fn target_error(kind: &'static str, detail: impl Into<String>) -> HostAppError {
-    HostAppError::new(
-        "KELD-CORE-036",
-        "staged target validation",
-        format!("{kind}: {}", detail.into()),
-        "Regenerate the owner-private stage with readable regular files and no symlinks.",
-    )
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-fn validate_relative_path(kind: &'static str, value: &str) -> Result<PathBuf, HostAppError> {
-    if value.is_empty()
-        || value.contains('\\')
-        || value.contains(':')
-        || value
-            .split('/')
-            .any(|part| part.is_empty() || matches!(part, "." | ".."))
-    {
-        return Err(target_error(
-            kind,
-            "path is not a portable project-relative path",
-        ));
-    }
-    let path = Path::new(value);
-    for component in path.components() {
-        if !matches!(component, Component::Normal(_)) {
-            return Err(target_error(
-                kind,
-                "path contains a root, prefix, dot, or dot-dot",
-            ));
-        }
-    }
-    Ok(path.to_path_buf())
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
-    let Some(hex) = value.strip_prefix(DIGEST_PREFIX) else {
-        return Err(boot_error(
-            "permissions.content_sha256 must start with sha256:",
-            "Regenerate the exact lowercase SHA-256 descriptor value.",
-        ));
-    };
-    if hex.len() != 64
-        || !hex
-            .as_bytes()
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-    {
-        return Err(boot_error(
-            "permissions.content_sha256 must contain 64 lowercase hexadecimal digits",
-            "Regenerate the exact lowercase SHA-256 descriptor value.",
-        ));
-    }
-    let mut digest = [0_u8; 32];
-    for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        let text = std::str::from_utf8(chunk).map_err(|source| {
-            boot_error(
-                format!("digest encoding is invalid: {source}"),
-                "Regenerate the exact lowercase SHA-256 descriptor value.",
-            )
-        })?;
-        digest[index] = u8::from_str_radix(text, 16).map_err(|source| {
-            boot_error(
-                format!("digest encoding is invalid: {source}"),
-                "Regenerate the exact lowercase SHA-256 descriptor value.",
-            )
-        })?;
-    }
-    Ok(digest)
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1012,11 +1373,20 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     let boot_file = open_relative_file(&root_fd, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
+    #[cfg(target_os = "linux")]
+    ensure_initial_window_supported(&parsed.initial)?;
     let entry_file = open_relative_file(&root_fd, &parsed.entry, "entry")?;
-    let renderer_file = open_relative_file(&root_fd, &parsed.renderer, "renderer")?;
-    let renderer_html = read_target(renderer_file, "renderer")?;
-    std::str::from_utf8(&renderer_html)
-        .map_err(|source| target_error("renderer", format!("HTML is not UTF-8: {source}")))?;
+    let initial_window = match parsed.initial {
+        InitialWindow::Renderer(renderer) => {
+            let renderer_file = open_relative_file(&root_fd, &renderer, "renderer")?;
+            let html = read_target(renderer_file, "renderer")?;
+            std::str::from_utf8(&html).map_err(|source| {
+                target_error("renderer", format!("HTML is not UTF-8: {source}"))
+            })?;
+            ValidatedInitialWindow::Renderer(html)
+        }
+        InitialWindow::None => ValidatedInitialWindow::None,
+    };
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
@@ -1025,7 +1395,8 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             name: parsed.name,
             entry_path: parsed.entry,
             entry_file,
-            renderer_html,
+            initial_window,
+            auth_configuration: parsed.auth_configuration,
         },
         permissions_file,
         permissions_digest: parsed.permissions_digest,
@@ -1073,11 +1444,19 @@ fn validate_windows_boot_files(
     let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
+    ensure_initial_window_supported(&parsed.initial)?;
     let entry_file = open_relative_file_windows(&root, &parsed.entry, "entry")?;
-    let renderer_file = open_relative_file_windows(&root, &parsed.renderer, "renderer")?;
-    let renderer_html = read_target(renderer_file, "renderer")?;
-    std::str::from_utf8(&renderer_html)
-        .map_err(|source| target_error("renderer", format!("HTML is not UTF-8: {source}")))?;
+    let initial_window = match parsed.initial {
+        InitialWindow::Renderer(renderer) => {
+            let renderer_file = open_relative_file_windows(&root, &renderer, "renderer")?;
+            let html = read_target(renderer_file, "renderer")?;
+            std::str::from_utf8(&html).map_err(|source| {
+                target_error("renderer", format!("HTML is not UTF-8: {source}"))
+            })?;
+            ValidatedInitialWindow::Renderer(html)
+        }
+        InitialWindow::None => ValidatedInitialWindow::None,
+    };
     let permissions_file =
         open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
@@ -1086,7 +1465,8 @@ fn validate_windows_boot_files(
             name: parsed.name,
             entry_path: parsed.entry,
             entry_file,
-            renderer_html,
+            initial_window,
+            auth_configuration: parsed.auth_configuration,
             mode,
         },
         permissions_file,
@@ -1503,9 +1883,12 @@ fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppErr
 ///
 /// # Errors
 ///
-/// Returns [`HostAppError`] for startup, authenticated session, window,
+/// Returns [`HostRunFailure`] preserving the original startup, authenticated session, window,
 /// guardian, Bun self-termination, or ordered-shutdown failure.
-pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
+pub fn run_unprivileged(
+    boot: ValidatedBootSelection,
+    #[cfg(target_os = "macos")] pre_init_terminal: fn(&HostAppError) -> !,
+) -> Result<(), HostRunFailure> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         drop(boot);
@@ -1514,7 +1897,8 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
             "platform availability",
             "no-flag host support is unavailable on this platform",
             NO_FLAG_UNAVAILABLE_FIX,
-        ))
+        )
+        .into())
     }
     #[cfg(target_os = "macos")]
     {
@@ -1526,7 +1910,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
         // This explicit diagnostic/test path remains incapable of registering
         // a privileged channel. It never serves as recovery from run_guarded.
         drop((permissions_file, permissions_digest));
-        run_app(app, None)
+        run_app(app, None, pre_init_terminal)
     }
     #[cfg(windows)]
     {
@@ -1536,7 +1920,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
             permissions_digest,
         } = boot;
         drop((permissions_file, permissions_digest));
-        run_app_direct(app, None)
+        run_app_direct(app, None).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
@@ -1546,7 +1930,7 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
             permissions_digest,
         } = boot;
         drop((permissions_file, permissions_digest));
-        run_app_direct(app, None)
+        run_app_direct(app, None).map_err(HostRunFailure::from)
     }
 }
 
@@ -1558,9 +1942,12 @@ pub fn run_unprivileged(boot: ValidatedBootSelection) -> Result<(), HostAppError
 ///
 /// # Errors
 ///
-/// Returns [`HostAppError`] for a typed manifest preflight failure or any
+/// Returns [`HostRunFailure`] preserving a typed manifest preflight failure or any
 /// existing no-flag startup, session, window, guardian, Bun, or shutdown error.
-pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
+pub fn run_guarded(
+    boot: ValidatedBootSelection,
+    #[cfg(target_os = "macos")] pre_init_terminal: fn(&HostAppError) -> !,
+) -> Result<(), HostRunFailure> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         drop(boot);
@@ -1569,7 +1956,8 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
             "platform availability",
             "no-flag host support is unavailable on this platform",
             NO_FLAG_UNAVAILABLE_FIX,
-        ))
+        )
+        .into())
     }
     #[cfg(windows)]
     {
@@ -1583,7 +1971,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
             .map_err(HostAppError::manifest)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(app, Some(&guard_snapshot))
+        run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "macos")]
     {
@@ -1600,7 +1988,13 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
         // The owner stays in this frame while run_app performs every startup,
         // event-loop, and ordered-cleanup step. run_app receives only a borrow,
         // so it cannot destroy the verified session policy early.
-        run_app(app, Some(&guard_snapshot))
+        let mut result = run_app(app, Some(&guard_snapshot), pre_init_terminal);
+        if let Err(failure) = &mut result
+            && let Some(retained) = &mut failure.retained
+        {
+            let _ = retained.guard.get_or_insert(guard_snapshot);
+        }
+        result
     }
     #[cfg(target_os = "linux")]
     {
@@ -1614,7 +2008,7 @@ pub fn run_guarded(boot: ValidatedBootSelection) -> Result<(), HostAppError> {
             .map_err(HostAppError::manifest)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(app, Some(&guard_snapshot))
+        run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
     }
 }
 
@@ -1697,10 +2091,20 @@ impl SessionShutdownState {
     fn new() -> Self {
         Self {
             cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
+            reserved_cause: Arc::new(AtomicU8::new(SESSION_RUNNING)),
             transition: Arc::new(Mutex::new(())),
+            changed: Arc::new(Condvar::new()),
             reader_stop: Arc::new(AtomicBool::new(false)),
             generation_reader_stops: Arc::new(Mutex::new(Vec::new())),
             tail_started: Arc::new(AtomicBool::new(false)),
+            handover_requested: Arc::new(AtomicBool::new(false)),
+            tail_ended: Arc::new(AtomicBool::new(false)),
+            #[cfg(any(target_os = "linux", windows))]
+            handover_clock: Arc::new(HandoverClock::default()),
+            #[cfg(any(target_os = "linux", windows))]
+            under_dev_lease: Arc::new(AtomicBool::new(false)),
+            #[cfg(any(target_os = "linux", windows))]
+            quit_admission: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1708,35 +2112,198 @@ impl SessionShutdownState {
         self.cause.load(Ordering::Acquire)
     }
 
+    fn handover_requested(&self) -> bool {
+        self.handover_requested.load(Ordering::Acquire)
+    }
+
+    /// The handover fact as a reader outside `transition` must see it.
+    /// `request_handover` sends the handover's `Quit` and records the fact in one
+    /// `transition` hold. A reader that saw the `Quit` take effect, such as the main
+    /// thread after the UI loop returned, therefore reads under the same guard, so it
+    /// can never land between the send and the record and misclassify a handover as
+    /// an ordinary end.
+    #[cfg(any(target_os = "linux", windows))]
+    fn handover_requested_guarded(&self) -> bool {
+        let _transition = self.transition_guard();
+        self.handover_requested()
+    }
+
+    /// Caller holds `transition` and has just sent the handover's `Quit` to the UI loop.
+    #[cfg(any(target_os = "linux", windows))]
+    #[cfg_attr(
+        not(any(all(debug_assertions, windows), test)),
+        expect(
+            dead_code,
+            reason = "called by request_handover, whose production caller is the PerUserDirect coordinator (S6c2e)"
+        )
+    )]
+    fn mark_handover_requested_guarded(&self) {
+        let _ = self.handover_clock.requested.set(Instant::now());
+        self.handover_requested.store(true, Ordering::Release);
+    }
+
+    /// Records that a CLI dev lease's tail runs beside this session.
+    #[cfg(any(target_os = "linux", windows))]
+    fn mark_under_dev_lease(&self) {
+        self.under_dev_lease.store(true, Ordering::Release);
+    }
+
+    /// The claimant's tail has ended, with or without success.
+    fn end_tail(&self) {
+        let _transition = self.transition_guard();
+        self.tail_ended.store(true, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    /// Starts the tail of the claimant that just reserved the session cause.
+    fn tail_run(&self) -> TailRun<'_> {
+        TailRun { shutdown: self }
+    }
+
+    /// Caller holds `transition` and found the session running: records that the
+    /// lifecycle-Quit handler of `attempt` entered for a `Quit` and may still claim the
+    /// session after its filesystem drain.
+    #[cfg(any(target_os = "linux", windows))]
+    fn admit_quit_guarded(&self, attempt: u32) -> QuitAdmission<'_> {
+        self.quit_admission
+            .store(quit_admission_tag(attempt), Ordering::Release);
+        self.changed.notify_all();
+        QuitAdmission {
+            shutdown: self,
+            attempt,
+            released: false,
+        }
+    }
+
+    /// Caller holds `transition`: `attempt`'s admitted `Quit`, if it is the recorded
+    /// one, can no longer claim the session (it claimed, gave up or failed, or its
+    /// generation retired). Wakes the handover's wait either way.
+    #[cfg(any(target_os = "linux", windows))]
+    fn clear_quit_admission_guarded(&self, attempt: u32) {
+        let _ = self.quit_admission.compare_exchange(
+            quit_admission_tag(attempt),
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.changed.notify_all();
+    }
+
+    /// Waits for the application's `Quit` until `deadline`: returns as soon as any
+    /// claimant reserved the session cause, or claims [`SESSION_HANDOVER`] at the
+    /// deadline under the same guard hold as the last running check, so the first
+    /// claim wins and no claim is lost between the check and the claim (KEL-53 §4
+    /// "Profile handover", steps 3b and 3c).
+    ///
+    /// The deadline claim waits while a `Quit` is admitted (`quit_admission`): a
+    /// `Quit` whose handler entered before the deadline keeps its claim through its
+    /// filesystem drain, so the claim point agrees with the D sample, the handler's
+    /// entry. Its admission ends with its claim, which ends this wait, or with its
+    /// release, after which this wait claims the handover at once if the deadline has
+    /// passed. This adds no unbounded wait: that drain waits only for filesystem calls
+    /// admitted before the `Quit` on its generation (the reader is paused in the `Quit`;
+    /// a successor generation exists only after a retirement, which clears the
+    /// admission), and the forced tail this wait would otherwise start drains the same
+    /// calls without a deadline (`cli_lease_lost`, `quiesce_and_drain_fs`).
+    #[cfg(any(target_os = "linux", windows))]
+    fn await_quit_or_claim_handover(&self, deadline: Instant) -> HandoverWait {
+        let mut transition = self.transition_guard();
+        loop {
+            if !self.is_running() {
+                return HandoverWait::ClaimedByOther;
+            }
+            if self.quit_admission.load(Ordering::Acquire) != 0 {
+                transition = self
+                    .changed
+                    .wait(transition)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                // Under the guard with the session running, both swaps succeed.
+                let _ = self.claim_guarded(SESSION_HANDOVER);
+                return HandoverWait::ClaimedHandover;
+            }
+            transition = self
+                .changed
+                .wait_timeout(transition, deadline - now)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// Waits until the claimant's tail has ended (the forced tail ends on this thread;
+    /// the lifecycle-Quit tail ends on its reader thread). A CLI-lease-loss claim has no
+    /// tail this thread may await: the lease observer runs it concurrently with the
+    /// teardown, as before a handover existed, and `request_handover` refuses a session
+    /// under a dev lease.
+    #[cfg(any(target_os = "linux", windows))]
+    fn await_tail_end(&self) {
+        let mut transition = self.transition_guard();
+        while !self.tail_ended.load(Ordering::Acquire) && self.cause() != SESSION_CLI_LEASE_LOST {
+            transition = self
+                .changed
+                .wait(transition)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
     fn is_running(&self) -> bool {
         self.cause() == SESSION_RUNNING
+            && self.reserved_cause.load(Ordering::Acquire) == SESSION_RUNNING
     }
 
     #[cfg(all(test, target_os = "macos"))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn claim_lifecycle_quit(&self) -> bool {
         self.claim(SESSION_LIFECYCLE_QUIT)
     }
 
-    #[cfg(any(unix, all(test, windows)))]
+    #[cfg(any(target_os = "linux", test))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn claim_cli_lease_lost(&self) -> bool {
         self.claim(SESSION_CLI_LEASE_LOST)
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn claim(&self, cause: u8) -> bool {
         let _transition = self.transition_guard();
         self.claim_guarded(cause)
     }
 
+    #[cfg(any(target_os = "linux", windows, test))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn claim_guarded(&self, cause: u8) -> bool {
+        self.reserve_guarded(cause) && self.accept_reserved_guarded(cause)
+    }
+
+    fn reserve_guarded(&self, cause: u8) -> bool {
         let claimed = self
-            .cause
+            .reserved_cause
             .compare_exchange(SESSION_RUNNING, cause, Ordering::AcqRel, Ordering::Acquire)
             .is_ok();
         if claimed {
+            self.tail_ended.store(false, Ordering::Release);
             self.stop_reader();
+            self.changed.notify_all();
         }
         claimed
+    }
+
+    fn accept_reserved_guarded(&self, cause: u8) -> bool {
+        self.reserved_cause.load(Ordering::Acquire) == cause
+            && self
+                .cause
+                .compare_exchange(SESSION_RUNNING, cause, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn reserve_cli_lease_lost(&self) -> bool {
+        let _transition = self.transition_guard();
+        self.reserve_guarded(SESSION_CLI_LEASE_LOST)
     }
 
     fn transition_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -1773,11 +2340,24 @@ impl SessionShutdownState {
 }
 
 #[cfg(target_os = "macos")]
+fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTrigger) {
+    // One validated boot decision supplies both the strict private argument and
+    // the existing compatibility environment input. Neither reads caller env.
+    let mode = if ready_trigger == AppReadyTrigger::HostInitialized {
+        "1"
+    } else {
+        "0"
+    };
+    command.arg(mode).env(NATIVE_WINDOW_FACADE_ENV, mode);
+}
+
+#[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)] // one startup/cleanup state machine keeps every owned handle transition contiguous
 fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
-) -> Result<(), HostAppError> {
+    pre_init_terminal: fn(&HostAppError) -> !,
+) -> Result<(), HostRunFailure> {
     let mut dev_lease = DevHostLease::from_environment()?;
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
@@ -1785,16 +2365,23 @@ fn run_app(
         name,
         entry_path,
         entry_file,
-        renderer_html,
+        initial_window,
+        auth_configuration,
     } = boot;
-    let html = String::from_utf8(renderer_html).map_err(|source| {
-        HostAppError::new(
-            "KELD-CORE-036",
-            "renderer",
-            source.to_string(),
-            "Regenerate the stage with UTF-8 renderer HTML.",
-        )
-    })?;
+    let (html, ready_trigger) = match initial_window {
+        ValidatedInitialWindow::Renderer(renderer_html) => {
+            let html = String::from_utf8(renderer_html).map_err(|source| {
+                HostAppError::new(
+                    "KELD-CORE-036",
+                    "renderer",
+                    source.to_string(),
+                    "Regenerate the stage with UTF-8 renderer HTML.",
+                )
+            })?;
+            (Some(html), AppReadyTrigger::NavigationReady)
+        }
+        ValidatedInitialWindow::None => (None, AppReadyTrigger::HostInitialized),
+    };
     // Authenticate the running package, or mint one explicit dev nonce, before
     // starting the guardian child, listener, app-link, or WebKit engine.
     let profile_selection = macos_profile_selection(dev_lease.as_ref())?;
@@ -1810,7 +2397,21 @@ fn run_app(
         .arg(&root)
         .arg(&entry_path)
         .arg(entry_metadata.dev().to_string())
-        .arg(entry_metadata.ino().to_string())
+        .arg(entry_metadata.ino().to_string());
+    configure_guardian_boot_mode(&mut guardian_command, ready_trigger);
+    guardian_command
+        // The facade Host's blocked pre-Init main stack can retain an open
+        // native profile when its coordinator terminates the process. Only
+        // the parent Host may delete this dev stage after a proved return;
+        // the Guardian must not race that custody decision on child exit.
+        .env(
+            "KELD_HOST_OWNS_FACADE_STAGE_CLEANUP",
+            if ready_trigger == AppReadyTrigger::HostInitialized && dev_lease.is_some() {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env_remove(DEV_LEASE_ENV)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -1833,6 +2434,19 @@ fn run_app(
     };
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
+    let main_thread = objc2::MainThreadMarker::new().ok_or_else(|| {
+        app_detail(
+            "auth presentation",
+            "application owner is not on the main thread",
+        )
+    })?;
+    let presentation_commands = window_commands_tx.clone();
+    let (presentation_port, mut presentation_owner) = keld_native::auth::prepare_as_presentation(
+        main_thread,
+        Arc::new(move || {
+            let _ = presentation_commands.send(AppWindowCommand::MacAuthWake);
+        }),
+    );
     let guardian_owner = GuardianOwner::start(
         guardian,
         window_commands_tx.clone(),
@@ -1844,16 +2458,30 @@ fn run_app(
         window_commands_tx.clone(),
         guardian_owner.handle(),
         shutdown,
-        guard_snapshot.map(GuardSnapshot::fs_weak),
+        guard_snapshot,
+        MacBoundStart {
+            auth_configuration,
+            presentation: Some(presentation_port),
+            facade_windows: ready_trigger == AppReadyTrigger::HostInitialized,
+        },
     )?;
     guardian_owner.attach_router(router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
+    let init_deadline = Arc::new(OnceLock::new());
+    let coordinator_deadline = Arc::clone(&init_deadline);
     let event_coordinator = thread::Builder::new()
         .name("keld-core-app-window-events".to_owned())
         .spawn(move || {
-            coordinate_window_events(&window_events_rx, &router_handle, &commands_for_events)
+            coordinate_window_events(
+                &window_events_rx,
+                &router_handle,
+                &commands_for_events,
+                ready_trigger,
+                |_| Ok(()),
+                Some((&coordinator_deadline, pre_init_terminal)),
+            )
         })
         .map_err(|source| app_io("window event coordinator", &source))?;
 
@@ -1874,9 +2502,10 @@ fn run_app(
                 window_events_tx,
                 event_coordinator,
                 None,
-                router,
+                (router, presentation_owner, main_thread),
                 guardian_owner,
-            );
+            )
+            .map_err(HostRunFailure::from);
         }
     };
 
@@ -1892,39 +2521,115 @@ fn run_app(
                 window_events_tx,
                 event_coordinator,
                 Some(renderer_dispatch),
-                router,
+                (router, presentation_owner, main_thread),
                 guardian_owner,
-            );
+            )
+            .map_err(HostRunFailure::from);
         }
     };
-    let spec = WebviewSpec {
-        title: name,
-        initial: NavTarget::Html(html),
-        ..WebviewSpec::default()
-    };
-    WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    // The bridge admits exactly the host's echo entry (GH-508 §4.6); the
-    // request loop below re-checks the same id before dispatch.
-    let renderer_endpoint = RendererBridgeEndpoint::new(
-        renderer_requests_tx,
-        renderer_outcomes_rx,
-        keld_ipc::channel_table::ECHO.wire_id(),
-    );
-    if let Err(source) =
-        engine.create_app_with_renderer_bridge(&spec, window_events_tx.clone(), renderer_endpoint)
-    {
-        let primary = app_webview_error("initial renderer bridge window", &source);
-        return cleanup_window_start_failure(
-            &primary,
-            guard_snapshot,
-            window_events_tx,
-            event_coordinator,
-            Some(renderer_dispatch),
-            router,
-            guardian_owner,
+    // Only renderer-declared boots create a host window. In a facade boot the
+    // first window belongs to the application's later authenticated Create.
+    // Do not fabricate an invisible anchor: a zero-window Init is observable.
+    let primary_view = if let Some(html) = html {
+        let spec = WebviewSpec {
+            title: name,
+            initial: NavTarget::Html(html),
+            ..WebviewSpec::default()
+        };
+        WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+        // GH-508: the renderer bridge admits only the host's echo channel.
+        let renderer_endpoint = RendererBridgeEndpoint::new(
+            renderer_requests_tx,
+            renderer_outcomes_rx,
+            keld_ipc::channel_table::ECHO.wire_id(),
         );
+        match engine.create_app_with_renderer_bridge(
+            &spec,
+            window_events_tx.clone(),
+            renderer_endpoint,
+        ) {
+            Ok(view) => Some(view),
+            Err(source) => {
+                let primary = app_webview_error("initial renderer bridge window", &source);
+                return cleanup_window_start_failure(
+                    &primary,
+                    guard_snapshot,
+                    window_events_tx,
+                    event_coordinator,
+                    Some(renderer_dispatch),
+                    (router, presentation_owner, main_thread),
+                    guardian_owner,
+                )
+                .map_err(HostRunFailure::from);
+            }
+        }
+    } else {
+        drop(renderer_requests_tx);
+        drop(renderer_outcomes_rx);
+        None
+    };
+    let presentation_router = router.handle();
+    let mut presentation_unproved = None;
+    let mut retains_main_custody = false;
+    let window_result = engine.run_app_until_quit_with_main_owner(
+        window_commands_rx,
+        window_events_tx,
+        primary_view,
+        ready_trigger,
+        &mut |main_thread, anchor, stopping| {
+            if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
+                let detail = error.to_string();
+                presentation_unproved.get_or_insert(error);
+                return Err(WvError::EventLoop(detail));
+            }
+            let stop_scope = presentation_router.prepare_auth_presentation_drive(stopping);
+            match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
+                keld_native::auth::AsMainProgress::Pending { next_deadline } => {
+                    Ok((false, next_deadline))
+                }
+                keld_native::auth::AsMainProgress::Drained => Ok((true, None)),
+                keld_native::auth::AsMainProgress::Unproved { fault, .. } => {
+                    presentation_unproved.get_or_insert_with(|| {
+                        app_detail("auth presentation custody", format!("{fault:?}"))
+                    });
+                    Err(WvError::EventLoop(format!(
+                        "native presentation custody unproved: {fault:?}"
+                    )))
+                }
+            }
+        },
+        (&mut retains_main_custody, || {
+            if ready_trigger == AppReadyTrigger::HostInitialized {
+                let _ = init_deadline.set(Instant::now() + keld_wv::INITIAL_MILESTONE_DEADLINE);
+            }
+        }),
+    );
+    if retains_main_custody {
+        // This is the owned fatal branch, not ordinary view-close intent.
+        presentation_router.shutdown.stop_reader();
+        // No blocking joins, profile/stage deletion, or owner Drop on this cut.
+        let loop_error = window_result.err().map_or_else(
+            || app_detail("main presentation tail", "main custody was not released"),
+            |error| app_webview_error("main presentation tail", &error),
+        );
+        let error = match presentation_unproved {
+            Some(native) => collapse_app_failures(&loop_error, [Err(native)]),
+            None => loop_error,
+        };
+        return Err(HostRunFailure {
+            error,
+            retained: Some(Box::new(RetainedMacSession {
+                _engine: engine,
+                _presentation: presentation_owner,
+                _router: router,
+                _guardian: guardian_owner,
+                _coordinator: event_coordinator,
+                _renderer: renderer_dispatch,
+                _commands: window_commands_tx,
+                guard: None,
+            })),
+        });
     }
-    let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
     finish_guarded_session(guard_snapshot, |_| {
         drop(window_commands_tx);
         let event_result = event_coordinator
@@ -1957,113 +2662,7 @@ fn run_app(
             ]),
         }
     })
-}
-
-#[cfg(target_os = "macos")]
-const MACOS_PUBLISHER_SCOPE_DOMAIN: &[u8] = b"keld.publisher.macos/v1\0";
-
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-struct MacValidatedAppIdentity {
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    team_identifier: Box<str>,
-    publisher_scope: [u8; 32],
-    signing_identifier: Box<str>,
-    profile_identity: ProfileIdentity,
-}
-
-#[cfg(target_os = "macos")]
-impl MacValidatedAppIdentity {
-    fn from_verified_parts(
-        team_identifier: &str,
-        signing_identifier: &str,
-    ) -> Result<Self, HostAppError> {
-        if team_identifier.len() != 10
-            || !team_identifier
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
-        {
-            return Err(macos_identity_error(
-                "the validated code signature has no canonical 10-character Team Identifier",
-            ));
-        }
-        let mut publisher_hasher = Sha256::new();
-        publisher_hasher.update(MACOS_PUBLISHER_SCOPE_DOMAIN);
-        publisher_hasher.update(team_identifier.as_bytes());
-        let publisher_digest = publisher_hasher.finalize();
-        let mut publisher_scope = [0_u8; 32];
-        publisher_scope.copy_from_slice(&publisher_digest);
-        let profile_identity = ProfileIdentity::from_host_verified_parts(
-            publisher_scope,
-            signing_identifier,
-        )
-        .map_err(|source| {
-            macos_identity_error(format!(
-                "the validated code-signing identifier is not a canonical Keld app id: {source}"
-            ))
-        })?;
-        Ok(Self {
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            team_identifier: team_identifier.into(),
-            publisher_scope,
-            signing_identifier: signing_identifier.into(),
-            profile_identity,
-        })
-    }
-
-    fn into_profile_selection(self) -> Result<WebProfileSelection, HostAppError> {
-        debug_assert_eq!(
-            ProfileIdentity::from_host_verified_parts(
-                self.publisher_scope,
-                &self.signing_identifier,
-            ),
-            Ok(self.profile_identity)
-        );
-        WebProfileSelection::persistent(Some(self.profile_identity))
-            .map_err(|source| macos_identity_error(source.to_string()))
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn select_macos_profile_mode_with(
-    has_authenticated_dev_lease: bool,
-    release_identity: impl FnOnce() -> Result<MacValidatedAppIdentity, HostAppError>,
-) -> Result<WebProfileSelection, HostAppError> {
-    if has_authenticated_dev_lease {
-        let mut launch_nonce = [0_u8; 32];
-        fill_os_random(&mut launch_nonce)
-            .map_err(|source| macos_identity_error(format!("host randomness failed: {source}")))?;
-        let profile = EphemeralProfile::from_host_random(launch_nonce)
-            .map_err(|source| macos_identity_error(source.to_string()))?;
-        return Ok(WebProfileSelection::ephemeral_dev(profile));
-    }
-    release_identity()?.into_profile_selection()
-}
-
-#[cfg(target_os = "macos")]
-fn macos_profile_selection(
-    dev_lease: Option<&DevHostLease>,
-) -> Result<WebProfileSelection, HostAppError> {
-    select_macos_profile_mode_with(dev_lease.is_some(), verified_macos_app_identity)
-}
-
-#[cfg(target_os = "macos")]
-fn verified_macos_app_identity() -> Result<MacValidatedAppIdentity, HostAppError> {
-    let signing_info = verified_current_process_signing_info().map_err(macos_identity_error)?;
-    MacValidatedAppIdentity::from_verified_parts(
-        &signing_info.team_identifier,
-        &signing_info.signing_identifier,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn macos_identity_error(detail: impl Into<String>) -> HostAppError {
-    HostAppError::new(
-        "KELD-WV-009",
-        "macOS authenticated app identity",
-        detail,
-        "Launch a validly signed macOS app with a canonical signed identifier, or use `keld dev` for a fresh nonpersistent profile.",
-    )
+    .map_err(HostRunFailure::from)
 }
 
 /// Reports only facts read from this process after successful Security.framework validation.
@@ -2345,8 +2944,10 @@ impl ValidatedAppIdentity {
     }
 }
 
+/// Selected once per process at boot; every application session of the process
+/// constructs its engine from a copy.
 #[cfg(windows)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum WindowsProfileMode {
     Persistent(WebProfileSelection),
     EphemeralDev,
@@ -2541,78 +3142,245 @@ fn verified_windows_image(
     Ok((verified, identity))
 }
 
+/// Inputs that outlive every application session of one host process: the boot
+/// selection's paths and renderer, the profile mode selected at boot and the verified
+/// guard snapshot. A session borrows them and owns nothing here.
 #[cfg(any(target_os = "linux", windows))]
-#[allow(clippy::too_many_lines)] // one shared direct-owner state machine keeps Linux/Windows lifecycle transitions identical
-fn run_app_direct(
-    boot: AppBootSelection,
-    guard_snapshot: Option<&GuardSnapshot>,
-) -> Result<(), HostAppError> {
-    let shutdown = SessionShutdownState::new();
-    let AppBootSelection {
-        root,
-        name,
-        entry_path,
-        entry_file,
-        renderer_html,
-        #[cfg(windows)]
-        mode,
-    } = boot;
-    // Held until this session returns, so the installed version tree it runs from
-    // stays pinned through teardown.
+struct DirectSessionInputs<'a> {
+    root: &'a Path,
+    name: &'a str,
+    entry_path: &'a Path,
+    html: &'a str,
     #[cfg(windows)]
-    let (installed_identity, _installed_package) = match mode {
-        WindowsBootMode::DevStage => (None, None),
-        WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
-    };
-    let html = String::from_utf8(renderer_html).map_err(|source| {
-        HostAppError::new(
-            "KELD-CORE-036",
-            "renderer",
-            source.to_string(),
-            "Regenerate the stage with UTF-8 renderer HTML.",
-        )
-    })?;
-    drop(entry_file);
-    #[cfg(windows)]
-    let dev_lease = prepare_windows_dev_lease(&shutdown)?;
-    #[cfg(windows)]
-    let windows_profile_mode =
-        select_windows_profile_mode(installed_identity, dev_lease.is_some())?;
-    #[cfg(target_os = "linux")]
-    let mut dev_lease = DevHostLease::from_environment()?;
-    #[cfg(target_os = "linux")]
-    if let Some(lease) = dev_lease.as_mut()
-        && lease.poll_lost()?
-    {
-        return Ok(());
+    windows_profile_mode: WindowsProfileMode,
+    guard_snapshot: Option<&'a GuardSnapshot>,
+}
+
+/// What the session loop does once an application session has returned.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectSessionNext {
+    /// Return the session's result from `run_app_direct`: the host exits.
+    Exit,
+    /// Run one more full application session in this process.
+    RunAnother,
+}
+
+/// How an `Ok` application session ended; carried by the session's result, never
+/// inferred from the session cause.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectSessionEnd {
+    /// The UI loop ended on a tail's `Quit`: the application's own Quit, or CLI lease
+    /// loss, with no handover.
+    Ordinary,
+    /// A profile handover ended the UI loop first, and the application session then
+    /// ended under the lifecycle-Quit cause (its Quit inside D) or under
+    /// [`SESSION_HANDOVER`] (forced at D).
+    Handover,
+}
+
+/// Decides the loop's post-session action from the facts a session left behind
+/// (KEL-53 §4 "Profile handover", *Rollback and restore*; §5 `run_app_direct`).
+///
+/// Another session follows only a session that returned `Ok` and that a requester
+/// asked to follow: one under the application's lifecycle-Quit cause, or one a
+/// handover ended (under either of its causes). A fatal, CLI lease loss or an error
+/// always exits, as does a handover-cause session whose result does not carry the
+/// handover fact. The only requester today is the debug-only evidence seam, so
+/// production runs exactly one session.
+#[cfg(any(target_os = "linux", windows))]
+const fn next_direct_session(
+    ended_ok: bool,
+    cause: u8,
+    ended_by_handover: bool,
+    another_requested: bool,
+) -> DirectSessionNext {
+    if !ended_ok || !another_requested {
+        return DirectSessionNext::Exit;
     }
-    let prestart_lease_result = || {
-        #[cfg(windows)]
-        {
-            take_direct_prestart_lease_result(dev_lease.as_ref())
+    if cause == SESSION_LIFECYCLE_QUIT || (ended_by_handover && cause == SESSION_HANDOVER) {
+        DirectSessionNext::RunAnother
+    } else {
+        DirectSessionNext::Exit
+    }
+}
+
+/// Debug-only S6c evidence triggers, in the shape of `KELD_TEST_WINDOWS_LEASE_CENSUS`,
+/// read once per process and absent from release builds (KEL-53 §7 "8, 20 (profile
+/// handover)"): `KELD_TEST_WINDOWS_SECOND_SESSION=1` asks the session loop for exactly
+/// one more application session after the first ended under the lifecycle-Quit cause
+/// (cell h5).
+#[cfg(all(debug_assertions, windows))]
+const TEST_WINDOWS_SECOND_SESSION_ENV: &str = "KELD_TEST_WINDOWS_SECOND_SESSION";
+/// `KELD_TEST_WINDOWS_HANDOVER=1` requests a profile handover right after the first
+/// session's `Ready` and asks the loop for one more session after it (cells h11, h12
+/// and the tail half of h9).
+#[cfg(all(debug_assertions, windows))]
+const TEST_WINDOWS_HANDOVER_ENV: &str = "KELD_TEST_WINDOWS_HANDOVER";
+
+/// The one owner of both evidence triggers: the remaining extra sessions the seam may
+/// request, and whether the first session's `Ready` requests a handover.
+#[cfg(all(debug_assertions, windows))]
+#[derive(Debug)]
+struct TestSessionSeam {
+    remaining: u8,
+    handover_at_ready: bool,
+}
+
+#[cfg(all(debug_assertions, windows))]
+impl TestSessionSeam {
+    fn from_environment(has_dev_lease: bool) -> Result<Self, HostAppError> {
+        let requested = |name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new("1"));
+        Self::from_request(
+            requested(TEST_WINDOWS_SECOND_SESSION_ENV),
+            requested(TEST_WINDOWS_HANDOVER_ENV),
+            has_dev_lease,
+        )
+    }
+
+    /// A dev-stage host runs under its CLI lease, whose standard-input monitor belongs
+    /// to the first session only, so the seam refuses a dev lease as the lease-census
+    /// seam refuses the lack of one; one process carries one trigger.
+    fn from_request(
+        second_session: bool,
+        handover: bool,
+        has_dev_lease: bool,
+    ) -> Result<Self, HostAppError> {
+        if second_session && has_dev_lease {
+            return Err(app_detail(
+                "Windows session loop",
+                "test second session requested under a dev lease",
+            ));
         }
-        #[cfg(target_os = "linux")]
-        {
+        if handover && has_dev_lease {
+            return Err(app_detail(
+                "Windows session loop",
+                "test handover requested under a dev lease",
+            ));
+        }
+        if second_session && handover {
+            return Err(app_detail(
+                "Windows session loop",
+                "test second session and test handover requested together",
+            ));
+        }
+        Ok(Self {
+            remaining: u8::from(second_session || handover),
+            handover_at_ready: handover,
+        })
+    }
+
+    /// Consumes one requested extra session, if any remains.
+    fn take_request(&mut self) -> bool {
+        let requested = self.remaining > 0;
+        self.remaining = self.remaining.saturating_sub(1);
+        requested
+    }
+
+    /// Consumes the handover request, which belongs to the first session only.
+    fn take_handover_at_ready(&mut self) -> bool {
+        std::mem::take(&mut self.handover_at_ready)
+    }
+}
+
+/// Steps 3a to 3c of KEL-53 §4 "Profile handover" once the UI loop has returned under
+/// a handover request: the host writes `LastWindowClosed` itself (the `Quit` path of the
+/// loop emits none), waits up to [`HANDOVER_QUIT_DEADLINE`] for the application's `Quit`,
+/// and otherwise claims [`SESSION_HANDOVER`] and runs the forced tail on this thread;
+/// when the application's `Quit` won, this thread awaits that tail's end before the
+/// teardown, as it awaited the loop's return before. A `LastWindowClosed` write that
+/// fails ends the session at once under the handover cause (fail closed, no D). D runs
+/// from the return of this function's own write alone, recorded in the session's
+/// [`HandoverClock`] beside the loop's return and the forced claim. `quit_deadline` is
+/// D: [`HANDOVER_QUIT_DEADLINE`] in the host; the unit cells pass a shorter one.
+#[cfg(any(target_os = "linux", windows))]
+fn complete_profile_handover(
+    router: &PrimaryRouterHandle,
+    shutdown: &SessionShutdownState,
+    quit_deadline: Duration,
+) -> Result<(), HostAppError> {
+    let clock = &shutdown.handover_clock;
+    let _ = clock.ui_returned.set(Instant::now());
+    let written = router.signal_last_window_closed();
+    let deadline = match &written {
+        Ok(written_at) => {
+            let _ = clock.last_window_closed_written.set(*written_at);
+            *written_at + quit_deadline
+        }
+        Err(_) => Instant::now(),
+    };
+    let tail = match shutdown.await_quit_or_claim_handover(deadline) {
+        HandoverWait::ClaimedHandover => {
+            let _ = clock.forced.set(Instant::now());
+            router.cli_lease_lost()
+        }
+        HandoverWait::ClaimedByOther => {
+            shutdown.await_tail_end();
             Ok(())
         }
     };
-    #[cfg(target_os = "linux")]
-    let direct_engine = WebKitGtkEngine::new()
-        .map_err(|source| app_detail("Linux GPU safe mode", source.to_string()))?;
-    #[cfg(target_os = "linux")]
-    let config = linux_strict_primary_config(&root, &entry_path)?;
-    #[cfg(windows)]
+    collapse_app_results([written.map(drop), tail])
+}
+
+#[cfg(all(debug_assertions, windows))]
+impl HandoverClock {
+    /// The seam's evidence line for one completed handover: the cause and the three
+    /// intervals in microseconds (request to loop return; `LastWindowClosed` write to
+    /// the lifecycle-Quit handler's entry for the frame that claimed the session, the D
+    /// sample; write to the forced claim at D).
+    fn evidence_json(&self, cause: u8) -> String {
+        let micros = |from: Option<&Instant>, to: Option<&Instant>| match (from, to) {
+            (Some(from), Some(to)) => to.saturating_duration_since(*from).as_micros().to_string(),
+            _ => String::from("null"),
+        };
+        let cause = match cause {
+            SESSION_LIFECYCLE_QUIT => "lifecycle-quit",
+            SESSION_HANDOVER => "forced",
+            SESSION_CLI_LEASE_LOST => "cli-lease-lost",
+            _ => "running",
+        };
+        let written = self.last_window_closed_written.get();
+        format!(
+            "{{\"cause\":\"{cause}\",\"ui_end_us\":{},\"quit_wait_us\":{},\"forced_after_us\":{},\"deadline_us\":{}}}",
+            micros(self.requested.get(), self.ui_returned.get()),
+            micros(written, self.quit_frame.get()),
+            micros(written, self.forced.get()),
+            HANDOVER_QUIT_DEADLINE.as_micros()
+        )
+    }
+}
+
+/// The Bun primary command of one Windows application session. Test-only variables
+/// never reach the child: the lease-census seam hands over the host lease handle only
+/// under a live dev lease, and the session-loop seams and the keld-wv barrier fault
+/// fixture are removed from the child.
+#[cfg(windows)]
+fn windows_primary_config(
+    root: &Path,
+    entry_path: &Path,
+    dev_lease: Option<&WindowsDevLeaseMonitor>,
+) -> Result<PrimaryRoleConfig, HostAppError> {
     let config = PrimaryRoleConfig::new("bun")
         .arg("run")
-        .arg(root.join(&entry_path))
-        .current_dir(&root)
+        .arg(root.join(entry_path))
+        .current_dir(root)
+        // This boot path owns a legacy renderer; inherited Host hints cannot
+        // select the facade subscription barrier in any Bun generation.
+        .env(NATIVE_WINDOW_FACADE_ENV, "0")
         .env_remove(DEV_LEASE_ENV)
         .env_remove(keld_runtime::windows_job::WINDOWS_LAUNCH_GATE_ENV);
-    #[cfg(all(debug_assertions, windows))]
+    #[cfg(debug_assertions)]
+    let config = config
+        .env_remove(TEST_WINDOWS_SECOND_SESSION_ENV)
+        .env_remove(TEST_WINDOWS_HANDOVER_ENV);
+    #[cfg(any(feature = "profile-test-hooks", feature = "kel135-profile-test-root"))]
+    let config = config.env_remove(keld_wv::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV);
+    #[cfg(debug_assertions)]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
         == Some(std::ffi::OsStr::new("1"))
     {
-        let handle = dev_lease.as_ref().ok_or_else(|| {
+        let handle = dev_lease.ok_or_else(|| {
             app_detail(
                 "Windows dev-host lease census",
                 "test census requested without a live dev lease",
@@ -2627,9 +3395,154 @@ fn run_app_direct(
     } else {
         config
     };
+    #[cfg(not(debug_assertions))]
+    let _ = dev_lease;
+    Ok(config)
+}
+
+/// Runs the host's application sessions: a per-process prelude, then a loop of full
+/// sessions on the main thread (KEL-53 §5 `run_app_direct`). A session ends by the
+/// application's Quit, a fatal or CLI lease loss; `next_direct_session` decides whether
+/// another follows. Today nothing but the debug-only evidence seam requests one.
+#[cfg(any(target_os = "linux", windows))]
+fn run_app_direct(
+    boot: AppBootSelection,
+    guard_snapshot: Option<&GuardSnapshot>,
+) -> Result<(), HostAppError> {
+    let AppBootSelection {
+        root,
+        name,
+        entry_path,
+        entry_file,
+        initial_window,
+        auth_configuration: _auth_configuration,
+        #[cfg(windows)]
+        mode,
+    } = boot;
+    // Held until the last session returns, so the installed version tree every
+    // session runs from stays pinned through teardown.
+    #[cfg(windows)]
+    let (installed_identity, _installed_package) = match mode {
+        WindowsBootMode::DevStage => (None, None),
+        WindowsBootMode::Installed { identity, active } => (Some(identity), Some(active)),
+    };
+    let renderer_html = match initial_window {
+        ValidatedInitialWindow::Renderer(html) => html,
+        ValidatedInitialWindow::None => {
+            return Err(HostAppError::new(
+                "KELD-CORE-034",
+                "facade boot platform",
+                "schema 2 is supported on macOS only",
+                "Remove initialWindow from keld.config.ts to use a renderer-declared boot on this platform.",
+            ));
+        }
+    };
+    let html = String::from_utf8(renderer_html).map_err(|source| {
+        HostAppError::new(
+            "KELD-CORE-036",
+            "renderer",
+            source.to_string(),
+            "Regenerate the stage with UTF-8 renderer HTML.",
+        )
+    })?;
+    drop(entry_file);
+    // Per-process state ends below; everything a session owns is created inside
+    // `run_direct_app_session`. The first session takes the CLI dev-lease monitor,
+    // whose standard-input reader lives for the process, so a dev-stage host runs one
+    // session; the `PerUserDirect` handover and restore run without a lease.
+    let shutdown = SessionShutdownState::new();
+    #[cfg(windows)]
+    let dev_lease = prepare_windows_dev_lease(&shutdown)?;
+    #[cfg(windows)]
+    let windows_profile_mode =
+        select_windows_profile_mode(installed_identity, dev_lease.is_some())?;
+    #[cfg(all(debug_assertions, windows))]
+    let mut session_seam = TestSessionSeam::from_environment(dev_lease.is_some())?;
+    #[cfg(target_os = "linux")]
+    let mut dev_lease = DevHostLease::from_environment()?;
+    #[cfg(target_os = "linux")]
+    if let Some(lease) = dev_lease.as_mut()
+        && lease.poll_lost()?
+    {
+        return Ok(());
+    }
+    let inputs = DirectSessionInputs {
+        root: &root,
+        name: &name,
+        entry_path: &entry_path,
+        html: &html,
+        #[cfg(windows)]
+        windows_profile_mode,
+        guard_snapshot,
+    };
+    let mut session = (shutdown, dev_lease);
+    loop {
+        let (shutdown, dev_lease) = session;
+        #[cfg(all(debug_assertions, windows))]
+        let handover_at_ready = session_seam.take_handover_at_ready();
+        let result = run_direct_app_session(
+            &inputs,
+            &shutdown,
+            dev_lease,
+            #[cfg(all(debug_assertions, windows))]
+            handover_at_ready,
+        );
+        #[cfg(all(debug_assertions, windows))]
+        let another_requested = session_seam.take_request();
+        #[cfg(not(all(debug_assertions, windows)))]
+        let another_requested = false;
+        let ended_by_handover = matches!(result, Ok(DirectSessionEnd::Handover));
+        match next_direct_session(
+            result.is_ok(),
+            shutdown.cause(),
+            ended_by_handover,
+            another_requested,
+        ) {
+            DirectSessionNext::Exit => return result.map(|_| ()),
+            DirectSessionNext::RunAnother => {
+                // The next session's guard preflight, before any of its resources.
+                if let Some(snapshot) = inputs.guard_snapshot {
+                    snapshot.prepare_next_session()?;
+                }
+                session = (SessionShutdownState::new(), None);
+            }
+        }
+    }
+}
+
+/// One full application session: the Bun primary, the router, the window and its UI
+/// loop, then the ordered teardown. Every session of one process, the first and each
+/// one `run_app_direct` runs after it, is this same body.
+#[cfg(any(target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)] // one shared direct-owner state machine keeps Linux/Windows lifecycle transitions identical
+fn run_direct_app_session(
+    inputs: &DirectSessionInputs<'_>,
+    shutdown: &SessionShutdownState,
+    #[cfg(windows)] dev_lease: Option<WindowsDevLeaseMonitor>,
+    #[cfg(target_os = "linux")] dev_lease: Option<DevHostLease>,
+    #[cfg(all(debug_assertions, windows))] handover_at_ready: bool,
+) -> Result<DirectSessionEnd, HostAppError> {
+    let prestart_lease_result = || {
+        #[cfg(windows)]
+        {
+            take_direct_prestart_lease_result(dev_lease.as_ref())
+                .map(|()| DirectSessionEnd::Ordinary)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Ok(DirectSessionEnd::Ordinary)
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let direct_engine = WebKitGtkEngine::new()
+        .map_err(|source| app_detail("Linux GPU safe mode", source.to_string()))?;
+    #[cfg(target_os = "linux")]
+    let config = linux_strict_primary_config(inputs.root, inputs.entry_path)?;
+    #[cfg(windows)]
+    let config = windows_primary_config(inputs.root, inputs.entry_path, dev_lease.as_ref())?;
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let supervisor = run_direct_startup_if_session_running(&shutdown, || {
+    let supervisor = run_direct_startup_if_session_running(shutdown, || {
         PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
             .map_err(|source| app_runtime("direct primary startup", &source))
     });
@@ -2640,7 +3553,7 @@ fn run_app_direct(
     let initial = match await_direct_bound_generation(
         &supervisor,
         &recovery,
-        &shutdown,
+        shutdown,
         Instant::now() + APP_LINK_IO_DEADLINE,
     ) {
         Ok(bound) => bound,
@@ -2655,7 +3568,8 @@ fn run_app_direct(
                         Err(app_runtime("direct primary startup cleanup", &error))
                     }
                 };
-                return collapse_app_results([prestart_lease_result(), cleanup]);
+                return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
+                    .map(|()| DirectSessionEnd::Ordinary);
             }
             let output = supervisor.output();
             let primary = app_detail(
@@ -2687,11 +3601,12 @@ fn run_app_direct(
                 Err(app_runtime("direct primary startup cleanup", &error))
             }
         };
-        return collapse_app_results([prestart_lease_result(), cleanup]);
+        return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
+            .map(|()| DirectSessionEnd::Ordinary);
     }
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let primary_owner = DirectPrimaryOwner::start(
+    let mut primary_owner = DirectPrimaryOwner::start(
         supervisor,
         recovery,
         window_commands_tx.clone(),
@@ -2702,28 +3617,45 @@ fn run_app_direct(
         window_commands_tx.clone(),
         primary_owner.handle(),
         shutdown.clone(),
-        guard_snapshot.map(GuardSnapshot::fs_weak),
+        inputs.guard_snapshot,
     )?;
     primary_owner.attach_router(router.handle())?;
     let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
+    // The evidence seam's handover request, right after this session's `Ready` (the
+    // recovery arm acknowledged): the shape of the coordinator's production request.
+    #[cfg(all(debug_assertions, windows))]
+    let on_ready = move |router: &PrimaryRouterHandle| -> Result<(), HostAppError> {
+        if handover_at_ready {
+            router.request_handover().map(|_| ())
+        } else {
+            Ok(())
+        }
+    };
+    #[cfg(not(all(debug_assertions, windows)))]
+    let on_ready = |_: &PrimaryRouterHandle| -> Result<(), HostAppError> { Ok(()) };
     let event_coordinator = thread::Builder::new()
         .name("keld-core-direct-app-window-events".to_owned())
         .spawn(move || {
-            coordinate_window_events(&window_events_rx, &router_handle, &commands_for_events)
+            coordinate_window_events(
+                &window_events_rx,
+                &router_handle,
+                &commands_for_events,
+                on_ready,
+            )
         })
         .map_err(|source| app_io("direct window event coordinator", &source))?;
 
     let spec = WebviewSpec {
-        title: name,
-        initial: NavTarget::Html(html),
+        title: inputs.name.to_owned(),
+        initial: NavTarget::Html(inputs.html.to_owned()),
         ..WebviewSpec::default()
     };
-    let engine = run_direct_startup_if_session_running(&shutdown, || {
+    let engine = run_direct_startup_if_session_running(shutdown, || {
         #[cfg(windows)]
-        let mut direct_engine = match windows_profile_mode {
+        let mut direct_engine = match inputs.windows_profile_mode {
             WindowsProfileMode::Persistent(selection) => WebView2Engine::new(selection),
             WindowsProfileMode::EphemeralDev => WebView2Engine::new_dev_ephemeral(),
         }
@@ -2745,8 +3677,11 @@ fn run_app_direct(
         let lease_result = take_direct_lease_error(lease_errors.as_ref());
         let router_result = router.shutdown();
         let owner_result = primary_owner.shutdown();
-        let _retained_digest = guard_snapshot.map(|snapshot| snapshot.verified.verified_sha256());
-        return collapse_app_results([lease_result, event_result, router_result, owner_result]);
+        let _retained_digest = inputs
+            .guard_snapshot
+            .map(|snapshot| snapshot.verified.verified_sha256());
+        return collapse_app_results([lease_result, event_result, router_result, owner_result])
+            .map(|()| DirectSessionEnd::Ordinary);
     };
     let engine = match engine {
         Ok(engine) => engine,
@@ -2759,8 +3694,9 @@ fn run_app_direct(
             let lease_result = take_direct_lease_error(lease_errors.as_ref());
             let router_result = router.shutdown();
             let owner_result = primary_owner.shutdown();
-            let _retained_digest =
-                guard_snapshot.map(|snapshot| snapshot.verified.verified_sha256());
+            let _retained_digest = inputs
+                .guard_snapshot
+                .map(|snapshot| snapshot.verified.verified_sha256());
             return Err(collapse_app_failures(
                 &primary,
                 [lease_result, event_result, router_result, owner_result],
@@ -2769,6 +3705,28 @@ fn run_app_direct(
     };
     let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
     drop(window_commands_tx);
+    // A handover ended the loop: the application session is still live and ends here
+    // (KEL-53 §4 "Profile handover", steps 3a to 3c). A loop that returned an error
+    // under a handover is a failed tail: no step follows, the session fails.
+    let ended_by_handover = shutdown.handover_requested_guarded();
+    let handover_result = match (&window_result, ended_by_handover) {
+        (Ok(()), true) => {
+            complete_profile_handover(&router.handle(), shutdown, HANDOVER_QUIT_DEADLINE)
+        }
+        _ => Ok(()),
+    };
+    #[cfg(all(debug_assertions, windows))]
+    if handover_at_ready && window_result.is_ok() && handover_result.is_ok() {
+        println!(
+            "KELD_TEST_WINDOWS_HANDOVER {}",
+            shutdown.handover_clock.evidence_json(shutdown.cause())
+        );
+    }
+    let session_end = if ended_by_handover {
+        DirectSessionEnd::Handover
+    } else {
+        DirectSessionEnd::Ordinary
+    };
     let event_result = event_coordinator
         .join()
         .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
@@ -2776,16 +3734,19 @@ fn run_app_direct(
     let lease_result = take_direct_lease_error(lease_errors.as_ref());
     let router_result = router.shutdown();
     let owner_result = primary_owner.shutdown();
-    let _retained_digest = guard_snapshot.map(|snapshot| snapshot.verified.verified_sha256());
+    let _retained_digest = inputs
+        .guard_snapshot
+        .map(|snapshot| snapshot.verified.verified_sha256());
 
     let owner_result = match owner_result {
-        Err(primary) if primary.code == "KELD-CORE-033" => {
+        Err(primary) if owner_cause_outranks_window(&primary) => {
             return Err(append_app_cleanup(
                 primary,
                 [
                     lease_result,
                     window_result
                         .map_err(|source| app_detail("direct app window", source.to_string())),
+                    handover_result,
                     event_result,
                     router_result,
                 ],
@@ -2805,10 +3766,12 @@ fn run_app_direct(
         result => collapse_app_results([
             lease_result,
             result.map_err(|source| app_detail("direct app window", source.to_string())),
+            handover_result,
             event_result,
             router_result,
             owner_result,
-        ]),
+        ])
+        .map(|()| session_end),
     }
 }
 
@@ -2920,8 +3883,19 @@ fn linux_strict_primary_config_x86(
                 .map_err(|source| app_detail("Linux strict test control", source.to_string()))?;
             config = config.env("KELD_T1B_CONTROL", control);
         }
-        if let Some(value) = std::env::var_os("KELD_T2_EXIT_ON_LINK_EOF") {
-            config = config.env("KELD_T2_EXIT_ON_LINK_EOF", value);
+        for (key, value) in linux_strict_test_flags(|key| std::env::var_os(key)) {
+            config = config.env(key, value);
+        }
+        // The inherited knob is value-only: the witness's pathname is
+        // derived exclusively from the validated private dev stage. Its
+        // descriptor is pinned before the supervisor can prepare a child.
+        if let Some(path) = create_stage_debug_attempt_witness(
+            root,
+            std::env::var_os("KELD_T3_SUPERVISOR_ATTEMPTS").as_deref(),
+        )? {
+            config = config
+                .with_debug_primary_attempt_witness(&path)
+                .map_err(|source| app_io("debug primary attempt witness", &source))?;
         }
         config = config.env("KELD_T4_LINUX_STRICT", "1");
         config
@@ -2929,11 +3903,58 @@ fn linux_strict_primary_config_x86(
     Ok(config.linux_strict(profile))
 }
 
+/// Host-only Linux debug witness bound to the active validated dev-stage root.
+/// A path supplied through the inherited environment is never used as an I/O
+/// destination. An existing file (including a same-UID hardlink or symlink)
+/// fails the exclusive create rather than being opened for append.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn create_stage_debug_attempt_witness(
+    root: &Path,
+    requested: Option<&std::ffi::OsStr>,
+) -> Result<Option<PathBuf>, HostAppError> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Some(value) = requested else {
+        return Ok(None);
+    };
+    if value != std::ffi::OsStr::new("1") {
+        return Err(app_detail(
+            "debug primary attempt witness",
+            "only the value 1 enables the stage-local witness",
+        ));
+    }
+    let path = root.join(".keld-debug-primary-attempts");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|source| app_io("debug primary attempt witness", &source))?;
+    drop(created);
+    Ok(Some(path))
+}
+
+/// Value-only harness flags a debug strict sandbox forwards past `--clearenv`.
+/// None names a path, socket or handle, so none adds sandbox authority;
+/// `KELD_T1B_CONTROL` names a socket and keeps its own bind above.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+const LINUX_STRICT_TEST_FLAGS: [&str; 2] = ["KELD_T2_EXIT_ON_LINK_EOF", "KELD_T3_EXIT_AFTER_HELLO"];
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", debug_assertions))]
+fn linux_strict_test_flags(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    LINUX_STRICT_TEST_FLAGS
+        .iter()
+        .filter_map(|key| lookup(key).map(|value| (*key, value)))
+        .collect()
+}
+
 /// Admits the staged hello sidecar before any Linux `--ro-bind`.
 /// `Ok(true)` binds this exact path; `Ok(false)` is `NotFound` for
 /// self-contained entries. Symlinks fail closed so
 /// `LinuxReadonlyMount::new` cannot canonicalize them to an external file.
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+#[cfg(not(keld_core_native_renderer_main))]
 fn admit_kipc_transport_sidecar(path: &Path) -> Result<bool, HostAppError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(app_detail(
@@ -3150,6 +4171,7 @@ fn start_direct_dev_lease_tail(
     let Some(mut lease) = lease else {
         return Ok(None);
     };
+    router.shutdown.mark_under_dev_lease();
     let (error_tx, error_rx) = mpsc::channel();
     thread::Builder::new()
         .name("keld-core-linux-dev-lease".to_owned())
@@ -3200,6 +4222,7 @@ fn start_direct_dev_lease_tail(
     let Some(monitor) = monitor else {
         return Ok(None);
     };
+    router.shutdown.mark_under_dev_lease();
     let (error_tx, error_rx) = mpsc::channel();
     let _handle = thread::Builder::new()
         .name("keld-core-windows-dev-lease-tail".to_owned())
@@ -3463,9 +4486,36 @@ fn cleanup_window_start_failure(
     window_events: Sender<AppWindowEvent>,
     event_coordinator: JoinHandle<Result<(), HostAppError>>,
     renderer_dispatch: Option<RendererDispatch>,
-    router: PrimaryRouter,
+    presentation: (
+        PrimaryRouter,
+        keld_native::auth::AsMainOwner,
+        objc2::MainThreadMarker,
+    ),
     guardian_owner: GuardianOwner,
 ) -> Result<(), HostAppError> {
+    let (router, mut owner, main_thread) = presentation;
+    if let Some(auth) = &router.handle.auth {
+        auth.stop_tail();
+    }
+    router.handle.shutdown.stop_reader();
+    // No main SDK owner has been created before this loop starts. Native closes
+    // its port synchronously so queued starts and the worker cannot await a UI
+    // loop that failed to start. This does not substitute for the worker tail.
+    let presentation_result = match owner.drive(
+        main_thread,
+        &mut |_| None,
+        keld_native::auth::AsMainStop::HostTail,
+    ) {
+        keld_native::auth::AsMainProgress::Drained => Ok(()),
+        keld_native::auth::AsMainProgress::Unproved { fault, .. } => Err(app_detail(
+            "auth presentation startup cleanup",
+            format!("{fault:?}"),
+        )),
+        keld_native::auth::AsMainProgress::Pending { .. } => Err(app_detail(
+            "auth presentation startup cleanup",
+            "pre-loop owner remains pending",
+        )),
+    };
     finish_guarded_session(guard_snapshot, |_| {
         drop(window_events);
         let event_result = event_coordinator
@@ -3478,6 +4528,7 @@ fn cleanup_window_start_failure(
         Err(collapse_app_failures(
             primary,
             [
+                presentation_result,
                 event_result,
                 router_result,
                 renderer_result,
@@ -3498,13 +4549,16 @@ fn await_bound_generation(
         if let Some(lease) = dev_lease.as_deref_mut()
             && lease.poll_lost()?
         {
-            guardian.deny_recovery();
-            guardian
-                .accept_shutdown()
-                .map_err(|source| app_runtime("accepted startup cancellation", &source))?;
-            guardian
-                .shutdown()
-                .map_err(|source| app_guardian_fatal("accepted startup cancellation", &source))?;
+            // Lease loss is a host shutdown, not a Bun-accepted Quit. Before
+            // the first generation exists the Guardian refuses Q; orderly S
+            // is acknowledged at every startup stage and denies recovery
+            // under the lock that orders it against initial PREPARE.
+            guardian.shutdown().map_err(|source| {
+                app_guardian_fatal(
+                    "orderly shutdown after dev lease loss before Bound",
+                    &source,
+                )
+            })?;
             return Ok(None);
         }
         let now = Instant::now();
@@ -3539,22 +4593,206 @@ fn await_bound_generation(
     }
 }
 
+/// Forwards the UI loop's milestones to the router; `on_ready` runs once `Ready` has
+/// been signalled and its recovery arm acknowledged (the evidence seam's handover
+/// request on the direct path; a no-op elsewhere).
+#[cfg(target_os = "macos")]
+type InitTerminalWatch<'a> = Option<(&'a OnceLock<Instant>, fn(&HostAppError) -> !)>;
+
+#[cfg(target_os = "macos")]
+fn initial_milestone_poll(until: Option<Instant>, now: Instant) -> Duration {
+    until.map_or(APP_LINK_READER_POLL, |deadline| {
+        APP_LINK_READER_POLL.min(deadline.saturating_duration_since(now))
+    })
+}
+
+/// The absolute first-Init deadline applies to successful queued receives as
+/// well as an empty queue. A genuine on-time UI first turn keeps its native
+/// timestamp even when this worker is descheduled before observing the event.
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+enum InitialMilestoneReceive {
+    Event(AppWindowEvent),
+    Again,
+    Expired,
+    Disconnected,
+}
+
+#[cfg(target_os = "macos")]
+fn receive_initial_milestone(
+    events: &Receiver<AppWindowEvent>,
+    watch: Option<&OnceLock<Instant>>,
+) -> InitialMilestoneReceive {
+    let before_receive = watch.and_then(|clock| clock.get().copied());
+    let poll = initial_milestone_poll(before_receive, Instant::now());
+    let received = events.recv_timeout(poll);
+    // The coordinator can begin waiting before the UI thread arms its first
+    // loop-entry deadline. Re-read after receipt; real Init is sent only after
+    // the native producer has armed this same OnceLock.
+    let deadline = watch.and_then(|clock| clock.get().copied());
+    match received {
+        Ok(AppWindowEvent::HostInitialized { observed_at })
+            if watch.is_some() && deadline.is_none_or(|at| observed_at >= at) =>
+        {
+            InitialMilestoneReceive::Expired
+        }
+        Ok(event)
+            if deadline.is_some_and(|at| {
+                !matches!(event, AppWindowEvent::HostInitialized { .. }) && Instant::now() >= at
+            }) =>
+        {
+            // A busy queue of non-Init events must not starve the watchdog.
+            InitialMilestoneReceive::Expired
+        }
+        Ok(event) => InitialMilestoneReceive::Event(event),
+        Err(mpsc::RecvTimeoutError::Timeout) if deadline.is_some_and(|at| Instant::now() >= at) => {
+            InitialMilestoneReceive::Expired
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => InitialMilestoneReceive::Again,
+        Err(mpsc::RecvTimeoutError::Disconnected) => InitialMilestoneReceive::Disconnected,
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn coordinate_window_events(
     events: &Receiver<AppWindowEvent>,
     router: &PrimaryRouterHandle,
     commands: &Sender<AppWindowCommand>,
+    #[cfg(target_os = "macos")] ready_trigger: AppReadyTrigger,
+    mut on_ready: impl FnMut(&PrimaryRouterHandle) -> Result<(), HostAppError>,
+    #[cfg(target_os = "macos")] init_watch: InitTerminalWatch<'_>,
 ) -> Result<(), HostAppError> {
-    while let Ok(event) = events.recv() {
+    #[cfg(target_os = "macos")]
+    let mut ready_signaled = false;
+    #[cfg(target_os = "macos")]
+    let init_seen = std::cell::Cell::new(false);
+    #[cfg(target_os = "macos")]
+    let mut signal_once = |observed| {
+        accept_boot_ready_trigger(ready_trigger, observed, &mut ready_signaled)?;
+        if observed == AppReadyTrigger::HostInitialized {
+            init_seen.set(true);
+        }
+        router.signal_ready().and_then(|()| on_ready(router))
+    };
+    let mut process_event = |event| {
         let result = match event {
-            AppWindowEvent::NavigationReady => router.signal_ready(),
-            AppWindowEvent::LastWindowClosed => router.signal_last_window_closed(),
+            AppWindowEvent::NavigationReady => {
+                #[cfg(target_os = "macos")]
+                {
+                    signal_once(AppReadyTrigger::NavigationReady)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    if router.windows.is_none() {
+                        router.signal_ready().and_then(|()| on_ready(router))
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::HostInitialized { .. } => signal_once(AppReadyTrigger::HostInitialized),
+            AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
+                router.signal_last_window_closed().map(drop)
+            }
+            // Registry windows own their count; never emit a legacy count.
+            AppWindowEvent::LastWindowClosed => Ok(()),
+            event => router.window_native_event(event),
         };
         if let Err(error) = result {
             let _ = commands.send(AppWindowCommand::Fatal);
-            return Err(error);
+            Err(error)
+        } else {
+            Ok(())
+        }
+    };
+    #[cfg(target_os = "macos")]
+    loop {
+        if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
+            break;
+        }
+        let until_init = init_watch
+            .filter(|_| ready_trigger == AppReadyTrigger::HostInitialized && !init_seen.get());
+        let event = match receive_initial_milestone(events, until_init.map(|(clock, _)| clock)) {
+            InitialMilestoneReceive::Event(event) => {
+                if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
+                    break;
+                }
+                event
+            }
+            InitialMilestoneReceive::Expired => {
+                if let Some((_, terminal)) = until_init {
+                    terminate_stalled_init(router, terminal);
+                }
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "expired first-Init observation without an armed deadline",
+                ));
+            }
+            InitialMilestoneReceive::Again => continue,
+            InitialMilestoneReceive::Disconnected if until_init.is_some() => {
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "window-module event source ended before the first Init turn",
+                ));
+            }
+            InitialMilestoneReceive::Disconnected => break,
+        };
+        process_event(event)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    while let Ok(event) = events.recv() {
+        process_event(event)?;
+    }
+    router.finish_window_facts()
+}
+
+/// The UI loop cannot deliver Fatal before its initial Tao turn. Its blocked
+/// main stack still owns `!Send` `AppKit`, profile and presentation resources.
+/// Only thread-safe, bounded authority/child owners run on this worker.
+#[cfg(target_os = "macos")]
+fn terminate_stalled_init(router: &PrimaryRouterHandle, terminal: fn(&HostAppError) -> !) -> ! {
+    let error = app_detail(
+        "initial UI milestone",
+        "the UI loop did not deliver its first turn within 15 s",
+    );
+    router.guardian.deny_recovery();
+    router.shutdown.reader_stop.store(true, Ordering::Release);
+    // Do not block on a reader/native handler holding one of these locks.
+    if let Ok(readers) = router.shutdown.generation_reader_stops.try_lock() {
+        for reader in readers.iter() {
+            reader.store(true, Ordering::Release);
         }
     }
+    if let Some(fs) = router.fs.as_ref().and_then(Weak::upgrade)
+        && let Ok(mut state) = fs.state.try_lock()
+    {
+        state.accepting = false;
+    }
+    // The Runtime owner terminates/reaps the real supervised process group;
+    // this reply has a separate 6s bound. Even a failed receipt must not let
+    // Core unwind or drop the main-thread stack.
+    if let Err(cleanup) = router.guardian.shutdown_and_wait() {
+        eprintln!("{error}; pre-Init guardian cleanup unproved: {cleanup}");
+    }
+    terminal(&error)
+}
+
+#[cfg(target_os = "macos")]
+fn accept_boot_ready_trigger(
+    expected: AppReadyTrigger,
+    observed: AppReadyTrigger,
+    already_signaled: &mut bool,
+) -> Result<(), HostAppError> {
+    if expected != observed || *already_signaled {
+        return Err(HostAppError::new(
+            "KELD-CORE-044",
+            "application Ready milestone",
+            format!("unexpected or repeated {observed:?} for {expected:?} boot"),
+            "Deliver exactly the selected boot kind's first Ready milestone.",
+        ));
+    }
+    *already_signaled = true;
     Ok(())
 }
 
@@ -3568,13 +4806,13 @@ struct GuardianOwner {
 #[cfg(target_os = "macos")]
 enum GuardianOwnerCommand {
     AttachRouter(
-        PrimaryRouterHandle,
+        Box<PrimaryRouterHandle>,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
-    ArmRecovery(std::sync::mpsc::SyncSender<Result<(), String>>),
+    ArmRecovery(RecoveryArm, std::sync::mpsc::SyncSender<Result<(), String>>),
     DenyRecovery,
     FailGeneration(u32, std::sync::mpsc::SyncSender<Result<(), String>>),
-    FailRetiredGeneration(u32, std::sync::mpsc::SyncSender<Result<(), String>>),
+    FailRetiredGeneration(u32, std::sync::mpsc::SyncSender<Result<Instant, String>>),
     PrepareAcceptedShutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
     Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
 }
@@ -3611,9 +4849,12 @@ impl GuardianOwner {
             .name("keld-core-guardian-owner".to_owned())
             .spawn(move || {
                 let mut router = None;
+                let mut initial_arm = false;
+                let mut fs_recovery: Option<FsRecoveryAttempt> = None;
                 loop {
                     match command_rx.recv_timeout(Duration::from_millis(50)) {
                         Ok(GuardianOwnerCommand::AttachRouter(attached, reply)) => {
+                            let attached = *attached;
                             let observed = if router.is_some() {
                                 Err(String::from("router is already attached"))
                             } else {
@@ -3623,6 +4864,7 @@ impl GuardianOwner {
                             let _ = reply.send(observed);
                         }
                         Ok(GuardianOwnerCommand::PrepareAcceptedShutdown(reply)) => {
+                            guardian.deny_recovery();
                             let result = match guardian.poll_fatal() {
                                 Err(source) => Err(app_guardian_fatal(
                                     "guardian unexpected primary exit before accepted shutdown",
@@ -3639,9 +4881,20 @@ impl GuardianOwner {
                             let _ = reply.send(observed);
                             result?;
                         }
-                        Ok(GuardianOwnerCommand::ArmRecovery(reply)) => {
-                            guardian.arm_recovery();
-                            let _ = reply.send(Ok(()));
+                        Ok(GuardianOwnerCommand::ArmRecovery(phase, reply)) => {
+                            let result = apply_guardian_recovery_arm(
+                                phase,
+                                &mut guardian,
+                                router.as_ref(),
+                                &mut initial_arm,
+                                fs_recovery.as_mut(),
+                            );
+                            let observed = result
+                                .as_ref()
+                                .copied()
+                                .map_err(std::string::ToString::to_string);
+                            let _ = reply.send(observed);
+                            result?;
                         }
                         Ok(GuardianOwnerCommand::DenyRecovery) => {
                             guardian.deny_recovery();
@@ -3667,7 +4920,7 @@ impl GuardianOwner {
                                 });
                             let observed = result
                                 .as_ref()
-                                .copied()
+                                .map(|()| Instant::now())
                                 .map_err(std::string::ToString::to_string);
                             let _ = reply.send(observed);
                             if let Err(error) = result {
@@ -3695,73 +4948,133 @@ impl GuardianOwner {
                             let _ = reply.send(observed);
                             return result;
                         }
-                        Err(RecvTimeoutError::Timeout) => {
-                            while let Some(update) = guardian.recv_update(Duration::ZERO) {
-                                let Some(router) = &router else {
-                                    if matches!(&update, GuardedPrimaryUpdate::Role(_))
-                                        && !matches!(
-                                            &update,
-                                            GuardedPrimaryUpdate::Role(
-                                                PrimaryRoleEvent::Revoked { .. }
-                                            )
-                                        )
-                                    {
-                                        continue;
-                                    }
-                                    let _ = window_commands.send(AppWindowCommand::Fatal);
-                                    return Err(app_detail(
-                                        "guardian generation update",
-                                        "generation changed before the primary router attached",
-                                    ));
-                                };
-                                if let Err(error) = router.apply_generation_update(update.into()) {
-                                    guardian.deny_recovery();
-                                    let _ = window_commands.send(AppWindowCommand::Fatal);
-                                    return Err(error.into());
-                                }
-                            }
-                            if let Some(lease) = dev_lease.as_mut() {
-                                match lease.poll_lost() {
-                                    Ok(true) => {
-                                        if shutdown.claim_cli_lease_lost() {
-                                            let Some(router) = &router else {
-                                                let _ =
-                                                    window_commands.send(AppWindowCommand::Fatal);
-                                                return Err(app_detail(
-                                                    "CLI lease loss",
-                                                    "primary router is not attached",
-                                                ));
-                                            };
-                                            lease_tx.send(router.clone()).map_err(|_| {
-                                                let _ =
-                                                    window_commands.send(AppWindowCommand::Fatal);
-                                                app_detail(
-                                                    "CLI lease-loss shutdown owner",
-                                                    "shutdown executor stopped",
-                                                )
-                                            })?;
-                                        }
-                                    }
-                                    Ok(false) => {}
-                                    Err(error) => {
-                                        let _ = window_commands.send(AppWindowCommand::Fatal);
-                                        return Err(error);
-                                    }
-                                }
-                            }
-                            if shutdown.cause() == SESSION_CLI_LEASE_LOST {
-                                continue;
-                            }
-                            if let Err(source) = guardian.poll_fatal() {
-                                let _ = window_commands.send(AppWindowCommand::Fatal);
-                                return Err(app_guardian_fatal("guardian watcher", &source));
-                            }
-                        }
+                        Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => {
                             return guardian.shutdown().map_err(|source| {
                                 app_guardian_fatal("guardian owner disconnect", &source)
                             });
                         }
+                    }
+                    for _ in 0..64 {
+                        let Some(update) = guardian.recv_update(Duration::ZERO) else {
+                            break;
+                        };
+                        let Some(router) = &router else {
+                            if matches!(&update, GuardedPrimaryUpdate::Role(_))
+                                && !matches!(
+                                    &update,
+                                    GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked { .. })
+                                )
+                            {
+                                continue;
+                            }
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(app_detail(
+                                "guardian generation update",
+                                "generation changed before the primary router attached",
+                            ));
+                        };
+                        let retired = match &update {
+                            GuardedPrimaryUpdate::Role(PrimaryRoleEvent::Revoked {
+                                attempt,
+                                ..
+                            }) => Some(*attempt),
+                            _ => None,
+                        };
+                        let bound_attempt = match &update {
+                            GuardedPrimaryUpdate::Bound(bound) => Some(bound.attempt()),
+                            GuardedPrimaryUpdate::Role(_) => None,
+                        };
+                        let already_retired = router.last_revoked_attempt.load(Ordering::Acquire);
+                        if let Err(error) = router.apply_generation_update(update.into()) {
+                            guardian.deny_recovery();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error.into());
+                        }
+                        if let Some(attempt) = retired.filter(|attempt| *attempt > already_retired)
+                            && router.shutdown.is_running()
+                        {
+                            if fs_recovery
+                                .as_ref()
+                                .is_some_and(|recovery| !recovery.released)
+                            {
+                                guardian.deny_recovery();
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(app_detail(
+                                    "filesystem recovery",
+                                    "overlapping native retirement attempts",
+                                ));
+                            }
+                            fs_recovery = match FsRecoveryAttempt::retire(router, attempt) {
+                                Ok(recovery) => Some(recovery),
+                                Err(error) => {
+                                    guardian.deny_recovery();
+                                    let _ = window_commands.send(AppWindowCommand::Fatal);
+                                    return Err(error);
+                                }
+                            };
+                        }
+                        if bound_attempt.is_some_and(|attempt| {
+                            fs_recovery.as_ref().is_some_and(|recovery| {
+                                recovery.prepared == attempt && recovery.released
+                            })
+                        }) {
+                            fs_recovery = None;
+                        }
+                    }
+                    if let (Some(router), Some(recovery)) = (router.as_ref(), fs_recovery.as_mut())
+                    {
+                        if let Err(error) = recovery.poll(router) {
+                            guardian.deny_recovery();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error);
+                        }
+                        let phase = RecoveryArm::Retired {
+                            retired: recovery.retired,
+                            prepared: recovery.prepared,
+                        };
+                        if let Err(error) = apply_guardian_recovery_arm(
+                            phase,
+                            &mut guardian,
+                            Some(router),
+                            &mut initial_arm,
+                            Some(recovery),
+                        ) {
+                            guardian.deny_recovery();
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                            return Err(error);
+                        }
+                    }
+                    if let Some(lease) = dev_lease.as_mut() {
+                        match lease.poll_lost() {
+                            Ok(true) => {
+                                if shutdown.reserve_cli_lease_lost() {
+                                    let Some(router) = &router else {
+                                        let _ = window_commands.send(AppWindowCommand::Fatal);
+                                        return Err(app_detail(
+                                            "CLI lease loss",
+                                            "primary router is not attached",
+                                        ));
+                                    };
+                                    lease_tx.send(router.clone()).map_err(|_| {
+                                        let _ = window_commands.send(AppWindowCommand::Fatal);
+                                        app_detail(
+                                            "CLI lease-loss shutdown owner",
+                                            "shutdown executor stopped",
+                                        )
+                                    })?;
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                let _ = window_commands.send(AppWindowCommand::Fatal);
+                                return Err(error);
+                            }
+                        }
+                    }
+                    if let Err(source) = guardian.poll_fatal() {
+                        let _ = window_commands.send(AppWindowCommand::Fatal);
+                        return Err(app_guardian_fatal("guardian watcher", &source));
                     }
                 }
             })
@@ -3788,7 +5101,10 @@ impl GuardianOwner {
     fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
-            .send(GuardianOwnerCommand::AttachRouter(router, reply_tx))
+            .send(GuardianOwnerCommand::AttachRouter(
+                Box::new(router),
+                reply_tx,
+            ))
             .map_err(|_| app_detail("guardian router attachment", "guardian owner stopped"))?;
         match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
             Ok(Ok(())) => Ok(()),
@@ -3832,6 +5148,81 @@ impl Drop for GuardianOwner {
 }
 
 #[cfg(target_os = "macos")]
+fn apply_guardian_recovery_arm(
+    phase: RecoveryArm,
+    guardian: &mut GuardedPrimary,
+    router: Option<&PrimaryRouterHandle>,
+    initial_arm: &mut bool,
+    recovery: Option<&mut FsRecoveryAttempt>,
+) -> Result<(), HostAppError> {
+    let Some(router) = router else {
+        return Err(app_detail(
+            "primary recovery arm",
+            "primary router is not attached",
+        ));
+    };
+    let _transition = router.shutdown.transition_guard();
+    if !router.shutdown.is_running() {
+        guardian.deny_recovery();
+        return Ok(());
+    }
+    match phase {
+        RecoveryArm::Initial(attempt) => {
+            if attempt == 1 && !*initial_arm {
+                guardian.arm_recovery();
+                *initial_arm = true;
+            }
+        }
+        RecoveryArm::Retired { retired, prepared } => {
+            let Some(recovery) = recovery else {
+                return Ok(());
+            };
+            if recovery.retired != retired
+                || recovery.prepared != prepared
+                || !recovery.ready
+                || recovery.released
+                || !*initial_arm
+                || !router.recovery_armed.load(Ordering::Acquire)
+                || router.last_revoked_attempt.load(Ordering::Acquire) != retired
+                || guardian.group_pid().is_some()
+            {
+                return Ok(());
+            }
+            let current = router
+                .current
+                .lock()
+                .map_err(|_| app_detail("primary recovery arm", "generation lock poisoned"))?;
+            if current.is_some() {
+                return Ok(());
+            }
+            if let Some(session) = router.fs.as_ref().and_then(Weak::upgrade) {
+                let state = session.state.lock().map_err(|_| {
+                    app_detail("primary recovery arm", "native metadata lock poisoned")
+                })?;
+                if state.failed_write_attempt.is_some() {
+                    return Ok(());
+                }
+                if state.prepared_attempt != Some(prepared) || state.in_flight != 0 {
+                    return Err(app_detail(
+                        "primary recovery arm",
+                        "native completion did not prepare the expected attempt",
+                    ));
+                }
+            } else if router.fs.is_some() {
+                return Err(app_detail(
+                    "primary recovery arm",
+                    "native metadata disappeared",
+                ));
+            }
+            drop(current);
+            guardian.arm_recovery();
+            recovery.released = true;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 impl GuardianOwnerHandle {
     fn deny_recovery(&self) {
         let _ = self.command_tx.send(GuardianOwnerCommand::DenyRecovery);
@@ -3840,7 +5231,10 @@ impl GuardianOwnerHandle {
     fn request_recovery_arm(&self) -> Result<Receiver<Result<(), String>>, HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
-            .send(GuardianOwnerCommand::ArmRecovery(reply_tx))
+            .send(GuardianOwnerCommand::ArmRecovery(
+                RecoveryArm::Initial(1),
+                reply_tx,
+            ))
             .map_err(|_| app_detail("primary recovery arm", "guardian owner stopped"))?;
         Ok(reply_rx)
     }
@@ -3878,25 +5272,17 @@ impl GuardianOwnerHandle {
             )),
         }
     }
-    fn fail_retired_generation(&self, attempt: u32) -> Result<(), HostAppError> {
+    fn request_fail_retired_generation(
+        &self,
+        attempt: u32,
+    ) -> Result<Receiver<Result<Instant, String>>, HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(GuardianOwnerCommand::FailRetiredGeneration(
                 attempt, reply_tx,
             ))
             .map_err(|_| app_detail("filesystem reply recovery", "guardian owner stopped"))?;
-        match reply_rx.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(detail)) => Err(app_detail("filesystem reply recovery", detail)),
-            Err(RecvTimeoutError::Timeout) => Err(app_detail(
-                "filesystem reply recovery",
-                "guardian owner did not acknowledge retired generation",
-            )),
-            Err(RecvTimeoutError::Disconnected) => Err(app_detail(
-                "filesystem reply recovery",
-                "guardian owner ended before acknowledging retired generation",
-            )),
-        }
+        Ok(reply_rx)
     }
 
     fn prepare_accepted_shutdown(&self) -> Result<(), HostAppError> {
@@ -3964,8 +5350,13 @@ impl Clone for DirectPrimaryOwnerHandle {
 
 #[cfg(any(target_os = "linux", windows))]
 enum DirectPrimaryOwnerCommand {
-    AttachRouter(PrimaryRouterHandle, mpsc::SyncSender<Result<(), String>>),
-    ArmRecovery(mpsc::SyncSender<Result<(), String>>),
+    // Boxed like the macOS guardian's command: the handle dwarfs every other
+    // variant (`clippy::large_enum_variant`), and attachment is cold.
+    AttachRouter(
+        Box<PrimaryRouterHandle>,
+        mpsc::SyncSender<Result<(), String>>,
+    ),
+    ArmRecovery(RecoveryArm, mpsc::SyncSender<Result<(), String>>),
     DenyRecovery,
     FailGeneration(u32, mpsc::SyncSender<Result<(), String>>),
     FailRetiredGeneration(u32, mpsc::SyncSender<Result<(), String>>),
@@ -4005,6 +5396,7 @@ impl DirectPrimaryOwner {
                             &recovery,
                             &supervisor,
                             &window_commands,
+                            &shutdown,
                         ));
                     }
                     while let Some(bound) = supervisor.try_recv_bound_generation() {
@@ -4020,6 +5412,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         }
                         let Some(router) = router.as_ref() else {
@@ -4032,6 +5425,7 @@ impl DirectPrimaryOwner {
                                 &recovery,
                                 &supervisor,
                                 &window_commands,
+                                &shutdown,
                             ));
                         };
                         let attempt = bound.attempt();
@@ -4043,19 +5437,18 @@ impl DirectPrimaryOwner {
                             }) {
                                 continue;
                             }
-                            let _ = recovery.deny();
-                            supervisor.shutdown();
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                            return Err(error.into());
+                            return Err(terminate_direct_primary_owner(
+                                error.into(),
+                                &recovery,
+                                &supervisor,
+                                &window_commands,
+                                &shutdown,
+                            ));
                         }
                     }
                     if let Some(outcome) = supervisor.try_wait_for_outcome() {
                         let session_running = shutdown.is_running();
-                        if session_running {
-                            let _ = window_commands.send(AppWindowCommand::Fatal);
-                        }
-                        forward_direct_primary_output(&supervisor)?;
-                        return match outcome {
+                        let result = match outcome {
                             keld_runtime::SupervisorOutcome::Stopped if session_running => {
                                 let ledger = supervisor.crash_ledger();
                                 ledger.last_self_termination.map_or_else(
@@ -4073,19 +5466,26 @@ impl DirectPrimaryOwner {
                             | keld_runtime::SupervisorOutcome::Failed(error) => {
                                 Err(app_runtime_fatal("primary supervisor", &error))
                             }
-                        };
+                        }
+                        // Ranked before the Fatal that ends the window loop.
+                        .map_err(|error| owner_failure_by_causality(error, &shutdown));
+                        if session_running {
+                            let _ = window_commands.send(AppWindowCommand::Fatal);
+                        }
+                        forward_direct_primary_output(&supervisor)?;
+                        return result;
                     }
                     match command_rx.recv_timeout(DIRECT_PRIMARY_OWNER_POLL) {
                         Ok(DirectPrimaryOwnerCommand::AttachRouter(attached, reply)) => {
                             let result = if router.is_some() {
                                 Err(String::from("primary router was already attached"))
                             } else {
-                                router = Some(attached);
+                                router = Some(*attached);
                                 Ok(())
                             };
                             let _ = reply.send(result);
                         }
-                        Ok(DirectPrimaryOwnerCommand::ArmRecovery(reply)) => {
+                        Ok(DirectPrimaryOwnerCommand::ArmRecovery(RecoveryArm::Initial(_attempt), reply)) => {
                             let result = recovery
                                 .arm()
                                 .then_some(())
@@ -4098,15 +5498,7 @@ impl DirectPrimaryOwner {
                             let _ = recovery.deny();
                         }
                         Ok(DirectPrimaryOwnerCommand::FailGeneration(attempt, reply)) => {
-                            // The Supervisor is the sole process/restart owner.
-                            // Reject a reader's stale request after a natural
-                            // exit installed a successor; the worker also
-                            // matches the attempt before classifying a live
-                            // child as host-requested restart.
-                            if router
-                                .as_ref()
-                                .is_some_and(|router| router.is_current(attempt))
-                            {
+                            if direct_link_failure_restarts(router.as_ref(), attempt) {
                                 supervisor.restart_generation(attempt);
                             }
                             let _ = reply.send(Ok(()));
@@ -4177,12 +5569,35 @@ impl DirectPrimaryOwner {
         }
     }
 
-    fn attach_router(&self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
+    fn attach_router(&mut self, router: PrimaryRouterHandle) -> Result<(), HostAppError> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.command_tx
-            .send(DirectPrimaryOwnerCommand::AttachRouter(router, reply_tx))
-            .map_err(|_| app_detail("primary router attachment", "owner stopped"))?;
-        receive_direct_owner_reply(&reply_rx, "primary router attachment", false)
+        if self
+            .command_tx
+            .send(DirectPrimaryOwnerCommand::AttachRouter(
+                Box::new(router),
+                reply_tx,
+            ))
+            .is_err()
+        {
+            // The owner already exited. Its terminal error is authoritative;
+            // a closed command channel is only a symptom of that failure.
+            return self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner stopped",
+            )));
+        }
+        match reply_rx.recv_timeout(DIRECT_PRIMARY_OWNER_REPLY_DEADLINE) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(detail)) => Err(app_detail("primary router attachment", detail)),
+            Err(RecvTimeoutError::Timeout) => Err(app_detail(
+                "primary router attachment",
+                "owner did not acknowledge before deadline",
+            )),
+            Err(RecvTimeoutError::Disconnected) => self.join().and(Err(app_detail(
+                "primary router attachment",
+                "owner ended before acknowledgment",
+            ))),
+        }
     }
 
     fn shutdown(mut self) -> Result<(), HostAppError> {
@@ -4244,6 +5659,64 @@ fn restart_failed_bound_generation(
         restart(attempt);
     }
     owned
+}
+
+/// The phase of the one typed startup failure for a primary generation lost
+/// before the initial window became `Ready` (GH-1182).
+const PRIMARY_PRE_READY_PHASE: &str = "primary generation before Ready";
+
+/// Whether the primary owner's terminal error outranks the window loop's own
+/// result. A terminal owner ends the loop, so its typed cause is the session's:
+/// a recovery-gate refusal (KELD-CORE-033), or a generation lost before the
+/// initial Ready.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_cause_outranks_window(owner: &HostAppError) -> bool {
+    owner.code == "KELD-CORE-033"
+        || (owner.code == "KELD-CORE-037" && owner.phase == PRIMARY_PRE_READY_PHASE)
+}
+
+/// The phase of an owner cause first reached after session teardown began.
+#[cfg(any(target_os = "linux", windows))]
+const PRIMARY_AFTER_TEARDOWN_PHASE: &str = "primary generation after teardown began";
+
+/// Ranks the owner's terminal failure by causality (PR #1300 review): only a
+/// cause the owner reached before teardown began can have ended the window
+/// loop. Teardown stops the readers (`reader_stop`) under the transition guard
+/// before it closes the app link, so a cause reached once that is set is that
+/// teardown's consequence: it keeps its text, but under a phase that
+/// [`owner_cause_outranks_window`] does not promote.
+#[cfg(any(target_os = "linux", windows))]
+fn owner_failure_by_causality(
+    error: HostAppError,
+    shutdown: &SessionShutdownState,
+) -> HostAppError {
+    if !owner_cause_outranks_window(&error) {
+        return error;
+    }
+    let _transition = shutdown.transition_guard();
+    if shutdown.reader_stop.load(Ordering::Acquire) {
+        app_detail(PRIMARY_AFTER_TEARDOWN_PHASE, error.to_string())
+    } else {
+        error
+    }
+}
+
+/// Whether a pre-Ready app-link EOF goes to the platform owner, as a ready
+/// one does. Linux and Windows route it through the direct owner so startup
+/// fails with the recovery gate's typed cause (GH-1182). macOS keeps the
+/// reader-owned pre-Ready failure its guardian tests pin; its owner path for
+/// this case is unverified on a device.
+const PRE_READY_LINK_EOF_DEFERS_TO_OWNER: bool = cfg!(any(target_os = "linux", windows));
+
+/// Whether a reader's link failure for `attempt` asks the Supervisor (the sole
+/// process/restart owner) to restart that generation. A stale request after a
+/// natural exit installed a successor is rejected. Before the router attaches,
+/// the first reader is already running but no successor can exist (a `Bound`
+/// then is fatal), so the request stands; the worker also matches the attempt
+/// before classifying a live child as a host-requested restart (GH-1182).
+#[cfg(any(target_os = "linux", windows))]
+fn direct_link_failure_restarts(router: Option<&PrimaryRouterHandle>, attempt: u32) -> bool {
+    router.is_none_or(|router| router.is_current(attempt))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -4327,8 +5800,8 @@ fn drain_direct_primary_role_events(
         let Some(router) = router else {
             if matches!(event, PrimaryRoleEvent::Revoked { .. }) {
                 return Err(app_detail(
-                    "primary generation update",
-                    "generation changed before the primary router attached",
+                    PRIMARY_PRE_READY_PHASE,
+                    "Bun terminated before the initial window became ready",
                 ));
             }
             continue;
@@ -4344,7 +5817,10 @@ fn terminate_direct_primary_owner(
     recovery: &PrimaryRecoveryGate,
     supervisor: &PrimaryRoleSupervisor,
     window_commands: &Sender<AppWindowCommand>,
+    shutdown: &SessionShutdownState,
 ) -> HostAppError {
+    // Ranked before the Fatal that ends the window loop.
+    let error = owner_failure_by_causality(error, shutdown);
     let _ = recovery.deny();
     supervisor.shutdown();
     let _ = window_commands.send(AppWindowCommand::Fatal);
@@ -4372,7 +5848,7 @@ impl DirectPrimaryOwnerHandle {
 
     fn request_recovery_arm(&self) -> Result<Receiver<Result<(), String>>, HostAppError> {
         self.enqueue_request(
-            DirectPrimaryOwnerCommand::ArmRecovery,
+            |reply| DirectPrimaryOwnerCommand::ArmRecovery(RecoveryArm::Initial(1), reply),
             "primary recovery arm",
         )
     }
@@ -4524,29 +6000,45 @@ struct PrimaryRouterHandle {
     next_host_corr: Arc<AtomicU32>,
     window_ready: Arc<AtomicBool>,
     last_window_closed: Arc<AtomicBool>,
+    /// None preserves legacy renderer composition. Validated facade boot and
+    /// genuine Init remain GH-446's completion dependency.
+    windows: Option<Arc<Mutex<window_router::WindowSession>>>,
     recovery_armed: Arc<AtomicBool>,
     last_revoked_attempt: Arc<AtomicU32>,
+    /// The app link ended before the initial `Ready`. Written and read only
+    /// under the shutdown transition guard that also publishes `Ready`, so one
+    /// order holds (PR #1300 review). A flag, not an attempt: before `Ready` the
+    /// recovery gate is closed, so only the first generation can ever be
+    /// current, and a stale reader's EOF never reaches the latch.
+    pre_ready_link_failed: Arc<AtomicBool>,
     shutdown: SessionShutdownState,
     fs: Option<Weak<FsDispatchSession>>,
     fs_worker_commands: Option<SyncSender<FsWorkerCommand>>,
+    #[cfg(target_os = "macos")]
+    auth: Option<Arc<AuthSession>>,
+    #[cfg(target_os = "macos")]
+    auth_commands: Option<SyncSender<AuthWork>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     quit_drain_hooks: Arc<Mutex<QuitDrainTestHooks>>,
 }
 
 /// Test hooks for the post-Quit drain: [`PrimaryRouterHandle::stall_next_quit_drain`]
 /// and [`PrimaryRouterHandle::observe_next_quit_drain_end`].
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 #[derive(Default)]
 struct QuitDrainTestHooks {
     stall: Option<(SyncSender<()>, Receiver<()>)>,
     end: Option<SyncSender<QuitDrainEnd>>,
+    // Only the macOS CLI-publication fixture reads this slot.
+    #[cfg(target_os = "macos")]
+    cli_acceptance: Option<(SyncSender<()>, Receiver<()>)>,
 }
 
 /// How a post-Quit drain ended (GH-527 §4.9). Every end leads to the same
 /// host-initiated close; tests observe which one it was.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QuitDrainEnd {
     /// The role ended the link: its EOF, or a reset (the normal end).
@@ -4567,8 +6059,38 @@ enum QuitDrainEnd {
 type PrimaryReader = JoinHandle<Result<(), HostAppError>>;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrimaryLinkIdentity {
+    Role(RolePrincipal),
+    // Historical paired-stream component fixtures are not authenticated role
+    // producers and cannot qualify KEL-97. Never a production admission path.
+    #[cfg(test)]
+    Fixture,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl PrimaryLinkIdentity {
+    fn is_primary(self) -> bool {
+        match self {
+            Self::Role(principal) => principal.owner() == RoleOwner::Primary,
+            #[cfg(test)]
+            Self::Fixture => true,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[derive(Clone)]
+struct PrimaryCallerContext {
+    attempt: u32,
+    identity: PrimaryLinkIdentity,
+    reader_stop: Arc<AtomicBool>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct ActivePrimaryGeneration {
     attempt: u32,
+    identity: PrimaryLinkIdentity,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
@@ -4607,6 +6129,15 @@ impl PrimaryRouterHandle {
             if !self.shutdown.is_running() {
                 return Ok(());
             }
+            // The reader observed this generation's link end first: publish no
+            // `Ready` and arm no recovery. The owner's `Revoked` then meets the
+            // closed gate and fails startup with its typed pre-Ready cause.
+            if self.pre_ready_link_failed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if !self.mark_window_registry_ready_guarded()? {
+                return Ok(());
+            }
             if self.recovery_armed.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::Ready)?;
                 self.window_ready.store(true, Ordering::Release);
@@ -4633,11 +6164,73 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
-    fn signal_last_window_closed(&self) -> Result<(), HostAppError> {
+    #[cfg(target_os = "macos")]
+    fn prepare_auth_presentation_drive(&self, ui_stopping: bool) -> keld_native::auth::AsMainStop {
+        // Only the existing global host owner ends Auth admission. An anchor
+        // close retires presentation authority, not the host's account session.
+        let session_cut =
+            self.shutdown.reader_stop.load(Ordering::Acquire) || !self.shutdown.is_running();
+        if session_cut {
+            if let Some(auth) = &self.auth {
+                auth.stop_tail();
+            }
+            keld_native::auth::AsMainStop::HostTail
+        } else if ui_stopping {
+            keld_native::auth::AsMainStop::AnchorClosing
+        } else {
+            keld_native::auth::AsMainStop::Running
+        }
+    }
+
+    /// Writes `LastWindowClosed` to the application and returns the instant the write
+    /// returned. A window's own close ignores that instant; a profile handover counts
+    /// its quit deadline D from the instant of its own write
+    /// (`complete_profile_handover`), so an earlier close of the last window, after
+    /// which the application kept running windowless, never starts D.
+    fn signal_last_window_closed(&self) -> Result<Instant, HostAppError> {
         let _transition = self.shutdown.transition_guard();
         self.last_window_closed.store(true, Ordering::Release);
-        self.write_event_guarded(LifecycleEvent::LastWindowClosed)
-            .map_err(Into::into)
+        self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
+        Ok(Instant::now())
+    }
+
+    /// Requests a profile handover (KEL-53 §4 "Profile handover", step 3a): the UI loop
+    /// ends through the existing `Quit` command while the application keeps running;
+    /// once the loop has returned, the main thread writes `LastWindowClosed`, waits up
+    /// to [`HANDOVER_QUIT_DEADLINE`] for the application's `Quit` and otherwise ends the
+    /// session under [`SESSION_HANDOVER`] (`complete_profile_handover`). This is the
+    /// production entry the `PerUserDirect` coordinator calls; in S6c2a only the
+    /// debug-only evidence seam calls it. The request is refused (`Ok(false)`) once the
+    /// session is ending or a handover was already requested. A session under a CLI dev
+    /// lease fails it typed (`KELD-CORE-037`), before anything reaches the loop: its
+    /// lease tail would run beside the handover's teardown, which the main thread does
+    /// not await (`await_tail_end`).
+    #[cfg(any(target_os = "linux", windows))]
+    #[cfg_attr(
+        not(any(all(debug_assertions, windows), test)),
+        expect(
+            dead_code,
+            reason = "the PerUserDirect coordinator (S6c2e) is the production caller; until then only the debug evidence seam calls it"
+        )
+    )]
+    fn request_handover(&self) -> Result<bool, HostAppError> {
+        let _transition = self.shutdown.transition_guard();
+        if self.shutdown.under_dev_lease.load(Ordering::Acquire) {
+            return Err(HostAppError::new(
+                "KELD-CORE-037",
+                "profile handover",
+                "a session under a CLI dev lease cannot hand over its profile",
+                "Hand over only from an installed host launched without `keld dev`; a dev-stage session ends through its CLI lease.",
+            ));
+        }
+        if !self.shutdown.is_running() || self.shutdown.handover_requested() {
+            return Ok(false);
+        }
+        self.window_commands
+            .send(AppWindowCommand::Quit)
+            .map_err(|_| app_detail("profile handover", "UI event loop is unavailable"))?;
+        self.shutdown.mark_handover_requested_guarded();
+        Ok(true)
     }
 
     #[cfg(target_os = "macos")]
@@ -4846,6 +6439,22 @@ impl PrimaryRouterHandle {
         }
     }
 
+    fn privileged_calls(&self) -> &'static [&'static keld_ipc::channel_table::ChannelEntry] {
+        #[cfg(target_os = "macos")]
+        if self.auth.is_some() {
+            return if self.fs.is_some() {
+                &[&keld_ipc::channel_table::FS, &keld_ipc::channel_table::AUTH]
+            } else {
+                &[&keld_ipc::channel_table::AUTH]
+            };
+        }
+        if self.fs.is_some() {
+            &[&keld_ipc::channel_table::FS]
+        } else {
+            &[]
+        }
+    }
+
     fn retire_current_generation_locked(
         &self,
         current: &mut Option<ActivePrimaryGeneration>,
@@ -4866,7 +6475,24 @@ impl PrimaryRouterHandle {
             ));
         };
         active.reader_stop.store(true, Ordering::Release);
+        let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
+            active.identity,
+            active.attempt,
+        ));
+        // Every caller holds `transition`. A `Quit` of a retired generation can no
+        // longer claim the session, so it no longer holds the handover's deadline.
+        #[cfg(any(target_os = "linux", windows))]
+        self.shutdown.clear_quit_admission_guarded(attempt);
+        #[cfg(target_os = "macos")]
+        let auth_retirement = self
+            .auth
+            .as_ref()
+            .map_or(Ok(()), |auth| auth.retire(attempt));
+        #[cfg(not(target_os = "macos"))]
+        let auth_retirement = Ok(());
         collapse_app_results([
+            window_retirement,
+            auth_retirement,
             self.fail_pending_echo_for_attempt(attempt, pending_detail),
             self.fs
                 .as_ref()
@@ -4910,7 +6536,30 @@ impl PrimaryRouterHandle {
                 .take()
                 .map(|corr| (LIFECYCLE_CHANNEL, corr)),
         ];
-        write_best_effort_answers(&mut active.writer, pending.into_iter().flatten(), error);
+        #[cfg(target_os = "macos")]
+        let auth_pending = match self
+            .auth
+            .as_ref()
+            .map(|auth| auth.pending_for(attempt))
+            .transpose()
+        {
+            Ok(pending) => pending.unwrap_or_default(),
+            Err(error) => {
+                eprintln!("{error}");
+                if let Some(auth) = &self.auth {
+                    auth.stop_tail();
+                }
+                let _ = self.window_commands.send(AppWindowCommand::Fatal);
+                Vec::new()
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let auth_pending = std::iter::empty();
+        write_best_effort_answers(
+            &mut active.writer,
+            pending.into_iter().flatten().chain(auth_pending),
+            error,
+        );
     }
 
     /// After an accepted `Quit`'s real REPLY and its FS drain, answers each
@@ -4930,7 +6579,7 @@ impl PrimaryRouterHandle {
     ///
     /// It cannot fail: every way the drain ends leads to the same
     /// host-initiated close, so the caller's link close and tail always run.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn answer_calls_after_quit(&self, attempt: u32, reader: &mut BootstrapStream) {
         let started = Instant::now();
         let (Some(idle_deadline), Some(hard_deadline)) = (
@@ -4939,14 +6588,14 @@ impl PrimaryRouterHandle {
         ) else {
             return;
         };
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
         let idle_deadline = self
             .stall_quit_drain_for_test(started)
             .unwrap_or(idle_deadline);
         let end = self.drain_calls_after_quit(attempt, reader, idle_deadline, hard_deadline);
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
         self.report_quit_drain_end(end);
-        #[cfg(not(all(test, target_os = "macos")))]
+        #[cfg(not(all(test, any(target_os = "macos", target_os = "linux", windows))))]
         let _ = end;
     }
 
@@ -4955,7 +6604,7 @@ impl PrimaryRouterHandle {
     /// accepted shutdown: a role that closes right after its Quit REPLY ends
     /// it at that EOF, and an answer it can no longer receive (`EPIPE`, a
     /// reset, `NotConnected`) ends it quietly as a lost link.
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn drain_calls_after_quit(
         &self,
         attempt: u32,
@@ -4964,11 +6613,11 @@ impl PrimaryRouterHandle {
         hard_deadline: Instant,
     ) -> QuitDrainEnd {
         let error = CallError::quit_drained();
-        let privileged_call = self.fs.is_some().then_some(&keld_ipc::channel_table::FS);
+        let privileged_calls = self.privileged_calls();
         loop {
-            let header = match read_quit_drain_frame(
+            let header = match read_quit_drain_frame_with_privileged_calls(
                 reader,
-                privileged_call,
+                privileged_calls,
                 idle_deadline,
                 hard_deadline,
             ) {
@@ -4979,7 +6628,10 @@ impl PrimaryRouterHandle {
                 Err(_) => return QuitDrainEnd::NotAdmitted,
             };
             let declares_err = header.channel() == LIFECYCLE_CHANNEL
-                || (privileged_call.is_some() && header.channel() == FS_CHANNEL);
+                || header.channel() == keld_ipc::channel_table::WINDOW.id()
+                || privileged_calls
+                    .iter()
+                    .any(|entry| entry.id() == header.channel());
             if header.kind() != FrameKind::Call || !declares_err {
                 continue;
             }
@@ -5002,7 +6654,8 @@ impl PrimaryRouterHandle {
     }
 
     /// Test hook: reports how the next post-Quit drain ended.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn observe_next_quit_drain_end(&self, end: SyncSender<QuitDrainEnd>) {
         self.quit_drain_hooks
             .lock()
@@ -5010,7 +6663,7 @@ impl PrimaryRouterHandle {
             .end = Some(end);
     }
 
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     fn report_quit_drain_end(&self, end: QuitDrainEnd) {
         let observer = self
             .quit_drain_hooks
@@ -5026,7 +6679,8 @@ impl PrimaryRouterHandle {
     /// Test hook: holds the next post-Quit drain before its first read until
     /// the test resumes it, then gives it an idle deadline that has already
     /// passed, as a host stall longer than its idle backstop would.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn stall_next_quit_drain(&self, stalled: SyncSender<()>, resume: Receiver<()>) {
         self.quit_drain_hooks
             .lock()
@@ -5036,7 +6690,7 @@ impl PrimaryRouterHandle {
 
     /// Returns the injected idle deadline (`started`, already passed) when
     /// the hook is armed.
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
     fn stall_quit_drain_for_test(&self, started: Instant) -> Option<Instant> {
         let (stalled, resume) = self
             .quit_drain_hooks
@@ -5057,12 +6711,22 @@ impl PrimaryRouterHandle {
         fs.has_outstanding_call_for(attempt)
     }
 
+    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn begin_fs_call(
         &self,
         attempt: u32,
         correlation: CorrelationId,
     ) -> Result<FsInFlight, HostAppError> {
         let _transition = self.shutdown.transition_guard();
+        self.begin_fs_call_guarded(attempt, correlation)
+    }
+
+    fn begin_fs_call_guarded(
+        &self,
+        attempt: u32,
+        correlation: CorrelationId,
+    ) -> Result<FsInFlight, HostAppError> {
         if !self.shutdown.is_running() {
             return Err(app_detail(
                 "filesystem admission",
@@ -5101,12 +6765,12 @@ impl PrimaryRouterHandle {
         })
     }
 
-    fn finish_fs_terminal_write(
+    fn submit_fs_terminal_write(
         &self,
         admitted: FsInFlight,
         attempt: u32,
         write: impl FnOnce(&mut BootstrapStream) -> Result<(), HostAppError>,
-    ) -> Result<(), HostAppError> {
+    ) -> Result<Option<PendingFsWriteFailure>, HostAppError> {
         let transition = self.shutdown.transition_guard();
         let mut current = self
             .current
@@ -5114,22 +6778,22 @@ impl PrimaryRouterHandle {
             .map_err(|_| app_detail("filesystem terminal reply", "generation lock poisoned"))?;
         admitted.retire_pending_call()?;
         if !self.shutdown.is_running() {
-            return Ok(());
+            return Ok(None);
         }
         let Some(active) = current.as_mut() else {
-            return Ok(());
+            return Ok(None);
         };
         if active.attempt != attempt {
-            return Ok(());
+            return Ok(None);
         }
         let Err(primary) = write(&mut active.writer) else {
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(test)]
             {
                 drop(current);
                 drop(transition);
                 admitted.session.hold_after_terminal_write();
             }
-            return Ok(());
+            return Ok(None);
         };
 
         let retirement = self.retire_current_generation_locked(
@@ -5166,13 +6830,31 @@ impl PrimaryRouterHandle {
         // may already be installing a successor which waits in fs.drain().
         drop(admitted);
 
-        if let Err(cleanup) = self.guardian.fail_retired_generation(attempt) {
-            return Err(append_app_cleanup(primary, [Err(cleanup)]));
+        #[cfg(target_os = "macos")]
+        {
+            let deadline = Instant::now() + GUARDIAN_OWNER_REPLY_DEADLINE;
+            let reply = match self.guardian.request_fail_retired_generation(attempt) {
+                Ok(reply) => reply,
+                Err(cleanup) => return Err(append_app_cleanup(primary, [Err(cleanup)])),
+            };
+            Ok(Some(PendingFsWriteFailure {
+                attempt,
+                session: fs,
+                primary,
+                reply,
+                deadline,
+            }))
         }
-        if let Err(cleanup) = fs.clear_failed_write_attempt(attempt) {
-            return Err(append_app_cleanup(primary, [Err(cleanup)]));
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            if let Err(cleanup) = self.guardian.fail_retired_generation(attempt) {
+                return Err(append_app_cleanup(primary, [Err(cleanup)]));
+            }
+            if let Err(cleanup) = fs.clear_failed_write_attempt(attempt) {
+                return Err(append_app_cleanup(primary, [Err(cleanup)]));
+            }
+            Ok(None)
         }
-        Ok(())
     }
 
     fn quiesce_and_drain_fs(&self) -> Result<(), HostAppError> {
@@ -5224,6 +6906,28 @@ impl PrimaryRouterHandle {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
+    fn retire_auth_for_quit(&self, attempt: u32) -> Result<(), HostAppError> {
+        self.auth.as_ref().map_or(Ok(()), |auth| {
+            let retired = (|| {
+                let mut current = self
+                    .current
+                    .lock()
+                    .map_err(|_| app_detail("auth Quit", "generation lock poisoned"))?;
+                self.answer_pending_calls_locked(
+                    &mut current,
+                    attempt,
+                    &CallError::generation_retired(),
+                );
+                auth.retire(attempt)
+            })();
+            // Close physical admission even when the caller bookkeeping failed.
+            // Native stop/poll remains the sole proof of physical drain.
+            auth.stop_tail();
+            retired
+        })
+    }
+
     fn lifecycle_quit(
         &self,
         attempt: u32,
@@ -5231,6 +6935,9 @@ impl PrimaryRouterHandle {
         reply: &[u8],
         reader: &mut BootstrapStream,
     ) -> Result<(), HostAppError> {
+        let quit_frame = Instant::now();
+        #[cfg(any(target_os = "linux", windows))]
+        let admission;
         {
             let transition = self.shutdown.transition_guard();
             let mut current_guard = self.current.lock().map_err(|_| {
@@ -5254,6 +6961,12 @@ impl PrimaryRouterHandle {
             // Pending until its REPLY: a retirement during the FS drain below
             // answers it with KELD-IPC-023 (GH-527 §4.9).
             active.pending_quit = Some(correlation);
+            // Admitted while the session runs: a handover's deadline claim now waits
+            // for this handler's claim or its release (`await_quit_or_claim_handover`).
+            #[cfg(any(target_os = "linux", windows))]
+            {
+                admission = self.shutdown.admit_quit_guarded(attempt);
+            }
         }
 
         // This reader is paused in Quit, so no later FS Call can enter. Keep
@@ -5265,6 +6978,10 @@ impl PrimaryRouterHandle {
         }
 
         let transition = self.shutdown.transition_guard();
+        // This hold decides the admitted Quit's claim, and the handover's wait observes
+        // neither the release nor the claim before the hold ends.
+        #[cfg(any(target_os = "linux", windows))]
+        admission.release_guarded();
         let current_guard = self
             .current
             .lock()
@@ -5275,7 +6992,7 @@ impl PrimaryRouterHandle {
         {
             return Ok(());
         }
-        if !self.shutdown.claim_guarded(SESSION_LIFECYCLE_QUIT) {
+        if !self.shutdown.reserve_guarded(SESSION_LIFECYCLE_QUIT) {
             drop(current_guard);
             drop(transition);
             return if self.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -5284,16 +7001,103 @@ impl PrimaryRouterHandle {
                 Ok(())
             };
         }
-        if !self.shutdown.begin_tail() {
-            return Ok(());
-        }
+        // This Quit claims the session: its frame's entry instant ends the D sample at
+        // a handover (from the `LastWindowClosed` write).
+        #[cfg(any(target_os = "linux", windows))]
+        let _ = self.shutdown.handover_clock.quit_frame.set(quit_frame);
+        #[cfg(target_os = "macos")]
+        let _ = quit_frame;
         drop(current_guard);
         drop(transition);
+        // Ends the tail on every return below, so a main thread awaiting it after a
+        // handover never waits past this claimant's failure.
+        let _tail = self.shutdown.tail_run();
         self.fail_pending_echo_for_attempt(
             attempt,
             "application call retired by accepted lifecycle Quit",
         )?;
         self.guardian.prepare_accepted_shutdown()?;
+        let (quit_reply, window_end) = {
+            let _transition = self.shutdown.transition_guard();
+            if !self
+                .shutdown
+                .accept_reserved_guarded(SESSION_LIFECYCLE_QUIT)
+                || !self.shutdown.begin_tail()
+            {
+                return Ok(());
+            }
+            // Attempt the owed reply before native commands, then always end
+            // managed windows. This hold prevents native receipts interleaving
+            // between accepted Quit and Ending, including on reply failure.
+            let quit_reply = self.write_quit_reply(correlation, reply);
+            let window_end = self.end_window_session_guarded();
+            (quit_reply, window_end)
+        };
+        // TailRun ends outside transition. Preserve the reply as the primary
+        // error if teardown also failed; neither result skips the other attempt.
+        if let Err(primary) = quit_reply {
+            return Err(append_app_cleanup(primary, [window_end]));
+        }
+        window_end?;
+        #[cfg(target_os = "macos")]
+        let auth_retirement = self.retire_auth_for_quit(attempt);
+        #[cfg(not(target_os = "macos"))]
+        let auth_retirement = Ok(());
+        if let Err(fs_error) = self.quiesce_and_drain_fs() {
+            return collapse_app_results([auth_retirement, Err(fs_error)]);
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        self.answer_calls_after_quit(attempt, reader);
+        self.finish_quit_link_and_tail(auth_retirement)
+    }
+
+    fn finish_quit_link_and_tail(
+        &self,
+        auth_retirement: Result<(), HostAppError>,
+    ) -> Result<(), HostAppError> {
+        let Ok(mut current_guard) = self.current.lock() else {
+            return collapse_app_results([
+                auth_retirement,
+                Err(app_detail(
+                    "primary session generation",
+                    "generation lock poisoned",
+                )),
+            ]);
+        };
+        let Some(active) = current_guard.as_mut() else {
+            return collapse_app_results([
+                auth_retirement,
+                Err(app_detail(
+                    "lifecycle Quit link close",
+                    "current primary generation disappeared after the reply",
+                )),
+            ]);
+        };
+        let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
+            active.identity,
+            active.attempt,
+        ));
+        let link_close = collapse_app_results([
+            window_retirement,
+            finish_link_shutdown(
+                active.writer.shutdown_app_link(),
+                "lifecycle Quit link close",
+            ),
+        ]);
+        current_guard.take();
+        drop(current_guard);
+        collapse_app_results([
+            auth_retirement,
+            link_close,
+            self.finish_tail("lifecycle Quit"),
+        ])
+    }
+
+    fn write_quit_reply(
+        &self,
+        correlation: CorrelationId,
+        reply: &[u8],
+    ) -> Result<(), HostAppError> {
         let mut current_guard = self
             .current
             .lock()
@@ -5315,52 +7119,114 @@ impl PrimaryRouterHandle {
         )
         .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
         drop(current_guard);
-        self.quiesce_and_drain_fs()?;
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        self.answer_calls_after_quit(attempt, reader);
-        let mut current_guard = self
-            .current
-            .lock()
-            .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
-        let active = current_guard.as_mut().ok_or_else(|| {
-            app_detail(
-                "lifecycle Quit link close",
-                "current primary generation disappeared after the reply",
-            )
-        })?;
-        #[cfg(windows)]
-        let peer_close = await_windows_quit_peer_close(reader);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let peer_close = Ok(());
-        let link_close = finish_link_shutdown(
-            active.writer.shutdown_app_link(),
-            "lifecycle Quit link close",
-        );
-        current_guard.take();
-        drop(current_guard);
-        collapse_app_results([peer_close, link_close, self.finish_tail("lifecycle Quit")])
+        Ok(())
     }
 
+    #[cfg(all(test, target_os = "macos"))]
+    fn hold_cli_acceptance_for_test(&self) -> Result<(), HostAppError> {
+        let hold = self
+            .quit_drain_hooks
+            .lock()
+            .map_err(|_| app_detail("CLI publication fixture", "fixture slot poisoned"))?
+            .cli_acceptance
+            .take();
+        if let Some((observed, resume)) = hold {
+            observed.send(()).map_err(|error| {
+                app_detail("CLI publication fixture witness", error.to_string())
+            })?;
+            resume
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| {
+                    app_detail("CLI publication fixture release", error.to_string())
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Caller holds the shutdown transition and has won `begin_tail`: accept
+    /// its reserved forced cause and end the managed window session atomically.
+    fn accept_forced_tail_guarded(&self, reserved: u8) -> Result<(), HostAppError> {
+        if self.shutdown.cause() == SESSION_RUNNING {
+            self.shutdown.accept_reserved_guarded(reserved);
+            #[cfg(all(test, target_os = "macos"))]
+            self.hold_cli_acceptance_for_test()?;
+        }
+        self.end_window_session_guarded()
+    }
+
+    /// The forced tail: the host-initiated session end without the application's
+    /// `Quit`, under CLI lease loss or, past the quit deadline of a profile handover,
+    /// [`SESSION_HANDOVER`] (KEL-53 §4 "Profile handover", step 3c). One body for both
+    /// causes; the gate admits either reserved cause and the tail runs once.
     fn cli_lease_lost(&self) -> Result<(), HostAppError> {
-        if self.shutdown.cause() != SESSION_CLI_LEASE_LOST || !self.shutdown.begin_tail() {
+        let reserved = self.shutdown.reserved_cause.load(Ordering::Acquire);
+        if !is_forced_cause(reserved) || self.shutdown.tail_started.load(Ordering::Acquire) {
             return Ok(());
         }
+        let (retired_detail, link_phase, tail_phase) = if reserved == SESSION_HANDOVER {
+            (
+                "application call retired by the profile handover",
+                "profile handover link close",
+                "profile handover",
+            )
+        } else {
+            (
+                "application call retired by CLI lease loss",
+                "CLI lease-loss link close",
+                "CLI lease loss",
+            )
+        };
         self.guardian.prepare_accepted_shutdown()?;
+        let window_ending = {
+            let _transition = self.shutdown.transition_guard();
+            if !self.shutdown.begin_tail() {
+                return Ok(());
+            }
+            // Capture every fallible step after beginning this tail. Its
+            // completion guard must be dropped only after releasing transition.
+            self.accept_forced_tail_guarded(reserved)
+        };
+        let _tail = self.shutdown.tail_run();
+        window_ending?;
         self.quiesce_and_drain_fs()?;
         let mut current_guard = self
             .current
             .lock()
             .map_err(|_| app_detail("primary session generation", "generation lock poisoned"))?;
-        let pending = self.fail_any_pending_echo("application call retired by CLI lease loss");
+        let pending = self.fail_any_pending_echo(retired_detail);
+        #[cfg(target_os = "macos")]
+        let auth_retirement = if let Some(active) = current_guard.as_ref() {
+            let attempt = active.attempt;
+            self.answer_pending_calls_locked(
+                &mut current_guard,
+                attempt,
+                &CallError::generation_retired(),
+            );
+            self.auth.as_ref().map_or(Ok(()), |auth| {
+                let retired = auth.retire(attempt);
+                auth.stop_tail();
+                retired
+            })
+        } else {
+            if let Some(auth) = &self.auth {
+                auth.stop_tail();
+            }
+            Ok(())
+        };
+        #[cfg(not(target_os = "macos"))]
+        let auth_retirement = Ok(());
         let link = current_guard.as_mut().map_or(Ok(()), |active| {
-            finish_link_shutdown(
-                active.writer.shutdown_app_link(),
-                "CLI lease-loss link close",
-            )
+            collapse_app_results([
+                self.retire_window_owner(window_registry::WindowOwner::new(
+                    active.identity,
+                    active.attempt,
+                )),
+                finish_link_shutdown(active.writer.shutdown_app_link(), link_phase),
+            ])
         });
         current_guard.take();
         drop(current_guard);
-        collapse_app_results([pending, link, self.finish_tail("CLI lease loss")])
+        collapse_app_results([pending, auth_retirement, link, self.finish_tail(tail_phase)])
     }
 
     fn apply_generation_update(
@@ -5373,7 +7239,7 @@ impl PrimaryRouterHandle {
                     .fetch_max(attempt, Ordering::AcqRel);
                 if !self.window_ready.load(Ordering::Acquire) {
                     return Err(app_detail(
-                        "primary generation before Ready",
+                        PRIMARY_PRE_READY_PHASE,
                         "Bun terminated before the initial window became ready",
                     )
                     .into());
@@ -5382,22 +7248,167 @@ impl PrimaryRouterHandle {
             }
             PrimaryOwnerUpdate::Role(_) => Ok(()),
             PrimaryOwnerUpdate::Bound(bound) => {
+                let identity = PrimaryLinkIdentity::Role(bound.principal());
                 let attempt = bound.attempt();
                 if attempt <= self.last_revoked_attempt.load(Ordering::Acquire) {
                     let stream = bound.into_stream();
                     let _ = stream.shutdown_app_link();
                     return Ok(());
                 }
-                self.install_generation(attempt, bound.into_stream())
+                #[cfg(target_os = "macos")]
+                {
+                    self.install_prepared_generation_with_identity(
+                        attempt,
+                        bound.into_stream(),
+                        identity,
+                    )
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    self.install_generation_with_identity(attempt, bound.into_stream(), identity)
+                }
             }
         }
     }
 
+    // Paired-stream regressions and historical non-macOS composition wait on
+    // their calling thread. The macOS guardian actor never uses this adapter.
+    #[cfg(any(test, not(target_os = "macos")))]
+    #[cfg(not(keld_core_native_renderer_main))]
+    fn install_generation_with_identity(
+        &self,
+        attempt: u32,
+        stream: BootstrapStream,
+        identity: PrimaryLinkIdentity,
+    ) -> Result<(), PrimaryGenerationFailure> {
+        if let Some(session) = self.fs.as_ref().and_then(Weak::upgrade) {
+            {
+                let _transition = self.shutdown.transition_guard();
+                if !self.shutdown.is_running() || self.shutdown.reader_stop.load(Ordering::Acquire)
+                {
+                    let _ = stream.shutdown_app_link();
+                    return Ok(());
+                }
+                if self
+                    .current
+                    .lock()
+                    .map_err(|_| {
+                        app_detail("primary session generation", "generation lock poisoned")
+                    })?
+                    .is_some()
+                {
+                    return Err(app_detail(
+                        "primary session generation",
+                        "successor bound before the retired generation was revoked",
+                    )
+                    .into());
+                }
+            }
+            session.drain()?;
+            if !self.shutdown.is_running() {
+                let _ = stream.shutdown_app_link();
+                return Ok(());
+            }
+            #[cfg(target_os = "macos")]
+            if session
+                .state
+                .lock()
+                .map_err(|_| app_detail("filesystem recovery", "native metadata lock poisoned"))?
+                .prepared_attempt
+                != Some(attempt)
+            {
+                let retired = attempt.checked_sub(1).ok_or_else(|| {
+                    app_detail("filesystem recovery", "invalid successor attempt")
+                })?;
+                let commands = self.fs_worker_commands.as_ref().ok_or_else(|| {
+                    app_detail("filesystem recovery", "native worker is unavailable")
+                })?;
+                session.close_admission()?;
+                let (reply, completion) = mpsc::sync_channel(1);
+                commands
+                    .send(FsWorkerCommand::Retire(retired, reply))
+                    .map_err(|_| app_detail("filesystem recovery", "native worker stopped"))?;
+                if !matches!(completion.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE), Ok(FsWorkerCompletion::Retired(observed)) if observed == retired)
+                {
+                    return Err(app_detail(
+                        "filesystem recovery",
+                        "native retirement was not acknowledged",
+                    )
+                    .into());
+                }
+                if !self.shutdown.is_running() {
+                    let _ = stream.shutdown_app_link();
+                    return Ok(());
+                }
+                let (reply, completion) = mpsc::sync_channel(1);
+                commands
+                    .send(FsWorkerCommand::Prepare {
+                        retired,
+                        attempt,
+                        reply,
+                    })
+                    .map_err(|_| app_detail("filesystem recovery", "native worker stopped"))?;
+                match completion.recv_timeout(GUARDIAN_OWNER_REPLY_DEADLINE) {
+                    Ok(FsWorkerCompletion::Prepared {
+                        retired: old,
+                        attempt: fresh,
+                        result,
+                    }) if old == retired && fresh == attempt => result?,
+                    _ => {
+                        return Err(app_detail(
+                            "filesystem recovery",
+                            "fresh native preparation was not acknowledged",
+                        )
+                        .into());
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                session
+                    .state
+                    .lock()
+                    .map_err(|_| app_detail("filesystem generation", "in-flight lock poisoned"))?
+                    .prepared_attempt = Some(attempt);
+            }
+        }
+        self.install_prepared_generation_with_identity(attempt, stream, identity)
+    }
+
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
     fn install_generation(
         &self,
         attempt: u32,
-        mut stream: BootstrapStream,
+        stream: BootstrapStream,
     ) -> Result<(), PrimaryGenerationFailure> {
+        self.install_generation_with_identity(attempt, stream, PrimaryLinkIdentity::Fixture)
+    }
+
+    #[cfg(test)]
+    fn install_prepared_generation(
+        &self,
+        attempt: u32,
+        stream: BootstrapStream,
+    ) -> Result<(), PrimaryGenerationFailure> {
+        self.install_prepared_generation_with_identity(
+            attempt,
+            stream,
+            PrimaryLinkIdentity::Fixture,
+        )
+    }
+
+    fn install_prepared_generation_with_identity(
+        &self,
+        attempt: u32,
+        mut stream: BootstrapStream,
+        identity: PrimaryLinkIdentity,
+    ) -> Result<(), PrimaryGenerationFailure> {
+        if !identity.is_primary() {
+            let primary = app_detail("primary role binding", "accepted role owner is not primary");
+            let cleanup =
+                finish_link_shutdown(stream.shutdown_app_link(), "wrong primary role link close");
+            return Err(append_app_cleanup(primary, [cleanup]).into());
+        }
         stream
             .set_app_link_read_deadline(Some(APP_LINK_READER_POLL))
             .map_err(|source| app_io("primary session reader deadline", &source))?;
@@ -5407,34 +7418,6 @@ impl PrimaryRouterHandle {
         writer_stream
             .set_app_link_write_deadline(Some(APP_LINK_IO_DEADLINE))
             .map_err(|source| app_io("primary session writer deadline", &source))?;
-
-        // Recovery must not publish a successor while filesystem authority from
-        // its retired predecessor is still alive. Check retirement under the
-        // shared transition, release every generation/shutdown lock, then wait
-        // for the old native call to reach its terminal outcome. A genuinely
-        // wedged synchronous syscall may therefore stall recovery, as KEL-130
-        // permits, without overlapping old/new privileged authority.
-        if let Some(fs) = self.fs.as_ref().and_then(Weak::upgrade) {
-            {
-                let _transition = self.shutdown.transition_guard();
-                if !self.shutdown.is_running() || self.shutdown.reader_stop.load(Ordering::Acquire)
-                {
-                    let _ = writer_stream.shutdown_app_link();
-                    return Ok(());
-                }
-                let current = self.current.lock().map_err(|_| {
-                    app_detail("primary session generation", "generation lock poisoned")
-                })?;
-                if current.is_some() {
-                    return Err(app_detail(
-                        "primary session generation",
-                        "successor bound before the retired generation was revoked",
-                    )
-                    .into());
-                }
-            }
-            fs.drain()?;
-        }
 
         let reader_stop;
         {
@@ -5453,9 +7436,19 @@ impl PrimaryRouterHandle {
                 )
                 .into());
             }
+            if let Some(session) = self.fs.as_ref().and_then(Weak::upgrade) {
+                session.install_prepared_attempt(attempt)?;
+            } else if self.fs.is_some() {
+                return Err(app_detail(
+                    "primary session generation",
+                    "native preparation metadata disappeared",
+                )
+                .into());
+            }
             reader_stop = self.shutdown.register_generation_reader();
             *current = Some(ActivePrimaryGeneration {
                 attempt,
+                identity,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
                 pending_quit: None,
@@ -5467,15 +7460,20 @@ impl PrimaryRouterHandle {
             if self.window_ready.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::Ready)?;
             }
-            if self.last_window_closed.load(Ordering::Acquire) {
+            if self.windows.is_none() && self.last_window_closed.load(Ordering::Acquire) {
                 self.write_event_guarded(LifecycleEvent::LastWindowClosed)?;
             }
         }
         let handle = self.clone();
+        let caller = PrimaryCallerContext {
+            attempt,
+            identity,
+            reader_stop,
+        };
         let reader = thread::Builder::new()
             .name(format!("keld-core-primary-router-{attempt}"))
             .spawn(move || {
-                let mut result = read_primary_frames(&mut stream, &handle, attempt, &reader_stop);
+                let mut result = read_primary_frames(&mut stream, &handle, &caller);
                 if result.is_err()
                     && let Err(cleanup) = handle.fail_pending_echo_for_attempt(
                         attempt,
@@ -5485,7 +7483,10 @@ impl PrimaryRouterHandle {
                 {
                     result = Err(append_app_cleanup(primary, [Err(cleanup)]));
                 }
-                if result.is_err() && !handle.is_current(attempt) {
+                // A revoked reader during live recovery is intentionally inert.
+                // Accepted terminal shutdown errors must survive current removal:
+                // removing the link is one cleanup step, not proof all steps passed.
+                if result.is_err() && !handle.is_current(attempt) && handle.shutdown.is_running() {
                     result = Ok(());
                 }
                 if result.is_err() && handle.is_current(attempt) {
@@ -5534,6 +7535,19 @@ impl PrimaryRouterHandle {
         self.guardian.fail_generation(attempt)
     }
 
+    /// Records that the current generation's app link ended before the
+    /// initial `Ready`, under the transition guard [`Self::signal_ready`]
+    /// publishes `Ready` under. A `Ready` already published keeps the
+    /// after-Ready recovery path; otherwise every later `Ready` and its
+    /// recovery arm are refused, whether or not the owner has handled the
+    /// failure yet.
+    fn latch_pre_ready_link_failure(&self) {
+        let _transition = self.shutdown.transition_guard();
+        if !self.window_ready.load(Ordering::Acquire) {
+            self.pre_ready_link_failed.store(true, Ordering::Release);
+        }
+    }
+
     fn is_current(&self, attempt: u32) -> bool {
         self.current.lock().map_or(true, |current| {
             current
@@ -5543,7 +7557,27 @@ impl PrimaryRouterHandle {
     }
 
     fn finish_tail(&self, phase: &'static str) -> Result<(), HostAppError> {
-        self.guardian.shutdown_and_wait()?;
+        // On every OS the primary owner (Guardian on macOS, `DirectPrimaryOwner` on
+        // Linux and Windows) can fail this shutdown after an accepted lifecycle Quit.
+        // That Quit already removed the primary, so its retired reader cannot send a
+        // current-generation Fatal; wake the UI loop here. CLI lease loss and the
+        // profile handover already have their own terminal paths.
+        self.guardian.shutdown_and_wait().inspect_err(|_| {
+            if self.shutdown.cause() == SESSION_LIFECYCLE_QUIT {
+                let _ = self.window_commands.send(AppWindowCommand::Fatal);
+            }
+        })?;
+        #[cfg(target_os = "macos")]
+        if let Some(auth) = &self.auth {
+            return auth.quit_after_drain(self);
+        }
+        // The UI step, read under the transition guard that also orders the handover's
+        // own `Quit` send: once a handover has ended the UI loop, the loop needs nothing
+        // from this tail (KEL-53 §4 "Profile handover", step 3b).
+        let _transition = self.shutdown.transition_guard();
+        if self.shutdown.handover_requested() {
+            return Ok(());
+        }
         self.window_commands
             .send(AppWindowCommand::Quit)
             .map_err(|_| app_detail(phase, "UI event loop is unavailable"))
@@ -5554,6 +7588,31 @@ impl PrimaryRouterHandle {
 struct PrimaryRouter {
     handle: PrimaryRouterHandle,
     fs_worker: Option<FsWorker>,
+    #[cfg(target_os = "macos")]
+    auth_worker: Option<AuthWorker>,
+}
+
+/// The selected macOS boot's native window and authentication settings travel
+/// together; neither is a separate authority source for the primary router.
+#[cfg(target_os = "macos")]
+struct MacBoundStart {
+    auth_configuration: AuthConfiguration,
+    presentation: Option<keld_native::auth::AsWorkerPort>,
+    facade_windows: bool,
+}
+
+/// One optional runtime setup bundle keeps the primary admission boundary
+/// independent of whether the session has a native registry or auth worker.
+#[derive(Default)]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct BoundSetup {
+    window_native_support: Option<bool>,
+    #[cfg(target_os = "macos")]
+    auth_startup: Option<(
+        VerifiedManifest,
+        AuthConfiguration,
+        Option<keld_native::auth::AsWorkerPort>,
+    )>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5566,9 +7625,9 @@ struct FsWorker {
 impl FsWorker {
     fn start(
         handle: &mut PrimaryRouterHandle,
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-            Arc<FsWorkerTestGate>,
-        >,
+        broker: FsBroker,
+        attempt: u32,
+        #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
     ) -> Result<Self, HostAppError> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let worker_handle = handle.clone();
@@ -5579,7 +7638,9 @@ impl FsWorker {
                 let result = run_fs_worker(
                     &receiver,
                     &worker_handle,
-                    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                    broker,
+                    attempt,
+                    #[cfg(test)]
                     test_gate.as_deref(),
                 );
                 if result.is_err() {
@@ -5596,24 +7657,21 @@ impl FsWorker {
     }
 
     fn stop_and_join(&mut self) -> Result<(), HostAppError> {
-        let stop = match self.commands.try_send(FsWorkerCommand::Stop) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(app_detail(
-                "filesystem worker shutdown",
-                "worker queue remained full after filesystem drain",
-            )),
-        };
-        let join = self.join.take().map_or(Ok(()), |join| {
+        // This terminal owner has already drained native calls. A queued
+        // retirement/preflight must finish before Stop, not lose the stop and
+        // leave join waiting on a worker which can never receive it.
+        let _ = self.commands.send(FsWorkerCommand::Stop);
+        self.join.take().map_or(Ok(()), |join| {
             join.join()
                 .map_err(|_| app_detail("filesystem worker", "thread panicked"))?
-        });
-        collapse_app_results([stop, join])
+        })
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 impl PrimaryRouter {
     #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn start(
         stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
@@ -5624,23 +7682,24 @@ impl PrimaryRouter {
     }
 
     #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(keld_core_native_renderer_main))]
     fn start_with_fs(
         stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
         guardian: PlatformPrimaryOwnerHandle,
         shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
+        fs: Option<&GuardSnapshot>,
     ) -> Result<Self, HostAppError> {
         Self::start_with_fs_test_gate(stream, window_commands, guardian, shutdown, fs, None)
     }
 
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+    #[cfg(test)]
     fn start_with_fs_test_gate(
         stream: BootstrapStream,
         window_commands: Sender<AppWindowCommand>,
         guardian: PlatformPrimaryOwnerHandle,
         shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
+        fs: Option<&GuardSnapshot>,
         fs_worker_test_gate: Option<Arc<FsWorkerTestGate>>,
     ) -> Result<Self, HostAppError> {
         let handle = PrimaryRouterHandle {
@@ -5656,22 +7715,33 @@ impl PrimaryRouter {
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
+            windows: None,
             recovery_armed: Arc::new(AtomicBool::new(true)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
-            fs,
+            fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
+            #[cfg(target_os = "macos")]
+            auth: None,
+            #[cfg(target_os = "macos")]
+            auth_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+            fs.map(GuardSnapshot::take_initial_broker).transpose()?,
+            1,
+            None,
+            #[cfg(test)]
             fs_worker_test_gate,
+            #[cfg(target_os = "macos")]
+            None,
         )?;
-        router.handle.install_generation(1, stream)?;
+        router.handle.install_prepared_generation(1, stream)?;
         Ok(router)
     }
 
@@ -5680,8 +7750,67 @@ impl PrimaryRouter {
         window_commands: Sender<AppWindowCommand>,
         guardian: PlatformPrimaryOwnerHandle,
         shutdown: SessionShutdownState,
-        fs: Option<Weak<FsDispatchSession>>,
+        fs: Option<&GuardSnapshot>,
+        #[cfg(target_os = "macos")] mac_start: MacBoundStart,
     ) -> Result<Self, HostAppError> {
+        Self::start_bound_with_fs_setup(
+            bound,
+            window_commands,
+            guardian,
+            shutdown,
+            fs,
+            #[cfg(test)]
+            None,
+            #[cfg(target_os = "macos")]
+            BoundSetup {
+                window_native_support: mac_start.facade_windows.then_some(true),
+                auth_startup: fs.map(|snapshot| {
+                    (
+                        snapshot.verified.clone(),
+                        mac_start.auth_configuration,
+                        mac_start.presentation,
+                    )
+                }),
+            },
+            // Linux/Windows have no owned macOS auth startup to move; borrow
+            // the optional native-window policy instead of copying the bundle
+            // by value (Clippy's needless_pass_by_value is deny-by-default).
+            #[cfg(not(target_os = "macos"))]
+            &BoundSetup {
+                window_native_support: None,
+            },
+        )
+    }
+
+    #[cfg(feature = "fs-acceptance-observer")]
+    keld_native::keld_native_fs_observer_items! {
+    #[cfg(all(test, target_os = "macos", not(keld_core_native_renderer_main)))]
+    fn start_bound_with_fs_test_gate(
+        bound: BoundPrimaryGeneration,
+        window_commands: Sender<AppWindowCommand>,
+        guardian: PlatformPrimaryOwnerHandle,
+        shutdown: SessionShutdownState,
+        fs: Option<&GuardSnapshot>,
+        gate: Arc<FsWorkerTestGate>,
+    ) -> Result<Self, HostAppError> {
+        Self::start_bound_with_fs_setup(bound, window_commands, guardian, shutdown, fs, Some(gate), BoundSetup::default())
+    }
+    }
+
+    fn start_bound_with_fs_setup(
+        bound: BoundPrimaryGeneration,
+        window_commands: Sender<AppWindowCommand>,
+        guardian: PlatformPrimaryOwnerHandle,
+        shutdown: SessionShutdownState,
+        fs: Option<&GuardSnapshot>,
+        #[cfg(test)] fs_worker_test_gate: Option<Arc<FsWorkerTestGate>>,
+        // On macOS the verified auth startup is *consumed* exactly once by
+        // AuthWorker; do not introduce a clone of its native presentation port.
+        #[cfg(target_os = "macos")] options: BoundSetup,
+        // On Linux/Windows BoundSetup contains only Copy policy values.
+        #[cfg(not(target_os = "macos"))] options: &BoundSetup,
+    ) -> Result<Self, HostAppError> {
+        let identity = PrimaryLinkIdentity::Role(bound.principal());
         let attempt = bound.attempt();
         let stream = bound.into_stream();
         let handle = PrimaryRouterHandle {
@@ -5697,41 +7826,75 @@ impl PrimaryRouter {
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
+            windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown,
-            fs,
+            fs: fs.map(GuardSnapshot::fs_weak),
             fs_worker_commands: None,
+            #[cfg(target_os = "macos")]
+            auth: None,
+            #[cfg(target_os = "macos")]
+            auth_commands: None,
             guardian,
             window_commands,
-            #[cfg(all(test, target_os = "macos"))]
+            #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
             quit_drain_hooks: Arc::default(),
         };
         let router = Self::finish_start(
             handle,
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-            None,
+            fs.map(GuardSnapshot::take_initial_broker).transpose()?,
+            attempt,
+            options.window_native_support,
+            #[cfg(test)]
+            fs_worker_test_gate,
+            #[cfg(target_os = "macos")]
+            options.auth_startup,
         )?;
-        router.handle.install_generation(attempt, stream)?;
+        router
+            .handle
+            .install_prepared_generation_with_identity(attempt, stream, identity)?;
         Ok(router)
     }
 
     fn finish_start(
         mut handle: PrimaryRouterHandle,
-        #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-            Arc<FsWorkerTestGate>,
-        >,
+        broker: Option<FsBroker>,
+        attempt: u32,
+        window_native_support: Option<bool>,
+        #[cfg(test)] test_gate: Option<Arc<FsWorkerTestGate>>,
+        #[cfg(target_os = "macos")] auth_startup: Option<(
+            VerifiedManifest,
+            AuthConfiguration,
+            Option<keld_native::auth::AsWorkerPort>,
+        )>,
     ) -> Result<Self, HostAppError> {
-        let fs_worker = if handle.fs.is_some() {
+        handle.windows = window_native_support
+            .map(|supported| Arc::new(Mutex::new(window_router::WindowSession::new(supported))));
+        #[cfg(target_os = "macos")]
+        let auth_worker = auth_startup
+            .map(|(verified, configuration, presentation)| {
+                AuthWorker::start(&mut handle, verified, configuration, presentation)
+            })
+            .transpose()?;
+        let fs_worker = if let Some(broker) = broker {
             Some(FsWorker::start(
                 &mut handle,
-                #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+                broker,
+                attempt,
+                #[cfg(test)]
                 test_gate,
             )?)
         } else {
             None
         };
-        Ok(Self { handle, fs_worker })
+        Ok(Self {
+            handle,
+            fs_worker,
+            #[cfg(target_os = "macos")]
+            auth_worker,
+        })
     }
 
     fn handle(&self) -> PrimaryRouterHandle {
@@ -5752,15 +7915,34 @@ impl PrimaryRouter {
             let fs_close = fs
                 .as_ref()
                 .map_or(Ok(()), |session| session.close_admission());
+            #[cfg(target_os = "macos")]
+            if let Some(auth) = &self.handle.auth {
+                auth.stop_tail();
+            }
             self.handle.shutdown.stop_reader();
+            let window_end = self.handle.end_window_session_guarded();
             let mut current = match self.handle.current.lock() {
                 Ok(current) => current,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let pending = self
-                .handle
-                .fail_any_pending_echo("application call retired by router shutdown");
+            let mut pending = collapse_app_results([
+                window_end,
+                self.handle
+                    .fail_any_pending_echo("application call retired by router shutdown"),
+            ]);
             if let Some(active) = current.take() {
+                pending = collapse_app_results([
+                    pending,
+                    self.handle
+                        .retire_window_owner(window_registry::WindowOwner::new(
+                            active.identity,
+                            active.attempt,
+                        )),
+                ]);
+                #[cfg(target_os = "macos")]
+                if let Some(auth) = &self.handle.auth {
+                    let _ = auth.retire(active.attempt);
+                }
                 let _ = active.writer.shutdown_app_link();
             }
             (fs_close, pending)
@@ -5789,11 +7971,16 @@ impl PrimaryRouter {
         if let Some(worker) = &mut self.fs_worker {
             results.push(worker.stop_and_join());
         }
+        #[cfg(target_os = "macos")]
+        if let Some(worker) = &mut self.auth_worker {
+            results.push(worker.stop_and_join());
+        }
         collapse_app_results(results)
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[cfg(all(test, target_os = "macos"))]
+#[cfg(not(keld_core_native_renderer_main))]
 fn prepare_fs_work(
     handle: &PrimaryRouterHandle,
     attempt: u32,
@@ -5801,7 +7988,19 @@ fn prepare_fs_work(
     payload: &[u8],
     cancellation: &Arc<AtomicBool>,
 ) -> Result<FsWorkItem, HostAppError> {
-    let admitted = handle.begin_fs_call(attempt, correlation)?;
+    let _transition = handle.shutdown.transition_guard();
+    prepare_fs_work_guarded(handle, attempt, correlation, payload, cancellation)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn prepare_fs_work_guarded(
+    handle: &PrimaryRouterHandle,
+    attempt: u32,
+    correlation: CorrelationId,
+    payload: &[u8],
+    cancellation: &Arc<AtomicBool>,
+) -> Result<FsWorkItem, HostAppError> {
+    let admitted = handle.begin_fs_call_guarded(attempt, correlation)?;
     let request = decode(payload).map_err(|source| app_ipc("filesystem request", &source))?;
     Ok(FsWorkItem {
         admitted,
@@ -5816,55 +8015,170 @@ fn prepare_fs_work(
 fn run_fs_worker(
     receiver: &Receiver<FsWorkerCommand>,
     handle: &PrimaryRouterHandle,
-    #[cfg(all(test, any(target_os = "macos", target_os = "linux")))] test_gate: Option<
-        &FsWorkerTestGate,
-    >,
+    initial_broker: FsBroker,
+    initial_attempt: u32,
+    #[cfg(test)] test_gate: Option<&FsWorkerTestGate>,
 ) -> Result<(), HostAppError> {
-    while let Ok(command) = receiver.recv() {
-        let FsWorkerCommand::Work(work) = command else {
+    let session = handle.fs.as_ref().and_then(Weak::upgrade).ok_or_else(|| {
+        app_detail(
+            "filesystem worker startup",
+            "dispatch metadata is unavailable",
+        )
+    })?;
+    let mut native = FsWorkerNativeState {
+        broker: Some(initial_broker),
+        attempt: initial_attempt,
+    };
+    let mut pending_failure: Option<PendingFsWriteFailure> = None;
+    let mut stop_requested = false;
+    #[cfg(target_os = "macos")]
+    let mut retiring: Option<(u32, SyncSender<FsWorkerCompletion>)> = None;
+    // Retain this exact worker's scope through its final call and loop exit.
+    // A thread-affine erased value is never transferred back to the fixture.
+    #[cfg(test)]
+    let _worker_scope = test_gate
+        .map(FsWorkerTestGate::initialize_worker)
+        .transpose()?
+        .flatten();
+    loop {
+        if let Some(pending) = pending_failure.take() {
+            pending_failure = pending.poll()?;
+        }
+        if stop_requested && pending_failure.is_none() {
+            drop(native.broker.take());
             return Ok(());
-        };
-        let FsWorkItem {
-            admitted,
-            request,
-            attempt,
-            correlation,
-            cancellation,
-        } = work;
-        let outcome = admitted.handle_with(|| {
-            #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
-            if let Some(gate) = test_gate {
-                gate.wait_after_take()?;
-            }
-            Ok::<_, HostAppError>(admitted.session.broker.handle_request(
-                &admitted.session.verified,
-                Principal::AppProcess,
-                request,
-                &cancellation,
-            ))
-        })?;
-        let Some(outcome) = outcome else {
-            continue;
-        };
-        match outcome? {
-            Ok(response) => {
-                let reply =
-                    encode(&response).map_err(|source| app_ipc("filesystem response", &source))?;
-                handle.finish_fs_terminal_write(admitted, attempt, |writer| {
-                    write_frame(writer, FrameKind::Reply, 0, FS_CHANNEL, correlation, &reply)
-                        .map_err(|source| app_ipc("primary session reply", &source))
-                })?;
-            }
-            Err(error) => {
-                let call_error = CallError::from(&error);
-                handle.finish_fs_terminal_write(admitted, attempt, |writer| {
-                    keld_ipc::write_call_error(writer, FS_CHANNEL, correlation, &call_error)
-                        .map_err(|source| app_ipc("primary session call error", &source))
-                })?;
+        }
+        #[cfg(target_os = "macos")]
+        if retiring.is_some() {
+            let state = session
+                .state
+                .lock()
+                .map_err(|_| app_detail("filesystem retirement", "in-flight lock poisoned"))?;
+            if state.in_flight == 0 {
+                // The operation and its FsInFlight are gone. Destroy the actual
+                // sole broker before emitting the root-free retirement receipt.
+                drop(state);
+                drop(native.broker.take());
+                let mut state = session
+                    .state
+                    .lock()
+                    .map_err(|_| app_detail("filesystem retirement", "in-flight lock poisoned"))?;
+                state.prepared_attempt = None;
+                drop(state);
+                if let Some((attempt, reply)) = retiring.take() {
+                    let _ = reply.send(FsWorkerCompletion::Retired(attempt));
+                }
             }
         }
+        #[cfg(target_os = "macos")]
+        let native_pending = retiring.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let native_pending = false;
+        let incoming_command = if native_pending || pending_failure.is_some() {
+            receiver.recv_timeout(Duration::from_millis(50))
+        } else {
+            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        };
+        let command = match incoming_command {
+            Ok(command) => command,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        };
+        let work = match command {
+            FsWorkerCommand::Work(work) => work,
+            FsWorkerCommand::Stop => {
+                stop_requested = true;
+                continue;
+            }
+            #[cfg(target_os = "macos")]
+            generation_command => {
+                native.handle_generation_command(&session, generation_command, &mut retiring)?;
+                continue;
+            }
+        };
+        let next_failure = run_fs_work_item(
+            &native,
+            &session,
+            handle,
+            work,
+            #[cfg(test)]
+            test_gate,
+        )?;
+        if let Some(next) = next_failure {
+            if let Some(previous) = pending_failure.take() {
+                pending_failure = previous.poll()?;
+            }
+            if pending_failure.is_some() {
+                return Err(app_detail(
+                    "filesystem reply recovery",
+                    "another owner receipt is still pending",
+                ));
+            }
+            pending_failure = Some(next);
+        }
     }
-    Ok(())
+}
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn run_fs_work_item(
+    native: &FsWorkerNativeState,
+    session: &FsDispatchSession,
+    handle: &PrimaryRouterHandle,
+    work: FsWorkItem,
+    #[cfg(test)] test_gate: Option<&FsWorkerTestGate>,
+) -> Result<Option<PendingFsWriteFailure>, HostAppError> {
+    let FsWorkItem {
+        admitted,
+        request,
+        attempt,
+        correlation,
+        cancellation,
+    } = work;
+    #[cfg(test)]
+    if let Some(fence) = test_gate.and_then(|gate| gate.before_entry.as_deref()) {
+        fence.wait_after_take()?;
+    }
+    let outcome = admitted.handle_with(|| {
+        #[cfg(test)]
+        if let Some(gate) = test_gate {
+            gate.wait_after_take()?;
+        }
+        let broker = native
+            .broker
+            .as_ref()
+            .filter(|_| cfg!(not(target_os = "macos")) || native.attempt == attempt)
+            .ok_or_else(|| {
+                app_detail(
+                    "filesystem worker",
+                    "request belongs to an unprepared generation",
+                )
+            })?;
+        Ok::<_, HostAppError>(broker.handle_request(
+            &session.verified,
+            Principal::AppProcess,
+            request,
+            &cancellation,
+        ))
+    })?;
+    let Some(outcome) = outcome else {
+        return Ok(None);
+    };
+    match outcome? {
+        Ok(response) => {
+            let reply =
+                encode(&response).map_err(|source| app_ipc("filesystem response", &source))?;
+            handle.submit_fs_terminal_write(admitted, attempt, |writer| {
+                write_frame(writer, FrameKind::Reply, 0, FS_CHANNEL, correlation, &reply)
+                    .map_err(|source| app_ipc("primary session reply", &source))
+            })
+        }
+        Err(error) => {
+            let call_error = CallError::from(&error);
+            handle.submit_fs_terminal_write(admitted, attempt, |writer| {
+                keld_ipc::write_call_error(writer, FS_CHANNEL, correlation, &call_error)
+                    .map_err(|source| app_ipc("primary session call error", &source))
+            })
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -5879,9 +8193,10 @@ impl Drop for PrimaryRouter {
 fn read_primary_frames(
     reader: &mut BootstrapStream,
     handle: &PrimaryRouterHandle,
-    attempt: u32,
-    reader_stop: &Arc<AtomicBool>,
+    caller: &PrimaryCallerContext,
 ) -> Result<(), HostAppError> {
+    let attempt = caller.attempt;
+    let reader_stop = &caller.reader_stop;
     loop {
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
             handle.cli_lease_lost()?;
@@ -5891,20 +8206,34 @@ fn read_primary_frames(
         // selects the existing privileged CALL policy for the `fs` channel
         // table entry; an unguarded session keeps the legacy
         // echo/lifecycle/PING policy.
-        let frame = if handle.fs.is_some() {
-            read_primary_app_frame_interruptible_with_privileged_call(
-                reader,
-                reader_stop,
-                || handle.pending_echo_corr_for(attempt),
-                &keld_ipc::channel_table::FS,
-                || handle.has_outstanding_fs_call(attempt),
-            )
-        } else {
-            read_primary_app_frame_interruptible(reader, reader_stop, || {
-                handle.pending_echo_corr_for(attempt)
-            })
-        };
-        let (header, payload) = match frame {
+        let frame = read_primary_app_frame_interruptible_with_admission(
+            reader,
+            reader_stop,
+            || handle.pending_echo_corr_for(attempt),
+            handle.privileged_calls(),
+            |entry, corr| {
+                #[cfg(not(target_os = "macos"))]
+                let _ = corr; // Auth correlation admission is macOS-only.
+                if entry.id() == FS_CHANNEL {
+                    return if handle.has_outstanding_fs_call(attempt) {
+                        GuardedCallAdmission::RejectSession
+                    } else {
+                        GuardedCallAdmission::Admit
+                    };
+                }
+                #[cfg(target_os = "macos")]
+                if entry.id() == keld_ipc::channel_table::AUTH.id() {
+                    return handle
+                        .auth
+                        .as_ref()
+                        .map_or(GuardedCallAdmission::RejectSession, |auth| {
+                            auth.admission(attempt, corr)
+                        });
+                }
+                GuardedCallAdmission::RejectSession
+            },
+        );
+        let frame = match frame {
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
@@ -5923,7 +8252,16 @@ fn read_primary_frames(
                 if !handle.is_current(attempt) {
                     return Ok(());
                 }
-                if handle.window_ready.load(Ordering::Acquire) && handle.shutdown.is_running() {
+                if handle.shutdown.is_running()
+                    && (PRE_READY_LINK_EOF_DEFERS_TO_OWNER
+                        || handle.window_ready.load(Ordering::Acquire))
+                {
+                    // Before the owner hears of it: the owner answers
+                    // asynchronously, and a `Ready` published meanwhile would
+                    // arm recovery for this failed generation.
+                    if PRE_READY_LINK_EOF_DEFERS_TO_OWNER {
+                        handle.latch_pre_ready_link_failure();
+                    }
                     handle.fail_pending_echo_for_attempt(
                         attempt,
                         "application call ended because the app link disconnected",
@@ -5931,7 +8269,13 @@ fn read_primary_frames(
                     // The KEL-75/KEL-78 owner decides whether this generation
                     // is recoverable. Its Revoked update retires this writer
                     // before a successor is installed; only its terminal
-                    // outcome may close the already-ready window.
+                    // outcome may close the already-ready window. Before
+                    // Ready (Linux and Windows) the latch above refuses a
+                    // later Ready, so the same update meets the closed
+                    // recovery gate and startup fails with the gate's typed
+                    // cause whether this EOF or the process exit is observed
+                    // first; a late owner acknowledgment can only add a
+                    // cleanup detail (GH-1182).
                     handle.link_failed(attempt)?;
                     return Ok(());
                 }
@@ -5945,6 +8289,25 @@ fn read_primary_frames(
         if handle.shutdown.cause() == SESSION_CLI_LEASE_LOST {
             handle.cli_lease_lost()?;
             return Ok(());
+        }
+        let keld_ipc::link::PrimaryAppFrame {
+            header,
+            payload,
+            admission,
+        } = frame;
+        if admission == GuardedCallAdmission::AtCapacity {
+            // The shared reader consumed the complete bounded frame under its
+            // original clock. It admitted no call and the body is never decoded.
+            with_primary_caller_writer(&handle.current, &handle.shutdown, caller, |writer| {
+                keld_ipc::write_call_error(
+                    writer,
+                    header.channel(),
+                    header.corr(),
+                    &CallError::admission_capacity(),
+                )
+                .map_err(|source| app_ipc("guarded call capacity refusal", &source))
+            })?;
+            continue;
         }
         match (header.kind(), header.channel()) {
             #[cfg(target_os = "macos")]
@@ -5962,19 +8325,20 @@ fn read_primary_frames(
                 handle.finish_pending_echo(attempt, header.corr(), PrimaryEchoReply::Err(error))?;
             }
             (FrameKind::Call, ECHO_CHANNEL) if handle.shutdown.is_running() => {
-                let reply = keld_ipc::echo::handle_echo(&payload)
-                    .map_err(|source| app_ipc("echo dispatch", &source))?;
-                write_primary_reply(
+                dispatch_primary_echo(
                     &handle.current,
                     &handle.shutdown,
-                    attempt,
-                    ECHO_CHANNEL,
+                    caller,
                     header.corr(),
-                    &reply,
+                    &payload,
                 )?;
             }
             (FrameKind::Call, FS_CHANNEL) if handle.shutdown.is_running() => {
-                let work = prepare_fs_work(handle, attempt, header.corr(), &payload, reader_stop)?;
+                // Admission and enqueue share retirement's transition: an admitted
+                // work item cannot be overtaken by its native retirement command.
+                let _transition = handle.shutdown.transition_guard();
+                let work =
+                    prepare_fs_work_guarded(handle, attempt, header.corr(), &payload, reader_stop)?;
                 let commands = handle.fs_worker_commands.as_ref().ok_or_else(|| {
                     app_detail(
                         "filesystem worker submission",
@@ -5999,10 +8363,32 @@ fn read_primary_frames(
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            (FrameKind::Call, channel)
+                if channel == keld_ipc::channel_table::AUTH.id()
+                    && handle.shutdown.is_running() =>
+            {
+                handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
+            }
+            (FrameKind::Call, channel) if channel == keld_ipc::channel_table::WINDOW.id() => {
+                handle.dispatch_window(caller, header.corr(), &payload)?;
+            }
             (FrameKind::Call, LIFECYCLE_CHANNEL) => {
-                let request: LifecycleRequest =
-                    decode(&payload).map_err(|source| app_ipc("lifecycle request", &source))?;
+                let mut request = None;
+                with_primary_caller_writer(&handle.current, &handle.shutdown, caller, |_| {
+                    request = Some(
+                        decode::<LifecycleRequest>(&payload)
+                            .map_err(|source| app_ipc("lifecycle request", &source))?,
+                    );
+                    Ok(())
+                })?;
+                let Some(request) = request else {
+                    continue;
+                };
                 match request {
+                    LifecycleRequest::Subscribe { channel } => {
+                        handle.subscribe_window(caller, header.corr(), channel)?;
+                    }
                     LifecycleRequest::Quit => {
                         let reply = encode(&LifecycleResponse::Quit)
                             .map_err(|source| app_ipc("lifecycle Quit reply", &source))?;
@@ -6062,6 +8448,16 @@ fn read_primary_frames(
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 const HOST_ANSWER_BUDGET: Duration = APP_LINK_READER_POLL;
 
+// The write deadline each best-effort answer ran under, read from the
+// writer itself on the writing thread once a test arms it. A Windows
+// deadline is per handle, so no clone can read the writer's
+// (`AppLinkDeadlines`); GH-528 T2 on Windows (gh527 §10).
+#[cfg(all(test, windows))]
+thread_local! {
+    static ANSWER_WRITE_DEADLINES: std::cell::RefCell<Option<Vec<Option<Duration>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Writes best-effort terminal `ERR` answers (`KELD-IPC-023` or
 /// `KELD-IPC-024`, GH-527 §4.9) on a link the caller closes next, each write
 /// bounded by [`HOST_ANSWER_BUDGET`]. Returns `false` once a write fails or
@@ -6080,19 +8476,23 @@ fn write_best_effort_answers(
     {
         return false;
     }
-    answers
-        .into_iter()
-        .all(|(channel, corr)| keld_ipc::write_call_error(writer, channel, corr, error).is_ok())
+    answers.into_iter().all(|(channel, corr)| {
+        #[cfg(all(test, windows))]
+        ANSWER_WRITE_DEADLINES.with_borrow_mut(|seen| {
+            if let Some(seen) = seen {
+                seen.push(writer.app_link_write_deadline().ok().flatten());
+            }
+        });
+        keld_ipc::write_call_error(writer, channel, corr, error).is_ok()
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn write_primary_reply(
+fn with_primary_caller_locked(
     current: &Mutex<Option<ActivePrimaryGeneration>>,
     shutdown: &SessionShutdownState,
-    attempt: u32,
-    channel: keld_ipc::ChannelId,
-    correlation: CorrelationId,
-    payload: &[u8],
+    caller: &PrimaryCallerContext,
+    dispatch: impl FnOnce(&mut Option<ActivePrimaryGeneration>) -> Result<(), HostAppError>,
 ) -> Result<(), HostAppError> {
     let _transition = shutdown.transition_guard();
     let mut current = current
@@ -6104,18 +8504,55 @@ fn write_primary_reply(
     let Some(active) = current.as_mut() else {
         return Ok(());
     };
-    if active.attempt != attempt {
+    // Generation and owner are Runtime-minted. This existing reader-stop Arc
+    // additionally scopes equal numeric generations to the actual Core link
+    // instance; no Core counter or identity registry is minted or mirrored.
+    if active.attempt != caller.attempt
+        || active.identity != caller.identity
+        || !Arc::ptr_eq(&active.reader_stop, &caller.reader_stop)
+        || caller.reader_stop.load(Ordering::Acquire)
+    {
         return Ok(());
     }
-    write_frame(
-        &mut active.writer,
-        FrameKind::Reply,
-        0,
-        channel,
-        correlation,
-        payload,
-    )
-    .map_err(|source| app_ipc("primary session reply", &source))
+    dispatch(&mut current)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn with_primary_caller_writer(
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
+    shutdown: &SessionShutdownState,
+    caller: &PrimaryCallerContext,
+    write: impl FnOnce(&mut BootstrapStream) -> Result<(), HostAppError>,
+) -> Result<(), HostAppError> {
+    with_primary_caller_locked(current, shutdown, caller, |current| {
+        let active = current.as_mut().ok_or_else(|| {
+            app_detail("primary caller", "validated current generation disappeared")
+        })?;
+        write(&mut active.writer)
+    })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn dispatch_primary_echo(
+    current: &Mutex<Option<ActivePrimaryGeneration>>,
+    shutdown: &SessionShutdownState,
+    caller: &PrimaryCallerContext,
+    correlation: CorrelationId,
+    payload: &[u8],
+) -> Result<(), HostAppError> {
+    with_primary_caller_writer(current, shutdown, caller, |writer| {
+        let reply = keld_ipc::echo::handle_echo(payload)
+            .map_err(|source| app_ipc("echo dispatch", &source))?;
+        write_frame(
+            writer,
+            FrameKind::Reply,
+            0,
+            ECHO_CHANNEL,
+            correlation,
+            &reply,
+        )
+        .map_err(|source| app_ipc("primary session reply", &source))
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -6124,55 +8561,6 @@ fn finish_link_shutdown(result: io::Result<()>, phase: &'static str) -> Result<(
         Ok(()) => Ok(()),
         Err(source) if source.kind() == io::ErrorKind::NotConnected => Ok(()),
         Err(source) => Err(app_io(phase, &source)),
-    }
-}
-
-#[cfg(windows)]
-fn await_windows_quit_peer_close(reader: &mut BootstrapStream) -> Result<(), HostAppError> {
-    let deadline = Instant::now()
-        .checked_add(APP_LINK_IO_DEADLINE)
-        .ok_or_else(|| app_detail("lifecycle Quit drain", "peer-close deadline overflow"))?;
-    await_windows_quit_peer_close_until(reader, deadline)
-}
-
-#[cfg(windows)]
-fn await_windows_quit_peer_close_until(
-    reader: &mut BootstrapStream,
-    deadline: Instant,
-) -> Result<(), HostAppError> {
-    let mut unexpected = [0_u8; 1];
-    loop {
-        match reader.read(&mut unexpected) {
-            Ok(0) => return Ok(()),
-            Ok(_) => {
-                return Err(app_detail(
-                    "lifecycle Quit drain",
-                    "app sent bytes after the terminal Quit reply",
-                ));
-            }
-            Err(error)
-                if matches!(error.raw_os_error(), Some(109 | 232 | 233))
-                    || error.kind() == io::ErrorKind::NotConnected =>
-            {
-                return Ok(());
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::Interrupted
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                if Instant::now() >= deadline {
-                    return Err(app_detail(
-                        "lifecycle Quit drain",
-                        "app did not close after the terminal Quit reply deadline",
-                    ));
-                }
-            }
-            Err(error) => return Err(app_io("lifecycle Quit drain", &error)),
-        }
     }
 }
 
@@ -6286,4944 +8674,35 @@ fn app_ipc(phase: &'static str, source: &IpcError) -> HostAppError {
 }
 
 #[cfg(test)]
-mod tests {
-    #[cfg(windows)]
-    use std::cell::Cell;
-    use std::path::Path;
-
-    use std::fs;
-    #[cfg(windows)]
-    use std::io::{BufRead as _, BufReader};
-    #[cfg(target_os = "macos")]
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    #[cfg(windows)]
-    use std::process::{Command, Stdio};
-
-    use super::*;
-
-    const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    struct ReapedRouterProbe(std::process::Child);
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    impl Drop for ReapedRouterProbe {
-        fn drop(&mut self) {
-            if self.0.try_wait().ok().flatten().is_none() {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    const RECOVERED_CHILD_ENV: &str = "KELD_CORE_TEST_RECOVERED_EVENT_ORDER_CHILD";
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    const RECOVERED_CHILD_OBSERVED: &str = "KELD_CORE_RECOVERED_EVENT_ORDER_OBSERVED";
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn assert_bounded_recovered_event_order_child() {
-        use std::io::{Read as _, Seek as _, SeekFrom};
-        use std::process::{Command, Stdio};
-
-        const SELECTOR: &str = "app_session::tests::recovered_generation_orders_window_events_once_across_installation";
-        let mut stdout = tempfile::tempfile().expect("private child stdout");
-        let mut stderr = tempfile::tempfile().expect("private child stderr");
-        let mut child = ReapedRouterProbe(
-            Command::new(std::env::current_exe().expect("test binary"))
-                .args(["--exact", SELECTOR, "--nocapture"])
-                .env(RECOVERED_CHILD_ENV, "1")
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(stdout.try_clone().expect("child stdout clone")))
-                .stderr(Stdio::from(stderr.try_clone().expect("child stderr clone")))
-                .spawn()
-                .expect("spawn isolated event-order test"),
-        );
-        let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.0.try_wait().expect("inspect event-order child") {
-                break status;
-            }
-            if started.elapsed() >= Duration::from_secs(10) {
-                child.0.kill().expect("kill blocked event-order child");
-                let status = child.0.wait().expect("reap blocked event-order child");
-                stdout
-                    .seek(SeekFrom::Start(0))
-                    .expect("rewind child stdout");
-                stderr
-                    .seek(SeekFrom::Start(0))
-                    .expect("rewind child stderr");
-                let mut output = String::new();
-                let mut detail = String::new();
-                stdout
-                    .read_to_string(&mut output)
-                    .expect("read child stdout");
-                stderr
-                    .read_to_string(&mut detail)
-                    .expect("read child stderr");
-                panic!(
-                    "event-order child exceeded 10-second cleanup bound: status={status}, stdout={output}, stderr={detail}"
-                );
-            }
-            std::thread::park_timeout(Duration::from_millis(10));
-        };
-        stdout
-            .seek(SeekFrom::Start(0))
-            .expect("rewind child stdout");
-        stderr
-            .seek(SeekFrom::Start(0))
-            .expect("rewind child stderr");
-        let mut output = String::new();
-        let mut detail = String::new();
-        stdout
-            .read_to_string(&mut output)
-            .expect("read child stdout");
-        stderr
-            .read_to_string(&mut detail)
-            .expect("read child stderr");
-        assert!(
-            status.success()
-                && output.contains(RECOVERED_CHILD_OBSERVED)
-                && output.contains("test result: ok. 1 passed; 0 failed;"),
-            "isolated event-order proof failed: status={status}, stdout={output}, stderr={detail}"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_publisher_and_signed_identifier_both_separate_profiles() {
-        let first = MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "com.example.app")
-            .expect("verified signing facts");
-        let publisher_changed =
-            MacValidatedAppIdentity::from_verified_parts("KLMNOPQRST", "com.example.app")
-                .expect("verified publisher change");
-        let app_changed =
-            MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "com.example.other")
-                .expect("verified signing identifier change");
-        assert_ne!(first.profile_identity, publisher_changed.profile_identity);
-        assert_ne!(first.profile_identity, app_changed.profile_identity);
-        assert!(
-            MacValidatedAppIdentity::from_verified_parts("ABCDEFGHIJ", "Com.Example.App").is_err()
-        );
-        assert!(MacValidatedAppIdentity::from_verified_parts("", "com.example.app").is_err());
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_dev_selection_never_reads_release_identity_and_changes_each_launch() {
-        let first = select_macos_profile_mode_with(true, || {
-            panic!("explicit dev lease must bypass release signing identity")
-        })
-        .expect("first ephemeral selection");
-        let second = select_macos_profile_mode_with(true, || {
-            panic!("explicit dev lease must bypass release signing identity")
-        })
-        .expect("second ephemeral selection");
-        let (WebProfileSelection::EphemeralDev(first), WebProfileSelection::EphemeralDev(second)) =
-            (first, second)
-        else {
-            panic!("dev lease selected a persistent profile")
-        };
-        assert_ne!(first.launch_nonce(), second.launch_nonce());
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn macos_release_selection_rejects_signature_failure() {
-        let error = select_macos_profile_mode_with(false, || {
-            Err(macos_identity_error(
-                "synthetic signature validation failure",
-            ))
-        })
-        .expect_err("release mode must fail closed");
-        assert_eq!(error.code(), "KELD-WV-009");
-        assert!(
-            error
-                .to_string()
-                .contains("synthetic signature validation failure")
-        );
-    }
-
-    #[cfg(windows)]
-    struct ReapedTestChild(std::process::Child);
-
-    #[cfg(windows)]
-    impl Drop for ReapedTestChild {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    fn valid_boot(entry: &str, renderer: &str) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
-            "schema": 1,
-            "name": "Fixture",
-            "entry": entry,
-            "renderer": renderer,
-            "permissions": {
-                "file": "keld.permissions.jsonc",
-                "content_sha256": DIGEST,
-            }
-        }))
-        .expect("serialize fixture boot")
-    }
-
-    fn must_err<T>(result: Result<T, HostAppError>, message: &str) -> HostAppError {
-        match result {
-            Ok(_) => panic!("{message}"),
-            Err(error) => error,
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn synthetic_windows_verified_parts_keep_publisher_and_app_separate() {
-        let first = ValidatedAppIdentity::from_verified_parts([1; 32], "com.example.app")
-            .expect("synthetic verified identity");
-        let publisher_changed =
-            ValidatedAppIdentity::from_verified_parts([2; 32], "com.example.app")
-                .expect("synthetic publisher change");
-        let app_changed = ValidatedAppIdentity::from_verified_parts([1; 32], "com.example.other")
-            .expect("synthetic app change");
-        assert_ne!(first.profile_identity, publisher_changed.profile_identity);
-        assert_ne!(first.profile_identity, app_changed.profile_identity);
-        for noncanonical in ["Com.Example.App", "com.example.app\n"] {
-            let error = ValidatedAppIdentity::from_verified_parts([1; 32], noncanonical)
-                .expect_err("a noncanonical verified app id has no profile identity");
-            assert_eq!(error.code(), "KELD-WV-009");
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_profile_follows_the_boot_route() {
-        let development =
-            select_windows_profile_mode(None, true).expect("a dev stage runs under its lease");
-        assert!(matches!(development, WindowsProfileMode::EphemeralDev));
-
-        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
-            .expect("synthetic verified identity");
-        let verified_profile = identity.profile_identity;
-        let installed = select_windows_profile_mode(Some(identity), false)
-            .expect("an installed package runs without a lease");
-        let WindowsProfileMode::Persistent(selection) = installed else {
-            panic!("an installed package selected an ephemeral profile")
-        };
-        assert_eq!(
-            selection,
-            WebProfileSelection::Persistent(verified_profile),
-            "the profile is the identity verified at boot"
-        );
-
-        let error = select_windows_profile_mode(None, false)
-            .expect_err("a dev stage without a live lease must not run");
-        assert_eq!(error.code(), "KELD-CORE-037");
-        assert!(error.to_string().contains("no live dev lease"), "{error}");
-        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
-            .expect("synthetic verified identity");
-        let error = select_windows_profile_mode(Some(identity), true)
-            .expect_err("an installed package must not run under a dev lease");
-        assert_eq!(error.code(), "KELD-CORE-037");
-        assert!(
-            error.to_string().contains("presented a dev lease"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_dev_lease_routes_only_to_the_dev_stage_validator() {
-        let error = select_windows_boot_route_with(
-            true,
-            || Err(target_error("app root", "synthetic dev-stage refusal")),
-            || panic!("a dev lease must not reach installed-package boot"),
-        )
-        .expect_err("the synthetic dev-stage validator decides the dev route");
-        assert_eq!(error.code(), "KELD-CORE-036");
-        assert!(error.to_string().contains("synthetic dev-stage refusal"));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_lease_less_boot_reaches_only_installed_package_boot() {
-        let unsigned = select_windows_boot_route_with(
-            false,
-            || panic!("a lease-less launch must not reach the dev-stage validator"),
-            || {
-                Err(windows_identity_error(
-                    "synthetic verifier rejection",
-                    "Use a real signed package fixture.",
-                ))
-            },
-        )
-        .expect_err("an unverified lease-less executable is refused");
-        assert_eq!(unsigned.code(), "KELD-WV-009");
-
-        let unselected = select_windows_boot_route_with(
-            false,
-            || panic!("a lease-less launch must not reach the dev-stage validator"),
-            || {
-                Err(installed_package_error(
-                    &keld_update::UpdateError::ExecutableBinding {
-                        image: keld_update::WindowsLocatedImage::Host,
-                        step: "locator",
-                        detail: "synthetic staged layout".to_owned(),
-                    },
-                ))
-            },
-        )
-        .expect_err("a verified host outside an installation is refused");
-        assert_eq!(unselected.code(), "KELD-UPDATE-018");
-        assert!(
-            unselected.to_string().contains("synthetic staged layout"),
-            "{unselected}"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn installed_package_refusal_carries_its_code_once() {
-        let error = installed_package_error(&keld_update::UpdateError::ExecutableBinding {
-            image: keld_update::WindowsLocatedImage::Host,
-            step: "locator",
-            detail: "synthetic staged layout".to_owned(),
-        });
-        let rendered = error.to_string();
-        println!("KELD_KEL254_INSTALLED_PACKAGE_REFUSAL {rendered}");
-        // The resource snapshot reads process-wide counters other tests advance.
-        let (message, _resources) = rendered
-            .split_once(" [startup-resource-attempts ")
-            .expect("a host error ends with its startup-resource snapshot");
-        assert_eq!(
-            message,
-            "KELD-UPDATE-018: no-flag host failed during Windows installed package selection \
-             — installed executable locator refused (synthetic staged layout). Launch \
-             keld-host.exe from its installation's selected version tree; repair or reinstall \
-             through the trusted installer if the layout is damaged. Then relaunch the \
-             installed host."
-        );
-        assert_eq!(rendered.matches("KELD-UPDATE-").count(), 1, "{rendered}");
-        assert!(!rendered.contains(".."), "{rendered}");
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn installed_boot_of_an_unsigned_host_refuses_before_resources() {
-        let before = startup_resource_snapshot();
-        let error = validate_installed_current_exe()
-            .expect_err("the unsigned test executable is not an installed package");
-        assert_eq!(error.code(), "KELD-WV-009");
-        // The running image opened as a pinned trust image and was refused by its owner.
-        assert!(
-            error
-                .to_string()
-                .contains("rejected the current executable with status"),
-            "{error}"
-        );
-        assert_eq!(
-            error.resources, before,
-            "installed boot advanced app resources"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn installed_boot_reads_the_expectation_from_the_handle_before_selection() {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
-
-        let executable = std::env::current_exe().expect("test executable path");
-        // The test executable carries no `.keldeai` container and lies in no installation.
-        let image = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .open(&executable)
-            .expect("open the test executable as the verified-image owner does");
-        let locator = executable.canonicalize().expect("canonical locator");
-        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
-            .expect("synthetic verified identity");
-        let before = startup_resource_snapshot();
-        let error = validate_installed_from_verified(&locator, &image, identity)
-            .expect_err("a host without an embedded expectation is refused");
-        // KELD-UPDATE-019, not the locator's KELD-UPDATE-018: the expectation is read from
-        // the handle before any installation is located.
-        assert_eq!(error.code(), "KELD-UPDATE-019");
-        assert!(error.to_string().contains("KELD-PACK-007"), "{error}");
-        assert_eq!(
-            error.resources, before,
-            "installed boot advanced app resources"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn installed_boot_reads_the_verified_handle_never_the_locator_path() {
-        use std::io::{Seek as _, SeekFrom, Write as _};
-
-        // The locator names this test executable, a valid PE image without a container
-        // (KELD-PACK-007 if anything reopened it). The handle is an anonymous file, with
-        // no path to reopen and its cursor at end of file, holding no PE image at all.
-        let locator = std::env::current_exe()
-            .expect("test executable path")
-            .canonicalize()
-            .expect("canonical locator");
-        let mut image = tempfile::tempfile().expect("anonymous image handle");
-        image
-            .write_all(b"MZ is not a host image")
-            .expect("write the malformed image");
-        image.seek(SeekFrom::End(0)).expect("cursor to end of file");
-        let identity = ValidatedAppIdentity::from_verified_parts([9; 32], "com.example.synthetic")
-            .expect("synthetic verified identity");
-        let before = startup_resource_snapshot();
-        let error = validate_installed_from_verified(&locator, &image, identity)
-            .expect_err("a malformed verified image is refused");
-        // KELD-PACK-006 is the handle's malformed image; a locator reopen would report the
-        // test executable's missing container instead.
-        assert_eq!(error.code(), "KELD-UPDATE-019");
-        assert!(error.to_string().contains("KELD-PACK-006"), "{error}");
-        assert_eq!(
-            error.resources, before,
-            "installed boot advanced app resources"
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_boot_files_validate_without_the_dev_stage_dacl() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("tree");
-        fs::create_dir(&root).expect("tree");
-        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
-        fs::write(root.join("index.html"), "<p>installed</p>\n").expect("renderer");
-        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
-        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
-
-        // The inherited temporary-directory DACL is not owner-private: the dev route
-        // still refuses this tree, so its predicate is unchanged.
-        let error = must_err(validate_from_root(&root), "a non-private stage must fail");
-        assert_eq!(error.code(), "KELD-CORE-036");
-        assert!(error.to_string().contains("app root DACL"), "{error}");
-
-        let selection = validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage)
-            .expect("the selected tree's boot files validate");
-        assert_eq!(selection.app.root, root);
-        assert_eq!(selection.app.name, "Fixture");
-        assert_eq!(selection.app.entry_path, Path::new("main.ts"));
-        assert_eq!(selection.app.renderer_html, b"<p>installed</p>\n");
-        assert_eq!(
-            selection.permissions_digest,
-            decode_digest(DIGEST).expect("fixture digest")
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_boot_files_keep_the_strict_descriptor_and_target_rules() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("tree");
-        fs::create_dir(&root).expect("tree");
-        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
-        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
-        fs::write(root.join(BOOT_FILE), br#"{"schema":1,"foreign":true}"#).expect("boot");
-        let error = must_err(
-            validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
-            "a malformed descriptor must fail",
-        );
-        assert_eq!(error.code(), "KELD-CORE-035");
-
-        let outside = temp.path().join("outside.html");
-        fs::write(&outside, "<p>outside</p>\n").expect("outside renderer");
-        std::os::windows::fs::symlink_file(&outside, root.join("index.html"))
-            .expect("renderer symlink");
-        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
-        let error = must_err(
-            validate_windows_boot_files(root, WindowsBootMode::DevStage),
-            "a reparse-point renderer must fail",
-        );
-        assert_eq!(error.code(), "KELD-CORE-036");
-        assert!(error.to_string().contains("reparse point"), "{error}");
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_trust_image_refusal_is_reported_as_wv009() {
-        let directory = tempfile::tempdir().expect("trust-image fixture directory");
-        let target = directory.path().join("target.exe");
-        let link = directory.path().join("link.exe");
-        fs::write(&target, b"trust image fixture").expect("write trust-image target");
-        std::os::windows::fs::symlink_file(&target, &link).expect("create a leaf symlink");
-
-        // keld-guard refuses the leaf reparse point; keld-core owns the code.
-        let error = verified_windows_image(&link).expect_err("a leaf reparse point is refused");
-        assert_eq!(error.code(), "KELD-WV-009");
-        assert!(error.to_string().contains("reparse point"), "{error}");
-    }
-
-    /// Authenticode FFI names that only the `keld-guard` owner may use. Split
-    /// literals keep these needles from matching this test's own source.
-    const AUTHENTICODE_FFI_NEEDLES: [&str; 8] = [
-        concat!("WinTrust", "::"),
-        concat!("Cryptography", "::"),
-        concat!("WinVerify", "Trust"),
-        concat!("WT", "Helper"),
-        concat!("CryptDecode", "Object"),
-        concat!("CryptEncode", "Object"),
-        concat!("CryptQuery", "Object"),
-        concat!("Crypt", "Msg"),
-    ];
-
-    fn authenticode_ffi_needles_in(source: &str) -> Vec<&'static str> {
-        AUTHENTICODE_FFI_NEEDLES
-            .into_iter()
-            .filter(|needle| source.contains(needle))
-            .collect()
-    }
-
-    /// The KEL-135 Authenticode FFI has one owner in `keld-guard` (KEL-270 D4).
-    #[test]
-    fn keld_core_source_holds_no_authenticode_ffi() {
-        let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
-        let mut scanned = 0_usize;
-        while let Some(directory) = pending.pop() {
-            for entry in fs::read_dir(&directory).expect("read a keld-core source directory") {
-                let path = entry.expect("read a keld-core source entry").path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "rs") {
-                    let source = fs::read_to_string(&path).expect("read a keld-core source file");
-                    scanned += 1;
-                    let found = authenticode_ffi_needles_in(&source);
-                    assert!(
-                        found.is_empty(),
-                        "{} names {found:?}; call the keld-guard Authenticode owner instead",
-                        path.display()
-                    );
-                }
-            }
-        }
-        assert!(scanned > 1, "no keld-core source files were scanned");
-    }
-
-    #[test]
-    fn authenticode_ffi_scan_flags_each_needle() {
-        assert!(authenticode_ffi_needles_in("fn clean() {}").is_empty());
-        for needle in AUTHENTICODE_FFI_NEEDLES {
-            let planted = format!("fn planted() {{ let _ = {needle}; }}");
-            assert_eq!(authenticode_ffi_needles_in(&planted), [needle]);
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn current_test_executable_is_rejected_as_a_release_carrier() {
-        let executable = current_windows_executable().expect("test executable path");
-        let error = verified_windows_image(&executable)
-            .expect_err("the test executable is not an approved signed Keld package carrier");
-        assert_eq!(error.code(), "KELD-WV-009");
-        // The running image opened as a pinned trust image and was refused by its owner.
-        assert!(
-            error
-                .to_string()
-                .contains("rejected the current executable with status"),
-            "{error}"
-        );
-    }
-
-    /// Verifies the specified host carrier, or this signed libtest for older fixtures.
-    #[test]
-    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
-    #[cfg(windows)]
-    fn kel135_signed_package_acceptance_fixture() {
-        let carrier = std::env::var_os("KELD_KEL135_CARRIER_UNDER_TEST")
-            .map_or_else(current_windows_executable, |path| Ok(PathBuf::from(path)))
-            .expect("the signed fixture carrier path");
-        let (_verified, identity) = verified_windows_image(&carrier)
-            .expect("the signed fixture must produce a verified Windows identity");
-        let app_id = identity.app_id.clone();
-        let publisher_scope = identity.publisher_scope.iter().fold(
-            String::with_capacity(identity.publisher_scope.len() * 2),
-            |mut text, byte| {
-                use std::fmt::Write as _;
-                write!(&mut text, "{byte:02x}").expect("format publisher scope");
-                text
-            },
-        );
-        let profile_namespace = identity.profile_identity.namespace_segment();
-        let mode = select_windows_profile_mode(Some(identity), false)
-            .expect("the verified signed fixture must select a persistent profile");
-        assert!(matches!(mode, WindowsProfileMode::Persistent(_)));
-        println!(
-            "KELD_KEL135_SIGNED_IDENTITY app_id={app_id} publisher_scope={publisher_scope} profile_namespace={profile_namespace}"
-        );
-    }
-
-    /// Runs only from a deliberately signed copy of this libtest binary.
-    #[test]
-    #[ignore = "requires a trusted Authenticode-signed fixture executable"]
-    #[cfg(windows)]
-    fn kel135_signed_package_purge_acceptance_fixture() {
-        let executable = current_windows_executable().expect("signed fixture path");
-        let (_verified, identity) = verified_windows_image(&executable)
-            .expect("the signed fixture must produce a verified Windows identity");
-        let profile_namespace = identity.profile_identity.namespace_segment();
-        WebView2Engine::purge_persistent_profile(identity.profile_identity)
-            .expect("the signed fixture must purge its authenticated idle profile");
-        println!("KELD_KEL135_SIGNED_PURGE profile_namespace={profile_namespace}");
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn quit_peer_close_wait_is_bounded_for_a_non_closing_client() {
-        let (mut server, client) = primary_test_stream_pair();
-        server
-            .set_app_link_read_deadline(Some(Duration::from_millis(10)))
-            .expect("server poll deadline");
-
-        let started = Instant::now();
-        let error = await_windows_quit_peer_close_until(
-            &mut server,
-            Instant::now() + Duration::from_millis(50),
-        )
-        .expect_err("non-closing client must hit the peer-close deadline");
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "peer-close deadline did not bound the wait"
-        );
-        assert!(error.to_string().contains("did not close"), "{error}");
-        drop(client);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn dev_stage_cleanup_retries_only_transient_final_directory_sharing() {
-        let temp = tempfile::tempdir().expect("cleanup fixture root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("cleanup stage");
-        fs::write(root.join("entry"), b"fixture").expect("cleanup stage entry");
-
-        let mut blocker = ReapedTestChild(
-            Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Write-Output (Get-Location).Path; $null = [Console]::In.ReadLine()",
-                ])
-                .current_dir(&root)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn final-directory holder"),
-        );
-        let mut blocker_stdin = blocker.0.stdin.take();
-        let mut ready = String::new();
-        BufReader::new(blocker.0.stdout.take().expect("holder readiness pipe"))
-            .read_line(&mut ready)
-            .expect("holder readiness");
-        let observed_ready = Path::new(ready.trim_end())
-            .canonicalize()
-            .expect("canonical holder working directory");
-        let expected_root = root.canonicalize().expect("canonical cleanup stage");
-        assert_eq!(observed_ready, expected_root);
-
-        let bare_error = fs::remove_dir_all(&root)
-            .expect_err("bare Windows removal must expose the transient sharing violation");
-        assert_eq!(
-            bare_error.raw_os_error(),
-            Some(WINDOWS_SHARING_VIOLATION),
-            "{bare_error}"
-        );
-        assert!(root.is_dir(), "sharing failure removed the held directory");
-
-        let mut exhausted_retry_count = 0;
-        let exhausted =
-            remove_windows_dev_stage_with(&root, || false, || exhausted_retry_count += 1)
-                .expect_err("expired cleanup deadline must preserve the sharing violation");
-        assert_eq!(
-            exhausted.raw_os_error(),
-            Some(WINDOWS_SHARING_VIOLATION),
-            "{exhausted}"
-        );
-        assert_eq!(
-            exhausted_retry_count, 0,
-            "expired cleanup deadline entered the retry path"
-        );
-
-        let mut retry_count = 0;
-        let retry_budget = Cell::new(10_000_u32);
-        remove_windows_dev_stage_with(
-            &root,
-            || {
-                let remaining = retry_budget.get();
-                if remaining == 0 {
-                    false
-                } else {
-                    retry_budget.set(remaining - 1);
-                    true
-                }
-            },
-            || {
-                retry_count += 1;
-                if let Some(stdin) = blocker_stdin.take() {
-                    drop(stdin);
-                    blocker.0.wait().expect("reap final-directory holder");
-                }
-                thread::yield_now();
-            },
-        )
-        .expect("bounded cleanup after holder exit");
-
-        assert!(retry_count > 0, "sharing violation did not exercise retry");
-        assert!(!root.exists(), "cleanup left the final directory");
-
-        let file = temp.path().join("not-a-directory");
-        fs::write(&file, b"fixture").expect("non-directory fixture");
-        let mut unrelated_retry_count = 0;
-        let unrelated =
-            remove_windows_dev_stage_with(&file, || true, || unrelated_retry_count += 1)
-                .expect_err("non-directory cleanup must fail");
-        assert_ne!(
-            unrelated.raw_os_error(),
-            Some(WINDOWS_SHARING_VIOLATION),
-            "{unrelated}"
-        );
-        assert_eq!(
-            unrelated_retry_count, 0,
-            "non-sharing error entered the retry path"
-        );
-    }
-
-    #[test]
-    fn strict_boot_schema_accepts_exact_v1() {
-        let parsed = parse_boot_bytes(&valid_boot("src/main.ts", "index.html"))
-            .expect("exact schema-v1 descriptor");
-        assert_eq!(parsed.name, "Fixture");
-        assert_eq!(parsed.entry, Path::new("src/main.ts"));
-        assert_eq!(parsed.renderer, Path::new("index.html"));
-        assert_eq!(parsed.permissions_digest.len(), 32);
-    }
-
-    #[test]
-    fn bounded_boot_rejects_zero_limit_plus_one_and_non_utf8() {
-        assert!(parse_boot_bytes(&[]).is_err());
-        let exact = vec![b' '; MAX_BOOT_BYTES];
-        let exact_error = must_err(parse_boot_bytes(&exact), "spaces are not JSON");
-        assert_eq!(exact_error.code(), "KELD-CORE-035");
-        let over = vec![b' '; MAX_BOOT_BYTES + 1];
-        let over_error = must_err(parse_boot_bytes(&over), "64 KiB + 1 must fail");
-        assert!(over_error.to_string().contains("64 KiB"), "{over_error}");
-        let utf8_error = must_err(parse_boot_bytes(&[0xff]), "non-UTF-8 must fail");
-        assert!(utf8_error.to_string().contains("UTF-8"), "{utf8_error}");
-    }
-
-    #[test]
-    fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
-        let cases = [
-            r#"{"schema":1,"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":1,"name":"x","entry":"a","renderer":"b","unknown":1,"permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":2,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":1,"name":"","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"wrong.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-            r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"SHA256:CA3D163BAB055381827226140568F3BEF7EAAC187CEBD76878E0B63E9E442356"}}"#,
-        ];
-        for bytes in cases {
-            assert!(
-                parse_boot_bytes(bytes.as_bytes()).is_err(),
-                "accepted: {bytes}"
-            );
-        }
-    }
-
-    #[test]
-    fn kipc_transport_sidecar_admission_skips_absent_and_accepts_regular_file() {
-        let temp = tempfile::tempdir().expect("sidecar root");
-        let sidecar = temp.path().join("kipc-transport.ts");
-        assert!(
-            !admit_kipc_transport_sidecar(&sidecar).expect("absent sidecar"),
-            "NotFound must allow self-contained entries"
-        );
-        fs::write(&sidecar, "export {}\n").expect("regular sidecar");
-        assert!(
-            admit_kipc_transport_sidecar(&sidecar).expect("regular sidecar"),
-            "regular file must be eligible to bind"
-        );
-    }
-
-    #[test]
-    fn kipc_transport_sidecar_admission_rejects_directory() {
-        let temp = tempfile::tempdir().expect("sidecar root");
-        let sidecar = temp.path().join("kipc-transport.ts");
-        fs::create_dir(&sidecar).expect("directory sidecar");
-        let error = must_err(
-            admit_kipc_transport_sidecar(&sidecar),
-            "directory sidecar must fail closed",
-        );
-        assert!(error.to_string().contains("not a regular file"), "{error}");
-    }
-
-    #[test]
-    fn fs_route_keeps_guard_evaluation_out_of_core_production_source() {
-        let source = include_str!("app_session.rs");
-        let production = source
-            .split_once("\n#[cfg(test)]\nmod tests")
-            .map(|(production, _)| production)
-            .expect("tests module marker");
-        let forbidden_dispatch = ["dispatch", "_privileged("].concat();
-        let forbidden_evaluate = ["keld_guard::", "evaluate("].concat();
-        assert!(
-            !production.contains(&forbidden_dispatch),
-            "keld-core must route to native rather than call the privileged dispatcher"
-        );
-        assert!(
-            !production.contains(&forbidden_evaluate),
-            "keld-core must never become a second guard evaluator"
-        );
-    }
-
-    #[test]
-    fn kipc_transport_sidecar_admission_uses_lstat_not_follow() {
-        let source = include_str!("app_session.rs");
-        let start = source
-            .find("fn admit_kipc_transport_sidecar")
-            .expect("admission helper");
-        let body = source
-            .get(start..start.saturating_add(900))
-            .expect("admission helper body");
-        assert!(
-            body.contains("symlink_metadata"),
-            "admission must lstat so a sidecar symlink is not followed into --ro-bind"
-        );
-        assert!(
-            !body.contains(".metadata()"),
-            "Path::metadata follows symlinks and would reintroduce CWE-59"
-        );
-        assert!(
-            body.contains("is_symlink()"),
-            "admission must reject a symlink before readonly_runtime"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn kipc_transport_sidecar_admission_rejects_symlink_to_regular_file() {
-        let temp = tempfile::tempdir().expect("sidecar root");
-        let outside = temp.path().join("outside.ts");
-        fs::write(&outside, "export const steal = 1;\n").expect("external target");
-        let sidecar = temp.path().join("kipc-transport.ts");
-        std::os::unix::fs::symlink(&outside, &sidecar).expect("sidecar symlink");
-        // `metadata()` follows and would admit this as a regular file — CWE-59.
-        assert!(
-            fs::metadata(&sidecar).expect("follow").is_file(),
-            "negative control: following the symlink sees a regular file"
-        );
-        let error = must_err(
-            admit_kipc_transport_sidecar(&sidecar),
-            "symlink sidecar must fail closed before --ro-bind",
-        );
-        assert!(error.to_string().contains("symbolic link"), "{error}");
-    }
-
-    #[test]
-    fn portable_relative_paths_reject_normalized_escape_and_empty_components() {
-        for path in [
-            "",
-            ".",
-            "..",
-            "/abs",
-            "a/../b",
-            "a/./b",
-            "a//b",
-            "a/",
-            "C:\\boot.ts",
-            "C:/boot.ts",
-            "\\\\server\\share",
-            "a\\b",
-        ] {
-            let error = must_err(
-                parse_boot_bytes(&valid_boot(path, "index.html")),
-                "unsafe entry path must fail",
-            );
-            assert!(error.to_string().contains("entry"), "{path}: {error}");
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn validated_root_opens_same_handle_targets_and_rejects_symlink_escape() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
-        fs::create_dir(root.join("src")).expect("src");
-        fs::write(root.join("src/main.ts"), "await new Promise(() => {});\n").expect("entry");
-        fs::write(root.join("index.html"), "<p id=fixture>exact</p>\n").expect("renderer");
-        fs::write(root.join("keld.permissions.jsonc"), b"{}\n").expect("permissions");
-        fs::write(
-            root.join("keld.boot.json"),
-            valid_boot("src/main.ts", "index.html"),
-        )
-        .expect("boot");
-
-        let selection = validate_from_root(&root).expect("validated selection");
-        assert_eq!(selection.app.renderer_html, b"<p id=fixture>exact</p>\n");
-        assert_eq!(selection.app.name, "Fixture");
-
-        let mut substituted: serde_json::Value =
-            serde_json::from_slice(&valid_boot("src/main.ts", "index.html"))
-                .expect("substitute boot JSON");
-        substituted["name"] = serde_json::Value::String("Substituted".to_owned());
-        fs::write(
-            root.join("keld.boot.json"),
-            serde_json::to_vec(&substituted).expect("substitute boot bytes"),
-        )
-        .expect("replace sidecar after selection");
-
-        let outside = temp.path().join("outside.html");
-        fs::write(&outside, "outside").expect("outside");
-        fs::remove_file(root.join("index.html")).expect("remove renderer");
-        symlink(&outside, root.join("index.html")).expect("escape symlink");
-        assert_eq!(
-            selection.app.renderer_html, b"<p id=fixture>exact</p>\n",
-            "post-selection renderer substitution changed consumed bytes"
-        );
-        assert_eq!(
-            selection.app.name, "Fixture",
-            "post-selection sidecar substitution changed owned fields"
-        );
-        let error = must_err(validate_from_root(&root), "symlink escape must fail");
-        assert!(error.to_string().contains("renderer"), "{error}");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn guarded_preflight_preserves_read_error_before_resources() {
-        use std::fs::OpenOptions;
-
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
-        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
-        fs::write(root.join("index.html"), "<p>guarded</p>\n").expect("renderer");
-        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
-        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
-
-        let mut selection = validate_from_root(&root).expect("validated selection");
-        selection.permissions_file = OpenOptions::new()
-            .write(true)
-            .open(root.join(PERMISSIONS_FILE))
-            .expect("write-only retained handle");
-        let before = startup_resource_snapshot();
-
-        let error = run_guarded(selection).expect_err("read failure must fail preflight");
-        assert_eq!(error.code(), "KELD-GUARD004");
-        assert_eq!(error.resources, before, "preflight advanced app resources");
-        let message = error.to_string();
-        assert!(message.contains("Check the path"), "{message}");
-        assert!(
-            message.contains("rebuild the staged boot artifact"),
-            "{message}"
-        );
-        let source = std::error::Error::source(&error).expect("manifest source");
-        assert!(source.downcast_ref::<ManifestError>().is_some());
-        assert_eq!(
-            source.to_string(),
-            error.manifest_source.as_ref().unwrap().to_string()
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn guarded_primary_route_reaches_native_fs_broker_with_allow_and_deny() {
-        use std::os::unix::net::UnixStream;
-
-        use keld_ipc::link::{read_frame, write_frame};
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("FS route temp root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("allowed root");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text =
-            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write FS manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open FS manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify FS manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare FS broker");
-
-        let (server, mut client) = UnixStream::pair().expect("primary FS pair");
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("primary FS read deadline");
-        let (window_tx, _window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-        )
-        .expect("guarded primary router");
-
-        let target = allowed.join("route.txt");
-        let target_wire = target.display().to_string().replace('\\', "/");
-        let write = FsRequest::Write {
-            path: target_wire.clone(),
-            bytes: b"through-primary".to_vec(),
-        };
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(41),
-            &encode(&write).expect("encode allowed write"),
-        )
-        .expect("send allowed write");
-        let (write_header, write_payload) = read_frame(&mut client).expect("allowed write reply");
-        assert_eq!(write_header.kind, FrameKind::Reply);
-        assert_eq!(write_header.channel, FS_CHANNEL);
-        assert_eq!(write_header.corr, CorrelationId(41));
-        assert!(matches!(
-            decode::<FsResponse>(&write_payload).expect("decode write response"),
-            FsResponse::Write
-        ));
-        assert_eq!(
-            fs::read(&target).expect("read written bytes"),
-            b"through-primary"
-        );
-
-        let read = FsRequest::Read { path: target_wire };
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(42),
-            &encode(&read).expect("encode allowed read"),
-        )
-        .expect("send allowed read");
-        let (read_header, read_payload) = read_frame(&mut client).expect("allowed read reply");
-        assert_eq!(read_header.kind, FrameKind::Reply);
-        assert_eq!(read_header.channel, FS_CHANNEL);
-        assert_eq!(read_header.corr, CorrelationId(42));
-        match decode::<FsResponse>(&read_payload).expect("decode read response") {
-            FsResponse::Read { bytes } => assert_eq!(bytes, b"through-primary"),
-            FsResponse::Write => panic!("read returned write response"),
-        }
-
-        let denied = temp.path().join("denied.txt");
-        let denied_wire = denied.display().to_string().replace('\\', "/");
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(43),
-            &encode(&FsRequest::Write {
-                path: denied_wire,
-                bytes: b"must-not-write".to_vec(),
-            })
-            .expect("encode denied write"),
-        )
-        .expect("send denied write");
-        let (deny_header, deny_payload) = read_frame(&mut client).expect("denied write Err");
-        assert_eq!(deny_header.kind, FrameKind::Err);
-        assert_eq!(deny_header.channel, FS_CHANNEL);
-        assert_eq!(deny_header.corr, CorrelationId(43));
-        let error: CallError = decode(&deny_payload).expect("decode guard denial");
-        assert_eq!(error.code, "KELD-GUARD002");
-        assert!(!denied.exists(), "denied primary route created its target");
-
-        router.shutdown().expect("guarded primary router shutdown");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
-        use std::os::unix::net::UnixStream;
-
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("FS worker write-failure root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("FS worker write-failure allowed root");
-        let target = allowed.join("input.txt");
-        fs::write(&target, b"reply write failure").expect("FS worker write-failure input");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text = format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write FS worker write-failure manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open FS worker write-failure manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify FS worker write-failure manifest");
-        let snapshot =
-            GuardSnapshot::prepare(verified).expect("prepare FS worker write-failure broker");
-
-        let (server, peer) = UnixStream::pair().expect("FS worker write-failure pair");
-        drop(peer);
-        let reader_stop = Arc::new(AtomicBool::new(false));
-        let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
-            attempt: 1,
-            writer: server,
-            reader_stop: Arc::clone(&reader_stop),
-            pending_quit: None,
-        })));
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (window_tx, window_rx) = mpsc::channel();
-        let shutdown = SessionShutdownState::new();
-        let handle = PrimaryRouterHandle {
-            current: Arc::clone(&current),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            pending_echo: Arc::new(Mutex::new(None)),
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(true)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(true)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown,
-            fs: Some(snapshot.fs_weak()),
-            fs_worker_commands: None,
-            guardian: GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            window_commands: window_tx,
-            #[cfg(target_os = "macos")]
-            quit_drain_hooks: Arc::default(),
-        };
-
-        let pending = PendingFsCall {
-            attempt: 1,
-            correlation: CorrelationId(90),
-        };
-        let admitted = snapshot
-            .fs
-            .begin_call(pending)
-            .expect("admit FS worker write-failure request")
-            .expect("FS worker write-failure admission remains open");
-        let work = FsWorkItem {
-            admitted,
-            request: FsRequest::Read {
-                path: target.display().to_string().replace('\\', "/"),
-            },
-            attempt: 1,
-            correlation: CorrelationId(90),
-            cancellation: Arc::new(AtomicBool::new(false)),
-        };
-        let (commands, receiver) = mpsc::channel();
-        commands
-            .send(FsWorkerCommand::Work(work))
-            .expect("queue FS worker write-failure work");
-        commands
-            .send(FsWorkerCommand::Stop)
-            .expect("queue worker stop after failed reply");
-
-        let owner = thread::spawn(move || {
-            let command = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("retired FS generation recovery request");
-            let GuardianOwnerCommand::FailRetiredGeneration(attempt, reply) = command else {
-                panic!("failed FS reply used the wrong generation-owner command");
-            };
-            assert_eq!(attempt, 1);
-            reply
-                .send(Ok(()))
-                .expect("acknowledge retired FS generation recovery");
-        });
-
-        run_fs_worker(&receiver, &handle, None)
-            .expect("reply write failure must retire the generation without killing the worker");
-        owner.join().expect("retired-generation owner joins");
-
-        assert!(
-            current.lock().expect("current generation").is_none(),
-            "failed terminal write left the corrupted generation installed"
-        );
-        assert!(
-            reader_stop.load(Ordering::Acquire),
-            "failed terminal write did not stop the retired generation reader"
-        );
-        assert!(
-            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "recoverable FS reply failure incorrectly fataled the app session"
-        );
-        let state = snapshot
-            .fs
-            .state
-            .lock()
-            .expect("FS state after failed reply");
-        assert_eq!(state.in_flight, 0);
-        assert!(state.pending_call.is_none());
-        assert!(state.failed_write_attempt.is_none());
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
-        use std::os::unix::net::UnixStream;
-
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("FS recovery ordering root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("FS recovery ordering allowed root");
-        let target = allowed.join("input.txt");
-        fs::write(&target, b"recovery ordering").expect("FS recovery ordering input");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text = format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write FS recovery ordering manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open FS recovery ordering manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify FS recovery ordering manifest");
-        let snapshot =
-            GuardSnapshot::prepare(verified).expect("prepare FS recovery ordering broker");
-
-        let (g1_server, g1_peer) = UnixStream::pair().expect("G1 recovery ordering pair");
-        drop(g1_peer);
-        let reader_stop = Arc::new(AtomicBool::new(false));
-        let current = Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
-            attempt: 1,
-            writer: g1_server,
-            reader_stop: Arc::clone(&reader_stop),
-            pending_quit: None,
-        })));
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (window_tx, window_rx) = mpsc::channel();
-        let handle = PrimaryRouterHandle {
-            current: Arc::clone(&current),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            pending_echo: Arc::new(Mutex::new(None)),
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(false)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(true)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown: SessionShutdownState::new(),
-            fs: Some(snapshot.fs_weak()),
-            fs_worker_commands: None,
-            guardian: GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            window_commands: window_tx,
-            #[cfg(target_os = "macos")]
-            quit_drain_hooks: Arc::default(),
-        };
-        let router = PrimaryRouter {
-            handle: handle.clone(),
-            fs_worker: None,
-        };
-
-        let admitted = snapshot
-            .fs
-            .begin_call(PendingFsCall {
-                attempt: 1,
-                correlation: CorrelationId(120),
-            })
-            .expect("admit G1 recovery-ordering FS call")
-            .expect("G1 recovery-ordering admission remains open");
-        let work = FsWorkItem {
-            admitted,
-            request: FsRequest::Read {
-                path: target.display().to_string().replace('\\', "/"),
-            },
-            attempt: 1,
-            correlation: CorrelationId(120),
-            cancellation: Arc::new(AtomicBool::new(false)),
-        };
-        let (commands, receiver) = mpsc::channel();
-        commands
-            .send(FsWorkerCommand::Work(work))
-            .expect("queue recovery-ordering FS work");
-        commands
-            .send(FsWorkerCommand::Stop)
-            .expect("queue recovery-ordering worker stop");
-
-        let worker_handle = handle.clone();
-        let worker = thread::spawn(move || run_fs_worker(&receiver, &worker_handle, None));
-        let command = guardian_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("failed terminal write must request retired-generation recovery");
-        let GuardianOwnerCommand::FailRetiredGeneration(attempt, recovery_reply) = command else {
-            panic!("failed terminal write used the wrong owner command");
-        };
-        assert_eq!(attempt, 1);
-        assert_eq!(
-            snapshot
-                .fs
-                .state
-                .lock()
-                .expect("failed-write recovery state")
-                .failed_write_attempt,
-            Some(1),
-            "failed-write recovery marker was not published before owner notification"
-        );
-        assert!(
-            current
-                .lock()
-                .expect("retired current generation")
-                .is_none(),
-            "failed terminal write did not retire G1 before owner notification"
-        );
-
-        let (g2_server, _g2_client) = UnixStream::pair().expect("G2 recovery ordering pair");
-        let g2_handle = handle.clone();
-        let (installed_tx, installed_rx) = mpsc::sync_channel(1);
-        let install = thread::spawn(move || {
-            let result = g2_handle.install_generation(2, g2_server);
-            installed_tx.send(result).expect("report G2 installation");
-        });
-
-        let install_report = installed_rx.recv_timeout(Duration::from_secs(2));
-        if install_report.is_err() {
-            let _ = recovery_reply.send(Ok(()));
-            let _ = worker.join();
-            let _ = install.join();
-            panic!("G2 installation waited for the retired-generation recovery acknowledgment");
-        }
-        install_report
-            .expect("G2 installation report")
-            .expect("G2 installs while owner recovery acknowledgment is pending");
-        assert!(
-            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "recovery ordering sent an unexpected fatal window command"
-        );
-
-        recovery_reply
-            .send(Ok(()))
-            .expect("acknowledge retired-generation recovery after G2 installation");
-        worker
-            .join()
-            .expect("recovery-ordering worker joins")
-            .expect("recovery-ordering worker stays healthy");
-        install.join().expect("G2 installer joins");
-        router
-            .shutdown()
-            .expect("recovery-ordering router shutdown");
-    }
-
-    /// One guarded primary router over a socket pair, with the FS worker held
-    /// by a test gate after it takes its job (GH-528 T2 router tests).
-    #[cfg(target_os = "macos")]
-    struct GuardedTestRouter {
-        router: PrimaryRouter,
-        snapshot: GuardSnapshot,
-        allowed: PathBuf,
-        taken: Receiver<()>,
-        release: Sender<()>,
-        window: Receiver<AppWindowCommand>,
-        guardian: Receiver<TestPrimaryOwnerCommand>,
-        _temp: tempfile::TempDir,
-    }
-
-    /// A guarded router over a socket pair, and the pair's client end.
-    #[cfg(target_os = "macos")]
-    fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) {
-        use keld_ipc::link::AppLinkDeadlines as _;
-
-        let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("guarded client deadlines");
-        (guarded_router(server), client)
-    }
-
-    /// A guarded router over `server`: a pair end, or a Bun role's
-    /// authenticated app link.
-    #[cfg(target_os = "macos")]
-    fn guarded_router(server: std::os::unix::net::UnixStream) -> GuardedTestRouter {
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("guarded router root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("guarded router allowed root");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text =
-            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write guarded router manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open guarded router manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify guarded router manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare guarded router broker");
-        let (taken_tx, taken) = mpsc::sync_channel(1);
-        let (release, release_rx) = mpsc::channel();
-        let gate = Arc::new(FsWorkerTestGate {
-            taken: taken_tx,
-            release: Mutex::new(release_rx),
-        });
-        let (window_tx, window) = mpsc::channel();
-        let (guardian_tx, guardian) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs_test_gate(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-            Some(gate),
-        )
-        .expect("guarded test router");
-        GuardedTestRouter {
-            router,
-            snapshot,
-            allowed,
-            taken,
-            release,
-            window,
-            guardian,
-            _temp: temp,
-        }
-    }
-
-    /// GH-528 T2 end-to-end cases: a Bun `WorkerLink` role against this
-    /// router (`app_session/tests/worker_link_e2e.rs`).
-    #[cfg(target_os = "macos")]
-    mod worker_link_e2e;
-
-    #[cfg(target_os = "macos")]
-    fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
-        write_frame(
-            client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(corr),
-            &encode(&FsRequest::Write {
-                path: target.display().to_string().replace('\\', "/"),
-                bytes: b"t2".to_vec(),
-            })
-            .expect("encode FS write"),
-        )
-        .expect("send FS write");
-    }
-
-    #[cfg(target_os = "macos")]
-    fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
-        write_frame(
-            client,
-            FrameKind::Call,
-            0,
-            LIFECYCLE_CHANNEL,
-            CorrelationId(corr),
-            &encode(&LifecycleRequest::Quit).expect("encode Quit"),
-        )
-        .expect("send Quit");
-    }
-
-    /// Every frame the client reads before the link ends (EOF or reset).
-    #[cfg(target_os = "macos")]
-    fn read_frames_until_eof(
-        client: &mut std::os::unix::net::UnixStream,
-    ) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
-        let mut frames = Vec::new();
-        while let Ok(frame) = keld_ipc::link::read_frame(client) {
-            frames.push(frame);
-        }
-        frames
-    }
-
-    /// GH-528 T2, spec gh527 criterion 6: retiring a generation answers its
-    /// pending calls on ERR-declaring channels with `KELD-IPC-023` before the
-    /// link closes. An admitted FS call held in its handler, and a Quit waiting
-    /// in its FS drain, are both pending; an echo call is answered at once and
-    /// never gets an ERR.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
-        let (t, mut client) = guarded_test_router();
-        assert_echo_call(&mut client, 10, "answered before retire");
-        write_fs_call(&mut client, 11, &t.allowed.join("held.txt"));
-        t.taken
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker took the FS job");
-        let (drain_tx, drain_rx) = mpsc::sync_channel(1);
-        t.snapshot.fs.observe_next_drain_wait(drain_tx);
-        write_quit_call(&mut client, 12);
-        drain_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit waits in its FS drain");
-
-        t.router.handle().retire_generation(1).expect("retire g1");
-        let frames = read_frames_until_eof(&mut client);
-        let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> = frames
-            .iter()
-            .map(|(header, payload)| {
-                let error: CallError = decode(payload).expect("retire answer is a CallError");
-                (header.kind, header.channel, header.corr, error.code)
-            })
-            .collect();
-        assert_eq!(
-            answers,
-            vec![
-                (
-                    FrameKind::Err,
-                    FS_CHANNEL,
-                    CorrelationId(11),
-                    "KELD-IPC-023".to_owned()
-                ),
-                (
-                    FrameKind::Err,
-                    LIFECYCLE_CHANNEL,
-                    CorrelationId(12),
-                    "KELD-IPC-023".to_owned()
-                ),
-            ],
-            "exactly the two pending calls are answered, then the link closes"
-        );
-
-        t.release.send(()).expect("release FS worker");
-        t.router.shutdown().expect("router shutdown after retire");
-        assert!(matches!(
-            t.guardian.try_recv(),
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected)
-        ));
-    }
-
-    /// GH-528 T2: a peer that stops reading cannot hold an accepted Quit open.
-    /// The client floods CALLs behind its Quit and never reads, so the host's
-    /// `KELD-IPC-024` answers fill both socket buffers. Each answer is one
-    /// best-effort write bounded by `HOST_ANSWER_BUDGET`, and the first that
-    /// times out ends the drain, so the Quit tail reaches its guardian
-    /// shutdown well before one writer deadline. The bound under test is
-    /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
-    /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
-    /// wait.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
-        let (t, client) = guarded_test_router();
-        let mut writer = client.try_clone().expect("flooding writer");
-        let target = t.allowed.join("never.txt");
-        let flood = std::thread::spawn(move || {
-            write_quit_call(&mut writer, 30);
-            for corr in 31..1_031 {
-                let frame = write_frame(
-                    &mut writer,
-                    FrameKind::Call,
-                    0,
-                    FS_CHANNEL,
-                    CorrelationId(corr),
-                    &encode(&FsRequest::Write {
-                        path: target.display().to_string().replace('\\', "/"),
-                        bytes: b"t2".to_vec(),
-                    })
-                    .expect("encode flooding FS write"),
-                );
-                // Writes stop once the host closes the link.
-                if frame.is_err() {
-                    break;
-                }
-            }
-        });
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit attribution")
-        else {
-            panic!("Quit skipped shutdown attribution");
-        };
-        prepare.send(Ok(())).expect("acknowledge attribution");
-        let bound = APP_LINK_IO_DEADLINE
-            .checked_sub(Duration::from_secs(1))
-            .expect("writer deadline exceeds one second");
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(bound)
-            .expect("the Quit tail reached its shutdown before one writer deadline")
-        else {
-            panic!("unexpected guardian command after the Quit REPLY");
-        };
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
-        drop(client);
-        flood.join().expect("flooding writer joins");
-        t.router.shutdown().expect("router shutdown after Quit");
-    }
-
-    /// GH-528 T2, spec gh527 criterion 7: after an accepted Quit's real REPLY
-    /// and its FS drain, a CALL already received on an ERR-declaring channel is
-    /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
-    /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn quit_drain_answers_received_calls_with_024_and_runs_none() {
-        let (t, mut client) = guarded_test_router();
-        let target = t.allowed.join("after-quit.txt");
-        // All three frames are buffered before the host can finish the Quit:
-        // its REPLY waits on the shutdown attribution acknowledged below.
-        write_quit_call(&mut client, 20);
-        write_fs_call(&mut client, 21, &target);
-        let echo = keld_ipc::echo::EchoRequest {
-            message: "after quit".to_owned(),
-            count: 22,
-        };
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            ECHO_CHANNEL,
-            CorrelationId(22),
-            &encode(&echo).expect("encode echo"),
-        )
-        .expect("send echo after Quit");
-
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit attribution")
-        else {
-            panic!("Quit skipped shutdown attribution");
-        };
-        prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, quit_payload) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-        assert_eq!(
-            (quit.kind, quit.channel, quit.corr),
-            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
-        );
-        assert_eq!(
-            decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
-            LifecycleResponse::Quit
-        );
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("guardian shutdown")
-        else {
-            panic!("unexpected guardian command after the Quit REPLY");
-        };
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        let after = read_frames_until_eof(&mut client);
-        assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
-        let (header, payload) = &after[0];
-        assert_eq!(
-            (header.kind, header.channel, header.corr),
-            (FrameKind::Err, FS_CHANNEL, CorrelationId(21))
-        );
-        assert_eq!(
-            decode::<CallError>(payload).expect("024 CallError").code,
-            "KELD-IPC-024"
-        );
-        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
-        t.router.shutdown().expect("router shutdown after Quit");
-    }
-
-    /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
-    /// EOF and never drops a CALL that has already arrived. Three FS CALLs are
-    /// buffered behind the Quit; the drain is then held before its first read
-    /// and given an idle deadline that has already passed, as a host stall
-    /// longer than its idle backstop would leave it, and only then does the
-    /// role end the link. Every buffered call still gets `KELD-IPC-024`, in
-    /// order, and none runs. *Negative control:* checking the idle deadline
-    /// before every read (as the earlier timer-window drain did) answers none
-    /// of them.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
-        let (t, mut client) = guarded_test_router();
-        let (stalled_tx, stalled) = mpsc::sync_channel(1);
-        let (resume, resume_rx) = mpsc::channel();
-        t.router
-            .handle()
-            .stall_next_quit_drain(stalled_tx, resume_rx);
-        let target = t.allowed.join("stalled.txt");
-        write_quit_call(&mut client, 50);
-        for corr in 51..=53 {
-            write_fs_call(&mut client, corr, &target);
-        }
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit attribution")
-        else {
-            panic!("Quit skipped shutdown attribution");
-        };
-        prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-        assert_eq!(
-            (quit.kind, quit.channel, quit.corr),
-            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(50))
-        );
-        stalled
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the drain fixed its deadlines and stalled");
-        client
-            .shutdown(std::net::Shutdown::Write)
-            .expect("the role ends the link after the Quit REPLY");
-        resume.send(()).expect("resume the stalled drain");
-
-        // The drain ends on that EOF, and the host's link close reaches the
-        // half-closed role before its tail asks the guardian to stop it.
-        let answers: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
-            read_frames_until_eof(&mut client)
-                .iter()
-                .map(|(header, payload)| {
-                    let error: CallError = decode(payload).expect("drain answer is a CallError");
-                    (header.kind, header.channel, header.corr, error.code)
-                })
-                .collect();
-        let expected: Vec<_> = (51..=53)
-            .map(|corr| {
-                (
-                    FrameKind::Err,
-                    FS_CHANNEL,
-                    CorrelationId(corr),
-                    "KELD-IPC-024".to_owned(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            answers, expected,
-            "every CALL written before the role ended the link gets 024"
-        );
-        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("guardian shutdown after the drain")
-        else {
-            panic!("unexpected guardian command after the Quit drain");
-        };
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
-        t.router.shutdown().expect("router shutdown after Quit");
-    }
-
-    /// GH-528 (#636 follow-up): a role that half-closes after its Quit REPLY
-    /// reads EOF from the host's link close itself, before the guardian is
-    /// asked to stop it. The Quit tail sends the guardian `Shutdown` only
-    /// after the link close (KEL-139 AC6), and the test does not acknowledge
-    /// it until after the probe, so neither a kill nor the host dropping its
-    /// link handles can have produced this EOF. The probe is a nonblocking
-    /// read, so the result does not depend on a timeout. *Negative control:*
-    /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
-    /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
-        use std::io::Read as _;
-
-        let (t, mut client) = guarded_test_router();
-        write_quit_call(&mut client, 80);
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit attribution")
-        else {
-            panic!("Quit skipped shutdown attribution");
-        };
-        prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-        assert_eq!(
-            (quit.kind, quit.channel, quit.corr),
-            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(80))
-        );
-        client
-            .shutdown(std::net::Shutdown::Write)
-            .expect("the role ends the link after the Quit REPLY");
-
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the Quit tail reached the guardian after the link close")
-        else {
-            panic!("unexpected guardian command after the Quit REPLY");
-        };
-        client.set_nonblocking(true).expect("nonblocking probe");
-        let mut byte = [0_u8; 1];
-        let probe = client.read(&mut byte);
-        assert!(
-            matches!(probe, Ok(0)),
-            "the role reads the host's EOF before the guardian stops it: {probe:?}"
-        );
-        client.set_nonblocking(false).expect("blocking link");
-
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
-        t.router.shutdown().expect("router shutdown after Quit");
-    }
-
-    /// GH-528 T3 (#636 gate review): a role that fully closes right after its
-    /// Quit REPLY can leave a CALL it wrote behind the Quit in the host's
-    /// buffer. The drain still reads it, its `KELD-IPC-024` finds the role gone
-    /// (`EPIPE`), and the drain ends quietly as a lost link: the Quit tail goes
-    /// on to the guardian's shutdown and the UI Quit, with no link-failure
-    /// report and no `Fatal`. The drain is held before its first read until
-    /// the role has closed, so the answer's failure is certain. *Negative
-    /// control:* a failed answer that propagates as a session error sends the
-    /// UI `Fatal` instead of `Quit`.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
-        let (t, mut client) = guarded_test_router();
-        let (stalled_tx, stalled) = mpsc::sync_channel(1);
-        let (resume, resume_rx) = mpsc::channel();
-        let (end_tx, drain_end) = mpsc::sync_channel(1);
-        let handle = t.router.handle();
-        handle.stall_next_quit_drain(stalled_tx, resume_rx);
-        handle.observe_next_quit_drain_end(end_tx);
-        let target = t.allowed.join("behind.txt");
-        write_quit_call(&mut client, 90);
-        write_fs_call(&mut client, 91, &target);
-        let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit attribution")
-        else {
-            panic!("Quit skipped shutdown attribution");
-        };
-        prepare.send(Ok(())).expect("acknowledge attribution");
-        let (quit, _) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-        assert_eq!(
-            (quit.kind, quit.channel, quit.corr),
-            (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(90))
-        );
-        stalled
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the drain stalled before its first read");
-        drop(client);
-        resume.send(()).expect("resume the drain");
-
-        assert_eq!(
-            drain_end
-                .recv_timeout(Duration::from_secs(5))
-                .expect("the post-Quit drain ended"),
-            QuitDrainEnd::AnswerLost
-        );
-        let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
-            .guardian
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the Quit tail reaches the guardian, not a link failure")
-        else {
-            panic!("a lost post-Quit answer must not report a link failure");
-        };
-        shutdown
-            .send(Ok(()))
-            .expect("acknowledge guardian shutdown");
-        assert_eq!(
-            t.window
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit"),
-            AppWindowCommand::Quit
-        );
-        assert!(!target.exists(), "a post-Quit FS CALL must not execute");
-        t.router
-            .shutdown()
-            .expect("the accepted Quit stays a clean shutdown");
-    }
-
-    /// GH-528 T2 (gate review of #636, L2): a peer that stops reading cannot
-    /// hold a retirement, and its generation lock, for the writer's deadline.
-    /// The host-to-role direction is full before retirement and nothing reads
-    /// it, so the `KELD-IPC-023` for the held FS call cannot be written. It is
-    /// written under `HOST_ANSWER_BUDGET`, its failure marks the link lost,
-    /// and retirement still succeeds and closes the link: the role reads the
-    /// bytes queued before retirement, then the close, and no `ERR` byte.
-    /// *Negative control:* leaving the writer's deadline in place fails the
-    /// deadline assertion (and holds the lock for `APP_LINK_IO_DEADLINE`).
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retire_answers_are_bounded_when_the_peer_stops_reading() {
-        use std::io::{ErrorKind, Read as _, Write as _};
-
-        use keld_ipc::link::AppLinkDeadlines as _;
-
-        let (server, mut client) = std::os::unix::net::UnixStream::pair().expect("pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("client deadlines");
-        server.set_nonblocking(true).expect("nonblocking fill");
-        let mut queued = 0_usize;
-        let chunk = [0_u8; 4096];
-        for size in [chunk.len(), 1] {
-            loop {
-                match (&server).write(&chunk[..size]) {
-                    Ok(written) => queued += written,
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(error) => panic!("fill the host-to-role direction: {error}"),
-                }
-            }
-        }
-        server.set_nonblocking(false).expect("blocking link");
-        let probe = server.try_clone().expect("deadline probe");
-        let t = guarded_router(server);
-        write_fs_call(&mut client, 70, &t.allowed.join("held.txt"));
-        t.taken
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker took the FS job");
-
-        t.router
-            .handle()
-            .retire_generation(1)
-            .expect("retirement succeeds although its ERR cannot be written");
-        assert_eq!(
-            probe.app_link_write_deadline().expect("write deadline"),
-            Some(HOST_ANSWER_BUDGET),
-            "the 023 write ran under the answer budget, not the writer's deadline"
-        );
-        let mut received = Vec::new();
-        client
-            .read_to_end(&mut received)
-            .expect("the role reads to the close");
-        assert_eq!(
-            received.len(),
-            queued,
-            "the role reads the bytes queued before retirement, then the close"
-        );
-
-        t.release.send(()).expect("release FS worker");
-        t.router.shutdown().expect("router shutdown after retire");
-    }
-
-    /// GH-528 T2 (gate review of #636, L4): a real reply written first wins.
-    /// The FS worker writes its real REPLY and is held after it releases the
-    /// generation lock, with its lease still alive; a retirement then runs and
-    /// sends no `KELD-IPC-023` for the answered call. *Negative control:*
-    /// removing the terminal write's `retire_pending_call` (so the lease drop
-    /// alone clears the pending call) makes this retirement send a 023 after
-    /// the REPLY.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retire_after_a_real_reply_sends_no_023() {
-        let (t, mut client) = guarded_test_router();
-        let target = t.allowed.join("replied.txt");
-        let (written_tx, written) = mpsc::sync_channel(1);
-        let (resume, resume_rx) = mpsc::channel();
-        t.snapshot
-            .fs
-            .hold_next_terminal_write(written_tx, resume_rx);
-        write_fs_call(&mut client, 60, &target);
-        t.taken
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker took the FS job");
-        t.release.send(()).expect("release FS worker");
-        written
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the FS REPLY was written");
-        let (reply, _) = keld_ipc::link::read_frame(&mut client).expect("real FS REPLY");
-        assert_eq!(
-            (reply.kind, reply.channel, reply.corr),
-            (FrameKind::Reply, FS_CHANNEL, CorrelationId(60))
-        );
-
-        t.router.handle().retire_generation(1).expect("retire g1");
-        resume.send(()).expect("resume the FS worker");
-        let after = read_frames_until_eof(&mut client);
-        assert!(
-            after.is_empty(),
-            "an answered call gets no KELD-IPC-023: {after:?}"
-        );
-        assert!(target.exists(), "the answered FS write ran");
-        t.router.shutdown().expect("router shutdown after retire");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn fs_worker_keeps_ping_responsive_and_quit_waits_for_fs_terminal_outcome() {
-        use std::os::unix::net::UnixStream;
-
-        use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
-        use sha2::{Digest as _, Sha256};
-
-        for (case, denied) in [("allowed", false), ("denied", true)] {
-            let temp = tempfile::tempdir().expect("FS worker gate root");
-            let allowed = temp.path().join("allowed");
-            fs::create_dir(&allowed).expect("FS worker allowed root");
-            let target = if denied {
-                temp.path().join("denied-held.txt")
-            } else {
-                allowed.join("held.txt")
-            };
-            let scope = allowed.display().to_string().replace('\\', "/");
-            let manifest_text =
-                format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-            let manifest_path = temp.path().join(PERMISSIONS_FILE);
-            fs::write(&manifest_path, &manifest_text).expect("write FS worker manifest");
-            let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-            let verified = load_verified_manifest(
-                File::open(&manifest_path).expect("open FS worker manifest"),
-                manifest_path,
-                digest,
-            )
-            .expect("verify FS worker manifest");
-            let snapshot = GuardSnapshot::prepare(verified).expect("prepare FS worker broker");
-
-            let (taken_tx, taken_rx) = mpsc::sync_channel(1);
-            let (release_tx, release_rx) = mpsc::channel();
-            let gate = Arc::new(FsWorkerTestGate {
-                taken: taken_tx,
-                release: Mutex::new(release_rx),
-            });
-            let (server, mut client) = UnixStream::pair().expect("FS worker primary pair");
-            client
-                .set_app_link_deadlines(Some(Duration::from_secs(5)))
-                .expect("FS worker client deadlines");
-            let (window_tx, window_rx) = mpsc::channel();
-            let (guardian_tx, guardian_rx) = mpsc::channel();
-            let router = PrimaryRouter::start_with_fs_test_gate(
-                server,
-                window_tx,
-                PlatformPrimaryOwnerHandle {
-                    command_tx: guardian_tx,
-                },
-                SessionShutdownState::new(),
-                Some(snapshot.fs_weak()),
-                Some(gate),
-            )
-            .expect("gated FS worker router");
-
-            let committed = format!("{case} committed before quit").into_bytes();
-            let base = if denied { 70 } else { 60 };
-            write_frame(
-                &mut client,
-                FrameKind::Call,
-                0,
-                FS_CHANNEL,
-                CorrelationId(base),
-                &encode(&FsRequest::Write {
-                    path: target.display().to_string().replace('\\', "/"),
-                    bytes: committed.clone(),
-                })
-                .expect("encode gated FS write"),
-            )
-            .expect("send gated FS write");
-            taken_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("worker took FS job");
-
-            write_frame(
-                &mut client,
-                FrameKind::Ping,
-                0,
-                keld_ipc::ChannelId::for_test(99),
-                CorrelationId(base + 1),
-                &[],
-            )
-            .expect("send Ping while FS worker is held");
-            let (quit_drain_tx, quit_drain_rx) = mpsc::sync_channel(1);
-            snapshot.fs.observe_next_drain_wait(quit_drain_tx);
-            write_frame(
-                &mut client,
-                FrameKind::Call,
-                0,
-                LIFECYCLE_CHANNEL,
-                CorrelationId(base + 2),
-                &encode(&LifecycleRequest::Quit).expect("encode held-worker Quit"),
-            )
-            .expect("send Quit while FS worker is held");
-
-            let (ping, ping_payload) =
-                read_frame(&mut client).expect("Ping while FS worker is held");
-            assert_eq!(ping.kind, FrameKind::Ping, "{case}");
-            assert_eq!(ping.channel, keld_ipc::ChannelId::for_test(99), "{case}");
-            assert_eq!(ping.corr, CorrelationId(base + 1), "{case}");
-            assert!(ping_payload.is_empty(), "{case}");
-            assert!(
-                matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-                "{case}: UI Quit occurred while admitted FS work was still held"
-            );
-
-            quit_drain_rx
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap_or_else(|error| {
-                    panic!("{case}: Quit did not reach FS drain before worker release: {error}")
-                });
-            assert!(
-                router.handle.shutdown.is_running(),
-                "{case}: Quit claimed shutdown before the admitted FS terminal outcome"
-            );
-            assert!(
-                matches!(guardian_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-                "{case}: shutdown attribution began before the admitted FS terminal outcome"
-            );
-            assert!(
-                !target.exists(),
-                "{case}: held native operation changed the target before worker release"
-            );
-
-            release_tx.send(()).expect("release FS worker");
-
-            let prepare = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("Quit preparation after FS terminal write");
-            let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare_reply) = prepare else {
-                panic!("{case}: FS worker Quit skipped shutdown attribution");
-            };
-            prepare_reply
-                .send(Ok(()))
-                .expect("acknowledge FS worker shutdown attribution");
-
-            let (fs_terminal, fs_payload) =
-                read_frame(&mut client).expect("FS terminal outcome before Quit reply");
-            assert_eq!(fs_terminal.channel, FS_CHANNEL, "{case}");
-            assert_eq!(fs_terminal.corr, CorrelationId(base), "{case}");
-            if denied {
-                assert_eq!(fs_terminal.kind, FrameKind::Err, "{case}");
-                let error: CallError =
-                    decode(&fs_payload).expect("decode denied FS terminal outcome");
-                assert_eq!(error.code, "KELD-GUARD002", "{case}");
-                assert!(
-                    !target.exists(),
-                    "{case}: denied write produced a filesystem effect"
-                );
-            } else {
-                assert_eq!(fs_terminal.kind, FrameKind::Reply, "{case}");
-                assert!(matches!(
-                    decode::<FsResponse>(&fs_payload).expect("decode FS terminal outcome"),
-                    FsResponse::Write
-                ));
-                assert_eq!(
-                    fs::read(&target).expect("read committed FS bytes"),
-                    committed,
-                    "{case}: write effect and terminal FS outcome diverged"
-                );
-            }
-
-            let (quit, quit_payload) =
-                read_frame(&mut client).expect("Quit reply after FS terminal");
-            assert_eq!(quit.kind, FrameKind::Reply, "{case}");
-            assert_eq!(quit.channel, LIFECYCLE_CHANNEL, "{case}");
-            assert_eq!(quit.corr, CorrelationId(base + 2), "{case}");
-            assert_eq!(
-                decode::<LifecycleResponse>(&quit_payload).expect("decode held-worker Quit reply"),
-                LifecycleResponse::Quit,
-                "{case}"
-            );
-
-            let shutdown = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("FS worker guardian shutdown after drain");
-            let TestPrimaryOwnerCommand::Shutdown(shutdown_reply) = shutdown else {
-                panic!("{case}: FS worker Quit sent unexpected guardian command");
-            };
-            shutdown_reply
-                .send(Ok(()))
-                .expect("complete FS worker guardian shutdown");
-            assert_eq!(
-                window_rx
-                    .recv_timeout(Duration::from_secs(5))
-                    .expect("UI Quit after FS terminal outcome"),
-                AppWindowCommand::Quit,
-                "{case}"
-            );
-            router
-                .shutdown()
-                .expect("completed FS worker router shutdown");
-        }
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retired_call_drop_cannot_clear_successor_single_flight() {
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("successor single-flight root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write successor manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open successor manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify successor manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare successor broker");
-
-        let c1_pending = PendingFsCall {
-            attempt: 1,
-            correlation: CorrelationId(96),
-        };
-        let c1 = snapshot
-            .fs
-            .begin_call(c1_pending)
-            .expect("admit C1")
-            .expect("C1 admission remains open");
-        c1.retire_pending_call().expect("retire C1 terminal marker");
-
-        let c2_pending = PendingFsCall {
-            attempt: 1,
-            correlation: CorrelationId(97),
-        };
-        let c2 = snapshot
-            .fs
-            .begin_call(c2_pending)
-            .expect("admit C2 after C1 terminal retirement")
-            .expect("C2 admission remains open");
-
-        drop(c1);
-        let state = snapshot.fs.state.lock().expect("state after old C1 drop");
-        assert!(
-            state.pending_call == Some(c2_pending),
-            "old C1 drop corrupted C2 correlation ownership"
-        );
-        assert!(
-            state.call_outstanding,
-            "old C1 drop cleared C2 single-flight occupancy"
-        );
-        drop(state);
-
-        let c3 = snapshot.fs.begin_call(PendingFsCall {
-            attempt: 1,
-            correlation: CorrelationId(98),
-        });
-        assert!(
-            c3.is_err(),
-            "C3 was admitted after old C1 drop erased C2 occupancy"
-        );
-
-        c2.retire_pending_call().expect("retire C2");
-        drop(c2);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn terminal_retirement_releases_call_occupancy_before_native_drain() {
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("terminal occupancy root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write terminal occupancy manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open terminal occupancy manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify terminal occupancy manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare terminal occupancy broker");
-        let pending = PendingFsCall {
-            attempt: 1,
-            correlation: CorrelationId(99),
-        };
-        let admitted = snapshot
-            .fs
-            .begin_call(pending)
-            .expect("admit terminal occupancy call")
-            .expect("terminal occupancy admission remains open");
-        assert!(snapshot.fs.has_outstanding_call_for(1));
-        assert_eq!(
-            snapshot
-                .fs
-                .state
-                .lock()
-                .expect("pre-terminal state")
-                .in_flight,
-            1
-        );
-
-        admitted
-            .retire_pending_call()
-            .expect("retire terminal correlation before reply");
-        assert!(
-            !snapshot.fs.has_outstanding_call_for(1),
-            "terminal correlation retirement must release single-flight occupancy before the native lease drains"
-        );
-        assert_eq!(
-            snapshot
-                .fs
-                .state
-                .lock()
-                .expect("post-terminal state")
-                .in_flight,
-            1,
-            "drain accounting must remain held until the native lease is dropped"
-        );
-
-        drop(admitted);
-        snapshot.fs.drain().expect("terminal occupancy drain");
-    }
-
-    #[cfg(target_os = "macos")]
-    fn successor_drain_test_router(
-        snapshot: &GuardSnapshot,
-        g1_server: std::os::unix::net::UnixStream,
-    ) -> (PrimaryRouter, Receiver<AppWindowCommand>) {
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let handle = PrimaryRouterHandle {
-            current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
-                attempt: 1,
-                writer: g1_server,
-                reader_stop: Arc::new(AtomicBool::new(false)),
-                pending_quit: None,
-            }))),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            pending_echo: Arc::new(Mutex::new(None)),
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(true)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(true)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown: SessionShutdownState::new(),
-            fs: Some(snapshot.fs_weak()),
-            fs_worker_commands: None,
-            guardian: GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            window_commands: window_tx,
-            #[cfg(target_os = "macos")]
-            quit_drain_hooks: Arc::default(),
-        };
-        let router =
-            PrimaryRouter::finish_start(handle, None).expect("successor drain router worker");
-        (router, window_rx)
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn successor_reader_waits_for_retired_fs_drain_before_ready_and_call() {
-        use std::os::unix::net::UnixStream;
-
-        use keld_ipc::link::{AppLinkDeadlines as _, read_frame, write_frame};
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("successor drain root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write successor drain manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open successor drain manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify successor drain manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare successor drain broker");
-
-        let (g1_server, _g1_client) = UnixStream::pair().expect("G1 drain pair");
-        let (mut router, window_rx) = successor_drain_test_router(&snapshot, g1_server);
-        let old_call = snapshot
-            .fs
-            .begin_call(PendingFsCall {
-                attempt: 1,
-                correlation: CorrelationId(110),
-            })
-            .expect("admit old generation FS call")
-            .expect("old generation FS admission remains open");
-        router
-            .handle
-            .retire_generation(1)
-            .expect("retire G1 while native work is outstanding");
-
-        let (drain_wait_tx, drain_wait_rx) = mpsc::sync_channel(1);
-        snapshot.fs.observe_next_drain_wait(drain_wait_tx);
-        let (g2_server, mut g2_client) = UnixStream::pair().expect("G2 drain pair");
-        g2_client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("G2 deadlines");
-        let install_handle = router.handle.clone();
-        let (installed_tx, installed_rx) = mpsc::sync_channel(1);
-        let install = thread::spawn(move || {
-            let result = install_handle.install_generation(2, g2_server);
-            installed_tx.send(result).expect("report G2 install");
-        });
-
-        drain_wait_rx
-            .recv_timeout(Duration::from_secs(2))
-            .expect("G2 install must wait for the retired native call to drain");
-        assert!(
-            matches!(installed_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "G2 was published before old filesystem authority drained"
-        );
-        assert!(
-            router
-                .handle
-                .current
-                .lock()
-                .expect("generation state")
-                .is_none(),
-            "G2 became current before retired native work drained"
-        );
-        assert!(
-            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "waiting for old FS work made the recovered session fatal"
-        );
-
-        drop(old_call);
-        installed_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("G2 install completion")
-            .expect("G2 installs after old FS drain");
-        install.join().expect("G2 installer joins");
-
-        let (ready, ready_payload) = read_frame(&mut g2_client).expect("G2 Ready replay");
-        assert_eq!(ready.kind, FrameKind::Event);
-        assert_eq!(ready.channel, LIFECYCLE_CHANNEL);
-        assert_eq!(ready.corr, CorrelationId(0));
-        assert_eq!(
-            decode::<LifecycleEvent>(&ready_payload).expect("decode G2 Ready"),
-            LifecycleEvent::Ready
-        );
-
-        write_frame(
-            &mut g2_client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(111),
-            &encode(&FsRequest::Read {
-                path: temp.path().join("denied.txt").display().to_string(),
-            })
-            .expect("encode G2 FS Call"),
-        )
-        .expect("send G2 FS Call");
-        let (reply, payload) = read_frame(&mut g2_client).expect("G2 FS terminal response");
-        assert_eq!(reply.kind, FrameKind::Err);
-        assert_eq!(reply.channel, FS_CHANNEL);
-        assert_eq!(reply.corr, CorrelationId(111));
-        let error: CallError = decode(&payload).expect("decode G2 FS Err");
-        assert_eq!(error.code, "KELD-GUARD001");
-        assert!(
-            matches!(window_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "G2's first well-formed FS Call became a fatal recovery error"
-        );
-
-        router
-            .stop_and_join()
-            .expect("successor drain router shutdown");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retired_generation_correlation_does_not_release_global_fs_single_flight() {
-        use std::io::Cursor;
-
-        use keld_ipc::link::write_frame;
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("global FS single-flight root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("global FS single-flight allowed root");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text = format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write global FS manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open global FS manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify global FS manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare global FS broker");
-
-        let g1 = snapshot
-            .fs
-            .begin_call(PendingFsCall {
-                attempt: 1,
-                correlation: CorrelationId(100),
-            })
-            .expect("admit G1 FS call")
-            .expect("G1 admission remains open");
-        snapshot
-            .fs
-            .retire_pending_call_for_attempt(1)
-            .expect("retire only G1 correlation metadata");
-        assert_eq!(
-            snapshot.fs.state.lock().expect("G1 state").in_flight,
-            1,
-            "generation retirement must not complete the admitted native operation"
-        );
-
-        let mut bytes = Vec::new();
-        write_frame(
-            &mut bytes,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(101),
-            &[0xaa; 64],
-        )
-        .expect("encode G2 FS frame");
-        let mut cursor = Cursor::new(bytes);
-        let stop = AtomicBool::new(false);
-        let error = read_primary_app_frame_interruptible_with_privileged_call(
-            &mut cursor,
-            &stop,
-            || None,
-            &keld_ipc::channel_table::FS,
-            || snapshot.fs.has_outstanding_call_for(2),
-        )
-        .expect_err("G2 must be rejected while G1 native work is still outstanding");
-        assert!(
-            error.to_string().contains("KELD-IPC-005"),
-            "wrong cross-generation single-flight classification: {error}"
-        );
-        assert_eq!(
-            cursor.position(),
-            u64::try_from(keld_ipc::HEADER_LEN).expect("header length fits u64"),
-            "G2 payload was consumed before global single-flight rejection"
-        );
-
-        let second = snapshot.fs.begin_call(PendingFsCall {
-            attempt: 2,
-            correlation: CorrelationId(101),
-        });
-        assert!(
-            second.is_err(),
-            "G2 raced past the global single-flight backstop after G1 correlation retirement"
-        );
-
-        drop(g1);
-        assert_eq!(
-            snapshot.fs.state.lock().expect("post-G1 state").in_flight,
-            0
-        );
-        snapshot
-            .fs
-            .begin_call(PendingFsCall {
-                attempt: 3,
-                correlation: CorrelationId(102),
-            })
-            .expect("G3 admission after G1 completion")
-            .expect("G3 must admit after global occupancy clears");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn second_fs_call_is_rejected_before_its_payload_while_first_is_outstanding() {
-        use std::io::Write as _;
-        use std::os::unix::net::UnixStream;
-
-        use keld_ipc::frame::FrameHeader;
-        use keld_ipc::link::{AppLinkDeadlines as _, write_frame};
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("second FS Call root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("second FS Call allowed root");
-        let first_target = allowed.join("held.txt");
-        fs::write(&first_target, b"held worker bytes").expect("second FS Call input");
-        let second_target = allowed.join("must-not-write.txt");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text =
-            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write second FS Call manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open second FS Call manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify second FS Call manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare second FS Call broker");
-
-        let (taken_tx, taken_rx) = mpsc::sync_channel(1);
-        let (release_tx, release_rx) = mpsc::channel();
-        let gate = Arc::new(FsWorkerTestGate {
-            taken: taken_tx,
-            release: Mutex::new(release_rx),
-        });
-        let (server, mut client) = UnixStream::pair().expect("second FS Call primary pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("second FS Call client deadlines");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs_test_gate(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-            Some(gate),
-        )
-        .expect("second FS Call router");
-
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(80),
-            &encode(&FsRequest::Read {
-                path: first_target.display().to_string().replace('\\', "/"),
-            })
-            .expect("encode held first FS Call"),
-        )
-        .expect("send held first FS Call");
-        taken_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker took first FS Call");
-        assert_eq!(
-            snapshot.fs.state.lock().expect("FS state").in_flight,
-            1,
-            "the held first FS Call is the only native admission"
-        );
-
-        let second_payload = encode(&FsRequest::Write {
-            path: second_target.display().to_string().replace('\\', "/"),
-            bytes: b"must not be read".to_vec(),
-        })
-        .expect("encode withheld second FS payload");
-        let second_len = u32::try_from(second_payload.len()).expect("second FS payload length");
-        client
-            .write_all(
-                &FrameHeader {
-                    kind: FrameKind::Call,
-                    flags: 0,
-                    channel: FS_CHANNEL,
-                    corr: CorrelationId(81),
-                    len: second_len,
-                }
-                .encode(),
-            )
-            .expect("send only second FS Call header");
-        client.flush().expect("flush second FS Call header");
-
-        let fatal = window_rx.recv_timeout(Duration::from_secs(1));
-        assert_eq!(
-            snapshot.fs.state.lock().expect("FS state").in_flight,
-            1,
-            "the withheld second payload reached native admission"
-        );
-        assert!(
-            matches!(taken_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
-            "the worker observed a second FS handler entry"
-        );
-        assert!(
-            !second_target.exists(),
-            "the header-only second FS Call produced a filesystem effect"
-        );
-
-        release_tx.send(()).expect("release first FS worker");
-        let shutdown = router.shutdown();
-        assert_eq!(
-            fatal.expect("second FS Call must fail before its withheld payload is read"),
-            AppWindowCommand::Fatal
-        );
-        let error = shutdown.expect_err("second outstanding FS Call must fail the session");
-        assert!(
-            error.to_string().contains("KELD-IPC-005"),
-            "wrong second FS Call failure: {error}"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn stale_generation_precedes_malformed_fs_payload_classification() {
-        use std::os::unix::net::UnixStream;
-
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("stale FS request root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write stale FS manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open stale FS manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify stale FS manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare stale FS broker");
-        let (server, _client) = UnixStream::pair().expect("stale FS router pair");
-        let (window_tx, _window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-        )
-        .expect("stale FS router");
-
-        let error = must_err(
-            prepare_fs_work(
-                &router.handle(),
-                2,
-                CorrelationId(70),
-                &[0xff],
-                &Arc::new(AtomicBool::new(false)),
-            ),
-            "stale generation must fail before malformed payload decoding",
-        );
-        router.shutdown().expect("stale FS router shutdown");
-        let rendered = error.to_string();
-        assert!(
-            rendered.contains("stale primary generation"),
-            "wrong stale-generation classification: {rendered}"
-        );
-        assert!(
-            !rendered.contains("KELD-IPC-003"),
-            "codec classification overtook stale generation: {rendered}"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn authenticated_primary_link_rejects_foreign_hello_then_routes_fs() {
-        use std::os::unix::net::UnixStream;
-
-        use keld_ipc::link::{handshake_client, read_frame, write_frame};
-        use keld_ipc::{
-            BootstrapAdmission, BootstrapListener, BootstrapRejection, BootstrapRejectionObserver,
-            SessionToken, parse_app_link,
-        };
-        use sha2::{Digest as _, Sha256};
-
-        struct RejectionRecorder(Arc<Mutex<Vec<BootstrapRejection>>>);
-        impl BootstrapRejectionObserver for RejectionRecorder {
-            fn rejected(&self, rejection: BootstrapRejection) {
-                self.0.lock().expect("rejection recorder").push(rejection);
-            }
-        }
-
-        let temp = tempfile::tempdir().expect("authenticated FS temp root");
-        let allowed = temp.path().join("allowed");
-        fs::create_dir(&allowed).expect("authenticated allowed root");
-        let scope = allowed.display().to_string().replace('\\', "/");
-        let manifest_text =
-            format!(r#"{{"app":{{"fs":{{"read":["{scope}/**"],"write":["{scope}/**"]}}}}}}"#);
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, &manifest_text).expect("write authenticated FS manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open authenticated FS manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify authenticated FS manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare authenticated FS broker");
-
-        let listener = Arc::new(BootstrapListener::bind().expect("bind production bootstrap"));
-        let app_link = listener.app_link();
-        let (endpoint, token) = parse_app_link(&app_link).expect("parse production app-link");
-
-        let rejections = Arc::new(Mutex::new(Vec::new()));
-        let listener_for_accept = Arc::clone(&listener);
-        let rejection_for_accept = Arc::clone(&rejections);
-        let accept = thread::spawn(move || {
-            let observer = RejectionRecorder(rejection_for_accept);
-            match listener_for_accept
-                .accept_authenticated_until(Instant::now() + Duration::from_secs(5), &observer)
-                .expect("bootstrap accept")
-            {
-                BootstrapAdmission::Authenticated(stream) => stream,
-                BootstrapAdmission::Cancelled => panic!("bootstrap cancelled before valid peer"),
-                BootstrapAdmission::DeadlineElapsed => {
-                    panic!("bootstrap deadline elapsed before valid peer")
-                }
-            }
-        });
-
-        let mut foreign_hex = token.to_hex().into_bytes();
-        foreign_hex[0] = if foreign_hex[0] == b'0' { b'1' } else { b'0' };
-        let foreign = SessionToken::from_hex(
-            std::str::from_utf8(&foreign_hex).expect("foreign token remains ASCII"),
-        )
-        .expect("foreign token");
-        let mut hostile = UnixStream::connect(endpoint).expect("foreign bootstrap connect");
-        let foreign_error =
-            handshake_client(&mut hostile, &foreign).expect_err("foreign HELLO must fail");
-        assert!(
-            matches!(foreign_error, IpcError::HelloAuth { .. } | IpcError::Io(_)),
-            "foreign peer must observe auth rejection or host close: {foreign_error}"
-        );
-        drop(hostile);
-
-        let denied_before_auth = allowed.join("foreign-must-not-write.txt");
-        assert!(
-            !denied_before_auth.exists(),
-            "foreign HELLO reached filesystem before authentication"
-        );
-
-        let mut client = UnixStream::connect(endpoint).expect("valid bootstrap connect");
-        handshake_client(&mut client, &token).expect("valid HELLO authenticates");
-        let server = accept.join().expect("accept thread");
-        let observed = rejections.lock().expect("rejection readback").clone();
-        assert_eq!(observed, vec![BootstrapRejection::HelloAuth]);
-        assert_eq!(observed[0].code(), "KELD-IPC-007");
-        assert!(
-            !listener.path().exists(),
-            "one-use locator remained after authenticated consume"
-        );
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("authenticated FS read deadline");
-
-        let (window_tx, _window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start_with_fs(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-            Some(snapshot.fs_weak()),
-        )
-        .expect("authenticated primary router");
-
-        let target = allowed.join("authenticated-route.txt");
-        let request = FsRequest::Write {
-            path: target.display().to_string().replace('\\', "/"),
-            bytes: b"authenticated-primary".to_vec(),
-        };
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(51),
-            &encode(&request).expect("encode authenticated write"),
-        )
-        .expect("send authenticated FS write");
-        let (header, payload) = read_frame(&mut client).expect("authenticated FS reply");
-        assert_eq!(header.kind, FrameKind::Reply);
-        assert_eq!(header.channel, FS_CHANNEL);
-        assert_eq!(header.corr, CorrelationId(51));
-        assert!(matches!(
-            decode::<FsResponse>(&payload).expect("decode authenticated FS response"),
-            FsResponse::Write
-        ));
-        assert_eq!(
-            fs::read(&target).expect("authenticated bytes"),
-            b"authenticated-primary"
-        );
-
-        router.shutdown().expect("authenticated router shutdown");
-
-        let late_target = allowed.join("post-quiesce-must-not-write.txt");
-        let late = FsRequest::Write {
-            path: late_target.display().to_string().replace('\\', "/"),
-            bytes: b"too-late".to_vec(),
-        };
-        if write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            FS_CHANNEL,
-            CorrelationId(52),
-            &encode(&late).expect("encode post-quiesce write"),
-        )
-        .is_ok()
-        {
-            read_frame(&mut client).expect_err("retained old stream must be closed/rejected");
-        }
-        assert!(
-            !late_target.exists(),
-            "retained old stream entered FS handler after quiescing"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn fs_quiesce_refuses_new_admission_and_drains_existing_lease() {
-        use sha2::{Digest as _, Sha256};
-
-        let temp = tempfile::tempdir().expect("FS quiesce root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write empty manifest");
-        let digest: [u8; 32] = Sha256::digest(manifest_text.as_bytes()).into();
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open empty manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify empty manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare empty FS broker");
-
-        let admitted = snapshot
-            .fs
-            .admit()
-            .expect("first FS admission")
-            .expect("session initially accepts");
-        snapshot.fs.quiesce().expect("publish FS quiescing");
-        assert!(
-            snapshot
-                .fs
-                .admit()
-                .expect("post-quiesce admission check")
-                .is_none(),
-            "new FS handler entered after quiescing"
-        );
-        assert_eq!(
-            snapshot.fs.state.lock().expect("FS state").in_flight,
-            1,
-            "pre-admitted lease disappeared before its terminal outcome"
-        );
-        drop(admitted);
-        snapshot.fs.drain().expect("drain admitted FS work");
-        assert_eq!(
-            snapshot.fs.state.lock().expect("FS state").in_flight,
-            0,
-            "drain returned before the admitted lease terminated"
-        );
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn dequeued_fs_item_losing_quiesce_never_enters_handler() {
-        let temp = tempfile::tempdir().expect("paused FS entry root");
-        let manifest_text = "{}\n";
-        let manifest_path = temp.path().join(PERMISSIONS_FILE);
-        fs::write(&manifest_path, manifest_text).expect("write paused FS manifest");
-        // SHA-256 of the exact static fixture bytes `{}\n`. Keep the Linux
-        // lifecycle regression independent of the macOS-only sha2 dependency.
-        let digest = [
-            0xca, 0x3d, 0x16, 0x3b, 0xab, 0x05, 0x53, 0x81, 0x82, 0x72, 0x26, 0x14, 0x05, 0x68,
-            0xf3, 0xbe, 0xf7, 0xea, 0xac, 0x18, 0x7c, 0xeb, 0xd7, 0x68, 0x78, 0xe0, 0xb6, 0x3e,
-            0x9e, 0x44, 0x23, 0x56,
-        ];
-        let verified = load_verified_manifest(
-            File::open(&manifest_path).expect("open paused FS manifest"),
-            manifest_path,
-            digest,
-        )
-        .expect("verify paused FS manifest");
-        let snapshot = GuardSnapshot::prepare(verified).expect("prepare paused FS broker");
-        let admitted = snapshot
-            .fs
-            .admit()
-            .expect("paused FS admission")
-            .expect("session initially accepts");
-        let invoked = Arc::new(AtomicBool::new(false));
-        let invoked_in_worker = Arc::clone(&invoked);
-        let (dequeued_tx, dequeued_rx) = mpsc::sync_channel(1);
-        let (enter_tx, enter_rx) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            dequeued_tx.send(()).expect("report dequeued FS item");
-            enter_rx.recv().expect("release paused handler entry");
-            admitted
-                .handle_with(|| invoked_in_worker.store(true, Ordering::Release))
-                .expect("attempt paused handler entry")
-                .is_none()
-        });
-
-        dequeued_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("worker dequeued admitted FS item");
-        snapshot.fs.quiesce().expect("publish FS quiescence");
-        enter_tx.send(()).expect("release handler-entry attempt");
-        assert!(worker.join().expect("paused FS worker joins"));
-        assert!(
-            !invoked.load(Ordering::Acquire),
-            "dequeued item invoked its handler after quiescence publication"
-        );
-        snapshot.fs.drain().expect("drain rejected FS item");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn guard_snapshot_drops_only_after_ordered_cleanup() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
-        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
-        fs::write(root.join("index.html"), "<p>guarded</p>\n").expect("renderer");
-        fs::write(root.join(PERMISSIONS_FILE), b"{}\n").expect("permissions");
-        fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("boot");
-        let ValidatedBootSelection {
-            app,
-            permissions_file,
-            permissions_digest,
-        } = validate_from_root(&root).expect("validated selection");
-        let verified = load_verified_manifest(
-            permissions_file,
-            root.join(PERMISSIONS_FILE),
-            permissions_digest,
-        )
-        .expect("verified manifest");
-        drop(app);
-        let dropped = Arc::new(AtomicBool::new(false));
-        let mut snapshot = GuardSnapshot::prepare(verified).expect("prepare guarded FS broker");
-        snapshot.drop_observer = Some(Arc::clone(&dropped));
-
-        let digest = finish_guarded_session(Some(&snapshot), |live| {
-            assert!(
-                !dropped.load(Ordering::Acquire),
-                "snapshot dropped before cleanup"
-            );
-            live.expect("guarded cleanup receives the snapshot")
-                .verified
-                .verified_sha256()
-        });
-
-        assert_eq!(digest, permissions_digest);
-        assert!(
-            !dropped.load(Ordering::Acquire),
-            "borrowed cleanup helper destroyed the outer session owner"
-        );
-        drop(snapshot);
-        assert!(
-            dropped.load(Ordering::Acquire),
-            "outer session owner did not destroy the snapshot after cleanup"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn boot_sidecar_symlink_is_rejected_before_target_resolution() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
-        let outside = temp.path().join("outside-boot.json");
-        fs::write(&outside, valid_boot("src/main.ts", "index.html")).expect("outside boot");
-        symlink(&outside, root.join("keld.boot.json")).expect("boot symlink");
-
-        let error = must_err(validate_from_root(&root), "boot symlink must fail");
-        assert!(error.to_string().contains("boot descriptor"), "{error}");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn descriptor_limit_does_not_narrow_renderer_size() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("mode");
-        fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
-        let renderer = vec![b'x'; MAX_BOOT_BYTES + 1];
-        fs::write(root.join("index.html"), &renderer).expect("large renderer");
-        fs::write(root.join("keld.permissions.jsonc"), b"{}\n").expect("permissions");
-        fs::write(
-            root.join("keld.boot.json"),
-            valid_boot("main.ts", "index.html"),
-        )
-        .expect("boot");
-
-        let selection = validate_from_root(&root).expect("large renderer is valid");
-        assert_eq!(selection.app.renderer_html, renderer);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn dev_lease_reader_is_nonblocking_cloexec_and_read_only() {
-        let (reader, writer) = nix::unistd::pipe().expect("lease pipe");
-        configure_dev_lease_fd(&reader).expect("configure lease reader");
-        let descriptor = FdFlag::from_bits_truncate(
-            fcntl(&reader, FcntlArg::F_GETFD).expect("lease descriptor flags"),
-        );
-        let status = OFlag::from_bits_truncate(
-            fcntl(&reader, FcntlArg::F_GETFL).expect("lease status flags"),
-        );
-        assert!(descriptor.contains(FdFlag::FD_CLOEXEC));
-        assert!(status.contains(OFlag::O_NONBLOCK));
-        assert!((status & OFlag::O_ACCMODE).is_empty());
-
-        let error = configure_dev_lease_fd(&writer).expect_err("writer is not a lease reader");
-        assert!(error.to_string().contains("read-only end"), "{error}");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn dev_lease_data_drain_yields_after_a_fixed_work_budget() {
-        struct EndlessReader {
-            reads: usize,
-        }
-
-        impl std::io::Read for EndlessReader {
-            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-                self.reads += 1;
-                bytes.fill(b'x');
-                Ok(bytes.len())
-            }
-        }
-
-        let mut reader = EndlessReader { reads: 0 };
-        assert!(!poll_dev_lease_reader(&mut reader).expect("bounded data drain"));
-        assert_eq!(reader.reads, DEV_LEASE_DRAIN_READS);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn stage_directory_mode_is_mandatory() {
-        let temp = tempfile::tempdir().expect("temp root");
-        let root = temp.path().join("stage");
-        fs::create_dir(&root).expect("stage");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o1700)).expect("wrong mode");
-        let mode_error = must_err(validate_from_root(&root), "mode must be exact 0700");
-        assert!(mode_error.to_string().contains("0o700"), "{mode_error}");
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[allow(clippy::too_many_lines)] // one test preserves the full Ready/calls/Quit ordering oracle
-    fn one_router_carries_ready_two_echo_calls_and_ordered_quit() {
-        use std::io::Read as _;
-        use std::os::unix::net::UnixStream;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::{Arc, mpsc};
-        use std::time::Duration;
-
-        use keld_ipc::codec::{decode, encode};
-        use keld_ipc::link::{AppLinkDeadlines, read_frame};
-
-        let (server, mut client) = UnixStream::pair().expect("session pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("client deadlines");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (eof_tx, eof_rx) = mpsc::channel();
-        let guardian_prepared = Arc::new(AtomicBool::new(false));
-        let guardian_prepared_in_thread = Arc::clone(&guardian_prepared);
-        let guardian_finished = Arc::new(AtomicBool::new(false));
-        let guardian_finished_in_thread = Arc::clone(&guardian_finished);
-        let guardian_thread = std::thread::spawn(move || {
-            let prepare_reply = match guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("guardian Quit preparation")
-            {
-                TestPrimaryOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
-                TestPrimaryOwnerCommand::Shutdown(_) => panic!("Quit reply lacked preparation"),
-                TestPrimaryOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
-                TestPrimaryOwnerCommand::FailGeneration(_, _)
-                | TestPrimaryOwnerCommand::FailRetiredGeneration(_, _) => {
-                    panic!("unexpected link failure")
-                }
-                TestPrimaryOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
-                TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
-            };
-            guardian_prepared_in_thread.store(true, Ordering::Release);
-            prepare_reply
-                .send(Ok(()))
-                .expect("guardian preparation reply");
-            let shutdown_reply = match guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("guardian shutdown request")
-            {
-                TestPrimaryOwnerCommand::Shutdown(reply) => reply,
-                TestPrimaryOwnerCommand::PrepareAcceptedShutdown(_) => {
-                    panic!("duplicate preparation")
-                }
-                TestPrimaryOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
-                TestPrimaryOwnerCommand::FailGeneration(_, _)
-                | TestPrimaryOwnerCommand::FailRetiredGeneration(_, _) => {
-                    panic!("unexpected link failure")
-                }
-                TestPrimaryOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
-                TestPrimaryOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
-            };
-            eof_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("link EOF before guardian reap");
-            guardian_finished_in_thread.store(true, Ordering::Release);
-            shutdown_reply
-                .send(Ok(()))
-                .expect("guardian shutdown reply");
-        });
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-        )
-        .expect("primary router");
-
-        router.handle().signal_ready().expect("Ready");
-        assert_lifecycle_event(&mut client, LifecycleEvent::Ready);
-
-        for (correlation, message) in [(41_u32, "first"), (42_u32, "second")] {
-            assert_echo_call(&mut client, correlation, message);
-        }
-
-        router
-            .handle()
-            .signal_last_window_closed()
-            .expect("LastWindowClosed");
-        assert_lifecycle_event(&mut client, LifecycleEvent::LastWindowClosed);
-
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            LIFECYCLE_CHANNEL,
-            CorrelationId(43),
-            &encode(&LifecycleRequest::Quit).expect("Quit request"),
-        )
-        .expect("write Quit Call");
-        let (quit_header, quit_payload) = read_frame(&mut client).expect("Quit Reply");
-        assert_eq!(quit_header.kind, FrameKind::Reply);
-        assert_eq!(quit_header.channel, LIFECYCLE_CHANNEL);
-        assert_eq!(quit_header.corr, CorrelationId(43));
-        assert_eq!(
-            decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
-            LifecycleResponse::Quit
-        );
-        assert!(
-            guardian_prepared.load(Ordering::Acquire),
-            "accepted shutdown attribution must precede the Quit reply"
-        );
-        let mut byte = [0_u8; 1];
-        assert_eq!(client.read(&mut byte).expect("link EOF"), 0);
-        eof_tx.send(()).expect("record EOF");
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("UI Quit wake"),
-            AppWindowCommand::Quit
-        );
-        assert!(
-            guardian_finished.load(Ordering::Acquire),
-            "UI Quit must follow guardian reap acknowledgement"
-        );
-
-        router.shutdown().expect("router shutdown");
-        guardian_thread.join().expect("guardian thread joins");
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn retired_generation_eof_cannot_fail_or_replace_the_successor() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        use keld_ipc::link::AppLinkDeadlines as _;
-
-        let (g1_server, mut g1_client) = UnixStream::pair().expect("g1 session pair");
-        g1_client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("g1 deadlines");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, _guardian_rx) = mpsc::channel();
-        let router = PrimaryRouter::start(
-            g1_server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-        )
-        .expect("generation router");
-        let handle = router.handle();
-        handle.signal_ready().expect("g1 Ready");
-        assert_lifecycle_event(&mut g1_client, LifecycleEvent::Ready);
-
-        handle.retire_generation(1).expect("retire g1");
-        handle
-            .signal_last_window_closed()
-            .expect("record last-window close during gap");
-        let (g2_server, mut g2_client) = UnixStream::pair().expect("g2 session pair");
-        g2_client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("g2 deadlines");
-        handle.install_generation(2, g2_server).expect("install g2");
-        assert_lifecycle_event(&mut g2_client, LifecycleEvent::Ready);
-        assert_lifecycle_event(&mut g2_client, LifecycleEvent::LastWindowClosed);
-        // A stale Quit returns before it reads; the peerless reader is unused.
-        let (mut stale_reader, stale_peer) = UnixStream::pair().expect("stale Quit reader");
-        drop(stale_peer);
-        handle
-            .lifecycle_quit(1, CorrelationId(72), &[0], &mut stale_reader)
-            .expect("stale g1 Quit is ignored");
-        assert!(
-            handle.shutdown.is_running(),
-            "stale g1 Quit claimed g2 shutdown"
-        );
-        drop(g1_client);
-        assert!(
-            window_rx.try_recv().is_err(),
-            "retired g1 EOF woke the UI fatal path"
-        );
-        assert_echo_call(&mut g2_client, 73, "successor");
-        drop(g2_client);
-        router.shutdown().expect("generation router shutdown");
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn recovered_generation_orders_window_events_once_across_installation() {
-        use std::os::unix::net::UnixStream;
-        if std::env::var_os(RECOVERED_CHILD_ENV).is_none() {
-            assert_bounded_recovered_event_order_child();
-            return;
-        }
-
-        // Gap, live delivery overlapping reader registration, and delivery after
-        // installation are distinct schedules of the same real framed router.
-        for close_at in ["gap", "registration", "installed"] {
-            let (g1_server, mut g1_client) = UnixStream::pair().expect("g1 pair");
-            g1_client
-                .set_app_link_read_deadline(Some(Duration::from_secs(5)))
-                .expect("g1 kill switch");
-            let (window_tx, _window_rx) = mpsc::channel();
-            let (command_tx, _command_rx) = mpsc::channel();
-            let router = PrimaryRouter::start(
-                g1_server,
-                window_tx,
-                PlatformPrimaryOwnerHandle { command_tx },
-                SessionShutdownState::new(),
-            )
-            .expect("router");
-            let handle = router.handle();
-            handle.signal_ready().expect("initial Ready");
-            assert_lifecycle_event(&mut g1_client, LifecycleEvent::Ready);
-            handle.retire_generation(1).expect("retire g1");
-            if close_at == "gap" {
-                handle.signal_last_window_closed().expect("gap Close");
-            }
-            let (g2_server, mut g2_client) = UnixStream::pair().expect("g2 pair");
-            g2_client
-                .set_app_link_read_deadline(Some(Duration::from_secs(5)))
-                .expect("test kill switch");
-            let mut events = Vec::new();
-            if close_at == "registration" {
-                let registration = handle.readers.lock().expect("pause registration");
-                let installer = handle.clone();
-                let install = thread::spawn(move || installer.install_generation(2, g2_server));
-                // A correlated reply proves the real reader is running while
-                // installation cannot yet finish. No absence timeout or sleep.
-                collect_events_before_echo(&mut g2_client, 90, &mut events);
-                handle
-                    .signal_last_window_closed()
-                    .expect("overlapping Close");
-                drop(registration);
-                install
-                    .join()
-                    .expect("installer joins")
-                    .expect("install g2");
-            } else {
-                handle.install_generation(2, g2_server).expect("install g2");
-                if close_at == "installed" {
-                    handle.signal_last_window_closed().expect("live Close");
-                }
-            }
-            // Both producers have completed before this positive fence. Every
-            // queued Event must precede this reply on the serialized writer.
-            collect_events_before_echo(&mut g2_client, 91, &mut events);
-            assert_eq!(
-                events,
-                [LifecycleEvent::Ready, LifecycleEvent::LastWindowClosed],
-                "close during {close_at}"
-            );
-            let retire_deadline = Instant::now() + Duration::from_secs(3);
-            let retired_reader_finished = loop {
-                let finished = handle
-                    .readers
-                    .lock()
-                    .expect("reader registry")
-                    .get(&1)
-                    .expect("retired reader remains registered")
-                    .is_finished();
-                if finished || Instant::now() >= retire_deadline {
-                    break finished;
-                }
-                std::thread::yield_now();
-            };
-            assert!(
-                retired_reader_finished,
-                "retired G1 reader remained live with its peer open after {close_at}"
-            );
-            router.shutdown().expect("router shutdown");
-        }
-        println!("{RECOVERED_CHILD_OBSERVED}");
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn collect_events_before_echo(
-        client: &mut std::os::unix::net::UnixStream,
-        correlation: u32,
-        events: &mut Vec<LifecycleEvent>,
-    ) {
-        use keld_ipc::echo::{EchoRequest, EchoResponse};
-        use keld_ipc::link::read_frame;
-
-        let request = EchoRequest {
-            message: "fence".to_owned(),
-            count: correlation,
-        };
-        write_frame(
-            client,
-            FrameKind::Call,
-            0,
-            ECHO_CHANNEL,
-            CorrelationId(correlation),
-            &encode(&request).expect("encode fence"),
-        )
-        .expect("write fence");
-        loop {
-            let (header, payload) = read_frame(client).expect("fence frame");
-            if header.kind == FrameKind::Event {
-                assert_eq!(header.channel, LIFECYCLE_CHANNEL);
-                assert_eq!(header.corr, CorrelationId(0));
-                events.push(decode(&payload).expect("lifecycle event"));
-                assert!(events.len() <= 3, "unbounded lifecycle replay");
-            } else {
-                assert_eq!(header.kind, FrameKind::Reply);
-                assert_eq!(header.channel, ECHO_CHANNEL);
-                assert_eq!(header.corr, CorrelationId(correlation));
-                assert_eq!(
-                    decode::<EchoResponse>(&payload).expect("fence payload"),
-                    EchoResponse {
-                        message: request.message,
-                        count: correlation
-                    }
-                );
-                break;
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn revoke_racing_accepted_quit_does_not_join_on_the_guardian_owner() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (server, mut client) = UnixStream::pair().expect("Quit race pair");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (observed_tx, observed_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let prepare = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("accepted Quit preparation");
-            let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(reply) = prepare else {
-                panic!("Quit race skipped attribution");
-            };
-            observed_tx.send(()).expect("report blocked attribution");
-            release_rx.recv().expect("release attribution");
-            reply.send(Ok(())).expect("accepted Quit attribution reply");
-            let shutdown = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("accepted Quit shutdown");
-            let TestPrimaryOwnerCommand::Shutdown(reply) = shutdown else {
-                panic!("Quit race skipped shutdown");
-            };
-            reply.send(Ok(())).expect("accepted Quit shutdown reply");
-        });
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-        )
-        .expect("Quit race router");
-        let handle = router.handle();
-        let quit_handle = handle.clone();
-        // The router's own reader serves the link; this direct Quit drains a
-        // peerless stream, so its post-REPLY drain ends at EOF at once.
-        let (mut quit_reader, quit_peer) =
-            std::os::unix::net::UnixStream::pair().expect("direct Quit reader");
-        drop(quit_peer);
-        let quit_thread = std::thread::spawn(move || {
-            quit_handle.lifecycle_quit(1, CorrelationId(81), &[0], &mut quit_reader)
-        });
-        observed_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("Quit reached guardian owner");
-        handle
-            .retire_generation(1)
-            .expect("terminal revoke must not join blocked reader");
-        assert!(
-            handle.is_current(1),
-            "accepted Quit lost its current writer"
-        );
-        release_tx.send(()).expect("release Quit attribution");
-        quit_thread
-            .join()
-            .expect("Quit thread joins")
-            .expect("Quit race tail");
-        let (header, _) = keld_ipc::link::read_frame(&mut client).expect("Quit race reply");
-        assert_eq!(header.corr, CorrelationId(81));
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("Quit race UI exit"),
-            AppWindowCommand::Quit
-        );
-        router.shutdown().expect("Quit race router shutdown");
-        guardian_thread.join().expect("Quit race guardian joins");
-    }
-
-    #[cfg(any(target_os = "linux", windows))]
-    use DirectPrimaryOwnerCommand as TestPrimaryOwnerCommand;
-    #[cfg(target_os = "macos")]
-    use GuardianOwnerCommand as TestPrimaryOwnerCommand;
-
-    #[cfg(target_os = "macos")]
-    fn primary_echo_test_router() -> (
-        PrimaryRouter,
-        PrimaryRouterHandle,
-        std::os::unix::net::UnixStream,
-        Receiver<TestPrimaryOwnerCommand>,
-        Receiver<AppWindowCommand>,
-    ) {
-        let (server, client) = std::os::unix::net::UnixStream::pair().expect("Echo router pair");
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("Echo client read deadline");
-        let (command_tx, command_rx) = mpsc::channel();
-        let (window_tx, window_rx) = mpsc::channel();
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            PlatformPrimaryOwnerHandle { command_tx },
-            SessionShutdownState::new(),
-        )
-        .expect("Echo primary router");
-        let handle = router.handle();
-        (router, handle, client, command_rx, window_rx)
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn renderer_dispatch_stop_does_not_depend_on_webview_sender_drop() {
-        let (router, handle, _client, _owner_rx, _window_rx) = primary_echo_test_router();
-        let (requests_tx, requests_rx) = mpsc::sync_channel(1);
-        let (outcomes_tx, _outcomes_rx) = mpsc::channel();
-        let dispatch =
-            start_renderer_dispatch(requests_rx, outcomes_tx, handle).expect("renderer dispatch");
-        let (done_tx, done_rx) = mpsc::channel();
-        let joiner = std::thread::spawn(move || {
-            let result = join_renderer_dispatch(dispatch);
-            let _ = done_tx.send(result);
-        });
-
-        let observed = done_rx.recv_timeout(Duration::from_secs(2));
-        drop(requests_tx);
-        joiner.join().expect("renderer dispatch join probe");
-        assert!(
-            observed
-                .expect("renderer dispatch ignored its explicit stop")
-                .is_ok(),
-            "renderer dispatch stop must not wait for WebKit to release its request sender"
-        );
-        router.shutdown().expect("renderer-stop router shutdown");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn host_echo_reply_shares_primary_reader_with_bun_call_and_ping() {
-        use keld_ipc::echo::{EchoRequest, EchoResponse};
-        use keld_ipc::link::{read_frame, write_frame};
-
-        let (router, handle, mut client, _owner_rx, _window_rx) = primary_echo_test_router();
-        let request = EchoRequest {
-            message: "renderer".to_owned(),
-            count: 42,
-        };
-        let request_bytes = encode(&request).expect("encode renderer Echo");
-        let call = handle
-            .begin_echo_call(&request_bytes)
-            .expect("host-originated Echo call");
-
-        let (outbound, outbound_payload) = read_frame(&mut client).expect("outbound renderer Call");
-        assert_eq!(outbound.kind, FrameKind::Call);
-        assert_eq!(outbound.channel, ECHO_CHANNEL);
-        assert_eq!(outbound.corr, call.correlation);
-        assert_eq!(outbound_payload, request_bytes);
-
-        write_frame(
-            &mut client,
-            FrameKind::Ping,
-            0,
-            keld_ipc::ChannelId::for_test(99),
-            CorrelationId(0),
-            &[],
-        )
-        .expect("write interleaved Ping");
-        let (pong, pong_payload) = read_frame(&mut client).expect("read interleaved Ping");
-        assert_eq!(pong.kind, FrameKind::Ping);
-        assert_eq!(pong.channel, keld_ipc::ChannelId::for_test(99));
-        assert_eq!(pong.corr, CorrelationId(0));
-        assert!(pong_payload.is_empty());
-
-        let bun_request = EchoRequest {
-            message: "bun".to_owned(),
-            count: 7,
-        };
-        write_frame(
-            &mut client,
-            FrameKind::Call,
-            0,
-            ECHO_CHANNEL,
-            CorrelationId(91),
-            &encode(&bun_request).expect("encode Bun Echo"),
-        )
-        .expect("write interleaved Bun Call");
-        let (bun_reply, bun_payload) = read_frame(&mut client).expect("read Bun Echo Reply");
-        assert_eq!(bun_reply.kind, FrameKind::Reply);
-        assert_eq!(bun_reply.channel, ECHO_CHANNEL);
-        assert_eq!(bun_reply.corr, CorrelationId(91));
-        assert_eq!(
-            decode::<EchoResponse>(&bun_payload).expect("decode Bun Echo Reply"),
-            EchoResponse {
-                message: bun_request.message,
-                count: bun_request.count,
-            }
-        );
-
-        let expected = encode(&EchoResponse {
-            message: request.message,
-            count: request.count,
-        })
-        .expect("encode renderer Echo Reply");
-        write_frame(
-            &mut client,
-            FrameKind::Reply,
-            0,
-            ECHO_CHANNEL,
-            call.correlation,
-            &expected,
-        )
-        .expect("write renderer Echo Reply");
-        match call
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("renderer Echo terminal outcome")
-            .expect("renderer Echo success")
-        {
-            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, expected),
-            PrimaryEchoReply::Err(error) => panic!("unexpected renderer Echo Err: {error}"),
-        }
-
-        router.shutdown().expect("Echo router shutdown");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn failed_primary_writes_retire_the_generation() {
-        let (echo_handle, _echo_client, echo_commands) = initial_ready_router();
-        let owner = std::thread::spawn(move || {
-            let command = echo_commands
-                .recv_timeout(Duration::from_secs(2))
-                .expect("failed-write owner notification");
-            match command {
-                GuardianOwnerCommand::FailGeneration(1, reply) => {
-                    reply.send(Ok(())).expect("failed-write owner reply");
-                }
-                _ => panic!("failed primary write sent the wrong owner command"),
-            }
-        });
-        {
-            let mut current = echo_handle.current.lock().expect("generation lock");
-            current
-                .as_mut()
-                .expect("active renderer generation")
-                .writer
-                .shutdown_app_link()
-                .expect("close renderer writer before probe");
-        }
-        let error = echo_handle
-            .begin_echo_call(&[0x14, 0x02])
-            .expect_err("renderer Call write must fail");
-        assert!(
-            error.to_string().contains("renderer Echo call write"),
-            "{error}"
-        );
-        assert!(
-            echo_handle
-                .current
-                .lock()
-                .expect("generation lock")
-                .is_none(),
-            "failed renderer write left a reusable primary generation"
-        );
-        owner.join().expect("failed-write owner joins");
-
-        let (event_handle, _event_client, _event_commands) = initial_ready_router();
-        {
-            let mut current = event_handle.current.lock().expect("generation lock");
-            current
-                .as_mut()
-                .expect("active lifecycle generation")
-                .writer
-                .shutdown_app_link()
-                .expect("close lifecycle writer before probe");
-        }
-        let error = event_handle
-            .signal_last_window_closed()
-            .expect_err("lifecycle Event write must fail");
-        assert!(error.to_string().contains("lifecycle event"), "{error}");
-        assert!(
-            event_handle
-                .current
-                .lock()
-                .expect("generation lock")
-                .is_none(),
-            "failed lifecycle write left a reusable primary generation"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn second_host_echo_call_is_busy_until_the_first_reply_retires() {
-        use keld_ipc::link::{read_frame, write_frame};
-
-        let (router, handle, mut client, _owner_rx, _window_rx) = primary_echo_test_router();
-        let first = handle.begin_echo_call(&[1, 2, 3]).expect("first Echo call");
-        let (outbound, _) = read_frame(&mut client).expect("first Echo frame");
-        assert_eq!(outbound.corr, first.correlation);
-
-        let second = handle
-            .begin_echo_call(&[4, 5])
-            .expect_err("second Echo call must fail busy");
-        assert!(
-            second.to_string().contains("already pending"),
-            "unexpected busy error: {second}"
-        );
-
-        write_frame(
-            &mut client,
-            FrameKind::Reply,
-            0,
-            ECHO_CHANNEL,
-            first.correlation,
-            &[9],
-        )
-        .expect("complete first Echo");
-        match first
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("first terminal outcome")
-            .expect("first success")
-        {
-            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, [9]),
-            PrimaryEchoReply::Err(error) => panic!("unexpected first Err: {error}"),
-        }
-
-        let third = handle
-            .begin_echo_call(&[6])
-            .expect("third Echo after retirement");
-        let (third_frame, _) = read_frame(&mut client).expect("third Echo frame");
-        assert_eq!(third_frame.corr, third.correlation);
-        write_frame(
-            &mut client,
-            FrameKind::Reply,
-            0,
-            ECHO_CHANNEL,
-            third.correlation,
-            &[8],
-        )
-        .expect("complete third Echo");
-        assert!(third.reply.recv_timeout(Duration::from_secs(2)).is_ok());
-
-        router.shutdown().expect("busy router shutdown");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn wrong_correlation_cannot_complete_host_echo_waiter() {
-        use keld_ipc::link::{read_frame, write_frame};
-
-        let (router, handle, mut client, _owner_rx, window_rx) = primary_echo_test_router();
-        let call = handle.begin_echo_call(&[1]).expect("host Echo call");
-        let (outbound, _) = read_frame(&mut client).expect("host Echo frame");
-        assert_eq!(outbound.corr, call.correlation);
-        let wrong = CorrelationId(call.correlation.0.wrapping_add(1).max(1));
-        write_frame(&mut client, FrameKind::Reply, 0, ECHO_CHANNEL, wrong, &[2])
-            .expect("wrong-corr reply bytes");
-
-        let terminal = call
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("wrong corr must terminalize the pending call")
-            .expect_err("wrong corr cannot become a successful reply");
-        assert!(
-            terminal.to_string().contains("primary reader"),
-            "unexpected waiter failure: {terminal}"
-        );
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("protocol failure wakes UI"),
-            AppWindowCommand::Fatal
-        );
-        assert!(
-            router.shutdown().is_err(),
-            "wrong correlation must remain a router/session failure"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn app_link_disconnect_terminalizes_pending_echo_and_fresh_session_still_works() {
-        use keld_ipc::link::{read_frame, write_frame};
-
-        let (router, handle, mut client, _owner_rx, window_rx) = primary_echo_test_router();
-        let call = handle.begin_echo_call(&[1, 2]).expect("pending host Echo");
-        let (outbound, _) = read_frame(&mut client).expect("pending Echo frame");
-        assert_eq!(outbound.corr, call.correlation);
-        drop(client);
-
-        let terminal = call
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("disconnect must settle the pending waiter")
-            .expect_err("disconnect cannot become a successful reply");
-        assert!(
-            terminal.to_string().contains("primary reader"),
-            "unexpected disconnect terminal outcome: {terminal}"
-        );
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("disconnect wakes the fatal UI path"),
-            AppWindowCommand::Fatal
-        );
-        assert!(
-            router.shutdown().is_err(),
-            "the failed reader remains a session failure"
-        );
-
-        let (fresh_router, fresh_handle, mut fresh_client, _owner_rx, _window_rx) =
-            primary_echo_test_router();
-        let fresh = fresh_handle
-            .begin_echo_call(&[7])
-            .expect("fresh non-recovery session Echo");
-        let (fresh_frame, _) = read_frame(&mut fresh_client).expect("fresh Echo frame");
-        assert_eq!(fresh_frame.corr, fresh.correlation);
-        write_frame(
-            &mut fresh_client,
-            FrameKind::Reply,
-            0,
-            ECHO_CHANNEL,
-            fresh.correlation,
-            &[8],
-        )
-        .expect("fresh Echo Reply");
-        match fresh
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("fresh Echo terminal outcome")
-            .expect("fresh Echo success")
-        {
-            PrimaryEchoReply::Reply(payload) => assert_eq!(payload, [8]),
-            PrimaryEchoReply::Err(error) => panic!("unexpected fresh Echo Err: {error}"),
-        }
-        fresh_router.shutdown().expect("fresh router shutdown");
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn primary_test_stream_pair() -> (BootstrapStream, BootstrapStream) {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            std::os::unix::net::UnixStream::pair().expect("primary stream pair")
-        }
-        #[cfg(windows)]
-        {
-            let listener = Arc::new(keld_ipc::BootstrapListener::bind().expect("bind pipe"));
-            let link = listener.app_link();
-            let (endpoint, token) = keld_ipc::parse_app_link(&link).expect("parse pipe link");
-            let endpoint = endpoint.to_owned();
-            let acceptor = Arc::clone(&listener);
-            let worker = thread::spawn(move || acceptor.accept_authenticated());
-            let mut client = BootstrapStream::connect(&endpoint).expect("connect pipe client");
-            client
-                .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
-                .expect("client deadlines");
-            keld_ipc::link::handshake_client(&mut client, &token).expect("client HELLO");
-            let server = worker
-                .join()
-                .expect("accept join")
-                .expect("accept result")
-                .expect("authenticated server stream");
-            (server, client)
-        }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn initial_ready_router() -> (
-        PrimaryRouterHandle,
-        BootstrapStream,
-        Receiver<TestPrimaryOwnerCommand>,
-    ) {
-        let (server, client) = primary_test_stream_pair();
-        let (command_tx, command_rx) = mpsc::channel();
-        let (window_tx, _window_rx) = mpsc::channel();
-        let handle = PrimaryRouterHandle {
-            current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
-                attempt: 1,
-                writer: server,
-                reader_stop: Arc::new(AtomicBool::new(false)),
-                pending_quit: None,
-            }))),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(target_os = "macos")]
-            pending_echo: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "macos")]
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(false)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(false)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown: SessionShutdownState::new(),
-            fs: None,
-            fs_worker_commands: None,
-            guardian: PlatformPrimaryOwnerHandle { command_tx },
-            window_commands: window_tx,
-            #[cfg(target_os = "macos")]
-            quit_drain_hooks: Arc::default(),
-        };
-        (handle, client, command_rx)
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_successor_ready_replay_requests_its_retired_attempt_restart() {
-        let (handle, _g1_client, _owner_rx) = initial_ready_router();
-        handle.window_ready.store(true, Ordering::Release);
-        handle.recovery_armed.store(true, Ordering::Release);
-        handle.last_revoked_attempt.store(1, Ordering::Release);
-        handle.retire_generation(1).expect("retire g1");
-        let (g2_server, g2_client) = primary_test_stream_pair();
-        drop(g2_client);
-        let error = handle
-            .install_generation(2, g2_server)
-            .expect_err("closed g2 replay");
-        assert!(
-            error.error.to_string().contains("lifecycle event"),
-            "{error:?}"
-        );
-        assert_eq!(error.retired_after_failed_ready, Some(2));
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        let mut restarted = Vec::new();
-        assert!(restart_failed_bound_generation(
-            &handle,
-            2,
-            &error,
-            |attempt| {
-                assert!(matches!(
-                    handle.shutdown.transition.try_lock(),
-                    Err(std::sync::TryLockError::WouldBlock)
-                ));
-                restarted.push(attempt);
-            }
-        ));
-        assert_eq!(
-            restarted,
-            [2],
-            "the direct owner must request the failed bound attempt"
-        );
-
-        // The restart-admitted-first order is the other linearization of the
-        // same transition used by teardown. Once teardown wins afterward, a
-        // late successor is closed without publishing current or a reader.
-        let mut router = PrimaryRouter {
-            handle: handle.clone(),
-            fs_worker: None,
-        };
-        router
-            .stop_and_join()
-            .expect("teardown after admitted restart");
-        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
-        let (late_server, _late_client) = primary_test_stream_pair();
-        handle
-            .install_generation(3, late_server)
-            .expect("late bound after admitted restart closes cleanly");
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        assert!(handle.readers.lock().expect("reader lock").is_empty());
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_successor_ready_replay_cannot_restart_after_router_teardown() {
-        let (handle, _g1_client, _owner_rx) = initial_ready_router();
-        handle.window_ready.store(true, Ordering::Release);
-        handle.recovery_armed.store(true, Ordering::Release);
-        handle.last_revoked_attempt.store(1, Ordering::Release);
-        handle.retire_generation(1).expect("retire g1");
-        let (g2_server, g2_client) = primary_test_stream_pair();
-        drop(g2_client);
-        let failure = handle
-            .install_generation(2, g2_server)
-            .expect_err("closed g2 replay");
-        assert_eq!(failure.retired_after_failed_ready, Some(2));
-        let mut router = PrimaryRouter {
-            handle: handle.clone(),
-            fs_worker: None,
-        };
-        router.stop_and_join().expect("router teardown");
-        assert!(
-            handle.shutdown.is_running(),
-            "UI failure need not claim accepted shutdown"
-        );
-        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
-        let mut restarted = Vec::new();
-        assert!(!restart_failed_bound_generation(
-            &handle,
-            2,
-            &failure,
-            |attempt| restarted.push(attempt)
-        ));
-        assert!(restarted.is_empty());
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        let (late_server, _late_client) = primary_test_stream_pair();
-        handle
-            .install_generation(3, late_server)
-            .expect("late bind is harmless after teardown");
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        assert!(handle.readers.lock().expect("reader lock").is_empty());
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_ready_restart_overlapping_router_teardown_has_only_serial_outcomes() {
-        let (handle, _g1_client, _owner_rx) = initial_ready_router();
-        handle.window_ready.store(true, Ordering::Release);
-        handle.recovery_armed.store(true, Ordering::Release);
-        handle.last_revoked_attempt.store(1, Ordering::Release);
-        handle.retire_generation(1).expect("retire g1");
-        let (g2_server, g2_client) = primary_test_stream_pair();
-        drop(g2_client);
-        let failure = handle
-            .install_generation(2, g2_server)
-            .expect_err("closed g2 replay");
-        assert_eq!(failure.retired_after_failed_ready, Some(2));
-
-        // The owner and UI teardown race for the same transition. The lock
-        // makes this equivalent to one of two observable orders: either the
-        // supervisor restart is admitted first, or reader_stop wins first.
-        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
-        let owner_start = std::sync::Arc::clone(&start);
-        let owner_handle = handle.clone();
-        let (restart_tx, restart_rx) = mpsc::channel();
-        let owner = thread::spawn(move || {
-            owner_start.wait();
-            let mut restarted = Vec::new();
-            let admitted = restart_failed_bound_generation(&owner_handle, 2, &failure, |attempt| {
-                assert!(
-                    !owner_handle.shutdown.reader_stop.load(Ordering::Acquire),
-                    "restart callback ran after router stop publication"
-                );
-                restart_tx.send(attempt).expect("record restart request");
-                restarted.push(attempt);
-            });
-            (admitted, restarted)
-        });
-        let teardown_start = std::sync::Arc::clone(&start);
-        let mut router = PrimaryRouter {
-            handle: handle.clone(),
-            fs_worker: None,
-        };
-        let teardown = thread::spawn(move || {
-            teardown_start.wait();
-            router.stop_and_join().expect("overlapping router teardown");
-        });
-        start.wait();
-
-        let (admitted, restarted) = owner.join().expect("owner decision joins");
-        teardown.join().expect("teardown worker joins");
-        let requests: Vec<u32> = restart_rx.try_iter().collect();
-        assert_eq!(requests, restarted);
-        assert!(requests.is_empty() || requests == [2], "{requests:?}");
-        assert_eq!(admitted, !requests.is_empty());
-        assert!(handle.shutdown.reader_stop.load(Ordering::Acquire));
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        assert!(handle.readers.lock().expect("reader lock").is_empty());
-
-        let (late_server, _late_client) = primary_test_stream_pair();
-        handle
-            .install_generation(3, late_server)
-            .expect("late bound closes after teardown");
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        assert!(handle.readers.lock().expect("reader lock").is_empty());
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
-        for case in [
-            "mismatch",
-            "stale",
-            "pre-ready",
-            "unarmed",
-            "shutdown",
-            "successor",
-            "ordinary",
-            "misordered",
-        ] {
-            let (handle, _client, _owner_rx) = initial_ready_router();
-            handle.window_ready.store(true, Ordering::Release);
-            handle.recovery_armed.store(true, Ordering::Release);
-            handle.last_revoked_attempt.store(1, Ordering::Release);
-            handle.retire_generation(1).expect("retire g1");
-            let mut failure = PrimaryGenerationFailure {
-                error: app_detail("lifecycle event", "forced failed replay"),
-                retired_after_failed_ready: Some(2),
-            };
-            match case {
-                "mismatch" => failure.retired_after_failed_ready = Some(1),
-                "stale" => handle.last_revoked_attempt.store(2, Ordering::Release),
-                "pre-ready" => handle.window_ready.store(false, Ordering::Release),
-                "unarmed" => handle.recovery_armed.store(false, Ordering::Release),
-                "shutdown" => assert!(handle.shutdown.claim_cli_lease_lost()),
-                "successor" | "misordered" => {
-                    let (writer, _peer) = primary_test_stream_pair();
-                    *handle.current.lock().expect("generation lock") =
-                        Some(ActivePrimaryGeneration {
-                            attempt: if case == "successor" { 3 } else { 1 },
-                            writer,
-                            reader_stop: Arc::new(AtomicBool::new(false)),
-                            pending_quit: None,
-                        });
-                    if case != "successor" {
-                        failure.retired_after_failed_ready = None;
-                    }
-                }
-                "ordinary" => failure.retired_after_failed_ready = None,
-                _ => unreachable!(),
-            }
-            let mut restarted = Vec::new();
-            assert!(
-                !restart_failed_bound_generation(&handle, 2, &failure, |attempt| restarted
-                    .push(attempt)),
-                "{case}"
-            );
-            assert!(restarted.is_empty(), "{case}: {restarted:?}");
-        }
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_bound_keeps_the_existing_current_attempt_restart_path() {
-        let (handle, _client, _owner_rx) = initial_ready_router();
-        handle.window_ready.store(true, Ordering::Release);
-        handle.recovery_armed.store(true, Ordering::Release);
-        let failure = PrimaryGenerationFailure::from(app_detail(
-            "primary session reader",
-            "forced post-publication reader spawn failure",
-        ));
-        let mut restarted = Vec::new();
-        assert!(restart_failed_bound_generation(
-            &handle,
-            1,
-            &failure,
-            |attempt| restarted.push(attempt)
-        ));
-        assert_eq!(restarted, [1]);
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn failed_close_write_cannot_mint_ready_replay_recovery() {
-        let (handle, client, _owner_rx) = initial_ready_router();
-        drop(client);
-        let error = handle
-            .write_event_guarded(LifecycleEvent::LastWindowClosed)
-            .expect_err("closed primary must fail Close");
-        assert!(
-            error.error.to_string().contains("lifecycle event"),
-            "{error:?}"
-        );
-        assert!(handle.current.lock().expect("generation lock").is_none());
-        assert_eq!(error.retired_after_failed_ready, None);
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", windows))]
-    fn direct_recovery_arm_is_published_before_acknowledgement() {
-        for armed in [false, true] {
-            let (handle, _client, _owner_rx) = initial_ready_router();
-            let result = armed.then_some(()).ok_or_else(|| String::from("denied"));
-            let mut acknowledged = false;
-            acknowledge_direct_recovery_arm(Some(&handle), result, |result| {
-                assert_eq!(result.is_ok(), armed);
-                assert_eq!(handle.recovery_armed.load(Ordering::Acquire), armed);
-                acknowledged = true;
-            });
-            assert!(acknowledged);
-        }
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn initial_ready_after_accepted_shutdown_does_not_arm_a_stopped_owner() {
-        use std::io::Read as _;
-
-        let (handle, mut client, command_rx) = initial_ready_router();
-        assert!(handle.shutdown.claim_cli_lease_lost());
-        drop(command_rx); // The accepted tail has already stopped its owner.
-        handle
-            .signal_ready()
-            .expect("late navigation must not restart admission");
-        assert!(!handle.window_ready.load(Ordering::Acquire));
-        assert!(!handle.recovery_armed.load(Ordering::Acquire));
-        client
-            .set_nonblocking(true)
-            .expect("observe absence without waiting");
-        let error = client
-            .read(&mut [0])
-            .expect_err("late Ready must write no bytes");
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn initial_ready_releases_transition_before_owner_acknowledgment() {
-        let (handle, mut client, command_rx) = initial_ready_router();
-        let shutdown = handle.shutdown.clone();
-        let ready = Arc::clone(&handle.window_ready);
-        let owner = thread::spawn(move || {
-            let TestPrimaryOwnerCommand::ArmRecovery(reply) =
-                command_rx.recv().expect("arm request")
-            else {
-                panic!("first owner command must arm recovery");
-            };
-            // A real owner may need this lock while applying a generation
-            // update before it can acknowledge the already-enqueued arm.
-            let _transition = shutdown.transition_guard();
-            assert!(ready.load(Ordering::Acquire));
-            reply.send(Ok(())).expect("arm acknowledgment");
-        });
-        handle
-            .signal_ready()
-            .expect("owner callback must not deadlock");
-        let (header, payload) = keld_ipc::link::read_frame(&mut client).expect("Ready bytes");
-        assert_eq!(header.kind, FrameKind::Event);
-        assert_eq!(header.channel, LIFECYCLE_CHANNEL);
-        assert_eq!(header.corr, CorrelationId(0));
-        assert_eq!(payload, [0]); // Rust lifecycle Ready postcard discriminant.
-        assert!(handle.recovery_armed.load(Ordering::Acquire));
-        owner.join().expect("owner callback joins");
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn initial_ready_preserves_unaccepted_owner_failures() {
-        let (handle, _client, command_rx) = initial_ready_router();
-        drop(command_rx);
-        let error = handle
-            .signal_ready()
-            .expect_err("a missing live-session owner is a fault");
-        assert!(error.to_string().contains("KELD-CORE-037"), "{error}");
-        assert!(
-            error.to_string().contains("primary recovery arm"),
-            "{error}"
-        );
-
-        for reject in [true, false] {
-            let (handle, _client, command_rx) = initial_ready_router();
-            let owner = thread::spawn(move || {
-                let TestPrimaryOwnerCommand::ArmRecovery(reply) =
-                    command_rx.recv().expect("arm request")
-                else {
-                    panic!("first owner command must arm recovery");
-                };
-                if reject {
-                    reply
-                        .send(Err(String::from("forced arm refusal")))
-                        .expect("refusal reply");
-                }
-                // Dropping the reply without acknowledgment remains a real error.
-            });
-            let error = handle
-                .signal_ready()
-                .expect_err("arm fault must remain visible");
-            assert!(error.to_string().contains("KELD-CORE-037"), "{error}");
-            if reject {
-                assert!(error.to_string().contains("forced arm refusal"), "{error}");
-            }
-            assert!(!handle.recovery_armed.load(Ordering::Acquire));
-            owner.join().expect("owner probe joins");
-        }
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn failed_initial_ready_write_denies_recovery_before_successor() {
-        use std::collections::HashMap;
-        use std::os::unix::net::UnixStream;
-        use std::sync::atomic::Ordering;
-        use std::sync::{Arc, Mutex, mpsc};
-        use std::time::Duration;
-
-        let (server, client) = UnixStream::pair().expect("failed Ready pair");
-        drop(client);
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (window_tx, _window_rx) = mpsc::channel();
-        let handle = PrimaryRouterHandle {
-            current: Arc::new(Mutex::new(Some(ActivePrimaryGeneration {
-                attempt: 1,
-                writer: server,
-                reader_stop: Arc::new(AtomicBool::new(false)),
-                pending_quit: None,
-            }))),
-            readers: Arc::new(Mutex::new(HashMap::new())),
-            #[cfg(target_os = "macos")]
-            pending_echo: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "macos")]
-            pending_echo_attempt: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            pending_echo_corr: Arc::new(AtomicU32::new(0)),
-            #[cfg(target_os = "macos")]
-            next_host_corr: Arc::new(AtomicU32::new(1)),
-            window_ready: Arc::new(AtomicBool::new(false)),
-            last_window_closed: Arc::new(AtomicBool::new(false)),
-            recovery_armed: Arc::new(AtomicBool::new(false)),
-            last_revoked_attempt: Arc::new(AtomicU32::new(0)),
-            shutdown: SessionShutdownState::new(),
-            fs: None,
-            fs_worker_commands: None,
-            guardian: PlatformPrimaryOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            window_commands: window_tx,
-            #[cfg(target_os = "macos")]
-            quit_drain_hooks: Arc::default(),
-        };
-        let error = handle
-            .signal_ready()
-            .expect_err("closed g1 must fail Ready");
-        assert!(error.to_string().contains("lifecycle event"), "{error}");
-        assert!(matches!(
-            guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("Ready failure recovery denial"),
-            TestPrimaryOwnerCommand::DenyRecovery
-        ));
-        assert!(!handle.recovery_armed.load(Ordering::Acquire));
-        assert!(!handle.window_ready.load(Ordering::Acquire));
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn failed_link_recovery_signal_wakes_ui_fatal() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (server, client) = UnixStream::pair().expect("link failure pair");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let command = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("link failure command");
-            let GuardianOwnerCommand::FailGeneration(1, reply) = command else {
-                panic!("reader sent the wrong guardian command");
-            };
-            reply
-                .send(Err(String::from("forced group-signal failure")))
-                .expect("link failure reply");
-        });
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-        )
-        .expect("link failure router");
-        router.handle().signal_ready().expect("link failure Ready");
-        drop(client);
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("link failure UI wake"),
-            AppWindowCommand::Fatal
-        );
-        assert!(
-            router.shutdown().is_err(),
-            "link failure vanished at shutdown"
-        );
-        guardian_thread.join().expect("link failure guardian joins");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn retire_does_not_join_reader_waiting_for_link_failure_ack() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (server, client) = UnixStream::pair().expect("link retirement pair");
-        let (window_tx, _window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (blocked_tx, blocked_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let command = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("link retirement command");
-            let GuardianOwnerCommand::FailGeneration(1, reply) = command else {
-                panic!("reader sent the wrong retirement command");
-            };
-            blocked_tx.send(()).expect("report blocked link failure");
-            release_rx.recv().expect("release link failure");
-            reply.send(Ok(())).expect("link failure reply");
-        });
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            SessionShutdownState::new(),
-        )
-        .expect("link retirement router");
-        router
-            .handle()
-            .signal_ready()
-            .expect("link retirement Ready");
-        drop(client);
-        blocked_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("reader waits for link failure acknowledgment");
-        let retire_handle = router.handle();
-        let (retired_tx, retired_rx) = mpsc::channel();
-        let retire_thread = std::thread::spawn(move || {
-            retired_tx
-                .send(retire_handle.retire_generation(1))
-                .expect("return retirement result");
-        });
-        retired_rx
-            .recv_timeout(Duration::from_secs(1))
-            .expect("guardian-owner retirement must not join the blocked reader")
-            .expect("retire blocked generation");
-        release_tx
-            .send(())
-            .expect("release link failure acknowledgment");
-        retire_thread.join().expect("retire thread joins");
-        guardian_thread.join().expect("guardian thread joins");
-        router.shutdown().expect("link retirement router shutdown");
-    }
-
-    #[cfg(target_os = "macos")]
-    fn begin_pending_renderer_echo(
-        handle: &PrimaryRouterHandle,
-        client: &mut std::os::unix::net::UnixStream,
-    ) -> PrimaryEchoCall {
-        let pending = handle
-            .begin_echo_call(&[0x14, 0x02])
-            .expect("lease-loss pending renderer Echo");
-        let (outbound, _) =
-            keld_ipc::link::read_frame(client).expect("lease-loss renderer Echo frame");
-        assert_eq!(outbound.kind, FrameKind::Call);
-        assert_eq!(outbound.channel, ECHO_CHANNEL);
-        assert_eq!(outbound.corr, pending.correlation);
-        pending
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn cli_lease_loss_closes_link_before_reap_and_sends_no_quit_reply() {
-        use std::io::Read as _;
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        use keld_ipc::link::AppLinkDeadlines as _;
-
-        let (server, mut client) = UnixStream::pair().expect("lease-loss session pair");
-        client
-            .set_app_link_deadlines(Some(Duration::from_secs(5)))
-            .expect("client deadlines");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let (eof_tx, eof_rx) = mpsc::channel();
-        let (writer_tx, writer_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let GuardianOwnerCommand::PrepareAcceptedShutdown(prepare_reply) = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("guardian lease-loss attribution")
-            else {
-                panic!("unexpected guardian command before lease-loss attribution");
-            };
-            let writer: Arc<Mutex<Option<ActivePrimaryGeneration>>> = writer_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("router writer identity");
-            assert!(
-                writer.try_lock().is_ok(),
-                "guardian RPC ran while the app-link writer was locked"
-            );
-            prepare_reply
-                .send(Ok(()))
-                .expect("guardian lease-loss attribution reply");
-            let GuardianOwnerCommand::Shutdown(shutdown_reply) = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("guardian lease-loss shutdown")
-            else {
-                panic!("unexpected guardian command during lease-loss shutdown");
-            };
-            eof_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("link EOF before guardian lease-loss reap");
-            shutdown_reply
-                .send(Ok(()))
-                .expect("guardian lease-loss reply");
-        });
-        let shutdown = SessionShutdownState::new();
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            shutdown.clone(),
-        )
-        .expect("primary router");
-        writer_tx
-            .send(Arc::clone(&router.handle.current))
-            .expect("share router writer identity");
-
-        let pending = begin_pending_renderer_echo(&router.handle(), &mut client);
-
-        assert!(shutdown.claim_cli_lease_lost());
-        let mut byte = [0_u8; 1];
-        assert_eq!(
-            client.read(&mut byte).expect("lease-loss link EOF"),
-            0,
-            "lease loss must not write a fabricated lifecycle reply"
-        );
-        eof_tx.send(()).expect("record lease-loss EOF");
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("lease-loss UI Quit wake"),
-            AppWindowCommand::Quit
-        );
-        let terminal = pending
-            .reply
-            .recv_timeout(Duration::from_secs(2))
-            .expect("lease loss must settle the pending renderer waiter")
-            .expect_err("lease loss cannot produce an application reply");
-        assert!(
-            terminal.to_string().contains("CLI lease loss"),
-            "unexpected lease-loss waiter result: {terminal}"
-        );
-
-        router.shutdown().expect("router shutdown");
-        guardian_thread.join().expect("guardian thread joins");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn cli_lease_loss_during_generation_gap_runs_the_shutdown_tail() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (server, client) = UnixStream::pair().expect("gap session pair");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let prepare = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("gap accepted-shutdown attribution");
-            match prepare {
-                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => {
-                    reply.send(Ok(())).expect("gap attribution reply");
-                }
-                _ => panic!("gap skipped accepted-shutdown attribution"),
-            }
-            let shutdown = guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("gap guardian shutdown");
-            match shutdown {
-                GuardianOwnerCommand::Shutdown(reply) => {
-                    reply.send(Ok(())).expect("gap shutdown reply");
-                }
-                _ => panic!("gap skipped guardian shutdown"),
-            }
-        });
-        let shutdown = SessionShutdownState::new();
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            shutdown.clone(),
-        )
-        .expect("gap router");
-        router.handle().signal_ready().expect("gap Ready");
-        router.handle().retire_generation(1).expect("retire g1");
-        drop(client);
-        assert!(shutdown.claim_cli_lease_lost());
-        router
-            .handle()
-            .cli_lease_lost()
-            .expect("generation-gap lease-loss tail");
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("gap UI Quit"),
-            AppWindowCommand::Quit
-        );
-        router.shutdown().expect("gap router shutdown");
-        guardian_thread.join().expect("gap guardian thread joins");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn terminal_tail_failure_wakes_the_ui_fatal_path() {
-        use std::os::unix::net::UnixStream;
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let (server, _client) = UnixStream::pair().expect("tail-failure session pair");
-        let (window_tx, window_rx) = mpsc::channel();
-        let (guardian_tx, guardian_rx) = mpsc::channel();
-        let guardian_thread = std::thread::spawn(move || {
-            let prepare_reply = match guardian_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("guardian tail-failure attribution")
-            {
-                GuardianOwnerCommand::PrepareAcceptedShutdown(reply) => reply,
-                GuardianOwnerCommand::Shutdown(_) => panic!("tail skipped attribution"),
-                GuardianOwnerCommand::AttachRouter(_, _) => panic!("unexpected router attach"),
-                GuardianOwnerCommand::FailGeneration(_, _)
-                | GuardianOwnerCommand::FailRetiredGeneration(_, _) => {
-                    panic!("unexpected link failure")
-                }
-                GuardianOwnerCommand::ArmRecovery(_) => panic!("unexpected recovery arm"),
-                GuardianOwnerCommand::DenyRecovery => panic!("unexpected recovery denial"),
-            };
-            prepare_reply
-                .send(Err(String::from("forced attribution failure")))
-                .expect("guardian tail-failure reply");
-        });
-        let shutdown = SessionShutdownState::new();
-        let router = PrimaryRouter::start(
-            server,
-            window_tx,
-            GuardianOwnerHandle {
-                command_tx: guardian_tx,
-            },
-            shutdown.clone(),
-        )
-        .expect("primary router");
-
-        assert!(shutdown.claim_cli_lease_lost());
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("terminal tail Fatal wake"),
-            AppWindowCommand::Fatal
-        );
-        let error = router
-            .shutdown()
-            .expect_err("terminal attribution failure must remain visible");
-        assert!(error.to_string().contains("forced attribution failure"));
-        guardian_thread.join().expect("guardian thread joins");
-    }
-
-    #[test]
-    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-    fn generation_reader_stop_preserves_successor_and_terminal_scope() {
-        let shutdown = SessionShutdownState::new();
-        let retired = shutdown.register_generation_reader();
-        let successor = shutdown.register_generation_reader();
-        retired.store(true, Ordering::Release);
-        assert!(retired.load(Ordering::Acquire));
-        assert!(!successor.load(Ordering::Acquire));
-        assert!(!shutdown.reader_stop.load(Ordering::Acquire));
-
-        shutdown.stop_reader();
-        assert!(successor.load(Ordering::Acquire));
-        assert!(
-            shutdown
-                .register_generation_reader()
-                .load(Ordering::Acquire),
-            "a reader registered after terminal shutdown must start stopped"
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn session_shutdown_accepts_exactly_one_first_cause() {
-        let shutdown = SessionShutdownState::new();
-        assert!(shutdown.claim_cli_lease_lost());
-        assert!(!shutdown.claim_lifecycle_quit());
-        assert_eq!(shutdown.cause(), SESSION_CLI_LEASE_LOST);
-
-        let lifecycle = SessionShutdownState::new();
-        assert!(lifecycle.claim_lifecycle_quit());
-        assert!(!lifecycle.claim_cli_lease_lost());
-        assert_eq!(lifecycle.cause(), SESSION_LIFECYCLE_QUIT);
-
-        let gated = SessionShutdownState::new();
-        let transition = gated.transition_guard();
-        let claimant = gated.clone();
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let claim = std::thread::spawn(move || {
-            started_tx.send(()).expect("claim started");
-            claimant.claim_cli_lease_lost()
-        });
-        started_rx.recv().expect("claim thread started");
-        assert_eq!(
-            gated.cause(),
-            SESSION_RUNNING,
-            "a terminal cause changed while a write transition was active"
-        );
-        drop(transition);
-        assert!(claim.join().expect("claim thread joins"));
-        assert!(!gated.claim_lifecycle_quit());
-        assert_eq!(gated.cause(), SESSION_CLI_LEASE_LOST);
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn terminal_cleanup_reports_independent_router_and_guardian_failures() {
-        let error = collapse_app_results([
-            Err(app_detail("router tail", "link close failed")),
-            Err(app_detail("guardian tail", "group reap failed")),
-        ])
-        .expect_err("two terminal failures must be aggregated");
-        let rendered = error.to_string();
-        assert!(rendered.contains("link close failed"), "{rendered}");
-        assert!(rendered.contains("group reap failed"), "{rendered}");
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn link_shutdown_accepts_already_closed_but_propagates_other_io_errors() {
-        finish_link_shutdown(
-            Err(std::io::Error::from(std::io::ErrorKind::NotConnected)),
-            "test link close",
-        )
-        .expect("already-closed link is idempotent success");
-        let error = finish_link_shutdown(
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-            "test link close",
-        )
-        .expect_err("unrelated link error must remain fatal");
-        assert!(error.to_string().contains("permission denied"), "{error}");
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn assert_echo_call(
-        client: &mut std::os::unix::net::UnixStream,
-        correlation: u32,
-        message: &str,
-    ) {
-        use keld_ipc::codec::{decode, encode};
-        use keld_ipc::echo::{EchoRequest, EchoResponse};
-        use keld_ipc::link::read_frame;
-
-        let request = EchoRequest {
-            message: message.to_owned(),
-            count: correlation,
-        };
-        write_frame(
-            client,
-            FrameKind::Call,
-            0,
-            ECHO_CHANNEL,
-            CorrelationId(correlation),
-            &encode(&request).expect("echo request"),
-        )
-        .expect("write echo Call");
-        let (header, payload) = read_frame(client).expect("echo Reply");
-        assert_eq!(header.kind, FrameKind::Reply);
-        assert_eq!(header.channel, ECHO_CHANNEL);
-        assert_eq!(header.corr, CorrelationId(correlation));
-        assert_eq!(
-            decode::<EchoResponse>(&payload).expect("echo response"),
-            EchoResponse {
-                message: message.to_owned(),
-                count: correlation,
-            }
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_shutdown_disconnect_is_idempotent_but_other_requests_fail() {
-        let (shutdown_tx, shutdown_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        drop(shutdown_tx);
-        assert!(receive_direct_owner_reply(&shutdown_rx, "Windows primary shutdown", true).is_ok());
-
-        let (request_tx, request_rx) = mpsc::sync_channel::<Result<(), String>>(1);
-        drop(request_tx);
-        assert!(
-            receive_direct_owner_reply(&request_rx, "Windows primary recovery arm", false).is_err()
-        );
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_lease_tail_failure_wakes_the_window_fatally() {
-        let (window_tx, window_rx) = mpsc::channel();
-        let (error_tx, error_rx) = mpsc::channel();
-        publish_windows_lease_result(
-            Err(app_detail("Windows lease test", "forced tail failure")),
-            &error_tx,
-            &window_tx,
-        );
-        assert_eq!(
-            window_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("lease failure Fatal wake"),
-            AppWindowCommand::Fatal
-        );
-        assert!(
-            error_rx
-                .recv_timeout(Duration::from_secs(1))
-                .expect("lease failure diagnostic")
-                .to_string()
-                .contains("forced tail failure")
-        );
-
-        publish_windows_lease_result(Ok(()), &error_tx, &window_tx);
-        assert!(matches!(
-            window_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-        assert!(matches!(
-            error_rx.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    #[allow(unsafe_code)] // test owns the live tempfile handle for every Win32 flag query/mutation
-    fn windows_lease_handle_inheritance_is_cleared_before_bun_spawn() {
-        use std::os::windows::io::AsRawHandle as _;
-
-        let file = tempfile::tempfile().expect("temporary handle");
-        let handle = file.as_raw_handle().cast();
-        // SAFETY: `handle` is borrowed from `file`, which remains live through
-        // every call. The test changes and reads only HANDLE_FLAG_INHERIT.
-        assert_ne!(
-            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
-            0,
-            "mark test handle inheritable: {}",
-            io::Error::last_os_error()
-        );
-        let mut flags = 0;
-        // SAFETY: `flags` is a live writable u32 and `handle` is live.
-        assert_ne!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
-        assert_ne!(flags & HANDLE_FLAG_INHERIT, 0);
-
-        clear_windows_handle_inheritance(handle).expect("clear handle inheritance");
-        // SAFETY: same live handle and output storage as above.
-        assert_ne!(unsafe { GetHandleInformation(handle, &raw mut flags) }, 0);
-        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    #[allow(unsafe_code)] // test owns and closes both anonymous-pipe handles
-    fn windows_preflight_rejects_a_lease_pipe_with_no_writer() {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
-        use windows_sys::Win32::System::Pipes::CreatePipe;
-
-        let mut reader = std::ptr::null_mut();
-        let mut writer = std::ptr::null_mut();
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
-                .expect("SECURITY_ATTRIBUTES size"),
-            lpSecurityDescriptor: std::ptr::null_mut(),
-            bInheritHandle: 0,
-        };
-        // SAFETY: both output pointers and the attributes value remain live;
-        // successful handles are closed below exactly once.
-        assert_ne!(
-            unsafe { CreatePipe(&raw mut reader, &raw mut writer, &raw const attributes, 0) },
-            0
-        );
-        // SAFETY: `writer` is the unique live handle returned by CreatePipe.
-        assert_ne!(unsafe { CloseHandle(writer) }, 0);
-        assert!(!windows_lease_pipe_is_live(reader.addr()).expect("peek closed lease"));
-        // SAFETY: `reader` is the remaining unique live pipe handle.
-        assert_ne!(unsafe { CloseHandle(reader) }, 0);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_shutdown_claim_blocks_late_ui_startup() {
-        let shutdown = SessionShutdownState::new();
-        assert!(shutdown.claim_cli_lease_lost());
-        let created = AtomicBool::new(false);
-        let result = run_direct_startup_if_session_running(&shutdown, || {
-            created.store(true, Ordering::Release);
-        });
-        assert!(result.is_none());
-        assert!(!created.load(Ordering::Acquire));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    fn assert_lifecycle_event(
-        client: &mut std::os::unix::net::UnixStream,
-        expected: LifecycleEvent,
-    ) {
-        let (header, payload) = keld_ipc::link::read_frame(client).expect("lifecycle Event");
-        assert_eq!(header.kind, FrameKind::Event);
-        assert_eq!(header.channel, LIFECYCLE_CHANNEL);
-        assert_eq!(
-            keld_ipc::codec::decode::<LifecycleEvent>(&payload).expect("lifecycle payload"),
-            expected
-        );
-    }
+type GuardedFsTestSetup = Box<dyn FnOnce(&mut FsWorkerTestGate)>;
+
+#[cfg(test)]
+#[cfg(feature = "fs-acceptance-observer")]
+keld_native::keld_native_fs_observer_items! {
+    #[cfg(test)]
+    #[path = "app_session/tests/native_observer_setup.rs"]
+    mod native_observer_setup;
+    #[cfg(test)]
+    #[path = "app_session/tests/native_generation_fixture.rs"]
+    mod native_generation_fixture;
 }
+
+#[cfg(test)]
+#[cfg(all(keld_core_native_renderer_main, target_os = "macos", debug_assertions))]
+#[path = "app_session/tests/native_observer_sensor.rs"]
+mod native_observer_sensor;
+
+#[cfg(test)]
+#[cfg(all(keld_core_native_renderer_main, target_os = "macos", debug_assertions))]
+#[path = "app_session/tests/native_renderer_main_entry.rs"]
+mod native_renderer_main_entry;
+
+#[cfg(test)]
+#[cfg(all(keld_core_native_renderer_main, target_os = "macos", debug_assertions))]
+pub(crate) fn native_renderer_main_thread_entry() {
+    native_renderer_main_entry::run_main();
+}
+
+#[cfg(not(keld_core_native_renderer_main))]
+#[cfg(test)]
+mod tests;

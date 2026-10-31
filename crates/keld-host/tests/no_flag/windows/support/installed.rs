@@ -129,6 +129,11 @@ impl InstalledApp {
         &self.app_id
     }
 
+    /// The exact signed host installed by the per-user fixture.
+    pub(crate) fn host(&self) -> &Path {
+        &self.host
+    }
+
     /// The installed version directory, `<update-root>/versions/<version>`, whose
     /// `tree` holds the host.
     pub(crate) fn version_dir(&self) -> &Path {

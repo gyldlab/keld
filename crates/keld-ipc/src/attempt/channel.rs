@@ -639,6 +639,13 @@ pub enum WindowsAttemptExchangeError {
     /// `KELD-IPC-018`: the claim deadline passed before the owner accepted a
     /// claimant; the endpoint is closed.
     ClaimDeadline,
+    /// `KELD-IPC-028`: the owner's claim canceller
+    /// ([`WindowsAttemptEndpoint::claim_canceller`]) ended the claim wait
+    /// before a claimant was accepted, in production because the watcher on
+    /// the retained launch handle saw it signal; the endpoint is closed.
+    ///
+    /// [`WindowsAttemptEndpoint::claim_canceller`]: super::WindowsAttemptEndpoint::claim_canceller
+    ClaimCancelled,
     /// `KELD-IPC-019`: an exchange step was called out of the KEL-53 order;
     /// nothing was sent or read.
     OutOfSequence {
@@ -703,6 +710,12 @@ impl fmt::Display for WindowsAttemptExchangeError {
                  the endpoint is closed. Roll the attempt back: health cannot commit, and \
                  refused claimants never extend this deadline.",
             ),
+            Self::ClaimCancelled => f.write_str(
+                "KELD-IPC-028: the keld-attempt claim wait was cancelled by its owner before a \
+                 claimant was accepted (the launched candidate's handle signaled, or the owner \
+                 ended the wait); the endpoint is closed. Roll the attempt back: health cannot \
+                 commit, and end the candidate family if any of it still runs.",
+            ),
             Self::OutOfSequence { step, phase } => write!(
                 f,
                 "KELD-IPC-019: keld-attempt step `{step}` refused {phase}; nothing was sent or \
@@ -760,6 +773,7 @@ impl std::error::Error for WindowsAttemptExchangeError {
                 ..
             } => Some(source),
             Self::ClaimDeadline
+            | Self::ClaimCancelled
             | Self::OutOfSequence { .. }
             | Self::CandidateFailure { .. }
             | Self::HealthWindow { source: None, .. }

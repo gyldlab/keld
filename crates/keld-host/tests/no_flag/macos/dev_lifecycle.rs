@@ -103,6 +103,6 @@ fn dev_lease_bytes_are_non_authority_and_only_eof_stops_the_host() {
     await_process_gone(cycle.bun_pid);
     await_process_gone(cycle.descendant_pid);
     await_process_gone(cycle.guardian_pid);
-    assert!(native_windows(cycle.host_pid, TITLE).is_empty());
+    assert_eq!(native_windows(cycle.host_pid, TITLE), [] as [u32; 0]);
     cycle.group_gone = true;
 }

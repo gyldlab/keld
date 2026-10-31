@@ -48,6 +48,10 @@ pub mod capability {
     pub const FS_READ: &str = "fs.read";
     /// Scoped filesystem write (`app.fs.write` grants).
     pub const FS_WRITE: &str = "fs.write";
+    /// Exact declared issuer for interactive authentication (`app.auth.begin`).
+    pub const AUTH_BEGIN: &str = "auth.begin";
+    /// Exact declared issuer for token acquisition (`app.auth.token`).
+    pub const AUTH_TOKEN: &str = "auth.token";
 }
 
 #[cfg(windows)]
@@ -465,6 +469,13 @@ pub enum ManifestError {
         /// `serde_json` error text.
         detail: String,
     },
+    /// An auth grant contains a doubled wildcard or a C0/DEL/C1 control.
+    InvalidAuthScope {
+        /// Path when loading from disk; `None` for [`parse_manifest`].
+        path: Option<PathBuf>,
+        /// The auth capability whose grant list is malformed.
+        capability: String,
+    },
     /// The input exceeded the bounded permissions-manifest size.
     TooLarge {
         /// Path when loading from disk; `None` for [`parse_manifest`].
@@ -496,7 +507,9 @@ impl ManifestError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NotFound { .. } | Self::Read { .. } => "KELD-GUARD004",
-            Self::Parse { .. } | Self::InvalidUtf8 { .. } => "KELD-GUARD005",
+            Self::Parse { .. } | Self::InvalidUtf8 { .. } | Self::InvalidAuthScope { .. } => {
+                "KELD-GUARD005"
+            }
             Self::IntegrityMismatch { .. } => "KELD-GUARD016",
             Self::TooLarge { .. } => "KELD-GUARD017",
         }
@@ -533,6 +546,23 @@ impl fmt::Display for ManifestError {
                      (comments are allowed; trailing commas are not)."
                 ),
             },
+            Self::InvalidAuthScope { path, capability } => {
+                let pointer = json_pointer_for(capability);
+                write!(f, "KELD-GUARD005: permissions manifest")?;
+                if let Some(path) = path {
+                    write!(
+                        f,
+                        " at \"{}\"",
+                        path.as_os_str().to_string_lossy().escape_debug()
+                    )?;
+                }
+                write!(
+                    f,
+                    " contains an invalid auth issuer literal at {pointer:?}. \
+                     Remove ** and control characters from this grant list; \
+                     use exact declared issuer literals at {pointer:?}."
+                )
+            }
             Self::TooLarge { path, max_bytes } => {
                 let max_kib = max_bytes / 1024;
                 match path {
@@ -617,7 +647,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
-/// malformed, or not a JSON object.
+/// malformed, or not a JSON object. Returns [`ManifestError::InvalidAuthScope`]
+/// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
     parse_manifest_at(text, None)
@@ -630,7 +661,8 @@ pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> 
 /// Returns [`ManifestError::NotFound`] when the file is missing,
 /// [`ManifestError::Read`] on other I/O/encoding errors,
 /// [`ManifestError::TooLarge`] above 64 KiB, or [`ManifestError::Parse`] when
-/// the contents are ambiguous or malformed JSONC.
+/// the contents are ambiguous or malformed JSONC, or
+/// [`ManifestError::InvalidAuthScope`] for malformed auth issuer grants.
 pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> {
     let file = File::open(path).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
@@ -652,10 +684,18 @@ pub fn load_manifest(path: &Path) -> Result<PermissionsManifest, ManifestError> 
     parse_manifest_at(&text, Some(path))
 }
 
-pub(crate) fn read_manifest_bytes<R: Read>(
-    reader: R,
-    path: &Path,
-) -> Result<Vec<u8>, ManifestError> {
+/// Captures permissions-manifest bytes from an already selected reader.
+///
+/// The caller owns source selection, identity and containment checks. `path`
+/// is used only in diagnostics and is never opened. This function applies the
+/// shared manifest byte ceiling and returns one owned buffer; it does not
+/// decode, parse or authorize its contents.
+///
+/// # Errors
+///
+/// Returns [`ManifestError::Read`] when reading fails or
+/// [`ManifestError::TooLarge`] when the shared 64 KiB ceiling is exceeded.
+pub fn read_manifest_bytes<R: Read>(reader: R, path: &Path) -> Result<Vec<u8>, ManifestError> {
     let mut bytes = Vec::with_capacity(MAX_MANIFEST_BYTES + 1);
     reader
         .take((MAX_MANIFEST_BYTES + 1) as u64)
@@ -690,10 +730,28 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
     })?;
-    serde_json::from_value(value).map_err(|e| ManifestError::Parse {
-        path: path.map(Path::to_path_buf),
-        detail: e.to_string(),
-    })
+    let manifest: PermissionsManifest =
+        serde_json::from_value(value).map_err(|e| ManifestError::Parse {
+            path: path.map(Path::to_path_buf),
+            detail: e.to_string(),
+        })?;
+    for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
+        let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
+            continue;
+        };
+        if scopes.iter().filter_map(Value::as_str).any(|scope| {
+            scope.contains("**")
+                || scope
+                    .chars()
+                    .any(|character| matches!(character, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}'))
+        }) {
+            return Err(ManifestError::InvalidAuthScope {
+                path: path.map(Path::to_path_buf),
+                capability: capability.to_owned(),
+            });
+        }
+    }
+    Ok(manifest)
 }
 
 /// Default-deny check of `operation` (capability id, e.g. `fs.read`) against `path`.
@@ -1271,6 +1329,55 @@ mod tests {
             MAX_MANIFEST_BYTES + 1,
             "the reader must not consume the rest of an oversized source"
         );
+        assert_eq!(error.code(), "KELD-GUARD017");
+        assert!(error.to_string().contains("Reduce the manifest"), "{error}");
+    }
+
+    #[test]
+    fn manifest_byte_capture_keeps_exact_bytes_without_parsing_or_opening_path() {
+        let source = [0xff, 0x00, b'{', b'/', b'*', b'\n'];
+        let captured = read_manifest_bytes(
+            source.as_slice(),
+            Path::new("missing-diagnostics-only/keld.permissions.jsonc"),
+        )
+        .expect("byte capture must not parse or open its diagnostics path");
+        assert_eq!(captured, source);
+    }
+
+    #[test]
+    fn manifest_byte_capture_accepts_empty_and_exact_ceiling() {
+        let path = Path::new("keld.permissions.jsonc");
+        assert_eq!(
+            read_manifest_bytes(&[][..], path).expect("empty capture is valid before parsing"),
+            Vec::<u8>::new()
+        );
+        let source = vec![0xff; MAX_MANIFEST_BYTES];
+        assert_eq!(
+            read_manifest_bytes(source.as_slice(), path).expect("exact byte ceiling"),
+            source
+        );
+    }
+
+    #[test]
+    fn manifest_byte_capture_retains_reader_failure_detail_and_fix() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("retained source read failed"))
+            }
+        }
+
+        let path = Path::new("selected/keld.permissions.jsonc");
+        let error = read_manifest_bytes(FailingReader, path).expect_err("failed source reader");
+        assert_eq!(error.code(), "KELD-GUARD004");
+        assert!(error.to_string().contains("retained source read failed"));
+        assert!(
+            error
+                .to_string()
+                .contains("Check the path exists and is readable.")
+        );
+        assert!(matches!(error, ManifestError::Read { path: actual, .. } if actual == path));
     }
 
     #[test]
@@ -1460,6 +1567,184 @@ mod tests {
         assert!(msg.contains("KELD-GUARD004"), "{msg}");
         assert!(msg.contains("keld.permissions.jsonc"), "{msg}");
         assert!(msg.contains(&path.display().to_string()), "{msg}");
+    }
+
+    fn auth_grant_manifest_text(operation: &str, entry: &str) -> String {
+        serde_json::json!({
+            "app": {"auth": {operation: ["https://issuer.example/valid", entry]}}
+        })
+        .to_string()
+    }
+
+    /// `AC9b` rejects the doubled wildcard anywhere in either auth grant list.
+    #[test]
+    fn auth_grants_reject_double_star_entries_at_parse() {
+        for operation in ["begin", "token"] {
+            for entry in [
+                "**",
+                "**https://issuer.example",
+                "https://**",
+                "https://issuer.example/**",
+                "https://issuer.example/ten**ant",
+                "https://issuer.example?realm=**",
+            ] {
+                let text = auth_grant_manifest_text(operation, entry);
+                assert!(
+                    parse_manifest(&text).is_err(),
+                    "app.auth.{operation} accepted malformed issuer literal {entry:?}"
+                );
+            }
+        }
+    }
+
+    /// D13's complete C0/DEL/C1 set is independent of a future validator.
+    #[test]
+    fn auth_grants_reject_all_c0_del_and_c1_controls_at_parse() {
+        for operation in ["begin", "token"] {
+            for scalar in (0_u32..=0x1f).chain(0x7f..=0x9f) {
+                let control = char::from_u32(scalar).expect("specified control scalar");
+                for entry in [
+                    format!("{control}https://issuer.example"),
+                    format!("https://issuer.example/{control}tenant"),
+                    format!("https://issuer.example{control}"),
+                ] {
+                    let text = auth_grant_manifest_text(operation, &entry);
+                    let decoded: Value = serde_json::from_str(&text).expect("valid fixture JSON");
+                    assert_eq!(
+                        decoded["app"]["auth"][operation][1].as_str(),
+                        Some(entry.as_str()),
+                        "the fixture must preserve the actual control scalar"
+                    );
+                    assert!(
+                        parse_manifest(&text).is_err(),
+                        "app.auth.{operation} accepted U+{scalar:04X} in {entry:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The public file loader must use the same malformed-auth rejection.
+    #[test]
+    fn auth_grants_reject_malformed_entries_at_load() {
+        for operation in ["begin", "token"] {
+            for (row, entry) in [
+                "**",
+                "https://issuer.example/ten**ant",
+                "\u{0}unresolved",
+                "https://issuer.example/\u{1f}",
+                "https://issuer.example/\u{7f}",
+                "https://issuer.example/\u{80}",
+                "https://issuer.example/\u{9f}",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let root = std::env::temp_dir().join(format!(
+                    "keld-guard-auth-load-{}-{operation}-{row}",
+                    std::process::id()
+                ));
+                std::fs::create_dir(&root).expect("isolated auth manifest directory");
+                let path = root.join("keld.permissions.jsonc");
+                std::fs::write(&path, auth_grant_manifest_text(operation, entry))
+                    .expect("write auth manifest fixture");
+                let result = load_manifest(&path);
+                std::fs::remove_file(&path).expect("remove auth manifest fixture");
+                std::fs::remove_dir(&root).expect("remove auth manifest directory");
+                let error = result.expect_err("malformed auth grant must fail file loading");
+                assert!(
+                    !matches!(
+                        error,
+                        ManifestError::NotFound { .. }
+                            | ManifestError::Read { .. }
+                            | ManifestError::TooLarge { .. }
+                    ),
+                    "the fixture must reach manifest validation: {error}"
+                );
+                let ManifestError::InvalidAuthScope {
+                    path: error_path,
+                    capability,
+                } = &error
+                else {
+                    panic!("malformed auth grant has the wrong typed error: {error}");
+                };
+                assert_eq!(error_path.as_deref(), Some(path.as_path()));
+                assert_eq!(capability, &format!("auth.{operation}"));
+                assert_eq!(error.code(), "KELD-GUARD005");
+                let message = error.to_string();
+                assert!(
+                    message.contains(&format!("/app/auth/{operation}")),
+                    "{message}"
+                );
+                assert!(
+                    message.contains("exact declared issuer literals"),
+                    "{message}"
+                );
+                assert!(!message.chars().any(char::is_control), "{message:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn auth_literal_grants_keep_exact_matching_and_neighbor_capabilities() {
+        let issuer = "https://login.microsoftonline.com/common";
+        let manifest = parse_manifest(
+            r#"{"app":{
+                "auth":{"begin":["https://login.microsoftonline.com/common"],
+                        "token":["https://login.microsoftonline.com/common"]},
+                "fs":{"read":["$APPDATA/**"]},
+                "net":{"connect":["https://api.example.com/**"]},
+                "matcher":{"read":["**","literal\u0000tail"]}
+            }}"#,
+        )
+        .expect("literal auth grants and other capabilities remain valid");
+        for operation in ["auth.begin", "auth.token"] {
+            assert!(matches!(
+                eval_app(&manifest, operation, issuer),
+                Decision::Allow(_)
+            ));
+            for neighbor in [
+                "https://login.microsoftonline.com/common/",
+                "HTTPS://login.microsoftonline.com/common",
+                "https://login.microsoftonline.com/other",
+            ] {
+                assert!(
+                    matches!(eval_app(&manifest, operation, neighbor), Decision::Deny(_)),
+                    "{operation} must retain exact issuer matching: {neighbor}"
+                );
+            }
+        }
+        for (operation, resource) in [
+            ("fs.read", "$APPDATA/cache/file"),
+            ("net.connect", "https://api.example.com/v1"),
+            ("matcher.read", "literal\u{0}tail"),
+        ] {
+            assert!(
+                matches!(eval_app(&manifest, operation, resource), Decision::Allow(_)),
+                "the auth-only load rule must preserve {operation} behavior"
+            );
+        }
+    }
+
+    #[test]
+    fn auth_sentinel_validation_is_load_only_not_a_serde_type_invariant() {
+        let text = r#"{"app":{"auth":{"token":["\u0000unresolved"]}}}"#;
+        let error =
+            parse_manifest(text).expect_err("the public load path must reject the sentinel");
+        assert!(matches!(
+            error,
+            ManifestError::InvalidAuthScope { path: None, ref capability }
+                if capability == "auth.token"
+        ));
+        let direct: PermissionsManifest = serde_json::from_str(text)
+            .expect("the approved public serde bypass remains expressible");
+        assert!(
+            matches!(
+                eval_app(&direct, "auth.token", "\u{0}unresolved"),
+                Decision::Allow(_)
+            ),
+            "AC13(d) must independently defend Allow without a resolved session"
+        );
     }
 
     #[test]

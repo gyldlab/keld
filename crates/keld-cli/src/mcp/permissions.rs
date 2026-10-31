@@ -198,6 +198,21 @@ fn manifest_error(err: &ManifestError) -> KeldErrorObject {
             )
             .with_cause(err.to_string())
         }
+        ManifestError::InvalidAuthScope { path, capability } => {
+            let tried = path
+                .as_ref()
+                .map_or_else(|| "<memory>".to_owned(), |p| p.display().to_string());
+            let pointer = keld_guard::json_pointer_for(capability);
+            KeldErrorObject::new(
+                MANIFEST_PARSE_CODE,
+                format!("permissions manifest at {tried:?} contains an invalid auth issuer grant"),
+                format!(
+                    "remove ** and control characters from {pointer:?}; \
+                     use exact declared issuer literals and retry"
+                ),
+            )
+            .with_cause(err.to_string())
+        }
         ManifestError::TooLarge { path, max_bytes } => {
             let tried = path
                 .as_ref()
@@ -379,6 +394,27 @@ mod tests {
             "must not tell the caller to create a file that already exists: {}",
             err.fix
         );
+    }
+
+    #[test]
+    fn malformed_auth_grant_has_a_typed_actionable_load_error() {
+        let dir = tempfile::tempdir().expect("auth manifest root");
+        let path = dir.path().join("keld.permissions.jsonc");
+        let bytes = br#"{"app":{"auth":{"token":["\u0000unresolved"]}}}"#;
+        fs::write(&path, bytes).expect("write malformed auth grant");
+        let error = permissions_explain(&args(dir.path(), "fs.read", "$DOCUMENTS/notes.txt"))
+            .expect_err("invalid auth policy must fail shared manifest loading");
+        assert_eq!(error.code, MANIFEST_PARSE_CODE);
+        assert!(error.fix.contains("/app/auth/token"), "{}", error.fix);
+        assert!(error.fix.contains("exact declared issuer literals"));
+        assert!(
+            error
+                .cause
+                .as_deref()
+                .is_some_and(|cause| cause.starts_with("KELD-GUARD005: "))
+        );
+        assert!(!error.fix.chars().any(char::is_control));
+        assert_eq!(fs::read(path).expect("original policy preserved"), bytes);
     }
 
     #[test]

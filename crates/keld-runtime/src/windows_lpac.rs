@@ -6,15 +6,19 @@
 //! its token and raw handle table can be audited before untrusted code runs.
 //! The `PerUserDirect` candidate's same-token launch uses the same creation call
 //! and the same suspended-child type, without the LPAC attributes and without
-//! any inherited handle (KEL-53 §5).
+//! any inherited handle (KEL-53 §5). Every launch names the child's standard
+//! handles explicitly, the admitted copies or null, because process creation
+//! otherwise hands the child this process's own standard handles.
 
 #![allow(unsafe_code)] // isolated Win32 security/process ABI; every call has a local proof
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString, c_void};
+use std::fs::OpenOptions;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 
@@ -23,9 +27,9 @@ use windows_sys::Win32::Foundation::{
     WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE,
-    SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_USER, TRUSTEE_W,
+    ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
+    SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+    TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile,
@@ -36,7 +40,9 @@ use windows_sys::Win32::Security::{
     TokenIsAppContainer,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_TRAVERSE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
@@ -48,6 +54,9 @@ use windows_sys::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows_sys::Win32::System::WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
+
+mod launch_encoding;
+use launch_encoding::{encode_command_line, encode_environment};
 
 const ERROR_SUCCESS: u32 = 0;
 const STILL_ACTIVE: u32 = 259;
@@ -245,26 +254,69 @@ impl WindowsLpacProfile {
     /// Adds the package SID to an existing filesystem DACL without replacing
     /// its other access entries.
     ///
+    /// The DACL is read, merged and written through one retained handle to the
+    /// object the path named when it was opened, so renaming or replacing the
+    /// path afterwards cannot redirect the write.
+    ///
+    /// Only the final path component (the leaf) is checked for a reparse point.
+    /// Reparse points in ancestor components (junctions, directory symbolic
+    /// links, mount points) are followed by the open like any Win32 path, so
+    /// the grant lands on whatever object the resolved path named at open
+    /// time. The caller must pass a path whose ancestors a less-trusted
+    /// principal cannot replace.
+    ///
     /// # Errors
     ///
-    /// Fails if the path does not exist or its DACL cannot be read, merged,
-    /// and written exactly.
+    /// Fails if the path does not exist, the opened leaf is a reparse point,
+    /// or that exact object's DACL cannot be read, merged, and written.
     pub fn grant_path(
         &self,
         path: &Path,
         access: WindowsLpacPathAccess,
     ) -> Result<(), WindowsLpacError> {
-        let path_wide = wide_nul(path.as_os_str(), "ACL path")?;
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| WindowsLpacError::contract("ACL path metadata", error.to_string()))?;
+        self.prepare_grant(path, access)?.publish()
+    }
+
+    /// Opens the grant target, refuses a reparse-point leaf, and reads and
+    /// merges that exact object's DACL. [`PreparedGrant::publish`] writes the
+    /// merged DACL through the same retained handle.
+    fn prepare_grant(
+        &self,
+        path: &Path,
+        access: WindowsLpacPathAccess,
+    ) -> Result<PreparedGrant, WindowsLpacError> {
+        // Preserve the API's explicit embedded-NUL refusal before opening.
+        let _ = wide_nul(path.as_os_str(), "ACL path")?;
+        // This handle owns both the identity and the authority to read/write
+        // its DACL. The share mode does not stop a rename: this handle asks
+        // for no data or DELETE access, so Windows does not check sharing
+        // against it; on Windows 11 a rename succeeds while it is open.
+        // Identity rests on this retained HANDLE alone.
+        // OPEN_REPARSE_POINT permits fail-closed inspection of the final leaf.
+        let original = OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| WindowsLpacError::contract("ACL object open", error.to_string()))?;
+        let metadata = original.metadata().map_err(|error| {
+            WindowsLpacError::contract("ACL object metadata", error.to_string())
+        })?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(WindowsLpacError::contract(
+                "ACL object admission",
+                "refuse a reparse-point grant target",
+            ));
+        }
 
         let mut old_acl = std::ptr::null_mut();
         let mut security_descriptor = std::ptr::null_mut();
-        // SAFETY: `path_wide` is NUL terminated; the requested output slots
-        // are live. The returned descriptor owns the borrowed old ACL.
+        // SAFETY: `original` is a live READ_CONTROL handle to the admitted
+        // object. The output slots are writable, and the returned LocalAlloc
+        // descriptor owns the borrowed old ACL.
         let status = unsafe {
-            GetNamedSecurityInfoW(
-                path_wide.as_ptr(),
+            GetSecurityInfo(
+                original.as_raw_handle().cast(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
@@ -311,32 +363,21 @@ impl WindowsLpacProfile {
             return Err(WindowsLpacError::win32("filesystem DACL merge", status));
         }
         let new_acl = LocalAllocation(new_acl.cast());
-        // SAFETY: the path is live and `new_acl` contains the merged DACL;
-        // SetNamedSecurityInfoW copies it before returning.
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_ptr().cast_mut(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                new_acl.0.cast(),
-                std::ptr::null(),
-            )
-        };
+        // The merged ACL is its own allocation; the read descriptor that owns
+        // the old ACL is no longer referenced.
         drop(descriptor);
-        if status != ERROR_SUCCESS {
-            return Err(WindowsLpacError::win32("filesystem DACL write", status));
-        }
-        Ok(())
+        Ok(PreparedGrant { original, new_acl })
     }
 
     /// Creates a suspended LPAC child with an explicit environment and exact
     /// inherited-handle list.
     ///
     /// `standard_handles`, when present, are added to the allowlist and wired
-    /// as stdin/stdout/stderr. `extra_handles` is reserved for authenticated
-    /// app-link transport. No other handle is admitted.
+    /// as stdin/stdout/stderr. Without them the child's three standard handles
+    /// are null, so its `GetStdHandle` reports a process without associated
+    /// standard handles; it never receives this process's own standard handles.
+    /// `extra_handles` is reserved for authenticated app-link transport. No
+    /// other handle is admitted.
     ///
     /// # Errors
     ///
@@ -412,8 +453,11 @@ impl WindowsLpacProfile {
                 WindowsLpacError::contract("STARTUPINFOEXW size", "structure exceeds u32")
             })?;
         startup.lpAttributeList = attributes.pointer;
+        // The child's standard handles are exactly these three fields: the
+        // admitted private copies, or the null default. The flag is set for
+        // every launch; `create_suspended_process` owns that rule.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         if let Some(stdio) = standard_handles {
-            startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
             startup.StartupInfo.hStdInput =
                 inherited.copy_of(stdio.stdin.as_raw_handle().cast())?;
             startup.StartupInfo.hStdOutput =
@@ -461,6 +505,17 @@ enum SuspendedStartup<'a> {
 }
 
 /// The one `CreateProcessW` call of every Keld suspended launch.
+///
+/// Every launch sets `STARTF_USESTDHANDLES`, so the child's standard handles
+/// are exactly the startup structure's `hStdInput`, `hStdOutput` and
+/// `hStdError`: the LPAC launch's admitted private copies, or null, which the
+/// child's `GetStdHandle` reports as a process without associated standard
+/// handles. Without the flag, process creation gives the child this process's
+/// own standard handles, and when they are not console handles, such as the
+/// pipes of `keld dev` or a test runner, it duplicates them into the child even
+/// with handle inheritance off, outside any handle-list attribute and whether
+/// or not the handle is inheritable. A startup structure without the flag is
+/// refused before any process exists.
 fn create_suspended_process(
     application: &[u16],
     command_line: &mut [u16],
@@ -468,9 +523,12 @@ fn create_suspended_process(
     current_dir: Option<&[u16]>,
     startup: SuspendedStartup<'_>,
 ) -> Result<WindowsSuspendedChild, WindowsLpacError> {
-    let (launch, startup_info, inherit_handles, extended, phase): (
+    // The pointer is derived from the whole startup object of each arm: the
+    // LPAC call reads the STARTUPINFOEXW beyond its leading STARTUPINFOW.
+    let (launch, startup_info, flags, inherit_handles, extended, phase): (
         _,
         *const STARTUPINFOW,
+        _,
         _,
         _,
         _,
@@ -480,7 +538,8 @@ fn create_suspended_process(
             inherit_handles,
         } => (
             SuspendedLaunch::Lpac,
-            (&raw const startup.StartupInfo).cast(),
+            std::ptr::from_ref(startup).cast::<STARTUPINFOW>(),
+            startup.StartupInfo.dwFlags,
             inherit_handles,
             EXTENDED_STARTUPINFO_PRESENT,
             "CreateProcessW LPAC launch",
@@ -488,21 +547,35 @@ fn create_suspended_process(
         SuspendedStartup::SameToken(startup) => (
             SuspendedLaunch::SameToken,
             std::ptr::from_ref(startup),
+            startup.dwFlags,
             false,
             0,
             "CreateProcessW same-token launch",
         ),
     };
+    if flags & STARTF_USESTDHANDLES == 0 {
+        return Err(WindowsLpacError::contract(
+            phase,
+            "the startup structure does not name the child's standard handles: without \
+             STARTF_USESTDHANDLES the child would receive this process's own",
+        )
+        .in_launch(launch));
+    }
     let mut process = PROCESS_INFORMATION::default();
     let creation_flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | extended;
     // SAFETY: every pointer refers to live storage through this synchronous
-    // call; command line is mutable as required; `startup_info` points at a
-    // borrowed STARTUPINFOW, which for the LPAC launch heads a STARTUPINFOEXW
-    // whose attribute list retains its backing values, and
-    // EXTENDED_STARTUPINFO_PRESENT is set only then; process/thread outputs are
-    // writable. TRUE inheritance is used only by the LPAC launch, together with
-    // its explicit handle-list attribute; the same-token launch passes FALSE and
-    // no token, so the child runs under a copy of this process's primary token.
+    // call; command line is mutable as required; `startup_info` points at the
+    // borrowed startup object of its arm: a STARTUPINFOW for the same-token
+    // launch, and for the LPAC launch a STARTUPINFOEXW whose attribute list
+    // retains its backing values, where the pointer is derived from the whole
+    // STARTUPINFOEXW, so the extended read of `lpAttributeList` that
+    // EXTENDED_STARTUPINFO_PRESENT (set only then) requests is within its
+    // provenance; its standard-handle fields are null or the LPAC launch's
+    // retained private copies, and the flag that makes them the child's is
+    // checked above; process/thread outputs are writable. TRUE inheritance is
+    // used only by the LPAC launch, together with its explicit handle-list
+    // attribute; the same-token launch passes FALSE and no token, so the child
+    // runs under a copy of this process's primary token.
     let created = unsafe {
         CreateProcessW(
             application.as_ptr(),
@@ -544,6 +617,7 @@ fn create_suspended_process(
         thread: Some(unsafe { OwnedHandle::from_raw_handle(process.hThread.cast()) }),
         pid: process.dwProcessId,
         terminated: false,
+        detached: false,
         launch,
     })
 }
@@ -575,6 +649,9 @@ pub struct WindowsSuspendedChild {
     thread: Option<OwnedHandle>,
     pid: u32,
     terminated: bool,
+    /// Set by the one detach, [`Self::detach`]: the child is a released
+    /// candidate that this owner keeps running when it drops.
+    detached: bool,
     launch: SuspendedLaunch,
 }
 
@@ -583,9 +660,14 @@ impl WindowsSuspendedChild {
     /// token (KEL-53 §5, §6 S6b).
     ///
     /// The one suspended creation call runs with `CREATE_SUSPENDED`, without the
-    /// LPAC attribute list and with handle inheritance off, so the child inherits
-    /// no handle of the caller: no attempt endpoint, no start-gate pipe and no
-    /// standard handle. It runs under a copy of the caller's primary token.
+    /// LPAC attribute list, with handle inheritance off and with the child's
+    /// three standard handles named null, so the child holds no handle of the
+    /// caller: no attempt endpoint, no start-gate pipe and no standard handle.
+    /// Its `GetStdHandle` reports NULL for all three, as for a process without
+    /// associated standard handles; inheritance off alone would not do this,
+    /// because process creation duplicates a caller's non-console standard
+    /// handles into a child whose startup structure does not name its own. It
+    /// runs under a copy of the caller's primary token.
     /// `environment` is its complete environment block, as for the LPAC launch,
     /// and `current_dir` its working directory. `program` and `current_dir` must
     /// be absolute: `program` names the image exactly, and Windows neither
@@ -633,6 +715,13 @@ impl WindowsSuspendedChild {
                     "structure exceeds u32",
                 ))
             })?,
+            // The child's standard handles are exactly these three, null: the
+            // flag is required by `create_suspended_process`, which owns the
+            // rule.
+            dwFlags: STARTF_USESTDHANDLES,
+            hStdInput: std::ptr::null_mut(),
+            hStdOutput: std::ptr::null_mut(),
+            hStdError: std::ptr::null_mut(),
             ..STARTUPINFOW::default()
         };
         create_suspended_process(
@@ -647,6 +736,17 @@ impl WindowsSuspendedChild {
     /// Whether the one resume was already spent.
     pub(crate) const fn is_resumed(&self) -> bool {
         self.thread.is_none()
+    }
+
+    /// Keeps the child running and closes this owner's handles to it: the
+    /// detach of a released candidate (KEL-53 §4 "Candidate release after
+    /// commit", *Launch-record detach*). The one caller is
+    /// [`crate::windows_job::WindowsLaunchedProcess::detach`], which admits only
+    /// a resumed child bound to a host-death census; that check is the record's,
+    /// so it is made once. Closing the process handle ends nothing: the child
+    /// continues by identity only, and the kernel keeps its object alive.
+    pub(crate) fn detach(mut self) {
+        self.detached = true;
     }
 
     /// A refusal of an operation on this child, coded for the launch that made it.
@@ -818,11 +918,16 @@ impl WindowsSuspendedChild {
 
 impl Drop for WindowsSuspendedChild {
     fn drop(&mut self) {
-        if self.terminated {
+        if self.terminated || self.detached {
             return;
         }
-        // SAFETY: this owner never detaches. Termination prevents a suspended
-        // or failed-evidence child from escaping when callers unwind.
+        // SAFETY: the process handle is live and owned here until this body
+        // returns, and the call reads no caller memory. The child was neither
+        // reaped nor terminated through this owner (`terminated`), nor released
+        // by the one detach there is, `WindowsLaunchedProcess::detach` of a
+        // resumed child bound to a host-death census (`detached`), so it is
+        // still this owner's suspended or failed-evidence child, and terminating
+        // it keeps it from escaping when callers unwind.
         let _ = unsafe { TerminateProcess(self.process.as_raw_handle().cast(), 1) };
     }
 }
@@ -964,6 +1069,39 @@ impl InheritedHandleCopies {
     }
 }
 
+/// A merged DACL ready to be written to the exact object
+/// [`WindowsLpacProfile::prepare_grant`] opened and read.
+struct PreparedGrant {
+    /// The retained `READ_CONTROL | WRITE_DAC` handle the DACL was read from.
+    original: std::fs::File,
+    /// The merged DACL, one `LocalAlloc` allocation from `SetEntriesInAclW`.
+    new_acl: LocalAllocation,
+}
+
+impl PreparedGrant {
+    /// Writes the merged DACL through the retained handle and closes it.
+    fn publish(self) -> Result<(), WindowsLpacError> {
+        // SAFETY: `original` is still the exact WRITE_DAC handle from the
+        // preceding GetSecurityInfo; renaming the path cannot redirect this
+        // write. The merged DACL is live for the synchronous SetSecurityInfo.
+        let status = unsafe {
+            SetSecurityInfo(
+                self.original.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                self.new_acl.0.cast(),
+                std::ptr::null(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(WindowsLpacError::win32("filesystem DACL write", status));
+        }
+        Ok(())
+    }
+}
+
 struct LocalAllocation(*mut c_void);
 
 impl Drop for LocalAllocation {
@@ -1050,93 +1188,6 @@ fn deduplicate_handles(handles: &mut Vec<HANDLE>) -> Result<(), WindowsLpacError
     Ok(())
 }
 
-fn encode_command_line(program: &OsStr, args: &[OsString]) -> Result<Vec<u16>, WindowsLpacError> {
-    let mut encoded = Vec::new();
-    append_quoted_arg(&mut encoded, program)?;
-    for arg in args {
-        encoded.push(u16::from(b' '));
-        append_quoted_arg(&mut encoded, arg)?;
-    }
-    encoded.push(0);
-    Ok(encoded)
-}
-
-fn append_quoted_arg(output: &mut Vec<u16>, arg: &OsStr) -> Result<(), WindowsLpacError> {
-    let units: Vec<u16> = arg.encode_wide().collect();
-    if units.contains(&0) {
-        return Err(WindowsLpacError::contract(
-            "command-line encoding",
-            "argument contains NUL",
-        ));
-    }
-    let needs_quotes =
-        units.is_empty() || units.iter().any(|unit| matches!(*unit, 0x20 | 0x09 | 0x22));
-    if !needs_quotes {
-        output.extend(units);
-        return Ok(());
-    }
-
-    output.push(u16::from(b'"'));
-    let mut slashes = 0_usize;
-    for unit in units {
-        if unit == u16::from(b'\\') {
-            slashes += 1;
-            continue;
-        }
-        if unit == u16::from(b'"') {
-            output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes * 2 + 1));
-        } else {
-            output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes));
-        }
-        slashes = 0;
-        output.push(unit);
-    }
-    output.extend(std::iter::repeat_n(u16::from(b'\\'), slashes * 2));
-    output.push(u16::from(b'"'));
-    Ok(())
-}
-
-fn encode_environment(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, WindowsLpacError> {
-    let mut ordered = Vec::with_capacity(environment.len());
-    let mut keys = BTreeSet::new();
-    for (key, value) in environment {
-        let key_units: Vec<u16> = key.encode_wide().collect();
-        let value_units: Vec<u16> = value.encode_wide().collect();
-        if key_units.is_empty()
-            || key_units.contains(&0)
-            || key_units.contains(&u16::from(b'='))
-            || value_units.contains(&0)
-        {
-            return Err(WindowsLpacError::contract(
-                "environment encoding",
-                "key is empty/contains '=' or key/value contains NUL",
-            ));
-        }
-        let folded = key.to_string_lossy().to_uppercase();
-        if !keys.insert(folded.clone()) {
-            return Err(WindowsLpacError::contract(
-                "environment encoding",
-                format!("duplicate case-insensitive key {folded}"),
-            ));
-        }
-        ordered.push((folded, key_units, value_units));
-    }
-    ordered.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut encoded = Vec::new();
-    for (_, key, value) in ordered {
-        encoded.extend(key);
-        encoded.push(u16::from(b'='));
-        encoded.extend(value);
-        encoded.push(0);
-    }
-    encoded.push(0);
-    if environment.is_empty() {
-        encoded.push(0);
-    }
-    Ok(encoded)
-}
-
 fn wide_nul(value: &OsStr, phase: &'static str) -> Result<Vec<u16>, WindowsLpacError> {
     nul_terminated_wide(value)
         .ok_or_else(|| WindowsLpacError::contract(phase, "value contains NUL"))
@@ -1198,6 +1249,47 @@ mod tests {
     }
 
     #[test]
+    fn a_startup_structure_that_does_not_name_the_childs_standard_handles_is_refused() {
+        // The one creation call owns the rule that every launch names the child's
+        // standard handles; a structure without STARTF_USESTDHANDLES refuses before
+        // any process exists. Removing the check creates a suspended cmd.exe instead.
+        let program =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+                .join(r"System32\cmd.exe");
+        let application =
+            super::wide_nul(program.as_os_str(), "application path").expect("encode the path");
+        let mut command_line =
+            super::encode_command_line(program.as_os_str(), &[std::ffi::OsString::from("/d")])
+                .expect("encode the command line");
+        let environment = super::encode_environment(&[]).expect("encode the environment");
+        let startup = windows_sys::Win32::System::Threading::STARTUPINFOW {
+            cb: u32::try_from(std::mem::size_of::<
+                windows_sys::Win32::System::Threading::STARTUPINFOW,
+            >())
+            .expect("STARTUPINFOW size fits u32"),
+            ..Default::default()
+        };
+        let refusal = super::create_suspended_process(
+            &application,
+            &mut command_line,
+            &environment,
+            None,
+            super::SuspendedStartup::SameToken(&startup),
+        )
+        .expect_err("a startup structure without STARTF_USESTDHANDLES refuses");
+        let text = refusal.to_string();
+        assert!(
+            text.starts_with("KELD-RUNTIME-020: ")
+                && text.contains(
+                    "CreateProcessW same-token launch: the startup structure does not name the \
+                     child's standard handles: without STARTF_USESTDHANDLES the child would \
+                     receive this process's own"
+                ),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn admitted_handle_uses_private_inheritable_copy_without_mutating_caller() {
         let original = File::open("NUL").expect("open test handle");
         let original_raw = original.as_raw_handle().cast();
@@ -1208,6 +1300,179 @@ mod tests {
         assert!(!is_inheritable(original_raw));
         assert!(is_inheritable(copies.raw_handles()[0]));
         assert_eq!(copies.copies.len(), 1);
+    }
+
+    #[test]
+    fn grant_path_reparse_alias_does_not_mutate_an_unrelated_directory() {
+        use std::ffi::OsString;
+        use std::os::windows::fs::symlink_dir;
+        use std::path::Path;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let fixture = tempfile::tempdir().expect("own an isolated LPAC grant fixture");
+        let ordinary = fixture.path().join("ordinary");
+        let outsider = fixture.path().join("outsider");
+        let alias = fixture.path().join("reparse-alias");
+        std::fs::create_dir(&ordinary).expect("own ordinary grant directory");
+        std::fs::create_dir(&outsider).expect("own unrelated directory");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("monotonic positive wall-clock generation")
+            .as_nanos();
+        let profile_name =
+            OsString::from(format!("keld-grant-alias-{}-{nonce}", std::process::id()));
+        let profile = super::WindowsLpacProfile::create(&profile_name)
+            .expect("fresh profile is under the native test owner");
+        profile
+            .grant_path(&ordinary, super::WindowsLpacPathAccess::ReadExecute)
+            .expect("ordinary owner-controlled directory admits a positive grant");
+
+        // Junction fallback requires no elevated symlink privilege on Windows.
+        // Both the alias and its target are test-owned paths under one TempDir.
+        if let Err(link_error) = symlink_dir(&outsider, &alias) {
+            let result = Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&alias)
+                .arg(&outsider)
+                .status()
+                .expect("invoke built-in junction creator");
+            assert!(
+                result.success(),
+                "test-owned reparse alias unavailable: symlink {link_error}; junction {result}"
+            );
+        }
+
+        let before = observed_dacl(&outsider);
+        let granted = profile.grant_path(&alias, super::WindowsLpacPathAccess::RolePrivate);
+        let after = observed_dacl(&outsider);
+        // Remove exactly this test-owned alias, never recursively remove its target.
+        std::fs::remove_dir(&alias).expect("unlink only test-owned alias");
+        assert_eq!(
+            after, before,
+            "granting a reparse alias must never change the unrelated target's actual DACL"
+        );
+        // The exact admission refusal, not any open or metadata failure.
+        assert_eq!(
+            granted
+                .expect_err("a reparse alias must not be admitted as a grant target")
+                .to_string(),
+            "KELD-RUNTIME-015: Windows LPAC admission failed during ACL object admission: \
+             refuse a reparse-point grant target. Do not start an unconfined replacement; \
+             repair the profile, ACL, or handle list."
+        );
+        assert!(
+            Path::new(&outsider).is_dir(),
+            "unrelated target was not removed"
+        );
+    }
+
+    #[test]
+    fn grant_path_retained_directory_refuses_post_read_substitution() {
+        use std::ffi::OsString;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let fixture = tempfile::tempdir().expect("own an isolated pathname-swap fixture");
+        let claimed = fixture.path().join("claimed");
+        let outsider = fixture.path().join("outsider");
+        let moved = fixture.path().join("original-moved");
+        std::fs::create_dir(&claimed).expect("test owns the claimed original");
+        std::fs::create_dir(&outsider).expect("test owns the independent outsider");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("positive fixture generation")
+            .as_nanos();
+        let name = OsString::from(format!("keld-grant-race-{}-{nonce}", std::process::id()));
+        let profile = super::WindowsLpacProfile::create(&name).expect("fresh test-owned LPAC SID");
+        let outsider_before = observed_dacl(&outsider);
+        let original_before = observed_dacl(&claimed);
+
+        // The substitution runs between the shipping ACL read and merge and
+        // the publish, outside the code under test. The same-user rename may
+        // succeed on this Windows build: only original HANDLE identity can
+        // guarantee that the outsider never receives this ACL grant.
+        let prepared = profile
+            .prepare_grant(&claimed, super::WindowsLpacPathAccess::RolePrivate)
+            .expect("an ordinary retained directory admits its DACL read and merge");
+        let mut substituted = false;
+        if std::fs::rename(&claimed, &moved).is_ok() {
+            std::fs::rename(&outsider, &claimed)
+                .expect("place only test-owned outsider at vacated name");
+            substituted = true;
+        }
+        let grant = prepared.publish();
+        let outsider_after = observed_dacl(if substituted { &claimed } else { &outsider });
+        let original_after = observed_dacl(if substituted { &moved } else { &claimed });
+        if substituted {
+            // Restore only test-owned entries before any assertion panics. Do
+            // not follow links or remove unrelated files in this cleanup.
+            std::fs::rename(&claimed, &outsider).expect("rescue owned outsider name");
+            std::fs::rename(&moved, &claimed).expect("restore original owner path");
+        }
+        assert_eq!(
+            outsider_after, outsider_before,
+            "path substitution must not publish the original ACL grant onto the outsider"
+        );
+        assert_ne!(
+            original_after, original_before,
+            "the grant must apply to the original retained object even after rename"
+        );
+        grant.expect("an ordinary retained directory receives its intended package grant");
+    }
+
+    fn observed_dacl(path: &std::path::Path) -> String {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: live NUL-terminated path, writable descriptor output.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut descriptor,
+            )
+        };
+        assert_eq!(status, 0, "read independently observed test-owned DACL");
+        let _descriptor = super::LocalAllocation(descriptor);
+        let mut sddl = std::ptr::null_mut();
+        // SAFETY: live security descriptor, writable string output.
+        assert_ne!(
+            unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    1,
+                    DACL_SECURITY_INFORMATION,
+                    &raw mut sddl,
+                    std::ptr::null_mut(),
+                )
+            },
+            0,
+            "convert actual kernel DACL to independent SDDL"
+        );
+        let _sddl = super::LocalAllocation(sddl.cast());
+        let mut len = 0;
+        while len < 4096 {
+            // SAFETY: conversion guarantees a terminated UTF-16 LocalAlloc string.
+            if unsafe { *sddl.add(len) } == 0 {
+                break;
+            }
+            len += 1;
+        }
+        assert!(len < 4096, "bounded SDDL conversion");
+        // SAFETY: LocalAlloc string is live and terminated at this bounded offset.
+        String::from_utf16(unsafe { std::slice::from_raw_parts(sddl, len) })
+            .expect("OS descriptor has valid UTF-16")
     }
 
     fn is_inheritable(handle: HANDLE) -> bool {

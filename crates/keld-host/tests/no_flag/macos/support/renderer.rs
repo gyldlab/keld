@@ -68,7 +68,7 @@ impl Beacon {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .expect("respond renderer beacon");
             request_tx.send(bytes).expect("report renderer request");
-            assert!(!marker.is_empty());
+            assert_ne!(marker, "");
         });
         Self {
             port,

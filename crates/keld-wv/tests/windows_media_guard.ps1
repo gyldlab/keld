@@ -99,12 +99,15 @@ function Invoke-MediaWatchdogProbe {
 }
 
 function Invoke-MediaOuterDeadlineProbe {
-    param([string]$EvidenceRoot)
+    param([string]$Binary, [string]$EvidenceRoot)
     $stdoutPath = Join-Path $EvidenceRoot 'outer-deadline-probe.log'
     $stderrPath = Join-Path $EvidenceRoot 'outer-deadline-probe.stderr.log'
     $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    $start.Arguments = '-NoProfile -Command "[Console]::Out.WriteLine(''KELD_MEDIA_PHASE outer-probe-block''); [Console]::Out.Flush(); $gate = [Threading.ManualResetEventSlim]::new($false); $gate.Wait()"'
+    # Reuse the warmed, hash-bound native libtest, not a cold Windows PowerShell 5.1 child.
+    # The independent outer watchdog remains exactly five seconds.
+    $start.FileName = $Binary
+    $start.Arguments = 'webview2::media_acceptance::tests::windows_media_acceptance_subprocess --ignored --exact --nocapture --test-threads=1'
+    $start.EnvironmentVariables['KELD_MEDIA_WATCHDOG_PROBE'] = 'outer'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
@@ -135,8 +138,21 @@ function Invoke-ProfileRegressionCases {
         'windows_dev_profile_cleanup_subprocess',
         'windows_busy_ephemeral_scavenge_subprocess',
         'windows_persistent_recovery_subprocess',
-        'windows_saved_media_reconciliation_subprocess'
+        'windows_saved_media_reconciliation_subprocess',
+        'windows_swallowed_browser_exit_fails_bounded_subprocess',
+        'windows_unproven_probe_retains_predecessor_subprocess',
+        'windows_unproven_probe_window_retains_predecessor_subprocess'
     )
+    # Outer kill switches only; every child bounds itself with its own watchdog.
+    # The two swallowed-event cases (host site, probe site) wait out the full
+    # production post-exit grace (BROWSER_EXIT_GRACE) on purpose, so their outer
+    # kill switch must exceed FIXTURE_DEADLINE + 2 x BROWSER_EXIT_GRACE (the child
+    # watchdog); re-derive it when either constant changes. Every other case keeps
+    # the 90 s kill switch.
+    $outerDeadlines = @{
+        'windows_swallowed_browser_exit_fails_bounded_subprocess' = 300000
+        'windows_unproven_probe_retains_predecessor_subprocess' = 300000
+    }
     foreach ($case in $cases) {
         $stdoutPath = Join-Path $EvidenceRoot "profile-$case.log"
         $stderrPath = Join-Path $EvidenceRoot "profile-$case.stderr.log"
@@ -147,7 +163,8 @@ function Invoke-ProfileRegressionCases {
         $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
-        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds 90000
+        $deadlineMilliseconds = if ($outerDeadlines.ContainsKey($case)) { $outerDeadlines[$case] } else { 90000 }
+        $execution = Invoke-MediaProcess -Start $start -StdoutPath $stdoutPath -StderrPath $stderrPath -DeadlineMilliseconds $deadlineMilliseconds
         if ($execution.outer_timed_out -or $execution.exit_code -ne 0 -or
             -not $execution.stdout_text.Contains("test webview2::media_acceptance::tests::$case") -or
             -not $execution.stdout_text.Contains('test result: ok. 1 passed; 0 failed')) {
@@ -173,10 +190,10 @@ if ($binaryHash -ne $sourceBinaryHash) {
     throw "Fixture executable copy mismatch: source=$sourceBinaryHash evidence=$binaryHash"
 }
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
-$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -EvidenceRoot $evidenceRoot
+$outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
-if ($profileRegressionCount -ne 5) {
-    throw "Expected five Windows profile regressions, observed $profileRegressionCount"
+if ($profileRegressionCount -ne 8) {
+    throw "Expected eight Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
 $seenNonces = @{}

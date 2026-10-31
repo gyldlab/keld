@@ -183,7 +183,7 @@ fn the_feature_is_declared_non_default_and_used_only_by_dev_dependencies() {
 #[test]
 fn each_production_enablement_path_is_found() {
     let real = workspace_metadata();
-    assert!(production_enablers(&real).is_empty());
+    assert_eq!(production_enablers(&real).len(), 0);
 
     let mut normal = real.clone();
     dev_entry_mut(&mut normal, "keld-core")["kind"] = Value::Null;
