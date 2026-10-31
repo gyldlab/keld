@@ -375,6 +375,9 @@ pub struct RoleConfig {
     admission_timeout: Duration,
     #[cfg(target_os = "linux")]
     linux_strict: Option<LinuxStrictProfile>,
+    // Debug-only host observer, never an environment key for a strict child.
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    debug_primary_attempt_witness: Option<Arc<Mutex<std::fs::File>>>,
     #[cfg(test)]
     #[cfg(unix)]
     probe_tx: Option<Sender<ProvisionedProbe>>,
@@ -416,6 +419,8 @@ impl RoleConfig {
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             #[cfg(target_os = "linux")]
             linux_strict: None,
+            #[cfg(all(target_os = "linux", debug_assertions))]
+            debug_primary_attempt_witness: None,
             #[cfg(test)]
             #[cfg(unix)]
             probe_tx: None,
@@ -476,6 +481,20 @@ impl RoleConfig {
     pub fn linux_strict(mut self, profile: LinuxStrictProfile) -> Self {
         self.linux_strict = Some(profile);
         self
+    }
+
+    /// Pins an existing private witness file once, before spawning any role.
+    /// The supervisor writes through this descriptor for every prepare, so
+    /// later pathname replacement cannot redirect its output. Debug Linux only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe filesystem objects, symlinked paths, or open failures.
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    pub fn with_debug_primary_attempt_witness(mut self, path: &Path) -> std::io::Result<Self> {
+        let file = open_debug_attempt_witness(path)?;
+        self.debug_primary_attempt_witness = Some(Arc::new(Mutex::new(file)));
+        Ok(self)
     }
 
     /// Sets the supervisor restart policy.
@@ -675,10 +694,52 @@ struct RolePreparer {
     recovery_decision: Option<Arc<AtomicU8>>,
 }
 
+/// Opens the parent-created attempt witness for appending under the same
+/// ownership rule as the strict sandbox's paths (`linux_strict`): a regular
+/// file owned by the current user and not group/other-writable, beneath
+/// trusted non-symlink ancestors. The open neither follows a final symlink,
+/// blocks on a FIFO, nor acquires a controlling terminal.
+#[cfg(all(target_os = "linux", debug_assertions))]
+fn open_debug_attempt_witness(path: &Path) -> std::io::Result<std::fs::File> {
+    use crate::linux_strict::{current_effective_uid, validate_trusted_ancestors};
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+    const PHASE: &str = "debug primary attempt witness";
+    let uid = current_effective_uid().map_err(|error| std::io::Error::other(error.to_string()))?;
+    validate_trusted_ancestors(path, uid, PHASE)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits())
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "debug primary attempt witness must be a regular file owned by the current user and not group/other-writable",
+        ));
+    }
+    Ok(file)
+}
+
 impl ChildPreparer for RolePreparer {
     type Lease = RoleGenerationLease;
 
     fn prepare(&mut self, attempt: u32) -> Result<PreparedChild<Self::Lease>, RuntimeError> {
+        #[cfg(all(target_os = "linux", debug_assertions))]
+        if let Some(witness) = &self.config.debug_primary_attempt_witness {
+            use std::io::Write as _;
+            // Record before provisioning, including a short-lived or failed
+            // successor. Retain the original verified descriptor across attempts.
+            let mut file = witness.lock().map_err(|_| RuntimeError::Lifecycle {
+                phase: "debug primary attempt witness",
+                source: std::io::Error::other("witness file lock poisoned"),
+            })?;
+            writeln!(*file, "{attempt}").map_err(|source| RuntimeError::Lifecycle {
+                phase: "debug primary attempt witness",
+                source,
+            })?;
+        }
         let provisioned = self.generation_owner.provision(attempt)?;
         #[cfg(target_os = "linux")]
         if let Some(profile) = &self.config.linux_strict {
@@ -1159,6 +1220,129 @@ impl BootstrapRejectionObserver for RoleBootstrapObserver {
             attempt: self.attempt,
             code: rejection.code(),
         });
+    }
+}
+
+#[cfg(test)]
+#[cfg(all(target_os = "linux", debug_assertions))]
+mod debug_attempt_witness_tests {
+    use super::open_debug_attempt_witness;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::Duration;
+
+    fn private_file(dir: &tempfile::TempDir, mode: u32) -> std::path::PathBuf {
+        let path = dir.path().join("attempts.log");
+        std::fs::write(&path, b"").expect("create witness");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            .expect("set witness mode");
+        path
+    }
+
+    #[test]
+    fn private_regular_witness_appends() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let path = private_file(&dir, 0o600);
+        writeln!(
+            open_debug_attempt_witness(&path).expect("open witness"),
+            "1"
+        )
+        .expect("record");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "1\n");
+    }
+
+    #[test]
+    fn pinned_witness_stays_on_original_inode_after_same_user_replacement() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let path = private_file(&dir, 0o600);
+        let config = super::RoleConfig::primary("/bin/sh")
+            .with_debug_primary_attempt_witness(&path)
+            .expect("pin stage-owned witness");
+        let original = dir.path().join("original-inode");
+        std::fs::rename(&path, &original).expect("rename original file");
+        std::fs::write(&path, b"unrelated data").expect("replace with same-user file");
+
+        let pinned = config
+            .debug_primary_attempt_witness
+            .as_ref()
+            .expect("witness descriptor");
+        writeln!(*pinned.lock().expect("pinned witness lock"), "1")
+            .expect("write through original descriptor");
+        assert_eq!(std::fs::read(&original).expect("read original"), b"1\n");
+        assert_eq!(
+            std::fs::read(&path).expect("read replacement"),
+            b"unrelated data",
+            "a same-user replacement must never receive supervisor output"
+        );
+    }
+
+    #[test]
+    fn symlinked_witness_is_refused_without_writing_its_target() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let target = private_file(&dir, 0o600);
+        std::fs::write(&target, b"keep").expect("seed target");
+        let link = dir.path().join("link.log");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+        assert!(open_debug_attempt_witness(&link).is_err());
+        assert_eq!(std::fs::read(&target).expect("read target"), b"keep");
+    }
+
+    #[test]
+    fn witness_beneath_a_symlinked_directory_is_refused() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).expect("real dir");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700))
+            .expect("private dir");
+        let file = real.join("attempts.log");
+        std::fs::write(&file, b"").expect("create witness");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+            .expect("private witness");
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink dir");
+        assert!(open_debug_attempt_witness(&alias.join("attempts.log")).is_err());
+    }
+
+    #[test]
+    fn fifo_witness_without_reader_is_refused_without_blocking() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let path = dir.path().join("attempts.log");
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .expect("create fifo");
+        // A blocking open would hang the thread, so the verdict is bounded here
+        // and a regression fails instead of stalling the test binary. On such a
+        // regression the spawned thread stays blocked until the process exits.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_debug_attempt_witness(&path).is_err());
+        });
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(true),
+            "opening a FIFO witness must fail without blocking"
+        );
+    }
+
+    #[test]
+    fn group_writable_witness_is_refused() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        assert!(open_debug_attempt_witness(&private_file(&dir, 0o620)).is_err());
+    }
+
+    #[test]
+    fn other_writable_witness_is_refused() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        assert!(open_debug_attempt_witness(&private_file(&dir, 0o602)).is_err());
+    }
+
+    #[test]
+    fn device_and_directory_witnesses_are_refused() {
+        assert!(open_debug_attempt_witness(std::path::Path::new("/dev/null")).is_err());
+        let dir = tempfile::tempdir().expect("scratch dir");
+        assert!(open_debug_attempt_witness(dir.path()).is_err());
     }
 }
 
