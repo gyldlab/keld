@@ -1784,12 +1784,11 @@ mod rendered {
     }
 
     /// The first row of a table, which GFM lets end a paragraph: a row, then a delimiter row
-    /// of the same width.
+    /// of the same width. GitHub needs no pipe in either: `a` over `:--` renders a table.
     fn table_start(lines: &[SourceLine]) -> Option<usize> {
         lines.windows(2).position(|pair| {
             let delimiter = split_cells(&pair[1].text);
-            pair[1].text.contains('|')
-                && pair[1].origin != Origin::Lazy
+            !matches!(pair[1].origin, Origin::Deep | Origin::Lazy)
                 && delimiter.iter().all(|cell| is_delimiter_cell(cell))
                 && split_cells(&pair[0].text).len() == delimiter.len()
         })
@@ -2484,20 +2483,13 @@ mod rendered {
                 closer += 1;
                 continue;
             }
-            let NodeKind::Run(open) = nodes[opener].kind else {
-                continue;
-            };
-            let used = if open.width >= 2 && end.width >= 2 {
-                2
-            } else {
-                1
-            };
+            // Strong takes two marks and emphasis one, and both show the same text.
             for at in [opener, closer] {
                 if let NodeKind::Run(run) = &mut nodes[at].kind {
-                    run.width -= used;
+                    run.width -= 1;
                 }
             }
-            if end.width == used {
+            if end.width == 1 {
                 closer += 1;
             }
         }
