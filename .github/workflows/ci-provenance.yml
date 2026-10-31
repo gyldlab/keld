@@ -142,40 +142,15 @@ jobs:
                 protectedChanges.push(file.filename);
               }
             }
+            // Reject every protected authority change until a separate,
+            // revocation-aware maintainer approval protocol is live. GitHub
+            // review dismissal does not trigger this pull_request_target job,
+            // so caching a past APPROVED review would permit stale PASS.
             if (protectedChanges.length) {
-              // Explicit positive maintenance path: a GitHub-authenticated
-              // review by an entrusted maintainer, bound to BOTH current
-              // immutable base and head. PR files cannot forge review authors.
-              const receipt = "KELD-VERISENTRY-CI-MAINTENANCE base=" +
-                before.base.sha + " head=" + before.head.sha;
-              const maintainers = new Set(["0monish", "amishabenramani"]);
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner, repo, pull_number: event.number, per_page: 100,
-              });
-              if (!Array.isArray(reviews) || reviews.length > 2000) {
-                throw new Error("CI provenance refuses unbounded maintainer review data");
-              }
-              const latest = new Map();
-              for (const review of reviews) {
-                const login = review?.user?.login;
-                if (!maintainers.has(login)) continue;
-                if (!Number.isSafeInteger(review.id) || review.id < 1) {
-                  throw new Error("CI provenance refuses malformed maintainer review data");
-                }
-                const prior = latest.get(login);
-                if (!prior || prior.id < review.id) latest.set(login, review);
-              }
-              const authorized = [...latest.values()].some((review) =>
-                review.state === "APPROVED" && review.commit_id === before.head.sha &&
-                review.body?.trim() === receipt && review.user.login !== before.user?.login);
-              if (!authorized) {
-                throw new Error("CI provenance: changes to protected CI authority require a separately reviewed trusted-base policy update: " +
-                  protectedChanges.slice(0, 12).join(", "));
-              }
-              core.info("CI provenance: authenticated maintainer approval for " +
-                protectedChanges.length + " protected authority paths");
+              throw new Error("CI provenance: changes to protected CI authority require a separately reviewed trusted-base policy update: " +
+                protectedChanges.slice(0, 12).join(", "));
             }
-            verifyPR(await fetchPR()); // Re-check after external review enumeration.
+            verifyPR(await fetchPR()); // A new head must trigger its own event.
             core.info("CI provenance: unchanged workflow/router/CI authority; " +
               files.length + " PR files inspected at " + before.head.sha);
             core.setOutput("verified_head_sha", before.head.sha);
@@ -221,22 +196,35 @@ jobs:
                 !isSha(event.head?.sha) || !isSha(event.base?.sha)) {
               throw new Error("VeriSentry refuses an untrusted PR event");
             }
-            const pr = (await github.rest.pulls.get({
-              owner, repo, pull_number: event.number,
-            })).data;
-            // A stale, moved or closed PR must never get a successful check.
-            // In those cases do not publish ANY check against an obsolete SHA.
-            if (pr?.state !== "open" || pr?.number !== event.number ||
-                pr.base?.ref !== "main" ||
-                pr.base?.repo?.full_name !== "gyldlab/keld" ||
-                pr.head?.sha !== event.head.sha || pr.base?.sha !== event.base.sha) {
-              throw new Error("VeriSentry refuses stale or changed PR state");
+            // GitHub computes the test-merge SHA asynchronously. Retry only
+            // bounded GitHub API reads, never execute or fetch PR code.
+            // Reject a moved/closed PR on EVERY read (including after delay).
+            let pr;
+            let ready = false;
+            for (let attempt = 0; attempt < 6; attempt++) {
+              pr = (await github.rest.pulls.get({
+                owner, repo, pull_number: event.number,
+              })).data;
+              if (pr?.state !== "open" || pr?.number !== event.number ||
+                  pr.base?.ref !== "main" ||
+                  pr.base?.repo?.full_name !== "gyldlab/keld" ||
+                  pr.head?.sha !== event.head.sha || pr.base?.sha !== event.base.sha) {
+                throw new Error("VeriSentry refuses stale or changed PR state");
+              }
+              if (pr.mergeable === false) {
+                throw new Error("VeriSentry refuses an unmergeable PR");
+              }
+              // Checks on the synthetic merge commit cannot be replayed by a
+              // different PR that uses the same source head SHA.
+              if (pr.mergeable === true && isSha(pr.merge_commit_sha)) {
+                ready = true;
+                break;
+              }
+              if (attempt < 5) {
+                await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+              }
             }
-            // GitHub required checks prefer the synthetic test-merge commit
-            // when it has checks. Using the head alone can reuse a PASS from
-            // another PR that happens to point at the same source commit.
-            // The merge SHA is GitHub-generated for this exact base/head pair.
-            if (!isSha(pr.merge_commit_sha)) {
+            if (!ready) {
               throw new Error("VeriSentry requires a current test-merge commit");
             }
             const verified = process.env.VERISENTRY_ADMISSION_RESULT === "success" &&

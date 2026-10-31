@@ -15,7 +15,13 @@ const AsyncFunction = Object.getPrototypeOf(async function () {})
   .constructor as new (
   ...args: string[]
 ) => (...args: unknown[]) => Promise<void>;
-const execute = new AsyncFunction("github", "context", "process", body);
+const execute = new AsyncFunction(
+  "github",
+  "context",
+  "process",
+  "setTimeout",
+  body,
+);
 const head = "a".repeat(40);
 const base = "b".repeat(40);
 const merge = "c".repeat(40);
@@ -30,6 +36,9 @@ function scenario(
     currentHead?: string;
     currentBase?: string;
     currentMerge?: string | null;
+    mergeSequence?: Array<string | null>;
+    currentMergeable?: boolean | null;
+    headSequence?: string[];
     currentBaseName?: string;
     currentBaseRepo?: string;
     currentState?: string;
@@ -65,9 +74,23 @@ function scenario(
                 sha: options.currentBase ?? eventBase,
                 repo: { full_name: options.currentBaseRepo ?? "gyldlab/keld" },
               },
-              head: { sha: options.currentHead ?? eventHead },
-              merge_commit_sha:
-                options.currentMerge === undefined
+              head: {
+                sha:
+                  options.headSequence?.[reads - 1] ??
+                  options.currentHead ??
+                  eventHead,
+              },
+              mergeable:
+                options.currentMergeable === undefined
+                  ? options.mergeSequence?.[reads - 1] === null
+                    ? null
+                    : true
+                  : options.currentMergeable,
+              merge_commit_sha: options.mergeSequence
+                ? options.mergeSequence[
+                    Math.min(reads - 1, options.mergeSequence.length - 1)
+                  ]
+                : options.currentMerge === undefined
                   ? merge
                   : options.currentMerge,
             },
@@ -106,7 +129,8 @@ function scenario(
     },
   };
   return {
-    run: () => execute(github, context, processStub),
+    run: () =>
+      execute(github, context, processStub, (resolve: () => void) => resolve()),
     written,
     getReads: () => reads,
   };
@@ -266,3 +290,34 @@ test.each([null, "", "not-a-SHA", "ABCDEF".repeat(6)])(
     expect(f.written).toHaveLength(0);
   },
 );
+
+test("a delayed GitHub synthetic merge becomes usable after a bounded re-read", async () => {
+  const s = scenario({ mergeSequence: [null, null, merge] });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getReads()).toBe(3);
+  expect(s.written).toHaveLength(1);
+  expect(s.written[0]?.head_sha).toBe(merge);
+  expect(s.written[0]?.conclusion).toBe("success");
+});
+
+test("reviewed source head changing during merge readiness retry fails closed", async () => {
+  const s = scenario({
+    mergeSequence: [null, merge],
+    headSequence: [head, "d".repeat(40)],
+  });
+  await expect(s.run()).rejects.toThrow("stale or changed PR state");
+  expect(s.written).toHaveLength(0);
+});
+
+test("unmergeable or indefinitely pending PR never receives a PASS", async () => {
+  const conflict = scenario({ currentMergeable: false });
+  await expect(conflict.run()).rejects.toThrow("unmergeable PR");
+  expect(conflict.getReads()).toBe(1);
+  expect(conflict.written).toHaveLength(0);
+  const pending = scenario({ currentMergeable: null });
+  await expect(pending.run()).rejects.toThrow(
+    "requires a current test-merge commit",
+  );
+  expect(pending.getReads()).toBe(6);
+  expect(pending.written).toHaveLength(0);
+});

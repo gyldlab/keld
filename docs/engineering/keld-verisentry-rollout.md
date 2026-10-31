@@ -25,8 +25,9 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
 
 1. `provenance` executes protected-default-branch workflow bytes using only a
    read-only `GITHUB_TOKEN`. It checks the immutable base/head comparison, refuses
-   incomplete (>299) file lists, and refuses changes to CI authority unless an
-   authenticated maintainer review supplies the exact maintenance receipt.
+   incomplete (>299) file lists, and refuses ALL changes to CI authority. An authorized maintenance
+   exception is **not** active because GitHub review revocation does not
+   automatically trigger a protected verifier rerun.
    It never checks out or executes untrusted PR code.
 2. `publish` needs `provenance` and runs even if verification fails. It is the
    **only job** referencing the environment-scoped `VERISENTRY_APP_PRIVATE_KEY`.
@@ -35,25 +36,22 @@ for an agent to install a new credential, relax protections, or merge PR #1253.
    `KELD VeriSentry` App check **for the GitHub test-merge commit bound to the current PR base/head**. A failed,
    skipped, cancelled, or missing verification result publishes a **failure**
    when the PR head/base is still current. API/secret problems leave **no PASS**.
-   If the PR moved, closed, changed base, or lacks a valid test merge,
+   The publisher retries a pending GitHub test-merge SHA a bounded number of
+   times, validating current head/base on every read. If the PR moved, closed,
+   changed base, or still lacks a valid test merge,
    the publisher refuses to create a stale check. Job failure alone is not sufficient; the App's check is the
    required source for merge admission.
 
-## Authorized CI-maintenance receipt
+## CI authority maintenance remains fail-closed
 
-A change to a protected CI file requires an **APPROVED GitHub PR review** from
-`0monish` or `amishabenramani`. The review must be the reviewer's latest review,
-not dismissed or self-authored, on the exact PR head, with the **entire review
-body** set to this line (replace the two values with immutable 40-hex SHAs):
-
-```text
-KELD-VERISENTRY-CI-MAINTENANCE base=<BASE_SHA> head=<HEAD_SHA>
-```
-
-The checker re-fetches the PR after reviewing the approval evidence. A review
-for an earlier base or head is never transferable. This programmatic approval
-is additive to existing protected-branch, CODEOWNERS, and independent review
-rules; Monish/Amisha's intentionally authorized merge bypass is untouched.
+Changes to `.github/`, `tools/` and other CI-authority inputs are **rejected**.
+Monish/Amisha's intentionally authorized administrative merge-bypass rights
+remain unchanged, but they are *not* converted into an automated provenance
+PASS. For a secure self-service maintenance exception, first implement and
+verify a revocation-aware trusted event channel: submitting, editing or
+dismissing a maintainer review must invalidate any previously published App
+PASS for the affected PR test-merge commit. A static approval lookup alone is
+not sufficient. Do not claim CI-authority updates are automatically admitted.
 
 ## Credential isolation
 
@@ -89,7 +87,8 @@ GitHub REST API, and tokens expire/revoke.
   App check must never satisfy the required merge gate.
 - Check the published check's **App ID 5550363** and `head_sha` (the current test-merge SHA), not only its
   name or green color. Verify no PR-owned job can get the App key or publish
-  with that App ID. Also verify legitimate CI changes using the review receipt.
+  with that App ID. Verify that CI-authority changes remain rejected without a separately
+  qualified trusted maintenance protocol.
 - ONLY after live evidence, update branch protection to add required check
   `KELD VeriSentry` pinned to source App ID 5550363 **alongside**, not instead
   of, the existing three required checks. Do not modify the existing delegated
@@ -101,3 +100,18 @@ GitHub REST API, and tokens expire/revoke.
 Disable the new required check first (preserving all existing checks), disable
 publisher workflow/event policy, revoke the App credential in GitHub Apps, and
 rotate environment secret if disclosure is suspected. Existing CI stays intact.
+
+## Primary GitHub references for reviewers
+
+- Trusted default-branch workflow semantics and elevated event risks:
+  https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
+- Required status check source and head versus test-merge precedence:
+  https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks
+- GitHub App authentication inside a GitHub Actions workflow:
+  https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow
+- REST Checks API and permissions:
+  https://docs.github.com/en/rest/checks/runs
+- `pull_request_target` and environment branch evaluation:
+  https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/
+- Workflow execution event allowlist and December 2026 default policy:
+  https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution
