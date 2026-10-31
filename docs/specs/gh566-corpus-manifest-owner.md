@@ -1419,3 +1419,36 @@ owner's delegation (2026-10-09); see the header. Two gh532 draft decisions stay 
 here: §10 Q1 (citation kinds) and Q2 (the harness label). This spec implements each of
 them as one switch: the D5 field set and the D7 `HARNESS_PROFILE` constant, which
 leaves the frozen v0 label unchanged.
+
+## Owner-delegated amendment — exact cross-crate case admission (GH-569)
+
+The repository owner delegated this bounded test-only amendment in
+[GH-566 comment 6470340011](https://github.com/gyldlab/keld/issues/566#issuecomment-6470340011).
+The existing owner remains the sole parser, citation authority, registry and execution
+admission owner. Existing `Libtest` and Bun registrations and commands remain unchanged.
+
+A compiled, trusted registration MAY select a workspace Cargo package, integration
+binary and one fully qualified libtest case. These values are static Rust registration
+data, never fields in a corpus JSON or an arbitrary manifest-controlled command. The
+owner MUST validate that package, target and workspace path identify one existing
+integration test and MUST reject a target whose root file includes this owner. This
+preserves the existing direct-root check; it does not prove the absence of an owner
+include in an arbitrary transitive module graph. Each trusted static registration's
+actual selected target and reachable support MUST receive independent recursion review.
+It MUST filter against the declared host platform before spawning. On an admitted platform, it MUST
+run Cargo offline and libtest with `--exact`, stable pretty output and `--show-output`;
+missing, ignored, wrong or zero-selected cases, a nonzero exit, duplicate registered
+target paths, and ambiguous case output MUST fail admission. The static registration case MUST equal the cell's case.
+
+A nonregistered compatibility consumer MAY load the existing `Corpus` owner and consume
+one exact registered case's observed output to compare actual behavior with each cell's
+expected verdict in both directions. It MUST reject malformed or duplicate observation
+output and MUST NOT register itself as a target. Unsupported platforms remain unknown;
+source-only and uncited evidence retains GH-532's unknown rule. This amendment changes
+no process design, production behavior, authority, schema, citation policy, or scorer.
+
+Falsifiers: restore the hard-coded keld-compat package and the Host case cannot run;
+select a wrong or ignored case and admission fails; register an owner-including target
+and validation fails; select an unsupported platform and no process is spawned; reverse
+an expected verdict and the actual-versus-expected comparison fails. Independent final
+review and the GH-1288 CI-reader routing change remain required before merge.
