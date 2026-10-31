@@ -240,3 +240,149 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
         );
     }
 }
+
+#[test]
+fn dialog_nonce_is_owned_by_the_authenticated_current_generation() {
+    let mut primary = AcceptedRole::start(RoleOwner::Primary);
+    let (bound, mut control) = primary.bind();
+    let principal = bound.principal();
+    let mut foreign = AcceptedRole::start(RoleOwner::AppBound);
+    let (foreign_bound, _) = foreign.bind();
+    let (owner, _commands) = mpsc::channel();
+    let (window, _events) = mpsc::channel();
+    let router = PrimaryRouter::start_bound(
+        bound,
+        window,
+        PlatformPrimaryOwnerHandle { command_tx: owner },
+        SessionShutdownState::new(),
+        None,
+        #[cfg(target_os = "macos")]
+        MacBoundStart {
+            auth_configuration: AuthConfiguration::new(),
+            presentation: None,
+            facade_windows: false,
+        },
+    )
+    .expect("actual authenticated primary router");
+    let handle = router.handle();
+    let caller = {
+        let current = handle.current.lock().expect("current primary lease");
+        let active = current.as_ref().expect("accepted generation installed");
+        assert!(active.identity == PrimaryLinkIdentity::Role(principal));
+        PrimaryCallerContext {
+            attempt: active.attempt,
+            identity: active.identity,
+            reader_stop: Arc::clone(&active.reader_stop),
+        }
+    };
+    let mut wrong_role = caller.clone();
+    wrong_role.identity = PrimaryLinkIdentity::Role(foreign_bound.principal());
+    let mut wrong_attempt = caller.clone();
+    wrong_attempt.attempt += 1;
+    for refused in [&wrong_role, &wrong_attempt] {
+        super::super::with_primary_caller_locked(
+            &handle.current,
+            &handle.shutdown,
+            refused,
+            |_| panic!("foreign caller reached nonce owner"),
+        )
+        .expect("foreign context is inert");
+    }
+    super::super::with_primary_caller_locked(
+        &handle.current,
+        &handle.shutdown,
+        &caller,
+        |current| {
+            let active = current.as_mut().expect("verified current generation");
+            assert!(!active.accept_dialog_nonce(0));
+            assert!(active.accept_dialog_nonce(1));
+            assert!(!active.accept_dialog_nonce(1));
+            assert!(active.accept_dialog_nonce(2));
+            assert!(active.accept_dialog_nonce(u64::MAX));
+            assert!(!active.accept_dialog_nonce(u64::MAX));
+            Ok(())
+        },
+    )
+    .expect("actual primary owns nonce sequence");
+    control
+        .get_mut()
+        .write_all(b"ECHO\n")
+        .expect("healthy call");
+    assert_eq!(read_control(&mut control), "ECHO-OK");
+    router.shutdown().expect("actual router reader joined");
+    drop(foreign_bound);
+    for role in [&mut primary, &mut foreign] {
+        assert!(matches!(
+            role.finish(),
+            Some(keld_runtime::SupervisorOutcome::Stopped)
+        ));
+    }
+}
+
+/// This sends real guarded CALL frames from an authenticated Runtime-owned Bun
+/// `WorkerLink`, not a fabricated Rust header. A denial must precede payload
+/// decode, while an allowed parentless call returns the typed unsupported
+/// result and never enqueues a native sheet.
+#[cfg(target_os = "macos")]
+#[test]
+fn real_primary_dialog_guard_refuses_before_decode_and_unknown_cancel_has_no_ui() {
+    for (manifest, command, expected) in [
+        ("{}", "DIALOG_DENIED", "KELD-GUARD001"),
+        (
+            r#"{"app":{"system":["dialog"]}}"#,
+            "DIALOG_ALLOWED_PARENTLESS",
+            "KELD-NATIVE-010",
+        ),
+        (
+            r#"{"app":{"system":["dialog"]}}"#,
+            "DIALOG_UNKNOWN_CANCEL",
+            "KELD-NATIVE-009",
+        ),
+    ] {
+        use sha2::{Digest as _, Sha256};
+        let temp = tempfile::tempdir().expect("private verified policy fixture");
+        let path = temp.path().join("keld.permissions.jsonc");
+        std::fs::write(&path, manifest).expect("exact policy bytes");
+        let digest: [u8; 32] = Sha256::digest(manifest.as_bytes()).into();
+        let verified = keld_guard::verified_manifest::load_verified_manifest(
+            std::fs::File::open(&path).expect("retained manifest handle"),
+            path,
+            digest,
+        )
+        .expect("digest-qualified immutable policy");
+        let snapshot =
+            super::super::GuardSnapshot::prepare(verified).expect("actual verified owner prepared");
+        let mut primary = AcceptedRole::start(RoleOwner::Primary);
+        let (bound, mut control) = primary.bind();
+        let (owner, _guardian_rx) = mpsc::channel();
+        let (window, windows_rx) = mpsc::channel();
+        let router = PrimaryRouter::start_bound(
+            bound,
+            window,
+            PlatformPrimaryOwnerHandle { command_tx: owner },
+            SessionShutdownState::new(),
+            Some(&snapshot),
+            MacBoundStart {
+                auth_configuration: AuthConfiguration::new(),
+                presentation: None,
+                facade_windows: false,
+            },
+        )
+        .expect("real guarded primary router");
+        assert!(
+            router.handle().dialog.is_some(),
+            "guarded channel installed"
+        );
+        writeln!(control.get_mut(), "{command}").expect("send actual role command");
+        assert_eq!(read_control(&mut control), format!("DIALOG-{expected}"));
+        assert!(
+            windows_rx.try_recv().is_err(),
+            "denied, unsupported and unknown Cancel cannot enqueue native UI"
+        );
+        router.shutdown().expect("reader and original role joined");
+        assert!(matches!(
+            primary.finish(),
+            Some(keld_runtime::SupervisorOutcome::Stopped)
+        ));
+    }
+}

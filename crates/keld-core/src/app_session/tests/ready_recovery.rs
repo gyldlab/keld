@@ -53,6 +53,8 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
             attempt: 1,
             writer: server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),
         readers: Arc::new(Mutex::new(HashMap::new())),
@@ -77,6 +79,8 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         auth: None,
         #[cfg(target_os = "macos")]
         auth_commands: None,
+        #[cfg(target_os = "macos")]
+        dialog: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -288,6 +292,8 @@ fn failed_bound_restart_rejects_unowned_or_terminal_transitions() {
                     attempt: if case == "successor" { 3 } else { 1 },
                     writer,
                     reader_stop: Arc::new(AtomicBool::new(false)),
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    dialog_nonce_high_water: 0,
                     pending_quit: None,
                 });
                 if case != "successor" {
