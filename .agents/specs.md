@@ -6,13 +6,13 @@ the rest; § Writing and § Authoring checklist are for review.
 
 ## Size
 
-A spec file MUST stay within these caps:
+A spec file MUST stay within:
 
 | Cap | Value | Why |
 |---|---|---|
 | Lines | 500 | Owner rule |
-| Bytes | 40 KiB | 500 lines at census p80, 82 bytes |
-| Line | 400 chars | Over prose p99 (303) and table p90 (380); fences count |
+| Bytes | 40 KiB | 500 lines at p80, 82 bytes |
+| Line | 400 chars | Over prose p99 (303), table p90 (380). Fences count |
 
 A table is an index. Put AC, decision and blocker text under headings.
 
@@ -32,7 +32,7 @@ docs/specs/<id>-<slug>/
   `Owner`, `Updated` and `Pin` (a full SHA in branch history).
 - The index stays within 120 lines and 8 KiB. Its `## ` headings are exactly
   `1. Goal & non-goals`, `Parts`, `Current blockers`, `8. Review gates triggered`.
-- `## Parts` is a table `| Part | Owns | Load when |` that lists every part.
+- `## Parts` is the table `| Part | Owns | Load when |` of every part.
 - `## Current blockers` lists exactly the open `B-n`.
 - A part starts with `# <title>`, `Part of: [index](index.md)`, `Owns: <scope>`.
   A part `##` is a canonical section, with optional `: <subtitle>`.
@@ -74,8 +74,7 @@ sentences. Use a maximum of 20 words in each sentence."
 - 6.5, 6.6: one topic per paragraph, at most six sentences.
 - 3.6: active voice. A description MAY use passive only when the agent is unknown.
 - 2.1: nouns of at most three words. 8.1: no semicolons. 4.3: lists for complex text.
-- 1.11, 9.4: one term for one thing. GR-3 (advice): replace an ambiguous pronoun with
-  its noun.
+- 1.11, 9.4: one term for one thing. GR-3 (advice): replace an ambiguous pronoun.
 - 8.5-8.7 word count: parenthetical text, identifiers, quotes, numbers and hyphenated
   words each count as one.
 
@@ -143,4 +142,5 @@ Agents MUST NOT split a spec to hide text, or lower a value by deleting a contra
 
 Quote accuracy, labels, reworded non-values, cited line content, root-level and
 extensionless citations, `@sha` commits absent from the clone, text split across lines,
-raw HTML links, `<details>` text, renumbered IDs, reworded, tabled or quoted fields.
+raw HTML links, `<details>` text, renumbered IDs, lower-case body labels, reworded,
+encoded, linked, tabled or quoted fields.
