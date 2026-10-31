@@ -1,6 +1,6 @@
 {
-  "schema": "keld.ci-inputs/v1",
-  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh)",
+  "schema": "keld.ci-inputs/v2",
+  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh); stateless schema v2, GH-1275",
   "known_inputs": [
     "AGENTS.md",
     "CLAUDE.md",
@@ -290,20 +290,6 @@
       "reader_set": "policy-readers"
     },
     {
-      "owner": "Spec structure gate and self-tests",
-      "outputs": [
-        "local_spec-structure-test",
-        "local_spec-structure"
-      ],
-      "inputs": [
-        "docs/*",
-        ".agents/*",
-        "*.md"
-      ],
-      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked Markdown file, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
-      "reader_set": "policy-readers"
-    },
-    {
       "owner": "Product status and self-tests",
       "outputs": [
         "local_product-status-test",
@@ -475,6 +461,20 @@
       ],
       "contract": "Direct native Bun JS/TS globs use root bunfig.toml and native ignores, including nonignored untracked files locally. The existing echo generator explicitly checks freshness/stamps. Its exact Rust enum/channel inputs select the same gate; hosted hygiene is additively routed by ci_changes.sh. Exact Bun 1.4.4 config basenames use ASCII case classes for Windows discovery; ancestor configs apply recursively, while .prettierignore is cwd-only. This same consumer selects hosted hygiene through input_hygiene.",
       "reader_set": "policy-readers"
+    },
+    {
+      "owner": "Spec structure gate and self-tests",
+      "outputs": [
+        "local_spec-structure-test",
+        "local_spec-structure"
+      ],
+      "inputs": [
+        "docs/*",
+        ".agents/*",
+        "*.md"
+      ],
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked Markdown file, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
+      "reader_set": "policy-readers"
     }
   ],
   "reader_sets": {
@@ -524,15 +524,13 @@
         "crates/keld-host/tests/no_flag/macos/public_fs.rs",
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
-      ],
-      "sha256": "50bbde015768cac7f21b687f15652080dfb09cfe48c062a313c40705b6a4fbcf"
+      ]
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
-      ],
-      "sha256": "9652b6f100d2116c2faf2a2d9e017ab091ae54a03908ffe5a8fe6d70df1bda8c"
+      ]
     },
     "policy-readers": {
       "patterns": [
@@ -541,15 +539,13 @@
         "docs/audits/*.py",
         ".githooks/*",
         "rust-toolchain.toml"
-      ],
-      "sha256": "28b365ed96dfaa197ceb4da281ee5aded23022984e0e1148ff1d9bd7eb159895"
+      ]
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
-      ],
-      "sha256": "458180542beffbf63666dce1c0e13196c8bc09c1e1e221327c9aaaaae0fb2745"
+      ]
     },
     "rustdoc-readers": {
       "patterns": [
@@ -558,14 +554,12 @@
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/*"
-      ],
-      "sha256": "b38a14cdfdd191e00cdfc127b2f218729028cfae60745755fbe9be7745888c28"
+      ]
     },
     "dependency-command": {
       "patterns": [
         "justfile"
-      ],
-      "sha256": "e419601d24a79fc10d56217d9974a65a4c050a68bb7473b431897080b232e50f"
+      ]
     },
     "status-test-readers": {
       "patterns": [
@@ -574,8 +568,7 @@
         "tools/repo_path_contract.rs",
         "rust-toolchain.toml",
         "justfile"
-      ],
-      "sha256": "4d6b0262f8d7a5b287173e5193fa76142907eff02c9dddf0ed27c89804f516c4"
+      ]
     }
   },
   "live_inputs": {
@@ -588,8 +581,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "6166cc65242b81214cbed401d5c63c1d58e041c76907404fb90842fc0723266b",
-    "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
+    "contract": "Broad census compares path membership against the comparison base: a crate path that the base did not track, or that the change removes, selects every lane. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; a change that touches a registered reader runs every consumer behind it. Nothing is recorded between changes (GH-1275)."
   },
   "rust_package_inputs": {
     "keld-runtime": [
