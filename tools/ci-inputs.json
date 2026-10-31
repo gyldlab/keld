@@ -298,9 +298,21 @@
       "inputs": [
         "docs/*",
         ".agents/*",
-        "*.md"
+        "*.[lL][iI][tT][cC][oO][fF][fF][eE][eE]",
+        "*.[lL][iI][vV][eE][mM][dD]",
+        "*.[mM][aA][rR][kK][dD][oO][wW][nN]",
+        "*.[mM][dD]",
+        "*.[mM][dD][oO][wW][nN]",
+        "*.[mM][dD][wW][nN]",
+        "*.[mM][dD][xX]",
+        "*.[mM][kK][dD]",
+        "*.[mM][kK][dD][nN]",
+        "*.[mM][kK][dD][oO][wW][nN]",
+        "*.[rR][oO][nN][nN]",
+        "*.[sS][cC][dD]",
+        "*.[wW][oO][rR][kK][bB][oO][oO][kK]"
       ],
-      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked Markdown file, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
+      "contract": "Self-tests use fixtures. The live gate reads docs/specs, the template, every tracked file with an extension in MARKDOWN_EXTENSIONS of tools/spec_structure.rs, in any case, relative link targets and Git history. A link target outside these inputs is a LINK-CODE failure, so a change that skips this gate cannot stale a spec link.",
       "reader_set": "policy-readers"
     },
     {
@@ -542,7 +554,7 @@
         ".githooks/*",
         "rust-toolchain.toml"
       ],
-      "sha256": "964df7e9ff23f5a960979eeaab5d3ddc93b084235038c65098c5ec8c5f350245"
+      "sha256": "8c57228ed93b12fcde30ec557dd8901a88309107fb7d6868750938091108d30e"
     },
     "audit-readers": {
       "patterns": [
