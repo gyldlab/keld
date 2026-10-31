@@ -1,0 +1,14 @@
+# Temporary CANARY: same-name PR-controlled check, NOT the trusted App.
+name: Untrusted VeriSentry same-name CANARY
+on:
+  pull_request:
+    branches: [verisentry-canary-base-20261031]
+permissions:
+  contents: read
+jobs:
+  spoof:
+    name: KELD VeriSentry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fake green from GitHub Actions App, never VeriSentry App
+        run: echo "candidate-controlled green must NOT satisfy App 5550363"
