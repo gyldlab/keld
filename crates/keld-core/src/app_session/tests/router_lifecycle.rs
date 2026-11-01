@@ -223,6 +223,133 @@ fn accepted_quit_with_failed_owner_shutdown_still_ends_the_ui_loop_as_fatal() {
     );
 }
 
+/// Native test owner for the ordering oracle below (ported from #1018):
+/// acknowledge one real Quit, then fail only the later terminal shutdown,
+/// and only after the test has proved the primary generation retired.
+#[cfg(target_os = "macos")]
+fn fail_owner_shutdown_after_real_quit(
+    commands: &Receiver<TestPrimaryOwnerCommand>,
+    entered: &SyncSender<()>,
+    release: &Receiver<()>,
+) {
+    match commands
+        .recv_timeout(Duration::from_secs(5))
+        .expect("owner accepted-Quit attribution")
+    {
+        TestPrimaryOwnerCommand::PrepareAcceptedShutdown(reply) => {
+            reply.send(Ok(())).expect("acknowledge accepted Quit");
+        }
+        _ => panic!("owner shutdown cannot precede accepted Quit"),
+    }
+    match commands
+        .recv_timeout(Duration::from_secs(5))
+        .expect("owner terminal shutdown")
+    {
+        TestPrimaryOwnerCommand::Shutdown(reply) => {
+            entered
+                .send(())
+                .expect("retired-generation boundary reached");
+            release
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release independent owner failure");
+            reply
+                .send(Err(String::from("owned Guardian shutdown denied")))
+                .expect("report exact owner failure");
+        }
+        _ => panic!("expected original owner terminal shutdown"),
+    }
+}
+
+/// Ordering oracle for the same `finish_tail` wake (ported from #1018). The
+/// test above proves exactly one `Fatal` after a failed owner shutdown; this
+/// one also proves WHERE it comes from. The owner's terminal shutdown is held
+/// until the link is closed, the generation is retired and no UI event has
+/// been sent, so the only possible source of the `Fatal` is the failed tail
+/// itself, never the retired reader's EOF path.
+#[test]
+#[cfg(target_os = "macos")]
+fn accepted_quit_owner_shutdown_error_wakes_ui_only_after_the_failure() {
+    use keld_ipc::link::read_frame;
+    use std::io::Read as _;
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    let (server, mut client) = UnixStream::pair().expect("real primary Quit socket");
+    client
+        .set_app_link_deadlines(Some(APP_LINK_IO_DEADLINE))
+        .expect("original app-link IO bound");
+    let (window_tx, window_rx) = mpsc::channel();
+    let (owner_tx, owner_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let owner = thread::spawn(move || {
+        fail_owner_shutdown_after_real_quit(&owner_rx, &entered_tx, &release_rx);
+    });
+    let router = PrimaryRouter::start(
+        server,
+        window_tx,
+        PlatformPrimaryOwnerHandle {
+            command_tx: owner_tx,
+        },
+        SessionShutdownState::new(),
+    )
+    .expect("real native primary router");
+    write_frame(
+        &mut client,
+        FrameKind::Call,
+        0,
+        LIFECYCLE_CHANNEL,
+        CorrelationId(1871),
+        &encode(&LifecycleRequest::Quit).expect("encode real Quit"),
+    )
+    .expect("send real correlated Quit");
+    let (header, payload) = read_frame(&mut client).expect("correlated native Quit reply");
+    assert_eq!(
+        (header.kind, header.channel, header.corr),
+        (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(1871))
+    );
+    assert!(matches!(
+        decode::<LifecycleResponse>(&payload).expect("decode Quit reply"),
+        LifecycleResponse::Quit
+    ));
+    client
+        .shutdown(Shutdown::Write)
+        .expect("Bun half-close after Quit");
+    let mut byte = [0_u8; 1];
+    assert_eq!(client.read(&mut byte).expect("real link EOF"), 0);
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("owner shutdown starts only after link retirement");
+    assert_eq!(router.handle().shutdown.cause(), SESSION_LIFECYCLE_QUIT);
+    assert!(
+        !router.handle().is_current(1),
+        "the retired reader cannot publish an earlier current-generation Fatal"
+    );
+    assert!(
+        window_rx.try_recv().is_err(),
+        "no UI terminal event precedes the actual owner failure"
+    );
+    release_tx.send(()).expect("inject failed owner shutdown");
+    assert_eq!(
+        window_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("failed owner shutdown must wake the live UI"),
+        AppWindowCommand::Fatal
+    );
+    assert!(
+        window_rx.try_recv().is_err(),
+        "exactly one terminal UI wake"
+    );
+    let error = router
+        .shutdown()
+        .expect_err("the original failure is preserved");
+    assert!(
+        error.to_string().contains("owned Guardian shutdown denied"),
+        "{error}"
+    );
+    owner.join().expect("test owner joins");
+}
+
 #[test]
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn retired_generation_eof_cannot_fail_or_replace_the_successor() {
