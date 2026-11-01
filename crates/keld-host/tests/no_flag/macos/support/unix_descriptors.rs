@@ -1,4 +1,3 @@
-use crate::support::process::process_state;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -70,11 +69,17 @@ pub(crate) fn unix_descriptors(pid: u32) -> Vec<UnixDescriptor> {
         .expect("enumerate Unix descriptors");
     assert!(
         output.status.success(),
-        "lsof cannot report Unix descriptors for {pid} in state {}: {output:?}",
-        process_state(pid)
+        "lsof could not inspect the requested process descriptor table"
     );
-    let rendered = String::from_utf8(output.stdout).expect("lsof output UTF-8");
+    let rendered = lsof_census_utf8(output.stdout);
     unix_descriptors_reported(pid, &rendered)
+}
+
+// A malformed native report may contain private socket names. The Debug form
+// of FromUtf8Error includes the original raw bytes, so never use expect here.
+fn lsof_census_utf8(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|_| panic!("lsof returned invalid UTF-8 descriptor census"))
 }
 
 /// The descriptors `lsof` reported for `pid` in `rendered`, or a panic if what it
@@ -98,7 +103,7 @@ pub(crate) fn unix_descriptors_reported(pid: u32, rendered: &str) -> Vec<UnixDes
             // chance because the cost of being wrong is silence.
             assert!(
                 descriptor.is_none(),
-                "lsof left descriptor {descriptor:?} of {pid} unnamed: {rendered:?}"
+                "lsof emitted a descriptor without a socket identity"
             );
             descriptor = Some(fd.to_owned());
             socket = None;
@@ -106,7 +111,7 @@ pub(crate) fn unix_descriptors_reported(pid: u32, rendered: &str) -> Vec<UnixDes
             // Two empty addresses would compare equal and excuse each other.
             assert!(
                 address.starts_with("0x"),
-                "lsof gave {pid} a socket address that is not one: {address:?}"
+                "lsof emitted an invalid socket address"
             );
             socket = Some(address.to_owned());
         } else if let Some(name) = line.strip_prefix('n') {
@@ -121,14 +126,12 @@ pub(crate) fn unix_descriptors_reported(pid: u32, rendered: &str) -> Vec<UnixDes
     }
     assert!(
         descriptor.is_none(),
-        "lsof left the last descriptor of {pid} unnamed: {rendered:?}"
+        "lsof ended with a descriptor missing its socket identity"
     );
     if descriptors.is_empty() {
         assert!(
             process_has_open_descriptors(pid),
-            "{pid} has no descriptor table in state {}, so an empty Unix census is \
-             teardown rather than evidence",
-            process_state(pid)
+            "empty Unix census without an independently observed live descriptor table"
         );
     }
     descriptors
@@ -256,4 +259,56 @@ pub(crate) fn unix_sockets_not_inherited_from_harness(pid: u32) -> Vec<String> {
         }
     }
     charged
+}
+
+#[cfg(test)]
+mod redacted_diagnostics_tests {
+    use super::unix_descriptors_reported;
+
+    const PRIVATE_SENTINEL: &str = "KELD_PRIVATE_UNIX_SOCKET_PATH_DO_NOT_LOG";
+
+    fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+        if let Some(text) = panic.downcast_ref::<String>() {
+            return text.clone();
+        }
+        if let Some(text) = panic.downcast_ref::<&str>() {
+            return (*text).to_owned();
+        }
+        String::from("unknown panic payload")
+    }
+
+    #[test]
+    fn invalid_utf8_lsof_report_does_not_echo_raw_private_bytes() {
+        let mut private_bytes = PRIVATE_SENTINEL.as_bytes().to_vec();
+        private_bytes.push(0xff);
+        let raw_debug = format!("{private_bytes:?}");
+        let Err(panic) = std::panic::catch_unwind(|| super::lsof_census_utf8(private_bytes)) else {
+            panic!("invalid lsof UTF-8 must fail closed");
+        };
+        let diagnostic = panic_message(panic.as_ref());
+        assert!(
+            !diagnostic.contains(PRIVATE_SENTINEL) && !diagnostic.contains(&raw_debug),
+            "invalid UTF-8 leaked private bytes"
+        );
+    }
+
+    #[test]
+    fn malformed_lsof_records_preserve_rejection_without_private_echo() {
+        for rendered in [
+            format!("f{PRIVATE_SENTINEL}\nfnext\n"),
+            format!("f7\nd{PRIVATE_SENTINEL}\nn{PRIVATE_SENTINEL}\n"),
+            format!("f7\nd0x123\nn{PRIVATE_SENTINEL}\nf8\n"),
+        ] {
+            let Err(panic) = std::panic::catch_unwind(|| {
+                unix_descriptors_reported(std::process::id(), &rendered)
+            }) else {
+                panic!("malformed descriptor census must fail closed");
+            };
+            let diagnostic = panic_message(panic.as_ref());
+            assert!(
+                !diagnostic.contains(PRIVATE_SENTINEL),
+                "malformed descriptor rejection leaked private material"
+            );
+        }
+    }
 }
