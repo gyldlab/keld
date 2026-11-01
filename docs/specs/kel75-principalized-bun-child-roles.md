@@ -152,6 +152,11 @@ Absent input is also selected explicitly by the Host's Bun constant, not an appl
 global. These additions do not qualify an installed source graph, grant access to any
 directory, change role identity or add a second startup/restart owner.
 
+GH452 T2c (`gh452-app-session-facts.md` §13) adds the Host process's first native
+preferred-language identifier under private facts schema 3. Schemas 1/2 remain
+readable with their original closed fields. Locale is immutable non-authority data,
+not an environment input, negotiated renderer locale or new restart owner.
+
 The child may receive stdout/stderr sinks only for supervisor-managed logging. Those
 fixed-direction log streams are not authority handles. All other inherited descriptors
 and handles are closed by default. The endpoint is private, one successful accept

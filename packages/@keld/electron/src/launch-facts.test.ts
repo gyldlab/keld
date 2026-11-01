@@ -92,6 +92,121 @@ test("GH452 schema-two partial absence does not synthesize other values", () => 
   expect(observed.appData).toBe("KELD-COMPAT-040");
 });
 
+test("GH452 private schema-three preserves the Host's preferred-language scalar", () => {
+  for (const locale of ["fr-CA", "zh-Hant-TW", "es-419", "a".repeat(4096)]) {
+    const child = observe({ ...facts, schema: 3, paths: {}, locale });
+    expect(child.exitCode).toBe(0);
+    expect(child.stderr.toString()).toBe("");
+    const observed = JSON.parse(child.stdout.toString());
+    expect(observed.locale).toBe(locale);
+    expect(observed.name).toBe(facts.name);
+    expect(observed.version).toBe("KELD-COMPAT-040");
+    expect(observed.path).toBe("KELD-COMPAT-040");
+  }
+});
+
+test("GH452 schema-three without a preferred language keeps locale absent", () => {
+  const child = observe({ ...facts, schema: 3, paths: {} });
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(JSON.parse(child.stdout.toString()).locale).toBe("KELD-COMPAT-040");
+});
+
+test("GH452 locale requires private schema-three and a bounded present string", () => {
+  const malformed = [
+    { ...facts, locale: "fr-CA" },
+    { ...facts, schema: 2, paths: {}, locale: "fr-CA" },
+    { ...facts, schema: 3, locale: "fr-CA" },
+    ...[
+      null,
+      "",
+      1,
+      false,
+      {},
+      [],
+      "fr\0CA",
+      "a".repeat(4097),
+      "é".repeat(2049),
+    ].map((locale) => ({ ...facts, schema: 3, paths: {}, locale })),
+  ];
+  for (const value of malformed) {
+    const child = observe(value);
+    expect(child.exitCode).not.toBe(0);
+    expect(child.stderr.toString()).toContain("KELD-IPC-029");
+    expect(child.stdout.toString()).toBe("");
+  }
+});
+
+test("GH452 locale capture never invokes an own or inherited getter", () => {
+  for (const own of [false, true]) {
+    const child = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "--no-install",
+        "--no-env-file",
+        "-e",
+        `let reads = 0;
+         const source = ${JSON.stringify({ ...facts, schema: 3, paths: {} })};
+         const holder = ${own ? "source" : "Object.getPrototypeOf(source)"};
+         Object.defineProperty(holder, "locale", { configurable: true, get() { reads++; return "fr-CA"; } });
+         globalThis["__KELD_HOST_LAUNCH_FACTS__"] = source;
+         let code;
+         try {
+           const { app } = await import(${JSON.stringify(facade)});
+           app.getLocale();
+         } catch(error) { code = error.code; }
+         console.log(JSON.stringify({ code, reads }));`,
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 4000,
+    });
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      code: own ? "KELD-IPC-029" : "KELD-COMPAT-040",
+      reads: 0,
+    });
+  }
+});
+
+test("GH452 captured locale resists source, prototype, environment and Intl replacement", () => {
+  const locale = "zh-Hant-TW";
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      "-e",
+      `const source = ${JSON.stringify({ ...facts, schema: 3, paths: {}, locale })};
+       globalThis["__KELD_HOST_LAUNCH_FACTS__"] = source;
+       const { hostLaunchFacts } = await import(${JSON.stringify(transport)});
+       source.locale = "fr-CA";
+       let refused = false;
+       try { hostLaunchFacts.locale = "es-419"; } catch { refused = true; }
+       Object.prototype.locale = "FORGED";
+       process.env.LANG = "de_DE.UTF-8";
+       process.env.LC_ALL = "fr_FR.UTF-8";
+       let intlReads = 0;
+       Intl.DateTimeFormat = function() { intlReads++; throw new Error("locale must not come from Intl"); };
+       const { app } = await import(${JSON.stringify(facade)});
+       console.log(JSON.stringify({ refused, frozen: Object.isFrozen(hostLaunchFacts), nullPrototype: Object.getPrototypeOf(hostLaunchFacts) === null, ready: app.isReady(), locale: app.getLocale(), intlReads }));`,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+  expect(JSON.parse(child.stdout.toString())).toEqual({
+    refused: true,
+    frozen: true,
+    nullPrototype: true,
+    ready: false,
+    locale,
+    intlReads: 0,
+  });
+});
+
 test("GH452 omitted launch facts stay absent instead of becoming unpackaged defaults", () => {
   const child = observe(undefined, false);
   expect(child.exitCode).not.toBe(0);
@@ -250,7 +365,11 @@ test("GH452 native directory snapshot is copied and deeply frozen", () => {
 });
 
 test("GH452 missing optional facts cannot be forged through Object.prototype after capture", () => {
-  for (const value of [facts, { ...facts, schema: 2, paths: {} }]) {
+  for (const value of [
+    facts,
+    { ...facts, schema: 2, paths: {} },
+    { ...facts, schema: 3, paths: {} },
+  ]) {
     const child = Bun.spawnSync({
       cmd: [
         process.execPath,
@@ -260,11 +379,12 @@ test("GH452 missing optional facts cannot be forged through Object.prototype aft
         `--preload=${transport}`,
         "-e",
         `Object.prototype.version = "FORGED";
+       Object.prototype.locale = "FORGED";
        Object.prototype.documents = "/forged";
        Object.prototype.paths = { documents: "/also-forged" };
        const { app } = await import(${JSON.stringify(facade)});
        const result = {};
-       for (const [key, read] of [["version",()=>app.getVersion()],["documents",()=>app.getPath("documents")]]) {
+       for (const [key, read] of [["version",()=>app.getVersion()],["documents",()=>app.getPath("documents")],["locale",()=>app.getLocale()]]) {
          try { result[key] = read(); } catch(error) { result[key] = error.code; }
        }
        console.log(JSON.stringify(result));`,
@@ -277,6 +397,7 @@ test("GH452 missing optional facts cannot be forged through Object.prototype aft
     expect(JSON.parse(child.stdout.toString())).toEqual({
       version: "KELD-COMPAT-040",
       documents: "KELD-COMPAT-040",
+      locale: "KELD-COMPAT-040",
     });
   }
 });

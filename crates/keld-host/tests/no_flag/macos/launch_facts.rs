@@ -13,7 +13,7 @@ use crate::support::dev_cycle::ShippingLaunchCleanup;
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryCycle;
 
-fn independent_native_directories() -> serde_json::Value {
+fn independent_native_facts() -> serde_json::Value {
     // Independent public URL-returning Foundation API, not Core's path-query
     // helper or the emitted launch record. This observer creates no directory.
     const SCRIPT: &str = r#"
@@ -22,7 +22,10 @@ let manager = FileManager.default
 let appData = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
 let documents = manager.urls(for: .documentDirectory, in: .userDomainMask)
 guard appData.count == 1 && documents.count == 1 else { exit(2) }
-let result = ["appData": appData[0].path, "documents": documents[0].path]
+// These unbundled test processes use the same native preferences context.
+// This observes preferred language, not Chromium/WebKit locale negotiation.
+guard let locale = Locale.preferredLanguages.first else { exit(3) }
+let result = ["appData": appData[0].path, "documents": documents[0].path, "locale": locale]
 FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result))
 "#;
     let child = Command::new("/usr/bin/xcrun")
@@ -30,14 +33,14 @@ FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: resul
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("independent native directory observer");
+        .expect("independent native facts observer");
     let output = wait_child_output(child, EVENT_DEADLINE);
     assert!(
         output.status.success(),
-        "native directory observer failed: {}",
+        "native facts observer failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).expect("native directory JSON")
+    serde_json::from_slice(&output.stdout).expect("native facts JSON")
 }
 
 #[test]
@@ -45,7 +48,7 @@ fn shipping_host_delivers_development_facts_before_ready_and_quits_cleanly() {
     let temp = tempfile::tempdir().expect("launch-facts project");
     let project = temp.path().join("project");
     fs::create_dir_all(project.join("src")).expect("source directory");
-    let native = independent_native_directories();
+    let native = independent_native_facts();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -58,10 +61,13 @@ fn shipping_host_delivers_development_facts_before_ready_and_quits_cleanly() {
         r#"import {{ app as facade }} from {facade};
 import {{ app }} from {api};
 process.env.HOME = "/not-the-native-home";
+process.env.LANG = "zz_TEST.UTF-8";
+process.env.LC_ALL = "zz_TEST.UTF-8";
 const read = () => ({{ name: facade.getName(), property: facade.name,
     root: facade.getAppPath(), packaged: facade.isPackaged,
     version: facade.getVersion(), appData: facade.getPath("appData"),
-    userData: facade.getPath("userData"), documents: facade.getPath("documents") }});
+    userData: facade.getPath("userData"), documents: facade.getPath("documents"),
+    locale: facade.getLocale() }});
 console.error("GH452_BEFORE_READY " + JSON.stringify({{...read(), ready: app.isReady()}}));
 await app.whenReady();
 console.error("GH452_AFTER_READY " + JSON.stringify({{...read(), ready: app.isReady()}}));
@@ -121,6 +127,7 @@ console.error("GH452_QUIT_ACK");
                 "root": stage.root().to_str().expect("test root UTF-8"), "packaged": false, "ready": ready,
                 "version": "29.1.7-native+initial", "appData": native["appData"],
                 "documents": native["documents"],
+                "locale": native["locale"],
                 "userData": Path::new(native["appData"].as_str().expect("native appData")).join("GH452 native values"),
             })
         );
@@ -143,7 +150,7 @@ console.error("GH452_QUIT_ACK");
 fn shipping_host_replays_frozen_launch_facts_into_a_recovered_bun_generation() {
     let mut fixture = ProductFixture::new("gh452-recovery");
     fixture.version = Some("29.1.7-native+recovery");
-    let native = independent_native_directories();
+    let native = independent_native_facts();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -162,10 +169,13 @@ import {{ appendFileSync }} from "node:fs";
 import {{ DrainSignal, FrameKind, FrameReader, LIFECYCLE_CHANNEL, WriteQueue, errorFromErrFrame, isWin32PipeEndpoint, parseAppLink, withIoDeadline }} from {api_link};
 import {{ parseWin32DiagnosticPort }} from {kipc};
 // Test-only observation before the unchanged authenticated lifecycle harness.
+process.env.LANG = "zz_TEST.UTF-8";
+process.env.LC_ALL = "zz_TEST.UTF-8";
 appendFileSync({observation_json}, JSON.stringify({{
   name: facade.getName(), root: facade.getAppPath(), packaged: facade.isPackaged,
   version: facade.getVersion(), appData: facade.getPath("appData"),
   userData: facade.getPath("userData"), documents: facade.getPath("documents"),
+  locale: facade.getLocale(),
   ready: facade.isReady(), pid: process.pid,
 }}) + "\n");
 {}"#,
@@ -216,6 +226,7 @@ appendFileSync({observation_json}, JSON.stringify({{
                 "packaged": false, "ready": false, "pid": pid,
                 "version": "29.1.7-native+recovery", "appData": native["appData"],
                 "documents": native["documents"],
+                "locale": native["locale"],
                 "userData": Path::new(native["appData"].as_str().expect("native appData")).join(crate::support::TITLE),
             })
         );

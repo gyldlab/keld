@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:599ffeff3ce5f805a432d78f13093babe95566f7a11ea9c3b47cd0638503b84b
+// @keld/kipc-transport sha256:cfcabf0e85ad0aa01c677db97cee4a0bbefc88e8e9491f19a056cdd6779fc325
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -37,11 +37,13 @@ declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
 
 /** @internal Non-authority data from a validated macOS development launch. */
 export interface HostLaunchFacts {
-  readonly schema: 1 | 2;
+  readonly schema: 1 | 2 | 3;
   readonly kind: "development";
   readonly name: string;
   readonly root: string;
   readonly version?: string;
+  /** Host process's preferred language, not a negotiated renderer locale. */
+  readonly locale?: string;
   readonly paths?: Readonly<
     Partial<Record<"appData" | "userData" | "documents", string>>
   >;
@@ -66,7 +68,7 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     return invalid();
   const keys = Reflect.ownKeys(value);
   const required = ["schema", "kind", "name", "root"];
-  const allowed = [...required, "version", "paths"];
+  const allowed = [...required, "version", "paths", "locale"];
   if (
     required.some((key) => !keys.includes(key)) ||
     keys.some((key) => typeof key !== "string" || !allowed.includes(key))
@@ -84,7 +86,7 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     !text.includes("\0") &&
     encoder.encode(text).byteLength <= 4096;
   if (
-    (record.schema !== 1 && record.schema !== 2) ||
+    (record.schema !== 1 && record.schema !== 2 && record.schema !== 3) ||
     record.kind !== "development" ||
     !validText(record.name) ||
     !validText(record.root) ||
@@ -93,8 +95,13 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     return invalid();
   if (record.schema === 1 && keys.length !== required.length) return invalid();
   let version: string | undefined;
+  let locale: string | undefined;
   let paths: HostLaunchFacts["paths"];
-  if (record.schema === 2) {
+  if (keys.includes("locale")) {
+    if (record.schema !== 3 || !validText(record.locale)) return invalid();
+    locale = record.locale;
+  }
+  if (record.schema === 2 || record.schema === 3) {
     if (!keys.includes("paths")) return invalid();
     if (keys.includes("version")) {
       if (!validText(record.version)) return invalid();
@@ -128,6 +135,7 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     name: record.name,
     root: record.root,
     ...(version === undefined ? {} : { version }),
+    ...(locale === undefined ? {} : { locale }),
     ...(paths === undefined ? {} : { paths }),
   };
   if (encoder.encode(JSON.stringify(captured)).byteLength > 16 * 1024)

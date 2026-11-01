@@ -1,6 +1,6 @@
 # Spec: `app` session facts — fail-closed facade half and Host-minted delivery (GH-452)
 
-Status: approved (T1, T2a and version/path T2b; locale/full T2/T3 remain pending)
+Status: approved (T1, T2a, version/path T2b and locale T2c; full T2/T3 remain pending)
 Linear: GH-452 (#517) · Owner: @0monish · Updated: 2026-11-01
 Disposition: **DO NOT MERGE until independent review and all execution gates pass.**
 The owner delegated technical decisions and continuation on 2026-11-01; the bounded
@@ -472,3 +472,96 @@ nested input, before-Ready delivery, and actual Bun restart with unchanged value
 Q2 selects explicit version only; Q9 remains bounded to the documented three paths.
 Locale, other paths, installed delivery and declared environment remain outside this
 slice. No complete Draw.io or all-facts corpus cell may be promoted on this proof.
+
+## 13. T2c — retained macOS preferred-language fact
+
+Status: approved under the user's standing technical-design delegation; independent
+architecture/public-contract review by `/root/locale_contract_review` on 2026-11-01.
+This resolves Q4 only for qualified macOS development. Source review and actual OS
+verification remain separate gates.
+
+**Reduced compatibility.** Electron v44.4.5 `getLocale()` returns Chromium's
+application UI locale. This slice instead returns the first preferred-language
+identifier of the **Host process**, selected by Foundation
+`NSLocale.preferredLanguages`. It does not claim Chromium or WebKit language
+negotiation, a universally selected system UI language, or installed-app behavior.
+Pinned Electron documents after-ready use; its implementation has no ready guard.
+The captured Keld value is synchronously readable before and after facade ready.
+No extra ready-state error is introduced.
+
+Core selects exactly the first ordered identifier once, during the existing
+validated development-session capture. An empty array leaves locale absent. A
+present empty, NUL-containing or over-4096-byte string fails with KELD-CORE-037.
+Core retains every accepted UTF-8 byte: no normalization, language negotiation,
+fallback to a later preference, `Intl`, locale environment variable, or constant.
+Foundation owns identifier semantics; this slice adds no BCP-47 parser.
+
+The **private launch-facts record** advances to schema 3. This version belongs only
+to the existing private Guardian argument and Bun parse-time data constant; it is
+not `keld.boot.json`, a profile schema, or a kipc wire version. Schema 3 has the
+same required `schema/kind/name/root/paths` fields as schema 2, optional `version`,
+and optional `locale`. Present locale must pass the existing bounded string rule.
+Schemas 1 and 2 retain their exact closed field sets and reject locale. Older
+records remain readable. Schema-3 omission remains a missing fact and
+`app.getLocale()` throws KELD-COMPAT-040; no guessed language is returned.
+
+Reuse and ownership: Core owns native selection and the closed JSON record;
+Guardian retains and replays that record for every Bun generation; the existing
+canonical transport validates its own data properties and captures a new frozen,
+null-prototype object; the facade only reads that captured field. Inherited values,
+accessors, null, wrong types, duplicate JSON keys, unsupported schemas and oversize
+records keep the existing typed refusal. Later application prototype/global/env
+changes cannot supply or replace a locale. This changes no handle/crash ownership,
+principal, permission, endpoint, runtime selection or configuration file. No
+boundary change to authority. The safe Foundation wrapper reuses the existing
+pinned objc2-foundation dependency with its macOS-only NSLocale feature enabled;
+there is no new package, version or unsafe operation.
+
+### Acceptance and first falsifiers
+
+| Atom | Observable | First falsifier |
+|---|---|---|
+| Native selection / Core | The first Foundation result is retained, or an empty result stays absent | Return a constant, skip the first result, or read Bun locale instead |
+| Closed private record / Core and transport | Schema 3 accepts bounded locale; schemas 1/2 reject it; malformed present data refuses | Accept locale under schema 2, null, an accessor or inherited-only data |
+| Immutable delivery / canonical preload | Nondefault, script and numeric-region identifiers survive byte-for-byte; mutation cannot replace or create locale | Drop the field, normalize it, or let prototype mutation supply it |
+| Facade / app.getLocale | Present value is the same before/after ready; missing remains 040 | Return a default, add a ready guard, or keep refusing a present fact |
+| Actual session / shipping Host | Native startup and Bun crash/recovery observations equal an independent OS query and each other | Remove native capture/delivery or alter the replayed value |
+
+Synthetic tests use distinct identifiers including fr-CA, zh-Hant-TW and es-419;
+these prove representation, not OS preference selection. The native observer uses
+Swift Foundation `Locale.preferredLanguages.first` in the controlled unbundled
+test context, separately from Core's Objective-C wrapper. Its context must match
+the Host; this does not prove all per-application preference overrides. The native
+fixture also supplies irrelevant Bun locale-environment decoys. Do not change the
+user's system preferences to run it. Reuse the existing startup/recovery tests and
+retain their real PID, readiness, authenticated Quit and stage-cleanup assertions.
+
+Boundaries: existing GH452 Core record, canonical transport, facade, their tests,
+native launch-facts fixture, this specification and the macOS feature declaration.
+KEL75/KEL96 notes describe the private record-version change without a boot-schema
+change. Public API, private-startup-data and dependency-feature gates require
+independent review. No new unsafe or permission gate is introduced. Cost is one
+cold Foundation query and one bounded string per session; no performance gain is
+claimed. Other paths, declared environment, Windows/Linux, installed delivery,
+original draw.io renderer/document acceptance and full T2/T3 remain open. Existing
+whole-app/all-facts conformance verdicts must not be promoted from this partial proof.
+
+### Current-documentation receipt
+
+- Applicability: applied: native preferred-language selection and Electron
+  `app.getLocale()` semantics.
+- Context7: used:`/electron/electron/v44.4.5`; query on `getLocale`, Chromium UI
+  locale, readiness and macOS preferred languages; retrieved 2026-11-01.
+- Official primary: https://developer.apple.com/documentation/Foundation/NSLocale/preferredLanguages
+  (ordered language preferences); https://developer.apple.com/videos/play/wwdc2025/222/
+  at 5:35 (BCP-47 identifiers), retrieved 2026-11-01.
+- Official pinned primary: https://github.com/electron/electron/blob/v44.4.5/docs/api/app.md
+  (getLocale and getPreferredSystemLanguages); and
+  https://github.com/electron/electron/blob/v44.4.5/shell/browser/api/electron_api_app.cc
+  (`App::GetLocale` directly returns `GetApplicationLocale`, without a ready
+  guard), retrieved 2026-11-01. Source blobs 3671f71273c2bad64c502a079f6676ce55e5a932
+  and 1771753b59dfd6a625a8637dc650ca2cc182666d respectively.
+- Supported claim: Host language preference is a documented reduced alternative
+  to Chromium's application UI locale, not proof of identical locale negotiation.
+- Fallback/blocker: no external-semantic blocker; exact source and actual native
+  execution are required before reporting this implementation verified.

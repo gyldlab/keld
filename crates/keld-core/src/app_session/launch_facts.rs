@@ -3,7 +3,7 @@
 use std::path::{Component, Path};
 
 use objc2_foundation::{
-    NSSearchPathDirectory, NSSearchPathDomainMask, NSSearchPathForDirectoriesInDomains,
+    NSLocale, NSSearchPathDirectory, NSSearchPathDomainMask, NSSearchPathForDirectoriesInDomains,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,12 @@ pub struct DevelopmentLaunchFacts {
         deserialize_with = "crate::hello::deserialize_optional_app_version"
     )]
     version: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    locale: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -188,12 +194,19 @@ impl DevelopmentLaunchFacts {
         let root_text = root
             .to_str()
             .ok_or_else(|| invalid("development launch root is not UTF-8"))?;
+        // GH452's bounded macOS contract captures the Host process's first
+        // preferred language. This is not Chromium/WebKit locale negotiation.
+        // Capture once here; the retained record is reused after Bun restarts.
+        let locale = NSLocale::preferredLanguages()
+            .firstObject()
+            .map(|language| language.to_string());
         let facts = Self {
-            schema: 2,
+            schema: 3,
             kind: String::from("development"),
             name: name.to_owned(),
             root: root_text.to_owned(),
             version: version.map(str::to_owned),
+            locale,
             paths: Some(LaunchDirectories::capture(name)?),
         };
         facts.validate(root)?;
@@ -244,7 +257,7 @@ impl DevelopmentLaunchFacts {
     }
 
     fn validate(&self, expected_root: &Path) -> Result<(), HostAppError> {
-        if !matches!(self.schema, 1 | 2)
+        if !matches!(self.schema, 1..=3)
             || self.kind != "development"
             || !valid_text(&self.name)
             || !valid_path(&self.root)
@@ -255,7 +268,8 @@ impl DevelopmentLaunchFacts {
             ));
         }
         if (self.schema == 1 && (self.version.is_some() || self.paths.is_some()))
-            || (self.schema == 2 && self.paths.is_none())
+            || (matches!(self.schema, 2 | 3) && self.paths.is_none())
+            || (self.schema != 3 && self.locale.is_some())
         {
             return Err(invalid(
                 "launch facts fields do not match their closed schema",
@@ -264,6 +278,15 @@ impl DevelopmentLaunchFacts {
         if let Some(version) = &self.version {
             crate::hello::validate_app_version(version)
                 .map_err(|source| invalid(source.to_string()))?;
+        }
+        if self
+            .locale
+            .as_ref()
+            .is_some_and(|locale| !valid_text(locale))
+        {
+            return Err(invalid(
+                "native preferred language is not a bounded nonempty string",
+            ));
         }
         if let Some(paths) = &self.paths {
             paths.validate(&self.name)?;
@@ -297,6 +320,66 @@ mod tests {
                 DevelopmentLaunchFacts::from_private_argument(&payload, Path::new("/stage"))
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn private_schema_three_preserves_locale_and_omission_without_defaults() {
+        let root = Path::new("/stage");
+        for locale in [
+            "fr-CA",
+            "zh-Hant-TW",
+            "es-419",
+            &"a".repeat(MAX_FIELD_BYTES),
+        ] {
+            let payload = serde_json::json!({
+                "schema": 3, "kind": "development", "name": "n", "root": "/stage",
+                "paths": {}, "locale": locale
+            });
+            let parsed = DevelopmentLaunchFacts::from_private_argument(&payload.to_string(), root)
+                .expect("schema-three locale");
+            let encoded: serde_json::Value =
+                serde_json::from_str(&parsed.private_argument().expect("encode")).expect("JSON");
+            assert_eq!(encoded["locale"], locale);
+            assert_eq!(encoded["schema"], 3);
+        }
+        let absent = r#"{"schema":3,"kind":"development","name":"n","root":"/stage","paths":{}}"#;
+        let parsed = DevelopmentLaunchFacts::from_private_argument(absent, root)
+            .expect("missing native preference is data absence");
+        assert_eq!(parsed.private_argument().expect("encode absent"), absent);
+    }
+
+    #[test]
+    fn private_locale_requires_schema_three_and_rejects_malformed_present_values() {
+        let root = Path::new("/stage");
+        for payload in [
+            r#"{"schema":1,"kind":"development","name":"n","root":"/stage","locale":"fr-CA"}"#.to_owned(),
+            r#"{"schema":2,"kind":"development","name":"n","root":"/stage","paths":{},"locale":"fr-CA"}"#.to_owned(),
+            r#"{"schema":3,"kind":"development","name":"n","root":"/stage","locale":"fr-CA"}"#.to_owned(),
+            r#"{"schema":3,"kind":"development","name":"n","root":"/stage","paths":{},"locale":"fr-CA","locale":"es-419"}"#.to_owned(),
+        ] {
+            let error = DevelopmentLaunchFacts::from_private_argument(&payload, root)
+                .expect_err("wrong schema, missing paths or duplicate locale");
+            assert_eq!(error.code(), "KELD-CORE-037");
+        }
+        for locale in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(false),
+            serde_json::json!(1),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            serde_json::json!("fr\0CA"),
+            serde_json::json!("a".repeat(MAX_FIELD_BYTES + 1)),
+            serde_json::json!("é".repeat(MAX_FIELD_BYTES / 2 + 1)),
+        ] {
+            let payload = serde_json::json!({
+                "schema": 3, "kind": "development", "name": "n", "root": "/stage",
+                "paths": {}, "locale": locale
+            });
+            let error = DevelopmentLaunchFacts::from_private_argument(&payload.to_string(), root)
+                .expect_err("malformed present locale");
+            assert_eq!(error.code(), "KELD-CORE-037");
         }
     }
 

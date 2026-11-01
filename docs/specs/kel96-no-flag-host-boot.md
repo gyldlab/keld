@@ -100,6 +100,11 @@ reopening config/package files. Older Hosts reject this added field; the compile
 ship its matching Host. This does not allocate schema 3/4 or change profile/graph
 ownership. GH452 §12 owns the non-authority native path snapshot and delivery bounds.
 
+GH452 T2c (`gh452-app-session-facts.md` §13) versions only the private launch-facts
+JSON to schema 3 for an optional Host preferred-language value. It leaves this boot
+descriptor and KEL78's profile schema numbers unchanged. Older private facts stay
+readable; the existing Host/Guardian retain one captured value for all generations.
+
 ### KEL-96/T1a — compiled boot descriptor contract
 
 1. A valid `keld.boot.json` is a bounded, strict schema-v1 document. Its exact

@@ -1,24 +1,26 @@
 /**
  * `app` session facts: typed absence plus the bounded development-launch slice
- * (`docs/specs/gh452-app-session-facts.md`, T1, T2a and version/path T2b).
+ * (`docs/specs/gh452-app-session-facts.md`, T1, T2a, version/path T2b and locale T2c).
  *
  * Electron reads `getPath`, `getVersion`, `getName`/`name`, `getAppPath`,
  * `getLocale` and `isPackaged` from the loaded application's package.json, from
  * Chromium's locale and from the packaging state (pinned v44.4.5
  * `docs/api/app.md`). Under Keld every one of them is a session fact the Host
  * captures at spawn: the Host owns the launch root, the compiled descriptor metadata,
- * native directory queries, the webview engine whose locale the renderer sees,
+ * native directory and preferred-language queries,
  * and the dev-lease versus installed-provenance distinction.
  *
  * The qualified macOS development Host delivers its validated name, launch root
  * and development provenance through the canonical preloaded transport. Schema 2
- * additionally carries explicit version metadata and available native directories. Only
+ * additionally carries explicit version metadata and available native directories.
+ * Private schema 3 carries the Host process's first preferred-language identifier,
+ * an explicitly reduced alternative to Electron's Chromium UI locale. Only
  * those captured values can satisfy reads. Missing records and unprovided facts
  * still throw `KELD-COMPAT-040`, naming the fact, Electron call and owning issue.
  * This module never reads HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, `Intl` or
  * a package.json to invent a value; the spec records why each of those is
  * rejected, and `fixtures/app_session_facts_decoy_env.ts` watches for such reads.
- * Locale and paths outside the bounded native set remain undelivered. Directory
+ * Paths outside the bounded native set remain undelivered. Directory
  * values are data, not filesystem grants; Guard still owns all authorization.
  */
 import { hostLaunchFacts } from "../../kipc/src/transport.ts";
@@ -148,6 +150,8 @@ export function readSessionFact(
     if (fact === "isPackaged") return false; // The captured kind is explicitly development.
     if (fact === "version" && hostLaunchFacts.version !== undefined)
       return hostLaunchFacts.version;
+    if (fact === "locale" && hostLaunchFacts.locale !== undefined)
+      return hostLaunchFacts.locale;
   }
   throw notDelivered(fact, call);
 }
