@@ -32,7 +32,10 @@ impl Observation {
                 .reports
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
                 .expect("actual page FS outcomes");
-            eprintln!("{}", observed_marker(&report, Phase::Observation));
+            // A page POST is untrusted data: its token, payload and private
+            // paths stay available to assertions, never to diagnostic stderr.
+            let stage = Phase::observation_stage(&report);
+            eprintln!("{}", observed_marker(&report, stage));
             let click_start = report["phase"] == "page-click-start";
             journal.push(report);
             if click_start && !started {
@@ -305,5 +308,34 @@ impl ObserverServer {
             }
             Err(error) => panic!("public FS observer accept: {error}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod observation_marker_tests {
+    // Pure marker tests (`private_diagnostics`) alone would stay green if the
+    // actual stderr callsite were changed back to a stage-less marker or to
+    // printing the untrusted report. This source-binding check covers that
+    // one callsite, without evaluating or publishing any private fixture
+    // data. Rejecting a restored raw report interpolation here or anywhere in
+    // public_fs/ is owned by the private_diagnostics source guard (whose own
+    // scan would flag that interpolation shape even as a literal here).
+    #[test]
+    fn observation_report_log_callsite_must_use_fixed_marker() {
+        let (implementation, _) = include_str!("server.rs")
+            .split_once("#[cfg(test)]\nmod observation_marker_tests")
+            .expect("adjacent regression module owns the source boundary");
+        // Whitespace-insensitive, so a formatter reflow cannot break the pin.
+        let compact: String = implementation
+            .chars()
+            .filter(|char| !char.is_whitespace())
+            .collect();
+        assert!(
+            compact.contains(
+                "letstage=Phase::observation_stage(&report);\
+                 eprintln!(\"{}\",observed_marker(&report,stage));"
+            ),
+            "actual observation stderr callsite bypassed the fixed stage marker"
+        );
     }
 }
