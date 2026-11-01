@@ -181,6 +181,7 @@ impl Project {
         case: &Case,
         port: u16,
         native_receipt: Option<&QuitBodyReceipt>,
+        post_reply_receipt: Option<&QuitBodyReceipt>,
     ) -> SmokeResult<Self> {
         let root = parent.join(case.name);
         fs::create_dir(&root)?; // never overwrite any candidate or earlier project
@@ -212,6 +213,23 @@ if (!nativeQuitReceipt.ok || await nativeQuitReceipt.text() !== "ack") throw new
                 receipt.token(),
             );
             body = body.replacen(anchor, &format!("{verified}{anchor}"), 1);
+        }
+        if let Some(receipt) = post_reply_receipt {
+            // Separate test-only physical ACK after public app.quit() resolves.
+            // The public API resolves only on the correlated Quit REPLY.
+            let anchor = "await app.quit();";
+            require(
+                body.matches(anchor).count() == 1,
+                "unique real post-quit Bun reply callsite",
+            )?;
+            let verified = format!(
+                r#"const nativeReplyReceipt = await fetch("http://127.0.0.1:{}/keld-body-verified/{}");
+if (!nativeReplyReceipt.ok || await nativeReplyReceipt.text() !== "ack") throw new Error("native correlated Quit reply receipt refused");
+"#,
+                receipt.port(),
+                receipt.token(),
+            );
+            body = body.replacen(anchor, &format!("{anchor}\n{verified}"), 1);
         }
         require(
             !body.contains("WorkerLink") && !body.contains("invokeAuth"),
@@ -563,6 +581,15 @@ fn observed_auth_family(app_ready: &Value, cli_pid: u32) -> SmokeResult<[u32; 4]
     Ok([host, guardian, bun, descendant])
 }
 
+fn arm_auth_original_kernel_exits(family: [u32; 4]) -> [ProcessExitObserver; 4] {
+    family.map(ProcessExitObserver::arm)
+}
+
+struct AuthReceipts<'a> {
+    body: Option<&'a mut QuitBodyReceipt>,
+    post_reply: Option<&'a mut QuitBodyReceipt>,
+}
+
 fn run_case(
     parent: &Path,
     repo: &Path,
@@ -571,7 +598,18 @@ fn run_case(
     census: Option<&Path>,
     case: &Case,
 ) -> SmokeResult<Value> {
-    run_case_with_body_receipt(parent, repo, cli, host_source, census, case, None)
+    run_case_with_body_receipt(
+        parent,
+        repo,
+        cli,
+        host_source,
+        census,
+        case,
+        AuthReceipts {
+            body: None,
+            post_reply: None,
+        },
+    )
 }
 
 // Preserve existing first-error ordering and native cleanup assertions.
@@ -580,6 +618,7 @@ struct AuthQuitProof<'a> {
     output: &'a std::process::Output,
     observation: &'a Observation,
     native_receipt: Option<&'a QuitBodyReceipt>,
+    post_reply_receipt: Option<&'a QuitBodyReceipt>,
     lineage: [u32; 5],
     host_image: &'a Path,
     session_dir: &'a Path,
@@ -607,6 +646,12 @@ fn verify_auth_product_quit_cleanup(
             "native Bun receipt cannot substitute for actual observer /quit GET and response",
         )?;
         receipt.assert_verified();
+    }
+    if let Some(reply) = proof.post_reply_receipt {
+        require(
+            reply.is_verified(),
+            "missing real Bun post-app.quit correlated reply receipt",
+        )?;
     }
     let exits = native_exits.map(ProcessExitObserver::wait);
     assert_product_cleanup(
@@ -637,8 +682,12 @@ fn run_case_with_body_receipt(
     host_source: &Path,
     census: Option<&Path>,
     case: &Case,
-    mut native_receipt: Option<&mut QuitBodyReceipt>,
+    receipts: AuthReceipts<'_>,
 ) -> SmokeResult<Value> {
+    let AuthReceipts {
+        body: mut native_receipt,
+        post_reply: mut post_reply_receipt,
+    } = receipts;
     let mut observation = Observation::bind();
     let project = Project::prepare(
         parent,
@@ -646,6 +695,7 @@ fn run_case_with_body_receipt(
         case,
         observation.port,
         native_receipt.as_deref(),
+        post_reply_receipt.as_deref(),
     )?;
     let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
     let stdout = fs::File::create(project.root.join("cli.stdout"))?;
@@ -694,12 +744,7 @@ fn run_case_with_body_receipt(
     let active_listener = verify_call_before_quit(case, &result, bun, host)?;
     // Independent OS exits are armed before the ordinary observer releases
     // the app's public Quit. App JSON/PIDs are never counted as cleanup proof.
-    let mut native_exits = [
-        ProcessExitObserver::arm(host),
-        ProcessExitObserver::arm(guardian),
-        ProcessExitObserver::arm(bun),
-        ProcessExitObserver::arm(descendant),
-    ];
+    let mut native_exits = arm_auth_original_kernel_exits([host, guardian, bun, descendant]);
     observation.quit.send(())?;
     let cli_child = cleanup.cli.take().ok_or("missing retained CLI owner")?;
     let output = wait_for_auth_cli_quit(
@@ -709,13 +754,17 @@ fn run_case_with_body_receipt(
         case,
         [host, guardian, bun, descendant],
         &mut native_exits,
-        native_receipt.as_deref_mut(),
+        AuthReceipts {
+            body: native_receipt.as_deref_mut(),
+            post_reply: post_reply_receipt.as_deref_mut(),
+        },
     );
     let exits = verify_auth_product_quit_cleanup(
         &AuthQuitProof {
             output: &output,
             observation: &observation,
             native_receipt: native_receipt.as_deref(),
+            post_reply_receipt: post_reply_receipt.as_deref(),
             lineage: [cli_pid, host, guardian, bun, descendant],
             host_image: &host_image,
             session_dir: &session_dir,
