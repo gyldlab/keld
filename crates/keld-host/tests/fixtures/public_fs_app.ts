@@ -232,6 +232,9 @@ if (automaticComponent) {
   const observed = await fetch(base + "/observe", { method: "POST",
     headers: { "Content-Type": "text/plain" }, body: JSON.stringify(result) });
   if (!observed.ok) throw new Error("public app component observation refused");
+  // Fixed fixture-only marker: Bun actually received HTTP response headers.
+  // No response payload, URL, PID, path, credential, or policy is recorded.
+  console.error("KELD_KEL140_APP_RESULT_HTTP_OK");
 } else if (naturalCase) {
   // Closed public-main scenarios only: no renderer action or Echo forwarding.
   const actions: readonly NaturalAction[] = naturalCase === "deny-read"
@@ -260,7 +263,10 @@ if (automaticComponent) {
 // The observer retains this stream without blocking other page observations.
 const quit = await fetch(base + (recoveryInputs || nativeJoint
   ? "/recovery-quit/" + process.pid : "/quit"));
-if (!quit.ok || await quit.text() !== "quit") throw new Error("invalid sample quit command");
+if (!quit.ok) throw new Error("invalid sample quit command");
+console.error("KELD_KEL140_QUIT_HTTP_HEADERS_OK");
+if (await quit.text() !== "quit") throw new Error("invalid sample quit command");
+console.error("KELD_KEL140_QUIT_HTTP_BODY_OK");
 console.error("KELD_KEL140_PUBLIC_QUIT_REQUEST calls=" + handlerCalls);
 const pendingQuit = app.quit();
 if (retireAfterQuit) {

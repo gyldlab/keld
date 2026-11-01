@@ -4,7 +4,7 @@ use super::{
     LaunchEvidence, observer::Observation, outcomes::assert_component_outcomes, run_launch,
 };
 use crate::support::EVENT_DEADLINE;
-use crate::support::control::wait_child_output;
+use crate::support::control::wait_child_output_observing;
 use serde_json::{Value, json};
 use std::fs;
 use std::net::TcpStream;
@@ -148,13 +148,47 @@ fn run_launch_without_window_census(
             .expect("release real Bun app-result acknowledgement");
     }
     observer.quit.send(()).expect("release real public Quit");
-    let output = wait_child_output(
-        cleanup.cli.take().expect("retained real shipping host"),
-        EVENT_DEADLINE,
-    );
+    // Preserve the original 20s Host-exit oracle. Capture the fixed 0/1/2
+    // HTTP phase while the real Host is still alive, before the original
+    // timeout assertion and before ReapOnDrop can rescue the owned process.
+    let mut last_running_http_quit_stage = 0;
+    let host_exit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_child_output_observing(
+            cleanup.cli.take().expect("retained real shipping host"),
+            EVENT_DEADLINE,
+            || {
+                last_running_http_quit_stage = observer
+                    .quit_progress
+                    .load(std::sync::atomic::Ordering::Acquire);
+            },
+        )
+    }));
     // Hold the independently accepted silent peer until the shipping host
     // actually exits, then release it before fixture observer Drop/join.
     drop(idle);
+    let output = host_exit.unwrap_or_else(|failure| {
+        eprintln!(
+            "KELD_KEL140_NATIVE_QUIT_PHASE predeadline_running_http_stage={last_running_http_quit_stage}"
+        );
+        std::panic::resume_unwind(failure)
+    });
+    if hold_silent_observer_peer {
+        // Require phase evidence from the real Bun stdout/stderr relay, not a
+        // forged test-side status. A successful Host cannot silently skip
+        // either the app-result headers or the actual /quit body receipt.
+        let stderr = std::str::from_utf8(&output.stderr).expect("native phase markers UTF-8");
+        for marker in [
+            "KELD_KEL140_APP_RESULT_HTTP_OK",
+            "KELD_KEL140_QUIT_HTTP_HEADERS_OK",
+            "KELD_KEL140_QUIT_HTTP_BODY_OK",
+        ] {
+            assert_eq!(
+                stderr.lines().filter(|line| *line == marker).count(),
+                1,
+                "one real Bun fixture phase receipt required: {marker}"
+            );
+        }
+    }
     super::assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     if exercise == Exercise::PublicAppRetirement {
         assert_after_quit(&output, &evidence, &prepared.target);
