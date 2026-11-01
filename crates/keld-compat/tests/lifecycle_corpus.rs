@@ -75,7 +75,7 @@ fn lifecycle_corpus_cells_map_to_existing_behavioral_oracles() {
             .find(|target| target.path == cell.test_path)
             .expect("the owner admitted only registered targets");
         match target.runner {
-            Runner::Libtest { .. } => runners.0 += 1,
+            Runner::Libtest { .. } | Runner::ExactLibtest { .. } => runners.0 += 1,
             Runner::Bun => runners.1 += 1,
         }
         assert_eq!(

@@ -112,16 +112,28 @@ pub enum RunnerKind {
 
 fn runner_kind(runner: Runner) -> RunnerKind {
     match runner {
-        Runner::Libtest { .. } => RunnerKind::Libtest,
+        Runner::Libtest { .. } | Runner::ExactLibtest { .. } => RunnerKind::Libtest,
         Runner::Bun => RunnerKind::Bun,
     }
+}
+
+/// Whether the corpus declares this static target for a given platform.
+pub fn target_eligible(corpus: &Corpus, target: &TestTarget, host: Platform) -> bool {
+    corpus
+        .cells()
+        .iter()
+        .any(|cell| cell.test_path == target.path && cell.platforms.contains(&host))
 }
 
 fn distinct_targets(corpora: &[&Corpus], kind: RunnerKind) -> Vec<TestTarget> {
     let mut targets: Vec<TestTarget> = Vec::new();
     for corpus in corpora {
         for target in corpus.registration().targets {
-            if runner_kind(target.runner) == kind && !targets.contains(target) {
+            let eligible = match target.runner {
+                Runner::ExactLibtest { .. } => target_eligible(corpus, target, host_platform()),
+                _ => true,
+            };
+            if eligible && runner_kind(target.runner) == kind && !targets.contains(target) {
                 targets.push(*target);
             }
         }
@@ -141,6 +153,11 @@ pub fn run_targets(
                 Runner::Libtest { target: name } => {
                     cargo_libtest(name, &["--format", "pretty", "--color", "never"])?
                 }
+                Runner::ExactLibtest {
+                    package,
+                    target: name,
+                    case,
+                } => run_exact_case(package, name, case)?,
                 Runner::Bun => run_bun(target.path)?,
             };
             Ok(RunnerOutput {
@@ -149,6 +166,106 @@ pub fn run_targets(
             })
         })
         .collect()
+}
+
+/// Execute one trusted static workspace case, retaining its observation output.
+pub(crate) fn run_exact_case(
+    package: &str,
+    target: &str,
+    case: &str,
+) -> Result<String, CorpusError> {
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "test",
+            "--offline",
+            "--color",
+            "never",
+            "-p",
+            package,
+            "--test",
+            target,
+            "--",
+            case,
+            "--exact",
+            "--format",
+            "pretty",
+            "--color",
+            "never",
+            "--show-output",
+        ])
+        .env_remove("RUST_TEST_NOCAPTURE")
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|error| CorpusError::RunnerFailed {
+            target: target.to_owned(),
+            detail: format!("cannot run exact Cargo case: {error}"),
+        })?;
+    let stdout = String::from_utf8(output.stdout).map_err(|error| CorpusError::RunnerFailed {
+        target: target.to_owned(),
+        detail: format!("invalid output UTF-8: {error}"),
+    })?;
+    if !output.status.success() || !rust_case_passed(&stdout, case) {
+        return Err(CorpusError::RunnerFailed {
+            target: target.to_owned(),
+            detail: format!(
+                "exact case {case} exit {}; stdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+    Ok(stdout)
+}
+
+/// Execute an eligible exact-case target from a validated corpus registration.
+pub fn run_registered_exact(corpus: &Corpus, path: &str) -> Result<String, CorpusError> {
+    run_registered_exact_on(corpus, path, host_platform())
+}
+
+/// Apply the same pre-spawn check for a specified host (also used by negative controls).
+pub(crate) fn run_registered_exact_on(
+    corpus: &Corpus,
+    path: &str,
+    host: Platform,
+) -> Result<String, CorpusError> {
+    let target = corpus
+        .registration()
+        .targets
+        .iter()
+        .find(|target| target.path == path)
+        .ok_or_else(|| CorpusError::UnregisteredTarget {
+            corpus_id: corpus.id().to_owned(),
+            cell: "observation".to_owned(),
+            test_path: path.to_owned(),
+        })?;
+    let Runner::ExactLibtest {
+        package,
+        target: name,
+        case,
+    } = target.runner
+    else {
+        return Err(CorpusError::InvalidTarget {
+            corpus_id: corpus.id().to_owned(),
+            path: path.to_owned(),
+            reason: "not an exact libtest registration".to_owned(),
+        });
+    };
+    let matching: Vec<_> = corpus
+        .cells()
+        .iter()
+        .filter(|cell| cell.test_path == path)
+        .collect();
+    if matching.is_empty()
+        || matching.iter().any(|cell| cell.test_name != case)
+        || !target_eligible(corpus, target, host)
+    {
+        return Err(CorpusError::InvalidTarget {
+            corpus_id: corpus.id().to_owned(),
+            path: path.to_owned(),
+            reason: "case mismatch or host platform not admitted".to_owned(),
+        });
+    }
+    run_exact_case(package, name, case)
 }
 
 fn run_bun(path: &str) -> Result<String, CorpusError> {
@@ -231,6 +348,18 @@ pub fn check_cells(
                 cell: cell.key.operation_id.clone(),
                 test_path: cell.test_path.clone(),
             })?;
+        if let Runner::ExactLibtest { case, .. } = target.runner
+            && case != cell.test_name
+        {
+            return Err(CorpusError::InvalidTarget {
+                corpus_id: corpus_id.to_owned(),
+                path: target.path.to_owned(),
+                reason: format!(
+                    "registered exact case {case} differs from cell {}",
+                    cell.test_name
+                ),
+            });
+        }
         if runner_kind(target.runner) != kind {
             continue;
         }
