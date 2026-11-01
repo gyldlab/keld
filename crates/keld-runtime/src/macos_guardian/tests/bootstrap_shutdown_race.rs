@@ -162,19 +162,68 @@ fn immediate_shutdown_guardian_role() {
 }
 
 fn receive_held_milestone(listener: &UnixListener, marker: &str) -> (UnixStream, u32) {
-    let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    receive_held_milestone_with_hook(
+        listener,
+        marker,
+        Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
+        |_| {},
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MilestoneReadStage {
+    AfterNativeAccept,
+    AcceptedWithinDeadline,
+    BeforeNativeRead(usize),
+    AfterNativeByte(u8),
+}
+
+// This is a private native test fixture, never a shipping Guardian listener.
+// The callback allows a separate owned peer to witness a genuine accept or
+// kernel read BEFORE the original absolute clock is checked again.
+fn receive_held_milestone_with_hook(
+    listener: &UnixListener,
+    marker: &str,
+    deadline: Instant,
+    mut observe: impl FnMut(MilestoneReadStage),
+) -> (UnixStream, u32) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "Guardian authentication notice missed original accept deadline"
+        );
         match listener.accept() {
             Ok((mut stream, _)) => {
+                observe(MilestoneReadStage::AfterNativeAccept);
+                assert!(
+                    Instant::now() < deadline,
+                    "Guardian authentication notice accepted after original deadline"
+                );
+                observe(MilestoneReadStage::AcceptedWithinDeadline);
                 stream
                     .set_nonblocking(true)
                     .expect("bounded test-only receipt");
                 let mut bytes = Vec::with_capacity(36);
                 loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "partial authentication notice timed out before native read"
+                    );
+                    observe(MilestoneReadStage::BeforeNativeRead(bytes.len()));
                     let mut byte = [0_u8; 1];
                     match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
                         Ok(1) => {
+                            observe(MilestoneReadStage::AfterNativeByte(byte[0]));
+                            // The last successful kernel byte, including LF,
+                            // cannot convert an expired original event into
+                            // a timely authenticated milestone.
+                            assert!(
+                                Instant::now() < deadline,
+                                "authentication notice byte arrived after original deadline"
+                            );
+                            if byte[0] == b'\n' {
+                                break;
+                            }
                             bytes.push(byte[0]);
                             assert!(bytes.len() <= 64, "bounded native authentication receipt");
                         }
@@ -194,6 +243,10 @@ fn receive_held_milestone(listener: &UnixListener, marker: &str) -> (UnixStream,
                 let raw = receipt
                     .strip_prefix(&format!("{marker} "))
                     .expect("native authenticated milestone");
+                assert!(
+                    Instant::now() < deadline,
+                    "authenticated milestone was parsed after original deadline"
+                );
                 return (stream, raw.parse().expect("actual Guardian process ID"));
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -207,6 +260,10 @@ fn receive_held_milestone(listener: &UnixListener, marker: &str) -> (UnixStream,
         }
     }
 }
+
+#[cfg(test)]
+#[path = "bootstrap_shutdown_race/milestone_deadline_tests.rs"]
+mod milestone_deadline_tests;
 
 fn assert_native_held_shutdown(gate_env: &str, marker: &str) {
     let temp = tempfile::tempdir().expect("private immediate-shutdown witness");
