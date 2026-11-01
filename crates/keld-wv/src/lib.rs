@@ -108,6 +108,8 @@ pub mod wkwebview;
 #[doc(hidden)]
 pub mod wv_link;
 
+#[cfg(target_os = "macos")]
+pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{
     AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
     WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,

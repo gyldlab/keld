@@ -4738,11 +4738,12 @@ fn initial_milestone_poll(until: Option<Instant>, now: Instant) -> Duration {
 /// well as an empty queue. A genuine on-time UI first turn keeps its native
 /// timestamp even when this worker is descheduled before observing the event.
 #[cfg(target_os = "macos")]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum InitialMilestoneReceive {
     Event(AppWindowEvent),
     Again,
     Expired,
+    UnexpectedDesktop,
     Disconnected,
 }
 
@@ -4750,6 +4751,7 @@ enum InitialMilestoneReceive {
 fn receive_initial_milestone(
     events: &Receiver<AppWindowEvent>,
     watch: Option<&OnceLock<Instant>>,
+    first_desktop_allowed: bool,
 ) -> InitialMilestoneReceive {
     let before_receive = watch.and_then(|clock| clock.get().copied());
     let poll = initial_milestone_poll(before_receive, Instant::now());
@@ -4759,6 +4761,13 @@ fn receive_initial_milestone(
     // the native producer has armed this same OnceLock.
     let deadline = watch.and_then(|clock| clock.get().copied());
     match received {
+        Ok(AppWindowEvent::DesktopObserved { .. }) if !first_desktop_allowed => {
+            // A genuine UI Init produces exactly one desktop sample before
+            // exactly one HostInitialized. Reject duplicates even when they
+            // arrive rapidly before the 15s deadline; a malicious/broken
+            // source cannot perpetually renew the only deadline exception.
+            InitialMilestoneReceive::UnexpectedDesktop
+        }
         Ok(AppWindowEvent::HostInitialized { observed_at })
             if watch.is_some() && deadline.is_none_or(|at| observed_at >= at) =>
         {
@@ -4766,7 +4775,13 @@ fn receive_initial_milestone(
         }
         Ok(event)
             if deadline.is_some_and(|at| {
-                !matches!(event, AppWindowEvent::HostInitialized { .. }) && Instant::now() >= at
+                // Only the one unconsumed Init desktop sample may pass the
+                // expired receive clock ahead of the authentic timestamped
+                // HostInitialized. No second desktop event receives exemption.
+                !(matches!(event, AppWindowEvent::HostInitialized { .. })
+                    || first_desktop_allowed
+                        && matches!(event, AppWindowEvent::DesktopObserved { .. }))
+                    && Instant::now() >= at
             }) =>
         {
             // A busy queue of non-Init events must not starve the watchdog.
@@ -4778,6 +4793,59 @@ fn receive_initial_milestone(
         }
         Err(mpsc::RecvTimeoutError::Timeout) => InitialMilestoneReceive::Again,
         Err(mpsc::RecvTimeoutError::Disconnected) => InitialMilestoneReceive::Disconnected,
+    }
+}
+
+/// Receive the next native event under the existing Init deadline and terminal owner.
+/// An empty result means the established event source has finished, not a timeout retry.
+#[cfg(target_os = "macos")]
+fn next_native_window_event(
+    events: &Receiver<AppWindowEvent>,
+    router: &PrimaryRouterHandle,
+    commands: &Sender<AppWindowCommand>,
+    until_init: InitTerminalWatch<'_>,
+    first_desktop_allowed: bool,
+) -> Result<Option<AppWindowEvent>, HostAppError> {
+    loop {
+        if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
+            return Ok(None);
+        }
+        match receive_initial_milestone(
+            events,
+            until_init.map(|(clock, _)| clock),
+            first_desktop_allowed,
+        ) {
+            InitialMilestoneReceive::Event(event) => {
+                if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
+                    return Ok(None);
+                }
+                return Ok(Some(event));
+            }
+            InitialMilestoneReceive::Expired => {
+                if let Some((_, terminal)) = until_init {
+                    terminate_stalled_init(router, terminal);
+                }
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "expired first-Init observation without an armed deadline",
+                ));
+            }
+            InitialMilestoneReceive::UnexpectedDesktop => {
+                let _ = commands.send(AppWindowCommand::Fatal);
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "a second native desktop event cannot replace the pending Init milestone",
+                ));
+            }
+            InitialMilestoneReceive::Again => {}
+            InitialMilestoneReceive::Disconnected if until_init.is_some() => {
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "window-module event source ended before the first Init turn",
+                ));
+            }
+            InitialMilestoneReceive::Disconnected => return Ok(None),
+        }
     }
 }
 
@@ -4794,6 +4862,8 @@ fn coordinate_window_events(
     let mut ready_signaled = false;
     #[cfg(target_os = "macos")]
     let init_seen = std::cell::Cell::new(false);
+    #[cfg(target_os = "macos")]
+    let desktop_seen = std::cell::Cell::new(false);
     #[cfg(target_os = "macos")]
     let mut signal_once = |observed| {
         accept_boot_ready_trigger(ready_trigger, observed, &mut ready_signaled)?;
@@ -4819,7 +4889,30 @@ fn coordinate_window_events(
                 }
             }
             #[cfg(target_os = "macos")]
-            AppWindowEvent::HostInitialized { .. } => signal_once(AppReadyTrigger::HostInitialized),
+            AppWindowEvent::HostInitialized { .. } => {
+                if ready_trigger == AppReadyTrigger::HostInitialized && !desktop_seen.get() {
+                    Err(app_detail(
+                        "initial UI milestone",
+                        "HostInitialized arrived without its preceding native desktop sample",
+                    ))
+                } else {
+                    signal_once(AppReadyTrigger::HostInitialized)
+                }
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::DesktopObserved { facts } => {
+                if ready_trigger != AppReadyTrigger::HostInitialized
+                    || init_seen.get()
+                    || desktop_seen.replace(true)
+                {
+                    Err(app_detail(
+                        "initial UI milestone",
+                        "duplicate or foreign native desktop sample before Init",
+                    ))
+                } else {
+                    router.window_native_event(AppWindowEvent::DesktopObserved { facts })
+                }
+            }
             #[cfg(target_os = "macos")]
             AppWindowEvent::MacDialogFinished {
                 attempt,
@@ -4842,35 +4935,12 @@ fn coordinate_window_events(
     };
     #[cfg(target_os = "macos")]
     loop {
-        if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
-            break;
-        }
         let until_init = init_watch
             .filter(|_| ready_trigger == AppReadyTrigger::HostInitialized && !init_seen.get());
-        let event = match receive_initial_milestone(events, until_init.map(|(clock, _)| clock)) {
-            InitialMilestoneReceive::Event(event) => {
-                if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
-                    break;
-                }
-                event
-            }
-            InitialMilestoneReceive::Expired => {
-                if let Some((_, terminal)) = until_init {
-                    terminate_stalled_init(router, terminal);
-                }
-                return Err(app_detail(
-                    "initial UI milestone",
-                    "expired first-Init observation without an armed deadline",
-                ));
-            }
-            InitialMilestoneReceive::Again => continue,
-            InitialMilestoneReceive::Disconnected if until_init.is_some() => {
-                return Err(app_detail(
-                    "initial UI milestone",
-                    "window-module event source ended before the first Init turn",
-                ));
-            }
-            InitialMilestoneReceive::Disconnected => break,
+        let Some(event) =
+            next_native_window_event(events, router, commands, until_init, !desktop_seen.get())?
+        else {
+            break;
         };
         process_event(event)?;
     }
@@ -8080,8 +8150,13 @@ impl PrimaryRouter {
             Option<keld_native::auth::AsWorkerPort>,
         )>,
     ) -> Result<Self, HostAppError> {
-        handle.windows = window_native_support
-            .map(|supported| Arc::new(Mutex::new(window_router::WindowSession::new(supported))));
+        handle.windows = window_native_support.map(|supported| {
+            #[cfg(target_os = "macos")]
+            let session = window_router::WindowSession::with_desktop(supported);
+            #[cfg(not(target_os = "macos"))]
+            let session = window_router::WindowSession::new(supported);
+            Arc::new(Mutex::new(session))
+        });
         #[cfg(target_os = "macos")]
         let auth_worker = auth_startup
             .map(|(verified, configuration, presentation)| {

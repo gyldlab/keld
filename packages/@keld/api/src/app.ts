@@ -14,7 +14,9 @@ import type {
   SaveDialogOptions,
 } from "./dialog.generated.ts";
 import {
+  hostLaunchFacts,
   linkError,
+  nativeFacadeBootSelected,
   stateMap,
   stateMapDelete,
   stateMapSet,
@@ -26,8 +28,27 @@ import type {
   WindowRequest,
   WindowResponse,
 } from "./window-codec.ts";
-import type { WindowSnapshot } from "./window-source.ts";
+import type { DesktopSnapshot, WindowSnapshot } from "./window-source.ts";
+export type { DesktopSnapshot } from "./window-source.ts";
 import { WindowCloseReceipts } from "./window-close-receipts.ts";
+
+/**
+ * GH481 S1 is currently the qualified macOS *development* facade slice.
+ * Only Core's macOS admitted dev lease produces the existing immutable
+ * hostLaunchFacts captured in the canonical preload. Windows/Linux facade
+ * roles receive the normal window subscription but no such record; their
+ * previously usable Ready must not depend on an unimplemented desktop source.
+ * Missing launch facts are not inferred from mutable process.env or from a
+ * guessed display value. Installed/non-dev macOS remains outside S1 until its
+ * own Host-owned selector and native proof are provided.
+ */
+const desktopS1Selected =
+  nativeFacadeBootSelected && hostLaunchFacts !== undefined;
+
+/** Shared scope for the facade's first-read refusal and public Ready commit. */
+export function isDesktopS1Selected(): boolean {
+  return desktopS1Selected;
+}
 
 export type Unsubscribe = () => void;
 
@@ -103,6 +124,34 @@ function onHostReady(): void {
   queueMicrotask(() => {
     nativeReadyQueued = false;
     if (hostReady || linkDead) return;
+    if (desktopS1Selected) {
+      let failure: Error | undefined;
+      try {
+        if (!connectedLink?.windowSource) {
+          failure = linkError(
+            "KELD-CORE-045",
+            "The native window subscription has no admitted mirror source.",
+          );
+        } else if (!connectedLink.windowSource.desktop()) {
+          failure = linkError(
+            "KELD-CORE-049",
+            "The native desktop snapshot is unavailable. Correct the Host display/appearance capture and relaunch.",
+          );
+        }
+      } catch (error) {
+        failure =
+          error instanceof Error
+            ? error
+            : linkError("KELD-IPC-005", "desktop mirror has ended");
+      }
+      if (failure) {
+        // Failure belongs to the same generation and is terminal. A later
+        // valid capture cannot revive its earlier public Ready promise.
+        failReadyWaiters(failure);
+        connectedLink?.close();
+        return;
+      }
+    }
     hostReady = true;
     const waiters = readyWaiters;
     readyWaiters = [];
@@ -266,6 +315,23 @@ export function getWindowSnapshot(ref: WindowRef): WindowSnapshot | undefined {
 export function getWindowSnapshots(): readonly WindowSnapshot[] {
   if (!hostReady) return [];
   return connectedLink?.windowSource?.all() ?? [];
+}
+
+/** Current admitted desktop facts. Reads are local and issue zero app-link frames. */
+export function getDesktopSnapshot(): DesktopSnapshot {
+  if (linkDead) throw linkDead;
+  if (!hostReady || !connectedLink?.windowSource)
+    throw linkError(
+      "KELD-CORE-040",
+      "desktop facts require the admitted Host Ready and desktop replay barrier",
+    );
+  const facts = connectedLink.windowSource.desktop();
+  if (!facts)
+    throw linkError(
+      "KELD-CORE-049",
+      "The native desktop snapshot is unavailable. Correct the Host display/appearance capture and relaunch.",
+    );
+  return facts;
 }
 
 /**

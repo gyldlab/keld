@@ -11,6 +11,8 @@ use super::{
 use crate::IpcError;
 use crate::codec::{decode, encode, encode_into};
 
+mod desktop;
+
 const VECTORS: &str = include_str!("../../tests/fixtures/window-v0.tsv");
 const WINDOW: WindowRef = WindowRef {
     id: WindowId(7),

@@ -43,8 +43,11 @@ tao = "0.35.3"
 # selected WKWebsiteDataStore and reads back its identifier/persistence before
 # the first view. These are the exact objc2 versions already pinned by Wry.
 objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
-objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID"] }
-objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow", "NSScreen"] }
+objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID", "NSValue"] }
+# GH481: NSScreen.deviceDescription requires NSGraphics; NSApplication's
+# effectiveAppearance requires NSResponder + NSAppearance. These enable safe
+# typed calls in the already pinned objc2-app-kit 0.3.2, no new crate or unsafe.
+objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow", "NSScreen", "NSGraphics", "NSApplication", "NSAppearance", "NSResponder"] }
 block2 = { workspace = true, optional = true }
 objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
 objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }

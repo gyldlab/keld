@@ -87,6 +87,10 @@ const connecting = LifecycleLink.connect("controlled-link", {
   },
   onWindowFact(fact) {
     assert.ok(
+      fact.variant !== "DesktopSnapshot",
+      "this fixture sends window facts only",
+    );
+    assert.ok(
       connected?.windowSource?.get(fact.window),
       "earlier callback must precede Source disposal",
     );

@@ -240,6 +240,57 @@ if (mode === "late-import-replay") {
     ["resize", "close"],
     "catch-up must not reorder or duplicate",
   );
+} else if (mode === "desktop-windowless-dispatch") {
+  const ref = createHostWindow();
+  becomeReady();
+  const win = BrowserWindow.getAllWindows()[0];
+  assert.ok(win);
+  const observed: string[] = [];
+  win.on("close", (event: { preventDefault(): void }) => {
+    observed.push("close");
+    event.preventDefault();
+  });
+  win.on("resize", () => observed.push("resize"));
+  fact({ variant: "CloseRequested", window: ref, close_seq: 11n });
+  assert.deepEqual(observed, ["close"]);
+  const beforeReceipts = deliveredCloses.pending();
+  const beforeCalls = calls.length;
+  const beforeWindow = BrowserWindow.getAllWindows()[0];
+  // Real postcard decode → Source apply → Source dispatch → close receipts
+  // and Electron's installed BrowserWindow listener. Both listeners must
+  // reject the temptation to read absent fact.window on a global snapshot.
+  fact({
+    variant: "DesktopSnapshot",
+    epoch: 1n,
+    snapshot: {
+      primary_id: 17,
+      displays: [
+        {
+          id: 17,
+          bounds: { x: 0, y: 0, width: 1440, height: 900 },
+          work_area: { x: 0, y: 24, width: 1440, height: 876 },
+          scale_factor: 2,
+        },
+      ],
+      should_use_dark_colors: true,
+    },
+  });
+  assert.equal(source.desktop()?.should_use_dark_colors, true);
+  assert.deepEqual(deliveredCloses.pending(), beforeReceipts);
+  assert.equal(calls.length, beforeCalls, "no desktop-triggered Host CALL");
+  assert.equal(BrowserWindow.getAllWindows()[0], beforeWindow);
+  assert.deepEqual(observed, ["close"], "desktop must not emit window events");
+  fact({
+    variant: "Bounds",
+    window: ref,
+    bounds: { ...state.bounds, width: 777 },
+  });
+  assert.deepEqual(
+    observed,
+    ["close", "resize"],
+    "later window facts still dispatch",
+  );
+  assert.deepEqual(deliveredCloses.pending(), beforeReceipts);
 } else if (mode === "recovery-gap") {
   // Host replays a gap-native close before the successor's Ready barrier.
   const ref = createHostWindow(7n);

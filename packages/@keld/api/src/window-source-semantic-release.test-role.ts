@@ -54,16 +54,16 @@ assert.equal(
 );
 const expected = js
   ? [
-      "4f2a6ba84be8d16d5920f77391af8b4966ef349b55d01704f8b52ff1c0be2176",
-      "b752bb8c7b875d57983a86695655653b1c103778d192c894789425c749756383",
+      "67a25166cc1a5a22ea409790fdfb6f435e772f15f23699df901f84d68458dfd6",
+      "d2fe657ed2ce16574db9edb52fa30deaa94d332440ad3f857fbd941ac0e409c5",
       "24ac3fb3b3ad69dcce45fd74f20cf42daac0da4f114915c1e0c4be3bcc1f1265",
-      "7667e5be43662995d4450abe5398003280cba9ee20f142df0e87856d3c54c629",
+      "4437fea472a5bc92bd8ff91a6fb69937a94636c8050bdb95639fd39f9d6e2d45",
     ]
   : [
-      "11e78e5753b659592444aeabd796766f404fbbe514bfd2c961160e9ae52ed595",
-      "02316c26133883f65a3255801160e2dc8209cd83490e7a9f90fd8d3f8d5e53c7",
+      "21c14c4ba0011be0bf565ee9597fb373a4d34055d561f77ad238f88767dd60f1",
+      "61a239b69828896e23a7b2c28de6047e14eb851833bc261ffab6553de8072b18",
       "3e11e55bedb30a3644e7d280c118ca5712b468d532dc9c214f7cd72f1e618c9f",
-      "2001d91ca95affb0a81ae11ebd5f33067a7f475eb46a4bf6cfa96fcc4792f3c2",
+      "5cd5de54c14c0939cef66f9b0688a702a9d922aa4c606236218c3dcfc698de1b",
     ];
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 const values = [source, codecPath, mirror, transportPath].map((path) =>
@@ -139,6 +139,8 @@ try {
     assert.deepEqual(fields, [
       "channel",
       "#windows",
+      "#desktop",
+      "#desktopEpoch",
       "#onFact",
       "#failureCode",
       "#failureMessage",
@@ -147,6 +149,7 @@ try {
     assert.deepEqual(bindings, [
       "WINDOW_CHANNEL",
       "stateFreeze",
+      "stateDefineProperty",
       "stateMap",
       "stateMapGet",
       "stateMapHas",
@@ -156,6 +159,11 @@ try {
       "stateMapClear",
       "linkError",
       "decodeWindowEvent",
+      "validateDesktopEpoch",
+      "validateDesktopFacts",
+      "desktopSnapshot",
+      "sameRect",
+      "sameDesktop",
       "PROPOSED_MAX_CUMULATIVE_WINDOW_IDS",
       "snapshot",
       "WindowSource",
@@ -185,8 +193,8 @@ try {
     assert.equal(
       sha(tagged),
       js
-        ? "e175d7fd0966473df51c12fec729b14476f39d4dc43f9d71c7b6cd4712e91575"
-        : "725c1ba14e5929489f6fbc1360cfdda978b3db5605832c90fd738bfc95f91767",
+        ? "5e5c90e4d24a902aca746f9f79c42dc9ac87df7b0eb559269b43041f29f85c45"
+        : "720f4a3cb2c693752cecfbfb4986c76d8497dd8e3d379dde1305c67d8e1fe761",
     );
   } finally {
     await snap.dispose();
@@ -231,6 +239,7 @@ try {
   for (const name of [
     "WINDOW_CHANNEL",
     "stateFreeze",
+    "stateDefineProperty",
     "stateMap",
     "stateMapGet",
     "stateMapHas",
@@ -242,6 +251,8 @@ try {
   ])
     assert.equal(actual[name], originalTransport[name]);
   assert.equal(actual.decodeWindowEvent, originalCodec.decodeWindowEvent);
+  assert.equal(actual.validateDesktopEpoch, originalCodec.validateDesktopEpoch);
+  assert.equal(actual.validateDesktopFacts, originalCodec.validateDesktopFacts);
   assert.deepEqual(readStatics(), []);
   assert.equal(typeof read, "function");
   assert.equal(typeof module.WindowSource, "function");
@@ -320,6 +331,7 @@ function captureEnvironment() {
       "constructor",
       "decode",
       "apply",
+      "desktop",
       "dispatch",
       "acceptHostCloseReply",
       "get",
@@ -691,6 +703,8 @@ function stage() {
     const expected = [
       "channel",
       "#windows",
+      "#desktop",
+      "#desktopEpoch",
       "#onFact",
       "#failureCode",
       "#failureMessage",
@@ -700,6 +714,10 @@ function stage() {
       addError(where + ":unknown-fields");
     }
     const fields = Object.fromEntries(rows);
+    // This window-lifetime scenario emits no desktop event. The two new
+    // fields must remain empty/scalar, not hide a retained window graph.
+    if (fields["#desktop"] !== undefined || fields["#desktopEpoch"] !== 0n)
+      addError(where + ":unexpected-desktop-root");
     if (where === "before") {
       if (fields["#onFact"] !== callback) addError("Source:callback-identity");
       else inspectCallback(callback);
@@ -727,6 +745,8 @@ function stage() {
         JSON.stringify([
           "channel",
           "#windows",
+          "#desktop",
+          "#desktopEpoch",
           "#onFact",
           "#failureCode",
           "#failureMessage",
@@ -869,12 +889,22 @@ function endStage(result: any) {
   const preRows = read(source);
   assert.deepEqual(
     preRows.map((x: any) => x[0]),
-    ["channel", "#windows", "#onFact", "#failureCode", "#failureMessage"],
+    [
+      "channel",
+      "#windows",
+      "#desktop",
+      "#desktopEpoch",
+      "#onFact",
+      "#failureCode",
+      "#failureMessage",
+    ],
   );
   const pre = Object.fromEntries(preRows);
   assert.equal(pre["#onFact"], callback);
   assert.equal(pre["#failureCode"], undefined);
   assert.equal(pre["#failureMessage"], "");
+  assert.equal(pre["#desktop"], undefined);
+  assert.equal(pre["#desktopEpoch"], 0n);
   const map = pre["#windows"];
   assert(mapShape(map));
   const entries = [...native.apply(native.entries, map, [])];
@@ -900,13 +930,23 @@ function endStage(result: any) {
   const postRows = read(source);
   assert.deepEqual(
     postRows.map((x: any) => x[0]),
-    ["channel", "#windows", "#onFact", "#failureCode", "#failureMessage"],
+    [
+      "channel",
+      "#windows",
+      "#desktop",
+      "#desktopEpoch",
+      "#onFact",
+      "#failureCode",
+      "#failureMessage",
+    ],
   );
   const post = Object.fromEntries(postRows);
   assert.equal(post["#windows"], map);
   assert(mapShape(map));
   assert.equal([...native.apply(native.entries, map, [])].length, 0);
   assert.equal(post["#onFact"], undefined);
+  assert.equal(post["#desktop"], undefined);
+  assert.equal(post["#desktopEpoch"], 0n);
   assert.equal(post["#failureCode"], code.value);
   assert.equal(post["#failureMessage"], message.value);
   assert.equal(typeof post["#failureCode"], "string");

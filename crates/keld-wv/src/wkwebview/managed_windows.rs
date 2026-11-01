@@ -5,8 +5,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSScreen, NSWindowStyleMask};
-use objc2_foundation::NSRect;
+use objc2_app_kit::{NSApplication, NSScreen, NSWindowStyleMask};
+use objc2_foundation::{NSArray, NSNumber, NSRect, NSString};
 use tao::dpi::{LogicalPosition, PhysicalPosition, PhysicalSize};
 use tao::event_loop::EventLoopWindowTarget;
 use tao::window::WindowBuilder;
@@ -18,7 +18,10 @@ use super::{
     WkUserEvent, mark_startup, page_load_trace_handler,
 };
 use crate::WebviewId;
-use crate::engine::{AppWindowCommand, AppWindowEvent, BuildStage, WebviewSpec, WindowSnapshot};
+use crate::engine::{
+    AppDesktopDisplay, AppDesktopFacts, AppDesktopRect, AppWindowCommand, AppWindowEvent,
+    BuildStage, WebviewSpec, WindowSnapshot,
+};
 use crate::error::WvError;
 use crate::media::guarded_default_media_builder;
 
@@ -334,6 +337,129 @@ fn appkit_registry_bounds(frame: NSRect, primary: NSRect) -> Result<(i32, i32, u
     Ok((position.x, position.y, size.width, size.height))
 }
 
+/// Actual first-Init macOS desktop observation. Every `AppKit` object stays on
+/// the Tao UI thread; the event carries only an owned checked value graph.
+/// Full primary NSScreen.frame is the single origin for both bounds and work.
+pub(super) fn capture_desktop() -> Result<AppDesktopFacts, WvError> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| {
+        WvError::Window(String::from(
+            "desktop capture requires the AppKit main thread",
+        ))
+    })?;
+    let screens = NSScreen::screens(mtm);
+    if screens.count() == 0 || screens.count() > 32 {
+        return Err(WvError::Window(String::from(
+            "native desktop must have between one and 32 complete displays",
+        )));
+    }
+    let primary = screens
+        .firstObject()
+        .ok_or_else(|| WvError::Window(String::from("AppKit primary NSScreen is absent")))?;
+    let primary_full = primary.frame();
+    let display_key = NSString::from_str("NSScreenNumber");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut displays = Vec::with_capacity(screens.count());
+    for screen in &screens {
+        let description = screen.deviceDescription();
+        let opaque_number = description.objectForKey(&display_key).ok_or_else(|| {
+            WvError::Window(String::from(
+                "NSScreenNumber missing from native deviceDescription",
+            ))
+        })?;
+        let number = opaque_number.downcast_ref::<NSNumber>().ok_or_else(|| {
+            WvError::Window(String::from("NSScreenNumber native value is not NSNumber"))
+        })?;
+        // NSNumber::unsignedLongLongValue may truncate a fractional NSNumber.
+        // Require an exact, positive, finite native u32 integer first. The
+        // captured value is still a platform observation, never a role ID.
+        let numeric = number.doubleValue();
+        if !numeric.is_finite()
+            || numeric.fract() != 0.0
+            || !(1.0..=f64::from(u32::MAX)).contains(&numeric)
+        {
+            return Err(WvError::Window(String::from(
+                "NSScreenNumber is not a positive integral u32",
+            )));
+        }
+        let id = u32::try_from(number.unsignedLongLongValue())
+            .map_err(|_| WvError::Window(String::from("NSScreenNumber exceeds u32")))?;
+        // Every positive u32 is exactly representable as f64. This identity
+        // check must not introduce an epsilon that admits a truncated ID.
+        if f64::from(id).to_bits() != numeric.to_bits() {
+            return Err(WvError::Window(String::from(
+                "NSScreenNumber numeric conversion is not exact",
+            )));
+        }
+        if id == 0 || !ids.insert(id) {
+            return Err(WvError::Window(String::from(
+                "native display identities must be unique and nonzero",
+            )));
+        }
+        let scale_factor = screen.backingScaleFactor();
+        if !scale_factor.is_finite() || scale_factor <= 0.0 {
+            return Err(WvError::Window(String::from(
+                "AppKit returned invalid native backing scale",
+            )));
+        }
+        let (x, y, width, height) = appkit_registry_bounds(screen.frame(), primary_full)?;
+        let (work_x, work_y, work_width, work_height) =
+            appkit_registry_bounds(screen.visibleFrame(), primary_full)?;
+        displays.push(AppDesktopDisplay {
+            id,
+            bounds: AppDesktopRect {
+                x,
+                y,
+                width,
+                height,
+            },
+            work_area: AppDesktopRect {
+                x: work_x,
+                y: work_y,
+                width: work_width,
+                height: work_height,
+            },
+            scale_factor,
+        });
+    }
+    let primary_id = displays
+        .first()
+        .ok_or_else(|| WvError::Window(String::from("no native primary display captured")))?
+        .id;
+    Ok(AppDesktopFacts {
+        primary_id,
+        displays,
+        should_use_dark_colors: capture_effective_appearance(mtm)?,
+    })
+}
+
+/// Read the current effective application appearance on the same UI thread.
+fn capture_effective_appearance(mtm: MainThreadMarker) -> Result<bool, WvError> {
+    // The pinned objc2 constants NSAppearanceNameAqua/DarkAqua are extern
+    // statics and would need unsafe. These exact NSString values are safe
+    // and were paired against Electron 44.4.5 on the same macOS machine.
+    let aqua = NSString::from_str("NSAppearanceNameAqua");
+    let dark = NSString::from_str("NSAppearanceNameDarkAqua");
+    let choices = NSArray::from_slice(&[&*aqua, &*dark]);
+    let application = NSApplication::sharedApplication(mtm);
+    let selected = application
+        .effectiveAppearance()
+        .bestMatchFromAppearancesWithNames(&choices)
+        .ok_or_else(|| {
+            WvError::Window(String::from(
+                "native effective appearance has no Aqua/DarkAqua match",
+            ))
+        })?;
+    if selected.isEqualToString(&dark) {
+        Ok(true)
+    } else if selected.isEqualToString(&aqua) {
+        Ok(false)
+    } else {
+        Err(WvError::Window(String::from(
+            "native effective appearance selected an unknown name",
+        )))
+    }
+}
+
 pub(super) fn next_view_id(next: &mut u32) -> Result<WebviewId, WvError> {
     let id = *next;
     let successor = id.checked_add(1).filter(|_| id != 0).ok_or_else(|| {
@@ -583,6 +709,35 @@ mod tests {
         let frame = registry_frame(initial, 800, 600, Some(37), Some(91), Some(shifted))?;
         assert_eq!((frame.origin.x, frame.origin.y), (-1883.0, 329.0));
         assert_eq!(appkit_registry_bounds(frame, shifted)?, (37, 91, 800, 600));
+        Ok(())
+    }
+
+    #[test]
+    fn work_areas_share_the_full_primary_point_space_anchor() -> Result<(), super::WvError> {
+        // Hypothetical arithmetic fixtures only: no OS capture or DPI equivalence claim.
+        let primary = NSRect::new(NSPoint::new(100.0, 200.0), NSSize::new(1440.0, 900.0));
+        let primary_work = NSRect::new(NSPoint::new(100.0, 200.0), NSSize::new(1440.0, 876.0));
+        let left_work = NSRect::new(NSPoint::new(-1160.0, 300.0), NSSize::new(1260.0, 800.0));
+        let above_work = NSRect::new(NSPoint::new(100.0, 1100.0), NSSize::new(1024.0, 768.0));
+        assert_eq!(appkit_registry_bounds(primary, primary)?, (0, 0, 1440, 900));
+        assert_eq!(
+            appkit_registry_bounds(primary_work, primary)?,
+            (0, 24, 1440, 876)
+        );
+        assert_eq!(
+            appkit_registry_bounds(left_work, primary)?,
+            (-1260, 0, 1260, 800)
+        );
+        assert_eq!(
+            appkit_registry_bounds(above_work, primary)?,
+            (0, -768, 1024, 768)
+        );
+        for invalid in [
+            NSRect::new(NSPoint::new(100.0, 200.0), NSSize::new(1440.0, 0.0)),
+            NSRect::new(NSPoint::new(f64::NAN, 200.0), NSSize::new(1440.0, 876.0)),
+        ] {
+            assert!(appkit_registry_bounds(invalid, primary).is_err());
+        }
         Ok(())
     }
 

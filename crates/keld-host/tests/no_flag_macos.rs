@@ -10,6 +10,8 @@ mod boot_admission;
 mod descriptor_attribution;
 #[path = "no_flag/macos/descriptor_liveness.rs"]
 mod descriptor_liveness;
+#[path = "no_flag/macos/desktop_facts.rs"]
+mod desktop_facts;
 #[path = "no_flag/macos/dev_lifecycle.rs"]
 mod dev_lifecycle;
 #[cfg(feature = "profile-test-hooks")]

@@ -64,7 +64,7 @@ fn teardown_enqueue_failure_remains_an_error_after_the_real_allow_reply() -> Tes
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 1,
         },
@@ -114,7 +114,7 @@ fn failed_allow_acknowledgement_still_queues_the_committed_teardown() -> TestRes
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 1,
         },
@@ -161,7 +161,7 @@ fn failed_allow_acknowledgement_and_enqueue_preserve_both_independent_faults() -
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 1,
         },

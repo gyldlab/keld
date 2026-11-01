@@ -784,6 +784,9 @@ export class BrowserWindow extends EventEmitter {
   static {
     onWindowFactApplied(
       (fact: WindowEvent) => {
+        // This is a global desktop fact. Close/Bounds listeners below own only
+        // real native WindowRef pairs; do not fabricate an id or flush a close.
+        if (fact.variant === "DesktopSnapshot") return;
         if (fact.variant === "Created") {
           stateMapSet(BrowserWindow.#receivedBounds, fact.window.id, {
             incarnation: fact.window.incarnation,

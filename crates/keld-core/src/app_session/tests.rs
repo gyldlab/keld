@@ -159,12 +159,12 @@ fn queued_late_first_init_cannot_bypass_absolute_deadline() {
     })
     .expect("queue one late UI first turn");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Expired,
         "queued late Init must not publish Ready or disarm the terminal"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Expired,
         "a non-terminal successful receive must not consume an invalid Init"
     );
@@ -188,18 +188,132 @@ fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline()
         observed_at: on_time,
     };
     let (send, events) = mpsc::channel();
-    send.send(first).expect("queue genuine timely UI event");
+    send.send(first.clone())
+        .expect("queue genuine timely UI event");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Event(first),
         "coordinator descheduling must not transform timely native Init into timeout"
     );
     send.send(AppWindowEvent::LastWindowClosed)
         .expect("healthy windowless session may continue");
     assert_eq!(
-        receive_initial_milestone(&events, None),
+        receive_initial_milestone(&events, None, true),
         InitialMilestoneReceive::Event(AppWindowEvent::LastWindowClosed),
         "once Init is accepted the expired clock is no longer armed"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn desktop_sample_before_timestamp_preserves_on_time_init_under_delayed_receive() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    // An on-time native Init may be queued until after the worker-side
+    // watchdog deadline. Its desktop sample necessarily precedes the
+    // timestamped HostInitialized on the same FIFO: sample must not eclipse
+    // that native timestamp. Do not weaken the non-Init/late-Init negatives.
+    let deadline = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("monotonic predecessor");
+    let on_time = deadline
+        .checked_sub(Duration::from_millis(1))
+        .expect("native before deadline");
+    let clock = OnceLock::new();
+    clock.set(deadline).expect("arm deadline");
+    let (sender, events) = mpsc::channel();
+    sender
+        .send(AppWindowEvent::DesktopObserved { facts: None })
+        .expect("queue first native desktop sample");
+    sender
+        .send(AppWindowEvent::HostInitialized {
+            observed_at: on_time,
+        })
+        .expect("queue genuine on-time Init after desktop");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock), true),
+        InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
+        "desktop event is allowed through for subsequent native timestamp review"
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock), false),
+        InitialMilestoneReceive::Event(AppWindowEvent::HostInitialized {
+            observed_at: on_time
+        }),
+        "the native on-time marker survives coordinator scheduling"
+    );
+
+    let (sender, events) = mpsc::channel();
+    sender
+        .send(AppWindowEvent::DesktopObserved { facts: None })
+        .expect("queue desktop sample for late Init");
+    sender
+        .send(AppWindowEvent::HostInitialized {
+            observed_at: deadline + Duration::from_millis(1),
+        })
+        .expect("queue late Init");
+    assert!(matches!(
+        receive_initial_milestone(&events, Some(&clock), true),
+        InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { .. })
+    ));
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock), false),
+        InitialMilestoneReceive::Expired,
+        "desktop bypass cannot make a late native Init valid"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn repeated_desktop_samples_cannot_starve_or_replace_the_one_first_init_watchdog() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+
+    let clock = OnceLock::new();
+    clock
+        .set(Instant::now() + Duration::from_secs(15))
+        .expect("arm actual first Init's unchanged 15-second bound");
+    let (sender, events) = mpsc::channel();
+    for _ in 0..100 {
+        sender
+            .send(AppWindowEvent::DesktopObserved { facts: None })
+            .expect("queue deliberately repeated native samples");
+    }
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock), true),
+        InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
+        "the sole native sample is allowed to precede the timestamped Init"
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&clock), false),
+        InitialMilestoneReceive::UnexpectedDesktop,
+        "the second sample must fail immediately even with time remaining"
+    );
+
+    // A solitary desktop sample is also not permission to wait indefinitely
+    // when the producer drops/omits HostInitialized. This tests the expired
+    // boundary directly, with no sleep and no invented native Init timestamp.
+    let expired_clock = OnceLock::new();
+    expired_clock
+        .set(
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("monotonic predecessor"),
+        )
+        .expect("arm a deadline that has actually elapsed");
+    let (sender, events) = mpsc::channel();
+    sender
+        .send(AppWindowEvent::DesktopObserved { facts: None })
+        .expect("queue one pre-Init desktop observation");
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&expired_clock), true),
+        InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, Some(&expired_clock), false),
+        InitialMilestoneReceive::Expired,
+        "a missing HostInitialized may not retain the desktop exception"
     );
 }
 
@@ -218,12 +332,12 @@ fn busy_non_init_queue_and_empty_deadline_both_expire_without_ready() {
     send.send(AppWindowEvent::LastWindowClosed)
         .expect("queue non-Init event after absolute expiry");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Expired,
         "busy queue cannot perpetually avoid a timeout"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Expired,
         "empty deadline expiry still takes bounded terminal path"
     );
@@ -244,7 +358,7 @@ fn unarmed_first_init_timestamp_cannot_mint_ready() {
     })
     .expect("queue a milestone with no loop-entry clock");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock)),
+        receive_initial_milestone(&events, Some(&clock), true),
         InitialMilestoneReceive::Expired,
         "unarmed native clock must not authorize Ready"
     );

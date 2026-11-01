@@ -24,7 +24,6 @@ import {
   refuse,
   refuseLater,
   unsupportedSurface,
-  writableProperty,
 } from "./unsupported.ts";
 
 /** Pinned `shell.md`: five members for the GH-479 broker; the Windows shortcut pair is a GH-482 scoreboard row. */
@@ -83,42 +82,8 @@ export const nativeImage = unsupportedSurface("nativeImage", {
   createMenuSymbol: method("GH-476"),
 });
 
-/** Pinned `native-theme.md`: `shouldUseDarkColors` is the GH-481 mirror fact; the rest, and the `updated` event, are GH-558's. */
-export const nativeTheme = unsupportedSurface("nativeTheme", {
-  shouldUseDarkColors: property("GH-481"),
-  themeSource: writableProperty("GH-558"),
-  shouldUseHighContrastColors: property("GH-558"),
-  shouldUseDarkColorsForSystemIntegratedUI: property("GH-558"),
-  shouldUseInvertedColorScheme: property("GH-558"),
-  inForcedColorsMode: property("GH-558"),
-  prefersReducedTransparency: property("GH-558"),
-  shouldDifferentiateWithoutColor: property("GH-558"),
-  on: method("GH-558"),
-  once: method("GH-558"),
-  off: method("GH-558"),
-  addListener: method("GH-558"),
-  removeListener: method("GH-558"),
-  removeAllListeners: method("GH-558"),
-});
-
-/** Pinned `screen.md`: the two draw.io getters are GH-481 mirror facts; the rest, and the display events, are GH-558's. */
-export const screen = unsupportedSurface("screen", {
-  getCursorScreenPoint: method("GH-558"),
-  getPrimaryDisplay: method("GH-481"),
-  getAllDisplays: method("GH-481"),
-  getDisplayNearestPoint: method("GH-558"),
-  getDisplayMatching: method("GH-558"),
-  screenToDipPoint: method("GH-558"),
-  dipToScreenPoint: method("GH-558"),
-  screenToDipRect: method("GH-558"),
-  dipToScreenRect: method("GH-558"),
-  on: method("GH-558"),
-  once: method("GH-558"),
-  off: method("GH-558"),
-  addListener: method("GH-558"),
-  removeListener: method("GH-558"),
-  removeAllListeners: method("GH-558"),
-});
+// GH481 owns screen and nativeTheme's first supported members in their
+// dedicated modules. The GH558 refusal rows remain there, one owner each.
 
 /**
  * Pinned `menu.md` statics. draw.io's `buildFromTemplate` and `setApplicationMenu` are

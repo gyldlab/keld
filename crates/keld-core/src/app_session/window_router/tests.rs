@@ -20,6 +20,8 @@ use std::time::Duration;
 
 mod close_failures;
 mod close_policy;
+#[cfg(target_os = "macos")]
+mod desktop;
 
 #[cfg(any(target_os = "linux", windows))]
 use super::super::DirectPrimaryOwnerCommand as OwnerCommand;
@@ -226,7 +228,7 @@ fn reply(fixture: &mut Fixture, correlation: u32, expected: WindowResponse) -> T
     assert_eq!(decode::<WindowResponse>(&bytes)?, expected);
     Ok(())
 }
-fn fact(fixture: &mut Fixture, expected: WindowEvent) -> TestResult {
+fn fact(fixture: &mut Fixture, expected: &WindowEvent) -> TestResult {
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel, header.corr),
@@ -236,7 +238,7 @@ fn fact(fixture: &mut Fixture, expected: WindowEvent) -> TestResult {
             CorrelationId(0)
         )
     );
-    assert_eq!(decode::<WindowEvent>(&bytes)?, expected);
+    assert_eq!(&decode::<WindowEvent>(&bytes)?, expected);
     Ok(())
 }
 fn verdict(
@@ -961,7 +963,7 @@ fn window_router_maximum_created_fact_fits_the_fixed_writer_storage() -> TestRes
     let mut failed = None;
     {
         let mut guard = fixture.handle.current.lock().expect("current writer");
-        event(guard.as_mut().expect("active writer"), fact, &mut failed)
+        event(guard.as_mut().expect("active writer"), &fact, &mut failed)
             .expect("maximum fact encodes into caller storage");
     }
     let (header, bytes) = read_frame(&mut fixture.peer).expect("actual maximum fact frame");
@@ -998,7 +1000,7 @@ fn window_router_successor_has_no_stale_legacy_last_window_replay() -> TestResul
         .expect("native close request");
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window: first,
             close_seq: 1,
         },

@@ -432,13 +432,25 @@ impl WkWebViewEngine {
                 && !terminal_requested
                 && first_host_init_turn(&event, &mut host_init_emitted)
             {
-                // Capture on the native UI owner before enqueueing: the Core
-                // receiver may be descheduled past the absolute first-Init
-                // deadline even when this genuine event happened on time.
+                // The first-Init native timestamp must cover the full S1
+                // desktop observation. Taking it before capture would let a
+                // slow native sample falsely pass the existing 15s watchdog.
+                // Core can still be descheduled after the UI completed the
+                // capture, so record completion on the native owner before
+                // enqueuing DesktopObserved then HostInitialized.
+                // GH481 S1: first native screen and appearance sample happens
+                // at the genuine Init, before HostInitialized may publish raw
+                // Ready. No hidden window is allocated to obtain these facts.
+                let facts = match managed_windows::capture_desktop() {
+                    Ok(facts) => Some(facts),
+                    Err(error) => {
+                        eprintln!("KELD-CORE-049: first native desktop capture failed: {error}");
+                        None
+                    }
+                };
                 let observed_at = Instant::now();
-                if events
-                    .send(AppWindowEvent::HostInitialized { observed_at })
-                    .is_err()
+                if events.send(AppWindowEvent::DesktopObserved { facts }).is_err()
+                    || events.send(AppWindowEvent::HostInitialized { observed_at }).is_err()
                 {
                     fatal_in_loop.store(true, Ordering::Release);
                     terminal_requested = true;

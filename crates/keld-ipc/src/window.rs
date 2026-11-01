@@ -57,8 +57,39 @@ pub struct WindowState {
     pub full_screen: bool,
 }
 
+/// One actual host-sampled desktop display. All sizes are positive logical points.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopFact {
+    /// Native nonzero display identifier (not a principal or OS grant).
+    pub id: u32,
+    /// Full display frame relative to the primary display's top-left.
+    pub bounds: Rect,
+    /// Native usable display frame, in the same coordinate space.
+    pub work_area: Rect,
+    /// Actual positive finite native-to-backing scale factor.
+    pub scale_factor: f64,
+}
+
+/// Complete native desktop and appearance capture for the admitted primary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DesktopFacts {
+    /// Native display identifier matching exactly one entry in `displays`.
+    pub primary_id: u32,
+    /// One to 32 complete displays, never a synthetic or truncated subset.
+    pub displays: Vec<DesktopFact>,
+    /// Observed current effective application appearance.
+    pub should_use_dark_colors: bool,
+}
+
+/// Maximum postcard storage for a qualified desktop event with at most 32 displays.
+///
+/// Event tag (1), epoch (10), Option (1), primary id (5), Vec length (1),
+/// 32 records of id (5), two four-field rectangles (40), f64 (8), and bool (1).
+/// This structural storage bound is not the separately enforced 32-KiB wire cap.
+pub const DESKTOP_EVENT_STORAGE_BYTES: usize = 1 + 10 + 1 + 5 + 1 + 32 * (5 + 40 + 8) + 1;
+
 /// Host-to-app window facts; discriminants are append-only, starting at zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WindowEvent {
     /// First fact for a window, or its complete state in a recovery replay.
     Created {
@@ -108,6 +139,13 @@ pub enum WindowEvent {
     Destroyed {
         /// Identity that the app must tombstone before notifying listeners.
         window: WindowRef,
+    },
+    /// GH481 S1: appended event tag 7. Global passive fact without a `WindowRef`.
+    DesktopSnapshot {
+        /// Monotonically increasing host-session observation generation, never zero.
+        epoch: u64,
+        /// Complete current observation or explicit invalidation.
+        snapshot: Option<DesktopFacts>,
     },
 }
 

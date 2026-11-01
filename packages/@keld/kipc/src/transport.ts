@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:9efbf8eda2ebc46c483a4eeb04d1c81d67defc2d0fa84edaf5fc986cafeb37f9
+// @keld/kipc-transport sha256:fe3c93b6c5c6e45a6892a9230a9227e141d8411911b5e4b3fc98e087338ff5d2
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -164,6 +164,9 @@ const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
 const IntrinsicMap = Map;
 const IntrinsicWeakMap = WeakMap;
 const IntrinsicArray = Array;
+const intrinsicIsArray = Array.isArray;
+const IntrinsicDataView = DataView;
+const intrinsicGetFloat64 = DataView.prototype.getFloat64;
 const intrinsicFreeze = Object.freeze;
 const intrinsicSetPrototypeOf = Object.setPrototypeOf;
 const intrinsicDefineProperty = Object.defineProperty;
@@ -325,6 +328,16 @@ export function stateIsUint8Array(value: unknown): value is Uint8Array {
 /** @internal Read native storage length without an application getter. */
 export function stateByteLength(value: Uint8Array): number {
   return intrinsicApply(intrinsicByteLength, value, []);
+}
+/** @internal Array brand test captured before application dependencies. */
+export const stateIsArray: typeof Array.isArray = intrinsicIsArray;
+/** @internal Decode one little-endian f64 without late buffer/offset/native hooks. */
+export function stateFloat64At(value: Uint8Array, offset: number): number {
+  const buffer = intrinsicApply(intrinsicBuffer, value, []) as ArrayBuffer;
+  const byteOffset = intrinsicApply(intrinsicByteOffset, value, []) as number;
+  const byteLength = intrinsicApply(intrinsicByteLength, value, []) as number;
+  const view = new IntrinsicDataView(buffer, byteOffset, byteLength);
+  return intrinsicApply(intrinsicGetFloat64, view, [offset, true]);
 }
 /** @internal Private dense helper backing; bounded own indices preserve its shape. */
 export function stateSlots<T>(capacity: number): (T | undefined)[] {

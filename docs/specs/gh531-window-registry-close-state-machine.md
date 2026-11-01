@@ -262,8 +262,24 @@ fail. "Owner" is the implementing ticket.
     skipping a replay applier fails the listener's mirror assertion. *NC 5:* repeating
     `Subscribe` after adoption and re-arming the consumed mark fails the idempotence
     assertion. Owner: F02-T2, coordinated with F01-T2's public readiness adapter.
-    F06-T5 reuses the admission rule, not this window-specific replay barrier, for
-    display and theme facts.
+    **GH481 S1 amendment approved in [the scoped decision](https://github.com/gyldlab/keld/issues/481#issuecomment-6556306946), with [development-only selection](https://github.com/gyldlab/keld/issues/481#issuecomment-6557264649):** on macOS facade
+    boots only, F06-T5 reuses this same authenticated current-primary window
+    subscription, ordered writer, replay and accepted reply barrier for one
+    windowless desktop/theme fact; it adds no channel, frame-version bump,
+    grant, role, or per-getter call. Before genuine native Init has sampled the
+    desktop, one eligible `Subscribe(c)` may remain pending (one bounded
+    correlation, no subscriber mark or replay). The native sample precedes
+    `HostInitialized`/raw Ready on the UI-to-Core FIFO. Core atomically writes
+    `DesktopSnapshot(e) → Created* → Subscribed(c)` only after a valid current
+    sample, or one same-correlation typed desktop-unavailable ERR with zero
+    replay on definitive Init-time failure. An unauthorized/duplicate Subscribe
+    cannot replace pending c, and link retirement fences it. The existing
+    5,000-ms caller timeout may fail before the separate 15-second native Init
+    watchdog; no deadline is extended. A successor replays Core's latest
+    epoch and value; a current None refuses admission, never replays stale Some.
+    The facade must have a currently applied Some at public Ready commit.
+    Source/codec, window-only listeners and writer/timeout/role negatives must
+    pass before this conditional amendment becomes executable.
 
     **No unbounded rendererless Init (GH446 AC15/20, 2026-10-25):** A
     schema-two macOS boot creates no initial native application window.
@@ -655,6 +671,9 @@ pub enum WindowEvent {
     FullScreen { window: WindowRef, full_screen: bool },   // 4
     CloseRequested { window: WindowRef, close_seq: u64 },  // 5
     Destroyed { window: WindowRef },                       // 6: last record for a window
+    // GH481 bounded S1: same-writer/current-primary amendment approved.
+    // 7: one global desktop fact, no WindowRef; None invalidates the epoch.
+    DesktopSnapshot { epoch: u64, snapshot: Option<DesktopFacts> },
 }
 
 /// App → host CALLs.
@@ -789,6 +808,20 @@ export interface MirrorSource<Fact> {
 }
 export function attachMirror<Fact>(link: WorkerLink, source: MirrorSource<Fact>): void;
 ```
+
+**GH481 S1 approved windowless consumer correction:** append only
+`WindowEvent` tag 7, retaining tags 0–6 and the existing frame/HELLO version.
+`DesktopFacts` is 1–32 unique nonzero native u32 display IDs, exactly one
+primary ID, checked i32/u32 logical rectangles, finite positive f64 scale and
+one dark-mode boolean. The complete encoded EVENT payload is at most 32 KiB.
+Core's u64 epoch starts at 1, advances on changed Some/None, never wraps, and
+rejects a changed value after u64::MAX. The single WindowSource first decodes,
+then applies a deeply copied/frozen latest desktop value; equal epoch/value is
+idempotent, contradictory or regressing epochs fail closed. On desktop-only
+facts, `WindowCloseReceipts.observe` and Electron `BrowserWindow`'s
+`onWindowFactApplied` listener must return before reading `fact.window`;
+their original window/close listener behavior, order and receipts remain
+unchanged. Tests must drive the actual two consumers, not just the codec.
 
 **Scoped mirror amendment approved — 2026-10-24:** [GH-1142's exact-content
 owner approval](https://github.com/gyldlab/keld/issues/1142#issuecomment-6374810328)

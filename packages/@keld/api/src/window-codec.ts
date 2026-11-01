@@ -5,6 +5,13 @@
  * the host registry must validate every supplied reference and operation.
  */
 import {
+  stateApply,
+  stateDefineProperty,
+  stateIsArray,
+  stateFloat64At,
+  stateMap,
+  stateMapHas,
+  stateMapSet,
   stateIsUint8Array,
   stateByteLength,
   decodeU64Varint,
@@ -33,6 +40,24 @@ export interface WindowState {
   maximized: boolean;
   full_screen: boolean;
 }
+/** One native monitor. Geometry is checked integer DIP anchored to primary frame. */
+export interface DesktopFact {
+  id: number;
+  bounds: Rect;
+  work_area: Rect;
+  scale_factor: number;
+}
+/** Current, complete native display/theme observation; no authority or OS handle. */
+export interface DesktopFacts {
+  primary_id: number;
+  displays: DesktopFact[];
+  should_use_dark_colors: boolean;
+}
+/** Counts the entire postcard WindowEvent body, excluding the KIPC header. */
+export const MAX_DESKTOP_EVENT_BYTES = 32 * 1024;
+const MAX_U64 = 0xffff_ffff_ffff_ffffn;
+const NativeDataView = DataView;
+const writeFloat64 = DataView.prototype.setFloat64;
 /** Application verdict on one host-minted pending close sequence. */
 export type CloseVerdict = "Allow" | "Veto";
 /** Host-to-app facts, in the Rust enum's append-only declaration order. */
@@ -48,7 +73,13 @@ export type WindowEvent =
   | { variant: "Maximized"; window: WindowRef; maximized: boolean }
   | { variant: "FullScreen"; window: WindowRef; full_screen: boolean }
   | { variant: "CloseRequested"; window: WindowRef; close_seq: bigint }
-  | { variant: "Destroyed"; window: WindowRef };
+  | { variant: "Destroyed"; window: WindowRef }
+  | {
+      /** GH481: appended postcard tag 7, no WindowRef on this global fact. */
+      variant: "DesktopSnapshot";
+      epoch: bigint;
+      snapshot: DesktopFacts | null;
+    };
 /** App-to-host calls; optional positions use explicit null, matching postcard. */
 export type WindowRequest =
   | {
@@ -85,7 +116,7 @@ function invalid(detail: string): Error {
   return kipcError("KELD-IPC-003", detail);
 }
 function requireObject(value: unknown): void {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (value === null || typeof value !== "object" || stateIsArray(value)) {
     throw invalid("window payload value must be an object");
   }
 }
@@ -155,6 +186,152 @@ function decodeOption<T>(
   if (tag === 0) return [null, offset + 1];
   if (tag !== 1) throw invalid("invalid or truncated window option");
   return decode(bytes, offset + 1);
+}
+
+function checkedU32(value: number): boolean {
+  return (
+    typeof value === "number" &&
+    value % 1 === 0 &&
+    value >= 0 &&
+    value <= 0xffff_ffff
+  );
+}
+function validateDesktopRect(value: Rect): void {
+  requireObject(value);
+  if (
+    typeof value.x !== "number" ||
+    value.x % 1 !== 0 ||
+    value.x < -0x8000_0000 ||
+    value.x > 0x7fff_ffff ||
+    typeof value.y !== "number" ||
+    value.y % 1 !== 0 ||
+    value.y < -0x8000_0000 ||
+    value.y > 0x7fff_ffff ||
+    !checkedU32(value.width) ||
+    value.width === 0 ||
+    !checkedU32(value.height) ||
+    value.height === 0
+  ) {
+    throw invalid(
+      "desktop rectangles need representable positive logical dimensions",
+    );
+  }
+}
+/** Same validation owner for directly applied facts and decoded postcard facts. */
+export function validateDesktopFacts(value: DesktopFacts): void {
+  requireObject(value);
+  if (!checkedU32(value.primary_id) || value.primary_id === 0)
+    throw invalid("desktop primary id must be a nonzero u32");
+  if (
+    !stateIsArray(value.displays) ||
+    value.displays.length === 0 ||
+    value.displays.length > 32
+  ) {
+    throw invalid("desktop requires between one and 32 displays");
+  }
+  if (typeof value.should_use_dark_colors !== "boolean")
+    throw invalid("desktop appearance must be a boolean");
+  const observed = stateMap<number, true>();
+  let matches = 0;
+  for (let i = 0; i < value.displays.length; i += 1) {
+    const display = value.displays[i]!;
+    requireObject(display);
+    if (
+      !checkedU32(display.id) ||
+      display.id === 0 ||
+      stateMapHas(observed, display.id)
+    )
+      throw invalid("desktop display ids must be unique, nonzero u32");
+    stateMapSet(observed, display.id, true);
+    if (display.id === value.primary_id) matches += 1;
+    validateDesktopRect(display.bounds);
+    validateDesktopRect(display.work_area);
+    if (
+      typeof display.scale_factor !== "number" ||
+      !(display.scale_factor > 0 && display.scale_factor < Infinity)
+    )
+      throw invalid("desktop scale factor must be finite and positive");
+  }
+  if (matches !== 1)
+    throw invalid("desktop primary id must match exactly one display");
+}
+export function validateDesktopEpoch(value: bigint): void {
+  if (
+    typeof value !== "bigint" ||
+    value === 0n ||
+    value > MAX_U64 ||
+    value < 0n
+  )
+    throw invalid("desktop epoch must be a nonzero u64");
+}
+function encodeFloat64(value: number): Uint8Array {
+  if (!Number.isFinite(value) || value <= 0)
+    throw invalid("desktop scale factor must be finite and positive");
+  const bytes = new Uint8Array(8);
+  stateApply(writeFloat64, new NativeDataView(bytes.buffer), [0, value, true]);
+  return bytes;
+}
+function float64At(bytes: Uint8Array, offset: number): [number, number] {
+  if (offset + 8 > stateByteLength(bytes))
+    throw invalid("truncated desktop scale factor");
+  const value = stateFloat64At(bytes, offset);
+  if (!(value > 0 && value < Infinity))
+    throw invalid("desktop scale factor must be finite and positive");
+  return [value, offset + 8];
+}
+function encodeDesktopFacts(value: DesktopFacts): Uint8Array {
+  validateDesktopFacts(value);
+  const displays: Uint8Array[] = [encodeVarint(value.displays.length)];
+  for (let i = 0; i < value.displays.length; i += 1) {
+    const display = value.displays[i]!;
+    displays.push(
+      encodeVarint(display.id),
+      encodeRect(display.bounds),
+      encodeRect(display.work_area),
+      encodeFloat64(display.scale_factor),
+    );
+  }
+  return join([
+    encodeVarint(value.primary_id),
+    ...displays,
+    encodeBool(value.should_use_dark_colors),
+  ]);
+}
+function desktopFactsAt(
+  bytes: Uint8Array,
+  offset: number,
+): [DesktopFacts, number] {
+  const primary = decodeVarint(bytes, offset);
+  const primary_id = primary[0];
+  const countField = decodeVarint(bytes, primary[1]);
+  const count = countField[0];
+  if (count === 0 || count > 32)
+    throw invalid("desktop requires between one and 32 displays");
+  const displays: DesktopFact[] = [];
+  let cursor = countField[1];
+  for (let index = 0; index < count; index += 1) {
+    const id = decodeVarint(bytes, cursor);
+    const bounds = rectAt(bytes, id[1]);
+    const work = rectAt(bytes, bounds[1]);
+    const scale = float64At(bytes, work[1]);
+    stateDefineProperty(displays, index, {
+      __proto__: null,
+      value: {
+        id: id[0],
+        bounds: bounds[0],
+        work_area: work[0],
+        scale_factor: scale[0],
+      },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    } as PropertyDescriptor);
+    cursor = scale[1];
+  }
+  const appearance = decodeBool(bytes, cursor);
+  const value = { primary_id, displays, should_use_dark_colors: appearance[0] };
+  validateDesktopFacts(value);
+  return [value, appearance[1]];
 }
 
 /** Encode a reference without replacing the registry's ownership checks. */
@@ -303,6 +480,17 @@ export function encodeWindowEvent(value: WindowEvent): Uint8Array {
       ]);
     case "Destroyed":
       return join([encodeVarint(6), encodeWindowRef(value.window)]);
+    case "DesktopSnapshot": {
+      validateDesktopEpoch(value.epoch);
+      const bytes = join([
+        encodeVarint(7),
+        encodeU64Varint(value.epoch),
+        encodeOption(value.snapshot, encodeDesktopFacts),
+      ]);
+      if (bytes.byteLength > MAX_DESKTOP_EVENT_BYTES)
+        throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
+      return bytes;
+    }
     default:
       throw invalid("unknown WindowEvent variant");
   }
@@ -311,7 +499,23 @@ function eventAt(bytes: Uint8Array, offset: number): [WindowEvent, number] {
   const decoded14 = decodeVarint(bytes, offset);
   const variant = decoded14[0];
   const afterVariant = decoded14[1];
-  if (variant > 6) throw invalid("unknown WindowEvent discriminant");
+  if (variant > 7) throw invalid("unknown WindowEvent discriminant");
+  if (variant === 7) {
+    if (stateByteLength(bytes) > MAX_DESKTOP_EVENT_BYTES)
+      throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
+    const decodedEpoch = decodeU64Varint(bytes, afterVariant);
+    const epoch = decodedEpoch[0];
+    validateDesktopEpoch(epoch);
+    const decodedSnapshot = decodeOption(
+      bytes,
+      decodedEpoch[1],
+      desktopFactsAt,
+    );
+    return [
+      { variant: "DesktopSnapshot", epoch, snapshot: decodedSnapshot[0] },
+      decodedSnapshot[1],
+    ];
+  }
   const decoded15 = windowRefAt(bytes, afterVariant);
   const window = decoded15[0];
   const afterWindow = decoded15[1];

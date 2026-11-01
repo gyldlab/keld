@@ -20,13 +20,13 @@ import "./entry-identity.ts";
 import { app } from "./app.ts";
 import { BrowserWindow } from "./browser-window.ts";
 import { dialog } from "./dialog.ts";
+import { nativeTheme } from "./native-theme.ts";
+import { screen } from "./screen.ts";
 import {
   ClipboardItem,
   Menu,
   clipboard,
   nativeImage,
-  nativeTheme,
-  screen,
   session,
   shell,
 } from "./unsupported-bindings.ts";

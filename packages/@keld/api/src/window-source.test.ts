@@ -261,6 +261,8 @@ test("Destroyed stays readable through its callback and retires even when it thr
   accept(source, literal("event-created"));
   const earlier = accept(source, literal("event-focus"));
   const destroyed = accept(source, literal("event-destroyed"));
+  if (destroyed.variant !== "Destroyed")
+    throw new Error("destroyed literal has the wrong tag");
   terminal = source.get(WINDOW)!;
   expect(terminal).toHaveProperty("host_destroyed", true);
   source.dispatch(earlier);

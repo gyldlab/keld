@@ -101,7 +101,7 @@ pub(super) struct PendingWindowCall {
     pub(super) owner: WindowOwner,
     pub(super) correlation: CorrelationId,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct OwnedWindowEvent {
     pub(super) owner: WindowOwner,
     pub(super) event: WindowEvent,
@@ -129,7 +129,7 @@ pub(super) struct Teardown {
     pub(super) window: WindowRef,
     pub(super) view: WebviewId,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum BuildOutcome {
     /// Parent writes the fact before the correlated reply on the same writer.
     Created {
@@ -151,7 +151,7 @@ pub(super) enum NativeSetter {
     Maximized { view: WebviewId, maximized: bool },
     FullScreen { view: WebviewId, full_screen: bool },
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum FactOutcome {
     Event(OwnedWindowEvent),
     Coalesced,
@@ -159,7 +159,7 @@ pub(super) enum FactOutcome {
     Unmapped,
     Dropped,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum CloseOutcome {
     Requested {
         close_seq: u64,
@@ -175,7 +175,7 @@ pub(super) enum CloseOutcome {
     Unmapped,
     Exhausted,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct ReleaseOutcome {
     /// Parent writes this before `last_window`, if both are present.
     pub(super) fact: Option<OwnedWindowEvent>,
@@ -759,7 +759,10 @@ impl WindowRegistry {
         } else {
             None
         };
-        let recipient = fact.map(|event| event.owner).filter(|_| !self.ending);
+        let recipient = fact
+            .as_ref()
+            .map(|event| event.owner)
+            .filter(|_| !self.ending);
         let last_window = if let Some(owner) = recipient {
             if self.has_live_windows() {
                 if self.only_opening_windows() {

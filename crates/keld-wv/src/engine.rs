@@ -166,7 +166,7 @@ pub enum MacDialogUiOutcome {
 }
 
 /// Observable UI-owned milestone delivered to the host session coordinator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppWindowEvent {
     /// Initial renderer navigation completed on the live backend.
     NavigationReady,
@@ -177,6 +177,13 @@ pub enum AppWindowEvent {
     HostInitialized {
         /// Monotonic observation time of the real first `AppKit` Init turn.
         observed_at: Instant,
+    },
+    /// Complete actual `AppKit` sample, or explicit unavailable result.
+    /// Sent from genuine Init before `HostInitialized`; never a user-supplied fact.
+    #[cfg(target_os = "macos")]
+    DesktopObserved {
+        /// An owned native observation, with no platform handles retained.
+        facts: Option<AppDesktopFacts>,
     },
     /// The primary-window count transitioned from one to zero.
     LastWindowClosed,
@@ -282,6 +289,46 @@ pub struct WindowSnapshot {
     pub maximized: bool,
     /// Whether the native window is in full screen.
     pub full_screen: bool,
+}
+
+/// An owned `AppKit` point-space rectangle after checked primary-origin conversion.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppDesktopRect {
+    /// Horizontal offset from primary top-left, signed for secondary screens.
+    pub x: i32,
+    /// Vertical offset from primary top-left, signed for secondary screens.
+    pub y: i32,
+    /// Outer frame width in logical points.
+    pub width: u32,
+    /// Outer frame height in logical points.
+    pub height: u32,
+}
+
+/// One display captured by the macOS UI loop before the Host Init milestone.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppDesktopDisplay {
+    /// Native nonzero u32 display identity, not an authorization identifier.
+    pub id: u32,
+    /// Full display frame in logical points.
+    pub bounds: AppDesktopRect,
+    /// Actual usable display frame in logical points.
+    pub work_area: AppDesktopRect,
+    /// Positive finite backing scale.
+    pub scale_factor: f64,
+}
+
+/// Owned copy of the native UI loop's current complete desktop capture.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppDesktopFacts {
+    /// Native primary display identity.
+    pub primary_id: u32,
+    /// One to 32 unique native displays.
+    pub displays: Vec<AppDesktopDisplay>,
+    /// Resolved light/dark effective application appearance.
+    pub should_use_dark_colors: bool,
 }
 
 /// Only the initial renderer owns the original startup navigation deadline.

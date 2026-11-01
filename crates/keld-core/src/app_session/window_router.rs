@@ -6,7 +6,11 @@
 //! frame parser, output queue, principal or subscription policy is minted here.
 
 use keld_ipc::channel_table::{Authority, ReceiveClass};
-use keld_ipc::window::{Rect, WindowRequest, WindowResponse, WindowState};
+use keld_ipc::window::{
+    DESKTOP_EVENT_STORAGE_BYTES, Rect, WindowEvent, WindowRequest, WindowResponse, WindowState,
+};
+#[cfg(target_os = "macos")]
+use keld_ipc::window::{DesktopFact, DesktopFacts};
 use keld_ipc::{ChannelId, SubscribeRefusal};
 use keld_wv::{BuildStage, WindowSnapshot};
 
@@ -26,6 +30,95 @@ use super::{
 // Created/Adopted = 16, LifecycleResponse SubscribeRefused = 2. The literal
 // codec vectors and maximum Created socket test qualify the current schema.
 const WINDOW_PAYLOAD_STORAGE_BYTES: usize = 64;
+/// GH481's event-specific body cap; the existing control frame limit is unchanged.
+const MAX_DESKTOP_EVENT_BYTES: usize = 32 * 1024;
+
+/// Core alone increments native observation epochs. Epoch zero has no authority.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DesktopEpoch(pub(super) u64);
+#[cfg(target_os = "macos")]
+impl DesktopEpoch {
+    pub(super) fn advance(&mut self) -> Result<u64, HostAppError> {
+        let next = self.0.checked_add(1).ok_or_else(|| {
+            app_detail(
+                "desktop observation",
+                "desktop epoch exhausted; end the Host session",
+            )
+        })?;
+        self.0 = next;
+        Ok(next)
+    }
+}
+/// Check the complete encoded postcard event body, not its outer KIPC header.
+#[cfg(target_os = "macos")]
+pub(super) fn admit_desktop_payload_bytes(bytes: usize) -> Result<(), HostAppError> {
+    if bytes > MAX_DESKTOP_EVENT_BYTES {
+        return Err(app_detail(
+            "desktop observation",
+            "desktop event exceeds 32 KiB",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_rect(native: keld_wv::AppDesktopRect) -> Rect {
+    Rect {
+        x: native.x,
+        y: native.y,
+        width: native.width,
+        height: native.height,
+    }
+}
+
+/// A pure validation/conversion boundary. The macOS UI source owns physical capture.
+#[cfg(target_os = "macos")]
+fn qualified_desktop(facts: keld_wv::AppDesktopFacts) -> Option<DesktopFacts> {
+    if facts.primary_id == 0 || facts.displays.is_empty() || facts.displays.len() > 32 {
+        return None;
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut primary_count = 0;
+    let mut displays = Vec::with_capacity(facts.displays.len());
+    for display in facts.displays {
+        if display.id == 0
+            || !ids.insert(display.id)
+            || display.bounds.width == 0
+            || display.bounds.height == 0
+            || display.work_area.width == 0
+            || display.work_area.height == 0
+            || !display.scale_factor.is_finite()
+            || display.scale_factor <= 0.0
+        {
+            return None;
+        }
+        if display.id == facts.primary_id {
+            primary_count += 1;
+        }
+        displays.push(DesktopFact {
+            id: display.id,
+            bounds: desktop_rect(display.bounds),
+            work_area: desktop_rect(display.work_area),
+            scale_factor: display.scale_factor,
+        });
+    }
+    if primary_count != 1 {
+        return None;
+    }
+    Some(DesktopFacts {
+        primary_id: facts.primary_id,
+        displays,
+        should_use_dark_colors: facts.should_use_dark_colors,
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingDesktopSubscribe {
+    owner: WindowOwner,
+    correlation: CorrelationId,
+}
 
 /// One optional facade service for the whole app session. None in the parent is
 /// the permanent renderer mode; current production boot constructors pass None.
@@ -34,6 +127,16 @@ pub(super) struct WindowSession {
     native_supported: bool,
     // The one subscription owner is this live link, not the window instances.
     subscribed: Option<WindowOwner>,
+    #[cfg(target_os = "macos")]
+    desktop_required: bool,
+    #[cfg(target_os = "macos")]
+    desktop_seen: bool,
+    #[cfg(target_os = "macos")]
+    desktop_epoch: DesktopEpoch,
+    #[cfg(target_os = "macos")]
+    desktop_latest: Option<DesktopFacts>,
+    #[cfg(target_os = "macos")]
+    pending_desktop: Option<PendingDesktopSubscribe>,
 }
 impl WindowSession {
     pub(super) fn new(native_supported: bool) -> Self {
@@ -41,7 +144,25 @@ impl WindowSession {
             registry: WindowRegistry::new(),
             native_supported,
             subscribed: None,
+            #[cfg(target_os = "macos")]
+            desktop_required: false,
+            #[cfg(target_os = "macos")]
+            desktop_seen: false,
+            #[cfg(target_os = "macos")]
+            desktop_epoch: DesktopEpoch(0),
+            #[cfg(target_os = "macos")]
+            desktop_latest: None,
+            #[cfg(target_os = "macos")]
+            pending_desktop: None,
         }
+    }
+    /// Actual macOS facade boot selects S1; old component and other OS paths
+    /// keep the existing baseline subscription semantics.
+    #[cfg(target_os = "macos")]
+    pub(super) fn with_desktop(native_supported: bool) -> Self {
+        let mut session = Self::new(native_supported);
+        session.desktop_required = true;
+        session
     }
     #[cfg(target_os = "macos")]
     pub(super) fn admitted_dialog_view(
@@ -158,15 +279,70 @@ fn call_error(
         failed,
     )
 }
-fn event(
+
+#[cfg(target_os = "macos")]
+fn lifecycle_call_error(
     active: &mut ActivePrimaryGeneration,
-    fact: keld_ipc::window::WindowEvent,
+    correlation: CorrelationId,
+    code: &'static str,
+    message: &'static str,
     failed: &mut Option<u32>,
 ) -> Result<(), HostAppError> {
+    let bytes = encode(&CallError {
+        code: code.to_owned(),
+        message: format!("{code}: {message}"),
+    })
+    .map_err(|source| app_ipc("desktop Subscribe ERR encode", &source))?;
+    write_payload(
+        active,
+        FrameKind::Err,
+        LIFECYCLE_CHANNEL,
+        correlation,
+        &bytes,
+        failed,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_unavailable(
+    active: &mut ActivePrimaryGeneration,
+    correlation: CorrelationId,
+    failed: &mut Option<u32>,
+) -> Result<(), HostAppError> {
+    lifecycle_call_error(
+        active,
+        correlation,
+        "KELD-CORE-049",
+        "The native desktop snapshot is unavailable. Correct the Host's native display/appearance error and relaunch.",
+        failed,
+    )
+}
+fn event(
+    active: &mut ActivePrimaryGeneration,
+    fact: &keld_ipc::window::WindowEvent,
+    failed: &mut Option<u32>,
+) -> Result<(), HostAppError> {
+    if matches!(fact, WindowEvent::DesktopSnapshot { .. }) {
+        // The qualified fixed-shape 32-display value needs at most 1715 bytes,
+        // proven by the IPC maximum-width vector. No per-event heap allocation.
+        let mut scratch = [0_u8; DESKTOP_EVENT_STORAGE_BYTES];
+        let bytes = keld_ipc::codec::encode_into(fact, &mut scratch)
+            .map_err(|source| app_ipc("desktop fact encode", &source))?;
+        #[cfg(target_os = "macos")]
+        admit_desktop_payload_bytes(bytes.len())?;
+        return write_payload(
+            active,
+            FrameKind::Event,
+            keld_ipc::channel_table::WINDOW.id(),
+            CorrelationId(0),
+            bytes,
+            failed,
+        );
+    }
     // Current WindowEvent's largest value is Created with both u64 maxima:
     // the owning codec test below proves its actual payload fits this storage.
     let mut scratch = [0_u8; WINDOW_PAYLOAD_STORAGE_BYTES];
-    let bytes = keld_ipc::codec::encode_into(&fact, &mut scratch)
+    let bytes = keld_ipc::codec::encode_into(fact, &mut scratch)
         .map_err(|source| app_ipc("window fact encode", &source))?;
     write_payload(
         active,
@@ -180,13 +356,13 @@ fn event(
 fn owned_event(
     current: &mut Option<ActivePrimaryGeneration>,
     subscribed: Option<WindowOwner>,
-    fact: OwnedWindowEvent,
+    fact: &OwnedWindowEvent,
     failed: &mut Option<u32>,
 ) -> Result<(), HostAppError> {
     if subscribed == Some(fact.owner)
         && let Some(active) = active_owner(current, fact.owner)
     {
-        event(active, fact.event, failed)?;
+        event(active, &fact.event, failed)?;
     }
     Ok(())
 }
@@ -278,7 +454,7 @@ fn window_released_locked(
         );
     }
     if let Some(fact) = outcome.fact {
-        owned_event(current, subscribed, fact, failed)?;
+        owned_event(current, subscribed, &fact, failed)?;
     }
     last_window_locked(current, subscribed, outcome.last_window, failed)?;
     for call in outcome.destroy_calls {
@@ -317,6 +493,143 @@ fn native_state(snapshot: WindowSnapshot) -> WindowState {
     }
 }
 
+/// Admit or reserve the one desktop Subscribe under the existing writer/registry locks.
+#[cfg(target_os = "macos")]
+fn subscribe_desktop_locked(
+    session: &mut WindowSession,
+    active: &mut ActivePrimaryGeneration,
+    caller_owner: WindowOwner,
+    correlation: CorrelationId,
+    failed: &mut Option<u32>,
+) -> Result<(), HostAppError> {
+    if session.subscribed == Some(caller_owner) {
+        return lifecycle_reply(active, correlation, LifecycleResponse::Subscribed, failed);
+    }
+    if let Some(pending) = session.pending_desktop {
+        if pending.owner == caller_owner && pending.correlation == correlation {
+            // A forged duplicate using the original pending
+            // correlation could settle it with ERR and then
+            // settle it again with Subscribed after Init.
+            // This is a fatal protocol violation, matching
+            // the established pending-window-CALL policy.
+            *failed = Some(active.attempt);
+            return Err(app_ipc(
+                "desktop Subscribe correlation admission",
+                &IpcError::Protocol {
+                    detail: "desktop Subscribe reuses its pending correlation",
+                },
+            ));
+        }
+        // A different second correlation gets only its own
+        // ERR; it cannot replace the reserved first call or
+        // receive a desktop/window replay.
+        return lifecycle_call_error(
+            active,
+            correlation,
+            "KELD-IPC-005",
+            "a desktop Subscribe is already pending on this role",
+            failed,
+        );
+    }
+    if !session.desktop_seen {
+        session.pending_desktop = Some(PendingDesktopSubscribe {
+            owner: caller_owner,
+            correlation,
+        });
+        return Ok(());
+    }
+    complete_desktop_subscribe_locked(session, active, caller_owner, correlation, failed)
+}
+
+/// The one writer holds current + window registry locks for this entire batch.
+/// Successor adoption marks and subscription eligibility become visible only
+/// after the complete desktop/Created replay and correlated accepted reply.
+#[cfg(target_os = "macos")]
+fn complete_desktop_subscribe_locked(
+    session: &mut WindowSession,
+    active: &mut ActivePrimaryGeneration,
+    owner: WindowOwner,
+    correlation: CorrelationId,
+    failed: &mut Option<u32>,
+) -> Result<(), HostAppError> {
+    let Some(facts) = session.desktop_latest.as_ref() else {
+        return desktop_unavailable(active, correlation, failed);
+    };
+    event(
+        active,
+        &WindowEvent::DesktopSnapshot {
+            epoch: session.desktop_epoch.0,
+            snapshot: Some(facts.clone()),
+        },
+        failed,
+    )?;
+    session.registry.subscribe_successor(owner);
+    for window in session.registry.replay(owner) {
+        event(active, &window, failed)?;
+    }
+    lifecycle_reply(active, correlation, LifecycleResponse::Subscribed, failed)?;
+    session.subscribed = Some(owner);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn desktop_observed_locked(
+    session: &mut WindowSession,
+    current: &mut Option<ActivePrimaryGeneration>,
+    facts: Option<keld_wv::AppDesktopFacts>,
+    failed: &mut Option<u32>,
+) -> Result<(), HostAppError> {
+    if !session.desktop_required {
+        return Err(app_detail(
+            "desktop observation",
+            "native desktop sample entered an unselected facade session",
+        ));
+    }
+    let validated = facts.and_then(qualified_desktop);
+    if session.desktop_seen && session.desktop_latest == validated {
+        // Identical native capture is idempotent and consumes no new epoch.
+        return Ok(());
+    }
+    let next = session.desktop_epoch.advance()?;
+    session.desktop_seen = true;
+    session.desktop_latest = validated;
+    // Enforce the full encoded size even when no subscriber has yet bound.
+    // Existing 16-MiB frame bounds do not substitute for this one.
+    let payload = encode(&WindowEvent::DesktopSnapshot {
+        epoch: next,
+        snapshot: session.desktop_latest.clone(),
+    })
+    .map_err(|error| app_ipc("desktop snapshot qualification", &error))?;
+    admit_desktop_payload_bytes(payload.len())?;
+    if let Some(pending) = session.pending_desktop.take() {
+        if let Some(active) = active_owner(current, pending.owner) {
+            return complete_desktop_subscribe_locked(
+                session,
+                active,
+                pending.owner,
+                pending.correlation,
+                failed,
+            );
+        }
+        // Old-generation timeout or link death consumed its authority. A late
+        // successful sample has no legal recipient and creates no replay.
+        return Ok(());
+    }
+    if let Some(owner) = session.subscribed
+        && let Some(active) = active_owner(current, owner)
+    {
+        event(
+            active,
+            &WindowEvent::DesktopSnapshot {
+                epoch: next,
+                snapshot: session.desktop_latest.clone(),
+            },
+            failed,
+        )?;
+    }
+    Ok(())
+}
+
 impl PrimaryRouterHandle {
     /// Caller already holds the shutdown transition. Ready publication cannot
     /// overtake terminal end or the registry's serviceability transition.
@@ -341,6 +654,13 @@ impl PrimaryRouterHandle {
                 .map_err(|_| app_detail("window role retirement", "registry lock poisoned"))?;
             if session.subscribed == Some(retired) {
                 session.subscribed = None;
+            }
+            #[cfg(target_os = "macos")]
+            if session
+                .pending_desktop
+                .is_some_and(|pending| pending.owner == retired)
+            {
+                session.pending_desktop = None;
             }
             session.registry.role_lost(retired, report_abandoned);
         }
@@ -419,13 +739,23 @@ impl PrimaryRouterHandle {
                     .lock()
                     .map_err(|_| app_detail("window Subscribe", "registry lock poisoned"))?;
                 let caller_owner = WindowOwner::new(caller.identity, caller.attempt);
+                #[cfg(target_os = "macos")]
+                if session.desktop_required {
+                    return subscribe_desktop_locked(
+                        &mut session,
+                        active,
+                        caller_owner,
+                        correlation,
+                        &mut failed,
+                    );
+                }
                 if session.subscribed != Some(caller_owner) {
                     session.registry.subscribe_successor(caller_owner);
                     session.subscribed = Some(caller_owner);
                     // The existing current writer lock makes this complete replay
                     // and the correlated acceptance one ordered stream operation.
                     for fact in session.registry.replay(caller_owner) {
-                        event(active, fact, &mut failed)?;
+                        event(active, &fact, &mut failed)?;
                     }
                 }
                 lifecycle_reply(
@@ -661,7 +991,7 @@ impl PrimaryRouterHandle {
                 close_seq,
                 fact: Some(fact),
             } => {
-                event(active, fact.event, failed)?;
+                event(active, &fact.event, failed)?;
                 WindowResponse::CloseRequested { close_seq }
             }
             CloseOutcome::Merged { close_seq } => WindowResponse::Merged { close_seq },
@@ -721,7 +1051,7 @@ impl PrimaryRouterHandle {
     ) -> Result<(), HostAppError> {
         match outcome {
             BuildOutcome::Created { fact, reply } => {
-                owned_event(current, subscribed, fact, failed)?;
+                owned_event(current, subscribed, &fact, failed)?;
                 owned_reply(current, subscribed, reply, failed)
             }
             BuildOutcome::Cleanup(teardown) => {
@@ -744,7 +1074,7 @@ impl PrimaryRouterHandle {
         match outcome {
             CloseOutcome::Requested {
                 fact: Some(fact), ..
-            } => owned_event(current, subscribed, fact, failed),
+            } => owned_event(current, subscribed, &fact, failed),
             CloseOutcome::Unmapped => {
                 eprintln!(
                     "KELD-CORE-038: native close references an unmapped view; inspect UI event ordering"
@@ -779,6 +1109,10 @@ impl PrimaryRouterHandle {
     ) -> Result<(), HostAppError> {
         let subscribed = session.subscribed;
         let fact = match native_event {
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::DesktopObserved { facts } => {
+                return desktop_observed_locked(session, current, facts, failed);
+            }
             AppWindowEvent::WindowBuilt {
                 build,
                 view,
@@ -851,7 +1185,7 @@ impl PrimaryRouterHandle {
             }
         };
         match fact {
-            FactOutcome::Event(fact) => owned_event(current, subscribed, fact, failed),
+            FactOutcome::Event(fact) => owned_event(current, subscribed, &fact, failed),
             FactOutcome::Unmapped => {
                 eprintln!(
                     "KELD-CORE-038: native state references an unmapped view; inspect UI event ordering"
@@ -930,6 +1264,12 @@ impl PrimaryRouterHandle {
         let mut session = windows
             .lock()
             .map_err(|_| app_detail("window session end", "registry lock poisoned"))?;
+        #[cfg(target_os = "macos")]
+        {
+            // Host termination discards an outstanding pre-Init Subscribe
+            // without inventing ERR or Subscribed on a retired writer.
+            session.pending_desktop = None;
+        }
         let mut result = Ok(());
         session.registry.session_end(|effect| match effect {
             SessionEffect::Teardown(teardown) => {

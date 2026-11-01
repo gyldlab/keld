@@ -30,6 +30,9 @@ export class WindowCloseReceipts {
   readonly #records = stateMap<number, CloseRecord>();
 
   observe(fact: WindowEvent): void {
+    // Global desktop facts are an authenticated WINDOW event without a
+    // WindowRef. They cannot alter any window's close sequence or receipt.
+    if (fact.variant === "DesktopSnapshot") return;
     const { id, incarnation } = fact.window;
     if (fact.variant === "Created") {
       // WorkerLink can apply a Host event before dispatching it while a CALL
