@@ -70,13 +70,17 @@ fn bundle_t1b_entry(repo: &Path, project: &Path, harness: &str) -> String {
 }
 
 pub(crate) struct ProductFixture {
+    // Fields drop in declaration order: retire the outside-project stages
+    // before the source TempDir. The root may still be retained by media tests.
+    stage_parent: StageParent,
     pub(crate) root: tempfile::TempDir,
     pub(crate) project: PathBuf,
     pub(crate) entry_source: String,
     pub(crate) version: Option<&'static str>,
     pub(crate) native_census: OnceLock<PathBuf>,
-    stage_parent: OnceLock<PathBuf>,
 }
+
+struct StageParent(OnceLock<PathBuf>);
 
 impl ProductFixture {
     pub(crate) fn new(name: &str) -> Self {
@@ -93,12 +97,12 @@ impl ProductFixture {
             include_str!("../../../fixtures/t1b_harness.ts"),
         );
         Self {
+            stage_parent: StageParent(OnceLock::new()),
             root,
             project,
             entry_source,
             version: None,
             native_census: OnceLock::new(),
-            stage_parent: OnceLock::new(),
         }
     }
 
@@ -145,7 +149,7 @@ impl ProductFixture {
             "macOS stage must be outside the source project"
         );
         assert_eq!(
-            self.stage_parent.get_or_init(|| parent.to_owned()),
+            self.stage_parent.0.get_or_init(|| parent.to_owned()),
             parent,
             "one fixture uses one isolated project namespace"
         );
@@ -154,6 +158,7 @@ impl ProductFixture {
 
     pub(crate) fn stage_parent(&self) -> &Path {
         self.stage_parent
+            .0
             .get()
             .expect("producer-selected stage parent was retained")
     }
@@ -251,12 +256,12 @@ impl ProductFixture {
     }
 }
 
-impl Drop for ProductFixture {
+impl Drop for StageParent {
     fn drop(&mut self) {
         // Fixture-only fallback after explicit product cleanup assertions. The
         // temporary source directory no longer contains the produced stages.
         if let Some(namespace) = self
-            .stage_parent
+            .0
             .get()
             .and_then(|parent| parent.parent())
             .and_then(Path::parent)
@@ -264,6 +269,71 @@ impl Drop for ProductFixture {
             let _ = fs::remove_dir_all(namespace);
         }
     }
+}
+
+#[test]
+fn retaining_fixture_source_root_still_retires_its_external_stage_namespace() {
+    let outside = tempfile::tempdir().expect("independent stage namespace parent");
+    let namespace = outside.path().join("owned-stage-namespace");
+    let stage_parent = namespace.join(".keld/dev");
+    fs::create_dir_all(&stage_parent).expect("owned stage parent");
+    let neighbor = outside.path().join("unrelated-sentinel");
+    fs::write(&neighbor, b"preserve").expect("outside namespace sentinel");
+    let retained = {
+        let root = tempfile::tempdir().expect("fixture source root");
+        let fixture = ProductFixture {
+            stage_parent: StageParent(OnceLock::from(stage_parent)),
+            project: root.path().join("fixture"),
+            root,
+            entry_source: String::new(),
+            version: None,
+            native_census: OnceLock::new(),
+        };
+        // These are the exact field-move semantics used by the media fixtures.
+        fixture.root.keep()
+    };
+    assert!(
+        retained.is_dir(),
+        "source owner explicitly retained its path"
+    );
+    assert!(
+        !namespace.exists(),
+        "retained source must not leak the stage namespace"
+    );
+    assert_eq!(
+        fs::read(neighbor).expect("unrelated path retained"),
+        b"preserve"
+    );
+    fs::remove_dir_all(retained).expect("remove only this test's retained source");
+}
+
+#[test]
+fn fixture_unwind_retires_stage_and_source_owners_without_neighbor_removal() {
+    let outside = tempfile::tempdir().expect("stage namespace parent");
+    let namespace = outside.path().join("owned-stage-namespace");
+    let stage_parent = namespace.join(".keld/dev");
+    fs::create_dir_all(&stage_parent).expect("owned stage parent");
+    let root = tempfile::tempdir().expect("fixture source root");
+    let root_path = root.path().to_path_buf();
+    let fixture = ProductFixture {
+        stage_parent: StageParent(OnceLock::from(stage_parent)),
+        project: root.path().join("fixture"),
+        root,
+        entry_source: String::new(),
+        version: None,
+        native_census: OnceLock::new(),
+    };
+    let observed = std::panic::catch_unwind(move || {
+        let _fixture = fixture;
+        panic!("deliberate fixture assertion failure");
+    });
+    assert!(observed.is_err(), "fixture must exercise unwind cleanup");
+    assert!(!namespace.exists(), "stage namespace leaked after unwind");
+    assert!(!root_path.exists(), "source root leaked after unwind");
+    assert!(
+        outside.path().is_dir(),
+        "cleanup escaped the owned namespace"
+    );
 }
 
 pub(crate) struct LiveCycle {
