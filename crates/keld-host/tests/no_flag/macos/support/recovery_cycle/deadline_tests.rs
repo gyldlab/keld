@@ -1,8 +1,8 @@
 //! Actual native Unix control-accept/line cuts for the recovered Bun fixture.
 //! The numeric record fields are synthetic; no process is created or signaled.
 use super::{
-    MAX_INITIAL_CONTROL_LINE_BYTES, NativeRecoveryStage, accept_recovery_until,
-    collect_initial_control_until, read_initial_line_until,
+    ControlRecord, MAX_INITIAL_CONTROL_LINE_BYTES, NativeRecoveryStage, RecoveryControlFailure,
+    accept_recovery_until, collect_initial_control_until, read_initial_line_until,
 };
 use std::io::Write as _;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -18,7 +18,7 @@ const RESCUE_LIMIT: Duration = Duration::from_secs(2);
 const HELLO: &[u8] = b"HELLO 54321 /tmp/owned-fixture.sock#test-only\n";
 const DESCENDANT: &[u8] = b"DESCENDANT 65432\n";
 
-fn native_listener() -> (tempfile::TempDir, UnixListener, PathBuf) {
+pub(super) fn native_listener() -> (tempfile::TempDir, UnixListener, PathBuf) {
     let root = tempfile::Builder::new()
         .prefix("krg-")
         .tempdir_in("/tmp")
@@ -50,22 +50,17 @@ fn native_accept_completing_after_original_clock_is_rejected_at_accept() {
     });
     let mut first_poll = true;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        accept_recovery_until(
-            &listener,
-            "native-cut",
-            deadline,
-            &mut |stage| match stage {
-                NativeRecoveryStage::BeforeAccept if first_poll => {
-                    first_poll = false;
-                    let _ = entered_tx.send(Instant::now());
-                    let _ = released_rx.recv_timeout(RESCUE_LIMIT);
-                }
-                NativeRecoveryStage::AfterAccept => {
-                    let _ = accepted_tx.send(Instant::now());
-                }
-                _ => {}
-            },
-        )
+        accept_recovery_until(&listener, deadline, &mut |stage| match stage {
+            NativeRecoveryStage::BeforeAccept if first_poll => {
+                first_poll = false;
+                let _ = entered_tx.send(Instant::now());
+                let _ = released_rx.recv_timeout(RESCUE_LIMIT);
+            }
+            NativeRecoveryStage::AfterAccept => {
+                let _ = accepted_tx.send(Instant::now());
+            }
+            _ => {}
+        })
     }));
     // The native peer remains owned until after the controller joins,
     // including a panic by the reader or the regression's expected refusal.
@@ -91,7 +86,7 @@ fn native_accept_completing_after_original_clock_is_rejected_at_accept() {
         result
             .expect("native accept reader must not panic")
             .expect_err("late native accept must fail directly, before any line read"),
-        "native-cut: native control accept completed after original deadline"
+        RecoveryControlFailure::AcceptCompletedLate
     );
 }
 
@@ -129,7 +124,7 @@ fn late_native_lf_refusal(line: u8) {
 
     let mut first_lf_poll = true;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let mut accepted = accept_recovery_until(&listener, "native-cut", deadline, &mut |stage| {
+        let mut accepted = accept_recovery_until(&listener, deadline, &mut |stage| {
             if let NativeRecoveryStage::AfterAccept = stage {
                 let _ = accepted_tx.send(Instant::now());
             }
@@ -139,26 +134,23 @@ fn late_native_lf_refusal(line: u8) {
             .set_nonblocking(true)
             .expect("actual nonblocking native byte observer");
         if line == 1 {
-            let hello =
-                read_initial_line_until(&mut accepted, "native-cut", deadline, 0, &mut |_| {})
-                    .expect("real HELLO completed in original clock");
+            let hello = read_initial_line_until(&mut accepted, deadline, 0, &mut |_| {})
+                .expect("real HELLO completed in original clock");
             assert_eq!(hello.as_bytes(), &HELLO[..HELLO.len() - 1]);
         }
-        read_initial_line_until(&mut accepted, "native-cut", deadline, line, &mut |stage| {
-            match stage {
-                NativeRecoveryStage::BeforeByte {
-                    line: current,
-                    received,
-                } if current == line && received == prefix_len && first_lf_poll => {
-                    first_lf_poll = false;
-                    let _ = before_tx.send(Instant::now());
-                    let _ = release_rx.recv_timeout(RESCUE_LIMIT);
-                }
-                NativeRecoveryStage::AfterLf { line: current } if current == line => {
-                    let _ = lf_tx.send(Instant::now());
-                }
-                _ => {}
+        read_initial_line_until(&mut accepted, deadline, line, &mut |stage| match stage {
+            NativeRecoveryStage::BeforeByte {
+                line: current,
+                received,
+            } if current == line && received == prefix_len && first_lf_poll => {
+                first_lf_poll = false;
+                let _ = before_tx.send(Instant::now());
+                let _ = release_rx.recv_timeout(RESCUE_LIMIT);
             }
+            NativeRecoveryStage::AfterLf { line: current } if current == line => {
+                let _ = lf_tx.send(Instant::now());
+            }
+            _ => {}
         })
     }));
     let (entered, written_at, written) = controller.join().expect("join real LF writer");
@@ -181,12 +173,11 @@ fn late_native_lf_refusal(line: u8) {
         lf_at.is_ok_and(|time| time >= deadline),
         "actual native LF must be consumed by the reader after cutoff"
     );
-    let expected = if line == 0 { "HELLO" } else { "DESCENDANT" };
     assert_eq!(
         result
             .expect("native line reader must not panic")
             .expect_err("late native LF must fail directly, before later frame parsing"),
-        format!("native-cut: {expected} LF completed after original deadline")
+        RecoveryControlFailure::LineLfLate(ControlRecord::of_line(line))
     );
 }
 
@@ -217,13 +208,11 @@ fn timely_native_hello_and_descendant_retain_exact_bytes() {
     let deadline = Instant::now() + Duration::from_secs(2);
     let (mut accepted_at, mut hello_at, mut descendant_at) = (None, None, None);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        collect_initial_control_until(&listener, "native-positive", deadline, &mut |stage| {
-            match stage {
-                NativeRecoveryStage::AfterAccept => accepted_at = Some(Instant::now()),
-                NativeRecoveryStage::AfterLf { line: 0 } => hello_at = Some(Instant::now()),
-                NativeRecoveryStage::AfterLf { line: 1 } => descendant_at = Some(Instant::now()),
-                _ => {}
-            }
+        collect_initial_control_until(&listener, deadline, &mut |stage| match stage {
+            NativeRecoveryStage::AfterAccept => accepted_at = Some(Instant::now()),
+            NativeRecoveryStage::AfterLf { line: 0 } => hello_at = Some(Instant::now()),
+            NativeRecoveryStage::AfterLf { line: 1 } => descendant_at = Some(Instant::now()),
+            _ => {}
         })
     }));
     let _ = release_tx.send(());
@@ -259,7 +248,7 @@ fn timely_native_records_survive_owned_peer_close_before_steady_reader_setup() {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut closed_at = None;
     let result = catch_unwind(AssertUnwindSafe(|| {
-        collect_initial_control_until(&listener, "closed-peer", deadline, &mut |stage| {
+        collect_initial_control_until(&listener, deadline, &mut |stage| {
             if let NativeRecoveryStage::AfterLf { line: 1 } = stage {
                 let _ = close_tx.send(());
                 let (at, release) = closed_rx
@@ -286,9 +275,15 @@ fn timely_native_records_survive_owned_peer_close_before_steady_reader_setup() {
 #[test]
 fn native_control_lines_bound_utf8_cap_and_eof_without_disclosing_bytes() {
     let cases = [
-        (vec![0xff, b'\n'], "invalid UTF-8"),
-        (vec![b'x'; MAX_INITIAL_CONTROL_LINE_BYTES + 1], "oversized"),
-        (b"private incomplete data".to_vec(), "EOF before LF"),
+        (vec![0xff, b'\n'], RecoveryControlFailure::LineInvalidUtf8),
+        (
+            vec![b'x'; MAX_INITIAL_CONTROL_LINE_BYTES + 1],
+            RecoveryControlFailure::LineOversized,
+        ),
+        (
+            b"private incomplete data".to_vec(),
+            RecoveryControlFailure::LineEof,
+        ),
     ];
     for (input, expected) in cases {
         let (mut reader, mut writer) = UnixStream::pair().expect("owned Unix byte pair");
@@ -304,18 +299,17 @@ fn native_control_lines_bound_utf8_cap_and_eof_without_disclosing_bytes() {
         drop(writer);
         let failure = read_initial_line_until(
             &mut reader,
-            "private-cut",
             Instant::now() + Duration::from_secs(2),
             0,
             &mut |_| {},
         )
         .expect_err("malformed native line must be refused");
-        assert!(
-            failure.contains(expected),
+        assert_eq!(
+            failure, expected,
             "failed to classify the malformed native line"
         );
         assert!(
-            !failure.contains("private incomplete data"),
+            !format!("{failure:?}").contains("private incomplete data"),
             "failure exposed private native payload"
         );
     }
