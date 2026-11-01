@@ -52,7 +52,7 @@ postcard = { version = "1", features = ["alloc"] }
 
 # --- Dependency review (KEL-53/T2 / AGENTS.md gate) ---
 # Names: base64 0.23.1, blake3 1.8.7, ed25519-dalek 3.0.0,
-#   semver 1.0.28, zstd 0.14.0
+#   semver 1.0.28, zstd 0.14.3
 # Purpose: verify the approved v0 detached-signature/full-package contract:
 #   strict standard-base64 signature bytes, strict Ed25519, transport/content
 #   BLAKE3, SemVer precedence floors, and bounded streaming zstd decode.
@@ -68,7 +68,7 @@ base64 = { version = "=0.23.1", default-features = false }
 blake3 = "=1.8.7"
 ed25519-dalek = { version = "=3.0.0", default-features = false }
 semver = "=1.0.28"
-zstd = { version = "=0.14.0", default-features = false }
+zstd = { version = "=0.14.3", default-features = false }
 
 # --- Dependency review (KEL-42 / AGENTS.md gate) ---
 # Name: rmcp =3.1.2 (official modelcontextprotocol/rust-sdk)

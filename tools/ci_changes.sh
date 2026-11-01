@@ -169,8 +169,9 @@ emit() {
 }
 
 # The same reviewed reader/input contract supplements both local and hosted
-# selections. A stale reader binding enables its consumers; malformed contracts
-# fail before any selection is published. No source-text inference is involved.
+# selections. A reader source changed in the diff widens its consumers for that
+# change; malformed contracts fail before any selection is published. No
+# source-text inference is involved.
 apply_consumer_contract() {
     local source_root python_command
     source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -193,6 +194,11 @@ apply_consumer_contract() {
     fi
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
+    fi
+    # Live audit consumers must select the existing hosted docs step too;
+    # local mandatory gates alone do not select a GitHub Actions job.
+    if grep -Fxq 'input_docs=true' <<<"$consumer_contract"; then
+        docs="$TRUE"
     fi
 }
 
@@ -953,6 +959,9 @@ classify_stream() {
     local -a contract_options=()
     if [[ "$mode" == paths ]]; then
         contract_options+=(--paths-only)
+    else
+        # Base tree owns crate membership; no reader digest persists (GH-1275).
+        contract_options+=(--base "$base")
     fi
     if [[ ${#changed_files[@]} -gt 0 ]]; then
         apply_consumer_contract ${contract_options[@]+"${contract_options[@]}"} < <(printf '%s\0' "${changed_files[@]}")
