@@ -11,7 +11,7 @@ import {
   stateMapSet,
   stateMapDelete,
   stateMapValues,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import type { WindowEvent, WindowRef } from "./window-codec.ts";
 
 export interface DeliveredWindowClose {

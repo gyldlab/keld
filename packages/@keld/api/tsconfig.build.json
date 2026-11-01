@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src"
+  },
+  "files": ["src/index.ts", "src/app.ts", "src/link.ts", "src/window-codec.ts"],
+  "include": []
+}

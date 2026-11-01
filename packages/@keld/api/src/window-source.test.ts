@@ -1,6 +1,8 @@
 /** Pure source/alias contracts, not link attachment, heap bytes or native proof. */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 import {
   APP_LINK_IO_DEADLINE_MS,
@@ -9,7 +11,7 @@ import {
   linkError,
   withIoDeadline,
   type KeldCallError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import {
   encodeWindowEvent,
   type WindowEvent,
@@ -66,6 +68,8 @@ function rejected(action: () => void): KeldCallError {
 async function sourceRole(
   file: string,
   args: readonly string[] = [],
+  diagnosticArgs: readonly string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
   const runtime = {
     version: Bun.version,
@@ -73,20 +77,48 @@ async function sourceRole(
     platform: process.platform,
     arch: process.arch,
   };
+  const semantic = file === "window-source-semantic-release.test-role.ts";
+  const token = semantic ? randomUUID() : undefined;
+  const sourcePath = resolve(import.meta.dir, "./window-source.ts");
+  const observed = token
+    ? join(
+        dirname(sourcePath),
+        `.window-source-observer-${token}.${sourcePath.endsWith(".js") ? "js" : "ts"}`,
+      )
+    : undefined;
+  if (observed && existsSync(observed))
+    throw new Error("observer path already exists");
   const child = Bun.spawn(
     [
       process.execPath,
+      // The one-shot observer has no independently scheduled JIT compiler root.
+      // It still imports the real role/artifacts and performs one collection.
+      ...(file === "window-source-release.test-role.ts"
+        ? [
+            "--eval",
+            'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]).href);',
+          ]
+        : []),
       join(import.meta.dir, file),
       ...args,
+      ...(semantic
+        ? [
+            resolve(import.meta.dir, "../node_modules/typescript"),
+            Bun.resolveSync("@keld/kipc", import.meta.dir),
+            token!,
+          ]
+        : []),
       runtime.version,
       runtime.revision,
       runtime.platform,
       runtime.arch,
+      ...diagnosticArgs,
     ],
     {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      env,
     },
   );
   try {
@@ -107,8 +139,51 @@ async function sourceRole(
   } finally {
     if (child.exitCode === null) child.kill();
     await child.exited;
+    if (observed) rmSync(observed, { force: true });
   }
 }
+
+test("Source collection diagnostics are explicit and preserve the zero oracle", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "keld-source-gc-diagnostic-"));
+  try {
+    for (const mode of [
+      "history:0:retire",
+      "history:1:retire",
+      "history:1:retain",
+    ]) {
+      const path = join(scratch, `${mode.replaceAll(":", "-")}.json`);
+      const result = (await sourceRole(
+        "window-source-release.test-role.ts",
+        [mode],
+        [`--heap-snapshot=${path}`],
+      )) as { settled: { objectsLive: number } };
+      expect(result.settled.objectsLive).toBe(mode.endsWith(":retain") ? 4 : 0);
+      expect(existsSync(path)).toBe(true);
+      const heap = JSON.parse(readFileSync(path, "utf8"));
+      expect(heap.version).toBe(3);
+      expect(heap.type).toBe("GCDebugging");
+      expect(heap.nodes.length).toBeGreaterThan(0);
+    }
+    await expect(
+      sourceRole(
+        "window-source-release.test-role.ts",
+        ["history:0:retire"],
+        ["--unknown-gc-option"],
+      ),
+    ).rejects.toThrow();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Source collection realm refuses unqualified compiler overrides", async () => {
+  await expect(
+    sourceRole("window-source-release.test-role.ts", ["history:0:retire"], [], {
+      ...process.env,
+      BUN_JSC_useConcurrentJIT: "true",
+    }),
+  ).rejects.toThrow("unqualified JSC override");
+});
 
 test("Created literal supplies the complete host snapshot on the generated channel", () => {
   const source = new WindowSource(() => {
@@ -635,28 +710,91 @@ test(
       arch: process.arch,
     };
     expect(
-      await sourceRole("window-source-release.test-role.ts", [
+      await sourceRole("window-source-semantic-release.test-role.ts", [
         Buffer.from(literal("event-created")).toString("hex"),
+        "baseline",
       ]),
     ).toEqual({
       runtime,
+      mode: "baseline",
+      immediateSemantic: true,
+      terminalSemantic: true,
+      oldComponents: 128,
+      prototypeGraphNodes: expect.any(Number),
       replacement: {
-        trackedGraphs: 33,
-        oldObjectsLive: 0,
-        currentObjectsLive: 4,
+        old: 0,
+        current: 4,
         sourceAlive: true,
-        callbackCaptureAlive: true,
-        externalSnapshotAlive: true,
-        census: 2,
+        callback: true,
+        witness: true,
+        externalAlive: true,
       },
       end: {
-        oldObjectsLive: 0,
-        currentObjectsLive: 0,
+        old: 0,
+        current: 0,
         sourceAlive: true,
-        callbackCaptureAlive: false,
-        externalSnapshotAlive: true,
-        readsDenied: true,
+        callback: false,
+        witness: false,
+        externalAlive: true,
       },
+      afterCallerDrop: null,
+    });
+  },
+  APP_LINK_IO_DEADLINE_MS * 2,
+);
+
+test(
+  "caller-held old snapshot survives until its independent owner releases it",
+  async () => {
+    const result = (await sourceRole(
+      "window-source-semantic-release.test-role.ts",
+      [Buffer.from(literal("event-created")).toString("hex"), "caller"],
+    )) as {
+      immediateSemantic: boolean;
+      terminalSemantic: boolean;
+      replacement: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      end: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      afterCallerDrop: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+    };
+    expect(result.immediateSemantic && result.terminalSemantic).toBe(true);
+    expect(result.replacement).toMatchObject({
+      old: 4,
+      current: 4,
+      callback: true,
+      witness: true,
+      externalAlive: true,
+    });
+    expect(result.end).toMatchObject({
+      old: 4,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
+    });
+    expect(result.afterCallerDrop).toMatchObject({
+      old: 0,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
     });
   },
   APP_LINK_IO_DEADLINE_MS * 2,
@@ -691,6 +829,7 @@ for (const history of [0, 1, 1024]) {
       ])) as {
         history: number;
         retaining: boolean;
+        collectionRealm: string;
         settled: {
           objectsLive: number;
           snapshotsVisible: number;
@@ -701,6 +840,7 @@ for (const history of [0, 1, 1024]) {
       };
       expect(result.history).toBe(history);
       expect(result.retaining).toBe(mode === "retain");
+      expect(result.collectionRealm).toBe("one-shot");
       expect(result.settled.objectsLive).toBe(
         mode === "retain" ? 4 * history : 0,
       );

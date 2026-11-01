@@ -31,7 +31,7 @@ export {
   withIoDeadline,
   type KeldCallError,
   type ReceivePolicy,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 import { resolveEchoCall } from "./echo-call.ts";
 import {
@@ -71,7 +71,7 @@ import {
   stateByteLength,
   type KeldCallError,
   type WorkerReceiveTable,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 export type LifecycleEventName = "ready" | "last-window-closed";
 

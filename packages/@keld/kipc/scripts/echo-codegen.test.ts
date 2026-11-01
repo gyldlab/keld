@@ -594,7 +594,7 @@ async function withFsBinding(
     writeFileSync(
       path,
       renderFsBinding(source).replace(
-        'from "../../kipc/src/transport.ts"',
+        'from "@keld/kipc"',
         `from "${pathToFileURL(transportPath).href}"`,
       ),
     );

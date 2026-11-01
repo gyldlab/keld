@@ -5,7 +5,7 @@ import {
   FrameKind,
   MAX_FRAME_LEN,
   decodeCallError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { resolveEchoCall, type EchoCallHandler } from "./echo-call.ts";
 
 const PAYLOAD = new Uint8Array([0x00, 0x00]);

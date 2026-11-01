@@ -170,7 +170,7 @@ console.log("PASS staged same canonical capture");
       writeFileSync(
         join(stage, file),
         readFileSync(join(apiRoot, file), "utf8").replaceAll(
-          "../../kipc/src/transport.ts",
+          "@keld/kipc",
           "./kipc-transport.ts",
         ),
       );
