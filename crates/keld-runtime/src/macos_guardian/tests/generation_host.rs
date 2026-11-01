@@ -16,6 +16,7 @@ use super::preparation_fixture::GatedUnmarkedFailurePreparer;
 use super::test_support::long_running_command;
 
 mod clear_authority;
+mod duplicate_spawned;
 mod invalid_spawn_after_revoke;
 
 #[derive(Debug, Clone, Copy)]

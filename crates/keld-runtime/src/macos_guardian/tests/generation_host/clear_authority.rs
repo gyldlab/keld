@@ -44,6 +44,7 @@ impl Drop for NativeBunGroup {
 }
 
 mod cleanup_authority;
+mod failed_clear_authority;
 
 fn await_bun_descendant(marker: &std::path::Path) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(5);
