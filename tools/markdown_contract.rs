@@ -14,8 +14,13 @@ pub(crate) fn fence_marker(line: &str) -> Option<(u8, usize, bool)> {
     let width = trimmed.bytes().take_while(|byte| *byte == marker).count();
     let tail = &trimmed[width..];
     // A backtick in the info string makes the line inline code, not a fence.
-    (width >= 3 && !(marker == b'`' && tail.contains('`')))
-        .then(|| (marker, width, tail.trim_matches([' ', '\t']).is_empty()))
+    (width >= 3 && !(marker == b'`' && tail.contains('`'))).then(|| {
+        (
+            marker,
+            width,
+            tail.trim_matches([' ', '\t', '\r']).is_empty(),
+        )
+    })
 }
 
 /// Removes struck-through text because it is not binding visible prose.

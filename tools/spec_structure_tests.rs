@@ -3267,6 +3267,38 @@ fn the_template_fence_may_keep_its_slots() {
 }
 
 #[test]
+fn sealed_directory_parts_do_not_claim_unrelated_basenames() {
+    let mut fixture = Fixture::new();
+    for name in ["index.md", "acceptance.md", "design.md", "delivery.md"] {
+        let path = format!("{DIR}/{name}");
+        let text = fixture.read(&path);
+        fixture.sealed.insert(path, text);
+    }
+    fixture.track(".agents/index.md", b"# Agent guide\n");
+    fixture.track("docs/delivery.md", b"# Delivery notes\n");
+
+    let report = fixture.run();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+}
+
+#[test]
+fn a_sealed_flat_spec_basename_stays_reserved_outside() {
+    let mut fixture = Fixture::new();
+    let path = "docs/archive/old-big.md";
+    fixture.track(path, b"# Archived note\n");
+
+    let report = fixture.run();
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    assert_eq!(report.findings[0].rule, Rule::Outside);
+    assert_eq!(report.findings[0].file, path);
+    assert!(
+        report.findings[0]
+            .detail
+            .contains("a landed spec has this name")
+    );
+}
+
+#[test]
 fn a_non_spec_page_outside_the_root_is_not_a_spec() {
     let mut fixture = Fixture::new();
     fixture.write(

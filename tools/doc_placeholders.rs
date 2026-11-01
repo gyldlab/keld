@@ -195,7 +195,10 @@ fn collect_markdown(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(
             entry.map_err(|error| format!("DOC-PLACEHOLDERS: cannot read `{dir:?}`: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
             if should_skip_dir(name) {
                 continue;
             }
@@ -358,17 +361,42 @@ mod tests {
         assert!(findings.is_empty(), "{findings:?}");
     }
 
+    /// Both newline forms close the sample before later prose is checked.
+    #[test]
+    fn crlf_fences_close_before_later_prose_is_scanned() {
+        for fence in ["```", "~~~"] {
+            for newline in ["\n", "\r\n"] {
+                let text = format!(
+                    "{fence}rust{newline}{{sample_only}}{newline}{fence}{newline}{{BS}}{newline}{{name}}{newline}"
+                );
+                let (findings, used) = scan("docs/x.md", &text, &known());
+                assert_eq!(findings.len(), 1, "{fence:?} {newline:?}: {findings:?}");
+                assert_eq!(findings[0].line, 4, "{findings:?}");
+                assert!(findings[0].detail.contains("`{BS}`"), "{findings:?}");
+                assert_eq!(used, BTreeSet::from(["name".to_owned()]));
+            }
+        }
+    }
+
     /// Inline code is where the KEL-208 defect landed, so it is scanned, not stripped.
     #[test]
     fn inline_code_is_scanned_because_that_is_where_the_defect_landed() {
         let (findings, _) = scan("docs/x.md", "see `{BS}` there", &known());
-        assert_eq!(findings.len(), 1, "inline code must not be exempt: {findings:?}");
+        assert_eq!(
+            findings.len(),
+            1,
+            "inline code must not be exempt: {findings:?}"
+        );
     }
 
     /// `{}` and format specs are not template slots and are none of this gate's business.
     #[test]
     fn non_identifier_braces_are_ignored() {
-        let (findings, _) = scan("docs/x.md", "use {} and {:?} and { spaced } freely", &known());
+        let (findings, _) = scan(
+            "docs/x.md",
+            "use {} and {:?} and { spaced } freely",
+            &known(),
+        );
         assert!(findings.is_empty(), "{findings:?}");
     }
 
@@ -387,7 +415,13 @@ mod tests {
         ] {
             assert!(should_skip_dir(name), "`{name}` must not be scanned");
         }
-        for name in ["architecture", "agents", "engineering", "onboarding", "specs"] {
+        for name in [
+            "architecture",
+            "agents",
+            "engineering",
+            "onboarding",
+            "specs",
+        ] {
             assert!(!should_skip_dir(name), "`{name}` must be scanned");
         }
     }
@@ -406,7 +440,10 @@ mod tests {
         );
         assert!(findings.is_empty(), "{findings:?}");
         // A brace merely following a `u` is still a slot: only the escape is exempt.
-        assert_eq!(placeholders("menu{unknown}"), vec![("unknown".to_owned(), 4)]);
+        assert_eq!(
+            placeholders("menu{unknown}"),
+            vec![("unknown".to_owned(), 4)]
+        );
     }
 
     #[test]
