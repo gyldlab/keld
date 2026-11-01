@@ -14,8 +14,8 @@ use super::process::{open_process_for_wait, wait_for_process_signal};
 use super::product::ProductFixture;
 use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
 use crate::{
-    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists, wait_child,
-    wait_for_host_window,
+    DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
+    startup_kill_switch, wait_child, wait_for_host_window,
 };
 
 pub(crate) struct ProductEvidence {
@@ -79,9 +79,13 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
-    if let Err(beacon_error) =
-        try_expect_renderer_beacon(beacon, "WebView2 renderer requested the exact beacon")
-    {
+    // The beacon is the initial navigation's own request, so this wait spans the
+    // host's WebView2 startup (READY has not been read yet).
+    if let Err(beacon_error) = try_expect_renderer_beacon(
+        beacon,
+        startup_kill_switch(),
+        "WebView2 renderer requested the exact beacon",
+    ) {
         fail_renderer_beacon_cycle(&mut child, host_pid, bun_pid, &beacon_error);
     }
     assert_eq!(read_control_line(&mut reader), "READY");

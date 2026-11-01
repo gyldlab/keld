@@ -197,6 +197,10 @@ pub fn runtime_version() -> Result<String, WvError> {
 /// Kill-switch bound on launching `WebView2`: environment resolution plus the
 /// browser-process launch inside controller creation.
 ///
+/// The host's startup arms it twice, with a fresh deadline for environment
+/// creation and another for controller creation; the exclusive-UDF probe arms
+/// it once across both. [`WEBVIEW2_STARTUP_BOUND`] composes those arms.
+///
 /// Measured on Windows 11 10.0.26300 with runtime 154.x (KEL-132 diagnosis):
 /// environment creation 2–10 ms, controller creation 260–506 ms; hosted CI
 /// never failed this phase in 165 recorded runs (2026-10-03 to 2026-10-08).
@@ -311,6 +315,32 @@ const BROWSER_SHUTDOWN_HANG_GUARD: Duration = Duration::from_mins(4);
 /// If the barrier ever gains another wait, this sum changes with it.
 pub const WEBVIEW2_UI_END_BOUND: Duration =
     BROWSER_SHUTDOWN_HANG_GUARD.saturating_add(BROWSER_EXIT_GRACE);
+
+/// The longest a healthy `WebView2` startup takes, from the engine's
+/// construction to the initial navigation that makes the session `Ready`.
+/// Startup runs these bounded phases one after another, so its bound is their
+/// sum:
+/// - recovery of a profile quarantined by a crash: the exclusive-UDF probe's
+///   launch (the profile launch deadline, shared by the probe's environment and
+///   controller) and then the probe browser's release barrier
+///   ([`WEBVIEW2_UI_END_BOUND`]);
+/// - environment creation (the profile launch deadline, armed afresh);
+/// - controller creation, which launches the browser process (the profile launch
+///   deadline, armed afresh);
+/// - the initial navigation (the initial-navigation deadline, KELD-WV-005).
+///
+/// This constant is the one owner of that rule, the startup counterpart of
+/// [`WEBVIEW2_UI_END_BOUND`]. A caller that must outlast a startup reads it
+/// rather than restating the phases; an example is a test harness's kill
+/// switch on `Ready`. If startup ever gains another bounded phase, this sum
+/// changes with it. Work that carries no deadline of its own is outside it: the
+/// runtime version query, profile selection, window creation, and on persistent
+/// profiles the saved media-permission reconciliation during webview creation.
+pub const WEBVIEW2_STARTUP_BOUND: Duration = PROFILE_LAUNCH_DEADLINE
+    .saturating_add(WEBVIEW2_UI_END_BOUND)
+    .saturating_add(PROFILE_LAUNCH_DEADLINE)
+    .saturating_add(PROFILE_LAUNCH_DEADLINE)
+    .saturating_add(crate::INITIAL_NAVIGATION_DEADLINE);
 
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";

@@ -5,6 +5,9 @@ use super::super::AuthProfileConfiguration;
 use super::*;
 use keld_guard::parse_manifest;
 
+#[path = "controller_tests/verified_snapshot_fixture.rs"]
+mod verified_snapshot_fixture;
+
 fn broker() -> AuthBroker {
     let mut configuration = AuthConfiguration::new();
     configuration.insert(
@@ -1025,4 +1028,73 @@ fn global_tail_overrides_unclaimed_local_unavailable() {
     assert_eq!(error.code, "KELD-AUTH-016");
     assert!(!owner.registry.admission_open());
     assert!(owner.jobs.is_empty());
+}
+
+// Unlike the fixture-only cases above, this exercises the public controller
+// entry with two separately file-verified policies. The prepared SHA-256 must
+// reject even byte changes whose parsed guard grants are identical.
+#[test]
+fn public_auth_snapshot_rejects_swapped_verified_bytes_before_guard_or_admission() {
+    use self::verified_snapshot_fixture::{OwnedSnapshotFiles, verified};
+
+    let temp = OwnedSnapshotFiles::new();
+    let allowed = br#"{"app":{"auth":{"begin":["https://login.microsoftonline.com/common"]}}}"#;
+    let same_grants_new_bytes =
+        br#" { "app": { "auth": { "begin": ["https://login.microsoftonline.com/common"] } } } "#;
+    let denied = br"{}";
+    let original = verified(&temp.root, "original.jsonc", allowed);
+    let equivalent = verified(&temp.root, "equivalent.jsonc", same_grants_new_bytes);
+    let unrelated = verified(&temp.root, "denied.jsonc", denied);
+    assert_ne!(original.verified_sha256(), equivalent.verified_sha256());
+    assert_ne!(original.verified_sha256(), unrelated.verified_sha256());
+
+    let mut owner = AuthBroker::prepare(&original, AuthConfiguration::new());
+    let request = || AuthRequest::Begin {
+        provider: "entra-common".to_owned(),
+        scopes: Some(vec!["openid".to_owned()]),
+        login_hint: Some("private-user-hint".to_owned()),
+    };
+    let admissions = std::cell::Cell::new(0_u32);
+    for swapped in [&equivalent, &unrelated] {
+        let result = owner.handle_request(swapped, Principal::AppProcess, request(), || {
+            admissions.set(admissions.get() + 1);
+            Some(())
+        });
+        assert!(
+            matches!(result, HandleState::HostFault(HostFault::SnapshotMismatch)),
+            "foreign verified policy must fail before any Guard or native admission: {result:?}"
+        );
+        assert_eq!(
+            admissions.get(),
+            0,
+            "swapped policy reached physical admission"
+        );
+        assert_eq!(
+            owner.next_operation, 0,
+            "swapped policy minted an operation"
+        );
+        assert!(owner.jobs.is_empty(), "swapped policy allocated a job");
+        assert!(
+            owner.registry.admission_open(),
+            "swapped policy changed broker lifecycle"
+        );
+    }
+
+    // Exact same verified source proceeds through its usual Guard/known-provider
+    // path; missing client config then denies before any SDK, socket or lease.
+    let control = owner.handle_request(&original, Principal::AppProcess, request(), || {
+        admissions.set(admissions.get() + 1);
+        Some(())
+    });
+    let HandleState::Ready(response) = control else {
+        panic!("original verified policy should reach the real config check: {control:?}");
+    };
+    let error = response
+        .into_response()
+        .expect_err("missing client cannot start a real authentication flow");
+    assert_eq!(error.code, "KELD-AUTH-015");
+    assert_eq!(admissions.get(), 0);
+    assert_eq!(owner.next_operation, 0);
+    assert!(owner.jobs.is_empty());
+    temp.finish();
 }

@@ -32,12 +32,17 @@ pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     }
 }
 
+/// Awaits the beacon of a renderer whose session is already `Ready`.
 pub(crate) fn expect_renderer_beacon(beacon: RendererBeacon, context: &str) {
-    try_expect_renderer_beacon(beacon, context).unwrap_or_else(|error| panic!("{error}"));
+    try_expect_renderer_beacon(beacon, PRODUCT_DEADLINE, context)
+        .unwrap_or_else(|error| panic!("{error}"));
 }
 
+/// Awaits the beacon under `kill_switch`: `PRODUCT_DEADLINE` once the session is
+/// `Ready`, or `startup_kill_switch` while the beacon still waits on the startup.
 pub(crate) fn try_expect_renderer_beacon(
     beacon: RendererBeacon,
+    kill_switch: Duration,
     context: &str,
 ) -> Result<(), String> {
     let RendererBeacon {
@@ -45,7 +50,7 @@ pub(crate) fn try_expect_renderer_beacon(
         worker,
         activate_deadline,
     } = beacon;
-    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let deadline = Instant::now() + kill_switch;
     let _ = activate_deadline.send(deadline);
     let remaining = deadline
         .checked_duration_since(Instant::now())
