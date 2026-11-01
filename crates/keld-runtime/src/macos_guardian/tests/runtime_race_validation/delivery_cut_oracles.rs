@@ -1,4 +1,5 @@
 //! Scenarios own fault injection, observable cleanup and independent admission assertions.
+use std::os::fd::AsFd;
 use std::thread;
 use std::time::Instant;
 
@@ -57,25 +58,15 @@ fn run_delivery_cut(cut: DeliveryCut) {
                 _ => panic!("unexpected prefix receipt"),
             };
             let deadline = Instant::now() + COLLECTION;
-            loop {
-                if rustix::io::ioctl_fionread(
-                    fixture
-                        .plane
-                        .consumption_probe
-                        .as_ref()
-                        .expect("observation alias"),
-                )
-                .expect("existing safe available-byte primitive")
-                    == 0
-                {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "valid prefix not consumed by sole control reader"
-                );
-                thread::yield_now();
-            }
+            await_native_prefix_consumed(
+                fixture
+                    .plane
+                    .consumption_probe
+                    .as_ref()
+                    .expect("observation alias"),
+                deadline,
+                |_| {},
+            );
             drop(fixture.plane.consumption_probe.take());
             fixture.accept_actual_q();
             fixture
@@ -114,6 +105,182 @@ fn run_delivery_cut(cut: DeliveryCut) {
             "unspawned successor revoke stalled {revoke:?} on the PID receipt deadline"
         );
     }
+}
+
+#[derive(Clone, Copy)]
+enum NativePrefixProbeStage {
+    BeforeNativeProbe,
+    AfterNativeProbe(u64),
+}
+
+fn await_native_prefix_consumed(
+    probe: &impl AsFd,
+    deadline: Instant,
+    mut observe: impl FnMut(NativePrefixProbeStage),
+) {
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "valid prefix probe must start within original collection deadline"
+        );
+        observe(NativePrefixProbeStage::BeforeNativeProbe);
+        let available =
+            rustix::io::ioctl_fionread(probe).expect("existing safe available-byte primitive");
+        observe(NativePrefixProbeStage::AfterNativeProbe(available));
+        assert!(
+            Instant::now() < deadline,
+            "native prefix absence completed after native probe original deadline"
+        );
+        if available == 0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "valid prefix not consumed by sole control reader"
+        );
+        thread::yield_now();
+    }
+}
+
+#[test]
+fn late_real_native_prefix_absence_cannot_cross_original_probe_deadline() {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (probe, mut peer) = UnixStream::pair().expect("own actual Unix socket pair");
+    peer.write_all(b"PART")
+        .expect("queue real prefix before original deadline");
+    assert_eq!(
+        rustix::io::ioctl_fionread(&probe).expect("real queued bytes"),
+        4
+    );
+    let mut actual_reader = probe.try_clone().expect("own read-only-consumption alias");
+    actual_reader
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("bound real native prefix reader");
+    let deadline = Instant::now() + Duration::from_millis(350);
+    let (go_tx, go_rx) = mpsc::channel();
+    let (actual_tx, actual_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        go_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("controller authorized actual native consumption");
+        let mut prefix = [0_u8; 4];
+        actual_reader
+            .read_exact(&mut prefix)
+            .expect("consume true queued Unix bytes");
+        actual_tx
+            .send((prefix, Instant::now()))
+            .expect("report actual native prefix receipt");
+    });
+    let before_probe_at = std::cell::Cell::new(None);
+    let native_zero_probe_at = std::cell::Cell::new(None);
+    let actual_consumed_at = std::cell::Cell::new(None);
+    let released = std::cell::Cell::new(false);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        await_native_prefix_consumed(&probe, deadline, |stage| match stage {
+            NativePrefixProbeStage::BeforeNativeProbe if !released.replace(true) => {
+                before_probe_at.set(Some(Instant::now()));
+                go_tx.send(()).expect("release original native reader");
+                let (bytes, instant) = actual_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("true native prefix must be consumed by test-owned reader");
+                assert_eq!(bytes, *b"PART");
+                actual_consumed_at.set(Some(instant));
+                while Instant::now() < deadline + Duration::from_millis(40) {
+                    thread::yield_now();
+                }
+            }
+            NativePrefixProbeStage::AfterNativeProbe(0) => {
+                native_zero_probe_at.set(Some(Instant::now()));
+            }
+            NativePrefixProbeStage::BeforeNativeProbe
+            | NativePrefixProbeStage::AfterNativeProbe(_) => {}
+        });
+    }));
+    reader
+        .join()
+        .expect("join actual native prefix consumer even after failing oracle");
+    assert!(
+        before_probe_at
+            .get()
+            .is_some_and(|instant| instant < deadline),
+        "the original kernel-read entry must occur before collection cutoff"
+    );
+    assert!(
+        actual_consumed_at
+            .get()
+            .is_some_and(|instant| instant < deadline),
+        "actual prefix consumption must complete before cutoff"
+    );
+    assert!(
+        native_zero_probe_at
+            .get()
+            .is_some_and(|instant| instant > deadline),
+        "actual kernel zero-available probe must occur after original deadline"
+    );
+    let panic = result.expect_err("late native zero-available probe cannot grant success");
+    let reason = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("expected native probe deadline panic");
+    assert!(
+        reason.contains("after native probe"),
+        "post-probe original-clock fence must reject actual late native result: {reason}"
+    );
+}
+
+#[test]
+fn timely_real_native_prefix_consumption_still_completes() {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (probe, mut peer) = UnixStream::pair().expect("own actual Unix socket pair");
+    peer.write_all(b"DATA").expect("queue real native bytes");
+    let mut actual_reader = probe.try_clone().expect("clone test-owned native reader");
+    actual_reader
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("bound actual reader");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (go_tx, go_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        go_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("consumer release within test budget");
+        let mut consumed = [0_u8; 4];
+        actual_reader
+            .read_exact(&mut consumed)
+            .expect("actually consume Unix bytes");
+        consumed
+    });
+    let released = std::cell::Cell::new(false);
+    let observed_positive = std::cell::Cell::new(false);
+    let observed_zero = std::cell::Cell::new(false);
+    await_native_prefix_consumed(&probe, deadline, |stage| match stage {
+        NativePrefixProbeStage::AfterNativeProbe(available) if available > 0 => {
+            observed_positive.set(true);
+            if !released.replace(true) {
+                go_tx.send(()).expect("release sole native reader");
+            }
+        }
+        NativePrefixProbeStage::AfterNativeProbe(0) => observed_zero.set(true),
+        NativePrefixProbeStage::BeforeNativeProbe | NativePrefixProbeStage::AfterNativeProbe(_) => {
+        }
+    });
+    assert_eq!(reader.join().expect("join owned native consumer"), *b"DATA");
+    assert!(
+        observed_positive.get() && observed_zero.get(),
+        "actual native FIONREAD must change from positive to zero"
+    );
+    assert!(
+        Instant::now() < deadline,
+        "positive fixture remains inside original collection budget"
+    );
 }
 
 fn assert_observation(cut: DeliveryCut, observed: &CutObservation, began: Option<Instant>) {
