@@ -1,8 +1,9 @@
-use crate::support::TITLE;
 use crate::support::native_window::native_windows;
+use crate::support::process::ProcessExitObserver;
 use crate::support::process::await_process_gone;
 use crate::support::process::kill_pid;
 use crate::support::product::{GuardianPidStage, LiveCycle, ProductFixture, guardian_pid_stage};
+use crate::support::{EVENT_DEADLINE, TITLE};
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -84,13 +85,19 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
     let mut orderly = fixture.launch_cycle("relaunch-orderly");
     orderly.assert_live_product();
     let guardian_pid = orderly.guardian_pid;
+    // Bind the kernel event to the already parent-attested original Guardian
+    // BEFORE Bun receives the real Quit command. This is observation only.
+    // A nonchild NOTE_EXITSTATUS registration can be unavailable under the
+    // kernel's permission rules. Keep the original T1B Quit acceptance alive
+    // and report only an unproved diagnostic if registration was refused.
+    let mut guardian_exit = ProcessExitObserver::try_arm(guardian_pid).ok();
     orderly
         .control_writer
         .write_all(b"QUIT\n")
         .expect("request fixture app.quit");
     orderly.expect_line("QUIT_REPLY");
     orderly.expect_line("LINK_EOF");
-    let output = wait_orderly_host_with_native_guardian_receipt(&mut orderly, guardian_pid);
+    let output = wait_orderly_host_with_native_guardian_receipt(&mut orderly, &mut guardian_exit);
     assert!(
         output.status.success(),
         "ordered no-flag host exit: {output:?}"
@@ -121,22 +128,51 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
 /// acknowledgment, UI Quit, or complete process-group cleanup.
 fn wait_orderly_host_with_native_guardian_receipt(
     cycle: &mut LiveCycle,
-    guardian_pid: u32,
+    guardian_exit: &mut Option<ProcessExitObserver>,
 ) -> Output {
+    let guardian_pid = cycle.guardian_pid;
+    // The actual Host wait captures its own 20s deadline after pipe setup.
+    // This earlier observation-only cut is conservative: a kevent64 read must
+    // start AND finish before it to count as a timely original-Host witness.
+    let witness_deadline = Instant::now() + EVENT_DEADLINE;
     let mut last_stage = GuardianPidStage::Unproved;
     let mut saw_guardian_absent = false;
+    let mut exit_event = if guardian_exit.is_some() {
+        GuardianExitEventPhase::NoEvent
+    } else {
+        GuardianExitEventPhase::Unproved
+    };
     let mut next_sample = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
         cycle.wait_host_observing(|| {
-            if saw_guardian_absent || Instant::now() < next_sample {
+            let before_native_poll = Instant::now();
+            if before_native_poll >= witness_deadline || before_native_poll < next_sample {
                 return;
             }
-            last_stage = guardian_pid_stage(guardian_pid);
-            if last_stage == GuardianPidStage::Absent {
-                saw_guardian_absent = true;
+            if exit_event == GuardianExitEventPhase::NoEvent
+                && let Some(registered_exit) = guardian_exit.as_mut()
+            {
+                let received = registered_exit.try_poll_exit();
+                // A native event delivered after the original observation cut
+                // is unproved, even if it is otherwise a valid NOTE_EXITSTATUS.
+                exit_event = if Instant::now() >= witness_deadline {
+                    GuardianExitEventPhase::Unproved
+                } else {
+                    match received {
+                        Ok(Some(_)) => GuardianExitEventPhase::Observed,
+                        Ok(None) => GuardianExitEventPhase::NoEvent,
+                        Err(_) => GuardianExitEventPhase::Unproved,
+                    }
+                };
             }
-            // A kernel signal-zero probe never sends a signal, blocks on I/O,
-            // or renews the original 20s Host-exit deadline.
+            if !saw_guardian_absent {
+                last_stage = guardian_pid_stage(guardian_pid);
+                if last_stage == GuardianPidStage::Absent {
+                    saw_guardian_absent = true;
+                }
+            }
+            // Retain the existing signal-zero receipt cadence. Neither this
+            // zero-time native event poll nor the PID census renews Host time.
             next_sample = Instant::now() + Duration::from_millis(100);
         })
     }));
@@ -157,17 +193,38 @@ fn wait_orderly_host_with_native_guardian_receipt(
             };
             // Fixed enum only: no PID, token, filesystem path or raw Host output.
             eprintln!("KEL96_T1B_NATIVE_GUARDIAN_PHASE stage={stage}");
+            eprintln!("KEL96_T1B_NATIVE_EXIT_EVENT stage={}", exit_event.marker());
         }
         resume_unwind(failure)
     })
+}
+
+/// Test-only observations about one pre-Quit kernel process subscription.
+/// No event means no exit was observed; it does not prove the Guardian lived.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuardianExitEventPhase {
+    NoEvent,
+    Observed,
+    Unproved,
+}
+
+impl GuardianExitEventPhase {
+    const fn marker(self) -> &'static str {
+        match self {
+            Self::NoEvent => "guardian_exit_event_not_observed",
+            Self::Observed => "guardian_exit_event_observed_before_host_deadline",
+            Self::Unproved => "guardian_exit_event_unproved",
+        }
+    }
 }
 
 #[cfg(test)]
 mod guardian_pid_phase_tests {
     use super::{GuardianPidStage, guardian_pid_stage};
     use crate::support::PROCESS_DEADLINE;
+    use crate::support::process::ProcessExitObserver;
     use std::os::unix::process::ExitStatusExt as _;
-    use std::process::{Child, Command};
+    use std::process::{Child, Command, Stdio};
     use std::thread;
     use std::time::Instant;
 
@@ -204,5 +261,97 @@ mod guardian_pid_phase_tests {
         assert_eq!(before, GuardianPidStage::Present);
         assert_eq!(guardian_pid_stage(pid), GuardianPidStage::Absent);
         assert_eq!(guardian_pid_stage(0), GuardianPidStage::Unproved);
+    }
+
+    #[test]
+    fn native_kqueue_records_owned_process_exit_without_a_pid_probe() {
+        // Native cat stays alive on a test-owned stdin. This is a real
+        // OS process, and the observer is armed before its EOF release.
+        let mut child = OwnedSleep(
+            Command::new("/bin/cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("owned native event witness"),
+        );
+        let mut exit_watcher = ProcessExitObserver::arm(child.0.id());
+        assert!(
+            exit_watcher
+                .try_poll_exit()
+                .expect("initial native event check")
+                .is_none(),
+            "the still-running owned child cannot have exited"
+        );
+        drop(
+            child
+                .0
+                .stdin
+                .take()
+                .expect("release exact owned native reader"),
+        );
+        let deadline = Instant::now() + PROCESS_DEADLINE;
+        let exit_status = loop {
+            if let Some(status) = exit_watcher
+                .try_poll_exit()
+                .expect("read native kernel exit event")
+            {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "native kernel exit receipt absent before the original process deadline"
+            );
+            thread::yield_now();
+        };
+        assert!(exit_status.success(), "native status-zero event");
+        assert!(
+            child.0.wait().expect("reap owned native child").success(),
+            "native child is reaped by its original owner"
+        );
+    }
+
+    #[test]
+    fn native_kqueue_retains_nonzero_exit_status_from_owned_process() {
+        // The shell's builtin read waits on test-owned stdin, then exits 23.
+        // A status-zero-only or NOTE_EXIT-without-STATUS implementation fails.
+        let mut child = OwnedSleep(
+            Command::new("/bin/sh")
+                .args(["-c", "IFS= read -r line; exit 23"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("owned native nonzero-exit witness"),
+        );
+        let mut exit_watcher = ProcessExitObserver::arm(child.0.id());
+        assert!(
+            exit_watcher
+                .try_poll_exit()
+                .expect("living native shell event check")
+                .is_none(),
+            "live shell cannot publish a terminal event"
+        );
+        drop(child.0.stdin.take().expect("release owned shell stdin"));
+        let deadline = Instant::now() + PROCESS_DEADLINE;
+        let exit_status = loop {
+            if let Some(status) = exit_watcher
+                .try_poll_exit()
+                .expect("read actual nonzero kernel event")
+            {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "nonzero native exit event absent before original process deadline"
+            );
+            thread::yield_now();
+        };
+        assert_eq!(exit_status.code(), Some(23), "kernel-reported exit code");
+        assert_eq!(
+            child.0.wait().expect("reap exact owned shell").code(),
+            Some(23),
+            "independent owned Child status must agree with kernel event"
+        );
     }
 }
