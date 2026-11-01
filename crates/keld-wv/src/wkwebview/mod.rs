@@ -1114,9 +1114,9 @@ mod startup_tests {
 
         // StartCause::WaitCancelled is non-exhaustive outside Tao; an
         // independently constructible non-Init turn checks the same boundary.
-        let later = Event::MainEventsCleared;
+        let later: Event<'_, WkUserEvent> = Event::MainEventsCleared;
         assert!(!first_host_init_turn(&later, &mut emitted));
-        let init = Event::NewEvents(StartCause::Init);
+        let init: Event<'_, WkUserEvent> = Event::NewEvents(StartCause::Init);
         assert!(first_host_init_turn(&init, &mut emitted));
         assert!(!first_host_init_turn(&init, &mut emitted));
         assert!(!first_host_init_turn(&later, &mut emitted));
