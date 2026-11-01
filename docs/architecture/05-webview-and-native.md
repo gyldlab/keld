@@ -183,6 +183,33 @@ window.keld = {
 The planned `@keld/web` package wraps this with generated typed clients;
 `@keld/electron`'s renderer shim implements `ipcRenderer`/`contextBridge` over it.
 
+**A2 proposed local macOS draw.io first-proof boundary:** one page-world
+WKScriptMessageHandler accepts only untrusted method/argument data, alongside
+separate app-preload and existing KEL-142 trusted handlers on the same dedicated
+controller. The page handler carries no credential, document mint, principal,
+grant, IPC endpoint, Function pointer or DOM authority. An allowed raw page
+method call and the fixed wrapper call must both pass identical original
+app-private method registration, current GH542 native committed document and
+main frame/view, app-world bind and bounded local copy/callback checks.
+[GH467 §4.3A](../specs/gh467-contextbridge-ipcrenderer.md#43a-a2-local-original-function-copy-rules)
+owns the local-registration versus actual outbound/inbound effect distinction;
+local listener installation requires no outbound send credit or grant, while
+actual sends and deliveries retain their separate authorization/credit gates. No page-supplied method/URL/DOM metadata is authority. The
+original admitted unmodified preload, its real four-function registration and
+any conditional storage seed must complete before first-inline page JS. The
+numeric KEL-142 trusted renderer remains isolated. GH484/GH467/KEL142 exact
+security approval and independent native effects are required before enabling
+A2; this is not a Strict or multi-engine grant.
+
+Proposed boundary falsifiers are GH484 AC13/AC17 and GH467
+BRG001c/BRG001d: remove outbound send grants/credit and retain successful
+current-document local registration with zero Bun writes; omit private
+registration or swap the native document and observe zero slot growth; deny
+an actual rendererReq grant and observe zero writes; inject wrong-target
+inbound mainResp and observe zero callback. Original internal listener setup
+before commit and early page-carrier refusal are separate observables.
+These are acceptance requirements, not execution evidence.
+
 The resource path below is also a **destination contract**, not behavior implemented by
 the live hello backends. An adapter may use authenticated HTTPS, a host-backed resource
 callback, or a qualified engine-specific scheme; the observable policy and response
