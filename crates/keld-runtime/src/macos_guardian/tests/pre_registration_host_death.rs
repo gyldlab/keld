@@ -255,6 +255,19 @@ fn receive_pre_registration_event_with_accept_hook(
     deadline: Instant,
     on_accept: impl FnOnce(),
 ) -> (std::os::unix::net::UnixStream, String) {
+    receive_pre_registration_event_with_read_hooks(listener, deadline, on_accept, |_| {}, |_| {})
+}
+
+// Test-only callbacks expose the real byte boundary: a pre-read callback runs
+// after the caller's deadline check, and a post-read callback runs only after
+// a native one-byte read succeeds. Normal callers keep both callbacks empty.
+fn receive_pre_registration_event_with_read_hooks(
+    listener: &std::os::unix::net::UnixListener,
+    deadline: Instant,
+    on_accept: impl FnOnce(),
+    mut on_checked_read: impl FnMut(usize),
+    mut on_native_byte: impl FnMut(u8),
+) -> (std::os::unix::net::UnixStream, String) {
     loop {
         require_pre_registration_event_deadline(deadline);
         match listener.accept() {
@@ -269,9 +282,11 @@ fn receive_pre_registration_event_with_accept_hook(
                 let mut event = Vec::new();
                 loop {
                     require_pre_registration_event_deadline(deadline);
+                    on_checked_read(event.len());
                     let mut byte = [0_u8; 1];
                     match stream.read(&mut byte) {
                         Ok(1) => {
+                            on_native_byte(byte[0]);
                             require_pre_registration_event_deadline(deadline);
                             if byte[0] == b'\n' {
                                 break;
