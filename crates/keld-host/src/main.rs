@@ -465,6 +465,9 @@ fn freeze_guardian_environment(
         // values. Neither diagnostics nor receipts expose inherited values.
         let effect = match name.to_str() {
             Some("BUN_INSPECT_PRELOAD") => Some("select an unqualified preload"),
+            Some("BUN_INSPECT" | "BUN_INSPECT_CONNECT_TO" | "BUN_INSPECT_NOTIFY") => {
+                Some("select unqualified debugger or inspector startup inputs")
+            }
             Some("NODE_PATH") => {
                 Some("add a module-resolution root outside the staged application")
             }
@@ -928,6 +931,9 @@ mod tests {
             ])
             .env_remove("BUN_INSPECT_PRELOAD")
             .env_remove("NODE_PATH")
+            .env_remove("BUN_INSPECT")
+            .env_remove("BUN_INSPECT_CONNECT_TO")
+            .env_remove("BUN_INSPECT_NOTIFY")
             .env_remove("KELD_GUARDIAN_EXPECT_REFUSAL")
             .env("KELD_GUARDIAN_PRELOAD_FIXTURE", temp.path())
             .env(
@@ -965,7 +971,13 @@ mod tests {
             retained,
             vec![("ORDINARY_NATIVE_VALUE".into(), native_value.clone())]
         );
-        for name in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+        for name in [
+            "BUN_INSPECT_PRELOAD",
+            "NODE_PATH",
+            "BUN_INSPECT",
+            "BUN_INSPECT_CONNECT_TO",
+            "BUN_INSPECT_NOTIFY",
+        ] {
             for value in [
                 std::ffi::OsString::new(),
                 native_value.clone(),
@@ -1092,6 +1104,16 @@ mod tests {
             .iter()
             .map(|(name, _)| name.to_str().expect("fixture key").to_owned())
             .collect();
+        for forbidden in [
+            "BUN_INSPECT",
+            "BUN_INSPECT_CONNECT_TO",
+            "BUN_INSPECT_NOTIFY",
+        ] {
+            assert!(
+                !expected_keys.iter().any(|key| key == forbidden),
+                "unqualified inspector input must not enter a healthy child"
+            );
+        }
         expected_keys.push("KELD_APP_LINK".into());
         expected_keys.sort();
         for app_link in ["/tmp/frozen-link#first", "/tmp/frozen-link#successor"] {
@@ -1140,7 +1162,13 @@ mod tests {
         )
         .expect("hostile preload marker");
         let test_binary = std::env::current_exe().expect("test binary");
-        for name in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+        for name in [
+            "BUN_INSPECT_PRELOAD",
+            "NODE_PATH",
+            "BUN_INSPECT",
+            "BUN_INSPECT_CONNECT_TO",
+            "BUN_INSPECT_NOTIFY",
+        ] {
             for value in [
                 std::ffi::OsString::new(),
                 temp.path().join("injected.ts").into_os_string(),
@@ -1154,6 +1182,9 @@ mod tests {
                     .env_remove("BUN_OPTIONS")
                     .env_remove("BUN_INSPECT_PRELOAD")
                     .env_remove("NODE_PATH")
+                    .env_remove("BUN_INSPECT")
+                    .env_remove("BUN_INSPECT_CONNECT_TO")
+                    .env_remove("BUN_INSPECT_NOTIFY")
                     .env("KELD_GUARDIAN_PRELOAD_FIXTURE", temp.path())
                     .env("KELD_GUARDIAN_EXPECT_REFUSAL", name)
                     .env(name, &value)

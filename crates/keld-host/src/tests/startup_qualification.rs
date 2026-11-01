@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 
 use super::super::{freeze_guardian_environment, guardian_bun_command};
 
+mod warm_cache;
+
 const BUN_NAME_INVENTORY: &str = include_str!("fixtures/bun-startup-identifiers.json");
 
 fn isolated_environment(root: &Path) -> Result<Vec<(OsString, OsString)>, String> {
@@ -159,7 +161,13 @@ fn guardian_pinned_bun_identifier_census_has_explicit_classifications() {
             .and_then(serde_json::Value::as_str),
         Some("REMOVED_BUN_OPTIONS")
     );
-    for token in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+    for token in [
+        "BUN_INSPECT_PRELOAD",
+        "NODE_PATH",
+        "BUN_INSPECT",
+        "BUN_INSPECT_CONNECT_TO",
+        "BUN_INSPECT_NOTIFY",
+    ] {
         assert_eq!(
             classifications
                 .get(token)
@@ -171,7 +179,7 @@ fn guardian_pinned_bun_identifier_census_has_explicit_classifications() {
         .values()
         .filter(|value| value.as_str() == Some("UNKNOWN"))
         .count();
-    assert_eq!(unknown_count, 196, "UNKNOWN tokens remain unqualified");
+    assert_eq!(unknown_count, 193, "UNKNOWN tokens remain unqualified");
     let unclassified = unclassified_tokens(&tokens, classifications);
     assert!(
         unclassified.is_empty(),
@@ -244,4 +252,89 @@ fn guardian_refuses_staged_force_install_before_constructing_bun() {
         assert!(diagnostic.contains(name), "{diagnostic}");
         fs::remove_file(config).expect("remove only the owned force-install fixture");
     }
+}
+
+// The scenario keeps every product outcome visible; the adjacent fixture owns
+// registry, cache preparation, bounded child execution and teardown.
+#[test]
+fn guardian_warm_cache_missing_package_requires_no_install() {
+    let fixture = warm_cache::Fixture::prepare().expect("isolated real Bun cache fixture");
+    let entry = Path::new("entry.ts");
+    let guarded = factory_command(&fixture.stage, entry, &fixture.environment)
+        .expect("actual Guardian factory");
+    let before = fixture.request_count();
+    let denied = fixture
+        .run("guarded", guarded)
+        .expect("bounded guarded Bun");
+    assert_eq!(
+        denied.status.code(),
+        Some(1),
+        "missing alias unexpectedly resolved: {denied:?}"
+    );
+    let error = String::from_utf8_lossy(&denied.stderr);
+    assert!(
+        error.contains("Cannot find package") && error.contains(warm_cache::PACKAGE),
+        "{error}"
+    );
+    for observed in [&denied.stdout, &denied.stderr] {
+        assert!(
+            !observed
+                .windows(warm_cache::MARKER.len())
+                .any(|s| s == warm_cache::MARKER.as_bytes())
+        );
+        assert!(
+            !observed
+                .windows(b"ENTRY_RAN".len())
+                .any(|s| s == b"ENTRY_RAN")
+        );
+    }
+    assert_eq!(
+        fixture.request_count(),
+        before,
+        "denied command reached its registry"
+    );
+
+    // Only remove the selected flag AFTER exercising the real guarded outcome.
+    let original = factory_command(&fixture.stage, entry, &fixture.environment)
+        .expect("actual factory counterweight");
+    let counterweight = warm_cache::without_install_flag(&original)
+        .expect("exact one-flag mutation, same executable/cwd/frozen environment");
+    let before = fixture.request_count();
+    let allowed = fixture
+        .run("counterweight", counterweight)
+        .expect("bounded counterweight");
+    assert!(
+        allowed.status.success(),
+        "warm-cache counterweight failed: {allowed:?}"
+    );
+    assert_eq!(allowed.stdout, b"CACHE_PACKAGE_EVALUATED\nENTRY_RAN\n");
+    assert_eq!(
+        fixture.request_count(),
+        before,
+        "counterweight fetched instead of using its warm cache"
+    );
+
+    let installed = fixture
+        .materialize_installed()
+        .expect("copy exact Bun-installed bytes");
+    let healthy = factory_command(&installed, entry, &fixture.environment)
+        .expect("actual factory installed-package positive");
+    let before = fixture.request_count();
+    let pass = fixture
+        .run("installed", healthy)
+        .expect("bounded installed-package positive");
+    assert!(pass.status.success(), "installed package failed: {pass:?}");
+    assert_eq!(pass.stdout, b"CACHE_PACKAGE_EVALUATED\nENTRY_RAN\n");
+    assert_eq!(
+        fixture.request_count(),
+        before,
+        "installed positive reached its registry"
+    );
+    println!(
+        "KEL75_E5_ACTUAL: Bun1.4.4;seed_registry_requests={};no_install_denied;cache_counterweight_ran;installed_positive",
+        fixture.request_count()
+    );
+    fixture
+        .finish()
+        .expect("owned registry terminates without masking a failure");
 }
