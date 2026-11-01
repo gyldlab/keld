@@ -1,5 +1,6 @@
 //! KEL-118 independent product descendant observations; no process authority.
 use super::ProcessFamily;
+use super::private_diagnostics::{assert_private_eq, output_summary};
 use crate::support::PROCESS_DEADLINE;
 use crate::support::control::accept_before;
 use crate::support::lease_descriptors::pipe_identity;
@@ -66,7 +67,7 @@ impl DescendantQuit {
             ])
             .output()
             .expect("select existing installed Python fixture interpreter");
-        assert!(output.status.success(), "{output:?}");
+        assert!(output.status.success(), "{}", output_summary(&output));
         let python = PathBuf::from(
             std::str::from_utf8(&output.stdout)
                 .expect("Python path UTF-8")
@@ -111,7 +112,7 @@ impl DescendantQuit {
         let mut reader = BufReader::new(stream);
         let ready = read_record(&mut reader).expect("actual descendant ready record");
         assert_eq!(ready["phase"], "child-ready");
-        assert_eq!(ready["token"], self.token);
+        assert_private_eq(&ready["token"], &self.token, "descendant ready token");
         assert_eq!(ready["pid"], family.descendant);
         assert_eq!(ready["ppid"], family.bun);
         assert_eq!(ready["pgid"], family.bun);
@@ -124,16 +125,18 @@ impl DescendantQuit {
         );
         let bun_pipe = pipe_identity(family.bun, "1");
         let child_pipe = pipe_identity(family.descendant, "1");
-        assert_eq!(
-            bun_pipe, child_pipe,
-            "descendant must inherit exact Bun stdout endpoint"
+        // Kernel pipe identities stay out of the failure text, as in the log line.
+        assert_private_eq(
+            &bun_pipe,
+            &child_pipe,
+            "descendant must inherit exact Bun stdout endpoint",
         );
         self.bun_exit = Some(ProcessExitObserver::arm(family.bun));
         self.child_exit = Some(ProcessExitObserver::arm(family.descendant));
         self.child_pid = Some(family.descendant);
         self.peer = Some(reader);
         eprintln!(
-            "KEL118_PRODUCT_ARM bun={} descendant={} stdout={bun_pipe:?} python={} ready={ready}",
+            "KEL118_PRODUCT_ARM bun={} descendant={} stdout_shared=true python={} ready=child-ready",
             family.bun,
             family.descendant,
             self.python.display()
@@ -180,9 +183,9 @@ impl DescendantQuit {
             Ok(reply) => {
                 assert_eq!(reply["phase"], "child-alive");
                 assert_eq!(reply["pid"], self.child_pid.expect("exact descendant"));
-                assert_eq!(reply["nonce"], nonce);
+                assert_private_eq(&reply["nonce"], &nonce, "descendant ack nonce");
                 assert!(reply["stdout"] == "written" || reply["stdout"] == "broken-pipe");
-                eprintln!("KEL118_PRODUCT_AFTER_EXIT0 alive=true fresh_ack={reply}");
+                eprintln!("KEL118_PRODUCT_AFTER_EXIT0 alive=true fresh_ack=child-alive");
                 true
             }
             Err(error)

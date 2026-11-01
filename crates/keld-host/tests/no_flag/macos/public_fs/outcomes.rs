@@ -1,4 +1,5 @@
 //! Independent page/application outcome binding and native byte/no-effect oracles.
+use super::private_diagnostics::{Phase, assert_private_eq, assert_report_phase};
 use super::project::{
     COMPONENT_SENTINEL, CONTENT, INTERNAL_INITIAL, LINK_SENTINEL, NaturalCase, NaturalInputs,
     Policy, PreparedLaunch, READ_SENTINEL, SENTINEL, WRITE_SENTINEL, file_digest,
@@ -21,17 +22,19 @@ pub(super) fn assert_handler_attribution(stderr: &str, result: &Value, bun: u32)
     assert_eq!(handlers.len(), 3);
     assert_eq!(outcomes.len(), 2);
     for (index, handler) in handlers.iter().enumerate() {
-        assert_eq!(
+        assert_private_eq(
             handler,
             &json!({"call":index + 1,"pid":bun,
-            "action":result["requests"][index]["action"],"nonce":result["requests"][index]["nonce"]})
+            "action":result["requests"][index]["action"],"nonce":result["requests"][index]["nonce"]}),
+            "public FS handler trace record",
         );
     }
     for (index, outcome) in outcomes.iter().enumerate() {
-        assert_eq!(
+        assert_private_eq(
             outcome,
             &json!({"call":index + 1,"nonce":result["requests"][index]["nonce"],
-            "outcome":result["outcomes"][index]["outcome"]})
+            "outcome":result["outcomes"][index]["outcome"]}),
+            "public FS outcome trace record",
         );
     }
 }
@@ -48,13 +51,13 @@ pub(super) fn assert_page_outcomes(
         .find(|report| report["phase"] == "page-ready")
         .expect("listener ready");
     let result = reports.last().expect("page result");
-    assert_eq!(result["phase"], "page-result", "{result}");
+    assert_report_phase(result, "page-result", Phase::Observation);
     assert_eq!(
         result["trusted"], true,
         "synthetic DOM input is not acceptance"
     );
     for key in ["documentNonce", "javascriptToken", "initial"] {
-        assert_eq!(before[key], result[key]);
+        assert_private_eq(&before[key], &result[key], key);
     }
     assert_eq!(
         result["requests"].as_array().expect("request census").len(),

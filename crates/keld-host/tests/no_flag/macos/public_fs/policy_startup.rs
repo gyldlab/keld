@@ -3,6 +3,7 @@
 //! it does not claim exhaustive transient kernel listener-descriptor history.
 
 use super::observer::Observation;
+use super::private_diagnostics::output_summary;
 use super::project::PublicFsProject;
 use crate::boot_admission::assert_invalid_stage_is_resource_free;
 use crate::support::admission::NativeAbsenceWatcher;
@@ -55,12 +56,18 @@ fn assert_invalid_source(bytes: &[u8], case: &str, code: &str, fixes: &[&str]) {
         None,
         true,
     );
-    assert_eq!(output.status.code(), Some(1), "{case}: {output:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{case}: {}",
+        output_summary(&output)
+    );
     let stderr = std::str::from_utf8(&output.stderr).expect("typed host error UTF-8");
     for fix in fixes {
         assert!(
             stderr.contains(fix),
-            "{case}: missing full remediation: {stderr}"
+            "{case}: missing full remediation {fix:?}; {}",
+            output_summary(&output)
         );
     }
     assert!(
