@@ -139,22 +139,24 @@ impl ExactFilePanelDelegate {
         let Some(path) = Self::path(url) else {
             return false;
         };
-        let (allow_files, allow_directories) = match self.ivars().mode {
-            DelegateMode::Open { files, directories } => (files, directories),
-            DelegateMode::Save => (true, false),
-        };
         let model = &self.ivars().filter;
         let active = if let Some(popup) = &self.ivars().popup {
             usize::try_from(popup.indexOfSelectedItem()).ok()
         } else {
             model.selected_index()
         };
-        model.accepts_selected_path_at(
-            active,
-            Path::new(&path),
-            self.native_directory(&path),
-            allow_files,
-            allow_directories,
-        )
+        let native_is_directory = self.native_directory(&path);
+        match self.ivars().mode {
+            DelegateMode::Open { files, directories } => model.accepts_selected_path_at(
+                active,
+                Path::new(&path),
+                native_is_directory,
+                files,
+                directories,
+            ),
+            DelegateMode::Save => {
+                model.accepts_selected_save_path_at(active, Path::new(&path), native_is_directory)
+            }
+        }
     }
 }

@@ -67,6 +67,14 @@ for await (const command of createInterface({ input: control })) {
     void pending.then((value) => report(`SAVE_SELECTED ${value.canceled} ${value.filePath}`),
       (error) => report(`SAVE_ERROR ${error?.code ?? String(error)}`));
     report("SUBMITTED");
+  } else if (command === "SAVE_PREFERRED_SUFFIX") {
+    const pending = dialog.showSaveDialog(win, {
+      defaultPath: process.env.KELD_T1B_PREFERRED_SAVE_DEST!,
+      filters: [{ name: "HTML", extensions: ["htm"] }],
+    });
+    void pending.then((value) => report("SAVE_PREFERRED_SELECTED " + value.canceled + " " + value.filePath),
+      (error) => report("SAVE_ERROR " + (error?.code ?? String(error))));
+    report("SUBMITTED");
   } else if (command === "OPEN_SELECT") {
     const pending = dialog.showOpenDialog(win, {
       defaultPath: process.env.KELD_T1B_OPEN_PATH!,
@@ -415,30 +423,19 @@ impl NativeDialog {
     }
 }
 
-fn run_real_host_files(
-    include_positive_selection: bool,
-    cancel_cycles: usize,
+// Native fixture command construction only. The scenario retains the single
+// launch/lease/cleanup owner and all effect, correlation and retirement assertions.
+fn file_host_command(
+    staged: &keld_cli::boot::DevBootStage,
+    socket: &Path,
+    paths: &FilePaths,
     directory_hint: bool,
-    reject_widened_svg: bool,
-    verify_xml_rows: bool,
-    verify_filter_switching: bool,
-    verify_mixed_selection: bool,
-    verify_physical_svg_denial: bool,
-) {
-    assert!(
-        cancel_cycles >= 2,
-        "native repeated proof must cover Open and Save"
-    );
-    let fixture = ProductFixture::new("gh478-real-open-save");
-    let paths = FilePaths::new(&fixture, directory_hint);
-    let staged = stage(&fixture);
-    let socket = fixture.root.path().join("native-file.sock");
-    let listener = UnixListener::bind(&socket).expect("owned single control listener");
-    listener.set_nonblocking(true).expect("bounded accept");
-    let child = Command::new(staged.host())
+) -> Command {
+    let mut command = Command::new(staged.host());
+    command
         .process_group(0)
         .current_dir(staged.root())
-        .env("KELD_T1B_CONTROL", &socket)
+        .env("KELD_T1B_CONTROL", socket)
         .env(
             "KELD_T1B_SAVE_DEST",
             if directory_hint {
@@ -454,6 +451,10 @@ fn run_real_host_files(
             } else {
                 &paths.source
             },
+        )
+        .env(
+            "KELD_T1B_PREFERRED_SAVE_DEST",
+            paths.directory.join("gh478-native-preferred"),
         )
         .env("KELD_T1B_XML_SVG_PATH", &paths.svg)
         .env(
@@ -474,7 +475,39 @@ fn run_real_host_files(
         .env("KELD_DEV_LEASE", "stdin-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+#[derive(Clone, Copy)]
+enum FileScenario {
+    CancelOnly,
+    Positive { directory_hint: bool },
+    RejectWidenedSvg,
+    NativeXml,
+    FilterSwitching,
+    MixedSelection,
+    PhysicalSvgDenial,
+}
+
+fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
+    let directory_hint = matches!(
+        scenario,
+        FileScenario::Positive {
+            directory_hint: true
+        }
+    );
+    assert!(
+        cancel_cycles >= 2,
+        "native repeated proof must cover Open and Save"
+    );
+    let fixture = ProductFixture::new("gh478-real-open-save");
+    let paths = FilePaths::new(&fixture, directory_hint);
+    let staged = stage(&fixture);
+    let socket = fixture.root.path().join("native-file.sock");
+    let listener = UnixListener::bind(&socket).expect("owned single control listener");
+    listener.set_nonblocking(true).expect("bounded accept");
+    let child = file_host_command(&staged, &socket, &paths, directory_hint)
         .spawn()
         .expect("actual shipping macOS Host");
     let mut cleanup = ShippingLaunchCleanup::new(child);
@@ -516,28 +549,28 @@ fn run_real_host_files(
         };
         dialog.press(operation, expected, button);
     }
-    if include_positive_selection {
-        selection::selected_paths(&mut dialog, &fixture, &paths, directory_hint);
-        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
+    match scenario {
+        FileScenario::CancelOnly => {}
+        FileScenario::Positive { directory_hint } => {
+            selection::selected_paths(&mut dialog, &fixture, &paths, directory_hint);
+        }
+        FileScenario::RejectWidenedSvg => {
+            selection::reject_widened_svg(&mut dialog, &fixture, &paths.svg);
+        }
+        FileScenario::NativeXml => {
+            selection::verify_native_xml_positive(&mut dialog, &fixture, &paths.xml);
+        }
+        FileScenario::FilterSwitching => {
+            selection::verify_native_filter_switching(&mut dialog, &fixture, &paths);
+        }
+        FileScenario::MixedSelection => {
+            selection::verify_native_mixed_selection(&mut dialog, &fixture, &paths);
+        }
+        FileScenario::PhysicalSvgDenial => {
+            selection::verify_physical_svg_denial(&mut dialog, &fixture, &paths.svg);
+        }
     }
-    if reject_widened_svg {
-        selection::reject_widened_svg(&mut dialog, &fixture, &paths.svg);
-        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
-    }
-    if verify_xml_rows {
-        selection::verify_native_xml_positive(&mut dialog, &fixture, &paths.xml);
-        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
-    }
-    if verify_filter_switching {
-        selection::verify_native_filter_switching(&mut dialog, &fixture, &paths);
-        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
-    }
-    if verify_mixed_selection {
-        selection::verify_native_mixed_selection(&mut dialog, &fixture, &paths);
-        dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
-    }
-    if verify_physical_svg_denial {
-        selection::verify_physical_svg_denial(&mut dialog, &fixture, &paths.svg);
+    if !matches!(scenario, FileScenario::CancelOnly) {
         dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
     }
     dialog
@@ -625,12 +658,17 @@ fn real_host_invalid_native_filter_keeps_dialog_custody_and_healthy_next_message
 
 #[test]
 fn real_host_open_save_cancel_and_next_message_use_one_authenticated_dialog_link() {
-    run_real_host_files(false, 2, false, false, false, false, false, false);
+    run_real_host_files(FileScenario::CancelOnly, 2);
 }
 
 #[test]
 fn real_host_open_and_save_positive_paths_are_native_and_save_does_not_write() {
-    run_real_host_files(true, 2, false, false, false, false, false, false);
+    run_real_host_files(
+        FileScenario::Positive {
+            directory_hint: false,
+        },
+        2,
+    );
 }
 
 #[test]
@@ -638,12 +676,17 @@ fn real_host_directory_default_paths_keep_folder_and_save_filename_distinct() {
     // The independent AX helper must find the fixture's exact directory and
     // file row. Save additionally checks its initial name before editing it;
     // neither helper navigates to repair an incorrectly chosen directory.
-    run_real_host_files(true, 2, true, false, false, false, false, false);
+    run_real_host_files(
+        FileScenario::Positive {
+            directory_hint: true,
+        },
+        2,
+    );
 }
 
 #[test]
 fn real_host_xml_filter_refuses_svg_and_next_message_survives() {
-    run_real_host_files(false, 2, false, true, false, false, false, false);
+    run_real_host_files(FileScenario::RejectWidenedSvg, 2);
 }
 
 #[test]
@@ -654,17 +697,17 @@ fn real_host_physical_svg_row_click_fails_open_under_xml_only() {
         Some("1"),
         "explicit KELD_GH478_EXCLUSIVE_GUI=1 is required before any Host is started"
     );
-    run_real_host_files(false, 2, false, false, false, false, false, true);
+    run_real_host_files(FileScenario::PhysicalSvgDenial, 2);
 }
 
 #[test]
 fn real_host_xml_only_selects_exact_native_xml_path() {
-    run_real_host_files(false, 2, false, false, true, false, false, false);
+    run_real_host_files(FileScenario::NativeXml, 2);
 }
 
 #[test]
 fn real_host_native_filter_accessory_switches_vsdx_and_all_files() {
-    run_real_host_files(false, 2, false, false, false, true, false, false);
+    run_real_host_files(FileScenario::FilterSwitching, 2);
 }
 
 #[test]
@@ -675,15 +718,15 @@ fn real_host_initial_drawio_filter_physically_denies_vsdx_before_switch() {
         Some("1"),
         "explicit KELD_GH478_EXCLUSIVE_GUI=1 is required before Host launch"
     );
-    run_real_host_files(false, 2, false, false, false, true, false, false);
+    run_real_host_files(FileScenario::FilterSwitching, 2);
 }
 
 #[test]
 fn real_host_native_open_with_files_and_directories_selects_each_and_both() {
-    run_real_host_files(false, 2, false, false, false, false, true, false);
+    run_real_host_files(FileScenario::MixedSelection, 2);
 }
 
 #[test]
 fn real_host_257_file_panels_cancel_then_message_healthy_on_same_link() {
-    run_real_host_files(false, 257, false, false, false, false, false, false);
+    run_real_host_files(FileScenario::CancelOnly, 257);
 }

@@ -13,6 +13,9 @@ struct FilterGroup {
     label: String,
     /// `None` is the exact unrestricted `*` selection, not another extension.
     suffixes: Option<Vec<String>>,
+    // Native UTType preferred extensions apply only to Save's generated name.
+    // Open must continue requiring the exact selected filter group.
+    save_preferred_suffixes: Vec<String>,
 }
 
 /// One selected native accessory filter group. No `AppKit` objects or effect
@@ -61,6 +64,7 @@ impl MacFileFilterModel {
             groups.push(FilterGroup {
                 label: filter.name.clone(),
                 suffixes,
+                save_preferred_suffixes: Vec::new(),
             });
         }
         let selected = (!groups.is_empty()).then_some(0);
@@ -149,6 +153,52 @@ impl MacFileFilterModel {
                     .iter()
                     .any(|suffix| ext.eq_ignore_ascii_case(suffix))
             })
+    }
+
+    /// Store the system-preferred Save extensions from the types already
+    /// installed in this exact native group. No alias affects Open validation.
+    ///
+    /// # Errors
+    ///
+    /// An invalid group index cannot widen native admission.
+    pub(crate) fn set_save_preferred_suffixes(
+        &mut self,
+        index: usize,
+        preferred: Vec<String>,
+    ) -> Result<(), IpcError> {
+        let group = self.groups.get_mut(index).ok_or(IpcError::Protocol {
+            detail: "native Save preferred suffix index is outside declared groups",
+        })?;
+        group.save_preferred_suffixes = preferred;
+        Ok(())
+    }
+
+    /// Save's native type may append its preferred suffix, even when the
+    /// caller supplied another suffix for the same `UTType`. Only the live
+    /// group's exact native preferred values are admitted as alternatives.
+    #[must_use]
+    pub(crate) fn accepts_selected_save_path_at(
+        &self,
+        active: Option<usize>,
+        path: &Path,
+        native_is_directory: bool,
+    ) -> bool {
+        if self.accepts_selected_path_at(active, path, native_is_directory, true, false) {
+            return true;
+        }
+        if native_is_directory {
+            return false;
+        }
+        let Some(group) = active.and_then(|index| self.groups.get(index)) else {
+            return false;
+        };
+        let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+            return false;
+        };
+        group
+            .save_preferred_suffixes
+            .iter()
+            .any(|preferred| extension.eq_ignore_ascii_case(preferred))
     }
 
     /// Replace the active group only if the requested item actually exists.

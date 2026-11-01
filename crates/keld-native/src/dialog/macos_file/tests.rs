@@ -157,6 +157,104 @@ fn native_save_result_uses_the_selected_generic_filter_not_type_conformance() {
     );
 }
 
+#[test]
+fn preferred_save_suffix_acceptance_never_widens_open_or_another_group() {
+    let mut model = MacFileFilterModel::new(&[
+        super::super::FileDialogFilter {
+            name: "HTML".into(),
+            extensions: vec!["htm".into()],
+        },
+        super::super::FileDialogFilter {
+            name: "JPEG".into(),
+            extensions: vec!["jpg".into()],
+        },
+    ])
+    .expect("two declared Save groups");
+    model
+        .set_save_preferred_suffixes(0, vec!["html".into()])
+        .expect("first installed native type");
+    model
+        .set_save_preferred_suffixes(1, vec!["jpeg".into()])
+        .expect("second installed native type");
+
+    let declared =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str("/tmp/native-declared.htm"), false);
+    assert_eq!(
+        selected_save_path(Some(declared), &model, false)
+            .expect("declared extension remains accepted"),
+        "/tmp/native-declared.htm"
+    );
+    let unrelated =
+        NSURL::fileURLWithPath_isDirectory(&NSString::from_str("/tmp/native-preferred.svg"), false);
+    assert!(
+        selected_save_path(Some(unrelated), &model, false).is_err(),
+        "Save cannot admit unrelated suffixes in the active HTML group"
+    );
+
+    let html = NSURL::fileURLWithPath_isDirectory(
+        &NSString::from_str("/tmp/native-preferred.html"),
+        false,
+    );
+    assert_eq!(
+        selected_save_path(Some(html.clone()), &model, false)
+            .expect("AppKit preferred extension in the live Save group"),
+        "/tmp/native-preferred.html",
+    );
+
+    let open_urls = NSArray::from_retained_slice(std::slice::from_ref(&html));
+    assert!(
+        selected_open_paths(&open_urls, &model, true, false, false).is_err(),
+        "Open must still enforce the originally declared htm extension",
+    );
+
+    model.select(1).expect("switch to JPEG");
+    assert!(
+        selected_save_path(Some(html), &model, false).is_err(),
+        "preferred extension from an inactive group must not be accepted",
+    );
+    let jpeg = NSURL::fileURLWithPath_isDirectory(
+        &NSString::from_str("/tmp/native-preferred.JPEG"),
+        false,
+    );
+    assert!(
+        selected_open_paths(
+            &NSArray::from_retained_slice(std::slice::from_ref(&jpeg)),
+            &model,
+            true,
+            false,
+            false,
+        )
+        .is_err(),
+        "switching to JPEG must not admit its preferred alias in Open",
+    );
+    assert_eq!(
+        selected_save_path(Some(jpeg), &model, false)
+            .expect("case-insensitive native preferred extension"),
+        "/tmp/native-preferred.JPEG",
+    );
+    assert!(
+        !model.accepts_selected_save_path_at(
+            Some(2),
+            Path::new("/tmp/native-preferred.jpeg"),
+            false,
+        ),
+        "out-of-range native groups remain default-deny",
+    );
+}
+
+#[test]
+fn installed_macos_html_type_preferred_extension_differs_from_declared_htm() {
+    let actual = super::UTType::typeWithFilenameExtension(&NSString::from_str("htm"))
+        .expect("system must represent htm as an installed native type")
+        .preferredFilenameExtension()
+        .expect("installed native HTML type must have a preferred filename extension");
+    assert_eq!(
+        actual.to_string(),
+        "html",
+        "the Host preferred-extension fixture needs a real native spelling difference",
+    );
+}
+
 fn assert_save_package_as_file(package: &Path, unrestricted: &MacFileFilterModel) {
     let url =
         NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&package.to_string_lossy()), true);

@@ -70,9 +70,47 @@ pub(super) fn selected_paths(
         );
         dialog.await_detached(operation);
     }
+
+    // Start without an extension: AppKit must append its installed HTML type's
+    // preferred suffix. An already-suffixed default would not prove that rule.
+    let extensionless = paths.directory.join("gh478-native-preferred");
+    let preferred = paths.directory.join("gh478-native-preferred.html");
+    assert!(
+        !extensionless.exists(),
+        "test owns an absent extensionless path"
+    );
+    assert!(
+        !preferred.exists(),
+        "test owns an initially absent Save path"
+    );
+    dialog.submit("SAVE_PREFERRED_SUFFIX");
+    let activation = run_ax(
+        Command::new(&dialog.button_helper)
+            .arg(dialog.host_pid.to_string())
+            .arg("Save"),
+    );
+    assert!(
+        activation.status.success(),
+        "native preferred-extension Save was not activated: {activation:?}"
+    );
+    let actual = read_control_line(&mut dialog.reader);
+    assert_eq!(
+        actual,
+        format!("SAVE_PREFERRED_SELECTED false {}", preferred.display()),
+        "AppKit's preferred extension must be admitted on the original Host correlation"
+    );
+    assert!(
+        !preferred.exists(),
+        "native Save returns a path but does not create or write the file"
+    );
+    assert!(
+        !extensionless.exists(),
+        "native Save must not create the original stem"
+    );
+    dialog.await_detached("SAVE_PREFERRED_SUFFIX");
 }
 
-/// The OS's broad XML UTType can admit an SVG row. The same real AX selection
+/// The OS's broad XML `UTType` can admit an SVG row. The same real AX selection
 /// must succeed under All Files, but must never gain a successful Open reply
 /// when the caller declared XML only. AX's selected-child setter can force
 /// the otherwise disabled native row, so Host result rejection is essential.
@@ -142,9 +180,8 @@ pub(super) fn reject_widened_svg(dialog: &mut NativeDialog, fixture: &ProductFix
                 .arg(dialog.host_pid.to_string())
                 .arg("OK"),
         );
-        assert_eq!(
+        assert!(
             rejected.status.success(),
-            true,
             "AppKit must show an OS validation refusal: {rejected:?}"
         );
         let canceled = run_ax(
@@ -288,6 +325,55 @@ pub(super) fn verify_native_xml_positive(
     dialog.await_detached("OPEN_XML_ONLY");
 }
 
+// Physical initial-denial control has its own UI lifecycle. Keep it separate
+// from accessory switching without changing the exclusive-GUI admission gate.
+fn verify_initial_vsdx_denial(
+    dialog: &mut NativeDialog,
+    fixture: &ProductFixture,
+    paths: &FilePaths,
+) {
+    // AXSelectedChildren can force disabled rows; use the physical mouse
+    // oracle only in an explicitly exclusive macOS GUI session.
+    let clicker = compile_ax(fixture, "user_click_file");
+    dialog.submit("OPEN_INITIAL_VSDX_DENIED");
+    capture_open_sheet(dialog);
+    let denied = run_ax(
+        Command::new(&clicker)
+            .arg(dialog.host_pid.to_string())
+            .arg(&paths.vsdx)
+            .arg("denied"),
+    );
+    eprintln!(
+        "GH478_PHYSICAL_INITIAL_VSDX_DENIAL {}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert!(
+        denied.status.success(),
+        "native VSDX mouse denial: {denied:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&denied.stdout).trim(),
+        format!(
+            "GH478_USER_CLICK_DENIED pid={} basename=gh478-format.vsdx open_enabled=false",
+            dialog.host_pid
+        ),
+    );
+    let canceled = run_ax(
+        Command::new(&dialog.button_helper)
+            .arg(dialog.host_pid.to_string())
+            .arg("Cancel"),
+    );
+    assert!(
+        canceled.status.success(),
+        "initial VSDX denial dismiss: {canceled:?}"
+    );
+    assert_eq!(
+        read_control_line(&mut dialog.reader),
+        "VSDX_DENIED_CANCEL 0"
+    );
+    dialog.await_detached("OPEN_INITIAL_VSDX_DENIED");
+}
+
 /// Exercise the true native accessory rather than changing Rust's filter model.
 /// The selected paths are independently returned by the authenticated Host;
 /// the fixture helper cannot synthesize a completion or alter the KIPC frame.
@@ -299,46 +385,7 @@ pub(super) fn verify_native_filter_switching(
     let accessory = compile_ax(fixture, "switch_filter");
     let selector = compile_ax(fixture, "select_file");
     if std::env::var("KELD_GH478_EXCLUSIVE_GUI").ok().as_deref() == Some("1") {
-        // AXSelectedChildren can force disabled rows; use the physical mouse
-        // oracle only in an explicitly exclusive macOS GUI session.
-        let clicker = compile_ax(fixture, "user_click_file");
-        dialog.submit("OPEN_INITIAL_VSDX_DENIED");
-        capture_open_sheet(dialog);
-        let denied = run_ax(
-            Command::new(&clicker)
-                .arg(dialog.host_pid.to_string())
-                .arg(&paths.vsdx)
-                .arg("denied"),
-        );
-        eprintln!(
-            "GH478_PHYSICAL_INITIAL_VSDX_DENIAL {}",
-            String::from_utf8_lossy(&denied.stderr)
-        );
-        assert!(
-            denied.status.success(),
-            "native VSDX mouse denial: {denied:?}"
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&denied.stdout).trim(),
-            format!(
-                "GH478_USER_CLICK_DENIED pid={} basename=gh478-format.vsdx open_enabled=false",
-                dialog.host_pid
-            ),
-        );
-        let canceled = run_ax(
-            Command::new(&dialog.button_helper)
-                .arg(dialog.host_pid.to_string())
-                .arg("Cancel"),
-        );
-        assert!(
-            canceled.status.success(),
-            "initial VSDX denial dismiss: {canceled:?}"
-        );
-        assert_eq!(
-            read_control_line(&mut dialog.reader),
-            "VSDX_DENIED_CANCEL 0"
-        );
-        dialog.await_detached("OPEN_INITIAL_VSDX_DENIED");
+        verify_initial_vsdx_denial(dialog, fixture, paths);
     }
     for (operation, group, expected_prefix, path) in [
         (

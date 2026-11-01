@@ -103,7 +103,11 @@ fn selected_save_path(
         treats_packages_as_directories,
         &NSWorkspace::sharedWorkspace(),
     );
-    if !filter.accepts_selected_path(Path::new(&path), native_is_directory, true, false) {
+    if !filter.accepts_selected_save_path_at(
+        filter.selected_index(),
+        Path::new(&path),
+        native_is_directory,
+    ) {
         return Err(invalid(
             "native Save selected a file outside the active filter",
         ));
@@ -197,7 +201,7 @@ impl MacFilePanel {
         hint: Option<&String>,
         filters: &[super::FileDialogFilter],
     ) -> Result<Self, IpcError> {
-        let filter = MacFileFilterModel::new(filters)?;
+        let mut filter = MacFileFilterModel::new(filters)?;
         // Preflight EVERY group before presentation. A later accessory
         // selection must not discover an unrepresentable UTType while a
         // physical sheet owns the effect and its original correlation.
@@ -216,6 +220,17 @@ impl MacFilePanel {
                         .ok_or_else(|| invalid("native file type could not be represented"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            if matches!(&panel, FilePanel::Save(_)) && !filters.is_empty() {
+                // NSSavePanel can append a UTType's preferred extension instead
+                // of the spelling admitted by Electron. Derive aliases from
+                // the same native types that are installed for this group.
+                let preferred = group
+                    .iter()
+                    .filter_map(|ty| ty.preferredFilenameExtension())
+                    .map(|suffix| suffix.to_string())
+                    .collect();
+                filter.set_save_preferred_suffixes(index, preferred)?;
+            }
             native_groups.push(group);
         }
         let completion = Rc::new(Cell::new(None));
