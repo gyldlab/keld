@@ -1,0 +1,36 @@
+{
+  "additional_952_only_path_still_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs"
+  ],
+  "all_77_source_complete": false,
+  "changed_historical_full_review_still_pending": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+    "crates/keld-runtime/src/macos_guardian/process_group.rs",
+    "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs"
+  ],
+  "changed_source_limited_overlays": 3,
+  "historical_949_head": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "historical_paths": 77,
+  "independent_semantic_review_of_new_ledger_pending": true,
+  "merge_authorized": false,
+  "native_tests_rerun_for_documentation": false,
+  "new_review_records": 10,
+  "parent_head": "c89db4a37de966578f16405c45075c79ffeee897",
+  "parent_pr": 967,
+  "parent_source_documents_unchanged": true,
+  "pending_historical_full_review": 42,
+  "schema_version": 1,
+  "source_tip_952": "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba",
+  "source_tip_paths": 78,
+  "status_counts": {
+    "changed-since-949-pending": 3,
+    "historical-scoped-only": 4,
+    "pending-source-review": 42,
+    "source-reviewed-limited": 5,
+    "source-reviewed-limited-batch10": 7,
+    "source-reviewed-new": 7,
+    "source-reviewed-production-followon": 4,
+    "source-reviewed-reused": 5
+  },
+  "unchanged_limited_reviews": 7
+}
