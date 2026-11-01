@@ -116,12 +116,37 @@ mod deadline_tests;
 
 pub(super) fn group_gone(group: i32, descendant: Option<i32>, guardian: i32) {
     let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
+    group_gone_with_probe_hook(group, descendant, guardian, deadline, |_| {});
+}
+
+// One exact original expiry; test-only native-kernel observation hook. This
+// source module is compiled solely by macOS Guardian native tests, never into
+// the production Guardian, and the hook grants no signal authority.
+fn group_gone_with_probe_hook(
+    group: i32,
+    descendant: Option<i32>,
+    guardian: i32,
+    deadline: Instant,
+    mut on_native_probe: impl FnMut(bool),
+) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "real Guardian or Bun group remained unverified at original shutdown deadline"
+        );
         let absent = kill(Pid::from_raw(-group), None) == Err(Errno::ESRCH)
             && kill(Pid::from_raw(group), None) == Err(Errno::ESRCH)
             && kill(Pid::from_raw(guardian), None) == Err(Errno::ESRCH)
             && descendant.is_none_or(|pid| kill(Pid::from_raw(pid), None) == Err(Errno::ESRCH));
+        on_native_probe(absent);
         if absent {
+            // Four read-only native probes describe one observation, not a
+            // new deadline. After the original clock expires, even genuine
+            // absence cannot retroactively certify timely cleanup.
+            assert!(
+                Instant::now() < deadline,
+                "native group absence was not confirmed by original shutdown deadline"
+            );
             return;
         }
         assert!(
@@ -133,13 +158,32 @@ pub(super) fn group_gone(group: i32, descendant: Option<i32>, guardian: i32) {
 }
 
 pub(super) fn read_marker(marker: &Path, deadline: Instant) -> (i32, i32) {
+    read_marker_with_hook(marker, deadline, |_| {})
+}
+
+fn read_marker_with_hook(
+    marker: &Path,
+    deadline: Instant,
+    mut on_real_file_read: impl FnMut(&str),
+) -> (i32, i32) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "real Bun and descendant marker was unavailable at original ACK deadline"
+        );
         if let Ok(bytes) = std::fs::read_to_string(marker) {
+            on_real_file_read(&bytes);
             let ids: Vec<i32> = bytes
                 .split_whitespace()
                 .map(|value| value.parse().expect("numeric Bun/descendant PID"))
                 .collect();
             if let [leader, descendant] = ids.as_slice() {
+                // Do not turn a file record consumed before the deadline into
+                // a successful KGR1 witness after unbounded parsing/scheduling.
+                assert!(
+                    Instant::now() < deadline,
+                    "Bun and descendant marker was accepted after original ACK deadline"
+                );
                 return (*leader, *descendant);
             }
         }
@@ -150,3 +194,7 @@ pub(super) fn read_marker(marker: &Path, deadline: Instant) -> (i32, i32) {
         thread::yield_now();
     }
 }
+
+#[cfg(test)]
+#[path = "observers/arrival_deadline_tests.rs"]
+mod arrival_deadline_tests;
