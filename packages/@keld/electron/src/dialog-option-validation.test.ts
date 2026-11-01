@@ -152,3 +152,152 @@ test("UTF-8 wire envelope bounds are checked without truncation or coercion", ()
     expect(() => normalizeMessageOptions(options)).toThrow("KELD-COMPAT");
   }
 });
+
+test("button iteration snapshots the own data length without invoking get traps", () => {
+  let lengthReads = 0;
+  let elementInspections = 0;
+  const buttons = new Proxy(["Yes"], {
+    get(target, key, receiver) {
+      if (key === "length") {
+        lengthReads++;
+        return lengthReads === 1 ? 1 : 1000;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (key !== "length") elementInspections++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  const normalized = normalizeMessageOptions({ message: "hi", buttons });
+  expect(normalized.buttons).toEqual(["Yes"]);
+  expect(lengthReads).toBe(0);
+  expect(elementInspections).toBe(1);
+});
+
+test("oversized buttons refuse before inspecting any element", () => {
+  let elementInspections = 0;
+  const buttons = new Proxy(Array(17).fill("Yes"), {
+    getOwnPropertyDescriptor(target, key) {
+      if (key !== "length") elementInspections++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+    "KELD-COMPAT-010",
+  );
+  expect(elementInspections).toBe(0);
+});
+
+test("revoked and throwing inspection traps become canonical Message refusal", () => {
+  const revokedRoot = Proxy.revocable({ message: "hi" }, {});
+  revokedRoot.revoke();
+  const revokedButtons = Proxy.revocable(["Yes"], {});
+  revokedButtons.revoke();
+  const throwingPrototype = new Proxy(["Yes"], {
+    getPrototypeOf() {
+      throw new Error("hostile prototype");
+    },
+  });
+  const throwingLength = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor() {
+      throw new Error("hostile descriptor");
+    },
+  });
+  const throwingElement = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === "0") throw new Error("hostile element");
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  expect(() => normalizeMessageOptions(revokedRoot.proxy)).toThrow(
+    "KELD-COMPAT-010",
+  );
+  for (const buttons of [
+    revokedButtons.proxy,
+    throwingPrototype,
+    throwingLength,
+    throwingElement,
+  ]) {
+    expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+      "KELD-COMPAT-010",
+    );
+  }
+  const healthy = normalizeMessageOptions({
+    message: "healthy",
+    buttons: ["Yes", "No"],
+  });
+  expect(healthy.buttons).toEqual(["Yes", "No"]);
+});
+
+test("validation refusals preserve their specific actionable reason", () => {
+  const cases: [unknown, string][] = [
+    [[], "options must be an object"],
+    [
+      Object.create({ message: "hi" }),
+      "custom-prototype options are unsupported",
+    ],
+    [{ message: "hi", buttons: "Yes" }, "buttons must be a plain array"],
+    [
+      { message: "hi", buttons: Array(17).fill("Yes") },
+      "buttons must have a bounded own data length",
+    ],
+    [
+      { message: "hi", buttons: Array(1) },
+      "button labels must be own data values",
+    ],
+    [
+      { message: "hi", buttons: [1] },
+      "button label must be bounded UTF-8 text",
+    ],
+    [
+      { message: "hi", buttons: ["x".repeat(16 * 1024 + 1)] },
+      "button label must be bounded UTF-8 text",
+    ],
+  ];
+  for (const [input, detail] of cases) {
+    expect(() => normalizeMessageOptions(input)).toThrow(
+      `KELD-COMPAT-010: unsupported Message dialog options: ${detail}.`,
+    );
+  }
+});
+
+test("inspection refusals never inspect an attacker-controlled thrown value", () => {
+  let thrownReads = 0;
+  const thrown = new Proxy({}, {
+    get() {
+      thrownReads++;
+      throw new Error("must not inspect thrown value");
+    },
+    getPrototypeOf() {
+      thrownReads++;
+      throw new Error("must not classify thrown value");
+    },
+  });
+  const roots = [
+    new Proxy({ message: "hi" }, {
+      getPrototypeOf() {
+        throw thrown;
+      },
+    }),
+    new Proxy({ message: "hi" }, {
+      ownKeys() {
+        throw thrown;
+      },
+    }),
+  ];
+  for (const input of roots) {
+    expect(() => normalizeMessageOptions(input)).toThrow(
+      "options could not be inspected safely",
+    );
+  }
+  const buttons = new Proxy(["Yes"], {
+    getOwnPropertyDescriptor() {
+      throw thrown;
+    },
+  });
+  expect(() => normalizeMessageOptions({ message: "hi", buttons })).toThrow(
+    "buttons could not be inspected safely",
+  );
+  expect(thrownReads).toBe(0);
+});
