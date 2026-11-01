@@ -1,21 +1,23 @@
 //! Native Windows host-death census: retained member identity and bounded release proof.
 //!
 //! The host-death Job owner retains both Job handles and alone clears kill-on-close
-//! after a settled census. This module observes and terminates eligible members.
+//! after a settled census. Observe never terminates or creates an updater release proof.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, HANDLE};
+use windows_sys::Win32::Foundation::{
+    ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
-    TerminateProcess,
+    GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
 };
 
 use super::{
     WindowsHostJobError, WindowsJobProcessIdSnapshot, process_in_job, process_signaled,
-    wait_handle_bounded, wait_handle_until,
+    wait_handle_until,
 };
 
 /// Witness of one host-death census (KEL-53 §4 "Candidate release after
@@ -105,59 +107,156 @@ impl WindowsExitCensus {
     }
 }
 
-/// The rights the census needs on one listed member: classification through
-/// `IsProcessInJob`, the exit wait and, outside the family, termination.
-const CENSUS_MEMBER_RIGHTS: u32 =
-    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE;
-/// Bound on one wait for a member whose termination was denied, before the
-/// next snapshot. The deadline refusal covers a member that never exits.
-const CENSUS_DENIED_MEMBER_WAIT: Duration = Duration::from_millis(25);
+/// One classifier and retake loop serve observation and consuming updater exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CensusPolicy {
+    Observe,
+    Terminate,
+}
 
-/// Opens one member of the host-death Job by the ID a snapshot listed, with
-/// exactly the census rights. This is the census's only lookup of that reusable
-/// ID: it classifies, waits and terminates through the handle returned here.
-///
-/// An ID that names no process object fails with `ERROR_INVALID_PARAMETER`, the
-/// status the census reads as "exited after the snapshot". An exited member
-/// whose object another open handle still keeps alive opens like a live one;
-/// its handle is signaled, and the census classifies it as any other member.
-/// Which of the two an exited ID shows depends on handles other processes
-/// hold, so the census relies on both.
-pub(super) fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
-    // SAFETY: OpenProcess reads no caller memory; a numeric ID that names no
-    // process object makes it fail. A non-null result is one fresh owning
-    // handle, converted exactly once below.
-    let raw = unsafe { OpenProcess(CENSUS_MEMBER_RIGHTS, 0, process_id) };
+impl CensusPolicy {
+    const fn member_rights(self) -> u32 {
+        let query_and_wait = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+        match self {
+            Self::Observe => query_and_wait,
+            Self::Terminate => query_and_wait | PROCESS_TERMINATE,
+        }
+    }
+}
+
+/// Private census facts are not an updater detach capability.
+struct CensusCounts {
+    family: u32,
+    terminated: u32,
+    snapshots: u32,
+}
+
+const CENSUS_RETAKE_WAIT: Duration = Duration::from_millis(25);
+
+/// Opens the reusable ID exactly once; classification and waits use that handle.
+/// Observe never acquires `PROCESS_TERMINATE`. `ERROR_INVALID_PARAMETER` is the
+/// documented missing-process outcome; other open failures remain errors.
+pub(super) fn open_member_for_policy(
+    process_id: u32,
+    policy: CensusPolicy,
+) -> io::Result<OwnedHandle> {
+    // SAFETY: OpenProcess reads no caller memory. A non-null result is one fresh
+    // handle with only the policy's rights, converted to one owner below.
+    let raw = unsafe { OpenProcess(policy.member_rights(), 0, process_id) };
     if raw.is_null() {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: `raw` is the fresh non-null owning handle returned above.
+    // SAFETY: raw is the fresh non-null owning handle returned above.
     Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
 }
 
-/// The host-death census of [`super::WindowsHostDeathJob::release_for_exit`]. The
-/// Jobs' owners retain both handles through the call.
+pub(super) fn open_census_member(process_id: u32) -> io::Result<OwnedHandle> {
+    open_member_for_policy(process_id, CensusPolicy::Terminate)
+}
+
+/// Consuming updater exit retains its one-family API and distinct proof. The
+/// caller still must clear the host-death limit before exposing this proof.
 pub(super) fn exit_census(
     host_death_job: HANDLE,
     attempt_job: HANDLE,
     deadline: Instant,
+    snapshot_ids: impl FnMut() -> Result<WindowsJobProcessIdSnapshot, WindowsHostJobError>,
+    open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
+) -> Result<WindowsExitCensus, WindowsHostJobError> {
+    let counts = census(
+        host_death_job,
+        &[attempt_job],
+        CensusPolicy::Terminate,
+        deadline,
+        snapshot_ids,
+        open_member,
+    )?;
+    Ok(WindowsExitCensus {
+        family: counts.family,
+        terminated: counts.terminated,
+        snapshots: counts.snapshots,
+    })
+}
+
+/// Observation borrows every retained family Job. It cannot clear a Job limit,
+/// terminate a process or mint the consuming updater's detach proof.
+pub(super) fn observe_census(
+    host_death_job: HANDLE,
+    family_jobs: &[HANDLE],
+    deadline: Instant,
+    snapshot_ids: impl FnMut() -> Result<WindowsJobProcessIdSnapshot, WindowsHostJobError>,
+) -> Result<(), WindowsHostJobError> {
+    let policy = CensusPolicy::Observe;
+    census(
+        host_death_job,
+        family_jobs,
+        policy,
+        deadline,
+        snapshot_ids,
+        |pid| open_member_for_policy(pid, policy),
+    )
+    .map(|_| ())
+}
+
+fn check_deadline(deadline: Instant, snapshots: u32) -> Result<(), WindowsHostJobError> {
+    if Instant::now() >= deadline {
+        return Err(WindowsHostJobError::contract(
+            "host-death census",
+            format!(
+                "the deadline passed before a clean census, with a member outside the \
+                 retained family or in transition after {snapshots} snapshot(s); not released"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Every unclean retake has a bounded wait, even if the only discrepancy is a
+/// kernel count/list transition. Round sub-millisecond remainder up to one OS
+/// wait tick; never accept a clean result after the original absolute deadline.
+fn wait_to_retake(
+    live_member: Option<&OwnedHandle>,
+    deadline: Instant,
+    snapshots: u32,
+) -> Result<(), WindowsHostJobError> {
+    check_deadline(deadline, snapshots)?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let wait = remaining.min(CENSUS_RETAKE_WAIT);
+    let millis = u32::try_from(wait.as_nanos().div_ceil(1_000_000)).unwrap_or(25);
+    // SAFETY: GetCurrentProcess returns a process-lifetime pseudo handle. It is
+    // not owned or closed and cannot signal while this caller is running.
+    let current = unsafe { GetCurrentProcess() };
+    let raw = live_member.map_or(current, |member| member.as_raw_handle().cast());
+    // SAFETY: the caller retains a query/synchronize member handle through this
+    // call, or raw is the current-process pseudo handle above. The wait is at
+    // most 25 ms and receives no pointers to caller-owned memory.
+    match unsafe { WaitForSingleObject(raw, millis.max(1)) } {
+        WAIT_OBJECT_0 | WAIT_TIMEOUT => Ok(()),
+        _ => Err(WindowsHostJobError::new("host-death census retake wait")),
+    }
+}
+
+fn census(
+    host_death_job: HANDLE,
+    family_jobs: &[HANDLE],
+    policy: CensusPolicy,
+    deadline: Instant,
     mut snapshot_ids: impl FnMut() -> Result<WindowsJobProcessIdSnapshot, WindowsHostJobError>,
     mut open_member: impl FnMut(u32) -> io::Result<OwnedHandle>,
-) -> Result<WindowsExitCensus, WindowsHostJobError> {
+) -> Result<CensusCounts, WindowsHostJobError> {
     let own_process_id = std::process::id();
     let mut terminated = 0_u32;
     let mut snapshots = 0_u32;
     loop {
+        check_deadline(deadline, snapshots)?;
         snapshots = snapshots.saturating_add(1);
         let snapshot = snapshot_ids()?;
-        // The kernel's count and list agree except while a membership change is in
-        // flight (KEL-270 F54); such a snapshot is retaken under the deadline, like
-        // one with an exited or reused ID, and is never a refusal.
         let mut clean = snapshot.is_settled();
         let mut family = 0_u32;
         let mut terminating = Vec::new();
-        let mut denied = Vec::new();
+        let mut waiting = None;
         for process_id in snapshot.ids {
+            check_deadline(deadline, snapshots)?;
             if process_id == own_process_id {
                 continue;
             }
@@ -166,7 +265,6 @@ pub(super) fn exit_census(
                 Err(source)
                     if source.raw_os_error() == Some(ERROR_INVALID_PARAMETER.cast_signed()) =>
                 {
-                    // The member exited after the snapshot; the next one omits it.
                     clean = false;
                     continue;
                 }
@@ -179,11 +277,14 @@ pub(super) fn exit_census(
             };
             let raw = member.as_raw_handle().cast();
             if !process_in_job(raw, host_death_job, "host-death census Job membership")? {
-                // The listed ID was reused by a process outside the Job.
                 clean = false;
                 continue;
             }
-            if process_in_job(raw, attempt_job, "host-death census family membership")? {
+            let mut in_family = false;
+            for &job in family_jobs {
+                in_family |= process_in_job(raw, job, "host-death census family membership")?;
+            }
+            if in_family {
                 family = family.saturating_add(1);
                 continue;
             }
@@ -192,17 +293,17 @@ pub(super) fn exit_census(
                 phase: "host-death census member state query",
                 source,
             })? {
-                // Already terminated; the list removes it on its own.
                 continue;
             }
-            // SAFETY: `member` is the live handle this census opened with
-            // PROCESS_TERMINATE; the call reads no caller memory. The member is a
-            // process of the host's own Job outside the released family, which
-            // closing that Job at exit would terminate in the same way.
+            if policy == CensusPolicy::Observe {
+                waiting.get_or_insert(member);
+                continue;
+            }
+            // SAFETY: only Terminate policy reaches this call. The retained
+            // handle identifies a live member of the host's own Job outside
+            // every retained family. Production opens it with PROCESS_TERMINATE.
             if unsafe { TerminateProcess(raw, 1) } == 0 {
-                // Denied, as for a protected process: it stays in the next
-                // snapshot and the deadline refusal covers it.
-                denied.push(member);
+                waiting.get_or_insert(member);
                 continue;
             }
             terminated = terminated.saturating_add(1);
@@ -215,36 +316,14 @@ pub(super) fn exit_census(
                 "host-death census member exit",
             )?;
         }
+        check_deadline(deadline, snapshots)?;
         if clean {
-            return Ok(WindowsExitCensus {
+            return Ok(CensusCounts {
                 family,
                 terminated,
                 snapshots,
             });
         }
-        let now = Instant::now();
-        if now >= deadline {
-            return Err(WindowsHostJobError::contract(
-                "host-death census",
-                format!(
-                    "the deadline passed with a member outside the released family or in \
-                     transition still in the host-death Job after {snapshots} snapshot(s); \
-                     not released"
-                ),
-            ));
-        }
-        if let Some(member) = denied.first() {
-            // A member the census could not terminate paces the next snapshot
-            // through a bounded wait on its own handle, in case it exits on its
-            // own; nothing here waits for a member that is already signaled.
-            let bound = now
-                .checked_add(CENSUS_DENIED_MEMBER_WAIT)
-                .map_or(deadline, |bound| bound.min(deadline));
-            wait_handle_bounded(
-                member.as_raw_handle().cast(),
-                bound,
-                "host-death census denied-member wait",
-            )?;
-        }
+        wait_to_retake(waiting.as_ref(), deadline, snapshots)?;
     }
 }

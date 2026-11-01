@@ -3038,7 +3038,7 @@ impl std::error::Error for WindowsHostJobError {
 
 mod host_death_census;
 pub use host_death_census::WindowsExitCensus;
-use host_death_census::{exit_census, open_census_member};
+use host_death_census::{exit_census, observe_census, open_census_member};
 
 /// The host's own host-death Job, held as a capability (KEL-53 §4 "Candidate
 /// release after commit", *Handle ownership*; Architecture 06 §1).
@@ -3085,6 +3085,69 @@ impl WindowsHostDeathJob {
     #[must_use]
     pub const fn observation(&self) -> WindowsHostJobObservation {
         self.observation
+    }
+
+    /// Waits for a settled census with no listed non-family members.
+    ///
+    /// GH1188 D7: every primary generation contributes its own retained family
+    /// Job, including retired generations whose descendants may still be alive.
+    /// Callers must stop admitting new resources before this bounded observation.
+    /// The family owners remain borrowed for the entire call. This does not
+    /// terminate any member, clear kill-on-close, or produce an updater detach
+    /// capability. Success is one census observation, not a future liveness lease.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unregistered family, a family containing this host, any failed
+    /// member/membership query, or expiry of the absolute deadline.
+    ///
+    /// ```no_run
+    /// use keld_runtime::windows_job::{WindowsHostDeathJob, WindowsHostJobError};
+    /// fn observe_only(host: &WindowsHostDeathJob) -> Result<(), WindowsHostJobError> {
+    ///     host.observe_non_family_exit(
+    ///         &[], std::time::Instant::now() + std::time::Duration::from_secs(1),
+    ///     )
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail,E0308
+    /// use keld_runtime::windows_job::{WindowsHostDeathJob, WindowsLaunchedProcess};
+    /// fn not_an_updater_proof(host: &WindowsHostDeathJob, launch: WindowsLaunchedProcess) {
+    ///     let observation = host.observe_non_family_exit(
+    ///         &[], std::time::Instant::now() + std::time::Duration::from_secs(1),
+    ///     ).expect("observation");
+    ///     let _ = launch.detach(observation);
+    /// }
+    /// ```
+    pub fn observe_non_family_exit(
+        &self,
+        families: &[&WindowsProcessJob],
+        deadline: Instant,
+    ) -> Result<(), WindowsHostJobError> {
+        let mut family_jobs = Vec::with_capacity(families.len());
+        // SAFETY: this pseudo handle names this calling process for the duration
+        // of these synchronous membership checks; it is neither owned nor closed.
+        let current_process = unsafe { GetCurrentProcess() };
+        for family in families {
+            if !family.host_assigned {
+                return Err(WindowsHostJobError::contract(
+                    "host-death census family registration",
+                    "a retained family must have a verified direct launch",
+                ));
+            }
+            let raw = family.handle.as_raw_handle().cast();
+            if process_in_job(current_process, raw, "host-death census family scope")? {
+                return Err(WindowsHostJobError::contract(
+                    "host-death census family scope",
+                    "the host itself must not belong to an excluded family",
+                ));
+            }
+            family_jobs.push(raw);
+        }
+        let host_job = self.handle.as_raw_handle().cast();
+        observe_census(host_job, &family_jobs, deadline, || {
+            list_job_process_ids(host_job, "host-death observation process-ID census")
+        })
     }
 
     /// The census, then the host-death clear: steps 6 and 7 of the
@@ -5015,6 +5078,7 @@ mod tests {
         assert!(again.to_string().contains("not released"), "{again}");
     }
 
+    mod census_observe;
     mod process_id_list;
 
     /// Two plain Jobs, `outer` standing for the host-death Job and `inner` for the
@@ -5043,6 +5107,56 @@ mod tests {
             }
         }
         (outer, inner, occupants)
+    }
+
+    #[test]
+    fn an_expired_census_cannot_issue_a_clean_release_proof() {
+        let outer = WindowsProcessJob::create().expect("create the host Job stand-in");
+        let inner = WindowsProcessJob::create().expect("create the family Job stand-in");
+        let refusal = exit_census(
+            outer.handle.as_raw_handle().cast(),
+            inner.handle.as_raw_handle().cast(),
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("the test clock has a one-millisecond past"),
+            || {
+                Ok(WindowsJobProcessIdSnapshot {
+                    ids: Vec::new(),
+                    assigned: 0,
+                })
+            },
+            open_census_member,
+        )
+        .expect_err("an expired observation must not mint a release proof");
+        assert!(refusal.to_string().contains("deadline"), "{refusal}");
+    }
+
+    #[test]
+    fn an_unsettled_census_is_paced_instead_of_busy_spinning() {
+        let outer = WindowsProcessJob::create().expect("create the host Job stand-in");
+        let inner = WindowsProcessJob::create().expect("create the family Job stand-in");
+        let mut snapshots = 0_u32;
+        let refusal = exit_census(
+            outer.handle.as_raw_handle().cast(),
+            inner.handle.as_raw_handle().cast(),
+            Instant::now() + Duration::from_millis(200),
+            || {
+                snapshots += 1;
+                Ok(WindowsJobProcessIdSnapshot {
+                    ids: Vec::new(),
+                    assigned: 1,
+                })
+            },
+            open_census_member,
+        )
+        .expect_err("an incomplete kernel snapshot cannot prove release");
+        assert!(refusal.to_string().contains("in transition"), "{refusal}");
+        // GH1188 D7: a 25 ms retake interval bounds this 200 ms observation.
+        // One initial and one final snapshot are allowed around the eight waits.
+        assert!(
+            snapshots <= 10,
+            "unsettled census busy-spun: {snapshots} snapshots"
+        );
     }
 
     #[test]
