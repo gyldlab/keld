@@ -1,5 +1,6 @@
 //! Source-owned diagnostics for an uncompleted public auth Quit on the actual shipping CLI.
 use super::{Case, Observation};
+use crate::public_fs::quit_body_receipt::QuitBodyReceipt;
 use crate::support::EVENT_DEADLINE;
 use crate::support::control::wait_child_output_observing;
 use crate::support::process::ProcessExitObserver;
@@ -96,14 +97,21 @@ pub(super) fn wait_for_auth_cli_quit(
     case: &Case,
     family: [u32; 4],
     native_exits: &mut [ProcessExitObserver; 4],
+    mut native_receipt: Option<&mut QuitBodyReceipt>,
 ) -> Output {
     let mut last_live_http = 0_u8;
+    let mut last_live_bun_body = "not_armed";
+    let native_receipt_deadline = std::time::Instant::now() + EVENT_DEADLINE;
     let mut last_live_kernel = [ExitPhase::NotSampled; 4];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_child_output_observing(cli_child, EVENT_DEADLINE, || {
             // This callback runs while the exact CLI Child is still live and
             // before its original 20-second exit/output deadline is checked.
             last_live_http = observation.quit_progress.load(Ordering::Acquire);
+            if let Some(receipt) = native_receipt.as_deref_mut() {
+                receipt.poll(native_receipt_deadline);
+                last_live_bun_body = receipt.stage();
+            }
             for (stage, witness) in last_live_kernel.iter_mut().zip(native_exits.iter_mut()) {
                 // Refusal is sticky: a later empty read cannot erase a
                 // failed native kernel observation. An observed original exit
@@ -118,13 +126,14 @@ pub(super) fn wait_for_auth_cli_quit(
     // optional redacted diagnostic must not replace the first source error.
     let _ = writeln!(
         std::io::stderr().lock(),
-        "KELD_KEL89_ORIGINAL_KERNEL_QUIT_PHASE cli_outcome={} last_live_http_stage={} host_exit={} guardian_exit={} bun_exit={} descendant_exit={}",
+        "KELD_KEL89_ORIGINAL_KERNEL_QUIT_PHASE cli_outcome={} last_live_http_stage={} bun_body_stage={} host_exit={} guardian_exit={} bun_exit={} descendant_exit={}",
         if result.is_ok() {
             "cli_exited"
         } else {
             "cli_deadline_or_capture_failed"
         },
         safe_quit_http_label(last_live_http),
+        last_live_bun_body,
         last_live_kernel[0].label(),
         last_live_kernel[1].label(),
         last_live_kernel[2].label(),

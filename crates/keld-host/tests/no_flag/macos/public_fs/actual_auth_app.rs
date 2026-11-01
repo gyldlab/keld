@@ -13,6 +13,7 @@ use super::application_link::assert_single_application_link;
 use super::observer::Observation;
 use super::process_image::process_image_path;
 use super::project::file_digest;
+use super::quit_body_receipt::QuitBodyReceipt;
 use crate::renderer_bridge::bundle_public_api_entry;
 use crate::support::EVENT_DEADLINE;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
@@ -23,6 +24,9 @@ use crate::support::native_window::{
 use crate::support::process::{
     ProcessExitObserver, await_process_gone, parent_process, process_group, session_dirs_for,
 };
+
+#[path = "actual_auth_app/body_receipt_tests.rs"]
+mod body_receipt_tests;
 
 #[path = "actual_auth_app/quit_diagnostics.rs"]
 mod quit_diagnostics;
@@ -171,7 +175,13 @@ struct Project {
     policy_digest: String,
 }
 impl Project {
-    fn prepare(parent: &Path, repo: &Path, case: &Case, port: u16) -> SmokeResult<Self> {
+    fn prepare(
+        parent: &Path,
+        repo: &Path,
+        case: &Case,
+        port: u16,
+        native_receipt: Option<&QuitBodyReceipt>,
+    ) -> SmokeResult<Self> {
         let root = parent.join(case.name);
         fs::create_dir(&root)?; // never overwrite any candidate or earlier project
         let root = fs::canonicalize(root)?;
@@ -183,9 +193,26 @@ impl Project {
                 .join("packages/@keld/api/src/index.ts")
                 .to_string_lossy(),
         )?;
-        let body = include_str!("../../../fixtures/public_auth_app.ts")
+        let mut body = include_str!("../../../fixtures/public_auth_app.ts")
             .replace("__PORT__", &port.to_string())
             .replace("__CASE__", &serde_json::to_string(case.name)?);
+        if let Some(receipt) = native_receipt {
+            // Only the new opt-in selector adds an independent native ACK.
+            // The original four-case fixture remains byte-for-byte unchanged.
+            let anchor = "console.error(\"KELD_KEL89_PUBLIC_QUIT_REQUEST \" + smokeCase);";
+            require(
+                body.matches(anchor).count() == 1,
+                "unique real post-body Bun callsite",
+            )?;
+            let verified = format!(
+                r#"const nativeQuitReceipt = await fetch("http://127.0.0.1:{}/keld-body-verified/{}");
+if (!nativeQuitReceipt.ok || await nativeQuitReceipt.text() !== "ack") throw new Error("native Quit body receipt refused");
+"#,
+                receipt.port(),
+                receipt.token(),
+            );
+            body = body.replacen(anchor, &format!("{verified}{anchor}"), 1);
+        }
         require(
             !body.contains("WorkerLink") && !body.contains("invokeAuth"),
             "smoke app must use only public API calls",
@@ -544,17 +571,86 @@ fn run_case(
     census: Option<&Path>,
     case: &Case,
 ) -> SmokeResult<Value> {
-    let mut observation = Observation::bind();
-    let project = Project::prepare(parent, repo, case, observation.port)?;
-    let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
-    let stdout = fs::File::create(project.root.join("cli.stdout"))?;
-    let stderr = fs::File::create(project.root.join("cli.stderr"))?;
+    run_case_with_body_receipt(parent, repo, cli, host_source, census, case, None)
+}
+
+// Preserve existing first-error ordering and native cleanup assertions.
+// This reduces the original launch function without weakening its acceptance.
+struct AuthQuitProof<'a> {
+    output: &'a std::process::Output,
+    observation: &'a Observation,
+    native_receipt: Option<&'a QuitBodyReceipt>,
+    lineage: [u32; 5],
+    host_image: &'a Path,
+    session_dir: &'a Path,
+    with_graphics: bool,
+}
+
+fn verify_auth_product_quit_cleanup(
+    proof: &AuthQuitProof<'_>,
+    native_exits: [ProcessExitObserver; 4],
+) -> SmokeResult<[std::process::ExitStatus; 4]> {
+    require(
+        proof.output.status.success(),
+        format!(
+            "shipping CLI public Quit failed; exit code {:?}",
+            proof.output.status.code()
+        ),
+    )?;
+    if let Some(receipt) = proof.native_receipt {
+        require(
+            proof
+                .observation
+                .quit_progress
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 2,
+            "native Bun receipt cannot substitute for actual observer /quit GET and response",
+        )?;
+        receipt.assert_verified();
+    }
+    let exits = native_exits.map(ProcessExitObserver::wait);
+    assert_product_cleanup(
+        &exits,
+        proof.lineage,
+        proof.lineage[1],
+        proof.host_image,
+        proof.session_dir,
+        proof.with_graphics,
+    )?;
+    Ok(exits)
+}
+
+fn write_starting_cli_status(root: &Path, case: &Case) -> SmokeResult<()> {
     fs::write(
-        project.root.join("launch-status.json"),
+        root.join("launch-status.json"),
         serde_json::to_vec_pretty(&json!({
             "status":"starting-cli", "case":case.name,
         }))?,
     )?;
+    Ok(())
+}
+
+fn run_case_with_body_receipt(
+    parent: &Path,
+    repo: &Path,
+    cli: &Path,
+    host_source: &Path,
+    census: Option<&Path>,
+    case: &Case,
+    mut native_receipt: Option<&mut QuitBodyReceipt>,
+) -> SmokeResult<Value> {
+    let mut observation = Observation::bind();
+    let project = Project::prepare(
+        parent,
+        repo,
+        case,
+        observation.port,
+        native_receipt.as_deref(),
+    )?;
+    let mut window = census.map(|path| NativeWindowObserver::arm_for_title(path, TITLE));
+    let stdout = fs::File::create(project.root.join("cli.stdout"))?;
+    let stderr = fs::File::create(project.root.join("cli.stderr"))?;
+    write_starting_cli_status(&project.root, case)?;
     let cli_child = Command::new(cli)
         .arg("dev")
         .current_dir(&project.root)
@@ -613,22 +709,19 @@ fn run_case(
         case,
         [host, guardian, bun, descendant],
         &mut native_exits,
+        native_receipt.as_deref_mut(),
     );
-    require(
-        output.status.success(),
-        format!(
-            "shipping CLI public Quit failed; exit code {:?}",
-            output.status.code()
-        ),
-    )?;
-    let exits = native_exits.map(ProcessExitObserver::wait);
-    assert_product_cleanup(
-        &exits,
-        [cli_pid, host, guardian, bun, descendant],
-        host,
-        &host_image,
-        &session_dir,
-        census.is_some(),
+    let exits = verify_auth_product_quit_cleanup(
+        &AuthQuitProof {
+            output: &output,
+            observation: &observation,
+            native_receipt: native_receipt.as_deref(),
+            lineage: [cli_pid, host, guardian, bun, descendant],
+            host_image: &host_image,
+            session_dir: &session_dir,
+            with_graphics: census.is_some(),
+        },
+        native_exits,
     )?;
     let active_terminal =
         await_active_begin_terminal(&observation, case, bun, active_listener.is_some())?;
