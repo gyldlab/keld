@@ -1,0 +1,21 @@
+{
+  "name": "@keld/electron-updater",
+  "version": "0.0.1",
+  "packageManager": "bun@1.4.4",
+  "type": "module",
+  "description": "Inert electron-updater compatibility adapter for migrated apps (GH-491)",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}
