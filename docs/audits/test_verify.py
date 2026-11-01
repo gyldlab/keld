@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,8 @@ REPO = HERE.parent.parent
 MANIFEST = "2026-09-19-full-spectrum-technical-audit.json"
 REPORT = "2026-09-19-full-spectrum-technical-audit.md"
 UTF8 = "utf-8"
+FINAL19 = "macos-guardian-2026-10-19-86933528-final19"
+FINAL19_POLICY = runpy.run_path(str(HERE / FINAL19 / "verify_final19.py"))
 
 
 class AuditVerifyTests(unittest.TestCase):
@@ -75,7 +79,10 @@ class AuditVerifyTests(unittest.TestCase):
         data = json.loads(current_manifest)
         audited_keld_revision = data["audited_revisions"]["gyldlab/keld"]
         subprocess.run(
-            ["git", "fetch", "-q", str(REPO), audited_keld_revision],
+            [
+                "git", "fetch", "-q", str(REPO), audited_keld_revision,
+                *(FINAL19_POLICY[key] for key in ("PARENT", "BASELINE", "SOURCE")),
+            ],
             cwd=self.repo,
             check=True,
         )
@@ -146,6 +153,51 @@ class AuditVerifyTests(unittest.TestCase):
     def test_current_fixture_passes(self) -> None:
         result = self.verify()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_final19_negative_controls_pass(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-B", str(self.audits / FINAL19 / "test_verify_final19.py")],
+            cwd=self.repo, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_final19_verifier_fails_closed(self) -> None:
+        (self.audits / FINAL19 / "verify_final19.py").unlink()
+        self.assert_rejected("Guardian final19 verifier failed")
+
+    def test_missing_final19_bundle_fails_closed(self) -> None:
+        shutil.rmtree(self.audits / FINAL19)
+        self.assert_rejected("Guardian final19 verifier failed")
+
+    def test_canonical_dispatch_checks_final19(self) -> None:
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Guardian final19 structural evidence: PASS", result.stdout)
+
+    def test_final19_corruption_is_rejected_by_canonical_process(self) -> None:
+        target = self.audits / FINAL19 / "review_append.csv"
+        original = target.read_bytes()
+        for field, value, diagnostic in (
+            ("disposition_and_gap", "fully-reviewed", "unearned semantic completion"),
+            ("source_lines", "native_activity.rs:10-41", "historical source interval/anchor removed"),
+        ):
+            with self.subTest(field=field):
+                with target.open(newline="", encoding=UTF8) as source:
+                    reader = csv.DictReader(source)
+                    columns, rows = reader.fieldnames, list(reader)
+                rows[0][field] = value
+                with target.open("w", newline="", encoding=UTF8) as output:
+                    writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\n")
+                    writer.writeheader()
+                    writer.writerows(rows)
+                self.assert_rejected(diagnostic)
+                target.write_bytes(original)
+
+    def test_missing_git_objects_fail_explicitly(self) -> None:
+        # Remove only this disposable fixture's objects; no remote fallback exists.
+        shutil.rmtree(self.repo / ".git" / "objects")
+        (self.repo / ".git" / "objects").mkdir()
+        self.assert_rejected("missing immutable Git evidence")
 
     def test_invalid_confidence_is_rejected(self) -> None:
         data = self.manifest()
