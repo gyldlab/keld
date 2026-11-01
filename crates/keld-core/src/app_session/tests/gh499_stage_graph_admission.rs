@@ -52,11 +52,8 @@ mod gh499_graph {
         assert_eq!(raw.len(), 64);
         let mut result = [0_u8; 32];
         for (index, pair) in raw.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-            result[index] = u8::from_str_radix(
-                std::str::from_utf8(pair).expect("hex"),
-                16,
-            )
-            .expect("pinned SHA");
+            result[index] = u8::from_str_radix(std::str::from_utf8(pair).expect("hex"), 16)
+                .expect("pinned SHA");
         }
         result
     }
@@ -83,8 +80,10 @@ mod gh499_graph {
                 ("src/main/electron.js", APP),
                 ("drawio/src/main/webapp/index.html", "<html>inert</html>\n"),
                 ("node_modules/electron/package.json", ELECTRON_PACKAGE),
-                ("node_modules/electron/dist/index.js",
-                    "export const neverEvaluate = \"FIRST_PARTY_FIXTURE_ONLY\";\n"),
+                (
+                    "node_modules/electron/dist/index.js",
+                    "export const neverEvaluate = \"FIRST_PARTY_FIXTURE_ONLY\";\n",
+                ),
                 ("node_modules/@keld/api/package.json", API_PACKAGE),
                 ("node_modules/@keld/kipc/package.json", KIPC_PACKAGE),
                 ("package.json", ROOT_PACKAGE),
@@ -92,7 +91,10 @@ mod gh499_graph {
             ] {
                 Self::write(&root, name, contents.as_bytes());
             }
-            Self { _owned: owned, root }
+            Self {
+                _owned: owned,
+                root,
+            }
         }
         fn write(root: &Path, name: &str, content: &[u8]) {
             let file = root.join(name);
@@ -105,9 +107,10 @@ mod gh499_graph {
             fs::write(self.root.join(GRAPH_FILE), &leaf).expect("stage graph");
             leaf
         }
-        fn selected(&self, approval: &ApprovedGraphCaptureInput) ->
-            Result<super::super::graph_contract::AdmittedStageGraph,
-                   super::super::HostAppError>
+        fn selected(
+            &self,
+            approval: &ApprovedGraphCaptureInput,
+        ) -> Result<super::super::graph_contract::AdmittedStageGraph, super::super::HostAppError>
         {
             let leaf = fs::read(self.root.join(GRAPH_FILE)).expect("graph selected");
             admit_stage_graph(&self.root, &leaf, approval)
@@ -119,12 +122,18 @@ mod gh499_graph {
         let stage = InertStage::new();
         let approval = approved();
         stage.leaf(&approval);
-        let graph = stage.selected(&approval).expect("three independently pinned providers");
+        let graph = stage
+            .selected(&approval)
+            .expect("three independently pinned providers");
         graph.recheck().expect("unchanged G2 selection");
-        let assets = graph.verified_resource_assets().expect("same captured file index");
+        let assets = graph
+            .verified_resource_assets()
+            .expect("same captured file index");
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].path, Path::new("index.html"));
-        let _code_dir = graph.clone_verified_code_root().expect("owned nofollow code root");
+        let _code_dir = graph
+            .clone_verified_code_root()
+            .expect("owned nofollow code root");
         assert!(!stage.root.join("app-ran").exists());
         assert!(!stage.root.join("foreign-ran").exists());
     }
@@ -137,7 +146,9 @@ mod gh499_graph {
         for index in 0..3 {
             let mut forged = approved();
             forged.expected_package_trees[index][0] ^= 0x55;
-            let error = stage.selected(&forged).expect_err("foreign provider subtree");
+            let error = stage
+                .selected(&forged)
+                .expect_err("foreign provider subtree");
             assert!(
                 error.to_string().contains("approved package artifact"),
                 "provider index {index}: {error}"
@@ -158,10 +169,9 @@ mod gh499_graph {
             "node_modules/dependency/node_modules/electron/package.json",
             b"{\"name\":\"electron\",\"version\":\"44.5.1\"}\n",
         );
-        let mut lock: serde_json::Value = serde_json::from_str(ROOT_LOCK)
-            .expect("original inert lock data");
-        lock["packages"]["node_modules/dependency"] =
-            serde_json::json!({"version": "1.0.0"});
+        let mut lock: serde_json::Value =
+            serde_json::from_str(ROOT_LOCK).expect("original inert lock data");
+        lock["packages"]["node_modules/dependency"] = serde_json::json!({"version": "1.0.0"});
         lock["packages"]["node_modules/dependency/node_modules/electron"] =
             serde_json::json!({"name":"electron","version":"44.5.1"});
         let bytes = serde_json::to_vec(&lock).expect("self-consistent nested lock");
@@ -191,10 +201,13 @@ mod gh499_graph {
         let independent = InertStage::new();
         independent.leaf(&approval);
         InertStage::write(
-            &independent.root, "node_modules/electron/unlisted.js",
+            &independent.root,
+            "node_modules/electron/unlisted.js",
             b"console.log('foreign code that must not execute');\n",
         );
-        let error = independent.selected(&approval).expect_err("extra unbound installed JS");
+        let error = independent
+            .selected(&approval)
+            .expect_err("extra unbound installed JS");
         assert!(error.to_string().contains("unlisted"), "{error}");
     }
 
@@ -203,15 +216,19 @@ mod gh499_graph {
         let stage = InertStage::new();
         let approval = approved();
         stage.leaf(&approval);
-        let selected = stage.selected(&approval).expect("original selected G1 graph");
+        let selected = stage
+            .selected(&approval)
+            .expect("original selected G1 graph");
         InertStage::write(
-            &stage.root, "drawio/src/main/webapp/index.html",
+            &stage.root,
+            "drawio/src/main/webapp/index.html",
             b"<html>changed before G2</html>\n",
         );
-        let err = selected.recheck().expect_err("G2 must refuse changed captured asset");
+        let err = selected
+            .recheck()
+            .expect_err("G2 must refuse changed captured asset");
         assert!(
-            err.to_string().contains("file size") ||
-            err.to_string().contains("file digest"),
+            err.to_string().contains("file size") || err.to_string().contains("file digest"),
             "{err}"
         );
     }
@@ -220,8 +237,8 @@ mod gh499_graph {
     fn graph_leaf_size_bound_uses_8_mib_and_no_candidate() {
         let stage = InertStage::new();
         let huge = vec![b' '; 8 * 1024 * 1024 + 1];
-        let err = admit_stage_graph(&stage.root, &huge, &approved())
-            .expect_err("8 MiB exact leaf limit");
+        let err =
+            admit_stage_graph(&stage.root, &huge, &approved()).expect_err("8 MiB exact leaf limit");
         assert!(err.to_string().contains("8 MiB"), "{err}");
         assert!(!stage.root.join("app-ran").exists());
     }
@@ -244,15 +261,17 @@ mod gh499_graph {
     #[test]
     fn bound_graph_entry_must_equal_host_and_guardian_selected_entry() {
         let stage = InertStage::new();
-        InertStage::write(&stage.root, "src/main/other.js", b"// inert alternate entry\n");
+        InertStage::write(
+            &stage.root,
+            "src/main/other.js",
+            b"// inert alternate entry\n",
+        );
         let leaf = stage.leaf(&approved());
         let hash: [u8; 32] = Sha256::digest(&leaf).into();
-        read_bound_graph_leaf(
-            &stage.root, hash, Path::new("src/main/electron.js"),
-        ).expect("the exact selected entry matches");
-        let err = read_bound_graph_leaf(
-            &stage.root, hash, Path::new("src/main/other.js"),
-        ).expect_err("boot entry cannot select another captured code file");
+        read_bound_graph_leaf(&stage.root, hash, Path::new("src/main/electron.js"))
+            .expect("the exact selected entry matches");
+        let err = read_bound_graph_leaf(&stage.root, hash, Path::new("src/main/other.js"))
+            .expect_err("boot entry cannot select another captured code file");
         assert!(err.to_string().contains("entry"), "{err}");
         assert!(!stage.root.join("app-ran").exists());
     }
@@ -262,9 +281,10 @@ mod gh499_graph {
         let stage = InertStage::new();
         stage.leaf(&approved());
         let bound = stage.selected(&approved()).expect("valid first generation");
-        fs::create_dir(stage.root.join("unlisted-empty"))
-            .expect("simulated late empty directory");
-        let err = bound.recheck().expect_err("second generation must reject extra directory");
+        fs::create_dir(stage.root.join("unlisted-empty")).expect("simulated late empty directory");
+        let err = bound
+            .recheck()
+            .expect_err("second generation must reject extra directory");
         assert!(err.to_string().contains("directory"), "{err}");
     }
 
@@ -272,7 +292,8 @@ mod gh499_graph {
     fn nested_app_package_scope_cannot_introduce_import_redirect() {
         let stage = InertStage::new();
         InertStage::write(
-            &stage.root, "src/main/package.json",
+            &stage.root,
+            "src/main/package.json",
             br##"{"imports":{"#helper":"./foreign.js"}}"##,
         );
         InertStage::write(&stage.root, "src/main/foreign.js", b"// never run\n");
@@ -286,16 +307,19 @@ mod gh499_graph {
         for provider in ["@keld/api", "@keld/kipc"] {
             let stage = InertStage::new();
             InertStage::write(
-                &stage.root, "node_modules/consumer/package.json",
+                &stage.root,
+                "node_modules/consumer/package.json",
                 br#"{"name":"consumer","version":"1.0.0"}"#,
             );
             let nested = format!("node_modules/consumer/node_modules/{provider}");
             InertStage::write(
-                &stage.root, &format!("{nested}/package.json"),
+                &stage.root,
+                &format!("{nested}/package.json"),
                 format!("{{\"name\":\"{provider}\",\"version\":\"0.0.1\"}}\n").as_bytes(),
             );
             InertStage::write(
-                &stage.root, &format!("{nested}/index.js"),
+                &stage.root,
+                &format!("{nested}/index.js"),
                 b"// counterfeit closer provider must not be evaluated\n",
             );
             let mut lock: serde_json::Value =
@@ -320,7 +344,8 @@ mod gh499_graph {
         let stage = InertStage::new();
         let duplicate_package = ROOT_PACKAGE.replacen(
             "\"dependencies\":",
-            "\"dependencies\":{\"electron\":\"electron\"},\"dependencies\":", 1,
+            "\"dependencies\":{\"electron\":\"electron\"},\"dependencies\":",
+            1,
         );
         InertStage::write(&stage.root, "package.json", duplicate_package.as_bytes());
         let mut approval = approved();
@@ -330,11 +355,12 @@ mod gh499_graph {
         assert!(err.to_string().contains("duplicate"), "{err}");
 
         let independent = InertStage::new();
-        let duplicate_lock = ROOT_LOCK.replacen(
-            "\"packages\":", "\"packages\":{},\"packages\":", 1,
-        );
+        let duplicate_lock =
+            ROOT_LOCK.replacen("\"packages\":", "\"packages\":{},\"packages\":", 1);
         InertStage::write(
-            &independent.root, "package-lock.json", duplicate_lock.as_bytes(),
+            &independent.root,
+            "package-lock.json",
+            duplicate_lock.as_bytes(),
         );
         let mut pinned = approved();
         pinned.expected_lock_sha256 = Sha256::digest(duplicate_lock.as_bytes()).into();
@@ -378,8 +404,11 @@ mod gh499_graph {
         let selected = "file:/private/var/tmp/verified/keld-electron-0.0.1.tgz";
         let pinned = retarget_local_electron_archive(&stage, selected, selected);
         stage.leaf(&pinned);
-        stage.selected(&pinned).expect("approved real installed provider identity")
-            .recheck().expect("same verified data at G2");
+        stage
+            .selected(&pinned)
+            .expect("approved real installed provider identity")
+            .recheck()
+            .expect("same verified data at G2");
         assert!(!stage.root.join("app-ran").exists());
     }
 

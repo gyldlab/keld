@@ -68,11 +68,17 @@ fn gh499_exact_schema_five_graph_does_not_change_schema_four_profile_contract() 
         let err = must_err(parse_boot_bytes(&encoded), "strict schema boundary");
         assert_eq!(err.code(), "KELD-CORE-035", "{name}");
     }
-    let duplicated = String::from_utf8(graph).expect("encoded")
-        .replacen("\"graph\":", "\"graph\":{},\"graph\":", 1);
+    let duplicated = String::from_utf8(graph).expect("encoded").replacen(
+        "\"graph\":",
+        "\"graph\":{},\"graph\":",
+        1,
+    );
     assert!(parse_boot_bytes(duplicated.as_bytes()).is_err());
     let normal = br#"{"schema":4,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
-    assert_eq!(parse_boot_bytes(normal).expect("unchanged schema4").schema, 4);
+    assert_eq!(
+        parse_boot_bytes(normal).expect("unchanged schema4").schema,
+        4
+    );
 }
 
 #[test]
