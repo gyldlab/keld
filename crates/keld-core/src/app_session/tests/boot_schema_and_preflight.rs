@@ -20,6 +20,61 @@ fn approved_schema_two_facade_boot_accepts_no_renderer() {
     assert!(parsed.auth_configuration.is_empty());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn gh499_exact_schema_five_graph_does_not_change_schema_four_profile_contract() {
+    let valid = serde_json::json!({
+        "schema": 5,
+        "name": "original-graph-fixture",
+        "entry": "src/main/electron.js",
+        "permissions": {
+            "file": "keld.permissions.jsonc",
+            "content_sha256": format!("sha256:{}", "ca".repeat(32))
+        },
+        "graph": {
+            "file": "keld.stage-graph.json",
+            "content_sha256": format!("sha256:{}", "ab".repeat(32))
+        }
+    });
+    let graph = serde_json::to_vec(&valid).expect("test graph descriptor");
+    let selected = parse_boot_bytes(&graph).expect("closed schema5 parsed");
+    assert_eq!(selected.schema, 5);
+    assert!(matches!(selected.initial, InitialWindow::None));
+    assert_eq!(selected.graph_digest, Some([0xab; 32]));
+
+    for (name, bad) in [
+        ("missing graph", {
+            let mut x = valid.clone();
+            x.as_object_mut().expect("object").remove("graph");
+            x
+        }),
+        ("wrong graph file", {
+            let mut x = valid.clone();
+            x["graph"]["file"] = "foreign.json".into();
+            x
+        }),
+        ("wrong digest", {
+            let mut x = valid.clone();
+            x["graph"]["content_sha256"] = format!("sha256:{}", "AB".repeat(32)).into();
+            x
+        }),
+        ("old schema cannot take graph", {
+            let mut x = valid.clone();
+            x["schema"] = 4.into();
+            x
+        }),
+    ] {
+        let encoded = serde_json::to_vec(&bad).expect("malformed test input");
+        let err = must_err(parse_boot_bytes(&encoded), "strict schema boundary");
+        assert_eq!(err.code(), "KELD-CORE-035", "{name}");
+    }
+    let duplicated = String::from_utf8(graph).expect("encoded")
+        .replacen("\"graph\":", "\"graph\":{},\"graph\":", 1);
+    assert!(parse_boot_bytes(duplicated.as_bytes()).is_err());
+    let normal = br#"{"schema":4,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;
+    assert_eq!(parse_boot_bytes(normal).expect("unchanged schema4").schema, 4);
+}
+
 #[test]
 fn schema_one_still_requires_renderer() {
     let bytes = br#"{"schema":1,"name":"Fixture","entry":"src/main.ts","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#;

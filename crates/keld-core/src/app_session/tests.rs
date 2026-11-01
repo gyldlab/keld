@@ -436,6 +436,8 @@ include!("tests/session_handover.rs");
 include!("tests/windows_profile_and_boot.rs");
 include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
+#[cfg(target_os = "macos")]
+include!("tests/gh499_stage_graph_admission.rs");
 include!("tests/profile_admission.rs");
 include!("tests/filesystem_guard_and_recovery.rs");
 include!("tests/guarded_router_and_quit.rs");

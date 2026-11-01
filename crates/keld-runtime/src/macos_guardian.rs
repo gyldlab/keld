@@ -136,6 +136,9 @@ const GENERATION_CONTROL_POLL: Duration = Duration::from_millis(20);
 /// It carries no authority: authenticated registration and the inherited
 /// liveness descriptor must still validate before Bun can spawn.
 pub const SUPERVISED_GUARDIAN_ARG: &str = "--keld-internal-macos-guardian-v1";
+/// Strict private graph-hash carrier for the schema-five first-proof boot.
+/// V1 remains unchanged for every existing ordinary stage.
+pub const SUPERVISED_GUARDIAN_ARG_V2: &str = "--keld-internal-macos-guardian-v2";
 
 /// Observable completion of one guardian-owned Bun process group.
 #[derive(Debug)]

@@ -9,6 +9,11 @@ mod dialog_custody_contract;
 #[cfg(target_os = "macos")]
 mod dialog_session;
 mod error;
+/// Bounded GH499 owned, no-evaluation installed graph validator reused by
+/// the KEL96 stage, Host and authenticated macOS Guardian.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod graph_contract;
 #[cfg(target_os = "macos")]
 mod launch_facts;
 #[cfg(target_os = "macos")]
@@ -417,6 +422,8 @@ struct AppBootSelection {
     entry_file: File,
     initial_window: ValidatedInitialWindow,
     auth_configuration: AuthConfiguration,
+    #[cfg(target_os = "macos")]
+    graph: Option<graph_contract::AdmittedStageGraph>,
     #[cfg(windows)]
     mode: WindowsBootMode,
 }
@@ -1407,6 +1414,18 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     };
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
+    #[cfg(target_os = "macos")]
+    let selected_graph = parsed
+        .graph_digest
+        .map(|digest| {
+            graph_contract::read_bound_graph_leaf_from_retained(
+                &root,
+                &root_fd,
+                digest,
+                &parsed.entry,
+            )
+        })
+        .transpose()?;
     Ok(ValidatedBootSelection {
         schema: parsed.schema,
         app: AppBootSelection {
@@ -1417,6 +1436,8 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             entry_file,
             initial_window,
             auth_configuration: parsed.auth_configuration,
+            #[cfg(target_os = "macos")]
+            graph: selected_graph,
         },
         permissions_file,
         permissions_digest: parsed.permissions_digest,
@@ -2418,6 +2439,7 @@ fn run_app(
         entry_file,
         initial_window,
         auth_configuration,
+        graph,
     } = boot;
     let (html, ready_trigger) = match initial_window {
         ValidatedInitialWindow::Renderer(renderer_html) => {
@@ -2453,12 +2475,28 @@ fn run_app(
         std::env::current_exe().map_err(|source| app_io("current executable", &source))?;
     let mut guardian_command = Command::new(executable);
     guardian_command
-        .arg(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
+        .arg(if graph.is_some() {
+            keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG_V2
+        } else {
+            keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG
+        })
         .arg(&root)
         .arg(&entry_path)
         .arg(entry_metadata.dev().to_string())
         .arg(entry_metadata.ino().to_string());
     configure_guardian_boot_mode(&mut guardian_command, ready_trigger);
+    if let Some(ref verified_graph) = graph {
+        // One private digest argument, after the existing boot-mode position.
+        // Optional launch facts retain their distinct final argument slot.
+        let digest = verified_graph.graph_sha256();
+        let mut lower = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            write!(&mut lower, "{byte:02x}")
+                .map_err(|source| app_detail("graph digest encoding", source.to_string()))?;
+        }
+        guardian_command.arg(lower);
+    }
     if let Some(facts) = launch_facts {
         guardian_command.arg(facts.private_argument()?);
     }

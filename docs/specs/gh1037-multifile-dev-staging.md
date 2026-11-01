@@ -9,6 +9,10 @@ continuation under the user's delegated technical decisions. Its independent
 review and native acceptance remain separate gates; it does not approve or
 implement general source-tree copying.
 
+The later **private graph-bound first-proof slice** in §11 is separately
+approved. It does not enable general tree copying in ordinary `keld dev` or
+change the historical verification results recorded below.
+
 ## 1. Goal & non-goals
 
 Let a macOS development entry import sibling and other project-relative source
@@ -434,3 +438,73 @@ remapping. Official Bun1.4.4 documentation confirms
 and [package/path resolution](https://bun.sh/docs/runtime/module-resolution).
 Supported claim: these are active startup/resolution inputs, not inert copied
 data. No new loader mechanism is selected; the owning qualification is unknown.
+
+## 11. Private graph-bound macOS first-proof slice (2026-11-01)
+
+The scoped [GH499 graph decision](https://github.com/gyldlab/keld/issues/499#issuecomment-6556551302)
+and [integration follow-up](https://github.com/gyldlab/keld/issues/499#issuecomment-6557697903)
+authorize an explicit Rust-only `stage_dev_boot_with_approved_graph` caller.
+The [entry-path correction](https://github.com/gyldlab/keld/issues/499#issuecomment-6557906883)
+preserves the actual relative Guardian argument. These are owner-delegated
+contract decisions, not original-application, release or other-OS qualification.
+
+The existing CLI stage transaction remains the sole producer. Before allocating
+its private nonce, it compares the approved root package and real npm lock bytes
+and all three installed runtime providers against independent packed-artifact
+expectations: `electron` (package name `@keld/electron`), `@keld/api`, and
+`@keld/kipc`. The expected provider fingerprint is SHA-256 over each sorted
+package-relative UTF-8 path, NUL, decimal size, NUL, raw file digest, NUL. The
+expectations are private caller inputs; the application-authored graph cannot
+provide its own trust root.
+
+Copy the admitted regular-file source from one retained no-follow root. Check
+parent and leaf device/inode/type/timestamps before and after capture, compare
+the streamed destination bytes, and repeat the complete physical census before
+publication. Reject symlinks, special files and empty directories not implied by
+captured file paths. Do not copy `.git`, `.keld`, or `keld.config.ts`; permissions
+remain separately captured by their existing owner. This is a cooperating-user
+development integrity boundary, not resistance to arbitrary same-user mutation
+after the final check or signed-release authenticity.
+
+The fixed `keld.stage-graph.json` has exactly three fields: `schema` with value
+`keld.stage.graph/v1`, portable relative `entry`, and sorted `files`. Each file
+has exactly `path`, `size`, and lowercase prefixed SHA-256. Bounds are 8 MiB for
+the graph, 32,768 regular files, 65,536 census entries, 64 path components,
+4,096 UTF-8 path bytes, and 4 MiB per package/lock/config JSON. File copying and
+hashing use a 64-KiB buffer. The shared Guard-owned strict JSON parser refuses
+duplicate package/lock keys. Reject nested alternate runtime providers,
+unapproved package imports and runtime/path configuration, missing/unlisted
+files, and mismatched size or digest. The three-field graph has no extra
+permission, profile, source-provenance or provider-approval fields.
+
+Schema five extends only the existing explicitly profiled facade. Its graph
+binding names the fixed leaf and hashes its exact raw bytes. Profile authority
+still comes only from the verified permissions snapshot. Host uses its retained
+stage root for the descriptor, entry, policy and graph. Guardian V2 receives
+the graph digest after authenticated registration and rechecks the same graph
+before every prepared Bun generation. Private argv[3] remains relative and
+must equal the graph entry; absolute aliases and traversal are refused.
+
+For these unpublished local first-proof packages, the owned installer may use
+exact `file:.keld/approved-artifacts/<package>.tgz` selectors. Root dependency,
+actual npm lock selection, installed package identity and independently packed
+provider bytes must agree. Generate the lock with npm; never hand-edit it to
+fake a registry alias. `.keld` holds build inputs only and is excluded from the
+runtime stage. A `file:` prefix or integrity-looking string alone grants no trust.
+
+Every graph generation preloads the actual admitted
+`node_modules/@keld/kipc/transport.js` before application dependencies. The
+installed SDK imports that same module; no copied second transport is created.
+Historical schema-one-to-four sidecar selection and environment/no-install
+rules remain unchanged. Native resource consumers obtain a retained code-root
+descriptor and immutable asset facts from the same graph off the UI thread;
+those accessors alone do not implement resource delivery or preload execution.
+
+The bounded fixture `graph_stage.rs` packs the actual three SDK providers,
+installs them offline, then drives shipping Host/Guardian G1 and G2. Its early
+application dependency changes `DataView`; the test failed with one hook before
+the installed transport preload was wired and passes with zero afterward.
+A separate native case changes one captured asset after G1 and proves Guardian
+refuses the successor before its application entry connects. These are authored
+framework fixtures, not draw.io. Full original launch/open/edit/save/reopen and
+unsaved-close acceptance remains separately required.

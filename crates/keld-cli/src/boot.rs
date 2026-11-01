@@ -39,6 +39,8 @@ const KIPC_TRANSPORT_REL: &str = "src/kipc-transport.ts";
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 #[cfg(target_os = "macos")]
+mod graph_capture;
+#[cfg(target_os = "macos")]
 mod macos_stage;
 
 /// One completed owner-private non-release app stage.
@@ -357,6 +359,24 @@ pub fn stage_dev_boot(
     }
 }
 
+/// A reviewed GH499/GH589 caller's explicit first-proof graph input.
+/// This is a private Rust integration helper; no public CLI verb or
+/// project-owned config/environment can request graph schema 5.
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub fn stage_dev_boot_with_approved_graph(
+    project_root: &Path,
+    developer_host: &Path,
+    approved: &keld_core::app_session::graph_contract::ApprovedGraphCaptureInput,
+) -> Result<DevBootStage, BootCompileError> {
+    stage_dev_boot_platform_with_owner_check_and_graph(
+        project_root,
+        developer_host,
+        Some(approved),
+        ensure_current_principal_owns,
+    )
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn stage_dev_boot_platform(
     project_root: &Path,
@@ -374,6 +394,40 @@ fn stage_dev_boot_platform(
 fn stage_dev_boot_platform_with_owner_check<F>(
     project_root: &Path,
     developer_host: &Path,
+    owner_check: F,
+) -> Result<DevBootStage, BootCompileError>
+where
+    F: FnMut(&Path) -> Result<(), ProjectOwnershipError>,
+{
+    #[cfg(target_os = "macos")]
+    {
+        stage_dev_boot_platform_with_owner_check_and_graph(
+            project_root,
+            developer_host,
+            None,
+            owner_check,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        stage_dev_boot_platform_with_owner_check_and_graph(
+            project_root,
+            developer_host,
+            owner_check,
+        )
+    }
+}
+
+/// This is still the one `StageGuard`, selected nonce and source-copy owner.
+/// The new argument is supplied only by the explicit first-proof Rust caller.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+#[allow(clippy::too_many_lines)]
+fn stage_dev_boot_platform_with_owner_check_and_graph<F>(
+    project_root: &Path,
+    developer_host: &Path,
+    #[cfg(target_os = "macos")] approved_graph: Option<
+        &keld_core::app_session::graph_contract::ApprovedGraphCaptureInput,
+    >,
     mut owner_check: F,
 ) -> Result<DevBootStage, BootCompileError>
 where
@@ -461,6 +515,31 @@ where
     #[cfg(not(target_os = "macos"))]
     let permissions_bytes = PERMISSIONS_BYTES;
     let schema = keld_core::app_session::boot_schema(facade, declared_profile);
+    #[cfg(target_os = "macos")]
+    let schema = if approved_graph.is_some() {
+        if !facade || declared_profile.is_none() || !auth_configuration.is_empty() {
+            return Err(BootCompileError::new(
+                "approved graph input",
+                "graph schema 5 requires the existing explicit-profile facade and no auth; preserve the requested /profile",
+            ));
+        }
+        5
+    } else {
+        schema
+    };
+    #[cfg(target_os = "macos")]
+    if let Some(expected) = approved_graph {
+        // Check all three actual installed first-party provider trees and the
+        // approved package/lock before allocating the nonce or copying files.
+        // This produces no executable marker or source/graph side effect.
+        keld_core::app_session::graph_contract::verify_approved_source_inputs(
+            &project_root,
+            expected,
+        )
+        .map_err(|source| {
+            BootCompileError::new("GH499 approved source preflight", source.to_string())
+        })?;
+    }
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = renderer
@@ -541,35 +620,53 @@ where
         "launcher",
     )?;
 
-    stage_project_file(&root, &entry, &entry_source, "entry")?;
-    if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
-        stage_project_file(&root, renderer, source, "renderer")?;
+    #[cfg(target_os = "macos")]
+    if approved_graph.is_some() {
+        graph_capture::capture_complete_tree(&project_root, &root, &mut owner_check)?;
+    } else {
+        stage_project_file(&root, &entry, &entry_source, "entry")?;
+        if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+            stage_project_file(&root, renderer, source, "renderer")?;
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        stage_project_file(&root, &entry, &entry_source, "entry")?;
+        if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+            stage_project_file(&root, renderer, source, "renderer")?;
+        }
     }
     // Probe with two Path components. `join("src/kipc-transport.ts")` then
     // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
     // separator); `contained_source` still uses the same relative string as
     // `entry` (`src/main.ts`), which `canonicalize` already accepts.
-    match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
-        Ok(metadata) if metadata.is_file() => {
-            let transport_source =
-                contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
-            owner_check(&transport_source)?;
-            stage_project_file(
-                &root,
-                KIPC_TRANSPORT_REL,
-                &transport_source,
-                "kipc transport",
-            )?;
-        }
-        Ok(_) => {
-            return Err(BootCompileError::new(
-                "kipc transport",
-                "target is not a regular file",
-            ));
-        }
-        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(BootCompileError::new("kipc transport", source.to_string()));
+    #[cfg(target_os = "macos")]
+    let capture_sidecar_separately = approved_graph.is_none();
+    #[cfg(not(target_os = "macos"))]
+    let capture_sidecar_separately = true;
+    if capture_sidecar_separately {
+        match fs::metadata(project_root.join("src").join("kipc-transport.ts")) {
+            Ok(metadata) if metadata.is_file() => {
+                let transport_source =
+                    contained_source(&project_root, KIPC_TRANSPORT_REL, "kipc transport")?;
+                owner_check(&transport_source)?;
+                stage_project_file(
+                    &root,
+                    KIPC_TRANSPORT_REL,
+                    &transport_source,
+                    "kipc transport",
+                )?;
+            }
+            Ok(_) => {
+                return Err(BootCompileError::new(
+                    "kipc transport",
+                    "target is not a regular file",
+                ));
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(BootCompileError::new("kipc transport", source.to_string()));
+            }
         }
     }
     write_new_file(
@@ -579,6 +676,21 @@ where
         "permissions",
     )?;
     let digest = Sha256::digest(permissions_bytes);
+    #[cfg(target_os = "macos")]
+    let graph_digest = if let Some(expected) = approved_graph {
+        let leaf = keld_core::app_session::graph_contract::make_graph_leaf(&root, &entry, expected)
+            .map_err(|source| BootCompileError::new("GH499 graph admission", source.to_string()))?;
+        write_new_file(
+            &root.join(keld_core::app_session::graph_contract::GRAPH_FILE),
+            &leaf,
+            0o400,
+            "graph leaf",
+        )?;
+        let fingerprint = Sha256::digest(&leaf);
+        Some(format!("sha256:{fingerprint:x}"))
+    } else {
+        None
+    };
     let mut descriptor = serde_json::json!({
         "schema": schema,
         "name": name,
@@ -595,6 +707,21 @@ where
         })?;
         object.insert(String::from("schema"), serde_json::Value::from(schema));
         object.remove("renderer");
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(graph_sha) = graph_digest {
+        descriptor
+            .as_object_mut()
+            .ok_or_else(|| {
+                BootCompileError::new("graph descriptor", "expected closed descriptor object")
+            })?
+            .insert(
+                String::from("graph"),
+                serde_json::json!({
+                    "file": keld_core::app_session::graph_contract::GRAPH_FILE,
+                    "content_sha256": graph_sha,
+                }),
+            );
     }
     if let Some(version) = version {
         let object = descriptor.as_object_mut().ok_or_else(|| {
@@ -1331,6 +1458,289 @@ mod tests {
             expected,
             "a facade-only change must preserve the existing schema-one bytes"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn graph_fixture(
+        project: &Path,
+    ) -> keld_core::app_session::graph_contract::ApprovedGraphCaptureInput {
+        use keld_core::app_session::graph_contract::ApprovedGraphCaptureInput;
+
+        fn fixed_sha(hex: &str) -> [u8; 32] {
+            assert_eq!(hex.len(), 64);
+            let mut hash = [0_u8; 32];
+            for (i, pair) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+                hash[i] = u8::from_str_radix(std::str::from_utf8(pair).expect("SHA pair"), 16)
+                    .expect("pinned SHA byte");
+            }
+            hash
+        }
+        // Three static provider package fixtures, independently pinned
+        // before generating graph data, never importing any module code.
+        for (name, bytes) in [
+            (
+                "node_modules/electron/package.json",
+                concat!(
+                    "{\"name\":\"@keld/electron\",\"version\":\"0.0.1\",\"type\":\"module\",",
+                    "\"exports\":{\".\":\"./dist/index.js\",\"./main\":\"./dist/index.js\",",
+                    "\"./renderer\":\"./dist/index.js\",\"./common\":\"./dist/index.js\",",
+                    "\"./utility\":\"./dist/index.js\"},",
+                    "\"dependencies\":{\"@keld/api\":\"0.0.1\",\"@keld/kipc\":\"0.0.1\"}}\n"
+                ),
+            ),
+            (
+                "node_modules/electron/dist/index.js",
+                "export const neverEvaluate = \"FIRST_PARTY_FIXTURE_ONLY\";\n",
+            ),
+            (
+                "node_modules/@keld/api/package.json",
+                "{\"name\":\"@keld/api\",\"version\":\"0.0.1\"}\n",
+            ),
+            (
+                "node_modules/@keld/kipc/package.json",
+                "{\"name\":\"@keld/kipc\",\"version\":\"0.0.1\"}\n",
+            ),
+        ] {
+            let path = project.join(name);
+            fs::create_dir_all(path.parent().expect("provider parent")).expect("parent");
+            fs::write(path, bytes).expect("static provider input");
+        }
+        fs::write(
+            project.join("package.json"),
+            concat!(
+                "{\"name\":\"graph-test\",\"type\":\"module\",\"version\":\"0.0.1\",",
+                "\"dependencies\":{\"electron\":\"npm:@keld/electron@0.0.1\",",
+                "\"@keld/api\":\"0.0.1\",\"@keld/kipc\":\"0.0.1\"}}\n"
+            ),
+        )
+        .expect("approved fixture root package");
+        fs::write(project.join("package-lock.json"), concat!(
+            "{\"name\":\"graph-test\",\"version\":\"0.0.1\",\"lockfileVersion\":3,\"packages\":{",
+            "\"\":{\"name\":\"graph-test\",\"version\":\"0.0.1\",\"dependencies\":{",
+            "\"electron\":\"npm:@keld/electron@0.0.1\",\"@keld/api\":\"0.0.1\",",
+            "\"@keld/kipc\":\"0.0.1\"}},",
+            "\"node_modules/electron\":{\"name\":\"@keld/electron\",\"version\":\"0.0.1\"},",
+            "\"node_modules/@keld/api\":{\"name\":\"@keld/api\",\"version\":\"0.0.1\"},",
+            "\"node_modules/@keld/kipc\":{\"name\":\"@keld/kipc\",\"version\":\"0.0.1\"}}}\n"
+        )).expect("approved fixture lock");
+        fs::write(
+            project.join("keld.permissions.jsonc"),
+            b"{\"profile\":\"legacy\"}\n",
+        )
+        .expect("explicit Legacy policy only in the existing manifest");
+        fs::write(project.join("keld.config.ts"),
+            "export default {\n  name: \"graph-test\",\n  initialWindow: \"none\",\n  entry: \"src/main/electron.js\",\n} as const;\n"
+        ).expect("facade config");
+        fs::create_dir_all(project.join("src/main")).expect("main source");
+        fs::write(
+            project.join("src/main/electron.js"),
+            "export const original = 1;\n",
+        )
+        .expect("inert original shape");
+        ApprovedGraphCaptureInput {
+            expected_package_sha256: fixed_sha(
+                "36f0819d6ec665ae79fc6fd13256fed97a93c6497b05c8e5e27f51c31c163dee",
+            ),
+            expected_lock_sha256: fixed_sha(
+                "fa43830d726d04578607c5d9566be4198718db3bbe914b73091c288617c3476b",
+            ),
+            expected_package_trees: [
+                fixed_sha("7e57f5030f61b455e6c7aecfd1554bdf1334cf9c5a98024ea388bc729b95646f"),
+                fixed_sha("24cb3148684ef325d0f0488f677f7d79c01be1ae881ab72cd758da75028fcec1"),
+                fixed_sha("e8893aeac32cb4828dce4360dd0fb432b51bf4d403a3f6b3e03b787017ff7e01"),
+            ],
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_explicit_graph_stage_captures_full_source_and_preserves_schema_four_normal_stage() {
+        let (_temp, project, developer_host) = fixture();
+        let approved = graph_fixture(&project);
+        let files: [(&str, &[u8]); 3] = [
+            (
+                "src/main/args.js",
+                b"export const actualOriginalSibling = 1;\n",
+            ),
+            (
+                "src/main/electron-preload.js",
+                b"const PRELOAD_UNCHANGED = true;\n",
+            ),
+            (
+                "drawio/src/main/webapp/index.html",
+                b"<html>editor own webapp</html>\n",
+            ),
+        ];
+        for (name, bytes) in files {
+            let file = project.join(name);
+            fs::create_dir_all(file.parent().expect("parent")).expect("source parent");
+            fs::write(file, bytes).expect("original source bytes");
+        }
+        let graph_stage = stage_dev_boot_with_approved_graph(&project, &developer_host, &approved)
+            .expect("approved graph capture stage");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(graph_stage.root().join("keld.boot.json")).expect("graph descriptor"),
+        )
+        .expect("closed JSON");
+        assert_eq!(descriptor["schema"], 5);
+        assert_eq!(descriptor["entry"], "src/main/electron.js");
+        assert_eq!(descriptor["graph"]["file"], "keld.stage-graph.json");
+        for (name, bytes) in files {
+            assert_eq!(
+                fs::read(graph_stage.root().join(name)).expect("captured original member"),
+                bytes
+            );
+        }
+        assert!(!graph_stage.root().starts_with(&project));
+        assert!(!graph_stage.root().join("keld.config.ts").exists());
+        let ordinary = stage_dev_boot(&project, &developer_host).expect("unchanged facade stage");
+        let normal: serde_json::Value = serde_json::from_slice(
+            &fs::read(ordinary.root().join("keld.boot.json")).expect("ordinary descriptor"),
+        )
+        .expect("closed JSON");
+        assert_eq!(normal["schema"], 4);
+        assert!(normal.get("graph").is_none());
+        assert!(!ordinary.root().join("src/main/args.js").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_explicit_graph_symlink_refuses_before_stage_publication() {
+        use std::os::unix::fs::symlink;
+        let (owned, project, developer_host) = fixture();
+        let approval = graph_fixture(&project);
+        let outside = owned.path().join("foreign.js");
+        fs::write(&outside, b"FOREIGN_CODE_NOT_EVALUATED\n").expect("source marker bytes");
+        symlink(&outside, project.join("src/main/foreign.js")).expect("unapproved link");
+        let error = stage_dev_boot_with_approved_graph(&project, &developer_host, &approval)
+            .expect_err("GH1037 entire selected source rejects a symlink");
+        assert!(error.to_string().contains("symlink"), "{error}");
+        let normal = stage_dev_boot(&project, &developer_host)
+            .expect("ordinary single-file stage remains unchanged by unselected symlink");
+        assert!(!normal.root().join("src/main/foreign.js").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_all_three_providers_are_verified_before_a_stage_is_allocated() {
+        for name in [
+            "node_modules/electron/package.json",
+            "node_modules/@keld/api/package.json",
+            "node_modules/@keld/kipc/package.json",
+        ] {
+            let (_owned, project, host) = fixture();
+            let approved = graph_fixture(&project);
+            let installed = project.join(name);
+            fs::write(
+                installed,
+                b"{\"name\":\"counterfeit\",\"version\":\"0.0.1\"}\n",
+            )
+            .expect("mutated physical provider data");
+            let error = stage_dev_boot_with_approved_graph(&project, &host, &approved)
+                .expect_err("external provider identity must be checked before capture");
+            assert!(
+                error.to_string().contains("approved package artifact"),
+                "{name}: {error}"
+            );
+            assert!(
+                !fixture_dev_root(&project).exists(),
+                "{name}: identity refusal must precede stage namespace allocation"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_capture_refuses_leaf_inode_swap_after_scan_before_copy() {
+        let (owned, project, _) = fixture();
+        let _approved = graph_fixture(&project);
+        let selected = project.join("src/main/electron.js");
+        let moved = owned.path().join("original-electron.js");
+        let stage = owned.path().join("private-output");
+        fs::create_dir(&stage).expect("private capture target");
+        let mut swapped = false;
+        let mut inspect_owner = |path: &Path| {
+            if !swapped && path == selected {
+                fs::rename(path, &moved).expect("swap out originally enumerated inode");
+                fs::write(path, b"// changed inode before capture\n")
+                    .expect("same-owner replacement");
+                swapped = true;
+            }
+            Ok(())
+        };
+        let err = graph_capture::capture_complete_tree(&project, &stage, &mut inspect_owner)
+            .expect_err("selected source inode must be bound to scanned leaf");
+        assert!(swapped, "source mutation ran");
+        assert!(err.to_string().contains("source"), "{err}");
+        assert!(!stage.join("app-ran").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_capture_refuses_parent_directory_inode_swap_after_scan() {
+        let (owned, project, _) = fixture();
+        let _approved = graph_fixture(&project);
+        let selected = project.join("src/main");
+        let moved = owned.path().join("original-main-directory");
+        let stage = owned.path().join("private-output");
+        fs::create_dir(&stage).expect("private capture target");
+        let mut swapped = false;
+        let mut inspect_owner = |path: &Path| {
+            if !swapped && path == selected {
+                fs::rename(path, &moved).expect("move enumerated parent inode");
+                fs::create_dir(path).expect("same-name new parent");
+                fs::write(
+                    path.join("electron.js"),
+                    b"// replaced parent before capture\n",
+                )
+                .expect("replacement leaf");
+                swapped = true;
+            }
+            Ok(())
+        };
+        let err = graph_capture::capture_complete_tree(&project, &stage, &mut inspect_owner)
+            .expect_err("parent source identity must remain same after scan");
+        assert!(swapped, "source directory mutation ran");
+        assert!(err.to_string().contains("source"), "{err}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_capture_refuses_file_inserted_after_directory_enumeration() {
+        let (owned, project, _) = fixture();
+        let _approved = graph_fixture(&project);
+        let trigger = project.join("src/main/electron.js");
+        let stage = owned.path().join("private-output");
+        fs::create_dir(&stage).expect("private capture target");
+        let mut inserted = false;
+        let mut inspect_owner = |path: &Path| {
+            if !inserted && path == trigger {
+                fs::write(project.join("src/main/late.js"), b"// new unscanned file\n")
+                    .expect("late source");
+                inserted = true;
+            }
+            Ok(())
+        };
+        let err = graph_capture::capture_complete_tree(&project, &stage, &mut inspect_owner)
+            .expect_err("a new physical source must fail the second census");
+        assert!(inserted);
+        assert!(err.to_string().contains("source"), "{err}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn gh499_capture_refuses_unlisted_empty_source_directory() {
+        let (owned, project, _) = fixture();
+        let _approved = graph_fixture(&project);
+        fs::create_dir(project.join("empty-source-dir"))
+            .expect("additional empty source directory");
+        let stage = owned.path().join("private-output");
+        fs::create_dir(&stage).expect("private capture target");
+        let mut inspect_owner = |_path: &Path| Ok(());
+        let err = graph_capture::capture_complete_tree(&project, &stage, &mut inspect_owner)
+            .expect_err("empty directories cannot be represented by three-field graph");
+        assert!(err.to_string().contains("directory"), "{err}");
+        assert!(!stage.join("app-ran").exists());
     }
 
     #[test]

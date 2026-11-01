@@ -45,9 +45,7 @@ fn main() {
         return;
     }
     #[cfg(target_os = "macos")]
-    if args.get(1).map(String::as_str)
-        == Some(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
-    {
+    if is_supervised_guardian_marker(args.get(1).map(String::as_str)) {
         // The argv value is only a role discriminator. `run_guarded_primary` must
         // authenticate GuardianBootstrap's one-use registration and validate
         // the inherited host-liveness pipe before it evaluates this process's
@@ -370,9 +368,21 @@ fn dev_stage_cleanup_root_for(
     Some(root.to_path_buf())
 }
 
+/// A private role discriminator only; registration still authenticates the child.
+#[cfg(target_os = "macos")]
+fn is_supervised_guardian_marker(marker: Option<&str>) -> bool {
+    matches!(
+        marker,
+        Some(
+            keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG
+                | keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG_V2
+        )
+    )
+}
+
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    let (native_facade, launch_facts) = parse_guardian_startup(args)?;
+    let (native_facade, launch_facts, graph_digest) = parse_guardian_startup(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
@@ -389,14 +399,35 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
         move || {
+            // Called only after authenticated Guardian registration, before
+            // Supervisor starts G1. The same selected Graph is retained for
+            // every subsequent prepared Bun generation.
+            let graph = graph_digest
+                .map(|digest| {
+                    // Host preserves parsed.entry as relative private argv[3].
+                    // Keep the same selector for graph admission and the later
+                    // root.join(entry) Bun command; do not reinterpret it.
+                    let relative = checked_guardian_graph_entry(&root, &entry)
+                        .map_err(guardian_entry_error)?;
+                    keld_core::app_session::graph_contract::read_bound_graph_leaf(
+                        &root, digest, relative,
+                    )
+                    .map_err(|source| guardian_entry_error(source.to_string()))
+                })
+                .transpose()?;
             let environment = freeze_guardian_environment(env::vars_os())?;
             Ok(move |app_link: &str| {
+                if let Some(ref selected_graph) = graph {
+                    selected_graph
+                        .recheck()
+                        .map_err(|source| guardian_entry_error(source.to_string()))?;
+                }
                 guardian_bun_command(
                     &cleanup_validation,
                     &root,
                     &entry,
                     (expected_dev, expected_ino),
-                    (native_facade, launch_facts.as_ref()),
+                    (native_facade, launch_facts.as_ref(), graph.as_ref()),
                     &environment,
                     app_link,
                 )
@@ -441,18 +472,53 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     cleanup_failure.map_or(Ok(()), Err)
 }
 
+/// Validate the actual Core-selected relative private argv entry unchanged.
+/// Never canonicalize through an ambient pathname or accept an absolute alias.
+/// The shared Graph validator separately verifies all nofollow file objects.
 #[cfg(target_os = "macos")]
-fn parse_guardian_startup(
-    args: &[String],
-) -> Result<(bool, Option<keld_core::app_session::DevelopmentLaunchFacts>), String> {
-    if args.len() != 7 && args.len() != 8 {
+fn checked_guardian_graph_entry<'a>(root: &Path, entry: &'a Path) -> Result<&'a Path, String> {
+    if !root.is_absolute() || entry.is_absolute() {
         return Err(String::from(
-            "KELD-CORE-037: invalid private Guardian argument count",
+            "KELD-CORE-037: Guardian v2 requires an absolute stage root and its exact relative graph entry",
         ));
     }
+    let text = entry
+        .to_str()
+        .ok_or_else(|| String::from("KELD-CORE-037: Guardian v2 graph entry has non-UTF8 path"))?;
+    keld_core::app_session::graph_contract::validate_graph_relative_path(text)
+        .map_err(|source| format!("KELD-CORE-037: Guardian v2 graph entry: {source}"))?;
+    Ok(entry)
+}
+
+/// Parsed private invocation: existing mode/facts plus optional v2 graph binding.
+#[cfg(target_os = "macos")]
+type GuardianStartup = (
+    bool,
+    Option<keld_core::app_session::DevelopmentLaunchFacts>,
+    Option<[u8; 32]>,
+);
+
+#[cfg(target_os = "macos")]
+fn parse_guardian_startup(args: &[String]) -> Result<GuardianStartup, String> {
+    use keld_runtime::macos_guardian::{SUPERVISED_GUARDIAN_ARG, SUPERVISED_GUARDIAN_ARG_V2};
+    let graph_digest = match args.get(1).map(String::as_str) {
+        Some(SUPERVISED_GUARDIAN_ARG) if matches!(args.len(), 7 | 8) => None,
+        Some(SUPERVISED_GUARDIAN_ARG_V2) if matches!(args.len(), 8 | 9) => {
+            let digest = args.get(7).ok_or_else(|| {
+                String::from("KELD-CORE-037: v2 graph digest argument is missing")
+            })?;
+            Some(parse_private_graph_digest(digest)?)
+        }
+        _ => {
+            return Err(String::from(
+                "KELD-CORE-037: invalid private Guardian marker or argument count",
+            ));
+        }
+    };
     let mode = parse_guardian_boot_mode(&args[..7])?;
+    let facts_offset = if graph_digest.is_some() { 8 } else { 7 };
     let facts = args
-        .get(7)
+        .get(facts_offset)
         .map(|text| {
             keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(
                 text,
@@ -461,7 +527,28 @@ fn parse_guardian_startup(
             .map_err(|error| error.to_string())
         })
         .transpose()?;
-    Ok((mode, facts))
+    Ok((mode, facts, graph_digest))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_private_graph_digest(encoded: &str) -> Result<[u8; 32], String> {
+    if encoded.len() != 64
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(String::from(
+            "KELD-CORE-037: v2 graph digest must be exactly 64 lowercase hex digits",
+        ));
+    }
+    let mut result = [0_u8; 32];
+    for (index, bytes) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let part = std::str::from_utf8(bytes)
+            .map_err(|source| format!("KELD-CORE-037: graph digest UTF-8: {source}"))?;
+        result[index] = u8::from_str_radix(part, 16)
+            .map_err(|source| format!("KELD-CORE-037: graph digest decoding: {source}"))?;
+    }
+    Ok(result)
 }
 
 #[cfg(target_os = "macos")]
@@ -517,11 +604,12 @@ fn guardian_bun_command(
     startup: (
         bool,
         Option<&keld_core::app_session::DevelopmentLaunchFacts>,
+        Option<&keld_core::app_session::graph_contract::AdmittedStageGraph>,
     ),
     environment: &[(std::ffi::OsString, std::ffi::OsString)],
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
-    let (native_facade, launch_facts) = startup;
+    let (native_facade, launch_facts, graph) = startup;
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
@@ -564,6 +652,35 @@ fn guardian_bun_command(
         // not satisfy the reserved constant through an application global.
         command.arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
     }
+    configure_guardian_preload(&mut command, root, graph)?;
+    command
+        .args(["--no-env-file", "--no-install", "run"])
+        .arg(root.join(entry))
+        .current_dir(root)
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .env("KELD_APP_LINK", app_link)
+        // Bun prepends BUN_OPTIONS arguments, allowing an inherited preload
+        // to run before the qualified canonical capture.
+        .env_remove("BUN_OPTIONS")
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+/// Preserve historical sidecar selection outside the graph-only private path.
+#[cfg(target_os = "macos")]
+fn configure_guardian_preload(
+    command: &mut Command,
+    root: &Path,
+    graph: Option<&keld_core::app_session::graph_contract::AdmittedStageGraph>,
+) -> Result<(), keld_runtime::RuntimeError> {
+    if let Some(graph) = graph {
+        let selected = graph
+            .installed_transport_preload()
+            .map_err(|source| guardian_entry_error(source.to_string()))?;
+        command.arg(format!("--preload={}", selected.display()));
+        return Ok(());
+    }
     let sidecar = root.join("src").join("kipc-transport.ts");
     match std::fs::metadata(&sidecar) {
         Ok(metadata) if metadata.is_file() => {
@@ -581,18 +698,7 @@ fn guardian_bun_command(
             )));
         }
     }
-    command
-        .args(["--no-env-file", "--no-install", "run"])
-        .arg(root.join(entry))
-        .current_dir(root)
-        .env_clear()
-        .envs(environment.iter().map(|(name, value)| (name, value)))
-        .env("KELD_APP_LINK", app_link)
-        // Bun prepends BUN_OPTIONS arguments, allowing an inherited preload
-        // to run before the qualified canonical capture.
-        .env_remove("BUN_OPTIONS")
-        .stdin(Stdio::null());
-    Ok(command)
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -667,12 +773,12 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        dev_stage_cleanup_root_for, freeze_guardian_environment, guardian_bun_command,
-        parse_guardian_boot_mode, parse_guardian_startup, reconcile_guardian_result,
-        reopen_validated_entry,
+        checked_guardian_graph_entry, dev_stage_cleanup_root_for, freeze_guardian_environment,
+        guardian_bun_command, parse_guardian_boot_mode, parse_guardian_startup,
+        reconcile_guardian_result, reopen_validated_entry,
     };
 
     #[test]
@@ -702,7 +808,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None),
+            (true, None, None),
             &[],
             "/tmp/link#token",
         )
@@ -721,7 +827,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None),
+            (true, None, None),
             &[],
             "/tmp/link#token",
         )
@@ -747,7 +853,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None),
+            (true, None, None),
             &[],
             "/tmp/link#token",
         )
@@ -775,7 +881,7 @@ mod tests {
                 temp.path(),
                 relative,
                 (identity.dev(), identity.ino()),
-                (true, None),
+                (true, None, None),
                 &[],
                 "/tmp/link#token",
             )
@@ -804,7 +910,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    (native_facade, None),
+                    (native_facade, None, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -882,7 +988,7 @@ mod tests {
         .expect("qualified retained environment");
         let mut args: Vec<String> = vec![
             "host".into(),
-            "guardian".into(),
+            keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG.into(),
             temp.path().to_str().expect("UTF-8").into(),
             "entry.ts".into(),
             identity.dev().to_string(),
@@ -890,14 +996,15 @@ mod tests {
             "1".into(),
             record.to_string(),
         ];
-        let (mode, facts) = parse_guardian_startup(&args).expect("closed private startup");
+        let (mode, facts, graph) = parse_guardian_startup(&args).expect("closed private startup");
+        assert!(graph.is_none(), "v1 preserves exact no-graph startup");
         for app_link in ["/tmp/initial#token-a", "/tmp/recovered#token-b"] {
             let command = guardian_bun_command(
                 &Ok(temp.path().to_path_buf()),
                 temp.path(),
                 Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (mode, facts.as_ref()),
+                (mode, facts.as_ref(), None),
                 &environment,
                 app_link,
             )
@@ -950,6 +1057,100 @@ mod tests {
     }
 
     #[test]
+    fn gh499_guardian_v2_digest_at_index_seven_and_optional_facts_at_eight() {
+        let stage = tempfile::tempdir().expect("private test stage");
+        let mut args: Vec<String> = [
+            "host",
+            "--keld-internal-macos-guardian-v2",
+            stage.path().to_str().expect("fixture path"),
+            "src/main/electron.js",
+            "1",
+            "2",
+            "1",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        args.push("ab".repeat(32));
+        let (mode, facts, graph) = parse_guardian_startup(&args).expect("v2 graph digest");
+        assert!(mode);
+        assert!(facts.is_none());
+        assert_eq!(graph, Some([0xab; 32]));
+
+        let launch_facts = serde_json::json!({
+            "schema": 3,
+            "kind": "development",
+            "name": "graph-test",
+            "root": stage.path(),
+            "version": "31.7.0",
+            "locale": "en-IN",
+            "paths": {
+                "appData": "/native/Application Support",
+                "userData": "/native/Application Support/graph-test",
+                "documents": "/native/Documents"
+            }
+        });
+        args.push(launch_facts.to_string());
+        let (_, preserved_facts, preserved_graph) =
+            parse_guardian_startup(&args).expect("v2 facts in ninth position");
+        assert!(preserved_facts.is_some());
+        assert_eq!(preserved_graph, Some([0xab; 32]));
+
+        for (reason, broken_digest) in [
+            ("short", "ab".repeat(31)),
+            ("uppercase", "AB".repeat(32)),
+            ("bad hex", "zz".repeat(32)),
+        ] {
+            let mut broken = args.clone();
+            broken[7] = broken_digest;
+            let err = parse_guardian_startup(&broken).expect_err("v2 digest rejection");
+            assert!(err.contains("graph digest"), "{reason}: {err}");
+        }
+        let mut v1 = args;
+        v1[1] = "--keld-internal-macos-guardian-v1".to_owned();
+        v1.remove(7);
+        assert!(
+            parse_guardian_startup(&v1).is_ok(),
+            "historical v1 facts stay intact"
+        );
+        // v1 cannot smuggle the extra eighth graph argument in addition to facts.
+        v1.insert(7, "ab".repeat(32));
+        assert!(parse_guardian_startup(&v1).is_err());
+    }
+
+    #[test]
+    fn gh499_guardian_v2_preserves_the_actual_relative_core_argv_entry() {
+        let stage = tempfile::tempdir().expect("owner-private stage identity fixture");
+        let root = stage.path();
+        // validate_from_root stores parsed.entry; run_app passes that exact
+        // relative PathBuf in argv[3]. Bun joins it with root only afterward.
+        let relative = Path::new("src/main/electron.js");
+        assert_eq!(
+            checked_guardian_graph_entry(root, relative)
+                .expect("actual Core-selected relative entry"),
+            relative,
+        );
+        for foreign in [
+            root.join(relative),
+            root.join("../outside.js"),
+            root.with_extension("substituted")
+                .join("src/main/electron.js"),
+            PathBuf::from("/tmp/foreign/electron.js"),
+            root.to_path_buf(),
+            PathBuf::new(),
+            PathBuf::from("../outside.js"),
+            PathBuf::from("src/../outside.js"),
+            PathBuf::from("src\\main\\electron.js"),
+        ] {
+            assert!(
+                checked_guardian_graph_entry(root, &foreign).is_err(),
+                "foreign/empty entry must not be interpreted as valid relative graph input: {}",
+                foreign.display(),
+            );
+        }
+    }
+
+    #[test]
     fn guardian_rejects_runtime_config_without_a_transport_sidecar() {
         let temp = tempfile::tempdir().expect("config admission fixture");
         let entry = temp.path().join("entry.ts");
@@ -968,7 +1169,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    (native_facade, None),
+                    (native_facade, None, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -1022,7 +1223,7 @@ mod tests {
             temp.path(),
             std::path::Path::new("entry.ts"),
             (identity.dev(), identity.ino()),
-            (true, None),
+            (true, None, None),
             &frozen,
             "/tmp/link#token",
         )
@@ -1183,7 +1384,7 @@ mod tests {
                 &stage,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None),
+                (true, None, None),
                 &frozen,
                 "/tmp/link#counterweight",
             )
@@ -1255,7 +1456,7 @@ mod tests {
                 temp.path(),
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None),
+                (true, None, None),
                 &frozen,
                 app_link,
             )
@@ -1356,7 +1557,7 @@ mod tests {
                 &root,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None),
+                (true, None, None),
                 &environment,
                 "/tmp/link#token",
             )

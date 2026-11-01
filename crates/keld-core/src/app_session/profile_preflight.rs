@@ -31,7 +31,7 @@ pub(super) fn validate_profile(
     let manifest = verified.manifest();
     let facade = match schema {
         1 | 3 => false,
-        2 | 4 => true,
+        2 | 4 | 5 => true,
         _ => {
             return Err(super::boot_error(
                 "unsupported compiled boot schema in profile preflight",
@@ -39,7 +39,23 @@ pub(super) fn validate_profile(
             ));
         }
     };
-    if schema != super::boot_schema(facade, manifest.declared_profile()) {
+    // Schema five is a graph-bound addition to the existing schema-four
+    // *explicit-profile* facade. It does not add or mint a second profile.
+    #[cfg(target_os = "macos")]
+    let expected = if schema == 5 {
+        if !facade || manifest.declared_profile().is_none() {
+            return Err(super::boot_error(
+                "graph schema five requires the verified /profile declaration",
+                "Restore the explicit profile and its unchanged source bytes.",
+            ));
+        }
+        5
+    } else {
+        super::boot_schema(facade, manifest.declared_profile())
+    };
+    #[cfg(not(target_os = "macos"))]
+    let expected = super::boot_schema(facade, manifest.declared_profile());
+    if schema != expected {
         return Err(super::boot_error(
             "boot schema and verified /profile presence disagree",
             "Recompile the same policy and window mode with a matching host; never strip the declaration or downgrade the schema.",

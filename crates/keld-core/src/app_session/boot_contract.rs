@@ -53,6 +53,34 @@ struct FacadeBootDocument {
     permissions: PermissionsDocument,
 }
 
+/// Graph is an additional closed, owner-private field only in schema five.
+/// No profile, renderer, auth or application-selected grant is added.
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphFacadeBootDocument {
+    schema: u8,
+    name: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::hello::deserialize_optional_app_version"
+    )]
+    version: Option<String>,
+    entry: String,
+    #[serde(deserialize_with = "deserialize_object")]
+    permissions: PermissionsDocument,
+    #[serde(deserialize_with = "deserialize_object")]
+    graph: GraphBindingDocument,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphBindingDocument {
+    file: String,
+    content_sha256: String,
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +97,8 @@ pub(super) struct ParsedBoot {
     pub(super) entry: PathBuf,
     pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
+    #[cfg(target_os = "macos")]
+    pub(super) graph_digest: Option<[u8; 32]>,
     pub(super) auth_configuration: AuthConfiguration,
 }
 
@@ -113,8 +143,27 @@ pub(super) enum InitialWindow {
     None,
 }
 
+/// Parse schema five without erasing duplicate keys or relaxing its fixed graph leaf.
+#[cfg(target_os = "macos")]
+fn parse_graph_document(text: &str) -> Result<GraphFacadeBootDocument, HostAppError> {
+    let document: GraphFacadeBootDocument = serde_json::from_str(text).map_err(|source| {
+        boot_error(
+            format!("closed graph schema five was rejected: {source}"),
+            "Retain the required graph/permissions objects; remove renderer, auth and extra fields.",
+        )
+    })?;
+    if document.graph.file != super::graph_contract::GRAPH_FILE {
+        return Err(boot_error(
+            "graph.file must be keld.stage-graph.json",
+            "Regenerate the fixed owner-private graph leaf.",
+        ));
+    }
+    Ok(document)
+}
+
+/// Bound and probe the boot input before selecting its existing closed DTO.
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
-pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
+fn bounded_boot_schema(bytes: &[u8]) -> Result<(&str, SchemaProbe), HostAppError> {
     if bytes.len() > MAX_BOOT_BYTES {
         return Err(boot_error(
             "keld.boot.json exceeds the 64 KiB limit",
@@ -142,6 +191,14 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             "Write exactly one closed JSON boot object.",
         )
     })?;
+    Ok((text, probe))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
+    let (text, probe) = bounded_boot_schema(bytes)?;
+    #[cfg(target_os = "macos")]
+    let mut graph_digest = None;
     let (name, version, entry, renderer, permissions, auth_configuration) = match probe.schema {
         1 | 3 => {
             let document: BootDocument = serde_json::from_str(text).map_err(|source| {
@@ -177,10 +234,27 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
                 AuthConfiguration::default(),
             )
         }
+        #[cfg(target_os = "macos")]
+        5 => {
+            let document = parse_graph_document(text)?;
+            debug_assert_eq!(document.schema, probe.schema);
+            graph_digest = Some(decode_digest_field(
+                &document.graph.content_sha256,
+                "graph.content_sha256",
+            )?);
+            (
+                document.name,
+                document.version,
+                document.entry,
+                None,
+                document.permissions,
+                AuthConfiguration::default(),
+            )
+        }
         version => {
             return Err(boot_error(
                 format!("unsupported schema {version}"),
-                "Regenerate the descriptor with supported schema 1, 2, 3 or 4.",
+                "Regenerate the descriptor with supported schema 1, 2, 3, 4 or 5 (macOS graph only).",
             ));
         }
     };
@@ -212,6 +286,8 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
         entry,
         initial,
         permissions_digest,
+        #[cfg(target_os = "macos")]
+        graph_digest,
         auth_configuration,
     })
 }
@@ -262,9 +338,14 @@ pub(super) fn validate_relative_path(
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
+    decode_digest_field(value, "permissions.content_sha256")
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+fn decode_digest_field(value: &str, field: &str) -> Result<[u8; 32], HostAppError> {
     let Some(hex) = value.strip_prefix(DIGEST_PREFIX) else {
         return Err(boot_error(
-            "permissions.content_sha256 must start with sha256:",
+            format!("{field} must start with sha256:"),
             "Regenerate the exact lowercase SHA-256 descriptor value.",
         ));
     };
@@ -275,7 +356,7 @@ pub(super) fn decode_digest(value: &str) -> Result<[u8; 32], HostAppError> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
     {
         return Err(boot_error(
-            "permissions.content_sha256 must contain 64 lowercase hexadecimal digits",
+            format!("{field} must contain 64 lowercase hexadecimal digits"),
             "Regenerate the exact lowercase SHA-256 descriptor value.",
         ));
     }

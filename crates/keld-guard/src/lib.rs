@@ -95,6 +95,17 @@ use serde_json::{Map, Value};
 
 use crate::jsonc::strip_jsonc_comments;
 
+/// Decode ordinary strict JSON with unique object keys at every depth.
+///
+/// This reuses the Guard-owned recursive parser for package and lock admission.
+/// Callers enforce their own size bounds and schema before interpreting values.
+///
+/// # Errors
+/// Returns the Serde JSON error for malformed JSON or duplicate object keys.
+pub fn parse_unique_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    unique_json::parse(text)
+}
+
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 pub use admit::{

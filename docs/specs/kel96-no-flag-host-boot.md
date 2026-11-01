@@ -105,6 +105,17 @@ JSON to schema 3 for an optional Host preferred-language value. It leaves this b
 descriptor and KEL78's profile schema numbers unchanged. Older private facts stay
 readable; the existing Host/Guardian retain one captured value for all generations.
 
+The separately approved private GH499 graph slice is specified in
+[`gh1037-multifile-dev-staging.md` §11](gh1037-multifile-dev-staging.md#11-private-graph-bound-macos-first-proof-slice-2026-11-01).
+On macOS only, schema 5 is the existing explicit-profile facade plus mandatory
+`graph: { file: "keld.stage-graph.json", content_sha256: "sha256:<64-lowercase-hex>" }`.
+Its relative `entry` must equal the bound graph entry. The private Guardian V2
+invocation has the graph digest at argv[7] and optional existing launch facts at
+argv[8]; argv[3] remains relative. The shared graph validator runs before every
+generation. That private path preloads the admitted installed KIPC transport,
+not an additional sidecar. Schema 1–4, Guardian V1 and ordinary staging retain
+their existing contracts. No graph field supplies profile or channel authority.
+
 ### KEL-96/T1a — compiled boot descriptor contract
 
 1. A valid `keld.boot.json` is a bounded, strict schema-v1 document. Its exact

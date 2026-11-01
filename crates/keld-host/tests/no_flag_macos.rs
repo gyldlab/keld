@@ -24,6 +24,8 @@ mod dialog_message;
 mod facade_ready;
 #[path = "no_flag/macos/facade_window.rs"]
 mod facade_window;
+#[path = "no_flag/macos/graph_stage.rs"]
+mod graph_stage;
 #[path = "no_flag/macos/launch_facts.rs"]
 mod launch_facts;
 #[path = "no_flag/macos/lifecycle.rs"]
