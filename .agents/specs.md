@@ -61,6 +61,9 @@ or a blocker `Owner` passes `UNKNOWN`.
 Qualify another spec's ID with its tracker: `#1311 AC-2`, `KEL-53 B-4`. IDs never change
 meaning: close one, never reuse it.
 
+A heading or label with an unresolved `&name;` fails, as do nesting past 32, a block over
+64 KiB and, in a spec, a tag just after a quote or list.
+
 ## Writing
 
 Normative text (rules, ACs, tasks, blockers) follows ASD-STE100 Issue 9 Part 1. Source:
@@ -137,9 +140,6 @@ Raising `BASELINE_ROWS` or moving the seal needs repository-owner approval.
 Agents MUST NOT split a spec to hide text, or lower a value by deleting a contract.
 
 ## Not enforced
-
-A heading or label with an unresolved `&name;` fails, as do nesting past 32, a block over
-64 KiB and, in a spec, a tag just after a quote or list.
 
 Exempt rows, labels, non-code citations, quotes, cited lines, root-level,
 extensionless or absent-`@sha` paths, `docs/research` links, homoglyphs, struck text, raw

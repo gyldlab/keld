@@ -4893,9 +4893,15 @@ fn spec_mark(doc: &Doc) -> Option<(usize, String)> {
 /// no rule can read is an unverified input, never proof that it is no spec.
 fn check_outside(root: &Path, sealed: &BTreeSet<String>, tracked: &[Tracked], report: &mut Report) {
     let base_name = |path: &str| path.rsplit('/').next().unwrap_or(path).to_owned();
-    let sealed_names: BTreeSet<String> = sealed.iter().map(|path| base_name(path)).collect();
+    let root_prefix = format!("{SPEC_ROOT}/");
+    let sealed_names: BTreeSet<String> = sealed
+        .iter()
+        .filter_map(|path| path.strip_prefix(&root_prefix))
+        .filter(|name| !name.contains('/') && is_markdown_path(name))
+        .map(str::to_owned)
+        .collect();
     for rel in tracked.iter().map(|file| file.path.as_str()) {
-        if rel.starts_with(&format!("{SPEC_ROOT}/")) || !is_markdown_path(rel) {
+        if rel.starts_with(&root_prefix) || !is_markdown_path(rel) {
             continue;
         }
         if sealed_names.contains(&base_name(rel)) {
