@@ -121,17 +121,48 @@ pub(super) fn timed_pair() -> (UnixStream, UnixStream) {
 pub(super) fn receive_record(
     stream: &mut UnixStream,
 ) -> Result<GenerationControlRecord, RuntimeError> {
+    receive_record_until(stream, Instant::now() + COLLECTION, |_| {})
+}
+
+#[derive(Clone, Copy, Debug)]
+enum NativeRecordStage {
+    BeforePoll,
+    AfterCompleteRecord,
+}
+
+// Private fixture hook, not an event or production authority. The caller's
+// original clock spans both the actual kernel read and complete-record return.
+fn receive_record_until(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    mut observe: impl FnMut(NativeRecordStage),
+) -> Result<GenerationControlRecord, RuntimeError> {
     let mut reader = GenerationControlReader::new();
-    let deadline = Instant::now() + COLLECTION;
     loop {
+        if Instant::now() >= deadline {
+            return Err(record_collection_timeout());
+        }
+        observe(NativeRecordStage::BeforePoll);
         if let Some(record) = reader.poll(stream)? {
+            observe(NativeRecordStage::AfterCompleteRecord);
+            if Instant::now() >= deadline {
+                return Err(record_collection_timeout());
+            }
             return Ok(record);
         }
         if Instant::now() >= deadline {
-            return Err(lifecycle_error(
-                "test Runtime record collection",
-                io::Error::from(io::ErrorKind::TimedOut),
-            ));
+            return Err(record_collection_timeout());
         }
     }
 }
+
+fn record_collection_timeout() -> RuntimeError {
+    lifecycle_error(
+        "test Runtime record collection",
+        io::Error::from(io::ErrorKind::TimedOut),
+    )
+}
+
+#[cfg(test)]
+#[path = "records_and_cut_types/deadline_tests.rs"]
+mod deadline_tests;
