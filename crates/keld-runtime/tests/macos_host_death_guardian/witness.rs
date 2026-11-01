@@ -32,6 +32,17 @@ impl EofWitness {
     }
 
     pub(super) fn accept_before(&mut self, deadline: Instant) {
+        self.accept_before_with_hook(deadline, |_| {});
+    }
+
+    // A no-op in the shipping fixture; a native test can pause ONLY after a
+    // genuine successful accept to falsify removal of the post-accept fence.
+    // This is private test-helper instrumentation, never a process authority.
+    fn accept_before_with_hook(
+        &mut self,
+        deadline: Instant,
+        mut after_native_accept: impl FnMut(&UnixStream),
+    ) {
         loop {
             assert!(
                 Instant::now() < deadline,
@@ -39,6 +50,7 @@ impl EofWitness {
             );
             match self.listener.accept() {
                 Ok((stream, _)) => {
+                    after_native_accept(&stream);
                     // Accept can succeed after the original budget expires;
                     // no accepted stream becomes proof of timely readiness.
                     assert!(
@@ -191,6 +203,51 @@ mod tests {
     }
 
     #[test]
+    fn timely_native_accept_cannot_cross_original_deadline_before_storage() {
+        let fixture = Fixture::new();
+        let mut witness = EofWitness::bind(&fixture.control);
+        let mut peer = UnixStream::connect(witness.path()).expect("queue real native EOF peer");
+        peer.write_all(b"W").expect("write accepted peer witness");
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let mut accepted = 0;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            witness.accept_before_with_hook(deadline, |stream| {
+                accepted += 1;
+                // The callback runs only after the actual UnixListener::accept
+                // succeeded. Read a real byte from that accepted socket so a
+                // mock receipt cannot make this oracle pass.
+                let mut accepted_stream = stream.try_clone().expect("clone owned accepted stream");
+                let mut receipt = [0_u8; 1];
+                accepted_stream
+                    .read_exact(&mut receipt)
+                    .expect("read peer's actual native receipt");
+                assert_eq!(receipt, *b"W");
+                while Instant::now() < deadline {
+                    thread::yield_now();
+                }
+            });
+        }));
+        assert_eq!(
+            accepted, 1,
+            "must exercise one actual successful native accept"
+        );
+        let panic = outcome.expect_err("late post-accept fence must reject accepted peer");
+        let detail = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic");
+        assert!(
+            detail.contains("EOF witness accept deadline expired"),
+            "expected post-accept deadline refusal after native success: {detail}"
+        );
+        assert!(
+            witness.stream.is_none(),
+            "expired native accept cannot be promoted into EOF witness custody"
+        );
+    }
+
+    #[test]
     fn fragmented_eof_witness_cannot_renew_original_deadline() {
         let (mut reader, mut writer) = UnixStream::pair().expect("real native witness pair");
         // The peer drips genuine record bytes well within each individual
@@ -252,5 +309,31 @@ mod tests {
             .read_exact(&mut release)
             .expect("peer receives release byte");
         assert_eq!(release, *b"R");
+    }
+
+    #[test]
+    fn no_newline_overlong_native_witness_fails_before_peer_eof() {
+        use std::io::ErrorKind;
+        let (mut reader, mut writer) = UnixStream::pair().expect("owned native witness socket");
+        let overlong = b"EOF_OBSERVEDXY";
+        assert!(overlong.len() > EOF_WITNESS_RECORD.len());
+        assert!(!overlong.contains(&b'\n'));
+        writer
+            .write_all(overlong)
+            .expect("send ASCII overlong witness without newline");
+        // Hold the writer open throughout the read: a missing size guard must
+        // wait for the short deadline and report TimedOut, NOT InvalidData.
+        let result =
+            read_eof_record_before(&mut reader, Instant::now() + Duration::from_millis(150));
+        assert_eq!(
+            result
+                .expect_err("overlong frame must fail without newline")
+                .kind(),
+            ErrorKind::InvalidData,
+            "overflow must be detected before waiting for newline or EOF"
+        );
+        writer
+            .write_all(b"Q")
+            .expect("peer remains open through verdict");
     }
 }
