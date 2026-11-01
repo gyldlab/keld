@@ -199,16 +199,28 @@ test("electron-updater.check-for-updates.unpackaged-null: with facts not package
   ]);
 });
 
-// Pinned to today's facade: `@keld/electron`'s app has no isPackaged (#452 open),
-// which upstream's `=== true` reads as not packaged, as `keld dev` is.
-test("electron-updater.check-for-updates.facade-today-unpackaged: the module autoUpdater reads the Electron facade, which is unpackaged under bun test, so it resolves null with no event", async () => {
+// No Host supplied launch facts to this test process. Missing facts must not
+// become a successful development check; the production facade owns refusal.
+test("electron-updater.check-for-updates.facade-missing-facts: both module checks synchronously refuse missing Host facts without an event or log", () => {
   const log = recordingLogger();
   autoUpdater.logger = log;
   const observed = observe(autoUpdater);
-  await expect(autoUpdater.checkForUpdates()).resolves.toBeNull();
+  for (const method of [
+    "checkForUpdates",
+    "checkForUpdatesAndNotify",
+  ] as const) {
+    let failure: unknown;
+    try {
+      autoUpdater[method]();
+    } catch (error) {
+      failure = error;
+    }
+    expect(isCallError(failure)).toBe(true);
+    expect(isCallError(failure) && failure.code).toBe("KELD-COMPAT-040");
+  }
   expect(observed.counts.error).toBe(0);
   expectNothingFabricated(observed);
-  expect(log.lines).toHaveLength(1);
+  expect(log.lines).toEqual([]);
 });
 
 // Negative controls: resolve null when packaged (no error, no rejection); emit

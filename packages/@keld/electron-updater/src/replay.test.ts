@@ -85,13 +85,33 @@ interface Run {
 
 type EnvEdit = (env: Record<string, string | undefined>) => void;
 
-function runFixture(script: string, edit: EnvEdit = () => {}): Run {
+function runFixture(
+  script: string,
+  edit: EnvEdit = () => {},
+  launchFacts: "absent" | "development" = "absent",
+): Run {
   const env: Record<string, string | undefined> = { ...process.env };
   delete env.DRAWIO_DISABLE_UPDATE;
   delete env.GH491_PACKAGED;
   edit(env);
   const child = Bun.spawnSync({
-    cmd: [process.execPath, "--preload", "./probe_preload.ts", `./${script}`],
+    cmd: [
+      process.execPath,
+      // Fixture data through the canonical facts reader, not native Host proof.
+      ...(launchFacts === "development"
+        ? [
+            `--define=__KELD_HOST_LAUNCH_FACTS__:${JSON.stringify({
+              schema: 1,
+              kind: "development",
+              name: "GH491 replay fixture",
+              root: fixtures,
+            })}`,
+          ]
+        : []),
+      "--preload",
+      "./probe_preload.ts",
+      `./${script}`,
+    ],
     cwd: fixtures,
     env,
     stdout: "pipe",
@@ -237,8 +257,8 @@ test("electron-updater.replay.env-disabled: with DRAWIO_DISABLE_UPDATE=true set 
 
 // Negative control: remove the packaged gate; the facade-backed check refuses
 // and the replica records a rejection.
-test("electron-updater.replay.env-absent-unpackaged: with the variable absent and the Electron facade unpackaged, the boot check runs once, resolves null and emits nothing", () => {
-  const run = runFixture("replay.ts");
+test("electron-updater.replay.env-absent-unpackaged: with the variable absent and explicit development facts, the facade boot check runs once, resolves null and emits nothing", () => {
+  const run = runFixture("replay.ts", undefined, "development");
   expectCleanExit(run);
   expectNoIo(run);
   expect(run.result).toMatchObject({

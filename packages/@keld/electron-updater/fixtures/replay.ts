@@ -12,8 +12,9 @@
  * - `DRAWIO_DISABLE_UPDATE`: read exactly as draw.io reads it (`=== "true"`).
  * - `GH491_PACKAGED=1`: drive an `AppUpdater` built on injected application
  *   facts that report packaged with no host updater, instead of the module
- *   `autoUpdater` whose Electron facade reports the F01-T4 fact (unpackaged
- *   until #452 mints it).
+ *   `autoUpdater` whose Electron facade reads the F01-T4 launch fact. The
+ *   development case supplies fixture facts through the canonical reader;
+ *   missing facts remain a typed refusal, not an unpackaged default.
  */
 import electronUpdater, { AppUpdater, type Logger } from "../src/index.ts";
 

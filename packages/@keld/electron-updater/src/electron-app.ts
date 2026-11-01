@@ -4,10 +4,9 @@
  * `get isPackaged() { return this.app.isPackaged === true }`).
  *
  * The packaged fact has one owner, F01-T4 (#452), surfaced as `app.isPackaged`
- * on `@keld/electron`. At the source basis the property is absent, so upstream's
- * strict comparison returns false; that is not proof of a delivered dev fact.
- * A throwing facade getter propagates unchanged. No failure is caught or
- * converted to false here. Sibling packages are reached by relative source
+ * on `@keld/electron`. Validated development facts report false. Missing facts
+ * throw synchronously; that refusal propagates unchanged and cannot become a
+ * successful unpackaged check. Sibling packages are reached by relative source
  * path, as `@keld/electron` reaches `@keld/api` (spec §4.2 D2).
  */
 import { app } from "../../electron/src/index.ts";
