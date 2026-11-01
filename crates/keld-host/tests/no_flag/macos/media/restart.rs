@@ -53,36 +53,91 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
         armed: true,
     };
     let mut origin = ProfileOrigin::new();
-    let omitted = origin.run_media_profile(
-        &app,
-        &support_root,
-        "media-nonce-omitted",
-        "media-nonce-omitted",
-        None,
-        None,
-    );
-    assert_eq!(omitted.get("local").map(String::as_str), Some(""));
-    assert_eq!(
-        omitted.get("media").map(String::as_str),
-        Some("not-requested")
-    );
-    let omitted_log = fs::read_to_string(support_root.join("media-nonce-omitted.log"))
-        .expect("read omitted-seed control log");
-    assert_store_report_matches(&omitted_log, &identity["store_uuid"]);
+    let omitted =
+        observe_omitted_media_control(&mut origin, &app, &support_root, &identity["store_uuid"]);
     let nonce = format!("keld-kel135-media-{}", std::process::id());
     let mut evidence = Vec::new();
     let mut scenarios = Vec::new();
 
     for (kind, track) in [("camera", "video"), ("microphone", "audio")] {
-        let seeded = origin.run_media_profile(
-            &app,
-            &support_root,
+        let mut case = SavedMediaCase {
+            origin: &mut origin,
+            app: &app,
+            support_root: &support_root,
+            store_uuid: &identity["store_uuid"],
+            host: stage.host(),
+            nonce: &nonce,
+        };
+        let (scenario, observation) = case.observe_kind(kind, track);
+        evidence.push(observation);
+        scenarios.push(scenario);
+    }
+
+    let (wrong_origin, changed_origin, changed_profile, other_app) = {
+        let mut case = SavedMediaCase {
+            origin: &mut origin,
+            app: &app,
+            support_root: &support_root,
+            store_uuid: &identity["store_uuid"],
+            host: stage.host(),
+            nonce: &nonce,
+        };
+        case.observe_isolation_controls(stage.root(), &app_root, &signer, &mut cleanup)
+    };
+
+    let other_purge = run_signed_purge_report(&other_app, &support_root);
+    assert!(other_purge.contains("store_absent=true"));
+    let purge = run_signed_purge_report(&app, &support_root);
+    assert!(purge.contains("store_absent=true"));
+    cleanup.armed = false;
+    fs::remove_dir_all(&fixture_root)
+        .expect("remove media fixture after exact WebKit purge verification");
+    assert_saved_media_restart_matrix(
+        &scenarios,
+        &nonce,
+        &omitted,
+        &changed_origin,
+        &changed_profile,
+    );
+    eprintln!(
+        "KELD_KEL135_MACOS_MEDIA_SAVED_GRANT macos_media_contract=public-grant-restart-v1 os={} webkit={} team={} identifier={} uuid={} origin={} nonce_store=indexeddb nonce_survived=true seed_decision=WKPermissionDecisionPrompt site_prompt_observed=true post_restart_policy=deny denial_site_prompt_absent=true tcc_status=authorized allow_counterfactual=captured controls=omitted-seed,changed-origin,changed-store,retained-page,allow-response-rejected results={}",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        origin.address,
+        evidence.join(","),
+    );
+    drop(wrong_origin);
+}
+
+// One stage/identity/OS lifecycle owner remains in the enclosing test. This
+// borrowed factory performs each real runtime observation in original order.
+struct SavedMediaCase<'a> {
+    origin: &'a mut ProfileOrigin,
+    app: &'a std::path::Path,
+    support_root: &'a std::path::Path,
+    store_uuid: &'a str,
+    host: &'a std::path::Path,
+    nonce: &'a String,
+}
+
+impl SavedMediaCase<'_> {
+    fn observe_seed(
+        &mut self,
+        kind: &str,
+        track: &str,
+    ) -> (MediaRecordedRun, String, &'static str) {
+        let seeded = self.origin.run_media_profile(
+            self.app,
+            self.support_root,
             &format!("media-seed-{kind}"),
             &format!("media-seed-{kind}"),
-            Some(&nonce),
+            Some(self.nonce),
             Some("prompt"),
         );
-        assert_eq!(seeded.get("local"), Some(&nonce));
+        assert_eq!(seeded.get("local"), Some(self.nonce));
         assert_eq!(
             seeded.get("media").map(String::as_str),
             Some(&format!("resolved-{track}-live")[..]),
@@ -131,7 +186,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             media_probe_sheet_count(&seeded) > 0,
             "public Prompt seed did not produce an observable AppKit sheet for {kind}"
         );
-        let seed_log = fs::read_to_string(support_root.join(format!("media-seed-{kind}.log")))
+        let seed_log = fs::read_to_string(self.support_root.join(format!("media-seed-{kind}.log")))
             .expect("read saved-media seed callback evidence");
         assert!(
             seed_log.contains(&format!(
@@ -144,17 +199,28 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             seed_callback_count, 1,
             "same-page {kind} repeat unexpectedly invoked a new delegate decision"
         );
-        assert_store_report_matches(&seed_log, &identity["store_uuid"]);
+        assert_store_report_matches(&seed_log, self.store_uuid);
 
-        let denied = origin.run_media_profile(
-            &app,
-            &support_root,
+        (
+            MediaRecordedRun {
+                report: seeded,
+                log: seed_log,
+            },
+            selected_label,
+            selected_class,
+        )
+    }
+
+    fn observe_restarted_denial(&mut self, kind: &str) -> MediaRecordedRun {
+        let denied = self.origin.run_media_profile(
+            self.app,
+            self.support_root,
             &format!("media-deny-{kind}"),
             &format!("media-deny-{kind}"),
             None,
             None,
         );
-        assert_eq!(denied.get("local"), Some(&nonce));
+        assert_eq!(denied.get("local"), Some(self.nonce));
         assert_eq!(
             denied.get("media").map(String::as_str),
             Some("error-NotAllowedError"),
@@ -169,7 +235,7 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             0,
             "restarted {kind} denial presented an AppKit permission sheet"
         );
-        let deny_log = fs::read_to_string(support_root.join(format!("media-deny-{kind}.log")))
+        let deny_log = fs::read_to_string(self.support_root.join(format!("media-deny-{kind}.log")))
             .expect("read saved-media deny callback evidence");
         assert!(
             deny_log.contains(&format!(
@@ -188,16 +254,28 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
                 && deny_log.contains("policy=PermissionsManifest { app: {} }"),
             "restarted {kind} denial lacks requesting principal or guard decision provenance"
         );
+        MediaRecordedRun {
+            report: denied,
+            log: deny_log,
+        }
+    }
+
+    fn observe_allow_counterfactual(
+        &mut self,
+        kind: &str,
+        track: &str,
+        selected_class: &str,
+    ) -> (MediaRecordedRun, String) {
         let allow_phase = format!("media-allow-{kind}");
-        let allowed = origin.run_media_profile(
-            &app,
-            &support_root,
+        let allowed = self.origin.run_media_profile(
+            self.app,
+            self.support_root,
             &allow_phase,
             &allow_phase,
             None,
             Some("allow"),
         );
-        assert_eq!(allowed.get("local"), Some(&nonce));
+        assert_eq!(allowed.get("local"), Some(self.nonce));
         assert!(
             media_probe_tcc_authorized(&allowed, kind),
             "signed Allow counterfactual host lacked pre-request {kind} TCC authorization"
@@ -224,9 +302,9 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
                 "Allow control camera capture did not deliver advancing video frames"
             );
         }
-        let allow_log = fs::read_to_string(support_root.join(format!("{allow_phase}.log")))
+        let allow_log = fs::read_to_string(self.support_root.join(format!("{allow_phase}.log")))
             .expect("read Allow counterfactual log");
-        assert_store_report_matches(&allow_log, &identity["store_uuid"]);
+        assert_store_report_matches(&allow_log, self.store_uuid);
         assert!(
             allow_log.contains(&format!(
                 "KELD_KEL135_MEDIA_CALLBACK kind={kind} response=allow"
@@ -234,9 +312,24 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             "Allow counterfactual did not override a real guarded denial"
         );
 
-        let ephemeral = origin.run_ephemeral_media_profile(
-            stage.host(),
-            &support_root,
+        (
+            MediaRecordedRun {
+                report: allowed,
+                log: allow_log,
+            },
+            allowed_label,
+        )
+    }
+
+    fn observe_ephemeral_control(
+        &mut self,
+        kind: &str,
+        seeded: &MediaRecordedRun,
+        denied: &MediaRecordedRun,
+    ) -> (String, String, String) {
+        let ephemeral = self.origin.run_ephemeral_media_profile(
+            self.host,
+            self.support_root,
             &format!("media-control-{kind}"),
             &format!("media-control-{kind}"),
         );
@@ -246,109 +339,135 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             "fresh ephemeral {kind} control must deny through Keld's callback"
         );
         let seed_permission = seeded
+            .report
             .get("permission_after")
             .map_or("missing", String::as_str);
         let restart_permission = denied
+            .report
             .get("permission_before")
             .map_or("missing", String::as_str);
         let fresh_permission = ephemeral
             .get("permission_before")
             .map_or("missing", String::as_str);
         let control_log =
-            fs::read_to_string(support_root.join(format!("media-control-{kind}.log")))
+            fs::read_to_string(self.support_root.join(format!("media-control-{kind}.log")))
                 .expect("read fresh ephemeral media permission control");
         assert_ephemeral_store_report(&control_log);
-        assert_store_report_matches(&deny_log, &identity["store_uuid"]);
-        evidence.push(format!(
-            "{kind}=live-track,seed-label:{selected_label},allow-label:{allowed_label},source-class:{selected_class},seed-after:{seed_permission},restart-before:{restart_permission},fresh-profile-before:{fresh_permission},restart-deny"
-        ));
-        scenarios.push(MediaScenario {
-            kind,
-            track,
-            seed: MediaRecordedRun {
-                report: seeded,
-                log: seed_log,
-            },
-            denied: MediaRecordedRun {
-                report: denied,
-                log: deny_log,
-            },
-            allowed: MediaRecordedRun {
-                report: allowed,
-                log: allow_log,
-            },
-        });
+        assert_store_report_matches(&denied.log, self.store_uuid);
+        (
+            seed_permission.to_owned(),
+            restart_permission.to_owned(),
+            fresh_permission.to_owned(),
+        )
     }
 
-    let mut wrong_origin = ProfileOrigin::new();
-    assert_ne!(wrong_origin.address, origin.address);
-    let changed_origin = wrong_origin.run_media_profile(
-        &app,
-        &support_root,
-        "media-nonce-wrong-origin",
-        "media-nonce-wrong-origin",
-        None,
-        None,
-    );
-    assert_eq!(changed_origin.get("local").map(String::as_str), Some(""));
-    let changed_origin_log = fs::read_to_string(support_root.join("media-nonce-wrong-origin.log"))
-        .expect("read changed-origin control log");
-    assert_store_report_matches(&changed_origin_log, &identity["store_uuid"]);
+    fn observe_kind(&mut self, kind: &'static str, track: &'static str) -> (MediaScenario, String) {
+        let (seed, selected_label, selected_class) = self.observe_seed(kind, track);
+        let denied = self.observe_restarted_denial(kind);
+        let (allowed, allowed_label) =
+            self.observe_allow_counterfactual(kind, track, selected_class);
+        let (seed_permission, restart_permission, fresh_permission) =
+            self.observe_ephemeral_control(kind, &seed, &denied);
+        let evidence = format!(
+            "{kind}=live-track,seed-label:{selected_label},allow-label:{allowed_label},source-class:{selected_class},seed-after:{seed_permission},restart-before:{restart_permission},fresh-profile-before:{fresh_permission},restart-deny"
+        );
+        (
+            MediaScenario {
+                kind,
+                track,
+                seed,
+                denied,
+                allowed,
+            },
+            evidence,
+        )
+    }
+    fn observe_isolation_controls(
+        &mut self,
+        stage_root: &std::path::Path,
+        app_root: &std::path::Path,
+        signer: &str,
+        cleanup: &mut MacProfilePurgeCleanup,
+    ) -> (
+        ProfileOrigin,
+        MediaRecordedRun,
+        MediaRecordedRun,
+        std::path::PathBuf,
+    ) {
+        let mut wrong_origin = ProfileOrigin::new();
+        assert_ne!(wrong_origin.address, self.origin.address);
+        let changed_origin = wrong_origin.run_media_profile(
+            self.app,
+            self.support_root,
+            "media-nonce-wrong-origin",
+            "media-nonce-wrong-origin",
+            None,
+            None,
+        );
+        assert_eq!(changed_origin.get("local").map(String::as_str), Some(""));
+        let changed_origin_log =
+            fs::read_to_string(self.support_root.join("media-nonce-wrong-origin.log"))
+                .expect("read changed-origin control log");
+        assert_store_report_matches(&changed_origin_log, self.store_uuid);
 
-    let other_app = build_signed_profile_app(
-        stage.root(),
-        &app_root,
-        "ProfileAppOtherMedia",
-        &format!(
-            "dev.keld.fixture.profile.other-media.{}",
-            std::process::id()
-        ),
-        &signer,
-    );
-    cleanup.apps.push(other_app.clone());
-    let other_identity = run_signed_identity_report(&other_app);
-    assert_ne!(other_identity["store_uuid"], identity["store_uuid"]);
-    let changed_profile = origin.run_media_profile(
-        &other_app,
-        &support_root,
-        "media-nonce-wrong-profile",
-        "media-nonce-wrong-profile",
-        None,
-        None,
-    );
-    assert_eq!(changed_profile.get("local").map(String::as_str), Some(""));
-    let changed_profile_log =
-        fs::read_to_string(support_root.join("media-nonce-wrong-profile.log"))
-            .expect("read changed-profile control log");
-    assert_store_report_matches(&changed_profile_log, &other_identity["store_uuid"]);
+        let other_app = build_signed_profile_app(
+            stage_root,
+            app_root,
+            "ProfileAppOtherMedia",
+            &format!(
+                "dev.keld.fixture.profile.other-media.{}",
+                std::process::id()
+            ),
+            signer,
+        );
+        cleanup.apps.push(other_app.clone());
+        let other_identity = run_signed_identity_report(&other_app);
+        assert_ne!(other_identity["store_uuid"].as_str(), self.store_uuid);
+        let changed_profile = self.origin.run_media_profile(
+            &other_app,
+            self.support_root,
+            "media-nonce-wrong-profile",
+            "media-nonce-wrong-profile",
+            None,
+            None,
+        );
+        assert_eq!(changed_profile.get("local").map(String::as_str), Some(""));
+        let changed_profile_log =
+            fs::read_to_string(self.support_root.join("media-nonce-wrong-profile.log"))
+                .expect("read changed-profile control log");
+        assert_store_report_matches(&changed_profile_log, &other_identity["store_uuid"]);
 
-    let omitted = MediaRecordedRun {
-        report: omitted,
-        log: omitted_log,
-    };
-    let changed_origin = MediaRecordedRun {
-        report: changed_origin,
-        log: changed_origin_log,
-    };
-    let changed_profile = MediaRecordedRun {
-        report: changed_profile,
-        log: changed_profile_log,
-    };
+        (
+            wrong_origin,
+            MediaRecordedRun {
+                report: changed_origin,
+                log: changed_origin_log,
+            },
+            MediaRecordedRun {
+                report: changed_profile,
+                log: changed_profile_log,
+            },
+            other_app,
+        )
+    }
+}
 
-    let other_purge = run_signed_purge_report(&other_app, &support_root);
-    assert!(other_purge.contains("store_absent=true"));
-    let purge = run_signed_purge_report(&app, &support_root);
-    assert!(purge.contains("store_absent=true"));
-    cleanup.armed = false;
-    fs::remove_dir_all(&fixture_root)
-        .expect("remove media fixture after exact WebKit purge verification");
-    for scenario in &scenarios {
+// Independent tests of a retained page, wrong origin/profile and Allow
+// mutation remain after the real purge; this is the same fault matrix.
+fn assert_saved_media_restart_matrix(
+    scenarios: &[MediaScenario],
+    nonce: &str,
+    omitted: &MediaRecordedRun,
+    changed_origin: &MediaRecordedRun,
+    changed_profile: &MediaRecordedRun,
+) {
+    for scenario in scenarios {
         let kind = scenario.kind;
         let evaluate = |seed: &MediaRecordedRun, restarted: &MediaRecordedRun| {
             media_restart_proof(
                 kind,
                 scenario.track,
-                &nonce,
+                nonce,
                 seed,
                 restarted,
                 &scenario.allowed,
@@ -358,11 +477,11 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             evaluate(&scenario.seed, &scenario.denied).is_complete(),
             "{kind} restart-denial proof is incomplete"
         );
-        let omitted_result = evaluate(&omitted, &scenario.denied);
+        let omitted_result = evaluate(omitted, &scenario.denied);
         assert!(!omitted_result.seed.qualified_capture && !omitted_result.is_complete());
-        let changed_origin_result = evaluate(&scenario.seed, &changed_origin);
+        let changed_origin_result = evaluate(&scenario.seed, changed_origin);
         assert!(!changed_origin_result.same_origin && !changed_origin_result.is_complete());
-        let changed_profile_result = evaluate(&scenario.seed, &changed_profile);
+        let changed_profile_result = evaluate(&scenario.seed, changed_profile);
         assert!(
             !changed_profile_result.continuity.same_store && !changed_profile_result.is_complete()
         );
@@ -376,14 +495,34 @@ fn kel135_macos_saved_media_grant_is_tested_against_restart_policy() {
             "fixture Allow {kind} capture falsely passed the denial oracle"
         );
     }
-    eprintln!(
-        "KELD_KEL135_MACOS_MEDIA_SAVED_GRANT macos_media_contract=public-grant-restart-v1 os={} webkit={} team={} identifier={} uuid={} origin={} nonce_store=indexeddb nonce_survived=true seed_decision=WKPermissionDecisionPrompt site_prompt_observed=true post_restart_policy=deny denial_site_prompt_absent=true tcc_status=authorized allow_counterfactual=captured controls=omitted-seed,changed-origin,changed-store,retained-page,allow-response-rejected results={}",
-        sw_vers_value("-productVersion"),
-        webkit_version(),
-        identity["team_id"],
-        identity["signing_identifier"],
-        identity["store_uuid"],
-        origin.address,
-        evidence.join(","),
+}
+
+// An omitted media nonce must be observed before any granted source.
+// The old signed Host, actual origin and store-identity assertions remain.
+fn observe_omitted_media_control(
+    origin: &mut ProfileOrigin,
+    app: &std::path::Path,
+    support_root: &std::path::Path,
+    store_uuid: &str,
+) -> MediaRecordedRun {
+    let omitted = origin.run_media_profile(
+        app,
+        support_root,
+        "media-nonce-omitted",
+        "media-nonce-omitted",
+        None,
+        None,
     );
+    assert_eq!(omitted.get("local").map(String::as_str), Some(""));
+    assert_eq!(
+        omitted.get("media").map(String::as_str),
+        Some("not-requested")
+    );
+    let omitted_log = fs::read_to_string(support_root.join("media-nonce-omitted.log"))
+        .expect("read omitted-seed control log");
+    assert_store_report_matches(&omitted_log, store_uuid);
+    MediaRecordedRun {
+        report: omitted,
+        log: omitted_log,
+    }
 }

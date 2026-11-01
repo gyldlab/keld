@@ -14,7 +14,7 @@ use crate::support::profile_evidence::run_signed_identity_report;
 use crate::support::profile_evidence::run_signed_purge_report;
 use crate::support::profile_evidence::sw_vers_value;
 use crate::support::profile_evidence::webkit_version;
-use crate::support::profile_origin::ProfileOrigin;
+use crate::support::profile_origin::{ProfileOrigin, ProfileRunSpec};
 use crate::support::signed_app::build_signed_profile_app;
 use crate::support::signed_app::path_text;
 use crate::support::signed_app::valid_macos_codesign_hashes;
@@ -26,81 +26,11 @@ use std::path::PathBuf;
 #[test]
 #[ignore = "requires a second standard macOS account, an authenticated sudo session, and a signed host fixture"]
 fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
-    let username = std::env::var("KELD_KEL135_SECOND_USER")
-        .expect("set KELD_KEL135_SECOND_USER to the temporary standard macOS login");
-    assert!(
-        !username.is_empty()
-            && username
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'),
-        "second-user login name must be lowercase ASCII, digits, or underscore"
-    );
-    let second_uid = account_numeric_value(&username);
-    let first_uid = current_account_numeric_id();
-    assert!(
-        first_uid != second_uid,
-        "second user UID must differ from the current user"
-    );
-    assert!(second_uid >= 501, "second user is a system/service account");
-    let groups = account_groups(&username);
-    assert!(
-        !groups.split_whitespace().any(|group| group == "admin"),
-        "second account must be an ordinary non-admin user"
-    );
-    let home = account_home(&username);
-    let current_home = std::env::var_os("HOME").map(PathBuf::from);
-    assert!(
-        home.starts_with("/Users/") && Some(&home) != current_home.as_ref(),
-        "second account must have its own local home directory: {}",
-        home.display()
-    );
-
-    let sudo_probe = run_as_local_user(&username, "/usr/bin/id", &["-u"], &[]);
-    assert!(
-        sudo_probe.status.success(),
-        "authenticate this Mac's administrator account in Terminal with `sudo -v`, then rerun this acceptance row"
-    );
-    let run_as_uid_matches = String::from_utf8_lossy(&sudo_probe.stdout)
-        .trim()
-        .parse::<u32>()
-        .ok()
-        == Some(second_uid);
-    assert!(
-        run_as_uid_matches,
-        "run-as identity must match the isolated standard user"
-    );
-
+    let (username, home) = validate_second_user_identity();
     let fixture = ProductFixture::new("kel135-second-user-profile");
     let stage = fixture.stage();
-    let shared_temp = tempfile::Builder::new()
-        .prefix("keld-kel135-second-user-")
-        .tempdir_in("/Users/Shared")
-        .expect("create cross-user-readable signed fixture directory");
-    fs::set_permissions(shared_temp.path(), fs::Permissions::from_mode(0o755))
-        .expect("allow the standard test account to traverse its private fixture directory");
-    let first_profile_temp = tempfile::Builder::new()
-        .prefix("keld-kel135-first-profile-")
-        .tempdir()
-        .expect("create persistent first-user test metadata root");
-    fs::set_permissions(first_profile_temp.path(), fs::Permissions::from_mode(0o700))
-        .expect("protect first-user profile metadata root");
-    let signer = valid_macos_codesign_hashes()
-        .into_iter()
-        .next()
-        .expect("an Apple Development signing identity is required");
-    let app = build_signed_profile_app(
-        stage.root(),
-        shared_temp.path(),
-        "ProfileAppSecondUser",
-        &format!(
-            "dev.keld.fixture.profile.second-user.{}",
-            std::process::id()
-        ),
-        &signer,
-    );
-    make_signed_fixture_readable_by_standard_users(&app);
-    let first_identity = run_signed_identity_report(&app);
-
+    let (shared_temp, first_profile_temp, app, first_identity) =
+        prepare_second_user_signed_fixture(stage.root());
     let mut origin = ProfileOrigin::new();
     let user_fixture_root = home
         .join("Library/Caches/Keld/KEL-135")
@@ -112,40 +42,13 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
         user_fixture_root: user_fixture_root.clone(),
         armed: true,
     };
-    let create_roots = run_as_local_user(
+    verify_second_user_signed_fixture(
         &username,
-        "/bin/mkdir",
-        &["-p", path_text(&user_temp), path_text(&user_profile_root)],
-        &[],
+        &user_temp,
+        &user_profile_root,
+        &app,
+        &first_identity,
     );
-    assert!(
-        create_roots.status.success(),
-        "create owner-private second-user profile roots: {create_roots:?}"
-    );
-    let second_codesign = run_as_local_user(
-        &username,
-        "/usr/bin/codesign",
-        &["--verify", "--deep", "--strict", path_text(&app)],
-        &[],
-    );
-    assert!(
-        second_codesign.status.success(),
-        "second user cannot verify the readable signed fixture: {second_codesign:?}"
-    );
-    let second_identity = run_signed_identity_report_as_user(&username, &user_temp, &app);
-    for field in [
-        "team_id",
-        "signing_identifier",
-        "profile_identity",
-        "store_uuid",
-    ] {
-        assert_eq!(
-            first_identity.get(field),
-            second_identity.get(field),
-            "the OS user is the only identity dimension changed"
-        );
-    }
-
     let shared = shared_temp.keep();
     let first_profile_root = first_profile_temp.keep();
     eprintln!(
@@ -167,57 +70,15 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
         armed: true,
     };
     preflight_cleanup.armed = false;
-    let seeded = origin.run_profile(
-        &app,
-        &first_profile_root,
-        "seed",
-        "same-user-seed",
-        Some("keld-kel135-second-user-state"),
-    );
-    for key in ["local", "cookie", "idb", "cache"] {
-        assert_eq!(
-            seeded.get(key).map(String::as_str),
-            Some("keld-kel135-second-user-state"),
-            "same-user positive control for {key}"
-        );
-    }
-    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+    let seeded = seed_first_user_positive(&mut origin, &app, &first_profile_root);
 
-    let (second_user_state, second_user_output) = origin.run_profile_as_user(
+    assert_second_user_empty_and_purged(
+        &mut origin,
         &username,
         &user_temp,
         &user_profile_root,
         &app,
-        "read",
-        "other-user-read",
-        None,
-    );
-    for key in ["local", "cookie", "idb", "cache"] {
-        assert_eq!(
-            second_user_state.get(key).map(String::as_str),
-            Some(""),
-            "second standard user's same-origin {key} must start empty"
-        );
-    }
-    assert_eq!(
-        second_user_state.get("sw").map(String::as_str),
-        Some("false")
-    );
-    let second_user_log = format!(
-        "{}{}",
-        String::from_utf8_lossy(&second_user_output.stdout),
-        String::from_utf8_lossy(&second_user_output.stderr)
-    );
-    assert_store_report_matches(&second_user_log, &first_identity["store_uuid"]);
-
-    let second_purge =
-        run_signed_purge_report_as_user(&username, &user_temp, &user_profile_root, &app);
-    assert!(
-        second_purge.status.success()
-            && String::from_utf8_lossy(&second_purge.stdout)
-                .contains(&format!("store_uuid={}", first_identity["store_uuid"]))
-            && String::from_utf8_lossy(&second_purge.stdout).contains("store_absent=true"),
-        "second user's exact-identity purge failed: {second_purge:?}"
+        &first_identity,
     );
     cleanup.second_profile_purged = true;
     let first_after = origin.run_profile(
@@ -266,5 +127,211 @@ fn kel135_macos_second_user_cannot_read_same_signed_profile_state() {
         first_identity["signing_identifier"],
         first_identity["profile_identity"],
         first_identity["store_uuid"],
+    );
+}
+
+fn seed_first_user_positive(
+    origin: &mut ProfileOrigin,
+    app: &std::path::Path,
+    profile_root: &std::path::Path,
+) -> std::collections::BTreeMap<String, String> {
+    let seeded = origin.run_profile(
+        app,
+        profile_root,
+        "seed",
+        "same-user-seed",
+        Some("keld-kel135-second-user-state"),
+    );
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            seeded.get(key).map(String::as_str),
+            Some("keld-kel135-second-user-state"),
+            "same-user positive control for {key}"
+        );
+    }
+    assert_eq!(seeded.get("sw").map(String::as_str), Some("true"));
+    seeded
+}
+
+// User authentication and OS-account provenance precede every cross-user
+// fixture resource or signed-binary operation, as in the original test.
+fn validate_second_user_identity() -> (String, PathBuf) {
+    let username = std::env::var("KELD_KEL135_SECOND_USER")
+        .expect("set KELD_KEL135_SECOND_USER to the temporary standard macOS login");
+    assert!(
+        !username.is_empty()
+            && username
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'),
+        "second-user login name must be lowercase ASCII, digits, or underscore"
+    );
+    let second_uid = account_numeric_value(&username);
+    let first_uid = current_account_numeric_id();
+    assert!(
+        first_uid != second_uid,
+        "second user UID must differ from the current user"
+    );
+    assert!(second_uid >= 501, "second user is a system/service account");
+    let groups = account_groups(&username);
+    assert!(
+        !groups.split_whitespace().any(|group| group == "admin"),
+        "second account must be an ordinary non-admin user"
+    );
+    let home = account_home(&username);
+    let current_home = std::env::var_os("HOME").map(PathBuf::from);
+    assert!(
+        home.starts_with("/Users/") && Some(&home) != current_home.as_ref(),
+        "second account must have its own local home directory: {}",
+        home.display()
+    );
+
+    let sudo_probe = run_as_local_user(&username, "/usr/bin/id", &["-u"], &[]);
+    assert!(
+        sudo_probe.status.success(),
+        "authenticate this Mac's administrator account in Terminal with `sudo -v`, then rerun this acceptance row"
+    );
+    let run_as_uid_matches = String::from_utf8_lossy(&sudo_probe.stdout)
+        .trim()
+        .parse::<u32>()
+        .ok()
+        == Some(second_uid);
+    assert!(
+        run_as_uid_matches,
+        "run-as identity must match the isolated standard user"
+    );
+
+    (username, home)
+}
+
+// The two TempDirs return to the test; only the original owner may `keep`
+// them after the cross-user preflight and arm the exact cleanup handles.
+fn prepare_second_user_signed_fixture(
+    stage_root: &std::path::Path,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    PathBuf,
+    std::collections::BTreeMap<String, String>,
+) {
+    let shared_temp = tempfile::Builder::new()
+        .prefix("keld-kel135-second-user-")
+        .tempdir_in("/Users/Shared")
+        .expect("create cross-user-readable signed fixture directory");
+    fs::set_permissions(shared_temp.path(), fs::Permissions::from_mode(0o755))
+        .expect("allow the standard test account to traverse its private fixture directory");
+    let first_profile_temp = tempfile::Builder::new()
+        .prefix("keld-kel135-first-profile-")
+        .tempdir()
+        .expect("create persistent first-user test metadata root");
+    fs::set_permissions(first_profile_temp.path(), fs::Permissions::from_mode(0o700))
+        .expect("protect first-user profile metadata root");
+    let signer = valid_macos_codesign_hashes()
+        .into_iter()
+        .next()
+        .expect("an Apple Development signing identity is required");
+    let app = build_signed_profile_app(
+        stage_root,
+        shared_temp.path(),
+        "ProfileAppSecondUser",
+        &format!(
+            "dev.keld.fixture.profile.second-user.{}",
+            std::process::id()
+        ),
+        &signer,
+    );
+    make_signed_fixture_readable_by_standard_users(&app);
+    let first_identity = run_signed_identity_report(&app);
+
+    (shared_temp, first_profile_temp, app, first_identity)
+}
+
+fn verify_second_user_signed_fixture(
+    username: &str,
+    user_temp: &std::path::Path,
+    user_profile_root: &std::path::Path,
+    app: &std::path::Path,
+    first_identity: &std::collections::BTreeMap<String, String>,
+) {
+    let create_roots = run_as_local_user(
+        username,
+        "/bin/mkdir",
+        &["-p", path_text(user_temp), path_text(user_profile_root)],
+        &[],
+    );
+    assert!(
+        create_roots.status.success(),
+        "create owner-private second-user profile roots: {create_roots:?}"
+    );
+    let second_codesign = run_as_local_user(
+        username,
+        "/usr/bin/codesign",
+        &["--verify", "--deep", "--strict", path_text(app)],
+        &[],
+    );
+    assert!(
+        second_codesign.status.success(),
+        "second user cannot verify the readable signed fixture: {second_codesign:?}"
+    );
+    let second_identity = run_signed_identity_report_as_user(username, user_temp, app);
+    for field in [
+        "team_id",
+        "signing_identifier",
+        "profile_identity",
+        "store_uuid",
+    ] {
+        assert_eq!(
+            first_identity.get(field),
+            second_identity.get(field),
+            "the OS user is the only identity dimension changed"
+        );
+    }
+}
+
+// This is the actual read/purge negative control. The caller marks second
+// profile cleanup complete only AFTER this function returns successfully.
+fn assert_second_user_empty_and_purged(
+    origin: &mut ProfileOrigin,
+    username: &str,
+    user_temp: &std::path::Path,
+    user_profile_root: &std::path::Path,
+    app: &std::path::Path,
+    first_identity: &std::collections::BTreeMap<String, String>,
+) {
+    let (second_user_state, second_user_output) = origin.run_profile_as_user(
+        username,
+        user_temp,
+        user_profile_root,
+        app,
+        ProfileRunSpec {
+            phase: "read",
+            log_name: "other-user-read",
+            seed: None,
+        },
+    );
+    for key in ["local", "cookie", "idb", "cache"] {
+        assert_eq!(
+            second_user_state.get(key).map(String::as_str),
+            Some(""),
+            "second standard user's same-origin {key} must start empty"
+        );
+    }
+    assert_eq!(
+        second_user_state.get("sw").map(String::as_str),
+        Some("false")
+    );
+    let second_user_log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second_user_output.stdout),
+        String::from_utf8_lossy(&second_user_output.stderr)
+    );
+    assert_store_report_matches(&second_user_log, &first_identity["store_uuid"]);
+
+    let second_purge = run_signed_purge_report_as_user(username, user_temp, user_profile_root, app);
+    assert!(
+        second_purge.status.success()
+            && String::from_utf8_lossy(&second_purge.stdout)
+                .contains(&format!("store_uuid={}", first_identity["store_uuid"]))
+            && String::from_utf8_lossy(&second_purge.stdout).contains("store_absent=true"),
+        "second user's exact-identity purge failed: {second_purge:?}"
     );
 }

@@ -264,27 +264,36 @@ test("validation refusals preserve their specific actionable reason", () => {
 
 test("inspection refusals never inspect an attacker-controlled thrown value", () => {
   let thrownReads = 0;
-  const thrown = new Proxy({}, {
-    get() {
-      thrownReads++;
-      throw new Error("must not inspect thrown value");
-    },
-    getPrototypeOf() {
-      thrownReads++;
-      throw new Error("must not classify thrown value");
-    },
-  });
-  const roots = [
-    new Proxy({ message: "hi" }, {
+  const thrown = new Proxy(
+    {},
+    {
+      get() {
+        thrownReads++;
+        throw new Error("must not inspect thrown value");
+      },
       getPrototypeOf() {
-        throw thrown;
+        thrownReads++;
+        throw new Error("must not classify thrown value");
       },
-    }),
-    new Proxy({ message: "hi" }, {
-      ownKeys() {
-        throw thrown;
+    },
+  );
+  const roots = [
+    new Proxy(
+      { message: "hi" },
+      {
+        getPrototypeOf() {
+          throw thrown;
+        },
       },
-    }),
+    ),
+    new Proxy(
+      { message: "hi" },
+      {
+        ownKeys() {
+          throw thrown;
+        },
+      },
+    ),
   ];
   for (const input of roots) {
     expect(() => normalizeMessageOptions(input)).toThrow(
