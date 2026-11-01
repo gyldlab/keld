@@ -48,7 +48,9 @@ impl std::fmt::Display for CreateError {
             Self::Io(e) => write!(
                 f,
                 "KELD-CLI-022: failed to write template — {e}. \
-                 Check the parent path exists and is a writable directory."
+                 Resolve the I/O error above and check that the parent path exists and is a writable directory. \
+                 If the target directory was created, it may contain incomplete files. \
+                 Inspect and preserve any files in that directory, then retry with an unused project name."
             ),
         }
     }
@@ -208,6 +210,30 @@ mod tests {
     }
 
     #[test]
+    fn io_error_guidance_is_conditional_and_preserves_os_error() {
+        let source = std::io::Error::from_raw_os_error(2);
+        let original_message = source.to_string();
+        let original_kind = source.kind();
+        let original_os_error = source.raw_os_error();
+        let err = CreateError::from(source);
+
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "KELD-CLI-022: failed to write template — {original_message}. \
+                 Resolve the I/O error above and check that the parent path exists and is a writable directory. \
+                 If the target directory was created, it may contain incomplete files. \
+                 Inspect and preserve any files in that directory, then retry with an unused project name."
+            )
+        );
+        let CreateError::Io(source) = err else {
+            panic!("I/O conversion must preserve the public error variant");
+        };
+        assert_eq!(source.kind(), original_kind);
+        assert_eq!(source.raw_os_error(), original_os_error);
+    }
+
+    #[test]
     fn invalid_parent_file_is_cli_022() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent = dir.path().join("not-a-dir");
@@ -216,6 +242,16 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("KELD-CLI-022"), "{msg}");
         assert!(msg.contains("writable"), "{msg}");
+        assert!(
+            msg.contains("If the target directory was created, it may contain incomplete files."),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(
+                "Inspect and preserve any files in that directory, then retry with an unused project name."
+            ),
+            "{msg}"
+        );
         assert!(!parent.join("app").exists());
     }
 
