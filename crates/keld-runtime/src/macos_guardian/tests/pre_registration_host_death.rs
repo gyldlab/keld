@@ -20,6 +20,7 @@ use super::super::{REGISTRATION_LEN, REGISTRATION_MAGIC, run_with_registration};
 use super::{assert_gone, liveness_pipe, long_running_command};
 
 mod cleanup_authority;
+mod deadline_tests;
 
 struct PausedGroupRegistration {
     entered: mpsc::Sender<u32>,
@@ -233,33 +234,59 @@ impl Drop for PreRegistrationProcessCleanup {
     }
 }
 
+fn require_pre_registration_event_deadline(deadline: Instant) {
+    assert!(
+        Instant::now() < deadline,
+        "control event exceeded original deadline before complete newline"
+    );
+}
+
 fn receive_pre_registration_event(
     listener: &std::os::unix::net::UnixListener,
     deadline: Instant,
 ) -> (std::os::unix::net::UnixStream, String) {
+    receive_pre_registration_event_with_accept_hook(listener, deadline, || {})
+}
+
+// Test-owned receipt pins the accepted-stream deadline cut independently of
+// scheduler delays. It does not observe or change product Guardian behavior.
+fn receive_pre_registration_event_with_accept_hook(
+    listener: &std::os::unix::net::UnixListener,
+    deadline: Instant,
+    on_accept: impl FnOnce(),
+) -> (std::os::unix::net::UnixStream, String) {
     loop {
+        require_pre_registration_event_deadline(deadline);
         match listener.accept() {
             Ok((mut stream, _)) => {
-                // macOS can reject SO_RCVTIMEO on these Unix sockets. Read a
-                // newline under a monotonic deadline instead of relying on
-                // socket timeouts or an unbounded blocking BufReader.
+                on_accept();
+                // The same caller-owned absolute deadline covers accept and
+                // every byte, including the final newline. macOS can reject
+                // SO_RCVTIMEO on these Unix sockets.
                 stream
                     .set_nonblocking(true)
                     .expect("bound event reader via nonblocking stream");
-                let read_deadline = Instant::now() + Duration::from_secs(3);
                 let mut event = Vec::new();
                 loop {
+                    require_pre_registration_event_deadline(deadline);
                     let mut byte = [0_u8; 1];
                     match stream.read(&mut byte) {
-                        Ok(1) if byte[0] == b'\n' => break,
                         Ok(1) => {
+                            require_pre_registration_event_deadline(deadline);
+                            if byte[0] == b'\n' {
+                                break;
+                            }
                             event.push(byte[0]);
                             assert!(event.len() <= 128, "control event exceeded 128 bytes");
                         }
                         Ok(0) => panic!("controller event closed before its newline"),
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < read_deadline, "control event read expired");
-                            thread::sleep(Duration::from_millis(2));
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            thread::yield_now();
                         }
                         Err(error) => panic!("read control event: {error}"),
                         Ok(_) => unreachable!("one-byte event read"),
@@ -269,11 +296,7 @@ fn receive_pre_registration_event(
                 return (stream, event);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                assert!(
-                    Instant::now() < deadline,
-                    "timed out awaiting process event"
-                );
-                thread::sleep(Duration::from_millis(2));
+                thread::yield_now();
             }
             Err(error) => panic!("accept process event: {error}"),
         }
