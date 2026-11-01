@@ -80,14 +80,20 @@ impl RecoveryObserver {
 
     pub(super) fn accept_wait(&mut self, path: &str, stream: TcpStream) -> Option<Value> {
         if let Some(identity) = path.strip_prefix("/recovery-pending/") {
-            let (pid, nonce) = identity.split_once('/').expect("pending handler identity");
-            let pid = pid.parse::<u32>().expect("owned pending handler PID");
-            assert!(self.admitted.contains(&pid));
-            assert_eq!(nonce.len(), 32);
-            assert!(nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
-            assert!(self.pending.replace((pid, stream)).is_none());
-            return Some(serde_json::json!({"phase":"recovery-handler-pending",
-                "pid":pid,"nonce":nonce,"barrier":"application-handler-only"}));
+            return Some(self.hold(
+                identity,
+                stream,
+                "recovery-handler-pending",
+                "application-handler-only",
+            ));
+        }
+        if let Some(identity) = path.strip_prefix("/recovery-register/") {
+            return Some(self.hold(
+                identity,
+                stream,
+                "recovery-registration-pending",
+                "before-handler-registration",
+            ));
         }
         if path == "/recovery-page" {
             assert!(self.page.replace(stream).is_none(), "one real page wait");
@@ -104,6 +110,22 @@ impl RecoveryObserver {
         }
         self.respond_ready();
         None
+    }
+
+    /// Hold one admitted app's fixture wait until `RetirePending(pid)` drops
+    /// it: the handler's own body (`/recovery-pending`) or, for GH-1095
+    /// AT-API2b, the gap inside `whenReady` before the handler is registered
+    /// (`/recovery-register`). One held wait at a time; the report names which.
+    fn hold(&mut self, identity: &str, stream: TcpStream, phase: &str, barrier: &str) -> Value {
+        let (pid, nonce) = identity
+            .split_once('/')
+            .expect("held fixture wait identity");
+        let pid = pid.parse::<u32>().expect("owned held wait PID");
+        assert!(self.admitted.contains(&pid));
+        assert_eq!(nonce.len(), 32);
+        assert!(nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(self.pending.replace((pid, stream)).is_none());
+        serde_json::json!({"phase":phase,"pid":pid,"nonce":nonce,"barrier":barrier})
     }
 
     fn respond_ready(&mut self) {

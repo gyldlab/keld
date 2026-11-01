@@ -77,7 +77,7 @@ describe("@keld/api channels", () => {
 
   test("missing handler rejects before any app effect", async () => {
     await expect(dispatchApplicationCall(ECHO_CHANNEL, encodeEcho("none", 0))).rejects.toThrow(
-      "KELD-API-001",
+      "KELD-API-002",
     );
   });
   test("dispatch decodes once, invokes once, and encodes the typed response", async () => {

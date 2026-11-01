@@ -381,6 +381,7 @@ Codes are `KELD-<AREA>-<NNN>`, and by convention every message states the fix
 | `KELD-CLI-051` | `keld_core::unicode_args` ([`argv.rs`](../../crates/keld-core/src/argv.rs)) | a process argument, including the program path, is not valid Unicode; refused by position without echoing its bytes (exit 2) |
 | `KELD-IPC-001..007` | [`keld-ipc/src/lib.rs`](../../crates/keld-ipc/src/lib.rs) | I/O · bad frame header · codec · payload too large · protocol error · I/O deadline · HELLO session token |
 | `KELD-WV-001..008,010` | [`keld-wv/src/error.rs`](../../crates/keld-wv/src/error.rs) | unsupported platform · window · webview · event loop · navigate · script · unknown webview id · WebView2 runtime · Linux GPU preparation |
+| `KELD-WV-011/012/013`, `KELD-API-001/002` | macOS `window.keld.invoke` rejections ([§5.5](#55-page-calls-to-bun-on-macos-outcomes-and-the-resend-rule)) | refused before any write · definitely not dispatched · outcome unknown · app call failed (may have run) · no handler registered (no app code ran) |
 | `KELD-MCP010..014` | `keld mcp` `keld_permissions_explain` | manifest missing · parse · unknown principal · unreadable · `channel` not evaluated in v0 |
 
 The `KELD-WV-*` messages are covered by a test that asserts both the code and the fix
@@ -778,6 +779,55 @@ relaunch. The stock entry makes the single call shown above; `crates/keld-cli/te
 remains the faster windowless diagnostic contract.
 
 ---
+
+### 5.5 Page calls to Bun on macOS: outcomes and the resend rule
+
+On macOS, a page reaches its Bun handler with `window.keld.invoke(1, bytes)`, and the
+handler is registered with `channels.handle(echoChannel, handler)` from `@keld/api`.
+Windows and Linux have no renderer bridge yet. A rejection is an `Error` whose
+`message` starts with `"<code>: "` and whose own `code` property is that same code, so
+the page reads `err.code` and never parses the message or branches on its detail.
+The codes, their proof and the resend rule are owned by
+[`gh1095-request-error-codes.md`](../specs/gh1095-request-error-codes.md) §4.2 and §4.4:
+
+| `err.code` | What Keld can prove | What the page may do |
+|---|---|---|
+| `KELD-WV-011` | refused before any write: invalid call, busy, stale document, undeclared channel, or the app is quitting | never resend automatically; a new call from a later user action is a new request |
+| `KELD-WV-012` | definitely not dispatched: no application generation was admitted | resend once, as a new invoke, after a later user action or a reliable app signal; never from a timer or retry loop |
+| `KELD-WV-013` | outcome unknown: the write was attempted, the link ended after it, or the page navigated while the call was pending | never resend automatically, unless the call is made safe (below) |
+| `KELD-API-002` | no handler was registered, so no app code ran | fix the registration order, then resend once |
+| `KELD-API-001` | the call reached the app and failed; the handler may have run | as `KELD-WV-013` |
+| anything else | treat it as outcome unknown | as `KELD-WV-013` |
+
+Keld never resends a call. A second `KELD-WV-012` or a `KELD-API-002` on the resend is
+shown to the user and not resent again.
+
+Register every handler synchronously at module top level, before the first
+`app.whenReady()` and before any `fs` or `auth` call. The app link opens only on those
+calls, so no host call can arrive before the handler exists. A handler registered inside
+`whenReady().then(...)` leaves a window, after every start and restart, in which calls
+get `KELD-API-002`.
+
+```ts
+import { app, channels, echoChannel } from "@keld/api";
+
+channels.handle(echoChannel, handleEcho); // first: no link exists yet
+await app.whenReady();                    // then: opens the link
+```
+
+A `KELD-WV-013` or `KELD-API-001` call is safe to resend only in one of two ways, both
+owned by the app:
+
+- **Idempotency key.** The page puts its own key (for example
+  `crypto.randomUUID()` per user action) in the payload and keeps it across the
+  resend. The handler records `(key, result)` in the same durable transaction as the
+  effect, returns the stored result for a repeated key, and passes the key on to any
+  external API.
+- **Status check.** The app's own handler reads that durable record and confirms the
+  effect did not happen before the page resends.
+
+An in-memory map does not make either safe: it dies with the Bun process that crashed.
+Keld ships no key store, dedup helper or status API, and never reads the key.
 
 ## 6. Where to go next
 

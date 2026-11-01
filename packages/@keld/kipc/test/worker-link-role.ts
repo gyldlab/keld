@@ -878,10 +878,21 @@ async function onEndReport(): Promise<void> {
   report("uncaught", uncaught);
 }
 
+// GH-1095 AT-B2 then AT-B1 (spec §4.5, criterion 9): the host reads one
+// async CALL and closes the link, so that call rejects with KELD-IPC-022; a
+// call made after the end is refused with the same code before it is posted.
+// One code for "the host read it" and "never sent" means KELD-IPC-022 can
+// never mean "not sent".
+async function unknownAfterEnd(): Promise<void> {
+  const { link } = await open();
+  await expectReject("pending", link.call(ECHO_CHANNEL, text("pending-at-close"), 30_000));
+  await expectReject("after-end", link.call(ECHO_CHANNEL, text("after-end"), 1_000));
+}
+
 // GH-528 T3 (#636 gate review): the role's Quit is its last call, and it never
 // parks (PANEL-P2). The link closes the moment the REPLY settles, so a call
-// still pending then rejects with KELD-IPC-022 (which callers treat as the
-// host drain's 024) and the host reads EOF at once.
+// still pending then rejects with KELD-IPC-022 (outcome unknown, GH-1095
+// §4.5) and the host reads EOF at once.
 async function quitClose(): Promise<void> {
   const { link } = await open();
   const log: string[] = [];
@@ -945,6 +956,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "t2-worker-dies": t2WorkerDies,
   "on-end": onEndReport,
   "quit-close": quitClose,
+  "gh1095-unknown-after-end": unknownAfterEnd,
   "t3-quit-close": t3QuitClose,
   "wedged-kick": wedgedKick,
   "expiry-after-close": expiryAfterClose,

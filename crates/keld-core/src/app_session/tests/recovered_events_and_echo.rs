@@ -292,8 +292,9 @@ fn failed_primary_writes_retire_the_generation() {
         .begin_echo_call(&[0x14, 0x02])
         .expect_err("renderer Call write must fail");
     assert!(
-        error.to_string().contains("renderer Echo call write"),
-        "{error}"
+        matches!(&error, super::EchoCallRefusal::WriteFailed(source)
+            if source.to_string().contains("renderer Echo call write")),
+        "{error:?}"
     );
     assert!(
         echo_handle
@@ -343,8 +344,8 @@ fn second_host_echo_call_is_busy_until_the_first_reply_retires() {
         .begin_echo_call(&[4, 5])
         .expect_err("second Echo call must fail busy");
     assert!(
-        second.to_string().contains("already pending"),
-        "unexpected busy error: {second}"
+        matches!(second, super::EchoCallRefusal::Busy),
+        "unexpected busy refusal: {second:?}"
     );
 
     write_frame(

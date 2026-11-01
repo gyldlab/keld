@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:f054baf639fd1b245248cc6f024cc53daa1d45e064687542d3932ed1ecf4cf95
+// @keld/kipc-transport sha256:09a16365ae731298dbcfe328ae95c9818218ef1d66f059e4d37dea85e0f2872a
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -2568,8 +2568,9 @@ export class WorkerLink {
  * reply: one asynchronous CALL carrying `LifecycleRequest::Quit` that never
  * parks the caller (PANEL-P2, #419: `app.quit` returns immediately), and the
  * link closes fully the moment its REPLY or typed failure settles, on every
- * OS. A call still pending then rejects with `KELD-IPC-022`, which callers
- * treat as the host drain's `KELD-IPC-024` (§4.4; both terminal, neither ran).
+ * OS. A call still pending then rejects with `KELD-IPC-022`: terminal, with an
+ * unknown outcome, because the host may have run a call the role wrote before
+ * its `Quit` (GH-1095 §4.5, owner decision Q3); callers MUST NOT replay it.
  * The host reads EOF at once, so its post-Quit drain ends without waiting on
  * its backstop. Resolves once the REPLY is `LifecycleResponse::Quit`; any other
  * REPLY rejects with `KELD-IPC-003`, and a host ERR with its own `CallError`.

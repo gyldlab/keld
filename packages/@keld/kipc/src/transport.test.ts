@@ -806,3 +806,35 @@ describe("deadline leftover I/O", () => {
     }
   });
 });
+
+// GH-1095 AT-13a, Bun half (characterisation): a CALL frame that a failed
+// host write left partial is never dispatched on its own, but bytes that
+// later complete it make the reader dispatch it as one whole frame. So a
+// failed write proves "not dispatched" only if no later writer can complete
+// the frame on that stream, which is why spec §4.2 keeps S9 outcome unknown.
+describe("FrameReader completes a partial frame (GH-1095)", () => {
+  test("a CALL split at each host failure boundary dispatches only once complete", async () => {
+    const payload = new Uint8Array(4_096).fill(0x70);
+    const frame = encodeFrame(FrameKind.Call, ECHO_CHANNEL, 9, payload);
+    for (const k of [1, HEADER_LEN - 1, HEADER_LEN, frame.length - 1]) {
+      const reader = new FrameReader();
+      const decoded: Array<{ kind: number; corr: number; payload: Uint8Array }> = [];
+      const read = reader.readFrame().then((value) => {
+        decoded.push({ kind: value.header.kind, corr: value.header.corr, payload: value.payload });
+      });
+      reader.push(frame.subarray(0, k));
+      // Let any (wrong) early resolution run before the observation.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(decoded).toEqual([]);
+      expect(reader.bufferedBytes()).toBe(k);
+      reader.push(frame.subarray(k));
+      await read;
+      expect(decoded.length).toBe(1);
+      expect(decoded[0]?.kind).toBe(FrameKind.Call);
+      expect(decoded[0]?.corr).toBe(9);
+      expect(decoded[0]?.payload).toEqual(payload);
+      expect(reader.bufferedBytes()).toBe(0);
+    }
+  });
+});

@@ -527,6 +527,32 @@ fn criterion5_close_without_err_throws_022_and_keeps_prior_records() {
     );
 }
 
+/// GH-1095 AT-B2 and AT-B1 (spec §4.5, criterion 9): `WorkerLink.call`
+/// rejects with `KELD-IPC-022` both for a CALL the host read before it
+/// closed the link and for a call made after that end, which the role
+/// refuses before posting. The same code covers "the host read it" and
+/// "never sent", so it is outcome unknown. Control: a REPLY published before
+/// the close settles the call with that reply instead
+/// (`review_reply_published_before_the_close_wins`).
+#[test]
+fn gh1095_ipc_022_is_one_code_for_a_read_call_and_an_unsent_call() {
+    let (mut stream, role) = start("gh1095-unknown-after-end");
+    read_call_named(&mut stream, "pending-at-close");
+    stream.shutdown_app_link().expect("host closes the link");
+    drop(stream);
+    let output = role.finish();
+    expect_report(
+        &output,
+        &[
+            ("pending-code", "KELD-IPC-022"),
+            ("pending-returned", "false"),
+            ("after-end-code", "KELD-IPC-022"),
+            ("after-end-returned", "false"),
+            ("done", "true"),
+        ],
+    );
+}
+
 /// GH-528 T3: `WorkerLink.onEnd` reports the host's close once, as
 /// `KELD-IPC-022`, after the EVENTs that preceded it reached their listener. A
 /// listener added after the end still runs, a removed one never does, and a

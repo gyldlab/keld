@@ -107,7 +107,7 @@ impl fmt::Display for WvError {
             Self::RendererBridge { detail } => write!(
                 f,
                 "KELD-WV-011: renderer bridge request rejected — {detail}. \
-                 Reload the current main-frame document and invoke only the declared Keld renderer API."
+                 Never resend it automatically; invoke only the declared Keld renderer API."
             ),
             Self::ProfileSelection(source) => source.fmt(f),
         }
@@ -193,7 +193,7 @@ mod tests {
                     detail: String::from("boom"),
                 },
                 "KELD-WV-011",
-                "Reload the current main-frame document",
+                "Never resend it automatically",
             ),
             (
                 WvError::from(ProfileError::missing_authenticated_identity()),

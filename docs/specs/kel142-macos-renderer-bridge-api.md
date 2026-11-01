@@ -184,7 +184,9 @@ Contract:
   reject locally. A generated multi-channel table remains later schema work.
 - Duplicate registration, missing handler, handler failure, and malformed
   request payload are terminal outcomes for that CALL; none may invoke a second
-  handler or produce a second reply.
+  handler or produce a second reply. A handler missing at dispatch time answers
+  `KELD-API-002` before any app code runs; every other call failure answers
+  `KELD-API-001` (GH-1095 §4.2, S11–S14).
 - A malformed declared application payload may return one correlated typed
   error with zero handler effect. Header/session-shape failures remain owned by
   KEL-133 and stay link-terminal where its contract says so.
@@ -328,43 +330,38 @@ semantics safe enough for that later task.
 
 Implementation registers, at minimum:
 
-- `KELD-WV-011` — renderer bridge request rejected before app dispatch
-  (malformed, stale document, wrong frame/view, over-budget, busy, undeclared
-  renderer channel, unsupported `opts`, or destroyed bridge). The structured
-  detail must distinguish these reasons without exposing endpoint/token or
-  authority material.
-- `KELD-API-001` — application channel registration/handler contract failure
-  (duplicate/reserved/missing handler or handler failure), with no stack or
-  secret returned to renderer.
+- `KELD-WV-011` — renderer bridge request refused before the host attempted
+  any write (malformed, stale document, wrong frame/view, over-budget, busy,
+  undeclared renderer channel, unsupported `opts`, destroyed bridge, host call
+  state unavailable, or the application quitting). The structured detail must
+  distinguish these reasons without exposing endpoint/token or authority
+  material. Never resent automatically.
+- `KELD-WV-012` — definitely not dispatched: no application generation was
+  admitted, so the host wrote nothing (GH-1095 S8).
+- `KELD-WV-013` — outcome unknown: the host attempted the CALL write, the link
+  ended after it, Bun answered with a host-only `KELD-WV-*` code, or the page
+  navigated while the call was pending (GH-1095 S9, S10, S10b, S16).
+- `KELD-API-001` — application channel registration contract failure
+  (duplicate/reserved/undeclared/non-function handler), or a call that
+  reached the application stage and failed (decode, handler, encode, or reply
+  size), with no stack or secret returned to renderer. Outcome unknown.
+- `KELD-API-002` — no handler was registered when the call reached Bun, so no
+  app code ran (GH-1095 S11).
+
+Every `window.keld.invoke` rejection is an `Error` whose message starts with
+`"<code>: "` and which carries an own, enumerable `code` property equal to
+that prefix.
 
 Existing `KELD-IPC-001..007` keep their KEL-133 meanings. Do not allocate a
 new KIPC error code for a webview-local validation failure.
 
-**Current-behaviour correction (GH-1095, 2026-10-22).** The `KELD-WV-011`
-bullet above is not true of the code at `516644b0`. Two emitters return
-`KELD-WV-011` when the call may already have run:
-
-- the host, after the CALL frame write was attempted: a failed write ("application
-  call is unavailable or already pending") or a link end after dispatch
-  ("application link ended before the renderer reply");
-- the page facade, on `pagehide` while a call is pending ("renderer document
-  navigated before reply").
-
-The same `KELD-API-001` bytes also cover both "no handler registered" (no app
-code ran) and "handler failed" (it may have run).
-
-Until GH-1095 is approved and implemented:
-
-- callers MUST treat every `KELD-WV-011` and every `KELD-API-001` as outcome
-  unknown, without branching on the detail string;
-- callers MUST NOT resend those calls automatically.
-
-The draft contract revision
-[`gh1095-request-error-codes.md`](gh1095-request-error-codes.md) narrows
-`KELD-WV-011` back to pre-write refusals and adds `KELD-WV-012` (definitely not
-dispatched), `KELD-WV-013` (outcome unknown) and `KELD-API-002` (no handler
-registered), and it keeps `KELD-WV-011` as "never resend automatically". It
-supersedes this section only once approved.
+**Revised by GH-1095.** The codes above follow
+[`gh1095-request-error-codes.md`](gh1095-request-error-codes.md), which
+replaces this section's earlier text. That spec owns the stage table (§4.2),
+the retry rules for apps (§4.4: only `KELD-WV-012` or `KELD-API-002` permits
+one resend; Keld never resends), and document-scoped settlement (§4.7).
+Callers MUST NOT branch on a detail string, and MUST treat an unrecognised
+code as outcome unknown.
 
 ## 8. Fuzzing and deterministic hostile tests
 

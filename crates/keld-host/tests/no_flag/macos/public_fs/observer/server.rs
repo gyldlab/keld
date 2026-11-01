@@ -1,12 +1,12 @@
 //! Owns the responsive HTTP observation thread and its finite peer lifetimes.
 use super::http::{PendingHttpRequest, RequestPoll};
 use super::recovery::{RecoveryCommand, RecoveryObserver};
-use super::respond;
+use super::{respond, respond_html};
 use crate::support::EVENT_DEADLINE;
 use serde_json::Value;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 
 /// HTTP observes ordinary app/page data; the retained Quit stream owns no authority.
@@ -18,6 +18,7 @@ pub(in crate::public_fs) struct Observation {
     /// No address, token, body, or real runtime protocol crosses this flag.
     pub(in crate::public_fs) quit_progress: Arc<AtomicU8>,
     recovery_commands: Option<mpsc::Sender<RecoveryCommand>>,
+    page: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -80,6 +81,14 @@ impl Observation {
         Self::bind_with_recovery(false, true)
     }
 
+    /// Serve `html` at `/successor-page`, the target of a page navigation.
+    pub(in crate::public_fs) fn serve_page(&self, html: String) {
+        *self
+            .page
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(html);
+    }
+
     pub(in crate::public_fs) fn send_recovery_command(&self, command: RecoveryCommand) {
         self.recovery_commands
             .as_ref()
@@ -113,7 +122,9 @@ impl Observation {
         };
         let stop = Arc::new(AtomicBool::new(false));
         let quit_progress = Arc::new(AtomicU8::new(0));
+        let page = Arc::new(Mutex::new(None));
         let server = ObserverServer {
+            page: Arc::clone(&page),
             listener,
             send,
             commands,
@@ -136,6 +147,7 @@ impl Observation {
             quit,
             quit_progress,
             recovery_commands,
+            page,
             stop,
             thread: Some(thread),
         }
@@ -164,6 +176,7 @@ impl Drop for Observation {
 /// Sole mutable owner of the test HTTP socket set and control/recovery signals.
 /// Pending requests never block another socket or the release of a Quit barrier.
 struct ObserverServer {
+    page: Arc<Mutex<Option<String>>>,
     listener: TcpListener,
     send: mpsc::Sender<Value>,
     commands: mpsc::Receiver<()>,
@@ -252,6 +265,15 @@ impl ObserverServer {
                     respond(&mut stream, "recorded");
                     self.send.send(report).expect("report observed data");
                 }
+            }
+            "/successor-page" => {
+                let page = self
+                    .page
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                    .expect("a test served a successor page");
+                respond_html(&mut stream, &page);
             }
             "/quit" if self.retain_fixture_quits => {
                 self.quit_progress.store(1, Ordering::Release);
