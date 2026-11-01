@@ -138,6 +138,25 @@ retired collision. The configuration supplies the entrypoint through the host's 
 bundle resolution. `KELD_APP_LINK` remains the sole child bootstrap variable; it conveys
 only `<endpoint>#<64 hex chars>`, never role/principal/grant metadata.
 
+GH452 T2a (owner-delegated 2026-11-01, comment 6549729612) adds a separate, non-authority
+development-launch fact record through the existing private macOS Guardian argument
+and qualified Bun constant/preload path. Its exact shape, bound, capture and absence
+rules are owned by `gh452-app-session-facts.md` §11. `KELD_APP_LINK` remains the sole
+bootstrap environment variable; no extra link, identity, grant or restart owner is added.
+
+GH452 T2b (delegated PR1362 comment 6550291308) extends that same private data owner
+with explicit compiled version metadata and native macOS directory values, under
+`gh452-app-session-facts.md` §12. The schema-2 record, including nested paths, is closed
+object data and is frozen once for all Bun generations; schema 1 remains readable.
+Absent input is also selected explicitly by the Host's Bun constant, not an application
+global. These additions do not qualify an installed source graph, grant access to any
+directory, change role identity or add a second startup/restart owner.
+
+GH452 T2c (`gh452-app-session-facts.md` §13) adds the Host process's first native
+preferred-language identifier under private facts schema 3. Schemas 1/2 remain
+readable with their original closed fields. Locale is immutable non-authority data,
+not an environment input, negotiated renderer locale or new restart owner.
+
 The child may receive stdout/stderr sinks only for supervisor-managed logging. Those
 fixed-direction log streams are not authority handles. All other inherited descriptors
 and handles are closed by default. The endpoint is private, one successful accept

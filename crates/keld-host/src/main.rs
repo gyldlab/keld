@@ -372,7 +372,7 @@ fn dev_stage_cleanup_root_for(
 
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    let native_facade = parse_guardian_boot_mode(args)?;
+    let (native_facade, launch_facts) = parse_guardian_startup(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
@@ -396,7 +396,7 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
                     &root,
                     &entry,
                     (expected_dev, expected_ino),
-                    native_facade,
+                    (native_facade, launch_facts.as_ref()),
                     &environment,
                     app_link,
                 )
@@ -439,6 +439,29 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
         .and_then(|()| std::io::stderr().write_all(stderr_notice.as_bytes()))
         .map_err(|source| format!("KELD-CORE-037: guardian stderr failed — {source}. Retry."))?;
     cleanup_failure.map_or(Ok(()), Err)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_guardian_startup(
+    args: &[String],
+) -> Result<(bool, Option<keld_core::app_session::DevelopmentLaunchFacts>), String> {
+    if args.len() != 7 && args.len() != 8 {
+        return Err(String::from(
+            "KELD-CORE-037: invalid private Guardian argument count",
+        ));
+    }
+    let mode = parse_guardian_boot_mode(&args[..7])?;
+    let facts = args
+        .get(7)
+        .map(|text| {
+            keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(
+                text,
+                Path::new(&args[2]),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    Ok((mode, facts))
 }
 
 #[cfg(target_os = "macos")]
@@ -491,10 +514,14 @@ fn guardian_bun_command(
     root: &Path,
     entry: &Path,
     expected_identity: (u64, u64),
-    native_facade: bool,
+    startup: (
+        bool,
+        Option<&keld_core::app_session::DevelopmentLaunchFacts>,
+    ),
     environment: &[(std::ffi::OsString, std::ffi::OsString)],
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
+    let (native_facade, launch_facts) = startup;
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
@@ -526,6 +553,17 @@ fn guardian_bun_command(
     } else {
         "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
     });
+    if let Some(facts) = launch_facts {
+        command.arg(
+            facts
+                .bun_define_argument()
+                .map_err(|error| guardian_entry_error(error.to_string()))?,
+        );
+    } else {
+        // Absence is also a Host decision. A historical no-sidecar entry must
+        // not satisfy the reserved constant through an application global.
+        command.arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
+    }
     let sidecar = root.join("src").join("kipc-transport.ts");
     match std::fs::metadata(&sidecar) {
         Ok(metadata) if metadata.is_file() => {
@@ -629,10 +667,12 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::Path;
 
     use super::{
         dev_stage_cleanup_root_for, freeze_guardian_environment, guardian_bun_command,
-        parse_guardian_boot_mode, reconcile_guardian_result, reopen_validated_entry,
+        parse_guardian_boot_mode, parse_guardian_startup, reconcile_guardian_result,
+        reopen_validated_entry,
     };
 
     #[test]
@@ -662,7 +702,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            true,
+            (true, None),
             &[],
             "/tmp/link#token",
         )
@@ -681,7 +721,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            true,
+            (true, None),
             &[],
             "/tmp/link#token",
         )
@@ -691,6 +731,7 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
+                "--define=__KELD_HOST_LAUNCH_FACTS__:undefined".as_ref(),
                 "--no-env-file".as_ref(),
                 "--no-install".as_ref(),
                 "run".as_ref(),
@@ -706,7 +747,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            true,
+            (true, None),
             &[],
             "/tmp/link#token",
         )
@@ -716,11 +757,13 @@ mod tests {
             args[0],
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
-        assert_eq!(args[1], format!("--preload={}", sidecar.display()).as_str());
-        assert_eq!(args[2], "--no-env-file");
-        assert_eq!(args[3], "--no-install");
-        assert_eq!(args[4], "run");
-        assert_eq!(args[5], entry.as_os_str());
+        assert_eq!(args[1], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
+        assert_eq!(args[2], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[3], "--no-env-file");
+        assert_eq!(args[4], "--no-install");
+        assert_eq!(args[5], "run");
+        assert_eq!(args[6], entry.as_os_str());
+        assert_eq!(args.len(), 7);
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         // Bun config can replace a CLI preload. Qualify every generation,
         // including recovery after a previously absent config appears.
@@ -732,7 +775,7 @@ mod tests {
                 temp.path(),
                 relative,
                 (identity.dev(), identity.ino()),
-                true,
+                (true, None),
                 &[],
                 "/tmp/link#token",
             )
@@ -761,7 +804,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    native_facade,
+                    (native_facade, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -771,6 +814,7 @@ mod tests {
                 } else {
                     "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
                 })];
+                expected.push("--define=__KELD_HOST_LAUNCH_FACTS__:undefined".into());
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
@@ -817,6 +861,95 @@ mod tests {
     }
 
     #[test]
+    fn guardian_private_launch_facts_bind_to_the_stage_and_precede_the_entry() {
+        let temp = tempfile::tempdir().expect("launch facts stage");
+        fs::write(temp.path().join("entry.ts"), "console.log('ENTRY');\n").expect("entry");
+        let identity = fs::metadata(temp.path().join("entry.ts")).expect("entry identity");
+        let record = serde_json::json!({
+            "schema": 3, "kind": "development", "name": "fixture", "root": temp.path(),
+            "version": "29.1.7-composed", "locale": "en-IN",
+            "paths": {
+                "appData": "/native/Application Support",
+                "userData": "/native/Application Support/fixture",
+                "documents": "/native/Documents"
+            }
+        });
+        let environment = freeze_guardian_environment([
+            ("KELD_APP_LINK".into(), "retired-generation".into()),
+            ("GH452_FROZEN".into(), "retained-native-value".into()),
+            ("BUN_OPTIONS".into(), "--preload=unqualified.ts".into()),
+        ])
+        .expect("qualified retained environment");
+        let mut args: Vec<String> = vec![
+            "host".into(),
+            "guardian".into(),
+            temp.path().to_str().expect("UTF-8").into(),
+            "entry.ts".into(),
+            identity.dev().to_string(),
+            identity.ino().to_string(),
+            "1".into(),
+            record.to_string(),
+        ];
+        let (mode, facts) = parse_guardian_startup(&args).expect("closed private startup");
+        for app_link in ["/tmp/initial#token-a", "/tmp/recovered#token-b"] {
+            let command = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                (mode, facts.as_ref()),
+                &environment,
+                app_link,
+            )
+            .expect("qualified command with both retained inputs");
+            let observed: Vec<_> = command.get_args().collect();
+            let define = observed[1].to_str().expect("UTF-8 facts argument");
+            let payload = define
+                .strip_prefix("--define=__KELD_HOST_LAUNCH_FACTS__:")
+                .expect("reserved facts argument before entry");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(payload).expect("complete facts"),
+                record,
+                "all facts survive initial and recovered command construction"
+            );
+            assert_eq!(observed[2], "--no-env-file");
+            assert_eq!(observed[3], "--no-install");
+            assert_eq!(observed[4], "run");
+            assert_eq!(observed[5], temp.path().join("entry.ts"));
+            assert_eq!(observed.len(), 6);
+            let inherited: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+            assert_eq!(
+                inherited.get(OsStr::new("GH452_FROZEN")),
+                Some(&Some(OsStr::new("retained-native-value")))
+            );
+            assert_eq!(
+                inherited.get(OsStr::new("KELD_APP_LINK")),
+                Some(&Some(OsStr::new(app_link))),
+                "each generation replaces the retained old link"
+            );
+            assert!(
+                inherited
+                    .get(OsStr::new("BUN_OPTIONS"))
+                    .is_none_or(Option::is_none),
+                "unqualified inherited preloads stay removed"
+            );
+        }
+        args[7] =
+            serde_json::json!({"schema":1,"kind":"development","name":"fixture","root":"/foreign"})
+                .to_string();
+        assert!(parse_guardian_startup(&args).is_err());
+        args[7] = "extra".into();
+        assert!(parse_guardian_startup(&args).is_err());
+        args.pop();
+        assert!(
+            parse_guardian_startup(&args)
+                .expect("historical no-facts startup")
+                .1
+                .is_none()
+        );
+    }
+
+    #[test]
     fn guardian_rejects_runtime_config_without_a_transport_sidecar() {
         let temp = tempfile::tempdir().expect("config admission fixture");
         let entry = temp.path().join("entry.ts");
@@ -835,7 +968,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    native_facade,
+                    (native_facade, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -889,7 +1022,7 @@ mod tests {
             temp.path(),
             std::path::Path::new("entry.ts"),
             (identity.dev(), identity.ino()),
-            true,
+            (true, None),
             &frozen,
             "/tmp/link#token",
         )
@@ -1050,7 +1183,7 @@ mod tests {
                 &stage,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                true,
+                (true, None),
                 &frozen,
                 "/tmp/link#counterweight",
             )
@@ -1122,7 +1255,7 @@ mod tests {
                 temp.path(),
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                true,
+                (true, None),
                 &frozen,
                 app_link,
             )
@@ -1223,7 +1356,7 @@ mod tests {
                 &root,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                true,
+                (true, None),
                 &environment,
                 "/tmp/link#token",
             )
