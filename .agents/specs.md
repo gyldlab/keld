@@ -26,9 +26,9 @@ docs/specs/<id>-<slug>/
   <part>.md  sections 2-7, 9, 10, in part-table order
 ```
 
-- `<id>` is `kel<n>` or `gh<n>`. The header states `Status`, `Tracker` (equal to `<id>`),
-  `Owner`, `Updated` and `Pin` (a full SHA in branch history).
-- The index stays within 120 lines and 8 KiB. Its `## ` headings are exactly
+- `<id>`: `kel<n>` or `gh<n>`. `Tracker`: matching `KEL-<n>` or `GH-<n>`.
+  Header also: `Status`, `Owner`, `Updated`, `Pin` (full SHA in branch history).
+- The index stays within 120 lines and 8 KiB. Its `##` headings are exactly
   `1. Goal & non-goals`, `Parts`, `Current blockers`, `8. Review gates triggered`.
 - `## Parts` is the table `| Part | Owns | Load when |` of every part.
 - `## Current blockers` lists exactly the open `B-n`.

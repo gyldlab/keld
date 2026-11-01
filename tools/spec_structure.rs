@@ -5065,6 +5065,10 @@ fn check_tree(root: &Path, config: &Config, history: &dyn History) -> Result<Rep
                 check_row(&baseline_rel, &rel, row, &doc, &mut report);
                 let mut structure = Report::default();
                 check_structure(&doc, &[], false, Some(history), &mut structure);
+                let stem = name.trim_end_matches(".md");
+                if is_spec_name(stem) {
+                    check_tracker(&doc, stem, &mut structure);
+                }
                 if row.structure == Structure::Exempt {
                     if structure.findings.is_empty() {
                         report.add(
@@ -5257,6 +5261,10 @@ fn baseline_rows_at(root: &Path, history: &dyn History) -> Result<String, String
             let doc = read_doc(root, &rel)?;
             let mut structure = Report::default();
             check_structure(&doc, &[], false, Some(history), &mut structure);
+            let stem = name.trim_end_matches(".md");
+            if is_spec_name(stem) {
+                check_tracker(&doc, stem, &mut structure);
+            }
             let size = measure(&doc);
             let unknowns = take_unknowns(&mut structure);
             let others = structure.findings.len();
