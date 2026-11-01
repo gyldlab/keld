@@ -51,8 +51,11 @@ Full receipts in `zettlr-corpus-facts.md`. The decision-bearing differences from
 | Env | none in preload | whole `process.env` copied into the page (decided ▲, env stays `{}`) |
 
 Consequence for the kill-condition ranking on the map: the main-side link-stall kill condition
-(#418, now landed as GH-527/#528 T1–T3) is **not** on Zettlr's path; the renderer `sendSync`
-kill condition (#401) **is**, but it gates only activation of six read sites, not launch.
+(#418, now landed as GH-527/#528 T1–T3) is **not** on Zettlr's path. The renderer `sendSync`
+kill condition (#401) is **retired for Zettlr** (D-Z20): its `config-provider` sites are served
+from a host-seeded, event-refreshed reply mirror (#1375) and its `citeproc` site is a ✘ feature
+cell outside the five workflow cells. The honest edit count if the mirror were refused is not 6:
+56 synchronous `window.config.get/set` call sites in 21 renderer files plus 8 citation consumers.
 
 ## 3. Atomic decomposition (root `AGENTS.md` § Atomic problem-solving protocol)
 
@@ -65,8 +68,8 @@ Independence edges are the dependency graph in §5; no atom's pass is proof of a
 | A2 | Renderer floor v2: one-way send + host→renderer events + credit | #465 / #543 / #540 | page ↔ app world ↔ wv-link v2 ↔ el control channel | unbounded renderer queue; stale-nonce delivery | N sends in one task arrive in order; N+1 refused; stale nonce refused |
 | A3 | N pending renderer invokes | #546 | credit window per WebView | second invoke KELD-WV-011 | two overlapping invokes settle; remove credit check → N+1 accepted |
 | A4 | invoke/handle facade + Electron error text | #547 | separate `_invokeHandlers` registry; `{error: String(err)}` reply | handler errors collapsed to KELD-API-001 | pinned strings: `Error invoking remote method '<ch>': <err>`, `No handler registered for '<ch>'`, `Attempted to register a second handler for '<ch>'` |
-| A5 | Renderer `sendSync` blocking lane | #401 (decision) → #548 / lane ticket | page sync XHR → WKURLSchemeHandler → host → Bun → value in same task | page never unblocks; second routing protocol | WebKit `LoadSynchronousURLSchemeTask` (source FACT); host-enforced deadline; arms 1–8 |
-| A6 | contextBridge sync + function-valued returns | #399 (decision) → #549 | page `dispatchEvent` → app-world listener → shared-DOM result | value only as Promise; object identity leak | `cloneAcrossWorlds` serialises (source FACT); same-task readback measured |
+| A5 | Renderer `sendSync` for declared channels | #1375 (mirror quirk) over #548 (typed throw) | main listener `returnValue` captured at window creation → document-start snapshot → refreshed by #543 events → synchronous read | stale value observed by a page listener before the mirror refresh; undeclared channel silently async | mirror-before-listener ordering entry; undeclared channel throws synchronously; lane A (#401) parked |
+| A6 | contextBridge returns: function-valued (page-world proxy, no relay), sync primitive from the mirror (shared-DOM relay #399), Promise (async relay) | #549 ← #399, #1375 | page `dispatchEvent` → app-world listener → shared-DOM result | value only as Promise; object identity leak | `cloneAcrossWorlds` serialises (source FACT); same-task readback measured; arm 1 is a preload-local read |
 | A7 | App preload runtime in a separate content world | #484 → #467 → #571 | document-start injection; sandboxed require map; `process.getSystemVersion()` at load | preload throws (`getSystemVersion` missing) | Zettlr preload evaluates with no TypeError |
 | A8 | Custom scheme producer behind the host resource adapter | #471 ← #554 | static scheme table; request → adapter → guard → Bun handler → bounded Response | scheme mints fs authority; traversal | encoded dot-dot refused before handler; >ceiling streams or typed ▲ |
 | A9 | Window registry, two-phase close, chrome | #449 → #450 → #456 / #534 | host-minted (id, generation); `close` preventDefault; `hiddenInset` | throwing close listener counts as veto (today) → window never closes | Zettlr `close` listener runs `session.clearStorageData` (A10) |
@@ -111,11 +114,11 @@ three new tickets.
 
 ```text
                          decisions / prototypes (scratch, real Mac)
-   #401 sendSync lane ──┐          #399 cross-world returns ──┐        #1355 chokidar on Bun
+   #401 sendSync lane (PARKED)      #399 cross-world returns ──┐        #1355 chokidar on Bun
          │              │                 │                   │                 │
          ▼              ▼                 ▼                   ▼                 ▼
  IPC v2 / contextBridge                                                   file handling
-   #540 contract ─► #465 v2a send ─► #543 v2b events ─► #546 N invokes ─► #547 invoke/handle ─► #549 returns ─► #548 / sync lane
+   #540 contract ─► #465 v2a send ─► #543 v2b events ─► #546 N invokes ─► #547 invoke/handle ─► #549 returns ─► #548 typed throw ─► #1375 reply mirror
         │                                                   ▲                      │
         └──► #544 codec ─► #545 payload bound ──────────────┘                      ▼
    #484 preload world ─► #467 contextBridge/ipcRenderer ─► #571 Zettlr preload tranche ─► #550 webUtils
@@ -138,7 +141,7 @@ Edge table (Zettlr-critical edges not already encoded as native blocked-by links
 | Needs | Because | Action |
 |---|---|---|
 | #547 ← #545 (or its invoke-result successor) | `get-document` returns the whole document text; the live inline bound is 4096 B, the envelope cap 64 KiB | #546/#547 spec states the invoke-result bound and the bulk lane for larger documents (D-Z6) |
-| #549 ← #401 | `config.get` / citation callback return `sendSync` values; the relay alone cannot make them synchronous | sequence #401 arm 1 before scoring #549 for those two shapes |
+| #549 ← #399, #1375 | `config.get` returns a value the preload world holds in the reply mirror; the #399 relay carries it to the page in the same task | #401 is parked; #549 arm 1 reads the mirror, never the host |
 | #450 ← #474 | Zettlr's `close` listener calls `session.clearStorageData`; a throwing listener is a veto today | add edge; #474 moves from "next, low" to Zettlr-critical |
 | #451 ← #450 and A11 re-entry | `app.quit()` is called again from inside the `before-quit` continuation and after `will-quit` | #451 spec covers re-entrant quit |
 | #1354 ← #556 | Cmd+S is a non-role accelerator with a click handler | #556 is on the save cell |
@@ -149,8 +152,8 @@ Edge table (Zettlr-critical edges not already encoded as native blocked-by links
 
 ### Immediate (startable now; no dependency on the draw.io proof landing)
 
-1. [#401](https://github.com/gyldlab/keld/issues/401) — run the eight arms on a real Mac (feasibility is now source-established; see the 2026-10-31 comment). Scratch only.
-2. [#399](https://github.com/gyldlab/keld/issues/399) — run the five arms (same harness family as the #484 DOM-ingress fixture). Scratch only.
+1. [#1375](https://github.com/gyldlab/keld/issues/1375) — spec for the app-declared sendSync reply mirror (replaces the parked sync lane; no carrier, no origin precondition).
+2. [#399](https://github.com/gyldlab/keld/issues/399) — run the five arms (same harness family as the #484 DOM-ingress fixture); arm 1 reads a preload-local value. Scratch only.
 3. [#1355](https://github.com/gyldlab/keld/issues/1355) — chokidar 5 on Bun 1.4.2 under legacy. Scratch only.
 4. [#554](https://github.com/gyldlab/keld/issues/554) — protocol/session/net conformance cells (red, Zettlr keys); add the `protocol.md`, `session.md`, `net.md` doc snapshots to the shared store (gh566 A5).
 5. Doc snapshots + red cells for `ipc-main.md`, `ipc-renderer.md`, `context-bridge.md`, `system-preferences.md`, `web-utils.md` under the existing conformance owners (#464 for the IPC family holds the first-proof slice; the Zettlr-only rows land under #547/#548/#549/#550/#1356 as conformance-first entries). The Electron source strings quoted in §9 are the oracle for the observed-only rows until the #494/#495 recorder exists.
@@ -159,7 +162,7 @@ Edge table (Zettlr-critical edges not already encoded as native blocked-by links
 
 ### Next milestone (Zettlr critical path, in pull order)
 
-IPC v2 and contextBridge: #540 → #465 → #543 → #546 → #547 → #549 → #548 (+ lane ticket if #401 passes) → #550.
+IPC v2 and contextBridge: #540 → #465 → #543 → #546 → #547 → #548 → #1375 → #549 → #550 (#401 parked).
 Renderer: #484 → #467 → #571.
 Windows/app: #449 → #450 → #474 → #451 → #456 → #534 (+ `setDocumentEdited`) → #524.
 Native: #477 → #478 → #561; #480 → #556; #481 → #558 → #1356; #479 (shell, navigation handler).
@@ -178,8 +181,8 @@ Proof: #589 (draw.io) → #1354 (Zettlr macOS) → #1359 (Linux lane) → #1360 
 |---|---|---|---|---|---|---|
 | N pending invokes | #546 | #465 (credit accounting) | `ipc-renderer.md` invoke; no documented bound → declared ▲ | two overlapping invokes settle; N+1 typed refusal | remove credit check → N+1 accepted | macOS WKWebView real run |
 | invoke/handle + error text | #547 | #546, #466, #467 | `ipc-main.md` "only the `message` property…"; source strings in §9 | round trip; handler throw text; no-handler text; duplicate `handle` throws; non-cloneable arg rejects | collapse errors to generic → handler-throw entry fails | macOS |
-| sendSync | #401 → #548 / lane | #467, #466; bridge-owner amendment (#484 KEL-142 revision, #540) | `ipc-renderer.md` "block the whole renderer"; `{error:"reply was never sent"}` on GC (source) | typed throw today; if lane: value in same task, host deadline | returning a Promise fails no-silent-async | macOS WKWebView; WebKitGTK separate |
-| contextBridge returns | #399 → #549 | #467 | `context-bridge.md` table: Function/Promise ✅ as return values | `ipc.on` returns a callable; sync value where Electron returns a value | Promise where Electron returns a value → entry fails | macOS |
+| sendSync | #548 (typed throw) → #1375 (declared-channel reply mirror) | #543, #467, #541/#552, #399 | `ipc-renderer.md` "expect a result synchronously" / `event.returnValue`; source-only strings (`reply was never sent`) are `unknown` cells | declared channel returns the mirrored value synchronously; undeclared throws; staleness window declared ▲ | mirror updated after a page listener → ordering entry fails; Promise return → no-silent-async fails | engine-neutral; macOS first |
+| contextBridge returns | #549 ← #399, #1375 | #467 | `context-bridge.md` table: Function/Promise ✅ as return values | `ipc.on` returns a callable (page-world proxy); `config.get` returns the mirrored value in the same task; `getCitationCallback`'s inner `get-citation-sync` is a ✘ feature cell | Promise where Electron returns a value → entry fails | macOS WKWebView; Linux after #1127 |
 | webUtils.getPathForFile | #550 | #467 | `web-utils.md` empty string for JS-constructed File | dropped file → path; constructed File → `''` | derive from `File.name` → fails | macOS (OS drop probe UNKNOWN) |
 | Preload tranche | #571 | #484, #567, #570 | sandboxed-renderer `process` subset | `getSystemVersion()` non-empty at load | remove it → preload throws | macOS |
 | safe-file scheme | #471 | #554, #473 seam | `protocol.md` handle/registerSchemesAsPrivileged; CustomScheme privileges per engine | 11 consumer files load; traversal refused; ceiling never truncates | allow scheme after construction → runtime-minting test fails | macOS (WKWebView privilege cells measured) |
@@ -224,6 +227,9 @@ Receipts: `zettlr-cross-os-lanes.md` and the refutation reports (research branch
 | D-Z18 | **Engine receipt pins:** before any engine receipt cited at branch tip backs a cell it is re-fetched at WebKitGTK 2.52.6 / wry 0.56.1 (arch 05 §148), WebView2 runtime 156.0.4314.50 / SDK 1.0.4314.35 (#1307), and the recorded macOS build. Lanes vocabulary is `present/emulated/absent/unknown`, never scoreboard ✔/▲/✘. | New, from lens A's missed-decisions list. | lane tickets |
 | D-Z19 | **Single-writer files:** #1354's claim line edits `DOCUMENTED_COMMITTED_PRODUCT_CORPORA` and `docs/engineering/compat-scoreboard.md`; a human-designated writer is required (`docs/agents/workflow.md` § Parallelism); #1354 lists this as a review condition instead of "none". | New, from lens A. | #1354 |
 
+| D-Z20 | **The synchronous-XHR lane is parked (#401 → `milestone:parked`).** Zettlr's `sendSync` demand is served without any carrier: `config-provider` (4 sites) by an app-declared **reply mirror** — the main listener's `returnValue` captured at window creation, delivered at document start, refreshed by the declared `config-provider` push events in issue order, writes as send + optimistic ▲ (#1375); `citeproc-provider` `get-citation-sync` (preload + 8 consumers) is a ✘ feature cell with fix-it, outside the five workflow cells when the proof document has no citations. | New (ruthless cut, 2026-11-01). The alternative "score 6 edits" is false: 56 sync `window.config.get/set` sites in 21 files plus 8 citation consumers. Re-entry for the lane: a demand that is neither mirror-able nor outside the cells, or the host-origin precondition free on every engine. | #1375 spec; gates public API, permission model |
+| D-Z21 | **#549 narrowed:** function-valued returns via page-world proxies (no relay); synchronous primitive returns only from the mirror through the #399 relay (arm 1 is preload-local); Promise returns via the async relay. #399 stays `next` as a cheap scratch prototype. | New (2026-11-01). | #549 ← #399, #1375 |
+
 Closed by existing decisions (no new ruling): `process.env` stays `{}` (#407, F07-E1 A); `el:*`
 never written (#398/#433); legacy never auto-selected (#586, KEL-78); no second kipc link (#424);
 no host UI thread blocks on Bun (#425).
@@ -235,7 +241,7 @@ freshness), `env -u CLAUDECODE cargo test -p keld-compat` (corpus admission; lea
 `bun test` in `packages/@keld/electron`, review gates named per ticket (wire protocol: #540, #546,
 #471, #1356 none; public API: #547, #549, #548, #550, #1356; permission model: #471, #550, #1356).
 
-Oracle strings (pinned v44.4.5 source, retrieved 2026-10-31) for the conformance-first entries:
+Oracle strings (pinned v44.4.5 source, retrieved 2026-10-31). **These are source citations, not `docs/` citations, so under gh532 AC3/AC6 their cells are `expected_verdict: unknown` (D-Z11) until the gh532 amendment in #494 admits recorder goldens; they still define what the Electron arm must observe:**
 
 | Entry | Expected observable | Source |
 |---|---|---|
@@ -249,8 +255,9 @@ Oracle strings (pinned v44.4.5 source, retrieved 2026-10-31) for the conformance
 | contextBridge value table | Function/Promise supported as parameters and return values; Symbols dropped; prototypes dropped | `docs/api/context-bridge.md` table |
 | `registerSchemesAsPrivileged` after ready | error text UNKNOWN — capture from a pinned run, never invent (#554 note) | — |
 
-Prototype gates (scratch, real Mac; close the decision ticket only on a transcript): #401 arms
-1–8; #399 arms 1–5 (arm 2 `postMessage` must fail); #1355 arms 1–6.
+Prototype gates (scratch, real device; close the decision ticket only on a transcript): #399 arms
+1–5 (arm 2 `postMessage` must fail; arm 1 reads a preload-local value); #1355 arms 1–6 on each
+OS lane. #401's eight arms are parked with the lane (D-Z20).
 
 End-to-end Zettlr product proof cells (#1354; each red until its ticket lands; each flipped only
 in the change that makes it pass, on a real Mac, `LegacySandboxOff`):
@@ -258,7 +265,7 @@ in the change that makes it pass, on a real Mac, `LegacySandboxOff`):
 | Cell | Observable | Flipping tickets |
 |---|---|---|
 | activation | `keld dev` starts the role, `app.whenReady` resolves, `bootApplication` completes | #452, #453, #502, #570, #586/#588, #1356, #471, #1355 |
-| launch | main window `ready-to-show` → shown; first inline script sees the five globals; onboarding window (first start) created and closable | #449, #456, #484, #467, #571, #455 (D-Z4) |
+| launch | main window `ready-to-show` → shown; first inline script sees the five globals and the pinia config store constructs from the seeded mirror; onboarding window (first start) created and closable | #449, #456, #484, #467, #571, #1375, #526 (D-Z4) |
 | open | `showOpenDialog` → root added; `invoke('documents-provider','open-file')` → `get-document` text > 4096 B delivered | #478, #547, #546, D-Z6 bound, #552 grants |
 | edit | ≥ 20 consecutive `push-updates` invokes without KELD-WV-011; `documents-update` broadcast to all windows; `setDocumentEdited(true)` | #546, #543, #534 (D-Z7) |
 | save | Cmd+S → menu click → `webContents.send('shortcut','save-file')` → `invoke('save-file')` → bytes on disk equal editor text with BOM/linefeed preserved | #480, #556, #547 |
@@ -294,6 +301,7 @@ New (this plan): [#1354](https://github.com/gyldlab/keld/issues/1354) Zettlr pro
 [#1355](https://github.com/gyldlab/keld/issues/1355) chokidar-on-Bun prototype ·
 [#1356](https://github.com/gyldlab/keld/issues/1356) `systemPreferences.subscribeNotification` ·
 [#1359](https://github.com/gyldlab/keld/issues/1359) Zettlr Linux lane · [#1360](https://github.com/gyldlab/keld/issues/1360) Zettlr Windows lane ·
+[#1375](https://github.com/gyldlab/keld/issues/1375) sendSync reply mirror (successor of #548's typed throw; #401 parked) ·
 [#1358](https://github.com/gyldlab/keld/issues/1358) `program(zettlr)` tracker.
 
 Decisions updated with primary-source receipts (not closed): [#399](https://github.com/gyldlab/keld/issues/399), [#401](https://github.com/gyldlab/keld/issues/401) (incl. the origin precondition correction); oracle ruling posted on [#1183](https://github.com/gyldlab/keld/issues/1183).
@@ -306,6 +314,7 @@ Existing tickets reused (no duplicates created): #540 #465 #543 #544 #545 #546 #
 ## 12. What this plan does not claim
 
 No Zettlr cell is passing. No percentage exists. The draw.io proof has not landed; this plan does
-not reorder its frontier. The real-Mac prototypes (#399, #401, #1355) were not run in this session.
+not reorder its frontier. The real-device prototypes (#399, #1355) were not run in this session;
+#401 is parked, not run.
 Windows and Linux Zettlr lanes are undefined. The `keld migrate` analyzer is not required for the
 proof and is not promised by it.
