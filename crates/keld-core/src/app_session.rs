@@ -2474,9 +2474,6 @@ fn run_app(
     )?;
     guardian_owner.attach_router(router.handle())?;
     let (window_events_tx, window_events_rx) = mpsc::channel();
-    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
-        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
-    });
     let router_handle = router.handle();
     let commands_for_events = window_commands_tx.clone();
     let init_deadline = Arc::new(OnceLock::new());
@@ -2519,7 +2516,20 @@ fn run_app(
         }
     };
 
-    let mut engine = match WkWebViewEngine::new(profile_selection) {
+    let engine_result = WkWebViewEngine::new(profile_selection);
+    // Private acceptance fault at the real post-bind/pre-loop cleanup cut.
+    // This branch is absent from release and normal builds.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    let engine_result = engine_result.and_then(|engine| {
+        if std::env::var("KELD_TEST_DIALOG_STARTUP_FAILURE").as_deref() == Ok("engine") {
+            Err(WvError::EventLoop(
+                "controlled dialog startup engine failure".to_owned(),
+            ))
+        } else {
+            Ok(engine)
+        }
+    });
+    let mut engine = match engine_result {
         Ok(engine) => engine,
         Err(source) => {
             let primary = app_webview_error("macOS profile store initialization", &source);
@@ -2578,6 +2588,12 @@ fn run_app(
         drop(renderer_outcomes_rx);
         None
     };
+    // A pre-loop failure joins the coordinator after dropping its event sender.
+    // Retaining this clone across that cleanup would keep the facade receiver
+    // connected forever. Native presentation starts only after startup succeeds.
+    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+    });
     let presentation_router = router.handle();
     let mut presentation_unproved = None;
     let mut retains_main_custody = false;

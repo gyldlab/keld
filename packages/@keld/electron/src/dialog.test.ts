@@ -7,7 +7,7 @@
  * its separate no-flag Host test exercises three OS clicks, actual checkbox
  * state, physical quiescence and 257+1 same-link operations. The parentless
  * overload remains unsupported, so the broad Message cell stays expected-fail
- * alongside sync Message, Open and Save until their OS gates pass.
+ * alongside sync Message, Open and Save until parentless and remaining OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
@@ -44,19 +44,45 @@ test("dialog.show-message-box-sync.clicked-index today: no synchronous native di
   expect(dialogMethod(electron.default, "showMessageBoxSync")).toBeUndefined();
 });
 
-// Electron v44.4.5 dialog.md: open returns { canceled, filePaths }, where
-// cancellation requires an empty filePaths array. This red-until-implemented
-// case detects an actually added API rather than accepting an import-only shim.
-test("dialog.show-open-dialog.canceled-paths today: no asynchronous native file-open method is exported", () => {
-  expect(dialogMethod(electron, "showOpenDialog")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showOpenDialog")).toBeUndefined();
+// Real parented Open returns a native selected path or canceled: true with an
+// empty array; the macOS Host fixture proves both with OS UI and file census.
+// The broad corpus cell stays expected-fail because parentless is incomplete.
+test("dialog.show-open-dialog.canceled-paths: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showOpenDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showOpenDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { filters: [{ name: "Files", extensions: ["*.drawio"] }] },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ properties: ["openFile", "openDirectory"] }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
-// Electron v44.4.5 dialog.md: save returns { canceled, filePath }, where
-// cancellation requires the empty string. Path selection is NOT a file write.
-test("dialog.show-save-dialog.canceled-path today: no asynchronous native file-save method is exported", () => {
-  expect(dialogMethod(electron, "showSaveDialog")).toBeUndefined();
-  expect(dialogMethod(electron.default, "showSaveDialog")).toBeUndefined();
+// Save is path-only; the OS fixture asserts positive native path without a
+// file write, plus empty canceled path. Parentless remains unimplemented.
+test("dialog.show-save-dialog.canceled-path: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showSaveDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showSaveDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { securityScopedBookmarks: true },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ defaultPath: "diagram.drawio", securityScopedBookmarks: false }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
 // Electron v44.4.5: real async facade exists on both export shapes; native

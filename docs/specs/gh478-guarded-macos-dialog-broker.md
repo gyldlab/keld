@@ -1,8 +1,9 @@
 # Spec: macOS guarded native dialog broker (GH-478, F06-T2)
 
 Status: approved
-Linear: GH-478 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-10-28
+Linear: GH-478 (tracker under #517; reference KEL-80) · Owner: gyldlab/keld · Updated: 2026-11-01
 Approval: owner-delegated acceptance of the exact v2 spec input (SHA-256 `a3137e6d826d93788845b57c4295917b34be54b61f7fcc939903ab3432fc73c2`) and the existing architecture05 path-only amendment is recorded at [GH478 comment 6476354568](https://github.com/gyldlab/keld/issues/478#issuecomment-6476354568); no native/product acceptance is claimed.
+Save preferred-suffix correction: bounded owner-delegated decision [6553879003](https://github.com/gyldlab/keld/issues/478#issuecomment-6553879003); exact source review and native proof remain separate from that contract decision.
 
 ## 1. Goal & non-goals
 
@@ -439,6 +440,26 @@ remains ambient and is disclosed as forfeited containment.
     Reuse pinned AppKit bindings and implement actual group-switch behavior;
     any added type-identifier binding or deprecated-API exception requires its
     owning dependency/lint review, not an unreviewed generic filter abstraction.
+    **Native Save suffixes:** when the proposed filename has no extension,
+    `NSSavePanel.allowedContentTypes` uses its first preferred extension. Save
+    admission may therefore also accept the preferred filename extensions from
+    the exact `UTType` objects already installed for its one selected group.
+    Derive and retain those strings before cloning the existing native delegate's
+    filter model. Both the live delegate and final Save reply validate against
+    that same active group's values. Never union inactive groups, infer arbitrary
+    type-conformance aliases, or admit unrelated suffixes. Open's exact declared
+    suffix predicate remains unchanged. Directory classification, path-only
+    results, no-write behavior, default-deny Guard and native cleanup ownership
+    remain unchanged; no implicit bookmark or filesystem grant is introduced.
+    The regression must use an extensionless native default name and require the
+    exact OS-appended preferred suffix, while both the stem and resulting path
+    remain absent. Separate controls cover declared/native Save positives,
+    unrelated Save rejection in the active group, unchanged Open rejection,
+    inactive-group aliases and invalid indexes. Pure model acceptance is not a
+    substitute for that real shipping-Host panel and subsequent-operation proof.
+    Primary native contracts (retrieved 2026-11-01):
+    [NSSavePanel.allowedContentTypes](https://developer.apple.com/documentation/appkit/nssavepanel/allowedcontenttypes)
+    and [UTType.preferredFilenameExtension](https://developer.apple.com/documentation/uniformtypeidentifiers/uttypereference/preferredfilenameextension).
   - **Message (shared with GH564):** `message:string`, optional
     `type` from `none|info|error|question|warning`, `buttons:string[]`,
     bounded `defaultId`/`cancelId` indexes, `normalizeAccessKeys:boolean`,

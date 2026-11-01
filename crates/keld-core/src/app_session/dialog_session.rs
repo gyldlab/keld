@@ -2,8 +2,8 @@
 //! The app-link reader owns admission; Tao owns the actual !Send `AppKit` sheet.
 //! Both use the existing Runtime generation and `WindowRegistry` identities.
 
+use std::sync::Mutex;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use keld_guard::Principal;
@@ -11,12 +11,11 @@ use keld_guard::capability;
 use keld_guard::verified_manifest::VerifiedManifest;
 use keld_ipc::CallError;
 use keld_ipc::guard_dispatch::dispatch_privileged;
-use keld_native::dialog::macos_message::{MacMessageOutcome, MacMessagePanel, MacMessageParent};
-use keld_native::dialog::{CancelDisposition, DialogReplyV1, MessageOptions};
+use keld_native::dialog::{
+    CancelDisposition, DialogReplyV1, MessageOptions, OpenDialogOptions, SaveDialogOptions,
+};
 use keld_wv::WebviewId;
 use keld_wv::wkwebview::{AppWindowCommand, AppWindowEvent, MacDialogUiOutcome};
-use objc2::MainThreadMarker;
-use objc2::rc::Retained;
 
 use super::dialog_custody::{CancelResult, DialogCustody, DialogOwner, ReserveError, TerminalKind};
 use super::window_registry::{WindowError, WindowOwner};
@@ -96,14 +95,25 @@ impl DialogFault {
 
 pub(super) struct DialogWork {
     pub(super) owner: DialogOwner,
-    pub(super) options: MessageOptions,
+    pub(super) options: DialogWorkOptions,
     pub(super) parent: WebviewId,
     pub(super) deadline: Instant,
+}
+
+/// One source-exact native operation; variants share the same authenticated
+/// role, generation nonce, window parent and original/cancel custody.
+pub(super) enum DialogWorkOptions {
+    Message(MessageOptions),
+    Open(OpenDialogOptions),
+    Save(SaveDialogOptions),
 }
 
 struct DialogState {
     custody: DialogCustody,
     pending: Option<DialogWork>,
+    /// File paths are captured only after the actual native callback and
+    /// physical sheet drain. No duplicate authority or new socket exists.
+    file_result: Option<(DialogOwner, DialogReplyV1)>,
 }
 
 /// The verified manifest is immutable; native effects and current-generation
@@ -123,6 +133,7 @@ impl DialogSession {
             state: Mutex::new(DialogState {
                 custody: DialogCustody::default(),
                 pending: None,
+                file_result: None,
             }),
             wake,
         }
@@ -147,6 +158,28 @@ impl DialogSession {
         &self,
         owner: DialogOwner,
         options: MessageOptions,
+        parent: WebviewId,
+    ) -> Result<(), DialogFault> {
+        self.reserve_operation(owner, DialogWorkOptions::Message(options), parent)
+    }
+
+    /// The real Open/Save operation uses exactly the Message queue/custody.
+    pub(super) fn reserve_file(
+        &self,
+        owner: DialogOwner,
+        options: DialogWorkOptions,
+        parent: WebviewId,
+    ) -> Result<(), DialogFault> {
+        if matches!(options, DialogWorkOptions::Message(_)) {
+            return Err(DialogFault::InvalidRequest);
+        }
+        self.reserve_operation(owner, options, parent)
+    }
+
+    fn reserve_operation(
+        &self,
+        owner: DialogOwner,
+        options: DialogWorkOptions,
         parent: WebviewId,
     ) -> Result<(), DialogFault> {
         {
@@ -290,6 +323,7 @@ impl DialogSession {
         &self,
         owner: DialogOwner,
         outcome: MacDialogUiOutcome,
+        file_result: Option<DialogReplyV1>,
     ) -> Result<(), HostAppError> {
         let mut state = self
             .state
@@ -298,12 +332,26 @@ impl DialogSession {
         if state.custody.active_owner() != Some(owner) {
             return Ok(()); // Already retired or from an older physical owner.
         }
-        match outcome {
-            MacDialogUiOutcome::Selected { .. } => {
+        match (outcome, file_result) {
+            (MacDialogUiOutcome::Selected { .. }, None) => {
                 state.custody.commit_native_result(owner);
             }
-            MacDialogUiOutcome::Dismissed | MacDialogUiOutcome::Failed => {
+            (
+                MacDialogUiOutcome::FileResult,
+                Some(value @ (DialogReplyV1::Open { .. } | DialogReplyV1::Save { .. })),
+            ) => {
+                if state.custody.commit_native_result(owner) {
+                    state.file_result = Some((owner, value));
+                }
+            }
+            (MacDialogUiOutcome::Dismissed | MacDialogUiOutcome::Failed, None) => {
                 state.custody.commit_native_failure(owner);
+            }
+            _ => {
+                return Err(app_detail(
+                    "native dialog result",
+                    "wrong native operation/result correlation",
+                ));
             }
         }
         Ok(())
@@ -332,6 +380,7 @@ impl DialogSession {
         // Do not invent a winning terminal here: the native owner committed
         // the outcome on the UI thread before sending this event. An observed
         // Cancel/expiry/retirement already owns the cause if it happened first.
+        let file_result = state.file_result.take();
         let terminal = state
             .custody
             .take_original_terminal(owner)
@@ -347,6 +396,12 @@ impl DialogSession {
                         response,
                         checkbox_checked,
                     }),
+                    (TerminalKind::NativeResult, MacDialogUiOutcome::FileResult) => {
+                        match file_result {
+                            Some((retained_owner, value)) if retained_owner == owner => Ok(value),
+                            _ => Err(DialogFault::NativeFailure),
+                        }
+                    }
                     (TerminalKind::Cancelled, _) => Err(DialogFault::Cancelled),
                     (TerminalKind::Expired, _) => Err(DialogFault::Expired),
                     (TerminalKind::NativeFailure | TerminalKind::NativeResult, _) => {
@@ -371,113 +426,8 @@ impl DialogSession {
 
 mod host_route;
 
-/// The retained macOS UI owner. All `NSAlert`, callbacks and `NSWindow`
-/// references stay on the actual Tao thread and never enter the worker queue.
-pub(super) struct DialogMainOwner {
-    session: Arc<DialogSession>,
-    events: Sender<AppWindowEvent>,
-    active: Option<(DialogOwner, WebviewId, MacMessagePanel, Instant)>,
-}
-
-impl DialogMainOwner {
-    pub(super) fn new(session: Arc<DialogSession>, events: Sender<AppWindowEvent>) -> Self {
-        Self {
-            session,
-            events,
-            active: None,
-        }
-    }
-
-    fn notify(&self, owner: DialogOwner, outcome: MacDialogUiOutcome) -> Result<(), HostAppError> {
-        self.session.record_native_outcome(owner, outcome)?;
-        self.events
-            .send(AppWindowEvent::MacDialogFinished {
-                attempt: owner.attempt,
-                nonce: owner.nonce,
-                outcome,
-            })
-            .map_err(|_| {
-                app_detail(
-                    "native dialog terminal",
-                    "Core event coordinator unavailable",
-                )
-            })
-    }
-
-    /// Runs one bounded main-loop turn. No `AppKit` call is made while holding
-    /// a shared mutex; the caller's Tao event loop owns autorelease pools.
-    ///
-    /// The sole parent resolver returns a live Wry-owned native `NSWindow` for
-    /// a previously registry-validated `WebviewId`, never a Bun pointer.
-    pub(super) fn drive(
-        &mut self,
-        main: MainThreadMarker,
-        resolve: &mut dyn FnMut(WebviewId) -> Option<Retained<MacMessageParent>>,
-        stopping: bool,
-    ) -> Result<(bool, Option<Instant>), HostAppError> {
-        if self.active.is_none()
-            && let Some(work) = self.session.take_work()?
-        {
-            if Instant::now() >= work.deadline {
-                self.session.expire(work.owner)?;
-                self.notify(work.owner, MacDialogUiOutcome::Dismissed)?;
-            } else if stopping || !self.session.may_present(work.owner)? {
-                self.notify(work.owner, MacDialogUiOutcome::Dismissed)?;
-            } else if let Some(parent) = resolve(work.parent) {
-                let mut panel = MacMessagePanel::prepare(main, &work.options)
-                    .map_err(|source| app_detail("native dialog prepare", source.to_string()))?;
-                panel
-                    .begin_sheet(&parent)
-                    .map_err(|source| app_detail("native dialog sheet", source.to_string()))?;
-                self.active = Some((work.owner, work.parent, panel, work.deadline));
-            } else {
-                self.notify(work.owner, MacDialogUiOutcome::Failed)?;
-            }
-        }
-        if let Some((owner, parent_view, panel, deadline)) = self.active.as_mut() {
-            // A registry window may be destroyed while its sheet was visible.
-            // Never retain the native panel solely because the former NSWindow
-            // pointer still has an AppKit retain count: the UI owner checks
-            // the live `WebviewId` map on every active service turn.
-            if stopping || !self.session.may_present(*owner)? || resolve(*parent_view).is_none() {
-                panel
-                    .request_cancel()
-                    .map_err(|source| app_detail("native dialog cancel", source.to_string()))?;
-            }
-            if let Some(outcome) = panel
-                .poll_outcome()
-                .map_err(|source| app_detail("native dialog callback", source.to_string()))?
-            {
-                let owner = *owner;
-                let outcome = match outcome {
-                    MacMessageOutcome::Selected(DialogReplyV1::Message {
-                        response,
-                        checkbox_checked,
-                    }) => MacDialogUiOutcome::Selected {
-                        response,
-                        checkbox_checked,
-                    },
-                    MacMessageOutcome::Selected(_) | MacMessageOutcome::Dismissed => {
-                        MacDialogUiOutcome::Dismissed
-                    }
-                };
-                self.notify(owner, outcome)?;
-                self.active = None;
-            } else if Instant::now() >= *deadline {
-                self.session.expire(*owner)?;
-                panel
-                    .request_cancel()
-                    .map_err(|source| app_detail("native dialog expired", source.to_string()))?;
-            }
-        }
-        let next = self.active.as_ref().map(|(_, _, _, deadline)| {
-            // After a native cancellation the callback can precede physical
-            // invisibility by one main turn; wake promptly to check quiescence.
-            (*deadline).min(Instant::now() + Duration::from_millis(20))
-        });
-        Ok((self.active.is_none() && self.session.fully_drained(), next))
-    }
-}
+mod native_ui;
+pub(super) use native_ui::DialogMainOwner;
 
 #[cfg(test)]
 mod tests;

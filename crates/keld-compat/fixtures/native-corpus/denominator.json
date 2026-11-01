@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-native-v1",
-  "corpus_sha256": "sha256:0d9ff0e962adfc6681bcc4e391f562a49a52d70cb3f9300fd7826dda76aa248e",
+  "corpus_sha256": "sha256:2ada914c069ce38503c183512c282b91023cf00f0312ac72a815148552d1821c",
   "kind": "primary_workflow",
   "cells": [
     {
