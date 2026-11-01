@@ -2,9 +2,12 @@ use crate::support::TITLE;
 use crate::support::native_window::native_windows;
 use crate::support::process::await_process_gone;
 use crate::support::process::kill_pid;
-use crate::support::product::ProductFixture;
+use crate::support::product::{GuardianPidStage, LiveCycle, ProductFixture, guardian_pid_stage};
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt as _;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::process::Output;
+use std::time::{Duration, Instant};
 
 #[test]
 fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
@@ -80,13 +83,14 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
 
     let mut orderly = fixture.launch_cycle("relaunch-orderly");
     orderly.assert_live_product();
+    let guardian_pid = orderly.guardian_pid;
     orderly
         .control_writer
         .write_all(b"QUIT\n")
         .expect("request fixture app.quit");
     orderly.expect_line("QUIT_REPLY");
     orderly.expect_line("LINK_EOF");
-    let output = orderly.wait_host();
+    let output = wait_orderly_host_with_native_guardian_receipt(&mut orderly, guardian_pid);
     assert!(
         output.status.success(),
         "ordered no-flag host exit: {output:?}"
@@ -108,4 +112,97 @@ fn no_flag_host_owns_real_window_session_death_reap_and_ordered_quit() {
         "host exit left a native window"
     );
     orderly.group_gone = true;
+}
+
+/// The Bun fixture closes its own app socket before `LINK_EOF`. Independently
+/// check whether the previously parent-attested native Guardian *process*
+/// has disappeared while the Host is still running, after a real Quit Reply.
+/// PID absence proves the native process has gone; it does not prove a clean S
+/// acknowledgment, UI Quit, or complete process-group cleanup.
+fn wait_orderly_host_with_native_guardian_receipt(
+    cycle: &mut LiveCycle,
+    guardian_pid: u32,
+) -> Output {
+    let mut last_stage = GuardianPidStage::Unproved;
+    let mut saw_guardian_absent = false;
+    let mut next_sample = Instant::now();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        cycle.wait_host_observing(|| {
+            if saw_guardian_absent || Instant::now() < next_sample {
+                return;
+            }
+            last_stage = guardian_pid_stage(guardian_pid);
+            if last_stage == GuardianPidStage::Absent {
+                saw_guardian_absent = true;
+            }
+            // A kernel signal-zero probe never sends a signal, blocks on I/O,
+            // or renews the original 20s Host-exit deadline.
+            next_sample = Instant::now() + Duration::from_millis(100);
+        })
+    }));
+    result.unwrap_or_else(|failure| {
+        let original_host_deadline = failure
+            .downcast_ref::<String>()
+            .is_some_and(|text| text.starts_with("child exceeded exit/output deadline"))
+            || failure
+                .downcast_ref::<&str>()
+                .is_some_and(|text| text.starts_with("child exceeded exit/output deadline"));
+        if original_host_deadline {
+            let stage = if saw_guardian_absent {
+                "guardian_kernel_pid_absent_while_host_live"
+            } else if last_stage == GuardianPidStage::Present {
+                "guardian_kernel_pid_last_seen_present"
+            } else {
+                "guardian_kernel_pid_state_unproved"
+            };
+            // Fixed enum only: no PID, token, filesystem path or raw Host output.
+            eprintln!("KEL96_T1B_NATIVE_GUARDIAN_PHASE stage={stage}");
+        }
+        resume_unwind(failure)
+    })
+}
+
+#[cfg(test)]
+mod guardian_pid_phase_tests {
+    use super::{GuardianPidStage, guardian_pid_stage};
+    use crate::support::PROCESS_DEADLINE;
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::process::{Child, Command};
+    use std::thread;
+    use std::time::Instant;
+
+    struct OwnedSleep(Child);
+
+    impl Drop for OwnedSleep {
+        fn drop(&mut self) {
+            // Even a failed assertion must not leave the test-owned process.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn real_kernel_probe_requires_exact_owned_child_reap() {
+        let mut child = OwnedSleep(
+            Command::new("/bin/sleep")
+                .arg("60")
+                .spawn()
+                .expect("spawn owned native process"),
+        );
+        let pid = child.0.id();
+        let before = guardian_pid_stage(pid);
+        child.0.kill().expect("terminate only the owned child");
+        let deadline = Instant::now() + PROCESS_DEADLINE;
+        let status = loop {
+            match child.0.try_wait().expect("inspect exact test-owned child") {
+                Some(status) => break status,
+                None if Instant::now() < deadline => thread::yield_now(),
+                None => panic!("owned native child exceeded existing process deadline"),
+            }
+        };
+        assert_eq!(status.signal(), Some(9), "owned child must exit by SIGKILL");
+        assert_eq!(before, GuardianPidStage::Present);
+        assert_eq!(guardian_pid_stage(pid), GuardianPidStage::Absent);
+        assert_eq!(guardian_pid_stage(0), GuardianPidStage::Unproved);
+    }
 }
