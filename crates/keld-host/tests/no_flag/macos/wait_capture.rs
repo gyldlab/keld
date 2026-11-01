@@ -52,7 +52,7 @@ fn run_isolated(mode: &str) {
         .expect("isolated wait regression child");
     let pid = child.id();
     let mut cleanup = ShippingLaunchCleanup::new(child);
-    cleanup.host_group = Some(pid);
+    cleanup.record_host_group(pid, std::process::id());
     let deadline = Instant::now() + EVENT_DEADLINE + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = cleanup

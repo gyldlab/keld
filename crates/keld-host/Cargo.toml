@@ -35,5 +35,8 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 windows-sys = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+nix = { workspace = true }
+
 [lints]
 workspace = true

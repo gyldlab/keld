@@ -1,20 +1,214 @@
 use crate::support::PROCESS_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
+use nix::libc;
 use std::fs;
-use std::io::BufRead;
 use std::io::BufReader;
+use std::io::{BufRead, Read, Write};
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 unsafe extern "C" {
     #[link_name = "kill"]
     fn kill_process(pid: i32, signal: i32) -> i32;
+}
+
+/// Test-only authority retained from an original *live* kernel process-group
+/// leader, not from a PID reported in an event or copied from another group.
+/// This is an observation/recheck, not a kernel-pinned group handle: a leader
+/// that has disappeared makes fallback group signaling fail closed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeGroupBirth {
+    group: u32,
+    real_uid: libc::uid_t,
+    start_sec: u64,
+    start_usec: u64,
+}
+
+impl NativeGroupBirth {
+    pub(crate) const fn group(self) -> u32 {
+        self.group
+    }
+}
+
+#[allow(unsafe_code)] // test-only fixed-size read-only Darwin process observation
+fn native_group_birth(group: u32) -> Option<(NativeGroupBirth, u32)> {
+    let raw = i32::try_from(group).ok()?;
+    if raw <= 1 {
+        return None;
+    }
+    // SAFETY: Darwin proc_bsdinfo has only value fields, the kernel retains no
+    // Rust pointer, and the output buffer has precisely the requested size.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: read-only process query fills the exact-size writable buffer.
+    let count =
+        unsafe { libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    if count != size || info.pbi_pid != group || info.pbi_pgid != group {
+        return None;
+    }
+    Some((
+        NativeGroupBirth {
+            group,
+            real_uid: info.pbi_ruid,
+            start_sec: info.pbi_start_tvsec,
+            start_usec: info.pbi_start_tvusec,
+        },
+        info.pbi_ppid,
+    ))
+}
+
+/// Verify expected native parentage at capture time, independently of test
+/// fixture messages, and exclude the harness' own group from this authority.
+pub(crate) fn retain_parented_group_birth(group: u32, parent: u32) -> NativeGroupBirth {
+    let (birth, actual_parent) = native_group_birth(group)
+        .expect("original native group leader must be live when recording cleanup authority");
+    assert_eq!(
+        actual_parent, parent,
+        "group leader must have the owned parent"
+    );
+    assert_ne!(group, process_group(std::process::id()));
+    birth
+}
+
+/// Numeric PGID is never signal authority without the *earlier* original
+/// birth; a group leader missing after cleanup is not grounds to signal by
+/// reusable group number. The check/kill race is not kernel pinned.
+pub(crate) fn signal_attested_group(
+    signal: &str,
+    original: NativeGroupBirth,
+) -> std::io::Result<()> {
+    let same_birth = native_group_birth(original.group).is_some_and(|(observed, _)| {
+        observed.group == original.group
+            && observed.real_uid == original.real_uid
+            && observed.start_sec == original.start_sec
+            && observed.start_usec == original.start_usec
+    });
+    if !same_birth {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "original native group leader disappeared or changed birth; refuse group signal",
+        ));
+    }
+    signal_process_group(signal, original.group)
+}
+
+// This sentinel is a real, freshly spawned, isolated OS process group, not an
+// arbitrary host PID. Its retained Child is the final independent rescue on
+// regression failure, even when ShippingLaunchCleanup drops in a panic.
+struct OwnedOutsider(Child);
+
+impl Drop for OwnedOutsider {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+fn native_outsider() -> OwnedOutsider {
+    let outsider = OwnedOutsider(
+        Command::new("/bin/cat")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("owned isolated outsider"),
+    );
+    let outsider_pid = outsider.0.id();
+    assert_eq!(process_group(outsider_pid), outsider_pid);
+    assert_ne!(process_group(std::process::id()), outsider_pid);
+    outsider
+}
+
+fn assert_outsider_echo(outsider: &mut OwnedOutsider) {
+    outsider
+        .0
+        .stdin
+        .as_mut()
+        .expect("outsider stdin retained")
+        .write_all(b"still-here\n")
+        .expect("outsider survived cleanup");
+    let mut stdout = outsider.0.stdout.take().expect("outsider stdout retained");
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let mut bytes = [0_u8; 11];
+        let outcome = stdout.read_exact(&mut bytes).map(|()| bytes);
+        let _ = tx.send(outcome);
+    });
+    let received = rx.recv_timeout(Duration::from_secs(2));
+    if received.is_err() {
+        let _ = outsider.0.kill();
+    }
+    reader
+        .join()
+        .expect("outsider read terminates after native rescue");
+    assert!(
+        matches!(received, Ok(Ok(bytes)) if bytes == *b"still-here\n"),
+        "unverified ShippingLaunchCleanup marker signaled the independent outsider"
+    );
+}
+
+#[test]
+fn shipping_cleanup_unverified_group_marker_cannot_signal_outsider() {
+    let mut outsider = native_outsider();
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("harmless completed CLI owner");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    cleanup.host_group = Some(outsider.0.id()); // Unverified marker: NO authority.
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
+fn shipping_cleanup_replaced_group_marker_cannot_borrow_original_birth() {
+    let mut original = native_outsider();
+    let mut outsider = native_outsider();
+    let cli = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("harmless completed CLI owner");
+    let mut cleanup = ShippingLaunchCleanup::new(cli);
+    cleanup.record_host_group(original.0.id(), std::process::id());
+    cleanup.host_group = Some(outsider.0.id()); // Replaced after valid capture.
+    drop(cleanup);
+    assert_outsider_echo(&mut outsider);
+    assert_outsider_echo(&mut original);
+}
+
+#[test]
+fn shipping_cleanup_wrong_original_birth_cannot_signal_outsider() {
+    let mut outsider = native_outsider();
+    let original = retain_parented_group_birth(outsider.0.id(), std::process::id());
+    let wrong = NativeGroupBirth {
+        start_usec: original.start_usec.wrapping_add(1),
+        ..original
+    };
+    let refused = signal_attested_group("-TERM", wrong)
+        .expect_err("altered original kernel birth cannot authorize group signaling");
+    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_outsider_echo(&mut outsider);
+}
+
+#[test]
+fn shipping_cleanup_unparented_birth_cannot_gain_group_authority() {
+    let mut outsider = native_outsider();
+    let refused = std::panic::catch_unwind(|| {
+        retain_parented_group_birth(outsider.0.id(), u32::MAX);
+    });
+    assert!(
+        refused.is_err(),
+        "foreign parent cannot enroll fixture authority"
+    );
+    assert_outsider_echo(&mut outsider);
 }
 
 #[test]
@@ -33,7 +227,7 @@ fn shipping_launch_cleanup_reaps_each_owned_process_group() {
         .spawn()
         .expect("launch disposable host group");
     let host_pid = host.id();
-    cleanup.host_group = Some(host_pid);
+    cleanup.record_host_group(host_pid, std::process::id());
     let mut descendant_line = String::new();
     let descendant_read = BufReader::new(host.stdout.take().expect("host child PID pipe"))
         .read_line(&mut descendant_line)
@@ -49,7 +243,7 @@ fn shipping_launch_cleanup_reaps_each_owned_process_group() {
         .spawn()
         .expect("launch disposable Bun group");
     let bun_pid = bun.id();
-    cleanup.bun_group = Some(bun_pid);
+    cleanup.record_bun_group(bun_pid, std::process::id());
     assert_eq!(process_group(cli_pid), cli_pid);
     assert_eq!(process_group(host_pid), host_pid);
     assert_eq!(process_group(bun_pid), bun_pid);

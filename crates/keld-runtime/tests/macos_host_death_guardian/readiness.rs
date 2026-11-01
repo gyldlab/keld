@@ -1,6 +1,9 @@
 //! Ready-state and group-ownership observation for real macOS Guardian tests.
 use super::roles::spawn_link_peer;
-use super::support::{accept_line_before, parse_pid, process_group, process_rss_kib};
+use super::support::{
+    NativeBirth, accept_line_before, parse_pid, process_group, process_rss_kib,
+    retain_group_member_birth, retain_parented_birth,
+};
 use super::{
     CycleCleanup, Duration, EVENT_DEADLINE, FileTypeExt, Instant, Path, PathBuf, UnixListener, fs,
     parse_app_link,
@@ -8,6 +11,7 @@ use super::{
 
 pub(super) struct ReadyState {
     pub(super) guardian_pid: u32,
+    pub(super) guardian_birth: NativeBirth,
     pub(super) leader_pid: u32,
     pub(super) descendant_pid: u32,
     pub(super) endpoint: PathBuf,
@@ -25,6 +29,7 @@ pub(super) fn await_ready(
     expect_leaker: bool,
 ) -> ReadyState {
     let mut guardian_pid = None;
+    let mut guardian_birth = None;
     let mut guardian_group_pid = None;
     let mut leader_event_pid = None;
     let mut descendant_pid = None;
@@ -49,8 +54,14 @@ pub(super) fn await_ready(
         let mut fields = line.split_whitespace();
         match fields.next() {
             Some("GUARDIAN") => {
-                guardian_pid = Some(parse_pid(fields.next(), &line));
+                let announced_guardian = parse_pid(fields.next(), &line);
                 let group = parse_pid(fields.next(), &line);
+                // A private control event is not signal authority. Require
+                // both actual original kernel births and the exact host ->
+                // Guardian -> group leader parent chain while they are live.
+                guardian_birth = Some(retain_parented_birth(announced_guardian, host_pid));
+                cleanup.group_birth = Some(retain_parented_birth(group, announced_guardian));
+                guardian_pid = Some(announced_guardian);
                 guardian_group_pid = Some(group);
                 guardian_ready_after = Some(cycle_started.elapsed());
                 cleanup.group = Some(group);
@@ -73,7 +84,11 @@ pub(super) fn await_ready(
             }
             Some("LINK_BOUND") => link_bound = true,
             Some("PEER_BOUND") => peer_bound = true,
-            Some("LEAKER") => cleanup.leaker = Some(parse_pid(fields.next(), &line)),
+            Some("LEAKER") => {
+                let leaker = parse_pid(fields.next(), &line);
+                cleanup.leaker_birth = Some(retain_parented_birth(leaker, host_pid));
+                cleanup.leaker = Some(leaker);
+            }
             event => panic!("unexpected readiness event {event:?}: {line}"),
         }
     }
@@ -84,7 +99,7 @@ pub(super) fn await_ready(
         Some(leader_pid),
         "guardian and group leader must identify the same process group"
     );
-    let descendant_pid = descendant_pid.expect("descendant ready");
+    let descendant_pid = arm_member_cleanup(cleanup, descendant_pid, leader_pid);
     let guardian_pid = guardian_pid.expect("guardian ready");
     let app_link = app_link.expect("app link ready");
     let registered_link = registered_link.expect("registered link ready");
@@ -96,6 +111,7 @@ pub(super) fn await_ready(
         .to_path_buf();
     let ready = ReadyState {
         guardian_pid,
+        guardian_birth: guardian_birth.expect("attested original Guardian birth"),
         leader_pid,
         descendant_pid,
         endpoint,
@@ -104,6 +120,14 @@ pub(super) fn await_ready(
     };
     verify_ready_ownership(host_pid, &ready, guardian_ready_after);
     ready
+}
+
+// Arm member-based emergency group cleanup while the descendant is live and
+// still the leader's direct child in the original group.
+fn arm_member_cleanup(cleanup: &mut CycleCleanup, descendant: Option<u32>, leader: u32) -> u32 {
+    let descendant = descendant.expect("descendant ready");
+    cleanup.descendant_birth = Some(retain_group_member_birth(descendant, leader, leader));
+    descendant
 }
 
 fn verify_ready_ownership(

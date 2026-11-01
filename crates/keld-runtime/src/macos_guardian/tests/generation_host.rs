@@ -13,7 +13,7 @@ use super::super::{
     run_generation_host, terminate_registered_group, write_generation_control,
 };
 use super::preparation_fixture::GatedUnmarkedFailurePreparer;
-use super::test_support::long_running_command;
+use super::test_support::{NativeChildOwner, long_running_command};
 
 mod clear_authority;
 mod duplicate_spawned;
@@ -115,7 +115,10 @@ fn generation_host_revokes_and_clears_before_preparing_successor() {
     let app_link = String::from_utf8(prepared_one.payload).expect("g1 app link UTF-8");
     let mut child_command = long_running_command();
     child_command.process_group(0);
-    let mut child = child_command.spawn().expect("g1 group leader");
+    // KGC1 exchanges and assertions below can fail before manual group
+    // termination. Keep the original test-owned Child under panic-safe RAII
+    // from the exact spawn until its explicit wait, never a stale PGID rescue.
+    let mut child = NativeChildOwner::new(child_command.spawn().expect("g1 group leader"));
     let child_pid = child.id();
     guardian_exchange(
         &mut guardian,

@@ -16,7 +16,9 @@ use crate::support::process::await_process_gone;
 use crate::support::process::parent_process;
 use crate::support::process::process_exists;
 use crate::support::process::process_group;
-use crate::support::process::signal_process_group;
+use crate::support::process::{
+    NativeGroupBirth, retain_parented_group_birth, signal_attested_group, signal_process_group,
+};
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
 use crate::support::renderer::Beacon;
@@ -78,6 +80,8 @@ pub(crate) struct ShippingLaunchCleanup {
     pub(crate) cli: Option<Child>,
     pub(crate) host_group: Option<u32>,
     pub(crate) bun_group: Option<u32>,
+    host_birth: Option<NativeGroupBirth>,
+    bun_birth: Option<NativeGroupBirth>,
 }
 
 impl ShippingLaunchCleanup {
@@ -86,18 +90,42 @@ impl ShippingLaunchCleanup {
             cli: Some(cli),
             host_group: None,
             bun_group: None,
+            host_birth: None,
+            bun_birth: None,
         }
     }
 
     pub(crate) fn record_authenticated_groups(&mut self, host_group: u32, bun_group: u32) {
-        let test_group = process_group(std::process::id());
-        self.host_group = (host_group != 0 && host_group != test_group).then_some(host_group);
-        self.bun_group = (bun_group != 0 && bun_group != test_group).then_some(bun_group);
+        let cli_pid = self.cli.as_ref().expect("live shipping CLI owner").id();
+        // A parsed PID alone is not an authenticated process birth. Verify
+        // kernel lineage from the live CLI down to Bun before retaining it.
+        self.record_host_group(host_group, cli_pid);
+        let guardian = parent_process(bun_group);
+        assert_eq!(
+            parent_process(guardian),
+            host_group,
+            "Bun Guardian must belong to this Host"
+        );
+        self.record_bun_group(bun_group, guardian);
+    }
+
+    pub(crate) fn record_host_group(&mut self, group: u32, parent: u32) {
+        let birth = retain_parented_group_birth(group, parent);
+        self.host_group = Some(group);
+        self.host_birth = Some(birth);
+    }
+
+    pub(crate) fn record_bun_group(&mut self, group: u32, parent: u32) {
+        let birth = retain_parented_group_birth(group, parent);
+        self.bun_group = Some(group);
+        self.bun_birth = Some(birth);
     }
 
     pub(crate) fn release(mut self) -> Child {
         self.host_group = None;
         self.bun_group = None;
+        self.host_birth = None;
+        self.bun_birth = None;
         self.cli.take().expect("shipping CLI cleanup owner")
     }
 }
@@ -110,8 +138,17 @@ impl Drop for ShippingLaunchCleanup {
             let _ = cli.kill();
             let _ = cli.wait();
         }
-        for group in [self.host_group, self.bun_group].into_iter().flatten() {
-            let _ = signal_process_group("-TERM", group);
+        for (group, birth) in [
+            (self.host_group, self.host_birth),
+            (self.bun_group, self.bun_birth),
+        ] {
+            // Raw marker edits, missing original births and changed group
+            // numbers must never gain numeric kill(-PGID) authority.
+            if let (Some(group), Some(original)) = (group, birth)
+                && original.group() == group
+            {
+                let _ = signal_attested_group("-TERM", original);
+            }
         }
     }
 }
