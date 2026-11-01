@@ -35,5 +35,10 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 windows-sys = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Independent native-stage observer; reuse existing pins, not production policy.
+rustix = { workspace = true, features = ["process"] }
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

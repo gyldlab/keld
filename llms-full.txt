@@ -2769,8 +2769,18 @@ screencast on Wayland) on Linux, with portal-first behavior so sandboxed formats
   send `Ready` again and continue echo/lifecycle dispatch. Status-zero
   self-termination remains terminal; a status-zero exit after an accepted
   correlated Quit is host-authorized and is not added to that ledger. Shipping
-  `keld dev` now compiles the same
-  owner-private stage, launches that host with no Keld argument, directly
+  `keld dev` compiles the owner-private stage. The macOS GH1037/KEL-75 isolation
+  continuation places its `.keld/dev/<nonce>` under an invoking-user-private
+  system temporary namespace outside the source project and checks resolver
+  inputs in its ancestors during capture; KEL-96 §4.2 owns that exact layout.
+  Its existing staging guard retains the parent chain and opens the nonce relative
+  to the retained `dev` handle. Failure cleanup requires every retained directory
+  to match its current pathname; unknown or changed identity skips deletion and
+  preserves the incomplete stage and replacement path.
+  This removes the live project's parent-directory lookup path. General
+  source-tree admission, installed-graph admission and the Host's qualification
+  before every Bun generation remain pending. The CLI
+  launches that host with no Keld argument, directly
   forwards its stdout/stderr, places it in a process group separate from the
   terminal-facing CLI, and retains only the host process handle plus the write
   end of a private stdin-v1 liveness pipe. The host makes its reader

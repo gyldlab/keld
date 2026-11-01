@@ -3,11 +3,14 @@
 //! reuse its observer/image owners; no FS assertions or renderer input actions.
 use std::error::Error;
 use std::fs;
+use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 use super::application_link::assert_single_application_link;
 use super::observer::Observation;
@@ -213,9 +216,29 @@ impl Project {
         case: &Case,
     ) -> SmokeResult<Value> {
         let stage = host_image.parent().ok_or("staged host has no root")?;
+        let project = self.root.canonicalize()?;
+        let uid = rustix::process::geteuid().as_raw();
+        let project_key = Sha256::digest(project.as_os_str().as_bytes());
+        let dev_root = std::env::temp_dir()
+            .canonicalize()?
+            .join(format!("keld-dev-{uid}"))
+            .join(format!("{project_key:x}"))
+            .join(".keld/dev");
         require(
-            stage.starts_with(self.root.join(".keld/dev")),
-            "kernel host image must be in this project's stock dev stage",
+            stage.parent() == Some(dev_root.as_path()) && !stage.starts_with(&project),
+            "kernel host image must be in this project's isolated stock dev namespace",
+        )?;
+        let nonce = stage.file_name().ok_or("stage has no nonce")?.as_bytes();
+        let metadata = fs::symlink_metadata(stage)?;
+        require(
+            nonce.len() == 32
+                && nonce
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+                && metadata.is_dir()
+                && metadata.uid() == uid
+                && metadata.permissions().mode() & 0o7777 == 0o700,
+            "kernel host stage must retain the owned private nonce contract",
         )?;
         require(
             fs::read(stage.join("keld.permissions.jsonc"))? == case.manifest.as_bytes(),

@@ -2,9 +2,12 @@
 Status: draft
 Linear: GH-1037 (#517 tracker; KEL-96 reference) · Owner: @0monish / GYLDLAB · Updated: 2026-10-31
 
-This is the evidence-led proposal after GH1037's native verification. Exact-text
-human approval is required before production staging changes. The verification
-fixtures and current-behavior README correction do not implement this proposal.
+This is the evidence-led proposal after GH1037's native verification. General
+source-tree copying remains draft and requires its source/startup owner contract.
+The bounded macOS stage-isolation prerequisite below is the current implementation
+continuation under the user's delegated technical decisions. Its independent
+review and native acceptance remain separate gates; it does not approve or
+implement general source-tree copying.
 
 ## 1. Goal & non-goals
 
@@ -19,7 +22,9 @@ transport, manifest format, Host principal, permission grant, installer, watch
 loop, hot reload or source re-staging on recovery. This is not an admitted
 Drawio closure, installed-package proof, schema-four facade qualification,
 release authentication or a complete multi-platform staging implementation.
-No production code changes belong in this specification/verification PR.
+The original verification delta contains no production change. The continuation
+changes only macOS stage placement and its existing consumers; source selection,
+graph admission, renderer delivery and other-platform staging remain unchanged.
 
 ## 2. Spec refs
 
@@ -124,8 +129,11 @@ omitting href or src fails; a `<base>` change fails only the document baseline.
    stages its one fixed policy buffer. Tree traversal never reopens or overwrites
    that policy, merges grants, changes the profile or writes a second descriptor.
 6. **Failure cleanup:** a failure after any selected-file copy removes only that
-   incomplete nonce via the existing stage guard. A healthy following project can
-   stage and run; caller-selected paths and prior launch roots are not deleted.
+   incomplete nonce via the existing stage guard when the retained nonce and
+   parent identities still match. Missing, substituted or uninspectable identities
+   refuse destructive cleanup and retain the owned incomplete stage for safe
+   disposition. A healthy following project can stage and run; caller-selected
+   paths and prior launch roots are not deleted.
 7. **Recovery:** an existing recovery generation uses the same completed stage.
    Replacing project source after capture does not re-stage or change the next
    generation. Existing fresh principal/token, stale-generation refusal and
@@ -150,12 +158,88 @@ omitting href or src fails; a `<base>` change fails only the document baseline.
 
 ### Facts, ownership and alternatives
 
-**No boundary change:** CLI still owns cold input capture and the private stage;
+**Source-copy ownership is retained:** CLI still owns cold input capture and the private stage;
 Host owns windows, app-link, policy, principal/generation and Bun lifetime. No
 handle or authority transfers to the renderer. Source file handles belong to
 CLI until capture finishes; staged byte files belong to the completed dev stage.
 This remains a cooperating-developer snapshot, not an atomic filesystem
 transaction or authenticity against a malicious same-user writer.
+
+### Isolated macOS stage prerequisite
+
+The live project must not be an ancestor of the produced stage. A fresh Bun 1.4.4
+control repeated the owning KEL-75 observation: a staged import reached live
+project `node_modules`, `tsconfig.json` paths and `package.json` imports even with
+`--no-install --no-env-file`. The same three imports failed from an isolated
+placement before either target or entry executed, while captured relative source
+still ran. This is resolver evidence, not a shipping Host or draw.io acceptance.
+
+The CLI therefore owns this bounded filesystem-boundary correction before tree
+copying. Its canonical system temporary directory must be outside the canonical
+project, owned by the invoking user and already mode `0700`. No fallback directory
+or permission repair is selected. The project namespace is
+`<temporary>/keld-dev-<uid>/<project-id>/.keld/dev/`, where `project-id` is the
+lowercase SHA-256 of the canonical project path's native bytes. It is only a
+non-authoritative locator; it does not authenticate the application or grant a
+capability. The existing random 128-bit nonce remains the per-launch leaf.
+
+Create each private namespace component with mode `0700`, open it relative to
+the retained parent with directory/no-follow flags, verify its existing owner and
+mode, and retain those parents until staging completes. Refuse a symlink,
+non-directory, foreign owner or unexpected mode without modifying it. Refuse
+`node_modules`, `package.json`, `tsconfig.json` or `jsconfig.json` in any stage
+ancestor. Immediately before completing capture, recheck the retained private
+parents' owner/mode and device/inode identity against their pathnames, and repeat
+the ancestor-input census. A missing, inaccessible or unsuitable temporary base
+is a typed staging failure, not a reason to return to the project-local layout.
+
+The existing `StageGuard` owns the retained namespace chain and opens the allocated
+nonce relative to the retained `dev` directory, with directory/no-follow flags.
+Every failure unwind checks the retained parents and nonce against their named
+owner/mode and device/inode identities before removing that incomplete nonce.
+Unknown, missing, substituted or uninspectable identity skips deletion, preserving
+the moved original stage and any replacement pathname. This identity-only cleanup
+check is separate from the resolver-input census: a late input with stable
+directory identities still removes only the owned incomplete nonce. Immediately
+before publishing a completed stage, require the retained nonce identity and
+recheck it together with the retained parent chain, after the final ancestor-input
+census. Any refusal leaves the same `StageGuard` responsible for its identity-bound
+failure unwind. A missing identity is a failure, not permission to publish by path.
+
+The shipping Host and Guardian still derive their exact `.keld/dev/<nonce>` cleanup
+root from the running executable and the existing lease; no new deletion authority
+or caller-selected root is introduced. Their production selection code is
+unchanged. The original entry/renderer/transport and one policy capture remain the
+only staged inputs. Linux and Windows retain their existing location and qualification.
+
+The native acceptance observers use the actual producer-returned parent and the
+kernel-observed Host image, while preserving exact source/policy byte checks and a
+live-stage positive before cleanup assertions. Test-only fallback cleanup happens
+after those assertions. The CLI regression must reject each live-project-only
+import and run a healthy captured entry; namespace tests cover unsuitable
+temporary placement, resolver-bearing ancestry, symlinks, mode preservation and
+capture-time path/input substitution. A late-input refusal must remove only the
+incomplete nonce while preserving an earlier completed stage and the new input;
+a healthy following capture must succeed after restoring the test fixture.
+The full staging path must also reject a parent replacement made during source
+capture while preserving a same-nonce replacement sentinel, the moved original
+incomplete stage and an earlier completed stage's Host/descriptor bytes. Its
+healthy-following control restores only test-owned paths after those oracles.
+The same full-producer regression must also substitute only the nonce leaf while
+leaving every parent unchanged. It must refuse publication and preserve the moved
+original stage, the replacement sentinel, and the earlier completed stage before
+any test-only restoration. This distinguishes final leaf admission from the
+already-qualified error-unwind cleanup predicate.
+This amendment changes KEL-96 stage-location text and architecture06 together.
+
+This slice does not freeze startup environment, stop runtime package acquisition,
+admit installed aliases, or supply GH499's missing source graph. Those remain
+KEL-75/GH499/GH502/GH593-owned implementation gates. The Host's qualification
+immediately before every Bun generation is not implemented by this CLI check.
+Same-user namespace mutation after capture remains outside the
+cooperating-developer snapshot guarantee; held CLI descriptors do not freeze
+Bun's later path-based lookup. Identity reads also do not lock namespace entries
+against a later same-user replacement during pathname cleanup.
 
 | Option | Decision and reason |
 |---|---|
@@ -163,8 +247,9 @@ transaction or authenticity against a malicious same-user writer.
 | (b) Entry import graph plus the app's renderer dev server | Deferred. A new import-graph implementation would duplicate resolver semantics and miss dynamic/data inputs; no current approved producer supplies this general graph. Existing qualified package/source graphs remain authoritative when available. The app's renderer dev server is the architecture06 destination under KEL-79; it does not solve this Bun copy defect. |
 | (c) Document the current selected-file limit | Required immediately in README as current behavior. It leaves the verified sibling failure in place, so it is the compatibility baseline rather than the proposed fix. |
 
-No implementation is rewritten and no performance advantage is claimed. Keep the
-current prepared-entry route available for projects outside this first slice.
+The isolation prerequisite does not rewrite source selection or claim a
+performance advantage. Keep the current prepared-entry route available for
+projects outside the proposed source-copy slice.
 Do not invent a graph-qualified flag or approval registry for packaging.
 
 ### Source paths and capture
@@ -239,8 +324,11 @@ ownership likewise require its real platform slice. Neither is silently widened.
 
 ## 5. Boundaries
 
-This PR: focused `keld-host` verification fixture/module registration,
-`docs/specs/gh1037-multifile-dev-staging.md`, and README's current staging rule.
+Original verification: focused `keld-host` fixture/module registration, this
+specification, and README's current staging rule. The isolation continuation owns
+`crates/keld-cli/src/boot.rs` stage placement and `boot/macos_stage.rs`, their
+owning tests, the existing macOS stage observers, and matching KEL-96/architecture06
+location text. It does not edit the boot-descriptor metadata block or shared CI keys.
 Generated docs change only if the allowlisted generator actually selects an input.
 
 After exact approval, implement the smallest macOS producer slice in
@@ -254,6 +342,10 @@ scope and independent gates. No PR1306/1308 source adoption.
 
 - [x] T0 verification: run the independent native sibling/counterweight and
   calibrated inline-renderer cases; retain failed and changed-source attempts.
+- [ ] T0a isolation prerequisite: fail first on actual producer ancestry, move the
+  macOS nonce outside the project using the existing private-stage/cleanup owners,
+  and qualify namespace refusal, preserved stock launch and cleanup. Candidate
+  implementation is not completed acceptance.
 - [ ] T1 publish this draft and the truthful README; obtain independent exact-head
   review and human exact-text approval. No production staging implementation.
 - [ ] T2 after approval: one macOS source-capture/copy owner, normal sibling and
