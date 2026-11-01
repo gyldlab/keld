@@ -272,6 +272,22 @@ fn acknowledge_pre_generation_orderly_shutdown(
     liveness: &mut impl Read,
     acknowledgment: &mut impl Write,
 ) -> Result<(), RuntimeError> {
+    acknowledge_pre_generation_orderly_shutdown_with_hook(
+        liveness,
+        acknowledgment,
+        super::GUARDIAN_SHUTDOWN_DEADLINE,
+        |_| {},
+    )
+}
+
+// Original post-KSA clock for the actual nonblocking Host pipe. The private
+// native-EOF receipt is a test seam only; the shipping invocation is a no-op.
+fn acknowledge_pre_generation_orderly_shutdown_with_hook(
+    liveness: &mut impl Read,
+    acknowledgment: &mut impl Write,
+    timeout: std::time::Duration,
+    mut on_native_eof: impl FnMut(std::time::Instant),
+) -> Result<(), RuntimeError> {
     acknowledgment
         .write_all(&SUPERVISED_ORDERLY_ACK)
         .and_then(|()| acknowledgment.flush())
@@ -281,10 +297,25 @@ fn acknowledge_pre_generation_orderly_shutdown(
                 source,
             )
         })?;
-    let deadline = std::time::Instant::now() + super::GUARDIAN_SHUTDOWN_DEADLINE;
+    let deadline = std::time::Instant::now() + timeout;
     loop {
         match poll_host_liveness(liveness)? {
-            HostLiveness::Dead => return Ok(()),
+            HostLiveness::Dead => {
+                on_native_eof(deadline);
+                // The final native read is part of this SAME absolute clock.
+                // An EOF observed or acted on after the post-KSA deadline
+                // cannot retroactively turn an expired shutdown into Ok.
+                if std::time::Instant::now() >= deadline {
+                    return Err(lifecycle_error(
+                        "macOS guardian pre-generation host EOF deadline",
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "host EOF was not confirmed inside acknowledged initial shutdown budget",
+                        ),
+                    ));
+                }
+                return Ok(());
+            }
             HostLiveness::Live if std::time::Instant::now() < deadline => {
                 thread::yield_now();
             }
@@ -446,3 +477,7 @@ pub(super) fn require_close_on_exec(writer: &impl AsFd) -> Result<(), RuntimeErr
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "host_liveness/deadline_tests.rs"]
+mod deadline_tests;
