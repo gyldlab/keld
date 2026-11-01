@@ -309,9 +309,10 @@ mod admitted {
 
     fn stalled_boot(stage: &keld_cli::boot::DevBootStage) -> StalledBoot {
         let (control, port) = listener();
+        // The child can arm its watch before the parent resumes after spawn.
+        let started = Instant::now();
         let mut host =
             spawn_host(admitted_command(stage, &port).env("KELD_T1B_STALL_BEFORE_INIT", "1"));
-        let started = Instant::now();
         let stdout = read_pipe_on_thread(host.child_mut().stdout.take().expect("captured stdout"));
         let stderr = read_pipe_on_thread(host.child_mut().stderr.take().expect("captured stderr"));
         let stream = accept_control_or_host_failure(
