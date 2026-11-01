@@ -5493,7 +5493,8 @@ CI: `crates/keld-cli/tests/error_registry.rs` (runs with workspace nextest).
 - A `KELD-*` code in `keld-ipc` / `keld-wv` / `keld-cli` / `keld-guard` /
   `keld-runtime` / `keld-native` / `keld-compat` / `keld-core` / `keld-update` /
   `keld-pack` / `keld-host` / `keld-updater-helper` `src`, `keld-cli` templates, the
-  `@keld/kipc` TypeScript transport `src`, the `@keld/api` public API `src`, or
+  `@keld/kipc` TypeScript transport `src`, the `@keld/api` public API `src`, the
+  `@keld/electron` facade `src`, the `@keld/electron-updater` adapter `src`, or
   workspace `tools/` that has no heading here fails the test.
 - A heading here that is not emitted in those trees fails the test.
 - Every entry MUST have non-empty `crate`, `message`, and `fix` lines.
@@ -6410,6 +6411,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-013
+
+- crate: @keld/electron
+- message: An Electron main-process member that `@keld/electron` links but does not implement yet was called, read or constructed; the message names the member and its gyldlab/keld tracking issue
+- fix: Follow the named tracking issue for the first supported release and guard or remove the call site until then. The binding exists only so the module links; a silent stub is forbidden.
+
 ## KELD-COMPAT-040
 
 - crate: @keld/electron
@@ -6427,6 +6434,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: @keld/electron
 - message: `app.name` was assigned (Electron's `setName`), which the GH-452 first-proof slice does not support because the app name is the Host's compiled descriptor name
 - fix: Remove the assignment and declare the name in `keld.config.ts`; `setName` is outside GH-452.
+
+## KELD-COMPAT-050
+
+- crate: @keld/electron-updater
+- message: `electron-updater` update check refused: the Keld host has no updater path for a migrated app, so the adapter emitted one `error` and rejected instead of contacting a feed
+- fix: Keep updates disabled in the migrated app (draw.io: `DRAWIO_DISABLE_UPDATE=true` in the declared role environment, #452) until the host update channel exists (F09-T5, KEL-53); the adapter never downloads or installs.
 
 ## KELD-CORE-030
 
