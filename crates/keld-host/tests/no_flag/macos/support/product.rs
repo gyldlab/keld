@@ -27,11 +27,10 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-pub(crate) fn dev_stage_count(project: &Path) -> usize {
-    fs::read_dir(project.join(".keld/dev"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
+pub(crate) fn dev_stage_count(dev_root: &Path) -> usize {
+    fs::read_dir(dev_root)
+        .expect("producer-selected stage parent remains observable")
+        .map(|entry| entry.expect("observe every stage entry"))
         .filter(|entry| entry.path().is_dir())
         .count()
 }
@@ -76,6 +75,7 @@ pub(crate) struct ProductFixture {
     pub(crate) entry_source: String,
     pub(crate) version: Option<&'static str>,
     pub(crate) native_census: OnceLock<PathBuf>,
+    stage_parent: OnceLock<PathBuf>,
 }
 
 impl ProductFixture {
@@ -98,6 +98,7 @@ impl ProductFixture {
             entry_source,
             version: None,
             native_census: OnceLock::new(),
+            stage_parent: OnceLock::new(),
         }
     }
 
@@ -133,8 +134,28 @@ impl ProductFixture {
             ),
         )
         .expect("fixture config");
-        keld_cli::boot::stage_dev_boot(&self.project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
-            .expect("compile owner-private no-flag stage")
+        let stage = keld_cli::boot::stage_dev_boot(
+            &self.project,
+            Path::new(env!("CARGO_BIN_EXE_keld-host")),
+        )
+        .expect("compile owner-private no-flag stage");
+        let parent = stage.root().parent().expect("stage parent");
+        assert!(
+            !parent.starts_with(self.project.canonicalize().expect("canonical project")),
+            "macOS stage must be outside the source project"
+        );
+        assert_eq!(
+            self.stage_parent.get_or_init(|| parent.to_owned()),
+            parent,
+            "one fixture uses one isolated project namespace"
+        );
+        stage
+    }
+
+    pub(crate) fn stage_parent(&self) -> &Path {
+        self.stage_parent
+            .get()
+            .expect("producer-selected stage parent was retained")
     }
 
     pub(crate) fn launch_cycle(&self, cycle: &str) -> LiveCycle {
@@ -227,6 +248,21 @@ impl ProductFixture {
         cycle.expect_line("ECHO2");
         cycle.beacon.take().expect("beacon owner").assert_exact();
         cycle
+    }
+}
+
+impl Drop for ProductFixture {
+    fn drop(&mut self) {
+        // Fixture-only fallback after explicit product cleanup assertions. The
+        // temporary source directory no longer contains the produced stages.
+        if let Some(namespace) = self
+            .stage_parent
+            .get()
+            .and_then(|parent| parent.parent())
+            .and_then(Path::parent)
+        {
+            let _ = fs::remove_dir_all(namespace);
+        }
     }
 }
 

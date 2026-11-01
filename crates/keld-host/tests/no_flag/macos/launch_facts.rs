@@ -185,7 +185,7 @@ appendFileSync({observation_json}, JSON.stringify({{
     fixture.entry_source = fs::read_to_string(fixture.project.join("src/main.ts"))
         .expect("exact facade plus existing recovery harness bundle");
     let mut cycle = RecoveryCycle::launch(&fixture, "launch-facts-recovery");
-    let staged_roots: Vec<_> = fs::read_dir(fixture.project.join(".keld/dev"))
+    let staged_roots: Vec<_> = fs::read_dir(fixture.stage_parent())
         .expect("physical staged roots")
         .map(|entry| entry.expect("stage entry").path())
         .collect();

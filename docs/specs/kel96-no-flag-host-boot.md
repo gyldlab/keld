@@ -119,7 +119,7 @@ readable; the existing Host/Guardian retain one captured value for all generatio
    staging, and KEL-102/T2 owns the first runtime compare on its one policy
    read. It does not authenticate an unsigned sidecar.
 3. For the non-release fixture only, the `keld-cli` boot compiler creates an owner-private
-   per-launch directory at `<project>/.keld/dev/<launch-nonce>/`, stages the
+   per-launch directory with the `.keld/dev/<launch-nonce>/` suffix, stages the
    prebuilt `keld-host[.exe]` and the compiled app files there, and returns the
    validated staged layout without launching it. The T1b integration harness
    invokes that host with no Keld flag; T2 is the first shipping `keld dev`
@@ -298,15 +298,40 @@ checked, and closed immediately before Bun spawn while no untrusted child yet
 exists. The owner-controlled dev user remains the fixture trust boundary; this
 does not claim release-grade resistance to same-user mutation.
 
-The non-release fixture has one exact per-launch layout:
+The non-release fixture has one exact executable-adjacent per-launch layout:
 
 ```text
-<project>/.keld/dev/<128-bit-random-launch-nonce>/
+<platform-stage-namespace>/.keld/dev/<128-bit-random-launch-nonce>/
   keld-host[.exe]            # new-inode copy/COW clone of current dev host
   keld.boot.json
   keld.permissions.jsonc
   <entry and renderer paths named by the sidecar>
 ```
+
+Linux and Windows keep `<platform-stage-namespace> = <project>`. The bounded
+macOS isolation continuation uses
+`<canonical-system-temporary>/keld-dev-<invoking-uid>/<project-id>`, where
+`project-id` is lowercase SHA-256 of the canonical project path's native bytes.
+This is a directory locator, not authentication. The temporary directory must
+already be invoking-owner private (`0700`) and outside the project. The CLI
+creates/opens each private namespace directory relative to retained no-follow
+parent handles and refuses wrong ownership, mode, type or links without repair.
+It also refuses `node_modules`, `package.json`, `tsconfig.json` and `jsconfig.json`
+in stage ancestors, and rechecks retained private-parent identity, owner/mode and
+the ancestor-input census before completing capture. This removes the live
+project's ancestor-resolution path. Before Host handoff, the existing CLI staging
+guard retains those parents and opens the nonce relative to the retained `dev`
+handle. Every failure unwind requires the full chain and nonce to retain their
+named owner/mode and device/inode identities before deletion; an unknown or changed
+identity preserves the incomplete stage and replacement path. That identity check
+does not repeat the resolver census, so a late-input refusal can still clean its
+own nonce. The existing random nonce and executable-derived Host/Guardian cleanup
+continue to own the running stage. This corrects the old macOS project-local
+location under GH1037/KEL-75; source-tree copying, graph admission and
+startup-environment qualification remain separate pending work.
+The Host's required qualification before every Bun generation is not supplied by
+this CLI capture check; retained CLI handles do not freeze later path lookups.
+Independent review and real Host acceptance of this continuation remain required.
 
 The reusable `keld-cli` boot compiler is the sole shipping-layout producer. T1a
 implements it; the T1b integration harness invokes it directly, and T2 later
