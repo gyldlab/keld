@@ -4952,9 +4952,6 @@ fn printed_rows(fixture: &Fixture) -> String {
     baseline_rows_at(&fixture.root, &fixture.history()).expect("rows print")
 }
 
-/// `baseline-rows` is the paste source for a drain: what it prints must be what `check`
-/// accepts, for a directory spec and a flat spec that both keep `UNKNOWN` fields.
-
 fn flat_tracker_fixture(mut text: String, cell: &str, oversized: bool) -> Fixture {
     let mut fixture = Fixture::new();
     let lines = if oversized {
@@ -5082,6 +5079,8 @@ fn printed_flat_tracker_rows_cover_every_structure_class() {
     }
 }
 
+/// `baseline-rows` is the paste source for a drain: what it prints must be what `check`
+/// accepts, for a directory spec and a flat spec that both keep `UNKNOWN` fields.
 #[test]
 fn baseline_rows_prints_what_check_accepts() {
     let fixture = migrated_fixture();
