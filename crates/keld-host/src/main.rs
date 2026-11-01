@@ -372,7 +372,7 @@ fn dev_stage_cleanup_root_for(
 
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    let native_facade = parse_guardian_boot_mode(args)?;
+    let (native_facade, launch_facts) = parse_guardian_startup(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
@@ -393,9 +393,9 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
                 &cleanup_validation,
                 &root,
                 &entry,
-                expected_dev,
-                expected_ino,
+                (expected_dev, expected_ino),
                 native_facade,
+                launch_facts.as_ref(),
                 app_link,
             )
         },
@@ -439,6 +439,29 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn parse_guardian_startup(
+    args: &[String],
+) -> Result<(bool, Option<keld_core::app_session::DevelopmentLaunchFacts>), String> {
+    if args.len() != 7 && args.len() != 8 {
+        return Err(String::from(
+            "KELD-CORE-037: invalid private Guardian argument count",
+        ));
+    }
+    let mode = parse_guardian_boot_mode(&args[..7])?;
+    let facts = args
+        .get(7)
+        .map(|text| {
+            keld_core::app_session::DevelopmentLaunchFacts::from_private_argument(
+                text,
+                Path::new(&args[2]),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    Ok((mode, facts))
+}
+
+#[cfg(target_os = "macos")]
 fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
     if args.len() == 7 {
         match args[6].as_str() {
@@ -457,15 +480,15 @@ fn guardian_bun_command(
     cleanup_validation: &Result<PathBuf, String>,
     root: &Path,
     entry: &Path,
-    expected_dev: u64,
-    expected_ino: u64,
+    expected_identity: (u64, u64),
     native_facade: bool,
+    launch_facts: Option<&keld_core::app_session::DevelopmentLaunchFacts>,
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
-    let reopened = reopen_validated_entry(root, entry, expected_dev, expected_ino)?;
+    let reopened = reopen_validated_entry(root, entry, expected_identity.0, expected_identity.1)?;
     // Advisory same-user dev-boundary check: retain the exact reopened
     // identity until immediately before Supervisor invokes spawn, then
     // close it. Bun resolves the name afterward, so this does not claim
@@ -493,6 +516,17 @@ fn guardian_bun_command(
     } else {
         "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
     });
+    if let Some(facts) = launch_facts {
+        command.arg(
+            facts
+                .bun_define_argument()
+                .map_err(|error| guardian_entry_error(error.to_string()))?,
+        );
+    } else {
+        // Absence is also a Host decision. A historical no-sidecar entry must
+        // not satisfy the reserved constant through an application global.
+        command.arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
+    }
     let sidecar = root.join("src").join("kipc-transport.ts");
     match std::fs::metadata(&sidecar) {
         Ok(metadata) if metadata.is_file() => {
@@ -592,10 +626,11 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::Path;
 
     use super::{
         dev_stage_cleanup_root_for, guardian_bun_command, parse_guardian_boot_mode,
-        reconcile_guardian_result, reopen_validated_entry,
+        parse_guardian_startup, reconcile_guardian_result, reopen_validated_entry,
     };
 
     #[test]
@@ -624,9 +659,9 @@ mod tests {
             )),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            None,
             "/tmp/link#token",
         )
         .expect_err("failed stage validation must refuse the Bun command");
@@ -643,9 +678,9 @@ mod tests {
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            None,
             "/tmp/link#token",
         )
         .expect("validated stage must still produce the Bun command");
@@ -654,6 +689,7 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
+                "--define=__KELD_HOST_LAUNCH_FACTS__:undefined".as_ref(),
                 "run".as_ref(),
                 entry.as_os_str()
             ]
@@ -666,9 +702,9 @@ mod tests {
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            None,
             "/tmp/link#token",
         )
         .expect("canonical sidecar launch");
@@ -677,9 +713,11 @@ mod tests {
             args[0],
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
-        assert_eq!(args[1], format!("--preload={}", sidecar.display()).as_str());
-        assert_eq!(args[2], "run");
-        assert_eq!(args[3], entry.as_os_str());
+        assert_eq!(args[1], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
+        assert_eq!(args[2], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[3], "run");
+        assert_eq!(args[4], entry.as_os_str());
+        assert_eq!(args.len(), 5);
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         // Bun config can replace a CLI preload. Qualify every generation,
         // including recovery after a previously absent config appears.
@@ -690,9 +728,9 @@ mod tests {
                 &Ok(temp.path().to_path_buf()),
                 temp.path(),
                 relative,
-                identity.dev(),
-                identity.ino(),
+                (identity.dev(), identity.ino()),
                 true,
+                None,
                 "/tmp/link#token",
             )
             .expect_err("ambient preload override must refuse launch");
@@ -719,9 +757,9 @@ mod tests {
                     &Ok(temp.path().to_path_buf()),
                     temp.path(),
                     std::path::Path::new("entry.ts"),
-                    identity.dev(),
-                    identity.ino(),
+                    (identity.dev(), identity.ino()),
                     native_facade,
+                    None,
                     "/tmp/link#token",
                 )
                 .expect("raw no-sidecar launch remains supported");
@@ -730,6 +768,7 @@ mod tests {
                 } else {
                     "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
                 })];
+                expected.push("--define=__KELD_HOST_LAUNCH_FACTS__:undefined".into());
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
@@ -771,6 +810,56 @@ mod tests {
     }
 
     #[test]
+    fn guardian_private_launch_facts_bind_to_the_stage_and_precede_the_entry() {
+        let temp = tempfile::tempdir().expect("launch facts stage");
+        fs::write(temp.path().join("entry.ts"), "console.log('ENTRY');\n").expect("entry");
+        let identity = fs::metadata(temp.path().join("entry.ts")).expect("entry identity");
+        let record = serde_json::json!({"schema":1,"kind":"development","name":"fixture","root":temp.path()}).to_string();
+        let mut args: Vec<String> = vec![
+            "host".into(),
+            "guardian".into(),
+            temp.path().to_str().expect("UTF-8").into(),
+            "entry.ts".into(),
+            identity.dev().to_string(),
+            identity.ino().to_string(),
+            "1".into(),
+            record,
+        ];
+        let (mode, facts) = parse_guardian_startup(&args).expect("closed private startup");
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            Path::new("entry.ts"),
+            (identity.dev(), identity.ino()),
+            mode,
+            facts.as_ref(),
+            "/tmp/link#token",
+        )
+        .expect("qualified command");
+        let observed: Vec<_> = command.get_args().collect();
+        assert!(
+            observed[1]
+                .to_string_lossy()
+                .starts_with("--define=__KELD_HOST_LAUNCH_FACTS__:")
+        );
+        assert_eq!(observed[2], "run");
+        assert_eq!(observed[3], temp.path().join("entry.ts"));
+        args[7] =
+            serde_json::json!({"schema":1,"kind":"development","name":"fixture","root":"/foreign"})
+                .to_string();
+        assert!(parse_guardian_startup(&args).is_err());
+        args[7] = "extra".into();
+        assert!(parse_guardian_startup(&args).is_err());
+        args.pop();
+        assert!(
+            parse_guardian_startup(&args)
+                .expect("historical no-facts startup")
+                .1
+                .is_none()
+        );
+    }
+
+    #[test]
     fn guardian_rejects_runtime_config_without_a_transport_sidecar() {
         let temp = tempfile::tempdir().expect("config admission fixture");
         let entry = temp.path().join("entry.ts");
@@ -788,9 +877,9 @@ mod tests {
                     &Ok(temp.path().to_path_buf()),
                     temp.path(),
                     std::path::Path::new("entry.ts"),
-                    identity.dev(),
-                    identity.ino(),
+                    (identity.dev(), identity.ino()),
                     native_facade,
+                    None,
                     "/tmp/link#token",
                 )
                 .expect_err("runtime config must refuse before entry execution");
@@ -815,9 +904,9 @@ mod tests {
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             std::path::Path::new("entry.ts"),
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            None,
             "/tmp/link#token",
         )
         .expect("qualified command");
@@ -884,9 +973,9 @@ mod tests {
             &Ok(root.clone()),
             &root,
             std::path::Path::new("entry.ts"),
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            None,
             "/tmp/link#token",
         )
         .expect("actual shipping Bun command")

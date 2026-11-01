@@ -1557,6 +1557,7 @@ dependencies = [
  "keld-wv",
  "nix",
  "objc2",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "sha2 0.10.9",
