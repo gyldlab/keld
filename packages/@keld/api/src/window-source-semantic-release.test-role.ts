@@ -57,13 +57,13 @@ const expected = js
       "4f2a6ba84be8d16d5920f77391af8b4966ef349b55d01704f8b52ff1c0be2176",
       "b752bb8c7b875d57983a86695655653b1c103778d192c894789425c749756383",
       "24ac3fb3b3ad69dcce45fd74f20cf42daac0da4f114915c1e0c4be3bcc1f1265",
-      "6d3d81dadf43d63897f0e8465d8d94f625a94ac2babb826222383be06b00dd33",
+      "7667e5be43662995d4450abe5398003280cba9ee20f142df0e87856d3c54c629",
     ]
   : [
       "11e78e5753b659592444aeabd796766f404fbbe514bfd2c961160e9ae52ed595",
       "02316c26133883f65a3255801160e2dc8209cd83490e7a9f90fd8d3f8d5e53c7",
       "3e11e55bedb30a3644e7d280c118ca5712b468d532dc9c214f7cd72f1e618c9f",
-      "de754ed120d6717e2d9008cd9dd39f2ee54dd82c255ddf0cf1e092b810eb7035",
+      "2001d91ca95affb0a81ae11ebd5f33067a7f475eb46a4bf6cfa96fcc4792f3c2",
     ];
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 const values = [source, codecPath, mirror, transportPath].map((path) =>

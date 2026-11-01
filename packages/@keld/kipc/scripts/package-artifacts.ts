@@ -108,6 +108,7 @@ async function pack(destination: string | undefined): Promise<void> {
     const apiExports = {
       ".": "./src/index.ts",
       "./internal/app": "./src/app.ts",
+      "./internal/dialog-codec": "./src/dialog.generated.ts",
       "./internal/link": "./src/link.ts",
       "./internal/window-codec": "./src/window-codec.ts",
     };
