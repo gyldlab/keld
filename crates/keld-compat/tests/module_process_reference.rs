@@ -7,15 +7,72 @@
 
 use serde_json::{Value, json};
 
+// GH565 links these Electron members; GH478 implements the parented async
+// dialog subset. This explicit current-shape observation does not claim their
+// methods work, remove helper leakage or qualify installed-module identity.
+const BASELINE_MEMBERS: &[&str] = &[
+    "BrowserWindow",
+    "ClipboardItem",
+    "Menu",
+    "app",
+    "clipboard",
+    "dialog",
+    "nativeImage",
+    "nativeTheme",
+    "screen",
+    "session",
+    "shell",
+];
+const BASELINE_HELPERS: &[&str] = &[
+    "ELECTRON_VERSION_SHIM",
+    "UNSUPPORTED_MEMBER_CODE",
+    "UnsupportedMemberError",
+    "isCallError",
+    "isUnsupportedMemberError",
+];
+
+fn baseline_namespace() -> Vec<&'static str> {
+    let mut names = BASELINE_MEMBERS.to_vec();
+    names.extend_from_slice(BASELINE_HELPERS);
+    names.sort_unstable();
+    names
+}
+
 fn facade_baseline_matches(observed: &Value) -> bool {
-    observed["namespace"]
-        == json!([
-            "BrowserWindow",
-            "ELECTRON_VERSION_SHIM",
-            "app",
-            "isCallError"
-        ])
-        && observed["defaultKeys"] == json!(["BrowserWindow", "app"])
+    observed["namespace"] == json!(baseline_namespace())
+        && observed["defaultKeys"] == json!(BASELINE_MEMBERS)
+}
+
+#[test]
+fn direct_facade_shape_rejects_missing_extra_and_wrong_side_exports() {
+    let baseline = json!({"namespace": baseline_namespace(), "defaultKeys": BASELINE_MEMBERS});
+    assert!(facade_baseline_matches(&baseline));
+    for field in ["namespace", "defaultKeys"] {
+        let mut missing = baseline.clone();
+        missing[field]
+            .as_array_mut()
+            .expect("explicit keys")
+            .remove(0);
+        assert!(!facade_baseline_matches(&missing), "missing {field} member");
+        let mut extra = baseline.clone();
+        extra[field]
+            .as_array_mut()
+            .expect("explicit keys")
+            .push(json!("inventedMember"));
+        assert!(!facade_baseline_matches(&extra), "extra {field} member");
+    }
+    let mut false_parity = baseline.clone();
+    false_parity["namespace"] = json!(BASELINE_MEMBERS);
+    assert!(
+        !facade_baseline_matches(&false_parity),
+        "unexpected helper removal needs qualification"
+    );
+    let mut helper_default = baseline;
+    helper_default["defaultKeys"] = json!(baseline_namespace());
+    assert!(
+        !facade_baseline_matches(&helper_default),
+        "helpers must not be hidden in the default object"
+    );
 }
 
 #[test]
@@ -68,16 +125,8 @@ fn direct_facade_observation_and_bounded_release_snapshot() {
     );
     let namespace = observed["namespace"].as_array().expect("namespace keys");
     let defaults = observed["defaultKeys"].as_array().expect("default keys");
-    assert_eq!(
-        namespace,
-        &vec![
-            json!("BrowserWindow"),
-            json!("ELECTRON_VERSION_SHIM"),
-            json!("app"),
-            json!("isCallError")
-        ]
-    );
-    assert_eq!(defaults, &vec![json!("BrowserWindow"), json!("app")]);
+    assert_eq!(json!(namespace), json!(baseline_namespace()));
+    assert_eq!(json!(defaults), json!(BASELINE_MEMBERS));
     assert_ne!(
         namespace, defaults,
         "unexpected parity: update reviewed observation"

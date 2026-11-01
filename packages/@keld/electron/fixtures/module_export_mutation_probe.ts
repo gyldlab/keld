@@ -21,10 +21,14 @@ try {
   }
   const entry = join(root, "electron/src/index.ts");
   const source = readFileSync(entry, "utf8");
-  const mutated = source.replace(
-    "export { app, BrowserWindow };",
-    "export { app };",
-  );
+  const exportBlocks = [...source.matchAll(/\bexport\s*\{[^{}]*\}/g)]
+    .map((match) => match[0])
+    .filter((block) => /\bBrowserWindow\b/.test(block));
+  if (exportBlocks.length !== 1)
+    throw new Error("expected one explicit BrowserWindow value-export block");
+  const block = exportBlocks[0];
+  const mutatedBlock = block.replace(/\bBrowserWindow\b\s*,?/, "");
+  const mutated = source.replace(block, mutatedBlock);
   if (mutated === source)
     throw new Error("named export mutation was not applied");
   writeFileSync(entry, mutated);
