@@ -33,11 +33,11 @@ fn schema_one_still_requires_renderer() {
 
 #[test]
 fn boot_optional_version_accepts_literal_metadata_in_existing_schemas() {
-    for schema in [1, 2] {
+    for schema in [1, 2, 3, 4] {
         let mut value: serde_json::Value =
             serde_json::from_slice(&valid_boot("src/main.ts", "index.html")).expect("fixture");
         value["schema"] = schema.into();
-        if schema == 2 {
+        if matches!(schema, 2 | 4) {
             value.as_object_mut().expect("object").remove("renderer");
         }
         value["version"] = "29.1.7-test+build.4".into();
@@ -276,7 +276,7 @@ fn duplicate_unknown_version_name_and_permissions_fields_fail_closed() {
     let cases = [
         r#"{"schema":1,"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","unknown":1,"permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
-        r#"{"schema":3,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
+        r#"{"schema":5,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"wrong.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
         r#"{"schema":1,"name":"x","entry":"a","renderer":"b","permissions":{"file":"keld.permissions.jsonc","file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,

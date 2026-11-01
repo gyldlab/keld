@@ -24,10 +24,18 @@ try {
   cpSync(resolve(import.meta.dir, "../src"), join(packageRoot, "src"), {
     recursive: true,
   });
-  if (process.argv[2] === "add-utility") {
+  const mutation = process.argv[2];
+  if (mutation !== undefined) {
+    if (mutation !== "remove-main" && mutation !== "remove-utility")
+      throw new Error("unknown resolver mutation: " + mutation);
+    const removed = mutation === "remove-main" ? "./main" : "./utility";
     const manifestPath = join(packageRoot, "package.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.exports["./utility"] = "./src/index.ts";
+    if (manifest.exports[removed] !== "./src/index.ts")
+      throw new Error(
+        "expected the real source export before mutation: " + removed,
+      );
+    delete manifest.exports[removed];
     writeFileSync(manifestPath, JSON.stringify(manifest));
   }
   const caller = join(root, "caller.cjs");

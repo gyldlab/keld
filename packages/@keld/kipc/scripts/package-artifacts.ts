@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { stampTransport, verifyTransportStamp } from "../src/transport.ts";
 
 const kipc = resolve(import.meta.dir, "..");
@@ -68,9 +68,20 @@ export async function buildReleaseTransport(release = true): Promise<string> {
   return built.outputs[0].text();
 }
 
-if (import.meta.main) await pack(process.argv[2]);
+/** Existing SDK producer; add --electron to include the installed alias artifact. */
+if (import.meta.main) {
+  const [destination, ...flags] = process.argv.slice(2);
+  if (flags.length > 1 || (flags.length === 1 && flags[0] !== "--electron"))
+    throw new Error(
+      "Usage: bun package-artifacts.ts <output-directory> [--electron]",
+    );
+  await pack(destination, flags[0] === "--electron");
+}
 
-async function pack(destination: string | undefined): Promise<void> {
+async function pack(
+  destination: string | undefined,
+  includeElectron = false,
+): Promise<void> {
   const api = resolve(kipc, "../api");
   if (!destination) throw new Error("Provide an artifact output directory");
   const output = resolve(destination);
@@ -184,13 +195,105 @@ async function pack(destination: string | undefined): Promise<void> {
       kipcManifest.exports,
       kipcManifest.dependencies,
     );
-    for (const [path, source] of [
+    interface ArtifactManifest {
+      exports: Record<string, string | { types: string; default: string }>;
+      [key: string]: unknown;
+    }
+    const artifacts: [string, ArtifactManifest][] = [
       [apiOut, apiDist],
       [kipcOut, kipcDist],
-    ] as const) {
+    ];
+    if (includeElectron) {
+      const electron = resolve(kipc, "../electron");
+      const electronManifest = manifest(electron);
+      const nodeTypesVersion = manifest(
+        dirname(Bun.resolveSync("@types/node/package.json", electron)),
+      ).version;
+      const electronExports = {
+        ".": "./src/index.ts",
+        "./main": "./src/index.ts",
+        "./renderer": "./src/index.ts",
+        "./common": "./src/index.ts",
+        "./utility": "./src/index.ts",
+      };
+      if (
+        JSON.stringify(electronManifest.exports) !==
+          JSON.stringify(electronExports) ||
+        electronManifest.dependencies?.["@keld/api"] !== "link:../api" ||
+        electronManifest.dependencies?.["@keld/kipc"] !== "link:../kipc" ||
+        electronManifest.dependencies?.["@types/node"] !== nodeTypesVersion ||
+        !/^\d+\.\d+\.\d+$/.test(nodeTypesVersion) ||
+        Object.keys(electronManifest.dependencies).length !== 3
+      )
+        throw new Error(
+          "Unexpected Electron source exports or declared SDK dependencies",
+        );
+      const electronOut = join(scratch, "electron");
+      const electronDist = join(electronOut, "dist");
+      mkdirSync(electronDist, { recursive: true });
+      run(
+        [
+          join(electron, "node_modules/.bin/tsc"),
+          "-p",
+          join(electron, "tsconfig.build.json"),
+          "--outDir",
+          electronDist,
+        ],
+        electron,
+      );
+      // Consumers need Node declarations for the public EventEmitter base. Add
+      // that dependency at the packed declaration boundary: a source directive
+      // would pull this package's development Node types into sibling tests.
+      const declarationEntry = join(electronDist, "index.d.ts");
+      writeFileSync(
+        declarationEntry,
+        '/// <reference types="node" />\n' +
+          readFileSync(declarationEntry, "utf8"),
+      );
+      const callerCwd = process.cwd();
+      let built: Awaited<ReturnType<typeof Bun.build>>;
+      try {
+        process.chdir(electron);
+        built = await Bun.build({
+          entrypoints: [join(electron, "src/index.ts")],
+          target: "node",
+          format: "esm",
+          packages: "external",
+        });
+      } finally {
+        process.chdir(callerCwd);
+      }
+      if (built.outputs.length !== 1)
+        throw new Error("Electron release build must emit one canonical entry");
+      writeFileSync(
+        join(electronDist, "index.js"),
+        await built.outputs[0].text(),
+      );
+      artifacts.push([
+        electronOut,
+        {
+          ...distManifest(electronManifest, electronExports, {
+            "@keld/api": apiManifest.version,
+            "@keld/kipc": kipcManifest.version,
+            "@types/node": nodeTypesVersion,
+          }),
+          exports: Object.fromEntries(
+            Object.keys(electronExports).map((key) => [key, "./dist/index.js"]),
+          ),
+          types: "./dist/index.d.ts",
+          files: ["dist"],
+        },
+      ]);
+    }
+    for (const [path, source] of artifacts) {
       for (const entry of Object.values(source.exports)) {
-        readFileSync(join(path, entry.types));
-        readFileSync(join(path, entry.default));
+        if (typeof entry === "string") {
+          readFileSync(join(path, entry));
+          readFileSync(join(path, entry.replace(/\.js$/, ".d.ts")));
+        } else {
+          readFileSync(join(path, entry.types));
+          readFileSync(join(path, entry.default));
+        }
       }
       writeFileSync(
         join(path, "package.json"),

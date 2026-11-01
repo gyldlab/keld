@@ -23,7 +23,7 @@
  * Paths outside the bounded native set remain undelivered. Directory
  * values are data, not filesystem grants; Guard still owns all authorization.
  */
-import { hostLaunchFacts } from "../../kipc/src/transport.ts";
+import { hostLaunchFacts } from "@keld/kipc";
 
 /**
  * Names documented for `app.getPath(name)` in the pinned Electron v44.4.5

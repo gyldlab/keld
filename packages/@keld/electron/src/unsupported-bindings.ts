@@ -25,7 +25,7 @@ import {
   refuseLater,
   unsupportedSurface,
   writableProperty,
-} from "./unsupported";
+} from "./unsupported.ts";
 
 /** Pinned `shell.md`: five members for the GH-479 broker; the Windows shortcut pair is a GH-482 scoreboard row. */
 export const shell = unsupportedSurface("shell", {

@@ -8,8 +8,8 @@
 use serde_json::{Value, json};
 
 // GH565 links these Electron members; GH478 implements the parented async
-// dialog subset. This explicit current-shape observation does not claim their
-// methods work, remove helper leakage or qualify installed-module identity.
+// dialog subset. GH502 removes non-Electron helper exports. This source-shape
+// observation does not prove member behavior or installed-module identity.
 const BASELINE_MEMBERS: &[&str] = &[
     "BrowserWindow",
     "ClipboardItem",
@@ -31,21 +31,14 @@ const BASELINE_HELPERS: &[&str] = &[
     "isUnsupportedMemberError",
 ];
 
-fn baseline_namespace() -> Vec<&'static str> {
-    let mut names = BASELINE_MEMBERS.to_vec();
-    names.extend_from_slice(BASELINE_HELPERS);
-    names.sort_unstable();
-    names
-}
-
 fn facade_baseline_matches(observed: &Value) -> bool {
-    observed["namespace"] == json!(baseline_namespace())
+    observed["namespace"] == json!(BASELINE_MEMBERS)
         && observed["defaultKeys"] == json!(BASELINE_MEMBERS)
 }
 
 #[test]
 fn direct_facade_shape_rejects_missing_extra_and_wrong_side_exports() {
-    let baseline = json!({"namespace": baseline_namespace(), "defaultKeys": BASELINE_MEMBERS});
+    let baseline = json!({"namespace": BASELINE_MEMBERS, "defaultKeys": BASELINE_MEMBERS});
     assert!(facade_baseline_matches(&baseline));
     for field in ["namespace", "defaultKeys"] {
         let mut missing = baseline.clone();
@@ -60,19 +53,18 @@ fn direct_facade_shape_rejects_missing_extra_and_wrong_side_exports() {
             .expect("explicit keys")
             .push(json!("inventedMember"));
         assert!(!facade_baseline_matches(&extra), "extra {field} member");
+        for helper in BASELINE_HELPERS {
+            let mut leaked = baseline.clone();
+            leaked[field]
+                .as_array_mut()
+                .expect("explicit keys")
+                .push(json!(helper));
+            assert!(
+                !facade_baseline_matches(&leaked),
+                "non-Electron helper {helper} leaked into {field}"
+            );
+        }
     }
-    let mut false_parity = baseline.clone();
-    false_parity["namespace"] = json!(BASELINE_MEMBERS);
-    assert!(
-        !facade_baseline_matches(&false_parity),
-        "unexpected helper removal needs qualification"
-    );
-    let mut helper_default = baseline;
-    helper_default["defaultKeys"] = json!(baseline_namespace());
-    assert!(
-        !facade_baseline_matches(&helper_default),
-        "helpers must not be hidden in the default object"
-    );
 }
 
 #[test]
@@ -125,11 +117,11 @@ fn direct_facade_observation_and_bounded_release_snapshot() {
     );
     let namespace = observed["namespace"].as_array().expect("namespace keys");
     let defaults = observed["defaultKeys"].as_array().expect("default keys");
-    assert_eq!(json!(namespace), json!(baseline_namespace()));
+    assert_eq!(json!(namespace), json!(BASELINE_MEMBERS));
     assert_eq!(json!(defaults), json!(BASELINE_MEMBERS));
-    assert_ne!(
+    assert_eq!(
         namespace, defaults,
-        "unexpected parity: update reviewed observation"
+        "public namespace and default member sets must match"
     );
     let snapshot_bytes = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -167,7 +159,7 @@ fn resolver_baseline_matches(observed: &Value) -> bool {
             "electron/utility",
         ]
         .iter()
-        .all(|name| observed[*name] == json!({"resolved": false, "code": "MODULE_NOT_FOUND"}))
+        .all(|name| observed[*name] == json!({"resolved": true}))
 }
 
 #[test]
@@ -205,45 +197,56 @@ fn copied_keld_package_resolution_observation() {
     ] {
         assert_eq!(
             observed[name],
-            json!({"resolved": false, "code": "MODULE_NOT_FOUND"}),
+            json!({"resolved": true}),
             "unexpected resolver observation for {name}"
         );
     }
-    let mutated = std::process::Command::new("bun")
-        .args([
-            "--no-install",
-            "packages/@keld/electron/fixtures/module_resolve_probe.ts",
-            "add-utility",
-        ])
-        .current_dir(workspace)
-        .output()
-        .expect("launch one-export mutation");
-    assert!(
-        mutated.status.success(),
-        "mutation probe failed: {}",
-        String::from_utf8_lossy(&mutated.stderr)
-    );
-    let changed: Value =
-        serde_json::from_slice(&mutated.stdout).expect("mutation observation JSON");
-    assert_eq!(changed["electron/utility"], json!({"resolved": true}));
-    assert!(
-        !resolver_baseline_matches(&changed),
-        "one-export mutation escaped the observed-status assertion"
-    );
-    for name in [
-        "electron",
-        "electron/main",
-        "electron/renderer",
-        "electron/common",
+    for (argument, removed) in [
+        ("remove-main", "electron/main"),
+        ("remove-utility", "electron/utility"),
     ] {
+        let mutated = std::process::Command::new("bun")
+            .args([
+                "--no-install",
+                "packages/@keld/electron/fixtures/module_resolve_probe.ts",
+                argument,
+            ])
+            .current_dir(workspace)
+            .output()
+            .expect("launch one-export mutation");
+        assert!(
+            mutated.status.success(),
+            "mutation probe failed: {}",
+            String::from_utf8_lossy(&mutated.stderr)
+        );
+        let changed: Value =
+            serde_json::from_slice(&mutated.stdout).expect("mutation observation JSON");
         assert_eq!(
-            changed[name], observed[name],
-            "mutation changed unrelated {name}"
+            changed[removed],
+            json!({"resolved": false, "code": "MODULE_NOT_FOUND"})
+        );
+        assert!(
+            !resolver_baseline_matches(&changed),
+            "one-export mutation escaped the observed-status assertion"
+        );
+        for name in [
+            "electron",
+            "electron/main",
+            "electron/renderer",
+            "electron/common",
+            "electron/utility",
+        ] {
+            if name != removed {
+                assert_eq!(
+                    changed[name], observed[name],
+                    "mutation changed unrelated {name}"
+                );
+            }
+        }
+        assert_ne!(
+            changed[removed], observed[removed],
+            "one-export mutation must falsify observed status"
         );
     }
-    assert_ne!(
-        changed["electron/utility"], observed["electron/utility"],
-        "one-export mutation must falsify observed status"
-    );
     // Resolution alone is not proof of module identity, installed graph, or a role.
 }

@@ -20,14 +20,13 @@
     {
       "operation_id": "resolver.documented-aliases.identity",
       "oracle_id": "electron-v44.4.5.resolver.documented-aliases.identity",
-      "expected_verdict": "fail",
+      "expected_verdict": "unknown",
       "platforms": [
         "macos"
       ],
       "test_path": "crates/keld-compat/tests/module_process_reference.rs",
       "test_name": "copied_keld_package_resolution_observation",
-      "negative_control": "Add one missing alias in disposable manifest; exact observed result changes. Final positive identity still requires full matrix.",
-      "implementing_ticket": "GH-502",
+      "negative_control": "Remove one declared alias in a disposable real manifest; only that observed result changes. Source resolution alone leaves identity unknown; the installed matrix is separate component evidence.",
       "doc_citation": {
         "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/tutorial/process-model.md",
         "quote": "These aliases have no impact on runtime, but can be used for typechecking\nand autocomplete.",
@@ -43,7 +42,7 @@
       ],
       "test_path": "crates/keld-compat/tests/module_process_reference.rs",
       "test_name": "copied_keld_package_resolution_observation",
-      "negative_control": "Add utility mapping in disposable manifest and assert actual result changes. Source: source-only lib/common/init.ts; no admitted docs citation for utility. Ledger unknown; owner GH-502."
+      "negative_control": "Remove only the real utility mapping in a disposable copied manifest; utility resolution fails while the other four results are unchanged. Source: source-only lib/common/init.ts; no admitted docs citation for utility. Ledger unknown; owner GH-502."
     },
     {
       "operation_id": "resolver.esm-export-set",

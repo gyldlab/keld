@@ -1,8 +1,8 @@
 /** Source-exact asynchronous Electron Message facade. The Host, not this
  * module, owns the verified permission, window identity and native panel. */
-import { invokeFileDialog, invokeMessageDialog } from "../../api/src/app.ts";
-import type { MessageOptions } from "../../api/src/dialog.generated.ts";
-import type { WindowRef } from "../../api/src/window-codec.ts";
+import { invokeFileDialog, invokeMessageDialog } from "@keld/api/internal/app";
+import type { MessageOptions } from "@keld/api/internal/dialog-codec";
+import type { WindowRef } from "@keld/api/internal/window-codec";
 
 import { readDialogParentRef } from "./browser-window.ts";
 import { normalizeMessageOptions } from "./dialog-options.ts";
@@ -10,7 +10,7 @@ import {
   normalizeOpenDialogOptions,
   normalizeSaveDialogOptions,
 } from "./file-dialog-options.ts";
-import { method, promise, unsupportedSurface } from "./unsupported";
+import { method, promise, unsupportedSurface } from "./unsupported.ts";
 
 /** The native button index and checkbox state reported by AppKit, not a
  * guessed `defaultId` or a fabricated Cancel selection. */

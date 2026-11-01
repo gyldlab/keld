@@ -9,7 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./main": "./src/index.ts",
+    "./renderer": "./src/index.ts",
+    "./common": "./src/index.ts",
+    "./utility": "./src/index.ts"
   },
   "files": [
     "src"
@@ -17,5 +21,10 @@
   "devDependencies": {
     "@types/bun": "1.4.0",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@keld/api": "link:../api",
+    "@keld/kipc": "link:../kipc",
+    "@types/node": "26.4.1"
   }
 }

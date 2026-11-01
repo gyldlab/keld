@@ -17,7 +17,7 @@
 import { expect, test } from "bun:test";
 
 import * as electron from "./index";
-import { isUnsupportedMemberError, type TrackingIssue } from "./index";
+import { isUnsupportedMemberError, type TrackingIssue } from "./unsupported.ts";
 
 /** Read the exported surface (not a copied implementation of dialog behavior). */
 function member(target: unknown, key: string): unknown {

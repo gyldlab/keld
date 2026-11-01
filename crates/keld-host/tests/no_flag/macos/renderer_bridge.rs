@@ -300,35 +300,38 @@ pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
         fs::copy(original.join("package.json"), staged.join("package.json"))
             .expect("byte-identical package manifest");
     }
-    let api: serde_json::Value = serde_json::from_slice(
-        &fs::read(destination.join("@keld/api/package.json")).expect("staged API manifest"),
-    )
-    .expect("actual API manifest JSON");
-    let kipc: serde_json::Value = serde_json::from_slice(
-        &fs::read(destination.join("@keld/kipc/package.json")).expect("staged KIPC manifest"),
-    )
-    .expect("actual KIPC manifest JSON");
-    assert_eq!(
-        api["dependencies"]["@keld/kipc"], "link:../kipc",
-        "the staged dependency must be the actual local SDK package edge"
-    );
-    assert_eq!(
-        kipc["name"], "@keld/kipc",
-        "the declared package edge must select canonical KIPC"
-    );
-    // The real package manager supplies this local, declared edge. The late
-    // source-copy fixture must do the same rather than silently depend on the
-    // caller's ambient node_modules or create another transport instance.
-    let link_parent = destination.join("@keld/api/node_modules/@keld");
-    fs::create_dir_all(&link_parent).expect("API dependency parent");
-    let linked_kipc = link_parent.join("kipc");
-    std::os::unix::fs::symlink("../../../kipc", &linked_kipc)
-        .expect("one API-to-staged-KIPC package link");
-    assert_eq!(
-        fs::canonicalize(&linked_kipc).expect("resolved API KIPC package"),
-        fs::canonicalize(destination.join("@keld/kipc")).expect("staged KIPC package"),
-        "API must reuse its one staged KIPC package"
-    );
+    // These are the actual local runtime edges, not a package-manager model
+    // or an installed-artifact qualification. Preserve their exact manifests
+    // and one source instance per package for the late-import regression.
+    for (consumer, dependency) in [("api", "kipc"), ("electron", "api"), ("electron", "kipc")] {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(destination.join(format!("@keld/{consumer}/package.json")))
+                .expect("actual staged consumer manifest"),
+        )
+        .expect("consumer manifest JSON");
+        let target_manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(destination.join(format!("@keld/{dependency}/package.json")))
+                .expect("actual staged dependency manifest"),
+        )
+        .expect("dependency manifest JSON");
+        assert_eq!(
+            manifest["dependencies"][format!("@keld/{dependency}")],
+            format!("link:../{dependency}"),
+            "the fixture must retain the actual declared local SDK edge"
+        );
+        assert_eq!(target_manifest["name"], format!("@keld/{dependency}"));
+        let link_parent = destination.join(format!("@keld/{consumer}/node_modules/@keld"));
+        fs::create_dir_all(&link_parent).expect("declared SDK dependency parent");
+        let linked = link_parent.join(dependency);
+        std::os::unix::fs::symlink(format!("../../../{dependency}"), &linked)
+            .expect("one declared SDK package link");
+        assert_eq!(
+            fs::canonicalize(&linked).expect("resolved SDK package"),
+            fs::canonicalize(destination.join(format!("@keld/{dependency}")))
+                .expect("single staged SDK package"),
+            "consumers must share the one copied SDK source instance"
+        );
+    }
 }
 
 /// Bundles an `@keld/api` entry with the kipc transport left external as
@@ -744,4 +747,77 @@ console.log("CANONICAL_STAGED_KIPC");
         "restored graph failed: {restored:?}"
     );
     assert_eq!(restored.stdout, b"CANONICAL_STAGED_KIPC\n");
+}
+
+#[test]
+fn staged_electron_source_preserves_both_declared_sdk_edges_and_refuses_each_missing_edge() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let root = tempfile::tempdir().expect("isolated ordinary source-package graph");
+    copy_public_package_sources(repo, root.path());
+    let electron = root.path().join("@keld/electron");
+    let probe = || {
+        let child = Command::new("bun")
+            .args(["--no-install", "--eval", r#"
+import { strict as assert } from "node:assert";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+const facade = await import("./src/index.ts");
+const api = await import("@keld/api/internal/app");
+const siblingApi = await import("../api/src/app.ts");
+const kipc = await import("@keld/kipc");
+const siblingKipc = await import("../kipc/src/transport.ts");
+assert.equal(api, siblingApi);
+assert.equal(kipc, siblingKipc);
+assert.equal(kipc.WorkerLink, siblingKipc.WorkerLink);
+assert.equal(realpathSync(fileURLToPath(import.meta.resolve("@keld/api/internal/app"))), realpathSync("../api/src/app.ts"));
+assert.equal(realpathSync(fileURLToPath(import.meta.resolve("@keld/kipc"))), realpathSync("../kipc/src/transport.ts"));
+assert.equal(typeof facade.BrowserWindow, "function");
+console.log("CANONICAL_STAGED_ELECTRON_SDK");
+"#])
+            .current_dir(&electron)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("execute actual ordinary Electron package imports");
+        crate::support::control::wait_child_output(child, EVENT_DEADLINE)
+    };
+    let intact = probe();
+    assert!(
+        intact.status.success(),
+        "staged Electron import failed: {intact:?}"
+    );
+    assert_eq!(intact.stdout, b"CANONICAL_STAGED_ELECTRON_SDK\n");
+    for dependency in ["api", "kipc"] {
+        let edge = electron.join(format!("node_modules/@keld/{dependency}"));
+        let removed = electron.join(format!("node_modules/@keld/{dependency}-removed"));
+        fs::rename(&edge, &removed).expect("remove only one declared Electron SDK edge");
+        let missing = probe();
+        assert!(
+            !missing.status.success(),
+            "missing {dependency} edge was accepted"
+        );
+        assert!(
+            String::from_utf8_lossy(&missing.stderr).contains(&format!("@keld/{dependency}")),
+            "missing edge failed for an unrelated reason: {missing:?}"
+        );
+        fs::rename(&removed, &edge).expect("restore the exact original SDK package edge");
+        let restored = probe();
+        assert!(
+            restored.status.success(),
+            "restored graph failed: {restored:?}"
+        );
+        assert_eq!(restored.stdout, b"CANONICAL_STAGED_ELECTRON_SDK\n");
+    }
+    for package in ["api", "electron", "kipc"] {
+        assert_eq!(
+            fs::read(repo.join(format!("packages/@keld/{package}/package.json")))
+                .expect("actual source manifest"),
+            fs::read(root.path().join(format!("@keld/{package}/package.json")))
+                .expect("staged source manifest"),
+            "fixture must not fabricate or rewrite declared dependencies"
+        );
+    }
 }

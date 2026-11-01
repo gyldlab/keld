@@ -1,10 +1,9 @@
 /**
  * `@keld/electron` — Electron module alias target (architecture 04 §3.1).
  *
- * Bundler-side alias (`keld build`) is deferred: `keld build` is not live.
- * Dev module alias: Bun 1.3.14 honors `tsconfig.json` `compilerOptions.paths`
- * (`electron` → this file). `bunfig.toml` `[alias]` is the spec-named file
- * but does not remap runtime `import "electron"` on this Bun version.
+ * The installed `electron` dependency alias and its four subpaths share one
+ * synchronous ESM entry. The existing SDK producer emits `dist/index.js` with
+ * declared API/KIPC dependencies; the transport remains its own stamped Worker.
  *
  * `process.versions.electron` / `process.type` are installed at import so
  * `import "electron"` is enough to observe them — they do not wait on kipc.
@@ -17,9 +16,10 @@
  * sends no kipc frame.
  */
 
-import { app } from "./app";
-import { BrowserWindow } from "./browser-window";
-import { dialog } from "./dialog";
+import "./entry-identity.ts";
+import { app } from "./app.ts";
+import { BrowserWindow } from "./browser-window.ts";
+import { dialog } from "./dialog.ts";
 import {
   ClipboardItem,
   Menu,
@@ -29,10 +29,10 @@ import {
   screen,
   session,
   shell,
-} from "./unsupported-bindings";
+} from "./unsupported-bindings.ts";
 
 /** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
-export const ELECTRON_VERSION_SHIM = "0.0.1";
+const ELECTRON_VERSION_SHIM = "0.0.1";
 
 const proc = process as typeof process & { type?: string };
 
@@ -64,7 +64,7 @@ export type {
   OpenDialogResult,
   SaveDialogOptions,
   SaveDialogResult,
-} from "./dialog";
+} from "./dialog.ts";
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
@@ -72,15 +72,9 @@ export type {
   WebContents,
   WebContentsEventMap,
   WebPreferences,
-} from "./browser-window";
-export { isCallError, type KeldCallError } from "./link";
-export {
-  UNSUPPORTED_MEMBER_CODE,
-  UnsupportedMemberError,
-  isUnsupportedMemberError,
-  type TrackingIssue,
-  type UnsupportedKind,
-} from "./unsupported";
+} from "./browser-window.ts";
+export type { KeldCallError } from "./link.ts";
+export type { TrackingIssue, UnsupportedKind } from "./unsupported.ts";
 
 const electron = {
   app,

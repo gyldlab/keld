@@ -11,7 +11,7 @@ import {
   app as apiApp,
   getWindowSnapshots,
   hasObservedHostReady,
-} from "../../api/src/app.ts";
+} from "@keld/api/internal/app";
 
 import {
   nativeFacadeBootSelected,
@@ -19,7 +19,7 @@ import {
   stateMapDelete,
   stateMapGet,
   stateMapSet,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 import {
   defineSessionFactAccessors,

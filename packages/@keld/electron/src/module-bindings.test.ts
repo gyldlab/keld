@@ -29,7 +29,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import * as electron from "./index";
-import { isUnsupportedMemberError, type UnsupportedKind } from "./index";
+import {
+  isUnsupportedMemberError,
+  UnsupportedMemberError,
+  UNSUPPORTED_MEMBER_CODE,
+  type UnsupportedKind,
+} from "./unsupported.ts";
 
 /** The facade entry Electron code imports, as a specifier any directory can resolve. */
 const INDEX_URL = pathToFileURL(join(import.meta.dir, "index.ts")).href;
@@ -355,7 +360,7 @@ interface ExpectedRefusal {
 function expectRefusal(caught: unknown, expected: ExpectedRefusal): void {
   expect(isUnsupportedMemberError(caught)).toBe(true);
   if (!isUnsupportedMemberError(caught)) return;
-  expect(caught).toBeInstanceOf(electron.UnsupportedMemberError);
+  expect(caught).toBeInstanceOf(UnsupportedMemberError);
   expect(caught.name).toBe("UnsupportedMemberError");
   expect(caught.code).toBe("KELD-COMPAT-013");
   expect(caught.kind).toBe(expected.kind);
@@ -618,6 +623,6 @@ describe("UnsupportedMemberError classification", () => {
       ),
     ).toBe(false);
     expect(isUnsupportedMemberError(undefined)).toBe(false);
-    expect(electron.UNSUPPORTED_MEMBER_CODE).toBe("KELD-COMPAT-013");
+    expect(UNSUPPORTED_MEMBER_CODE).toBe("KELD-COMPAT-013");
   });
 });

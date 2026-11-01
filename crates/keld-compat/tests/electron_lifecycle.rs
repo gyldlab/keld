@@ -23,7 +23,6 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
@@ -41,6 +40,7 @@ const TEST_TOKEN_BYTES: [u8; 32] = [0x72; 32];
 
 #[cfg(unix)]
 static NEXT_SESSION_DIR: AtomicU64 = AtomicU64::new(0);
+static NEXT_FIXTURE_DIR: AtomicU64 = AtomicU64::new(0);
 
 fn test_token() -> SessionToken {
     SessionToken::from_bytes(TEST_TOKEN_BYTES)
@@ -202,21 +202,81 @@ fn bind_app_link() -> Bound {
     Bound { listener, link }
 }
 
-fn spawn_fixture(script: &str, link: Option<&str>) -> std::process::Child {
+struct FixtureChild {
+    child: std::process::Child,
+    stdout: Option<std::process::ChildStdout>,
+    root: PathBuf,
+}
+
+impl FixtureChild {
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait()
+    }
+}
+
+impl Drop for FixtureChild {
+    fn drop(&mut self) {
+        let success = matches!(self.child.try_wait(), Ok(Some(status)) if status.success());
+        if !success {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        if success && !thread::panicking() {
+            std::fs::remove_dir_all(&self.root).expect("remove completed owned fixture");
+        } else {
+            eprintln!("KEL72 failed fixture retained at {}", self.root.display());
+        }
+    }
+}
+
+fn spawn_fixture(script: &str, link: Option<&str>) -> FixtureChild {
     let fixtures = fixtures_dir();
+    let root = loop {
+        let nonce = NEXT_FIXTURE_DIR.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!(
+            "keld-kel72-installed-{}-{nonce}",
+            std::process::id()
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        match builder.create(&candidate) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("create owned installed fixture: {error}"),
+        }
+    };
+    let runner = fixtures.join("installed-lifecycle.ts");
+    // Artifact preparation completes before the existing marker/handshake
+    // deadlines start. Only these owned fixture scripts can then be launched.
+    let prepared = Command::new("bun")
+        .arg("--no-install")
+        .arg(&runner)
+        .arg("prepare")
+        .arg(&root)
+        .current_dir(workspace_root())
+        .output()
+        .expect("prepare installed KEL72 fixture");
     assert!(
-        fixtures.join("tsconfig.json").is_file(),
-        "missing tsconfig.json paths alias at {}",
-        fixtures.display()
+        prepared.status.success(),
+        "installed fixture preparation failed; retained at {}: {}{}",
+        root.display(),
+        String::from_utf8_lossy(&prepared.stdout),
+        String::from_utf8_lossy(&prepared.stderr)
     );
+    let consumer = root.join("consumer");
     assert!(
-        fixtures.join("bunfig.toml").is_file(),
-        "missing bunfig.toml (spec-named alias file) at {}",
-        fixtures.display()
+        consumer.join("package-lock.json").is_file()
+            && consumer.join(script.replace(".ts", ".mjs")).is_file(),
+        "preparation omitted the actual installed lock or fixture entry"
     );
     let mut cmd = Command::new("bun");
-    cmd.arg(format!("./{script}"))
-        .current_dir(&fixtures)
+    cmd.arg("--no-install")
+        .arg(runner)
+        .arg("run")
+        .arg(&consumer)
+        .arg(script)
+        .current_dir(&consumer)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     match link {
@@ -227,16 +287,19 @@ fn spawn_fixture(script: &str, link: Option<&str>) -> std::process::Child {
             cmd.env_remove("KELD_APP_LINK");
         }
     }
-    cmd.spawn().expect("spawn bun — bun must be on PATH")
+    let mut child = cmd.spawn().expect("spawn bun — bun must be on PATH");
+    let stdout = child.stdout.take();
+    FixtureChild {
+        child,
+        stdout,
+        root,
+    }
 }
 
 #[test]
 fn bunfig_alias_resolves_electron_and_shims_process_fields() {
-    // Architecture 04 §3.1 / KEL-72: `import "electron"` must resolve to
-    // `packages/@keld/electron`, not the npm `electron` package. Bun 1.3.14
-    // honors `tsconfig.json` `compilerOptions.paths` for this (bunfig.toml
-    // `[alias]` does not — removing tsconfig.json and leaving only bunfig
-    // makes this fail with SyntaxError against `~/.bun/install/cache/electron`).
+    // Keep this historical selector for the pinned KEL237 receipts. The owned
+    // fixture now consumes the packed installed alias; no paths/bunfig resolver.
     let mut child = spawn_fixture("shim_env.ts", None);
     let stdout = child.stdout.take().expect("stdout");
     let mut log = spawn_line_log(stdout);

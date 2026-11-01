@@ -15,7 +15,7 @@
 import { expect, test } from "bun:test";
 
 import * as electron from "./index";
-import { isUnsupportedMemberError, type TrackingIssue } from "./index";
+import { isUnsupportedMemberError, type TrackingIssue } from "./unsupported.ts";
 
 /** No new implementation-specific facade test hook: read the public module. */
 function member(target: unknown, key: string): unknown {

@@ -13,13 +13,21 @@ import { join, resolve } from "node:path";
 const root = mkdtempSync(join(tmpdir(), "keld-gh569-export-"));
 try {
   for (const name of ["electron", "api", "kipc"]) {
-    const target = join(root, name);
-    mkdirSync(target);
+    const target = join(
+      root,
+      "node_modules",
+      name === "electron" ? name : `@keld/${name}`,
+    );
+    mkdirSync(target, { recursive: true });
+    cpSync(
+      resolve(import.meta.dir, `../../${name}/package.json`),
+      join(target, "package.json"),
+    );
     cpSync(resolve(import.meta.dir, `../../${name}/src`), join(target, "src"), {
       recursive: true,
     });
   }
-  const entry = join(root, "electron/src/index.ts");
+  const entry = join(root, "node_modules/electron/src/index.ts");
   const source = readFileSync(entry, "utf8");
   const exportBlocks = [...source.matchAll(/\bexport\s*\{[^{}]*\}/g)]
     .map((match) => match[0])

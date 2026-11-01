@@ -6,8 +6,8 @@
 import type {
   MessageKind,
   MessageOptions,
-} from "../../api/src/dialog.generated.ts";
-import { encodeDialogRequest } from "../../api/src/dialog.generated.ts";
+} from "@keld/api/internal/dialog-codec";
+import { encodeDialogRequest } from "@keld/api/internal/dialog-codec";
 
 const MAX_MESSAGE_BYTES = 16 * 1024;
 const MAX_BUTTONS = 16;

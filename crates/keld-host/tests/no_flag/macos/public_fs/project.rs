@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(super) const TITLE: &str = "KEL140 Public FS Acceptance";
+pub(super) const PROFILE_APP_ENTRY_LINE: &str = "KEL78_NATIVE_PROFILE_TEST_APP_ENTRY";
 pub(super) const CONTENT: &[u8] = &[0, 255, 65, 226, 130, 185];
 pub(super) const SENTINEL: &[u8] = b"KEL140-outside-sentinel-unchanged";
 pub(super) const READ_SENTINEL: &[u8] = b"KEL140-read-sentinel-must-not-be-returned";
@@ -32,6 +33,8 @@ pub(super) struct PublicFsProject {
     policy_bytes: Vec<u8>,
     natural_case: NaturalCase,
     descendant_quit: Value,
+    declared_profile: Option<&'static str>,
+    causal_profile_disclosure: bool,
     pub(super) policy: Policy,
     pub(super) outside: PathBuf,
     pub(super) scope: String,
@@ -135,6 +138,8 @@ impl PublicFsProject {
                 NaturalCase::DenyRead
             },
             descendant_quit: Value::Null,
+            declared_profile: None,
+            causal_profile_disclosure: false,
             policy,
             outside,
             scope,
@@ -159,10 +164,70 @@ impl PublicFsProject {
         fixture
     }
 
+    /// Change only the test-owned root manifest before stock CLI compilation.
+    /// Keep the existing narrow FS grants and independent outside sentinel.
+    pub(super) fn with_declared_profile(mut self, profile: &'static str) -> Self {
+        self.set_declared_profile(Some(profile));
+        self
+    }
+
+    /// Modify only the ordinary project policy between completely retired hosts.
+    pub(super) fn set_declared_profile(&mut self, profile: Option<&'static str>) {
+        assert!(matches!(self.policy, Policy::Narrow));
+        assert!(matches!(profile, None | Some("legacy" | "strict")));
+        let mut document: Value =
+            serde_json::from_slice(&self.policy_bytes).expect("narrow fixture manifest JSON");
+        let object = document.as_object_mut().expect("fixture policy object");
+        if let Some(profile) = profile {
+            object.insert("profile".to_owned(), json!(profile));
+        } else {
+            object.remove("profile");
+        }
+        self.policy_bytes = serde_json::to_vec(&document).expect("declared fixture manifest");
+        fs::write(
+            self.project.join("keld.permissions.jsonc"),
+            &self.policy_bytes,
+        )
+        .expect("explicit test-owned project profile");
+        self.declared_profile = profile;
+    }
+
+    pub(super) fn has_declared_profile(&self) -> bool {
+        self.declared_profile.is_some()
+    }
+
+    pub(super) fn profile_entry_marker(&self) -> PathBuf {
+        self.owned_root().join("kel78-app-entry.marker")
+    }
+
+    pub(super) fn with_causal_profile_disclosure(mut self) -> Self {
+        assert_eq!(self.declared_profile, Some("legacy"));
+        self.causal_profile_disclosure = true;
+        self
+    }
+
+    pub(super) fn profile_stderr_file(&self) -> Option<PathBuf> {
+        self.causal_profile_disclosure
+            .then(|| self.owned_root().join("kel78-host-stderr.log"))
+    }
+
+    pub(super) fn profile_disclosure_witness(&self) -> PathBuf {
+        self.owned_root()
+            .join("kel78-first-statement-disclosure.marker")
+    }
+
     pub(super) fn owned_root(&self) -> &Path {
         self.project
             .parent()
             .expect("canonical owned project parent")
+    }
+
+    pub(super) fn allowed_root(&self) -> &Path {
+        &self.allowed
+    }
+
+    pub(super) fn project_root(&self) -> &Path {
+        &self.project
     }
 
     /// Ordinary fixture data only; no host flag, grant, principal or policy change.
@@ -216,6 +281,130 @@ impl PublicFsProject {
             (after.dev(), after.ino())
         );
         retired
+    }
+
+    /// Hostile test-owned pathname edit after authenticated G1 filesystem work.
+    /// The shipping Host must use its original verified snapshot for G2, not
+    /// reread either the project source or the staged 0400 policy name.
+    pub(super) fn replace_recovery_project_and_staged_policy(&self, prepared: &PreparedLaunch) {
+        assert_eq!(prepared.exercise, Exercise::RendererRecovery);
+        self.replace_recovery_policy_paths(&prepared.stage, &prepared.digest, 3);
+    }
+
+    pub(super) fn replace_facade_profile_policy(
+        &self,
+        stage: &keld_cli::boot::DevBootStage,
+        digest: &str,
+    ) {
+        self.replace_recovery_policy_paths(stage, digest, 4);
+    }
+
+    fn replace_recovery_policy_paths(
+        &self,
+        stage: &keld_cli::boot::DevBootStage,
+        digest: &str,
+        expected_schema: u8,
+    ) {
+        use std::io::Write as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        assert!(matches!(expected_schema, 3 | 4));
+        assert_eq!(self.declared_profile, Some("legacy"));
+        let policy = stage.root().join("keld.permissions.jsonc");
+        let source = self.project.join("keld.permissions.jsonc");
+        let boot = stage.root().join("keld.boot.json");
+        let original_boot = fs::read(&boot).expect("original compiled boot binding");
+        let descriptor: Value =
+            serde_json::from_slice(&original_boot).expect("original boot descriptor JSON");
+        assert_eq!(descriptor["schema"], expected_schema);
+        assert_eq!(
+            descriptor["permissions"]["content_sha256"],
+            format!("sha256:{digest}")
+        );
+        assert_eq!(
+            fs::read(&policy).expect("retained staged bytes"),
+            self.policy_bytes
+        );
+        assert_eq!(
+            fs::read(&source).expect("original source policy"),
+            self.policy_bytes
+        );
+        assert_eq!(file_digest(&policy), digest);
+        assert_eq!(file_digest(&source), digest);
+        let original = fs::symlink_metadata(&policy).expect("owned staged policy object");
+        assert!(original.is_file() && !original.file_type().is_symlink());
+        let mode = original.permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o222, 0, "original stage policy must be read-only");
+
+        let hostile = serde_json::to_vec(&json!({
+            "profile":"strict",
+            "app":{"fs":{"read":[],"write":[]}}
+        }))
+        .expect("fixture-owned hostile policy");
+        let hostile_data: Value = serde_json::from_slice(&hostile).expect("valid hostile JSON");
+        assert_eq!(hostile_data["profile"], "strict");
+        assert_eq!(hostile_data["app"]["fs"]["read"], json!([]));
+        assert_eq!(hostile_data["app"]["fs"]["write"], json!([]));
+        // Edit the original producer's source bytes in place; only the staged
+        // read-only policy pathname below requires an atomic inode replacement.
+        let original_source = fs::symlink_metadata(&source).expect("original source identity");
+        fs::write(&source, &hostile).expect("test-owned project policy source edit");
+        assert_eq!(
+            fs::read(&source).expect("published new project policy"),
+            hostile
+        );
+        let edited_source = fs::symlink_metadata(&source).expect("edited project identity");
+        assert_eq!(
+            (original_source.dev(), original_source.ino()),
+            (edited_source.dev(), edited_source.ino()),
+            "the project edit is in place, separate from the staged inode replacement"
+        );
+
+        // A pathname cannot be overwritten in place when mode 0400. Reuse the
+        // KEL-143 test's atomic same-parent replacement shape, preserving mode
+        // while changing the selected inode and digest after G1 observation.
+        let mut replacement = tempfile::Builder::new()
+            .prefix("kel78-g2-policy-")
+            .permissions(original.permissions())
+            .tempfile_in(stage.root())
+            .expect("owned stage permits separate test policy inode");
+        replacement
+            .write_all(&hostile)
+            .expect("write complete hostile replacement");
+        replacement
+            .as_file()
+            .sync_all()
+            .expect("publish only fully written bytes");
+        let published = replacement
+            .persist(&policy)
+            .expect("atomic owned staged-policy leaf replacement");
+        let new_metadata = published.metadata().expect("new staged policy identity");
+        assert_ne!(
+            (original.dev(), original.ino()),
+            (new_metadata.dev(), new_metadata.ino()),
+            "test mutation must replace the retained policy inode"
+        );
+        assert_eq!(new_metadata.permissions().mode() & 0o7777, mode);
+        drop(published);
+        let selected = fs::symlink_metadata(&policy).expect("staged pathname now selected");
+        assert!(selected.is_file() && !selected.file_type().is_symlink());
+        assert_eq!(
+            (selected.dev(), selected.ino()),
+            (new_metadata.dev(), new_metadata.ino()),
+            "published staged policy must be the object selected by the pathname"
+        );
+        assert_eq!(fs::read(&policy).expect("changed staged pathname"), hostile);
+        assert_eq!(file_digest(&source), file_digest(&policy));
+        assert_ne!(file_digest(&source), digest);
+        assert_ne!(file_digest(&policy), digest);
+        assert_eq!(
+            fs::read(&boot).expect("descriptor identity after hostile change"),
+            original_boot,
+            "the immutable original boot digest must not follow the hostile policy"
+        );
+        eprintln!(
+            "KELD_KEL78_G1_POLICY_CHANGED original_digest_retained=true project_source_edited=true staged_inode_replaced=true both_disk_digests_hostile=true descriptor_unchanged=true"
+        );
     }
 
     fn natural_inputs(&self, launch: usize) -> NaturalInputs {
@@ -431,15 +620,45 @@ impl PublicFsProject {
                 &serde_json::to_string(CONTENT).expect("content JSON"),
             );
         assert!(!body.contains("WorkerLink") && !body.contains("invokeFs"));
+        let profile_entry = self.profile_entry_source();
         bundle_public_api_entry(
             &self.project,
             &self.repo,
             "kel140-public-fs",
             &format!(
-                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{body}"
+                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{profile_entry}{body}"
             ),
         );
         self.prepare_renderer_page(exercise, port, recovery);
+    }
+
+    fn profile_entry_source(&self) -> String {
+        // First application-body statement after static ESM imports. It
+        // precedes handler registration and app.whenReady(); rejected Strict
+        // candidates must not write the test-owned marker.
+        if self.has_declared_profile() {
+            let marker = serde_json::to_string(&self.profile_entry_marker().to_string_lossy())
+                .expect("JSON-quote the test-owned entry marker");
+            let causal = self.profile_stderr_file().map_or_else(String::new, |path| {
+                let log = serde_json::to_string(&path).expect("owned stderr path");
+                let witness = serde_json::to_string(&self.profile_disclosure_witness())
+                    .expect("owned first-statement witness path");
+                // Synchronous test-owned OS reads, before the entry's first
+                // await. The literal expectation is independent of the host
+                // formatter; later forwarding cannot change this observation.
+                format!(
+                    "import {{ readFileSync as readProfileLogSync, writeFileSync as writeProfileWitnessSync }} from 'node:fs';\n\
+                     const firstProfileLog = readProfileLogSync({log}, 'utf8');\n\
+                     writeProfileWitnessSync({witness}, firstProfileLog.includes('legacy — zero-authority claim forfeited') ? 'visible\\n' : 'missing\\n');\n"
+                )
+            });
+            format!(
+                "{causal}await Bun.write({marker}, 'entered\\n');\n\
+                 console.error({PROFILE_APP_ENTRY_LINE:?});\n"
+            )
+        } else {
+            String::new()
+        }
     }
 
     fn prepare_renderer_page(
@@ -493,6 +712,12 @@ impl PublicFsProject {
             Path::new(env!("CARGO_BIN_EXE_keld-host")),
         )
         .expect("stock CLI stages explicit project inputs");
+        if self.has_declared_profile() {
+            assert!(
+                !self.profile_entry_marker().exists(),
+                "staging must not execute the test-owned application body"
+            );
+        }
         assert_eq!(
             fs::read(stage.root().join("keld.permissions.jsonc")).expect("staged bytes"),
             self.policy_bytes
@@ -502,6 +727,11 @@ impl PublicFsProject {
         )
         .expect("boot descriptor");
         eprintln!("KELD_KEL140_STAGED_BOOT {boot}");
+        assert_eq!(
+            boot["schema"],
+            json!(if self.has_declared_profile() { 3 } else { 1 }),
+            "compiled renderer/profile must use schema 3; profile-free renderer stays schema 1"
+        );
         assert_eq!(
             boot["name"], TITLE,
             "stock producer selected the configured window name"

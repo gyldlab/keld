@@ -959,6 +959,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `electron-updater` update check refused: the Keld host has no updater path for a migrated app, so the adapter emitted one `error` and rejected instead of contacting a feed
 - fix: Keep updates disabled in the migrated app (draw.io: `DRAWIO_DISABLE_UPDATE=true` in the declared role environment, #452) until the host update channel exists (F09-T5, KEL-53); the adapter never downloads or installs.
 
+## KELD-COMPAT-051
+
+- crate: @keld/electron
+- message: A second distinct Electron compatibility entry was evaluated in the same role; the diagnostic records the first and second canonical module URLs
+- fix: Use one installed @keld/electron package for all electron imports. This realm-local diagnostic does not establish package provenance or replace installed-graph admission.
+
 ## KELD-CORE-030
 
 - crate: keld-core
