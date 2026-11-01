@@ -4954,6 +4954,134 @@ fn printed_rows(fixture: &Fixture) -> String {
 
 /// `baseline-rows` is the paste source for a drain: what it prints must be what `check`
 /// accepts, for a directory spec and a flat spec that both keep `UNKNOWN` fields.
+
+fn flat_tracker_fixture(mut text: String, cell: &str, oversized: bool) -> Fixture {
+    let mut fixture = Fixture::new();
+    let lines = if oversized {
+        let before = text.lines().count();
+        assert!(before < 501, "fixture must fit below the chosen boundary");
+        text.push_str(&"\n".repeat(501 - before));
+        "501"
+    } else {
+        "-"
+    };
+    fixture.write(SINGLE, &text);
+    fixture.sealed.insert(SINGLE.to_owned(), text);
+    fixture.rows += 1;
+    fixture.replace(
+        BASELINE,
+        BIG,
+        &format!("{SINGLE}\t{lines}\t-\t-\t{cell}\n{BIG}"),
+    );
+    fixture
+}
+
+#[test]
+fn flat_baseline_rows_still_require_the_named_tracker() {
+    for (cell, text, oversized) in [
+        ("ok", single_spec(), true),
+        (
+            "migrated:AC-1.Expected RED",
+            single_spec().replace(
+                "**Expected RED:** the test fails",
+                "**Expected RED:** UNKNOWN",
+            ),
+            false,
+        ),
+    ] {
+        let fixture = flat_tracker_fixture(text, cell, oversized);
+        let clean = fixture.run();
+        assert!(clean.findings.is_empty(), "{cell}: {:?}", clean.findings);
+        fixture.replace(SINGLE, "Tracker: GH-1", "Tracker: GH-2");
+        let report = fixture.run();
+        assert_eq!(report.findings.len(), 1, "{cell}: {:?}", report.findings);
+        let finding = &report.findings[0];
+        assert_eq!(finding.rule, Rule::Fields);
+        assert_eq!(finding.file, SINGLE);
+        assert_eq!(finding.line, 4);
+        assert!(finding.detail.contains("`Tracker: GH-2` must be `GH-1`"));
+        fixture.replace(SINGLE, "Tracker: GH-2", "Tracker: GH-1");
+        let restored = fixture.run();
+        assert!(
+            restored.findings.is_empty(),
+            "{cell}: {:?}",
+            restored.findings
+        );
+    }
+}
+
+#[test]
+fn flat_tracker_exemption_stays_explicit_and_cannot_regrow() {
+    let text = single_spec().replace("Tracker: GH-1", "Tracker: GH-2");
+    let mut fixture = flat_tracker_fixture(text, "exempt", true);
+    fixture.commit_baseline();
+    let report = fixture.run();
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+    assert_eq!(report.exempt, 3);
+
+    fixture.replace(SINGLE, "Tracker: GH-2", "Tracker: GH-1");
+    assert_only(
+        &fixture,
+        Rule::BaselineStale,
+        "tracker was the sole structural exemption",
+    );
+    let exempt_row = format!("{SINGLE}\t501\t-\t-\texempt");
+    let ok_row = format!("{SINGLE}\t501\t-\t-\tok");
+    fixture.replace(BASELINE, &exempt_row, &ok_row);
+    let narrowed = fixture.run();
+    assert!(narrowed.findings.is_empty(), "{:?}", narrowed.findings);
+    fixture.commit_baseline();
+
+    fixture.replace(SINGLE, "Tracker: GH-1", "Tracker: GH-2");
+    fixture.replace(BASELINE, &ok_row, &exempt_row);
+    let regrown = fixture.run();
+    assert_eq!(regrown.findings.len(), 1, "{:?}", regrown.findings);
+    assert_eq!(regrown.findings[0].rule, Rule::BaselineGrew);
+    assert_eq!(regrown.findings[0].file, BASELINE);
+    assert!(regrown.findings[0].detail.contains("wider than `ok`"));
+}
+
+#[test]
+fn printed_flat_tracker_rows_cover_every_structure_class() {
+    let wrong = single_spec().replace("Tracker: GH-1", "Tracker: GH-2");
+    for (label, text, oversized, expected) in [
+        (
+            "under cap",
+            wrong.clone(),
+            false,
+            format!("{SINGLE}\t-\t-\t-\texempt"),
+        ),
+        (
+            "over cap",
+            wrong.clone(),
+            true,
+            format!("{SINGLE}\t501\t-\t-\texempt"),
+        ),
+        (
+            "allowed UNKNOWN",
+            wrong.replace(
+                "**Expected RED:** the test fails",
+                "**Expected RED:** UNKNOWN",
+            ),
+            false,
+            format!("{SINGLE}\t-\t-\t-\texempt"),
+        ),
+    ] {
+        let mut fixture = flat_tracker_fixture(text, "exempt", oversized);
+        fixture.commit_baseline();
+        let printed = printed_rows(&fixture);
+        let actual: Vec<&str> = printed
+            .lines()
+            .filter(|row| row.starts_with(SINGLE))
+            .collect();
+        assert_eq!(actual, vec![expected.as_str()], "{label}: {printed}");
+        fixture.write(BASELINE, &printed);
+        let report = fixture.run();
+        assert!(report.findings.is_empty(), "{label}: {:?}", report.findings);
+        assert_eq!(printed_rows(&fixture), printed, "{label}: fixed point");
+    }
+}
+
 #[test]
 fn baseline_rows_prints_what_check_accepts() {
     let fixture = migrated_fixture();
