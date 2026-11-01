@@ -1,6 +1,6 @@
 {
-  "schema": "keld.ci-inputs/v1",
-  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh)",
+  "schema": "keld.ci-inputs/v2",
+  "owner": "tools/ci_inputs.py (invoked only by tools/ci_changes.sh); stateless schema v2, GH-1275",
   "known_inputs": [
     "AGENTS.md",
     "CLAUDE.md",
@@ -368,15 +368,13 @@
         "crates/keld-host/tests/no_flag/macos/public_fs.rs",
         "crates/keld-core/src/app_session/window_router/authenticated_tests.rs",
         "crates/keld-core/src/app_session/window_router/fixtures/authenticated_window_role.ts"
-      ],
-      "sha256": "5c84f666e5fa41438a55fb0228772ef6e017c332b208a2714ec691f577e0fd2f"
+      ]
     },
     "bun-readers": {
       "patterns": [
         "packages/*",
         "justfile"
-      ],
-      "sha256": "212587332bffa0fa8dda985cf72a20a5e189dafe681484a8350eb0e514081342"
+      ]
     },
     "policy-readers": {
       "patterns": [
@@ -385,15 +383,13 @@
         "docs/audits/*.py",
         ".githooks/*",
         "rust-toolchain.toml"
-      ],
-      "sha256": "380af109c50cd8d725c49e28084ade35b2139d407edcb0c2c5c9eace31afd394"
+      ]
     },
     "audit-readers": {
       "patterns": [
         "docs/audits/*.py",
         "justfile"
-      ],
-      "sha256": "ac477b1cf7aefe1c2131231db885e857c1191caa36c2bbb2dce47205a17df5c9"
+      ]
     },
     "rustdoc-readers": {
       "patterns": [
@@ -402,14 +398,12 @@
         "Cargo.lock",
         "rust-toolchain.toml",
         ".cargo/*"
-      ],
-      "sha256": "98269072ac24cd8a02ff08319d242f6c5a09cd88f829d0cf8f415486d2b8d952"
+      ]
     },
     "dependency-command": {
       "patterns": [
         "justfile"
-      ],
-      "sha256": "4de9cca302f9902b87557634896de7a9396fa32d05a83b04e0a47ededba77e11"
+      ]
     },
     "status-test-readers": {
       "patterns": [
@@ -418,8 +412,7 @@
         "tools/repo_path_contract.rs",
         "rust-toolchain.toml",
         "justfile"
-      ],
-      "sha256": "c78df7f63f79d63c92dea708f4e1dc852aca939c8386ff8e240c54c29686266e"
+      ]
     }
   },
   "live_inputs": {
@@ -432,8 +425,7 @@
     "patterns": [
       "crates/*"
     ],
-    "membership_sha256": "e07e8eeb0422f0eed4745fb46a9d161eec60d710e4b603dc6f3bf1d96766dfe2",
-    "contract": "Broad census binds path membership only: new/removed crate paths fail closed. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; exact-reader content digests then guard future drift."
+    "contract": "Broad census compares path membership against the comparison base: a crate path that the base did not track, or that the change removes, selects every lane. Existing crate-content edits select Rust through the crates/* input edge. A new cross-tree read in an existing source must register that reader and its input edge in the same change; a change that touches a registered reader runs every consumer behind it. Nothing is recorded between changes (GH-1275)."
   },
   "rust_package_inputs": {
     "keld-runtime": [

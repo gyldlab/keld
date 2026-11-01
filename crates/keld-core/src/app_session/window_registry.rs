@@ -1,16 +1,17 @@
-//! Private GH-449 T1 registry: identities, native facts, adoption and teardown.
+//! Private app-session registry: identities, facts, adoption and two-phase close.
 //!
 //! This state belongs to the app session, not a Bun generation. The parent owns
 //! authenticated primary/subscription admission, the one ordered writer and UI
 //! command queue. This module owns no handles, principal minter, I/O or output
-//! queue. GH-450 adds cancelable close; T1 uses the approved immediate-close arm.
+//! queue. Close state and deferred call metadata have this one owner.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 use keld_ipc::CorrelationId;
 use keld_ipc::window::{
-    Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowResponse, WindowState,
+    CloseVerdict, Rect, WindowEvent, WindowGeneration, WindowId, WindowRef, WindowResponse,
+    WindowState,
 };
 use keld_wv::WebviewId;
 
@@ -41,6 +42,7 @@ impl fmt::Debug for WindowOwner {
 pub(super) enum WindowCounter {
     Id,
     Incarnation,
+    CloseSequence,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WindowError {
@@ -69,6 +71,9 @@ impl fmt::Display for WindowError {
             Self::Exhausted(WindowCounter::Incarnation) => {
                 "WindowGeneration exhausted; start a new app session"
             }
+            Self::Exhausted(WindowCounter::CloseSequence) => {
+                "close_seq exhausted; destroy the window or start a new app session"
+            }
             Self::NotReady => {
                 "window registry is not serviceable; wait for Ready on a live app session"
             }
@@ -82,7 +87,7 @@ impl fmt::Display for WindowError {
 impl std::error::Error for WindowError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PendingCreate {
+pub(super) struct PendingWindowCall {
     pub(super) owner: WindowOwner,
     pub(super) correlation: CorrelationId,
 }
@@ -127,7 +132,7 @@ pub(super) enum BuildOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BuildFailureOutcome {
     /// Parent answers this with041 including the UI-reported failed stage first.
-    pub(super) call: Option<PendingCreate>,
+    pub(super) call: Option<PendingWindowCall>,
     pub(super) last_window: Option<WindowOwner>,
     pub(super) diagnostic: bool,
 }
@@ -146,23 +151,41 @@ pub(super) enum FactOutcome {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CloseOutcome {
+    Requested {
+        close_seq: u64,
+        fact: Option<OwnedWindowEvent>,
+    },
+    Merged {
+        close_seq: u64,
+    },
     Teardown(Teardown),
+    Vetoed,
+    Stale,
     AlreadyClosing,
     Unmapped,
+    Exhausted,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ReleaseOutcome {
     /// Parent writes this before `last_window`, if both are present.
     pub(super) fact: Option<OwnedWindowEvent>,
     pub(super) last_window: Option<WindowOwner>,
     pub(super) dropped_facts: u64,
     pub(super) diagnostic: bool,
+    /// Correlations only: the existing router writes them after both facts.
+    pub(super) destroy_calls: Vec<PendingWindowCall>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct AbandonedClose {
+    pub(super) window: WindowRef,
+    pub(super) close_seq: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SessionEffect {
     Teardown(Teardown),
     /// The Create was admitted: its effect is unknown, never proof for024/replay.
-    CreateInterrupted(PendingCreate),
+    CreateInterrupted(PendingWindowCall),
+    CloseAbandoned(AbandonedClose),
 }
 
 #[derive(Clone, Copy)]
@@ -172,8 +195,9 @@ struct NativeWindow {
 }
 #[derive(Clone, Copy)]
 enum Phase {
-    Opening(PendingCreate),
+    Opening(PendingWindowCall),
     Open(NativeWindow),
+    ClosePending(NativeWindow, u64),
     Closing(Option<NativeWindow>),
     Destroyed(Option<WebviewId>),
 }
@@ -186,12 +210,18 @@ struct Entry {
     // if publishing Created fails, before any later fact can use that writer.
     created: bool,
     dropped: u64,
+    last_close_seq: u64,
+    // Only admitted cold Destroy calls allocate this metadata. It carries no
+    // stream or handle, and native Released is the sole completion input.
+    destroy_calls: Vec<PendingWindowCall>,
     phase: Phase,
 }
 impl Entry {
     fn view(&self) -> Option<WebviewId> {
         match self.phase {
-            Phase::Open(native) | Phase::Closing(Some(native)) => Some(native.view),
+            Phase::Open(native) | Phase::ClosePending(native, _) | Phase::Closing(Some(native)) => {
+                Some(native.view)
+            }
             Phase::Destroyed(view) => view,
             Phase::Opening(_) | Phase::Closing(None) => None,
         }
@@ -242,7 +272,7 @@ impl WindowRegistry {
             entry.owner_live
                 && entry.owner == owner
                 && entry.adoptable
-                && matches!(entry.phase, Phase::Open(_))
+                && matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
         }) {
             entry.adoptable = false;
             return Ok(CreateOutcome::Adopted(entry.window));
@@ -271,7 +301,9 @@ impl WindowRegistry {
                 adoptable: false,
                 created: false,
                 dropped: 0,
-                phase: Phase::Opening(PendingCreate { owner, correlation }),
+                last_close_seq: 0,
+                destroy_calls: Vec::new(),
+                phase: Phase::Opening(PendingWindowCall { owner, correlation }),
             },
         );
         // The checked incarnation is already unique for this session: reuse it as
@@ -331,7 +363,10 @@ impl WindowRegistry {
                     view,
                 })
             }
-            Phase::Open(_) | Phase::Closing(Some(_)) | Phase::Destroyed(_) => BuildOutcome::Ignored,
+            Phase::Open(_)
+            | Phase::ClosePending(_, _)
+            | Phase::Closing(Some(_))
+            | Phase::Destroyed(_) => BuildOutcome::Ignored,
         }
     }
     pub(super) fn native_failed(&mut self, build: u64) -> BuildFailureOutcome {
@@ -349,7 +384,10 @@ impl WindowRegistry {
         let call = match entry.phase {
             Phase::Opening(call) => Some(call),
             Phase::Closing(None) => None,
-            Phase::Open(_) | Phase::Closing(Some(_)) | Phase::Destroyed(_) => {
+            Phase::Open(_)
+            | Phase::ClosePending(_, _)
+            | Phase::Closing(Some(_))
+            | Phase::Destroyed(_) => {
                 return BuildFailureOutcome {
                     call: None,
                     last_window: None,
@@ -372,13 +410,12 @@ impl WindowRegistry {
             diagnostic: false,
         }
     }
-    /// Reuse the existing pending-create owner rather than another correlation map.
-    pub(super) fn has_pending_create(
-        &self,
-        owner: WindowOwner,
-        correlation: CorrelationId,
-    ) -> bool {
-        self.entries.values().any(|entry| matches!(entry.phase, Phase::Opening(call) if call.owner == owner && call.correlation == correlation))
+    /// The existing entry owns both admitted Create and deferred Destroy calls.
+    pub(super) fn has_pending_call(&self, owner: WindowOwner, correlation: CorrelationId) -> bool {
+        self.entries.values().any(|entry| {
+            matches!(entry.phase, Phase::Opening(call) if call.owner == owner && call.correlation == correlation)
+                || entry.destroy_calls.iter().any(|call| call.owner == owner && call.correlation == correlation)
+        })
     }
     fn require_ready(&self) -> Result<(), WindowError> {
         if self.ready && !self.ending {
@@ -387,11 +424,11 @@ impl WindowRegistry {
             Err(WindowError::NotReady)
         }
     }
-    fn admitted_view(
+    fn admitted_entry(
         &mut self,
         owner: WindowOwner,
         window: WindowRef,
-    ) -> Result<WebviewId, WindowError> {
+    ) -> Result<&mut Entry, WindowError> {
         self.require_ready()?;
         let entry = self
             .entries
@@ -401,11 +438,18 @@ impl WindowRegistry {
         if !entry.owner_live || entry.owner != owner {
             return Err(WindowError::WrongOwner);
         }
-        let Phase::Open(native) = entry.phase else {
-            return Err(WindowError::StaleWindow);
-        };
         entry.adoptable = false;
-        Ok(native.view)
+        Ok(entry)
+    }
+    fn admitted_view(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Result<WebviewId, WindowError> {
+        match self.admitted_entry(owner, window)?.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _) => Ok(native.view),
+            _ => Err(WindowError::StaleWindow),
+        }
     }
     pub(super) fn set_maximized(
         &mut self,
@@ -442,9 +486,12 @@ impl WindowRegistry {
             return FactOutcome::Unmapped;
         };
         match entry.phase {
-            Phase::Open(mut native) => {
+            Phase::Open(mut native) | Phase::ClosePending(mut native, _) => {
                 let event = update(entry.window, &mut native.state);
-                entry.phase = Phase::Open(native);
+                entry.phase = match entry.phase {
+                    Phase::ClosePending(_, seq) => Phase::ClosePending(native, seq),
+                    _ => Phase::Open(native),
+                };
                 match event {
                     Some(event) if entry.owner_live => FactOutcome::Event(OwnedWindowEvent {
                         owner: entry.owner,
@@ -516,17 +563,102 @@ impl WindowRegistry {
         else {
             return CloseOutcome::Unmapped;
         };
+        Self::begin_close(entry)
+    }
+    fn begin_close(entry: &mut Entry) -> CloseOutcome {
         match entry.phase {
             Phase::Open(native) => {
-                entry.phase = Phase::Closing(Some(native));
-                entry.adoptable = false;
-                CloseOutcome::Teardown(Teardown {
-                    window: entry.window,
-                    view,
-                })
+                let Some(close_seq) = entry.last_close_seq.checked_add(1) else {
+                    return CloseOutcome::Exhausted;
+                };
+                entry.last_close_seq = close_seq;
+                entry.phase = Phase::ClosePending(native, close_seq);
+                CloseOutcome::Requested {
+                    close_seq,
+                    fact: entry.owner_live.then_some(OwnedWindowEvent {
+                        owner: entry.owner,
+                        event: WindowEvent::CloseRequested {
+                            window: entry.window,
+                            close_seq,
+                        },
+                    }),
+                }
             }
+            Phase::ClosePending(_, close_seq) => CloseOutcome::Merged { close_seq },
             Phase::Closing(_) | Phase::Destroyed(_) => CloseOutcome::AlreadyClosing,
             Phase::Opening(_) => CloseOutcome::Unmapped,
+        }
+    }
+    pub(super) fn request_close(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Result<CloseOutcome, WindowError> {
+        let entry = self.admitted_entry(owner, window)?;
+        if matches!(entry.phase, Phase::Opening(_)) {
+            return Err(WindowError::StaleWindow);
+        }
+        match Self::begin_close(entry) {
+            CloseOutcome::Exhausted => Err(WindowError::Exhausted(WindowCounter::CloseSequence)),
+            outcome => Ok(outcome),
+        }
+    }
+    pub(super) fn close_reply(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+        close_seq: u64,
+        verdict: CloseVerdict,
+    ) -> Result<CloseOutcome, WindowError> {
+        let entry = self.admitted_entry(owner, window)?;
+        let Phase::ClosePending(native, pending) = entry.phase else {
+            return Ok(CloseOutcome::Stale);
+        };
+        if close_seq != pending {
+            return Ok(CloseOutcome::Stale);
+        }
+        match verdict {
+            CloseVerdict::Veto => {
+                entry.phase = Phase::Open(native);
+                Ok(CloseOutcome::Vetoed)
+            }
+            CloseVerdict::Allow => {
+                entry.phase = Phase::Closing(Some(native));
+                Ok(CloseOutcome::Teardown(Teardown {
+                    window,
+                    view: native.view,
+                }))
+            }
+        }
+    }
+    pub(super) fn destroy(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+        correlation: CorrelationId,
+        mut abandoned: impl FnMut(AbandonedClose),
+    ) -> Result<CloseOutcome, WindowError> {
+        let entry = self.admitted_entry(owner, window)?;
+        let native = match entry.phase {
+            Phase::Open(native) => Some(native),
+            Phase::ClosePending(native, close_seq) => {
+                abandoned(AbandonedClose { window, close_seq });
+                Some(native)
+            }
+            Phase::Closing(_) => None,
+            Phase::Opening(_) | Phase::Destroyed(_) => return Err(WindowError::StaleWindow),
+        };
+        entry
+            .destroy_calls
+            .push(PendingWindowCall { owner, correlation });
+        if let Some(native) = native {
+            entry.phase = Phase::Closing(Some(native));
+            Ok(CloseOutcome::Teardown(Teardown {
+                window,
+                view: native.view,
+            }))
+        } else {
+            Ok(CloseOutcome::AlreadyClosing)
         }
     }
     pub(super) fn native_released(&mut self, view: WebviewId) -> ReleaseOutcome {
@@ -540,6 +672,7 @@ impl WindowRegistry {
                 last_window: None,
                 dropped_facts: 0,
                 diagnostic: true,
+                destroy_calls: Vec::new(),
             };
         };
         if !matches!(entry.phase, Phase::Closing(Some(_))) {
@@ -548,12 +681,14 @@ impl WindowRegistry {
                 last_window: None,
                 dropped_facts: 0,
                 diagnostic: true,
+                destroy_calls: Vec::new(),
             };
         }
         entry.phase = Phase::Destroyed(Some(view));
         entry.adoptable = false;
         let dropped_facts = entry.dropped;
         entry.dropped = 0;
+        let destroy_calls = std::mem::take(&mut entry.destroy_calls);
         let fact = if entry.created && entry.owner_live {
             Some(OwnedWindowEvent {
                 owner: entry.owner,
@@ -583,6 +718,7 @@ impl WindowRegistry {
             last_window,
             dropped_facts,
             diagnostic: false,
+            destroy_calls,
         }
     }
     fn has_live_windows(&self) -> bool {
@@ -599,7 +735,11 @@ impl WindowRegistry {
                 .values()
                 .all(|entry| matches!(entry.phase, Phase::Opening(_) | Phase::Destroyed(_)))
     }
-    pub(super) fn role_lost(&mut self, owner: WindowOwner) {
+    pub(super) fn role_lost(
+        &mut self,
+        owner: WindowOwner,
+        mut abandoned: impl FnMut(AbandonedClose),
+    ) {
         let mut affected = false;
         for entry in self
             .entries
@@ -609,8 +749,17 @@ impl WindowRegistry {
             affected = true;
             entry.owner_live = false;
             entry.adoptable = false;
-            if matches!(entry.phase, Phase::Opening(_)) {
-                entry.phase = Phase::Closing(None);
+            entry.destroy_calls.clear();
+            match entry.phase {
+                Phase::Opening(_) => entry.phase = Phase::Closing(None),
+                Phase::ClosePending(native, close_seq) => {
+                    abandoned(AbandonedClose {
+                        window: entry.window,
+                        close_seq,
+                    });
+                    entry.phase = Phase::Open(native);
+                }
+                _ => {}
             }
         }
         if affected {
@@ -620,25 +769,30 @@ impl WindowRegistry {
     /// Parent invokes this once on an accepted primary Subscribe, before replay.
     /// Same-owner repeats cannot replay/adopt again; the parent owns subscription state.
     pub(super) fn subscribe_successor(&mut self, owner: WindowOwner) {
-        for entry in self
-            .entries
-            .values_mut()
-            .filter(|entry| !entry.owner_live && matches!(entry.phase, Phase::Open(_)))
-        {
+        for entry in self.entries.values_mut().filter(|entry| {
+            !entry.owner_live && matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
+        }) {
             entry.owner = owner;
             entry.owner_live = true;
-            entry.adoptable = true;
+            // The approved mark-at-Subscribe rule applies to Open survivors.
+            // A gap close still transfers/replays, without gaining this mark.
+            entry.adoptable = matches!(entry.phase, Phase::Open(_));
         }
     }
     pub(super) fn replay(&self, owner: WindowOwner) -> impl Iterator<Item = WindowEvent> + '_ {
         self.entries
             .values()
             .filter_map(move |entry| match entry.phase {
-                Phase::Open(native) if entry.owner_live && entry.owner == owner => {
+                Phase::Open(native) | Phase::ClosePending(native, _)
+                    if entry.owner_live && entry.owner == owner =>
+                {
                     Some(WindowEvent::Created {
                         window: entry.window,
                         state: native.state,
-                        pending_close: None,
+                        pending_close: match entry.phase {
+                            Phase::ClosePending(_, close_seq) => Some(close_seq),
+                            _ => None,
+                        },
                     })
                 }
                 _ => None,
@@ -660,7 +814,13 @@ impl WindowRegistry {
                     entry.phase = Phase::Closing(None);
                     emit(SessionEffect::CreateInterrupted(call));
                 }
-                Phase::Open(native) => {
+                Phase::Open(native) | Phase::ClosePending(native, _) => {
+                    if let Phase::ClosePending(_, close_seq) = entry.phase {
+                        emit(SessionEffect::CloseAbandoned(AbandonedClose {
+                            window: entry.window,
+                            close_seq,
+                        }));
+                    }
                     entry.phase = Phase::Closing(Some(native));
                     emit(SessionEffect::Teardown(Teardown {
                         window: entry.window,

@@ -11,8 +11,9 @@ use keld_ipc::{ChannelId, SubscribeRefusal};
 use keld_wv::{BuildStage, WindowSnapshot};
 
 use super::window_registry::{
-    BuildFailureOutcome, BuildOutcome, CloseOutcome, CreateOutcome, FactOutcome, NativeSetter,
-    OwnedWindowEvent, ReleaseOutcome, SessionEffect, WindowOwner, WindowRegistry, WindowReply,
+    AbandonedClose, BuildFailureOutcome, BuildOutcome, CloseOutcome, CreateOutcome, FactOutcome,
+    NativeSetter, OwnedWindowEvent, ReleaseOutcome, SessionEffect, WindowError, WindowOwner,
+    WindowRegistry, WindowReply,
 };
 use super::{
     ActivePrimaryGeneration, AppWindowCommand, AppWindowEvent, CallError, CorrelationId, FrameKind,
@@ -265,7 +266,27 @@ fn window_released_locked(
     if let Some(fact) = outcome.fact {
         owned_event(current, subscribed, fact, failed)?;
     }
-    last_window_locked(current, subscribed, outcome.last_window, failed)
+    last_window_locked(current, subscribed, outcome.last_window, failed)?;
+    for call in outcome.destroy_calls {
+        owned_reply(
+            current,
+            subscribed,
+            WindowReply {
+                owner: call.owner,
+                correlation: call.correlation,
+                response: WindowResponse::Destroyed,
+            },
+            failed,
+        )?;
+    }
+    Ok(())
+}
+
+fn report_abandoned(close: AbandonedClose) {
+    eprintln!(
+        "window {} close_seq {} Abandoned; the pending request will not be replayed",
+        close.window.id.0, close.close_seq
+    );
 }
 
 fn native_state(snapshot: WindowSnapshot) -> WindowState {
@@ -307,7 +328,7 @@ impl PrimaryRouterHandle {
             if session.subscribed == Some(retired) {
                 session.subscribed = None;
             }
-            session.registry.role_lost(retired);
+            session.registry.role_lost(retired, report_abandoned);
         }
         Ok(())
     }
@@ -456,10 +477,7 @@ impl PrimaryRouterHandle {
                 if !session.native_supported {
                     return call_error(active, correlation, "KELD-CORE-042", "KELD-CORE-042: native window calls are unsupported by this platform adapter. Use a qualified window backend.".to_owned(), &mut failed);
                 }
-                if session
-                    .registry
-                    .has_pending_create(caller_owner, correlation)
-                {
+                if session.registry.has_pending_call(caller_owner, correlation) {
                     failed = Some(active.attempt);
                     return Err(app_ipc(
                         "window correlation admission",
@@ -470,24 +488,7 @@ impl PrimaryRouterHandle {
                 }
                 let request: WindowRequest =
                     decode(payload).map_err(|source| app_ipc("window request decode", &source))?;
-                match request {
-                    WindowRequest::Create { width, height, x, y } => match session.registry.create(caller_owner, correlation, width, height, x, y) {
-                        Ok(CreateOutcome::Build { build, width, height, x, y, .. }) => self.window_commands.send(AppWindowCommand::CreateWindow { build, width, height, x, y }).map_err(|_| app_detail("window native build", "UI command owner is unavailable")),
-                        Ok(CreateOutcome::Adopted(window)) => window_reply(active, correlation, WindowResponse::Adopted { window }, &mut failed),
-                        Err(error) => call_error(active, correlation, error.code(), error.to_string(), &mut failed),
-                    },
-                    WindowRequest::SetMaximized { window, maximized } => match session.registry.set_maximized(caller_owner, window, maximized) {
-                        Ok(setter) => self.send_window_setter(active, correlation, setter, &mut failed),
-                        Err(error) => call_error(active, correlation, error.code(), error.to_string(), &mut failed),
-                    },
-                    WindowRequest::SetFullScreen { window, full_screen } => match session.registry.set_full_screen(caller_owner, window, full_screen) {
-                        Ok(setter) => self.send_window_setter(active, correlation, setter, &mut failed),
-                        Err(error) => call_error(active, correlation, error.code(), error.to_string(), &mut failed),
-                    },
-                    // Strict staged ingress, not placeholder close implementations.
-                    // GH-450 must replace this refusal with its complete close owner.
-                    WindowRequest::RequestClose { .. } | WindowRequest::CloseReply { .. } | WindowRequest::Destroy { .. } => call_error(active, correlation, "KELD-CORE-038", "KELD-CORE-038: this T1 window state does not admit cancelable-close operations. Use the complete GH-450 close implementation before issuing them.".to_owned(), &mut failed),
-                }
+                self.window_request_locked(&mut session, active, correlation, request, &mut failed)
             })();
             self.finish_window_write(current, failed, result)
         });
@@ -496,6 +497,186 @@ impl PrimaryRouterHandle {
         } else {
             result
         }
+    }
+    fn window_request_locked(
+        &self,
+        session: &mut WindowSession,
+        active: &mut ActivePrimaryGeneration,
+        correlation: CorrelationId,
+        request: WindowRequest,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        let caller = owner(active);
+        match request {
+            WindowRequest::Create {
+                width,
+                height,
+                x,
+                y,
+            } => {
+                let outcome = session
+                    .registry
+                    .create(caller, correlation, width, height, x, y);
+                self.window_create_result(active, correlation, outcome, failed)
+            }
+            WindowRequest::SetMaximized { window, maximized } => {
+                let outcome = session.registry.set_maximized(caller, window, maximized);
+                self.window_setter_result(active, correlation, outcome, failed)
+            }
+            WindowRequest::SetFullScreen {
+                window,
+                full_screen,
+            } => {
+                let outcome = session
+                    .registry
+                    .set_full_screen(caller, window, full_screen);
+                self.window_setter_result(active, correlation, outcome, failed)
+            }
+            WindowRequest::RequestClose { window } => {
+                let outcome = session.registry.request_close(caller, window);
+                self.window_close_result(active, correlation, outcome, failed)
+            }
+            WindowRequest::CloseReply {
+                window,
+                close_seq,
+                verdict,
+            } => {
+                let outcome = session
+                    .registry
+                    .close_reply(caller, window, close_seq, verdict);
+                self.window_close_result(active, correlation, outcome, failed)
+            }
+            WindowRequest::Destroy { window } => {
+                match session
+                    .registry
+                    .destroy(caller, window, correlation, report_abandoned)
+                {
+                    Ok(CloseOutcome::Teardown(teardown)) => {
+                        self.send_window_teardown(teardown, "window teardown")
+                    }
+                    Ok(CloseOutcome::AlreadyClosing) => Ok(()),
+                    Ok(_) => Err(app_detail(
+                        "window Destroy",
+                        "registry returned an invalid destruction effect",
+                    )),
+                    Err(error) => {
+                        call_error(active, correlation, error.code(), error.to_string(), failed)
+                    }
+                }
+            }
+        }
+    }
+    fn window_create_result(
+        &self,
+        active: &mut ActivePrimaryGeneration,
+        correlation: CorrelationId,
+        outcome: Result<CreateOutcome, WindowError>,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        match outcome {
+            Ok(CreateOutcome::Build {
+                build,
+                width,
+                height,
+                x,
+                y,
+                ..
+            }) => self
+                .window_commands
+                .send(AppWindowCommand::CreateWindow {
+                    build,
+                    width,
+                    height,
+                    x,
+                    y,
+                })
+                .map_err(|_| app_detail("window native build", "UI command owner is unavailable")),
+            Ok(CreateOutcome::Adopted(window)) => window_reply(
+                active,
+                correlation,
+                WindowResponse::Adopted { window },
+                failed,
+            ),
+            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
+        }
+    }
+    fn window_setter_result(
+        &self,
+        active: &mut ActivePrimaryGeneration,
+        correlation: CorrelationId,
+        outcome: Result<NativeSetter, WindowError>,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        match outcome {
+            Ok(setter) => self.send_window_setter(active, correlation, setter, failed),
+            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
+        }
+    }
+    fn window_close_result(
+        &self,
+        active: &mut ActivePrimaryGeneration,
+        correlation: CorrelationId,
+        outcome: Result<CloseOutcome, WindowError>,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        match outcome {
+            Ok(close) => self.window_close_call_locked(active, correlation, close, failed),
+            Err(error) => call_error(active, correlation, error.code(), error.to_string(), failed),
+        }
+    }
+    fn send_window_teardown(
+        &self,
+        teardown: super::window_registry::Teardown,
+        phase: &'static str,
+    ) -> Result<(), HostAppError> {
+        self.window_commands
+            .send(AppWindowCommand::DestroyWindow {
+                view: teardown.view,
+            })
+            .map_err(|_| app_detail(phase, "UI command owner is unavailable"))
+    }
+    fn window_close_call_locked(
+        &self,
+        active: &mut ActivePrimaryGeneration,
+        correlation: CorrelationId,
+        outcome: CloseOutcome,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
+        let response = match outcome {
+            CloseOutcome::Requested {
+                close_seq,
+                fact: Some(fact),
+            } => {
+                event(active, fact.event, failed)?;
+                WindowResponse::CloseRequested { close_seq }
+            }
+            CloseOutcome::Merged { close_seq } => WindowResponse::Merged { close_seq },
+            CloseOutcome::AlreadyClosing => WindowResponse::AlreadyClosing,
+            CloseOutcome::Vetoed => WindowResponse::ReplyApplied,
+            CloseOutcome::Stale => {
+                eprintln!(
+                    "KELD-CORE-038: stale close reply ignored; answer the current close_seq once"
+                );
+                WindowResponse::ReplyStale
+            }
+            CloseOutcome::Teardown(teardown) => {
+                // T6 acknowledges the verdict before issuing physical teardown.
+                // Closing already committed: reply loss must not strand its view.
+                let acknowledgement =
+                    window_reply(active, correlation, WindowResponse::ReplyApplied, failed);
+                let release = self.send_window_teardown(teardown, "window teardown");
+                return collapse_app_results([acknowledgement, release]);
+            }
+            CloseOutcome::Requested { fact: None, .. }
+            | CloseOutcome::Unmapped
+            | CloseOutcome::Exhausted => {
+                return Err(app_detail(
+                    "window close reply",
+                    "admitted call returned a native-only close outcome",
+                ));
+            }
+        };
+        window_reply(active, correlation, response, failed)
     }
     fn send_window_setter(
         &self,
@@ -529,17 +710,9 @@ impl PrimaryRouterHandle {
                 owned_event(current, subscribed, fact, failed)?;
                 owned_reply(current, subscribed, reply, failed)
             }
-            BuildOutcome::Cleanup(teardown) => self
-                .window_commands
-                .send(AppWindowCommand::DestroyWindow {
-                    view: teardown.view,
-                })
-                .map_err(|_| {
-                    app_detail(
-                        "window late-build cleanup",
-                        "UI command owner is unavailable",
-                    )
-                }),
+            BuildOutcome::Cleanup(teardown) => {
+                self.send_window_teardown(teardown, "window late-build cleanup")
+            }
             BuildOutcome::Ignored => {
                 eprintln!(
                     "KELD-CORE-041: ignored unexpected native build result; inspect the UI build correlation"
@@ -548,21 +721,37 @@ impl PrimaryRouterHandle {
             }
         }
     }
-    fn window_native_close_locked(&self, outcome: CloseOutcome) -> Result<(), HostAppError> {
+    fn window_native_close_locked(
+        current: &mut Option<ActivePrimaryGeneration>,
+        subscribed: Option<WindowOwner>,
+        outcome: CloseOutcome,
+        failed: &mut Option<u32>,
+    ) -> Result<(), HostAppError> {
         match outcome {
-            CloseOutcome::Teardown(teardown) => self
-                .window_commands
-                .send(AppWindowCommand::DestroyWindow {
-                    view: teardown.view,
-                })
-                .map_err(|_| app_detail("window native close", "UI command owner is unavailable")),
+            CloseOutcome::Requested {
+                fact: Some(fact), ..
+            } => owned_event(current, subscribed, fact, failed),
             CloseOutcome::Unmapped => {
                 eprintln!(
                     "KELD-CORE-038: native close references an unmapped view; inspect UI event ordering"
                 );
                 Ok(())
             }
-            CloseOutcome::AlreadyClosing => Ok(()),
+            CloseOutcome::Exhausted => {
+                eprintln!(
+                    "KELD-CORE-039: native close_seq exhausted; destroy the window or end the session"
+                );
+                Ok(())
+            }
+            CloseOutcome::AlreadyClosing
+            | CloseOutcome::Merged { .. }
+            | CloseOutcome::Requested { fact: None, .. } => Ok(()),
+            CloseOutcome::Teardown(_) | CloseOutcome::Vetoed | CloseOutcome::Stale => {
+                Err(app_detail(
+                    "window native close",
+                    "registry returned a call-only close outcome",
+                ))
+            }
         }
     }
     // Caller owns transition -> current -> windows. This dispatch performs the
@@ -591,7 +780,12 @@ impl PrimaryRouterHandle {
                 return window_build_failed_locked(current, subscribed, outcome, stage, failed);
             }
             AppWindowEvent::WindowCloseRequested { view } => {
-                return self.window_native_close_locked(session.registry.native_close(view));
+                return Self::window_native_close_locked(
+                    current,
+                    subscribed,
+                    session.registry.native_close(view),
+                    failed,
+                );
             }
             AppWindowEvent::WindowReleased { view } => {
                 let outcome = session.registry.native_released(view);
@@ -711,14 +905,7 @@ impl PrimaryRouterHandle {
         let mut result = Ok(());
         session.registry.session_end(|effect| match effect {
             SessionEffect::Teardown(teardown) => {
-                let next = self
-                    .window_commands
-                    .send(AppWindowCommand::DestroyWindow {
-                        view: teardown.view,
-                    })
-                    .map_err(|_| {
-                        app_detail("window session teardown", "UI command owner is unavailable")
-                    });
+                let next = self.send_window_teardown(teardown, "window session teardown");
                 result = collapse_app_results([std::mem::replace(&mut result, Ok(())), next]);
             }
             SessionEffect::CreateInterrupted(call) => {
@@ -729,6 +916,7 @@ impl PrimaryRouterHandle {
                     call.correlation.0
                 );
             }
+            SessionEffect::CloseAbandoned(close) => report_abandoned(close),
         });
         result
     }

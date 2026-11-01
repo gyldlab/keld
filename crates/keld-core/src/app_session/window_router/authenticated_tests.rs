@@ -283,3 +283,72 @@ fn authenticated_primary_window_calls_use_actual_reader_and_host_facts() -> Test
     drop(role);
     Ok(())
 }
+
+#[test]
+fn authenticated_primary_close_verdicts_and_destroy_wait_for_ui_release() -> TestResult {
+    let mut role = RoleProcess::start()?;
+    let (bound, mut control) = role.bind()?;
+    assert_eq!(bound.principal().owner(), RoleOwner::Primary);
+    let (owner_tx, owner_rx) = mpsc::channel();
+    let (native_tx, native_rx) = mpsc::channel();
+    let router = router_for_bound(bound, owner_tx, native_tx)?;
+    let handle = router.handle();
+    command(&mut control, "SUBSCRIBE")?;
+    assert_eq!(read_control(&mut control)?, "SUBSCRIBE 1");
+    publish_ready(&role, &handle, &owner_rx)?;
+    command(&mut control, "READY")?;
+    assert_eq!(read_control(&mut control)?, "READY 00");
+    create_from_native_result(&mut control, &native_rx, &handle)?;
+    command(&mut control, "REQUEST-CLOSE")?;
+    assert_eq!(
+        read_control(&mut control)?,
+        "REQUEST-CLOSE CloseRequested 1 2 CloseRequested"
+    );
+    command(&mut control, "MERGE-CLOSE")?;
+    assert_eq!(
+        read_control(&mut control)?,
+        "MERGE-CLOSE Merged 1 2 CloseRequested"
+    );
+    command(&mut control, "VETO-CLOSE")?;
+    assert_eq!(read_control(&mut control)?, "VETO-CLOSE ReplyApplied 1 2");
+    command(&mut control, "REQUEST-CLOSE")?;
+    assert_eq!(
+        read_control(&mut control)?,
+        "REQUEST-CLOSE CloseRequested 2 3 CloseRequested"
+    );
+    command(&mut control, "STALE-CLOSE")?;
+    assert_eq!(read_control(&mut control)?, "STALE-CLOSE ReplyStale 2 3");
+    assert!(
+        native_rx.try_recv().is_err(),
+        "pending/veto/stale never request native destruction"
+    );
+    command(&mut control, "DESTROY-PAIR")?;
+    assert_eq!(
+        native_rx.recv_timeout(BOUND)?,
+        AppWindowCommand::DestroyWindow { view: WebviewId(7) }
+    );
+    assert_eq!(read_control(&mut control)?, "DESTROY-WAIT AlreadyClosing 3");
+    assert!(
+        native_rx.try_recv().is_err(),
+        "two real calls cause one teardown"
+    );
+    handle.window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
+    assert_eq!(
+        read_control(&mut control)?,
+        "DESTROY-PAIR Destroyed Destroyed Destroyed 4"
+    );
+    command(&mut control, "WAIT-END")?;
+    router.shutdown()?;
+    assert_eq!(read_control(&mut control)?, "ENDED KELD-IPC-022 4");
+    assert!(handle.current.lock().expect("retired current").is_none());
+    assert!(handle.readers.lock().expect("joined readers").is_empty());
+    assert!(
+        native_rx.try_recv().is_err(),
+        "shutdown cannot tear down an already released window"
+    );
+    handle.finish_window_facts()?;
+    assert!(matches!(role.finish()?, SupervisorOutcome::Stopped));
+    drop(control);
+    drop(role);
+    Ok(())
+}
