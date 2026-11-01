@@ -1,0 +1,42 @@
+{
+  "categories": {
+    "B": 18,
+    "C": 59
+  },
+  "evidence_prs": [
+    "https://github.com/gyldlab/keld/pull/945",
+    "https://github.com/gyldlab/keld/pull/947",
+    "https://github.com/gyldlab/keld/pull/948"
+  ],
+  "main_sha": "baf558f24b094c0dd5c0a77b5939f6e7013ba4aa",
+  "review_status_counts": {
+    "pending": 69,
+    "reopened": 2,
+    "verified-scoped": 6
+  },
+  "schema_version": 1,
+  "scope": "macOS Guardian runtime module and directly-owned native integration tests",
+  "scope_exclusions": [
+    "Other crate macOS callers are cross-component edges for later review",
+    "Other 1067 tracked tip files are not individually assessed here",
+    "Successful CI for a scoped fix does not prove full file-level architecture coverage"
+  ],
+  "scope_roots": [
+    "crates/keld-runtime/src/macos_guardian.rs",
+    "crates/keld-runtime/src/macos_guardian/",
+    "crates/keld-runtime/tests/macos_host_death_guardian.rs",
+    "crates/keld-runtime/tests/macos_host_death_guardian/"
+  ],
+  "stack_tip_parent": "b88b4ef6d38909107ff89faebfe993c113893f8a",
+  "stack_tip_sha": "ea728589d0143df134c0f21fe5cf335240018d6a",
+  "tip_relation_counts": {
+    "added": 75,
+    "modified": 2,
+    "unchanged": 0
+  },
+  "total_main_tree_files": 1014,
+  "total_tip_tree_files": 1144,
+  "total_tip_tree_files_outside_scope": 1067,
+  "tracked_main_count_in_scope": 2,
+  "tracked_tip_count": 77
+}
