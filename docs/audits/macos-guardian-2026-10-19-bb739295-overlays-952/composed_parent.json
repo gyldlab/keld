@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "historical_parent": "bb739295d4dda0ef83acc8c38b521594a49a29c5",
+  "composed_parent": "fc973395359de621829ce329ec0503877e314c67",
+  "scope": "final19 provenance only; not current-source or native acceptance",
+  "historical_receipts_rewritten": false,
+  "native_acceptance": false,
+  "files": [
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/README.md",
+      "historical_blob": "77c5603f8b69ff9b61ca1b29c304b5000e9ed7bc",
+      "composed_blob": "8da06f06db51748470eac399dcad485ff21ae57b"
+    },
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/ledger_77.csv",
+      "historical_blob": "339df7982452cad415bff506ecd22a98714192b6",
+      "composed_blob": "13490200ca4862bc3b537c7779e93ddae99f962f"
+    },
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/review_append.csv",
+      "historical_blob": "443d340b9e0370c7d9c193af161a1397156e2848",
+      "composed_blob": "443d340b9e0370c7d9c193af161a1397156e2848"
+    },
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/summary.json",
+      "historical_blob": "91d330764244279e7f2d22e7a6bda52bd5d6db50",
+      "composed_blob": "2c2549d02d7044ea0fd3230a8150f4c2535db3f1"
+    },
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/verify_final19.py",
+      "historical_blob": "5b14b245545617303ba497d56a53b6db2d5624b5",
+      "composed_blob": "a70d441decf48e8b169affa9113747736d64445a"
+    },
+    {
+      "path": "docs/audits/macos-guardian-2026-10-19-86933528-final19/test_verify_final19.py",
+      "historical_blob": "aac20bed2572322a4e836e15fbbac998deca663e",
+      "composed_blob": "aac20bed2572322a4e836e15fbbac998deca663e"
+    }
+  ],
+  "changed_paths": [
+    "docs/audits/macos-guardian-2026-10-19-86933528-final19/README.md",
+    "docs/audits/macos-guardian-2026-10-19-86933528-final19/ledger_77.csv",
+    "docs/audits/macos-guardian-2026-10-19-86933528-final19/summary.json",
+    "docs/audits/macos-guardian-2026-10-19-86933528-final19/verify_final19.py"
+  ]
+}

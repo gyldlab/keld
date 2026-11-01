@@ -819,6 +819,14 @@ def main() -> int:
     if guardian.returncode != 0:
         errors.append("Guardian final19 verifier failed")
 
+    overlays = subprocess.run(
+        [sys.executable, "-B",
+         str(ROOT / "macos-guardian-2026-10-19-bb739295-overlays-952" / "verify_overlays.py")],
+        cwd=REPO, check=False,
+    )
+    if overlays.returncode != 0:
+        errors.append("Guardian overlays verifier failed")
+
     if errors:
         for error in errors:
             print(f"audit-docs error: {error}", file=sys.stderr)
