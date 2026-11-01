@@ -2,17 +2,17 @@
  * GH-477 first-proof native/dialog conformance, pinned to Electron v44.4.5
  * (694f45852a0f1726cd23bfd379854de489cccb65).
  *
- * Four red-until-implemented cells are registered by the shared GH-566 corpus owner.
- * Since GH-565 the `dialog` binding links and each member refuses with the typed
- * `KELD-COMPAT-013` error naming its ticket, so these tests assert that *current
- * refusal* and pass while the corpus records expected_verdict: fail: GH-564 for the
- * sync call, GH-478 for the three async calls. Each implementation owner must invert
- * only its mapped cases and cells in the same change as real native acceptance.
+ * GH-566's original four red-until-implemented cells stay independently mapped.
+ * The guarded parented async Message case became real on macOS under GH-478:
+ * its separate no-flag Host test exercises three OS clicks, actual checkbox
+ * state, physical quiescence and 257+1 same-link operations. The parentless
+ * overload remains unsupported, so the broad Message cell stays expected-fail
+ * alongside sync Message, Open and Save until parentless and remaining OS gates pass.
  *
  * The Electron docs guarantee a blocking numeric clicked index for the
  * sync variant and distinct Promise result shapes for three async variants.
- * These tests do NOT simulate NSAlert, exercise WorkerLink, authorize native
- * dialog access, or claim a macOS native implementation works.
+ * This Bun test checks exports, Promise shape and early refusal only. Actual
+ * NSAlert/WorkerLink/Guard/native evidence belongs to the macOS Host fixtures.
  */
 import { expect, test } from "bun:test";
 
@@ -73,30 +73,6 @@ function expectSyncRefusal(method: string, ticket: TrackingIssue): void {
   }
 }
 
-/** An async dialog member returns a Promise (no synchronous throw) that rejects with the refusal. */
-async function expectAsyncRefusal(
-  method: string,
-  ticket: TrackingIssue,
-): Promise<void> {
-  for (const root of [electron, electron.default]) {
-    const fn = dialogMethod(root, method);
-    expect(typeof fn).toBe("function");
-    const result = Reflect.apply(
-      fn as (...args: unknown[]) => unknown,
-      member(root, "dialog"),
-      [{ title: "Open" }],
-    );
-    expect(result).toBeInstanceOf(Promise);
-    let caught: unknown;
-    try {
-      await (result as Promise<unknown>);
-    } catch (error) {
-      caught = error;
-    }
-    expectRefusal(caught, method, ticket);
-  }
-}
-
 // Electron dialog.md: `Returns Integer - the index of the clicked button.`
 // Independent negative control: make showMessageBoxSync return any value,
 // even a Promise substitute, instead of the typed refusal. After #564, the
@@ -106,21 +82,71 @@ test("dialog.show-message-box-sync.clicked-index today: dialog.showMessageBoxSyn
   expectSyncRefusal("showMessageBoxSync", "GH-564");
 });
 
-// Electron v44.4.5 dialog.md: open returns { canceled, filePaths }, where
-// cancellation requires an empty filePaths array. This red-until-implemented
-// case detects an actually added API rather than accepting an import-only shim.
-test("dialog.show-open-dialog.canceled-paths today: dialog.showOpenDialog returns a Promise that rejects with KELD-COMPAT-013 naming GH-478", async () => {
-  await expectAsyncRefusal("showOpenDialog", "GH-478");
+// Real parented Open returns a native selected path or canceled: true with an
+// empty array; the macOS Host fixture proves both with OS UI and file census.
+// The broad corpus cell stays expected-fail because parentless is incomplete.
+test("dialog.show-open-dialog.canceled-paths: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showOpenDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showOpenDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { filters: [{ name: "Files", extensions: ["*.drawio"] }] },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ properties: ["openFile", "openDirectory"] }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
-// Electron v44.4.5 dialog.md: save returns { canceled, filePath }, where
-// cancellation requires the empty string. Path selection is NOT a file write.
-test("dialog.show-save-dialog.canceled-path today: dialog.showSaveDialog returns a Promise that rejects with KELD-COMPAT-013 naming GH-478", async () => {
-  await expectAsyncRefusal("showSaveDialog", "GH-478");
+// Save is path-only; the OS fixture asserts positive native path without a
+// file write, plus empty canceled path. Parentless remains unimplemented.
+test("dialog.show-save-dialog.canceled-path: parented native works; parentless remains incomplete", () => {
+  const method = dialogMethod(electron, "showSaveDialog");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showSaveDialog")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { securityScopedBookmarks: true },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const pending: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [{ defaultPath: "diagram.drawio", securityScopedBookmarks: false }],
+  );
+  expect(pending).toBeInstanceOf(Promise);
+  void (pending as Promise<unknown>).catch(() => {});
 });
 
-// Electron v44.4.5 dialog.md: async message boxes return a Promise resolving
-// with a clicked response index and checkboxChecked=false without a label.
-test("dialog.show-message-box.response-checkbox today: dialog.showMessageBox returns a Promise that rejects with KELD-COMPAT-013 naming GH-478", async () => {
-  await expectAsyncRefusal("showMessageBox", "GH-478");
+// Electron v44.4.5: real async facade exists on both export shapes; native
+// clicked index 0/1/2 and actual checkbox state are proved separately by
+// no_flag_macos::dialog_message on the shipping Host, not a JS-only stub.
+test("dialog.show-message-box.response-checkbox: parented async works; parentless native remains incomplete", () => {
+  const method = dialogMethod(electron, "showMessageBox");
+  expect(typeof method).toBe("function");
+  expect(dialogMethod(electron.default, "showMessageBox")).toBe(method);
+  expect(() =>
+    Reflect.apply(method as Function, member(electron, "dialog"), [
+      { message: "invalid", unsupported: undefined },
+    ]),
+  ).toThrow("KELD-COMPAT-010");
+  const result: unknown = Reflect.apply(
+    method as Function,
+    member(electron, "dialog"),
+    [
+      {
+        message: "Confirm",
+        buttons: ["Save", "Cancel", "Discard Changes"],
+        defaultId: 0,
+        cancelId: 1,
+      },
+    ],
+  );
+  expect(result).toBeInstanceOf(Promise);
+  void (result as Promise<unknown>).catch(() => {});
 });

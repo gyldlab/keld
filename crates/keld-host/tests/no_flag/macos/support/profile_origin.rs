@@ -25,6 +25,17 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+// The source phase, receipt name and optional nonce are one fixture request.
+// Grouping them preserves exact native launch arguments and keeps the local
+// origin's command builders below the argument-count gate.
+#[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
+#[derive(Clone, Copy)]
+pub(crate) struct ProfileRunSpec<'a> {
+    pub(crate) phase: &'a str,
+    pub(crate) log_name: &'a str,
+    pub(crate) seed: Option<&'a str>,
+}
+
 #[cfg(all(target_os = "macos", feature = "profile-test-hooks"))]
 pub(crate) struct ProfileOrigin {
     pub(crate) listener: TcpListener,
@@ -79,9 +90,11 @@ impl ProfileOrigin {
         self.run_profile_executable(
             signed_host_executable(app),
             support_root,
-            phase,
-            log_name,
-            seed,
+            ProfileRunSpec {
+                phase,
+                log_name,
+                seed,
+            },
             false,
             None,
             None,
@@ -94,10 +107,13 @@ impl ProfileOrigin {
         user_temp: &Path,
         profile_root: &Path,
         app: &Path,
-        phase: &str,
-        log_name: &str,
-        seed: Option<&str>,
+        request: ProfileRunSpec<'_>,
     ) -> (std::collections::BTreeMap<String, String>, Output) {
+        let ProfileRunSpec {
+            phase,
+            log_name,
+            seed,
+        } = request;
         let url = format!("http://{}/{phase}?run={log_name}", self.address);
         let executable = signed_host_executable(app);
         let environment = [
@@ -155,9 +171,11 @@ impl ProfileOrigin {
         self.run_profile_executable(
             executable.to_owned(),
             support_root,
-            phase,
-            log_name,
-            seed,
+            ProfileRunSpec {
+                phase,
+                log_name,
+                seed,
+            },
             true,
             None,
             None,
@@ -175,9 +193,11 @@ impl ProfileOrigin {
         self.run_profile_executable(
             signed_host_executable(app),
             support_root,
-            phase,
-            log_name,
-            seed,
+            ProfileRunSpec {
+                phase,
+                log_name,
+                seed,
+            },
             false,
             Some("11111111-2222-4333-8444-555555555555"),
             None,
@@ -196,9 +216,11 @@ impl ProfileOrigin {
         self.run_profile_executable(
             signed_host_executable(app),
             support_root,
-            phase,
-            log_name,
-            seed,
+            ProfileRunSpec {
+                phase,
+                log_name,
+                seed,
+            },
             false,
             None,
             media_mode,
@@ -215,9 +237,11 @@ impl ProfileOrigin {
         self.run_profile_executable(
             executable.to_owned(),
             support_root,
-            phase,
-            log_name,
-            None,
+            ProfileRunSpec {
+                phase,
+                log_name,
+                seed: None,
+            },
             true,
             None,
             None,
@@ -228,13 +252,16 @@ impl ProfileOrigin {
         &mut self,
         executable: PathBuf,
         support_root: &Path,
-        phase: &str,
-        log_name: &str,
-        seed: Option<&str>,
+        request: ProfileRunSpec<'_>,
         dev_ephemeral: bool,
         boot_uuid: Option<&str>,
         media_mode: Option<&str>,
     ) -> std::collections::BTreeMap<String, String> {
+        let ProfileRunSpec {
+            phase,
+            log_name,
+            seed,
+        } = request;
         let log_path = support_root.join(format!("{log_name}.log"));
         let log = fs::File::create(&log_path).expect("create profile evidence log");
         let stderr = log.try_clone().expect("clone evidence log");
@@ -410,9 +437,7 @@ impl ProfileOrigin {
                             );
                             self.pending_reports.insert(other_phase.clone(), fields);
                         }
-                    } else if path.starts_with("/script-started?") {
-                        write_profile_http(&mut stream, 204, "");
-                    } else if path.starts_with("/favicon") {
+                    } else if path.starts_with("/script-started?") || path.starts_with("/favicon") {
                         write_profile_http(&mut stream, 204, "");
                     } else if path.starts_with("/sw.js") {
                         write_profile_http_type(

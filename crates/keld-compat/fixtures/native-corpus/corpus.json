@@ -53,8 +53,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-open-dialog.canceled-paths today: dialog.showOpenDialog returns a Promise that rejects with KELD-COMPAT-013 naming GH-478",
-      "negative_control": "While pending: a showOpenDialog that throws synchronously, resolves, or rejects with anything but the typed KELD-COMPAT-013 refusal naming GH-478 fails this mapped case. After GH-478 inverts it: a Promise resolving with canceled:true but nonempty filePaths, or an incorrect selected path, fails."
+      "test_name": "dialog.show-open-dialog.canceled-paths: parented native works; parentless remains incomplete",
+      "negative_control": "Partial macOS GH478: a real parented Open chooser cancels with [] and positively selects a real .drawio file through verified Host/Guard/native AX, then returns the original correlation; source test checks exports, Promise and early unsafe-filter denial. Parentless native Open is not yet admitted; this broad cell remains expected-fail until its genuine OS selection/cancel, quiescence and resource grants pass. Fake Promise, invented path or a security bookmark fails."
     },
     {
       "operation_id": "dialog.show-save-dialog.canceled-path",
@@ -70,8 +70,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-save-dialog.canceled-path today: dialog.showSaveDialog returns a Promise that rejects with KELD-COMPAT-013 naming GH-478",
-      "negative_control": "While pending: a showSaveDialog that throws synchronously, resolves, or rejects with anything but the typed KELD-COMPAT-013 refusal naming GH-478 fails this mapped case. After GH-478 inverts it: a canceled result with a nonempty filePath, or an incorrectly created/saved file, fails."
+      "test_name": "dialog.show-save-dialog.canceled-path: parented native works; parentless remains incomplete",
+      "negative_control": "Partial macOS GH478: a real parented Save chooser cancels with empty path and returns a genuine selected destination without creating or writing any file; source test checks exports, Promise and false-only securityScopedBookmarks. Parentless native Save and installed original Draw.io persistency remain unqualified; this broad corpus cell stays expected-fail. A synthesized path, file write, or bookmark authority fails."
     },
     {
       "operation_id": "dialog.show-message-box.response-checkbox",
@@ -87,8 +87,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-message-box.response-checkbox today: dialog.showMessageBox returns a Promise that rejects with KELD-COMPAT-013 naming GH-478",
-      "negative_control": "While pending: a showMessageBox that throws synchronously, resolves, or rejects with anything but the typed KELD-COMPAT-013 refusal naming GH-478 fails this mapped case. After GH-478 inverts it: a guessed response index or checkboxChecked:true without a checkbox fails the actual clicked-result oracle."
+      "test_name": "dialog.show-message-box.response-checkbox: parented async works; parentless native remains incomplete",
+      "negative_control": "Current partial GH478 Mac proof: parented actual Save/Cancel/Discard indices 0/1/2, native checkbox true/false, Guard/Cancel/parent retirement and 257+1 same-link cases pass, and this mapped Bun test checks genuine exported Promise plus early refusal. The broad Electron operation remains expected-fail because parentless async Message has no native CFRunLoop acceptance; an import-only fake Promise, missing parentless completion or guessed native click must not flip the cell to pass."
     },
     {
       "operation_id": "menu.build-from-template",

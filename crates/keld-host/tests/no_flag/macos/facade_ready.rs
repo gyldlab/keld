@@ -136,7 +136,7 @@ fn shipping_schema_two_host_emits_ready_without_an_initial_native_window() {
 /// AC15/AC20: a real child stalls the main thread after the native-loop entry
 /// callback arms the deadline, before tao can deliver its Init. The coordinator
 /// must independently end the process. This fixture is absent from shipping
-/// release binaries and cannot be mistaken for a real AppKit scheduling stall.
+/// release binaries and cannot be mistaken for a real `AppKit` scheduling stall.
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 #[test]
 fn shipping_schema_two_stalled_init_exits_through_the_binary_terminal_once() {

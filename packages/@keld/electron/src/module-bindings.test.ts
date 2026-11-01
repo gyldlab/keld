@@ -14,7 +14,9 @@
  * The remaining cases hold the spec's other criteria
  * (`docs/specs/gh565-link-time-electron-bindings.md` §3): default-export parity, zero
  * Host traffic while every member is touched (`fixtures/bindings_no_link.ts`), and the
- * typed `KELD-COMPAT-013` refusal of every member with Electron's documented return kind.
+ * typed `KELD-COMPAT-013` refusal of unimplemented members with their documented return
+ * kind. GH-478's three implemented async dialogs reject invalid arity before Host traffic;
+ * their option, parent and native behavior remain covered by their owning tests.
  * `ORACLE` below is this file's own copy of the spec §4.3 table, transcribed from the
  * pinned pages' member headings and `Returns Promise<…>` lines and from the owning
  * tickets' `Electron members covered` lines; it is independent of the implementation's
@@ -58,6 +60,13 @@ const DRAWIO_IMPORT = [
  * PR that lands second restores the full twelve-name case.
  */
 const LINKED_HERE = DRAWIO_IMPORT.filter((name) => name !== "ipcMain");
+
+/** These GH-478 methods now validate arguments and enter the real broker path. */
+const IMPLEMENTED_DIALOG_MEMBERS = new Set([
+  "showOpenDialog",
+  "showSaveDialog",
+  "showMessageBox",
+]);
 
 type MemberKind = "method" | "promise" | "property" | "writableProperty";
 
@@ -421,9 +430,13 @@ describe("module evaluation and refusals open no app link", () => {
     let threw = 0;
     let rejected = 0;
     for (const oracle of ORACLE) {
-      for (const [kind] of Object.values(oracle.members)) {
+      for (const [name, [kind]] of Object.entries(oracle.members)) {
         touched += 1;
-        if (kind === "promise") rejected += 1;
+        if (
+          kind === "promise" &&
+          !(oracle.name === "dialog" && IMPLEMENTED_DIALOG_MEMBERS.has(name))
+        )
+          rejected += 1;
         else threw += 1;
       }
       if (oracle.construct) {
@@ -447,10 +460,27 @@ describe("module evaluation and refusals open no app link", () => {
   });
 });
 
-describe("every linked member refuses with KELD-COMPAT-013 (spec §4.3)", () => {
+describe("unimplemented members refuse and implemented dialogs validate arity", () => {
   for (const oracle of ORACLE) {
     for (const [name, [kind, ticket]] of Object.entries(oracle.members)) {
       const path = `${oracle.name}.${name}`;
+      if (oracle.name === "dialog" && IMPLEMENTED_DIALOG_MEMBERS.has(name)) {
+        test(`${path}() rejects missing options before the real broker path`, () => {
+          for (const root of [electron, electron.default]) {
+            const self = member(root, "dialog");
+            const fn = member(self, name);
+            expect(typeof fn).toBe("function");
+            expect((fn as { name: string }).name).toBe(name);
+            const caught = thrownBy(() =>
+              Reflect.apply(fn as (...args: unknown[]) => unknown, self, []),
+            );
+            expect(caught).toBeInstanceOf(TypeError);
+            expect((caught as Error).message).toContain("KELD-COMPAT-010");
+            expect(isUnsupportedMemberError(caught)).toBe(false);
+          }
+        });
+        continue;
+      }
       switch (kind) {
         case "method":
           test(`${path}() throws the typed refusal naming ${ticket}`, () => {

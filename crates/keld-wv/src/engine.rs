@@ -136,6 +136,33 @@ pub enum AppWindowCommand {
     /// Wake the existing macOS main-owned authentication presentation service.
     #[cfg(target_os = "macos")]
     MacAuthWake,
+    /// Wake the existing macOS Tao main service for a guarded native dialog.
+    /// The actual bounded request/cancel custody stays in Core/Native; the
+    /// command contains no caller-minted window pointer or payload.
+    #[cfg(target_os = "macos")]
+    MacDialogWake,
+}
+
+/// Physical `AppKit` Message outcome observed on the macOS UI owner. The
+/// original request's authenticated correlation and nonce remain Core-owned.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacDialogUiOutcome {
+    /// A real native button click and observed checkbox state.
+    Selected {
+        /// Actual zero-based clicked native button.
+        response: u32,
+        /// Checkbox state after the real native callback.
+        checkbox_checked: bool,
+    },
+    /// A native Open/Save result was captured in the existing Core custody
+    /// before this lightweight event marker was queued. The actual selected
+    /// paths are never stored in this copyable OS/event type.
+    FileResult,
+    /// A native dismissal, never a fabricated selected button.
+    Dismissed,
+    /// The native presentation or callback did not meet its owner contract.
+    Failed,
 }
 
 /// Observable UI-owned milestone delivered to the host session coordinator.
@@ -212,6 +239,18 @@ pub enum AppWindowEvent {
     WindowReleased {
         /// Backend-owned view whose ownership was released.
         view: WebviewId,
+    },
+    /// `AppKit` reported a physically drained Message sheet (or a refused
+    /// presentation that never created one). The Core custody owner decides
+    /// whether the original correlation is still live and which reply to send.
+    #[cfg(target_os = "macos")]
+    MacDialogFinished {
+        /// Original authenticated Host generation attempt.
+        attempt: u32,
+        /// Original nonzero nonce, not a new authority handle.
+        nonce: u64,
+        /// AppKit-owned primitive outcome after its callback/physical drain.
+        outcome: MacDialogUiOutcome,
     },
 }
 

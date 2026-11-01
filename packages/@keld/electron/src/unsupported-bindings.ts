@@ -12,7 +12,8 @@
  * throwing. Members no ticket covers yet name the F06 epic #476 (§ Not yet specified).
  *
  * An implementing ticket moves its module out of this file into its own module and
- * deletes the rows it implements in the same change that flips its corpus cells. Instance
+ * deletes the rows it implements in the same change that flips its corpus cells.
+ * The partially implemented dialog module retains its remaining refusal rows itself. Instance
  * members of a refusing constructor (`menu.popup`, `image.toPNG`) are unreachable and are
  * not declared.
  */
@@ -146,18 +147,6 @@ export class Menu {
     return refuse("method", "Menu.sendActionToFirstResponder", "GH-476");
   }
 }
-
-/** Pinned `dialog.md`: the three async dialogs are GH-478's broker, the sync prompt GH-564's, the remainder GH-561's. */
-export const dialog = unsupportedSurface("dialog", {
-  showOpenDialogSync: method("GH-561"),
-  showOpenDialog: promise("GH-478"),
-  showSaveDialogSync: method("GH-561"),
-  showSaveDialog: promise("GH-478"),
-  showMessageBoxSync: method("GH-564"),
-  showMessageBox: promise("GH-478"),
-  showErrorBox: method("GH-561"),
-  showCertificateTrustDialog: promise("GH-561"),
-});
 
 /**
  * Pinned `session.md` module members. `defaultSession` refuses on read naming GH-553,

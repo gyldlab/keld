@@ -5,7 +5,9 @@ import {
   WorkerLink,
   ECHO_CHANNEL,
   LIFECYCLE_CHANNEL,
+  DIALOG_CHANNEL,
 } from "../../../../../../packages/@keld/kipc/src/transport.ts";
+import { encodeDialogRequest } from "../../../../../../packages/@keld/api/src/dialog.generated.ts";
 import {
   encodeEchoRequest,
   decodeEchoResponse,
@@ -40,6 +42,49 @@ for await (const command of lines) {
         ? "ECHO-OK\n"
         : "ECHO-BAD\n",
     );
+  } else if (
+    command === "DIALOG_DENIED" ||
+    command === "DIALOG_ALLOWED_PARENTLESS" ||
+    command === "DIALOG_UNKNOWN_CANCEL"
+  ) {
+    // A denied manifest must refuse even malformed payload before any native
+    // effect. The allowed control uses the real generated Message codec and
+    // expects the typed, not-yet-supported parentless outcome. The last case
+    // exercises Cancel decoding without creating a new native reservation.
+    const payload =
+      command === "DIALOG_DENIED"
+        ? Uint8Array.of(0xff)
+        : encodeDialogRequest(
+            command === "DIALOG_UNKNOWN_CANCEL"
+              ? { variant: "Cancel", nonce: 9n }
+              : {
+                  variant: "Message",
+                  nonce: 1n,
+                  parent: null,
+                  options: {
+                    message: "Unsaved changes",
+                    kind: "Question",
+                    buttons: ["Save", "Cancel", "Discard Changes"],
+                    default_id: 0,
+                    cancel_id: 1,
+                    normalize_access_keys: true,
+                    title: "Confirm",
+                    detail: null,
+                    no_link: true,
+                    checkbox_label: null,
+                    checkbox_checked: null,
+                  },
+                },
+          );
+    try {
+      await link.call(DIALOG_CHANNEL, payload, 5000);
+      control.write("DIALOG-UNEXPECTED-SUCCESS\n");
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      control.write(
+        `DIALOG-${typeof code === "string" ? code : "UNKNOWN-ERROR"}\n`,
+      );
+    }
   } else if (command === "STOP") {
     link.close();
     process.exit(0);

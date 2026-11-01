@@ -10,7 +10,7 @@ use crate::support::profile_evidence::assert_ephemeral_store_report;
 use crate::support::profile_evidence::run_signed_identity_report;
 use crate::support::profile_evidence::sw_vers_value;
 use crate::support::profile_evidence::webkit_version;
-use crate::support::profile_origin::ProfileOrigin;
+use crate::support::profile_origin::{ProfileOrigin, ProfileRunSpec};
 use crate::support::signed_app::build_signed_profile_app;
 use crate::support::signed_app::signed_host_executable;
 use crate::support::signed_app::valid_macos_codesign_hashes;
@@ -42,7 +42,7 @@ pub(crate) fn checked_dev_seed_report(
         }
     }
     let label = media_label_from_hex(report.get("device_label_hex").expect("dev device label"));
-    assert!(!label.is_empty());
+    assert_ne!(label, "");
     let source_class = selected_media_source_class(kind, &label);
     assert_eq!(
         source_class,
@@ -72,9 +72,11 @@ pub(crate) fn run_dev_media_kind(
     let seeded = origin.run_profile_executable(
         signed_host_executable(app),
         support_root,
-        &seed_phase,
-        &format!("dev-{seed_phase}"),
-        Some(nonce),
+        ProfileRunSpec {
+            phase: &seed_phase,
+            log_name: &format!("dev-{seed_phase}"),
+            seed: Some(nonce),
+        },
         true,
         None,
         Some("allow-reuse"),
@@ -88,9 +90,11 @@ pub(crate) fn run_dev_media_kind(
     let denied = origin.run_profile_executable(
         signed_host_executable(app),
         support_root,
-        &deny_phase,
-        &format!("dev-{deny_phase}"),
-        None,
+        ProfileRunSpec {
+            phase: &deny_phase,
+            log_name: &format!("dev-{deny_phase}"),
+            seed: None,
+        },
         true,
         None,
         None,

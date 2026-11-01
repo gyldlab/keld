@@ -36,20 +36,7 @@ fn kel135_macos_signed_profiles_isolate_same_origin_state_across_launches() {
         .first()
         .expect("a valid Apple code-signing identity is required");
     let fixture_id = format!("{}", std::process::id());
-    let app_a = build_signed_profile_app(
-        stage.root(),
-        &app_root,
-        "ProfileAppA",
-        &format!("dev.keld.fixture.profile.a.{fixture_id}"),
-        signer,
-    );
-    let app_b = build_signed_profile_app(
-        stage.root(),
-        &app_root,
-        "ProfileAppB",
-        &format!("dev.keld.fixture.profile.b.{fixture_id}"),
-        signer,
-    );
+    let (app_a, app_b) = signed_storage_pair(stage.root(), &app_root, signer, &fixture_id);
     let identity_a = run_signed_identity_report(&app_a);
     let identity_b = run_signed_identity_report(&app_b);
     assert_eq!(identity_a["team_id"], identity_b["team_id"]);
@@ -261,4 +248,29 @@ fn profile_origin_reads_split_reports_on_blocking_accepted_streams() {
         );
         assert!(response.ends_with("\r\n\r\n"), "complete response headers");
     }
+}
+
+// Construct the same two apps; keep signature identity, state, purge and
+// cleanup observations in the caller's original test.
+fn signed_storage_pair(
+    stage_root: &std::path::Path,
+    app_root: &std::path::Path,
+    signer: &str,
+    fixture_id: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let app_a = build_signed_profile_app(
+        stage_root,
+        app_root,
+        "ProfileAppA",
+        &format!("dev.keld.fixture.profile.a.{fixture_id}"),
+        signer,
+    );
+    let app_b = build_signed_profile_app(
+        stage_root,
+        app_root,
+        "ProfileAppB",
+        &format!("dev.keld.fixture.profile.b.{fixture_id}"),
+        signer,
+    );
+    (app_a, app_b)
 }

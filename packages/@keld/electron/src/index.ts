@@ -9,20 +9,21 @@
  * `process.versions.electron` / `process.type` are installed at import so
  * `import "electron"` is enough to observe them — they do not wait on kipc.
  *
- * GH-565: nine further bindings draw.io's main imports by name link here
+ * GH-565: eight further bindings draw.io's main imports by name link here
  * (`./unsupported-bindings.ts`); each of their members refuses with
- * `KELD-COMPAT-013` naming its owning issue until that slice lands. `ipcMain`
+ * `KELD-COMPAT-013` naming its owning issue until that slice lands. GH-478's
+ * dialog module supplies the async methods and retains its remaining refusals. `ipcMain`
  * arrives with the GH-466 registration slice (PR #1365). Evaluating this module
  * sends no kipc frame.
  */
 
 import { app } from "./app";
 import { BrowserWindow } from "./browser-window";
+import { dialog } from "./dialog";
 import {
   ClipboardItem,
   Menu,
   clipboard,
-  dialog,
   nativeImage,
   nativeTheme,
   screen,
@@ -56,6 +57,14 @@ export {
   session,
   shell,
 };
+export type {
+  MessageBoxOptions,
+  MessageBoxResult,
+  OpenDialogOptions,
+  OpenDialogResult,
+  SaveDialogOptions,
+  SaveDialogResult,
+} from "./dialog";
 export type {
   BrowserWindowEventMap,
   BrowserWindowOptions,
