@@ -547,25 +547,54 @@ pub(super) fn reconcile_denied_signal_after_reap(
     denied: RuntimeError,
     deadline: Instant,
 ) -> Result<(), RuntimeError> {
+    reconcile_denied_signal_after_reap_with_observers(
+        group,
+        denied,
+        deadline,
+        Instant::now,
+        probe_group_absence,
+    )
+}
+
+fn reconcile_denied_signal_after_reap_with_observers(
+    group: GroupIdentity,
+    denied: RuntimeError,
+    deadline: Instant,
+    now: impl FnMut() -> Instant,
+    probe: impl FnMut(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+) -> Result<(), RuntimeError> {
     match denied {
         RuntimeError::Lifecycle {
             phase: phase @ GROUP_SIGNAL_PHASE,
             source,
-        } if is_denied_signal_source(&source) => require_attested_group_absence(group, deadline)
-            .map_err(|absence| {
-                lifecycle_error(
-                    phase,
-                    io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        UnprovenDeniedSignal {
-                            denied: source,
-                            absence: absence_reason(&absence),
-                        },
-                    ),
-                )
-            }),
+        } if is_denied_signal_source(&source) => require_attested_group_absence_with_observers(
+            group, deadline, now, probe,
+        )
+        .map_err(|absence| {
+            lifecycle_error(
+                phase,
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    UnprovenDeniedSignal {
+                        denied: source,
+                        absence: absence_reason(&absence),
+                    },
+                ),
+            )
+        }),
         other => Err(other),
     }
+}
+
+#[cfg(test)]
+pub(super) fn reconcile_denied_signal_after_reap_for_test(
+    group: GroupIdentity,
+    denied: RuntimeError,
+    deadline: Instant,
+    now: impl FnMut() -> Instant,
+    probe: impl FnMut(i32) -> (Result<Pid, Errno>, Result<(), Errno>),
+) -> Result<(), RuntimeError> {
+    reconcile_denied_signal_after_reap_with_observers(group, denied, deadline, now, probe)
 }
 
 // A denied group signal whose read-only absence check did not prove the group
