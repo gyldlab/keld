@@ -1633,10 +1633,15 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   measurement yet; the kipc bench lane owns that number). A JSON fallback codec is
   planned for `--inspect-ipc` debugging (human dump) — none is live today — and would
   never sit on the hot path.
-- **Correlation ids** give request/reply without per-call allocations; channels are
-  u16 handles whose ids come from the static `keld-ipc` channel table (§4; live since
-  X05-T4, #597), so string names never travel per-call. Resolving ids from schema
-  names at handshake is destination work (§4).
+- **Correlation ids** associate protocol CALLs with their terminal REPLY or ERR.
+  Numeric channel ids come from the static, append-only `keld-ipc` channel table
+  (§4; live since X05-T4, #597); schema channel names do not travel per call.
+  The target [GH-540 compat-control contract](../specs/gh540-compat-ipc.md) makes one
+  explicit exception for application topics: its bounded generic routing envelope
+  carries a topic string, a direction-specific operation and endpoint-opaque bytes.
+  A topic is data inside that payload, never a new channel id or caller identity.
+  Renderer-originated topics pass the existing host guard before forwarding.
+  Handshake-time schema-name resolution remains destination work (§4).
 - **Receiver semantics (KEL-133, live):** one `keld-ipc` validator owns which
   kind/flags/channel/correlation/declared-length combination each session state
   admits. The host selects a static `ReceivePolicy` (no frame chooses its
@@ -1741,11 +1746,27 @@ compromised keeps the host's threat model uniform).
 
 ## 5. Electron-compat mapping (why this design carries the shim)
 
-- `ipcRenderer.send/on` ⇄ EVENT frames on a compat channel namespace (`el:*`).
-- `ipcRenderer.invoke`/`ipcMain.handle` ⇄ CALL/REPLY with structured-clone-compatible
-  codec: a `postcard`-encoded SCV (structured-clone value) sum type covering Electron's
-  value domain (incl. Buffer/TypedArray → bulk lane refs, Date, Map/Set, Error).
-- `webContents.send` ⇄ host-routed EVENT to a specific webview principal.
+- **First-proof target, not current implementation:** [GH-540](../specs/gh540-compat-ipc.md)
+  defines `ipcRenderer.send/on` and `ipcMain` listeners through one family-neutral
+  `compat-control` table entry and the existing host-mediated renderer bridge.
+  Host-to-Bun messages use subscribed EVENTs; Bun-to-host routing commands use CALL
+  with a terminal transport receipt. These internal receipts do not return an
+  application value or change Electron's void send/reply APIs. The literal `el:<topic>`
+  is a renderer grant resource, not a numeric channel namespace or wildcard permission.
+- Compatibility values are encoded and decoded only by the single `@keld/electron`
+  endpoint codec owned by GH-544, built into Bun and the renderer from the same source.
+  The first-proof domain is deliberately limited; unsupported domains and observable
+  differences remain explicit conformance gaps. The host decodes only the bounded
+  generic routing envelope and forwards its value bytes unchanged. `keld-core` and
+  `keld-ipc` contain no Electron value parsing. A host-visible postcard SCV, bulk
+  references and broader structured-clone coverage are not supplied by this slice.
+  `ipcRenderer.invoke`/`ipcMain.handle` and handler-error disclosure remain separately
+  owned destination work.
+- `webContents.send` captures the addressed WebContents' current main document at host
+  admission. `event.reply` retains the originally admitted document/navigation identity.
+  Neither retargets a successor document after the chosen target retires. The generic
+  host-to-Bun DocumentRetired control updates the existing facade mirror in transport
+  order; host authorization and final native delivery revalidate lifetime independently.
 - `MessagePort`s ⇄ host-owned virtual-port pairs with dedicated bounded channel routes
   and credit windows. A port capability binds to one authenticated role or webview
   generation; transfer is one-shot, receiver-bound and host-authorized. Browser and Bun
@@ -1754,9 +1775,11 @@ compromised keeps the host's threat model uniform).
 - `utilityProcess.fork` ⇄ an `@keld/electron` request for a host-declared app-bound or
   window-bound Bun role, not an arbitrary child-process escape hatch. Its PID is
   diagnostic only and never authorizes, identifies, reaps or routes a Keld role.
-- Semantics preserved: ordering per channel, `event.sender`/`senderFrame` identity
-  (host mints principal ids), sync `sendSync` supported but rate-limited + dev-warned
-  (it's a blocking CALL with a deadline; Electron apps abuse it, so it must exist).
+- First-proof semantics and limits are explicit in GH-540: admission order per
+  document/direction, host-origin sender metadata, ordered lifetime observation,
+  finite retained work and independent native completion. This is not a claim of
+  complete Electron IPC parity. `sendSync` remains separately owned destination work,
+  not a prerequisite or implemented feature of the send/on/reply slice.
 
 ## 6. Hot-path implementation rules (Bun-rewrite discipline)
 
