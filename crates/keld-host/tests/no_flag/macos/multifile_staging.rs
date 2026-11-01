@@ -32,6 +32,47 @@ fn record_stage(label: &str, stage: &keld_cli::boot::DevBootStage) {
     );
 }
 
+fn reports_initial_unbound_termination(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.starts_with("KELD-CORE-037:")
+            && line.contains("initial app-link authentication")
+            && line.contains("Bun terminated before its initial authenticated generation bound")
+            && line.ends_with("[startup-resource-attempts listener=1 child=1 window=0]")
+    })
+}
+
+#[test]
+fn missing_sibling_failure_oracle_accepts_both_guardian_report_orders() {
+    let direct = "KELD-CORE-037: no-flag host failed during initial app-link authentication — Bun terminated before its initial authenticated generation bound. Fix the selected entry. [startup-resource-attempts listener=1 child=1 window=0]";
+    let runtime = "KELD-RUNTIME-003: Bun process exited with status 1";
+    for output in [
+        direct.to_owned(),
+        format!("{runtime}\n{direct}"),
+        format!("{direct}\n{runtime}"),
+    ] {
+        assert!(reports_initial_unbound_termination(&output), "{output}");
+    }
+    for output in [
+        direct.replace("KELD-CORE-037", "KELD-CORE-033"),
+        direct.replace("initial app-link authentication", "stage cleanup"),
+        direct.replace(
+            "Bun terminated before its initial authenticated generation bound",
+            "app-link authentication deadline elapsed",
+        ),
+        direct.replace("window=0", "window=1"),
+        direct.replace("child=1", "child=0"),
+        direct.replace("listener=1", "listener=0"),
+        direct.replace(" — ", "\n"),
+        direct.replace(
+            " [startup-resource-attempts",
+            "\n[startup-resource-attempts",
+        ),
+        format!("unrelated output mentions KELD-CORE-037 and {runtime}"),
+    ] {
+        assert!(!reports_initial_unbound_termination(&output), "{output}");
+    }
+}
+
 #[test]
 fn shipping_stage_missing_sibling_has_an_explicit_injected_byte_counterweight() {
     let mut missing = fixture::project("gh1037-sibling-missing");
@@ -71,14 +112,10 @@ fn shipping_stage_missing_sibling_has_an_explicit_injected_byte_counterweight() 
         Some(1),
         "missing sibling must be a Host startup failure: {stderr}"
     );
-    assert!(stderr.contains("KELD-CORE-037"), "{stderr}");
-    assert!(stderr.contains("KELD-RUNTIME-003"), "{stderr}");
-    assert!(
-        stderr.contains("before its initial authenticated generation bound"),
-        "{stderr}"
-    );
-    // The macOS Guardian's error path returns before forwarding captured
-    // child stderr. Do not infer that the entry never evaluated from silence.
+    assert!(reports_initial_unbound_termination(&stderr), "{stderr}");
+    // Require the Host's typed initial-bind failure and exact zero-window
+    // resource census, not an optional nested Guardian diagnostic or silence.
+    // Exact staged bytes plus the one-sibling counterweight establish causality.
     assert!(
         session_dirs_for(host_pid).is_empty(),
         "Host left app-link locator"
