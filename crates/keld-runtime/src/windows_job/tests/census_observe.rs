@@ -327,6 +327,40 @@ fn thread_cpu_100ns() -> u64 {
 }
 
 #[test]
+fn observe_live_member_waits_without_periodic_settled_census_polling() {
+    let mut fixture = CensusFixture::new();
+    let index = fixture.add_member(false);
+    let raw = fixture.outer.handle.as_raw_handle().cast();
+    let before = thread_cpu_100ns();
+    let mut snapshots = 0_u32;
+    let mut unsettled = 0_u32;
+    let refusal = observe_census(raw, &[], Instant::now() + Duration::from_secs(5), || {
+        snapshots += 1;
+        let snapshot = list_job_process_ids(raw, "held-member pacing fixture")?;
+        if !snapshot.is_settled() {
+            unsettled += 1;
+        }
+        Ok(snapshot)
+    })
+    .expect_err("the independently held live member must block release");
+    let cpu = Duration::from_nanos((thread_cpu_100ns() - before) * 100);
+    assert!(refusal.to_string().contains("deadline"), "{refusal}");
+    assert!(
+        fixture.children[index]
+            .try_wait()
+            .expect("held member liveness")
+            .is_none(),
+        "the observation must not terminate its member"
+    );
+    eprintln!("held-member census: {snapshots} snapshots, {unsettled} unsettled, CPU {cpu:?}");
+    assert!(
+        snapshots <= 3 + unsettled,
+        "periodic settled polling: {snapshots} snapshots, {unsettled} unsettled"
+    );
+    assert!(cpu < Duration::from_millis(50), "census busy-spun: {cpu:?}");
+}
+
+#[test]
 fn observe_unsettled_five_second_census_has_bounded_work_and_cpu() {
     let fixture = CensusFixture::new();
     let raw = fixture.outer.handle.as_raw_handle().cast();
