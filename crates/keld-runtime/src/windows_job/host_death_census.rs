@@ -215,21 +215,33 @@ fn check_deadline(deadline: Instant, snapshots: u32) -> Result<(), WindowsHostJo
 /// kernel count/list transition. Round sub-millisecond remainder up to one OS
 /// wait tick; never accept a clean result after the original absolute deadline.
 fn wait_to_retake(
+    policy: CensusPolicy,
     live_member: Option<&OwnedHandle>,
     deadline: Instant,
     snapshots: u32,
 ) -> Result<(), WindowsHostJobError> {
     check_deadline(deadline, snapshots)?;
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let wait = remaining.min(CENSUS_RETAKE_WAIT);
-    let millis = u32::try_from(wait.as_nanos().div_ceil(1_000_000)).unwrap_or(25);
+    // A live observed member is itself the wake source. Only transitions with
+    // no live handle and updater termination retries need periodic retakes.
+    let wait = if policy == CensusPolicy::Observe && live_member.is_some() {
+        remaining
+    } else {
+        remaining.min(CENSUS_RETAKE_WAIT)
+    };
+    // Keep even an unusually distant caller deadline finite; u32::MAX means
+    // INFINITE to Win32. The next round checks the original absolute deadline.
+    let millis = u32::try_from(wait.as_nanos().div_ceil(1_000_000))
+        .unwrap_or(u32::MAX - 1)
+        .min(u32::MAX - 1);
     // SAFETY: GetCurrentProcess returns a process-lifetime pseudo handle. It is
     // not owned or closed and cannot signal while this caller is running.
     let current = unsafe { GetCurrentProcess() };
     let raw = live_member.map_or(current, |member| member.as_raw_handle().cast());
     // SAFETY: the caller retains a query/synchronize member handle through this
-    // call, or raw is the current-process pseudo handle above. The wait is at
-    // most 25 ms and receives no pointers to caller-owned memory.
+    // call, or raw is the current-process pseudo handle above. The finite wait
+    // ends on that member's exit or the remaining deadline (rounded up by less
+    // than one millisecond); transition/termination retries wait at most 25 ms.
     match unsafe { WaitForSingleObject(raw, millis.max(1)) } {
         WAIT_OBJECT_0 | WAIT_TIMEOUT => Ok(()),
         _ => Err(WindowsHostJobError::new("host-death census retake wait")),
@@ -324,6 +336,6 @@ fn census(
                 snapshots,
             });
         }
-        wait_to_retake(waiting.as_ref(), deadline, snapshots)?;
+        wait_to_retake(policy, waiting.as_ref(), deadline, snapshots)?;
     }
 }
