@@ -1163,15 +1163,6 @@ fn mutants() -> Vec<Mutant> {
         // Finding 4430014058: the lane is a rule on the real file.
         Mutant {
             rule: Rule::LinkCode,
-            label: "a tracked symlink checked out as text leaves the lane",
-            apply: |f| {
-                f.write("docs/alias.md", "../crates/x/src/lib.rs");
-                f.symlinks.push("docs/alias.md".to_owned());
-                link_from_design(f, "../../alias.md");
-            },
-        },
-        Mutant {
-            rule: Rule::LinkCode,
             label: "a tracked symlink ancestor leaves the lane",
             apply: |f| {
                 f.write("docs/alias/lib.md", "# real\n");
@@ -5518,4 +5509,138 @@ fn only_an_autolink_is_a_value_in_angle_brackets() {
         assert_eq!(non_value(tag, false), Some(NonValue::Placeholder), "{tag}");
     }
     assert_eq!(non_value("<https://x/y>", false), None);
+}
+
+#[test]
+fn outside_census_refuses_index_symlinks_without_opening_text_checkout_targets() {
+    for present in [true, false] {
+        let fixture = Fixture::new();
+        let rel = "docs/census-index-alias.md";
+        if present {
+            fixture.write(rel, "harmless-target.md");
+        }
+        let mut report = Report::default();
+        check_outside(
+            &fixture.root,
+            &BTreeSet::new(),
+            &[Tracked {
+                path: rel.to_owned(),
+                symlink: true,
+            }],
+            &mut report,
+        );
+        assert_eq!(report.findings.len(), 1, "{present}: {:?}", report.findings);
+        assert_eq!(report.findings[0].rule, Rule::Unreadable);
+        assert!(report.findings[0].detail.contains("symlink"));
+        assert_eq!(
+            report.absent_markdown, 0,
+            "a dangling indexed link is not a deleted regular file"
+        );
+    }
+}
+
+#[test]
+fn outside_census_refuses_real_symlinks_and_linked_ancestors() {
+    #[cfg(unix)]
+    fn link(target: &Path, at: &Path, _directory: bool) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, at)
+    }
+    #[cfg(windows)]
+    fn link(target: &Path, at: &Path, directory: bool) -> std::io::Result<()> {
+        if directory {
+            std::os::windows::fs::symlink_dir(target, at)
+        } else {
+            std::os::windows::fs::symlink_file(target, at)
+        }
+    }
+    for directory in [false, true] {
+        let fixture = Fixture::new();
+        fixture.write("safe-target/note.md", "# ordinary note\n");
+        let alias = fixture.root.join("docs/census-real-alias.md");
+        let target = fixture.root.join(if directory {
+            "safe-target"
+        } else {
+            "safe-target/note.md"
+        });
+        link(&target, &alias, directory).expect("native symlink prerequisite must be exercised");
+        let rel = if directory {
+            "docs/census-real-alias.md/note.md"
+        } else {
+            "docs/census-real-alias.md"
+        };
+        let mut report = Report::default();
+        check_outside(
+            &fixture.root,
+            &BTreeSet::new(),
+            &[Tracked {
+                path: rel.to_owned(),
+                symlink: false,
+            }],
+            &mut report,
+        );
+        if directory {
+            #[cfg(windows)]
+            fs::remove_dir(&alias).expect("remove directory symlink");
+            #[cfg(unix)]
+            fs::remove_file(&alias).expect("remove directory symlink");
+        } else {
+            fs::remove_file(&alias).expect("remove file symlink");
+        }
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "{directory}: {:?}",
+            report.findings
+        );
+        assert_eq!(report.findings[0].rule, Rule::Unreadable);
+        assert!(report.findings[0].detail.contains("symlink"));
+        assert_eq!(fixture.read("safe-target/note.md"), "# ordinary note\n");
+    }
+}
+
+#[test]
+fn outside_census_keeps_regular_note_spec_and_absent_controls_distinct() {
+    let fixture = Fixture::new();
+    fixture.write("docs/census-note.md", "# ordinary note\n");
+    fixture.write("docs/census-spec.md", "## Acceptance criteria\n");
+    let tracked = [
+        "docs/census-note.md",
+        "docs/census-spec.md",
+        "docs/census-absent.md",
+    ]
+    .map(|path| Tracked {
+        path: path.to_owned(),
+        symlink: false,
+    });
+    let mut report = Report::default();
+    check_outside(&fixture.root, &BTreeSet::new(), &tracked, &mut report);
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    assert_eq!(report.findings[0].rule, Rule::Outside);
+    assert_eq!(report.findings[0].file, "docs/census-spec.md");
+    assert_eq!(report.absent_markdown, 1);
+}
+
+// The shared path fault now reaches two owners. Exercise the link rule alone so
+// its removal cannot be hidden by the census's independent UNREADABLE finding.
+#[test]
+fn a_text_checkout_symlink_still_fails_the_link_owner_independently() {
+    let mut fixture = Fixture::new();
+    fixture.write("docs/alias.md", "../crates/x/src/lib.rs");
+    fixture.symlinks.push("docs/alias.md".to_owned());
+    link_from_design(&fixture, "../../alias.md");
+    let path = format!("{DIR}/design.md");
+    let doc = Doc::parse(&path, &fixture.read(&path));
+    let mut ordinary = Report::default();
+    check_links(&fixture.root, &doc, &BTreeSet::new(), &mut ordinary);
+    assert!(ordinary.findings.is_empty(), "{:?}", ordinary.findings);
+    let mut linked = Report::default();
+    check_links(
+        &fixture.root,
+        &doc,
+        &BTreeSet::from(["docs/alias.md".to_owned()]),
+        &mut linked,
+    );
+    assert_eq!(linked.findings.len(), 1, "{:?}", linked.findings);
+    assert_eq!(linked.findings[0].rule, Rule::LinkCode);
+    assert_eq!(fixture.rules(), BTreeSet::from(["LINK-CODE", "UNREADABLE"]));
 }

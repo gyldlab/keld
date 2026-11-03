@@ -4900,6 +4900,7 @@ fn check_outside(root: &Path, sealed: &BTreeSet<String>, tracked: &[Tracked], re
         .filter(|name| !name.contains('/') && is_markdown_path(name))
         .map(str::to_owned)
         .collect();
+    let symlinks = symlink_set(tracked);
     for rel in tracked.iter().map(|file| file.path.as_str()) {
         if rel.starts_with(&root_prefix) || !is_markdown_path(rel) {
             continue;
@@ -4912,6 +4913,43 @@ fn check_outside(root: &Path, sealed: &BTreeSet<String>, tracked: &[Tracked], re
                 format!("a landed spec has this name; move it back to `{SPEC_ROOT}`"),
             );
             continue;
+        }
+        // Git mode matters even when Windows checks out a symlink as text.
+        // Reuse the link-path owner so linked ancestors cannot bypass this census.
+        if let Some(symlink) = symlink_on_path(root, rel, &symlinks) {
+            report.add(
+                Rule::Unreadable,
+                rel,
+                1,
+                format!("tracked Markdown passes through symlink `{symlink}`; replace it with a regular file"),
+            );
+            continue;
+        }
+        match fs::symlink_metadata(root.join(rel)) {
+            Ok(meta) if meta.file_type().is_file() => {}
+            Ok(_) => {
+                report.add(
+                    Rule::Unreadable,
+                    rel,
+                    1,
+                    "tracked Markdown is not a regular file; replace it before verification"
+                        .to_owned(),
+                );
+                continue;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                report.absent_markdown += 1;
+                continue;
+            }
+            Err(error) => {
+                report.add(
+                    Rule::Unreadable,
+                    rel,
+                    1,
+                    format!("cannot inspect this tracked file: {error}. Restore it"),
+                );
+                continue;
+            }
         }
         let bytes = match fs::read(root.join(rel)) {
             Ok(bytes) => bytes,
