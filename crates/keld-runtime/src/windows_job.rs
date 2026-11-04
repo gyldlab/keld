@@ -3036,6 +3036,10 @@ impl std::error::Error for WindowsHostJobError {
     }
 }
 
+mod primary_families;
+pub(crate) use primary_families::WindowsGenerationEnrollment;
+pub use primary_families::WindowsPrimaryFamilies;
+
 mod host_death_census;
 pub use host_death_census::WindowsExitCensus;
 use host_death_census::{exit_census, observe_census, open_census_member};
@@ -5079,6 +5083,7 @@ mod tests {
     }
 
     mod census_observe;
+    mod primary_families;
     mod process_id_list;
 
     /// Two plain Jobs, `outer` standing for the host-death Job and `inner` for the

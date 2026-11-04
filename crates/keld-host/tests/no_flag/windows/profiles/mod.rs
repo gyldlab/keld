@@ -6,6 +6,7 @@ mod handover;
 mod installed;
 mod lifecycle;
 mod purge;
+mod release_witness;
 mod sessions;
 mod startup;
 mod storage;

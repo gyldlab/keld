@@ -1070,6 +1070,7 @@ mod tests {
     use super::*;
 
     mod first_navigation;
+    mod profile_release;
 
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
@@ -1083,6 +1084,7 @@ mod tests {
             events,
             crate::webview2::AppReadyTrigger::NavigationReady,
             || {},
+            |_| Ok::<(), std::convert::Infallible>(()),
         )
     }
 

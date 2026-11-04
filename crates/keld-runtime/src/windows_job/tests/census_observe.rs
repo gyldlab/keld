@@ -25,15 +25,15 @@ use crate::windows_job::{
 /// Actual native Jobs and processes with an explicit harness-only cleanup owner.
 /// The test process is not enrolled in the stand-in host Job. Its duplicated
 /// handle is closed here, unlike the real host's process-lifetime capability.
-struct CensusFixture {
-    host: WindowsHostDeathJob,
+pub(super) struct CensusFixture {
+    pub(super) host: WindowsHostDeathJob,
     outer: WindowsProcessJob,
     families: Vec<WindowsProcessJob>,
-    children: Vec<Child>,
+    pub(super) children: Vec<Child>,
 }
 
 impl CensusFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let outer = WindowsProcessJob::create().expect("outer native Job");
         let host = WindowsHostDeathJob {
             handle: ManuallyDrop::new(outer.handle.try_clone().expect("retain outer Job")),
@@ -52,9 +52,13 @@ impl CensusFixture {
         }
     }
 
-    fn add_member(&mut self, new_family: bool) -> usize {
+    pub(super) fn add_member(&mut self, new_family: bool) -> usize {
+        self.add_child(spawn_blocking_descendant(), new_family)
+    }
+
+    pub(super) fn add_child(&mut self, child: Child, new_family: bool) -> usize {
         let index = self.children.len();
-        self.children.push(spawn_blocking_descendant());
+        self.children.push(child);
         let child = &self.children[index];
         // SAFETY: both handles are live, owned by this fixture, and the child
         // is assigned to the outer Job before any nested family assignment.
@@ -79,7 +83,7 @@ impl CensusFixture {
         index
     }
 
-    fn end_member(&mut self, index: usize) {
+    pub(super) fn end_member(&mut self, index: usize) {
         self.children[index]
             .kill()
             .expect("end only this test-owned member");

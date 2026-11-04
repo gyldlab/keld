@@ -31,7 +31,6 @@ try {
 report(`MODE ${JSON.stringify({
   pid: process.pid,
   hint: Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") ?? null,
-  admission: Reflect.get(process.env, "KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT") ?? null,
   stall: Reflect.get(process.env, "KELD_T1B_STALL_BEFORE_INIT") ?? null,
   bunOptions: Reflect.get(process.env, "BUN_OPTIONS") ?? null,
 })}`);

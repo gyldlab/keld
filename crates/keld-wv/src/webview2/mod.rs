@@ -1628,6 +1628,8 @@ fn create_environment_with_options_until(
 ) -> Result<ICoreWebView2Environment, WvError> {
     let user_data = HSTRING::from(directory.as_os_str());
     let (tx, rx) = mpsc::channel();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    t2_test_observation::environment_requested();
 
     // SAFETY: called on the engine thread with a live STA (module note). The
     // handler is a one-shot completion callback delivered via this thread's
@@ -1723,6 +1725,8 @@ fn create_controller_observed_until(
     deadline: Instant,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
     let (tx, rx) = mpsc::channel();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    t2_test_observation::controller_requested();
     #[cfg(all(feature = "media-acceptance", test))]
     media_acceptance::observe_com_phase("controller-call-enter");
 
@@ -2155,6 +2159,9 @@ fn scavenge_ephemeral_profiles(
     Ok(removed)
 }
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod t2_test_observation;
+
 mod saved_media_permissions;
 #[cfg(test)]
 use saved_media_permissions::{SavedPermission, saved_media_permission_needs_deny};
@@ -2549,6 +2556,7 @@ struct ProfileReleaseWait {
     /// still unsignaled. The hang guard runs from here.
     armed_at: Cell<Option<Instant>>,
     observed: Cell<bool>,
+    normal_exit_observed_at: Cell<Option<Instant>>,
     fault: Cell<Option<ProfileReleaseFault>>,
     post_exit_deadline: Cell<Option<Instant>>,
     /// The KEL-53 §7 h9 fault fixture: a drained release event is lost instead
@@ -2615,6 +2623,7 @@ impl ProfileReleaseWait {
             hang_guard,
             armed_at: Cell::new(None),
             observed: Cell::new(false),
+            normal_exit_observed_at: Cell::new(None),
             fault: Cell::new(None),
             post_exit_deadline: Cell::new(None),
             #[cfg(feature = "profile-test-hooks")]
@@ -2671,6 +2680,7 @@ impl ProfileReleaseWait {
         }
         let Some(receiver) = self.receiver.as_ref() else {
             self.observed.set(true);
+            self.normal_exit_observed_at.set(Some(Instant::now()));
             return;
         };
         #[cfg(feature = "profile-test-hooks")]
@@ -2686,6 +2696,7 @@ impl ProfileReleaseWait {
             }
             Ok(Ok(())) => {
                 self.observed.set(true);
+                self.normal_exit_observed_at.set(Some(Instant::now()));
                 #[cfg(all(feature = "media-acceptance", test))]
                 if let Some(armed_at) = self.armed_at.get() {
                     media_acceptance::observe_barrier_released(self.site, armed_at.elapsed());
@@ -2743,6 +2754,35 @@ impl ProfileReleaseWait {
 
     fn fault(&self) -> Option<ProfileReleaseFault> {
         self.fault.get()
+    }
+
+    /// The census shares the already-started post-exit grace. A normal receipt
+    /// observed before terminal arming starts its release budget at that arming;
+    /// an already-recorded process-exit deadline is never renewed.
+    fn release_witness_deadline(&self) -> Result<Instant, WvError> {
+        let armed = self.armed_at.get().ok_or_else(|| {
+            profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                "profile release was never armed",
+            )
+        })?;
+        let deadline = if let Some(deadline) = self.post_exit_deadline.get() {
+            deadline
+        } else {
+            self.normal_exit_observed_at
+                .get()
+                .unwrap_or(armed)
+                .max(armed)
+                .checked_add(self.grace)
+                .ok_or_else(|| profile_failure(ProfileErrorKind::LifecycleUnproven))?
+        };
+        if Instant::now() >= deadline {
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                "the existing post-exit grace expired before the host release witness completed",
+            ));
+        }
+        Ok(deadline)
     }
 
     fn exit_ready(&self, expected_pid: &AtomicU32) -> bool {
@@ -2903,6 +2943,16 @@ impl fmt::Debug for WebView2Engine {
 }
 
 impl WebView2Engine {
+    /// Whether this backend implements managed window build/close/release.
+    ///
+    /// The release-witness integration alone does not implement managed windows.
+    /// Core combines this native fact with its actual borrowed release witness.
+    /// GH1188 T3 changes it only with the complete managed-window/fault proof.
+    #[must_use]
+    pub const fn supports_managed_windows() -> bool {
+        false
+    }
+
     /// Creates the engine, its event loop, and the shared environment.
     ///
     /// Must be called on the process main thread: tao pumps the Win32 message
@@ -2933,6 +2983,8 @@ impl WebView2Engine {
     /// is not installed, so callers fail with install guidance before a window
     /// ever appears.
     pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        t2_test_observation::begin();
         runtime_version()?;
         let profile_root = known_local_app_data()?;
         let selected = prepare_profile_before_event_loop(&profile_root, selection);
@@ -3036,6 +3088,9 @@ impl WebView2Engine {
         engine.browser_exit_environment = Some(browser_exit.environment);
         engine.browser_exit_token = Some(browser_exit.token);
         engine.expected_browser_pid = expected_browser_pid;
+        // The verified environment and exit observer exist before Running is
+        // durable. Zero-controller sessions must use the same stop/idle chain.
+        engine.mark_profile_running()?;
         Ok(engine)
     }
 
@@ -3142,10 +3197,22 @@ impl WebView2Engine {
     }
 
     fn finish_profile_release(&mut self, release_observed: bool) -> Result<(), WvError> {
+        // The standalone hello/media loop has no Host/Core session Job.
+        self.finish_profile_release_with(release_observed, || Ok(()))
+    }
+
+    fn finish_profile_release_with(
+        &mut self,
+        release_observed: bool,
+        witness: impl FnOnce() -> Result<(), WvError>,
+    ) -> Result<(), WvError> {
         let expected_pid = self.expected_browser_pid.load(Ordering::Acquire);
         if expected_pid != 0 && !release_observed {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
         }
+        // No observer removal, profile take, Idle write, or deletion precedes
+        // the Host's retained non-family census. Error preserves Stopping.
+        witness()?;
         if let (Some(environment), Some(token)) = (
             self.browser_exit_environment.as_ref(),
             self.browser_exit_token.take(),
@@ -3226,6 +3293,10 @@ impl WebView2Engine {
     /// the host arms its external Init watch there. A
     /// [`AppReadyTrigger::HostInitialized`] boot then emits
     /// [`AppWindowEvent::HostInitialized`] from the loop's actual first Init turn.
+    /// `release_witness` is mandatory for every application session. Core supplies
+    /// its retained host-death Job census after this loop ends and before Idle or
+    /// deletion. It receives the remaining absolute post-exit deadline; errors are
+    /// diagnosed and returned as `KELD-WV-009`. The standalone hello loop differs.
     ///
     /// # Errors
     ///
@@ -3233,12 +3304,13 @@ impl WebView2Engine {
     /// its deadline, and [`WvError::EventLoop`] for duplicate run, fatal
     /// session command, or a non-zero tao exit.
     #[allow(clippy::too_many_lines)] // one UI loop keeps terminal intent, controller drop, and profile-release ordering contiguous
-    pub fn run_app_until_quit(
+    pub fn run_app_until_quit<E: fmt::Display>(
         mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
         ready_trigger: AppReadyTrigger,
         on_loop_entry: impl FnOnce(),
+        release_witness: impl FnOnce(Instant) -> Result<(), E>,
     ) -> Result<(), WvError> {
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
@@ -3365,12 +3437,16 @@ impl WebView2Engine {
             }
             match event {
                 Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::Quit)) => {
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    t2_test_observation::terminal("Quit");
                     commit_profile_stop(stop_in_loop.as_ref());
                     views.clear();
                     exit_requested = true;
                     release_in_loop.arm();
                 }
                 Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::Fatal)) => {
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    t2_test_observation::terminal("Fatal");
                     fatal_in_loop.store(true, Ordering::Release);
                     commit_profile_stop(stop_in_loop.as_ref());
                     views.clear();
@@ -3428,6 +3504,8 @@ impl WebView2Engine {
             }
         });
         stop_app_wake_bridge(&stop_bridge, bridge);
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        t2_test_observation::loop_ended();
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -3442,7 +3520,15 @@ impl WebView2Engine {
         } else {
             finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
         };
-        self.finish_profile_release(release.observed.get())?;
+        self.finish_profile_release_with(release.observed.get(), || {
+            release_witness(release.release_witness_deadline()?).map_err(|error| {
+                eprintln!("KELD_WV_RELEASE_WITNESS_FAILED {error}");
+                profile_failure_with(
+                    ProfileErrorKind::LifecycleUnproven,
+                    "the host non-family process release witness failed; profile ownership is retained",
+                )
+            })
+        })?;
         scavenge_after_release(scavenge_root)?;
         app_result
     }

@@ -270,6 +270,38 @@ pub(crate) fn read_pipe_on_thread(mut pipe: impl Read + Send + 'static) -> PipeT
     PipeText { read, ended }
 }
 
+/// Finds one complete line in the existing capture, preserving all bytes for
+/// final output. The returned byte cursor supports consecutive session receipts.
+pub(crate) fn pipe_line_after(
+    pipe: &PipeText,
+    prefix: &str,
+    after: usize,
+) -> Option<(String, usize)> {
+    let state = pipe.read.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(
+        state.failure.is_none(),
+        "live capture failed: {:?}",
+        state.failure
+    );
+    assert!(
+        after <= state.bytes.len(),
+        "capture cursor exceeds observed bytes"
+    );
+    let mut offset = after;
+    for line in state.bytes[after..].split_inclusive(|byte| *byte == b'\n') {
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        offset += line.len();
+        let text = String::from_utf8_lossy(line);
+        let text = text.trim_end_matches(['\r', '\n']);
+        if text.starts_with(prefix) {
+            return Some((text.to_owned(), offset));
+        }
+    }
+    None
+}
+
 /// The text of a pipe [`read_pipe_on_thread`] reads by `deadline`. If the pipe is
 /// still open then (a live process holds its write end), this is the text read so
 /// far followed by a marker; the reader thread stays blocked on the pipe and ends

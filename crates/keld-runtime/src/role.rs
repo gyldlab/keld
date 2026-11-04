@@ -504,6 +504,8 @@ pub struct RoleConfig {
     env_remove: Vec<OsString>,
     current_dir: Option<PathBuf>,
     staged_bun_launch: Option<(PathBuf, bool)>,
+    #[cfg(windows)]
+    windows_primary_families: Option<crate::windows_job::WindowsPrimaryFamilies>,
     restart_policy: RestartPolicy,
     admission_timeout: Duration,
     #[cfg(target_os = "linux")]
@@ -549,6 +551,8 @@ impl RoleConfig {
             env_remove: Vec::new(),
             current_dir: None,
             staged_bun_launch: None,
+            #[cfg(windows)]
+            windows_primary_families: None,
             restart_policy: RestartPolicy::default(),
             admission_timeout: DEFAULT_ADMISSION_TIMEOUT,
             #[cfg(target_os = "linux")]
@@ -559,6 +563,20 @@ impl RoleConfig {
             #[cfg(unix)]
             probe_tx: None,
         }
+    }
+
+    /// Attaches the session's retained Windows primary-generation family owner.
+    ///
+    /// Every spawn reserves membership before launch and binds its retained child
+    /// before authenticated admission. The host must retain a clone through release.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn windows_primary_families(
+        mut self,
+        families: crate::windows_job::WindowsPrimaryFamilies,
+    ) -> Self {
+        self.windows_primary_families = Some(families);
+        self
     }
 
     /// Lifecycle owner this command will run as.
@@ -892,7 +910,24 @@ impl ChildPreparer for RolePreparer {
             .as_ref()
             .map(|(root, native_facade)| staged_bun_launch_args(root, *native_facade))
             .transpose()?;
+        #[cfg(windows)]
+        let enrollment = self
+            .config
+            .windows_primary_families
+            .as_ref()
+            .map(crate::windows_job::WindowsPrimaryFamilies::begin_generation)
+            .transpose()
+            .map_err(|source| RuntimeError::Lifecycle {
+                phase: "Windows primary family reservation",
+                source: std::io::Error::other(source),
+            })?;
         let provisioned = self.generation_owner.provision(attempt)?;
+        #[cfg(windows)]
+        let provisioned = {
+            let mut provisioned = provisioned;
+            provisioned.lease.windows_enrollment = enrollment;
+            provisioned
+        };
         #[cfg(target_os = "linux")]
         if let Some(profile) = &self.config.linux_strict {
             return prepare_linux_strict(&self.config, profile, provisioned);
@@ -1091,6 +1126,8 @@ impl RoleGenerationOwner {
                 admission_rx,
                 admission_thread: None,
                 admission_done: false,
+                #[cfg(windows)]
+                windows_enrollment: None,
                 link: Arc::new(Mutex::new(None)),
                 events_tx: self.events_tx.clone(),
                 bound_tx: self.bound_tx.clone(),
@@ -1152,6 +1189,8 @@ pub(crate) struct RoleGenerationLease {
     admission_rx: Receiver<AdmissionResult>,
     admission_thread: Option<JoinHandle<()>>,
     admission_done: bool,
+    #[cfg(windows)]
+    windows_enrollment: Option<crate::windows_job::WindowsGenerationEnrollment>,
     link: Arc<Mutex<Option<BootstrapStream>>>,
     events_tx: Sender<RoleEvent>,
     bound_tx: Option<Sender<BoundRoleGeneration>>,
@@ -1161,6 +1200,19 @@ pub(crate) struct RoleGenerationLease {
 }
 
 impl GenerationLease for RoleGenerationLease {
+    #[cfg(windows)]
+    fn bind_child(&mut self, child: &std::process::Child) -> Result<(), RuntimeError> {
+        if let Some(enrollment) = self.windows_enrollment.as_mut() {
+            enrollment
+                .bind_child(child)
+                .map_err(|source| RuntimeError::Lifecycle {
+                    phase: "Windows primary family binding",
+                    source: std::io::Error::other(source),
+                })?;
+        }
+        Ok(())
+    }
+
     fn child_spawned(&mut self, pid: u32, attempt: u32) -> Result<(), RuntimeError> {
         let listener = self
             .listener
@@ -1908,6 +1960,8 @@ mod lifecycle_tests {
             admission_rx,
             admission_thread: None,
             admission_done: false,
+            #[cfg(windows)]
+            windows_enrollment: None,
             link: Arc::new(Mutex::new(None)),
             events_tx,
             bound_tx: Some(bound_tx),
