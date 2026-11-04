@@ -115,6 +115,7 @@ impl MinimizeProbe {
                 .map_err(failure)?;
             }
             (Phase::Restored, host_window_probe::Point::Resized(id)) if id == self.window_id => {
+                // SAFETY: query the fixture-owned native parent on its UI thread.
                 if unsafe { IsIconic(self.hwnd) }.as_bool() {
                     return Ok(false);
                 }

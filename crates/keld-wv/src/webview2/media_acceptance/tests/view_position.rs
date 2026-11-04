@@ -113,6 +113,8 @@ fn position_case(hello: bool) -> Result<(), WvError> {
         }
         if stage == 2 {
             if hello {
+                // SAFETY: post a real close to the fixture-owned window from its UI
+                // loop. Both message payloads are zero; no borrowed pointer escapes.
                 unsafe {
                     let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 }

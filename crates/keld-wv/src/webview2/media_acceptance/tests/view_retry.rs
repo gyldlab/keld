@@ -51,6 +51,7 @@ fn native_minimize(view: &View, yes: bool) -> Result<(), WvError> {
             Some(LPARAM(0)),
         );
     }
+    // SAFETY: query the native HWND retained by this live, same-thread fixture.
     if unsafe { IsIconic(hwnd) }.as_bool() != yes {
         return Err(failure("native minimize stimulus disagrees"));
     }
@@ -64,6 +65,8 @@ fn focus_parent(view: &View) -> Result<(), WvError> {
         let _ = SetActiveWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
     }
+    // SAFETY: GetActiveWindow reads this UI thread; no pointer arguments.
+    // SAFETY: GetFocus reads this UI thread; no pointer arguments.
     if unsafe { GetActiveWindow() } != hwnd || unsafe { GetFocus() } != hwnd {
         return Err(failure("native retry focus stimulus disagrees"));
     }
@@ -110,7 +113,11 @@ fn exercise(view: &View, step: Step) -> Result<(), WvError> {
         }
         if step == Step::Focus {
             let hwnd = HWND(view.window.hwnd() as _);
+            // SAFETY: same-thread focus query; the returned HWND is read-only evidence.
             let focus = unsafe { GetFocus() };
+            // SAFETY: GetActiveWindow reads this fixture UI thread without pointers.
+            // SAFETY: IsChild queries our live parent and numeric focus handle;
+            // no Rust memory is dereferenced and no action uses the observed handle.
             if unsafe { GetActiveWindow() } != hwnd || !unsafe { IsChild(hwnd, focus) }.as_bool() {
                 return Err(failure(
                     "failed focus was not retried into actual WebView child",
