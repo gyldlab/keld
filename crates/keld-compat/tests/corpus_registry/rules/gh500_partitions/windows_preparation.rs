@@ -1,7 +1,7 @@
 //! GH-1183 W0 preparation, inside the existing GH-500 fixture family.
 //!
 //! No native operation runs here. These cases exercise the existing corpus,
-//! evidence and admission owners. ProductRecordsNeedReceipt is a deliberate
+//! evidence and admission owners. `ProductRecordsNeedReceipt` is a deliberate
 //! blanket refusal, not a document-byte, generation or native-origin verifier.
 
 use std::collections::BTreeSet;
