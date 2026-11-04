@@ -10,6 +10,8 @@ use super::*;
 
 mod expected_identity;
 #[cfg(windows)]
+pub(crate) mod native_windows;
+#[cfg(windows)]
 pub(crate) mod signed_image;
 
 const APP_ID: &str = "dev.keld.fixture";

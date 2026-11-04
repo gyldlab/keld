@@ -1,6 +1,8 @@
 //! Identity binding of journaled health receipts, channels, process retirement,
 //! and the coordinator image. Product oracles observe protected disk records.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::{
     ActivationEffect, ActivationFailureClass, ActivationHealthReceipt, ActivationPhase,
     ProcessFamilyRetirement, WindowsActivationOutcome, assert_refusal, assert_resolved, begin,
@@ -11,7 +13,7 @@ use super::{
 #[test]
 fn substituted_health_receipts_refuse_before_any_write_and_leave_recovery_authoritative() {
     for substitution in ["attempt", "channel", "candidate"] {
-        let fixture = tempfile::tempdir().expect("receipt falsifier fixture");
+        let fixture = native_install_tempdir().expect("receipt falsifier fixture");
         let trust = seed_per_user_baseline(fixture.path());
         let attempt = begin(&trust, "2.0.0");
         let before = observe(&trust);
@@ -47,7 +49,7 @@ fn substituted_health_receipts_refuse_before_any_write_and_leave_recovery_author
 #[test]
 fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_and_candidate() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("expected digest fixture");
+    let fixture = native_install_tempdir().expect("expected digest fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let attempt = begin(&trust, "2.0.0");
     let expected = *attempt.health_receipt_digest();
@@ -90,7 +92,7 @@ fn the_expected_digest_is_the_receipt_digest_of_the_journaled_attempt_channel_an
 
 #[test]
 fn substituted_retirement_or_coordinator_refuses_live_and_recovery_writes() {
-    let fixture = tempfile::tempdir().expect("retirement falsifier fixture");
+    let fixture = native_install_tempdir().expect("retirement falsifier fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = verifier(&trust);
     let attempt = begin(&trust, "2.0.0");

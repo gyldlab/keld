@@ -3,6 +3,8 @@
 //! These authentic Windows transaction tests preserve on-disk journal state,
 //! process ownership, crash cuts and channel identity, without fake mocks.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::io::Write as _;
 
 use super::support;
@@ -20,7 +22,7 @@ use crate::{ActivationEffect, ActivationFailureClass, UpdateError};
 
 #[test]
 fn an_unlaunched_attempt_resumes_under_the_lease_with_fresh_channels() {
-    let fixture = tempfile::tempdir().expect("unlaunched resume fixture");
+    let fixture = native_install_tempdir().expect("unlaunched resume fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let stdout = support::child(
         CRASH_HELPER,
@@ -114,7 +116,7 @@ pub(super) fn lost_first_attempt(
 
 #[test]
 fn minting_writes_nothing_until_the_owner_journals_its_facts() {
-    let fixture = tempfile::tempdir().expect("mint-then-journal fixture");
+    let fixture = native_install_tempdir().expect("mint-then-journal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     plant_stale_record_preparation(&trust);
     let (root, stage) = complete(&trust, "2.0.0");
@@ -174,7 +176,7 @@ fn minting_writes_nothing_until_the_owner_journals_its_facts() {
 
 #[test]
 fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
-    let fixture = tempfile::tempdir().expect("recovery re-mint fixture");
+    let fixture = native_install_tempdir().expect("recovery re-mint fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
     plant_stale_record_preparation(&trust);
@@ -245,7 +247,7 @@ fn journal_bound_recovery_re_mints_an_unlaunched_attempt_without_writing() {
 
 #[test]
 fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
-    let fixture = tempfile::tempdir().expect("fresh endpoint refusal fixture");
+    let fixture = native_install_tempdir().expect("fresh endpoint refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let (root, stage) = complete(&trust, "2.0.0");
     let before = observe(&trust);
@@ -266,7 +268,7 @@ fn an_endpoint_refusal_between_mint_and_journal_writes_nothing() {
     commit(&trust, "2.0.0");
     assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
 
-    let fixture = tempfile::tempdir().expect("resumed endpoint refusal fixture");
+    let fixture = native_install_tempdir().expect("resumed endpoint refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
     let minted = load_windows_recovery_inspection(&trust, &verifier(&trust))
@@ -329,7 +331,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
         ),
         (ATTEMPT_OWNER, zero_luid, ZERO_LUID),
     ] {
-        let fixture = tempfile::tempdir().expect("fresh owner-fact refusal fixture");
+        let fixture = native_install_tempdir().expect("fresh owner-fact refusal fixture");
         let trust = seed_per_user_baseline(fixture.path());
         plant_stale_record_preparation(&trust);
         let (root, stage) = complete(&trust, "2.0.0");
@@ -350,7 +352,7 @@ fn owner_facts_that_name_no_process_or_session_refuse_before_any_write() {
         );
     }
 
-    let fixture = tempfile::tempdir().expect("resumed owner-fact refusal fixture");
+    let fixture = native_install_tempdir().expect("resumed owner-fact refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
     for (initiating_logon, reason) in [
@@ -403,7 +405,7 @@ pub(in super::super) fn downgrade_journal_to_v1(trust: &WindowsBaselineTrust) {
 fn a_landed_v1_journal_finishes_and_its_re_mint_record_is_v2() {
     support::assert_user_principal_token();
     // An unlaunched v1 attempt resumes; its re-mint record supplies the owner facts.
-    let fixture = tempfile::tempdir().expect("v1 publish-pending fixture");
+    let fixture = native_install_tempdir().expect("v1 publish-pending fixture");
     let trust = seed_per_user_baseline(fixture.path());
     lost_first_attempt(fixture.path(), &trust, "floor-advanced");
     downgrade_journal_to_v1(&trust);
@@ -415,7 +417,7 @@ fn a_landed_v1_journal_finishes_and_its_re_mint_record_is_v2() {
     assert_resolved(&trust, "2.0.0", Some("1.0.0"), "2.0.0", &["1.0.0", "2.0.0"]);
 
     // A launched v1 attempt rolls back; its phase writes keep the v1 encoding.
-    let fixture = tempfile::tempdir().expect("v1 awaiting-health fixture");
+    let fixture = native_install_tempdir().expect("v1 awaiting-health fixture");
     let trust = seed_per_user_baseline(fixture.path());
     lost_first_attempt(fixture.path(), &trust, "awaiting-health");
     downgrade_journal_to_v1(&trust);

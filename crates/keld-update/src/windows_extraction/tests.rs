@@ -50,7 +50,8 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().expect("isolated extraction fixture");
+        let temp = crate::tests::native_windows::native_install_tempdir()
+            .expect("isolated native extraction fixture");
         let mut identity = expected_identity();
         identity.install_mode = DirectInstallMode::PerUserDirect;
         identity.install_root = temp.path().join("install");

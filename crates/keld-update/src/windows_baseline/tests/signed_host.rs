@@ -6,6 +6,8 @@
 //! and `select_active_package_for_executable`, as the host does with the handle KEL-135
 //! verified; Authenticode verification itself is the host's and is not exercised here.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::locate::{host_path, open_image, payload_for_identity, refuses};
 use super::support::host_package_content_with;
 use super::writer::seed_per_user_baseline_with;
@@ -30,7 +32,7 @@ pub(super) fn host_embedded_for(app_id: &str) -> Vec<u8> {
 
 #[test]
 fn the_tree_host_expectation_selects_through_the_same_handle() {
-    let fixture = tempfile::tempdir().expect("signed-host selection fixture");
+    let fixture = native_install_tempdir().expect("signed-host selection fixture");
     let trust = seed_per_user_baseline_with(
         fixture.path(),
         &host_package_content_with(&host_embedded_for(
@@ -61,7 +63,7 @@ fn the_tree_host_expectation_selects_through_the_same_handle() {
 
 #[test]
 fn a_host_embedded_for_another_app_refuses_on_the_record() {
-    let fixture = tempfile::tempdir().expect("foreign-expectation fixture");
+    let fixture = native_install_tempdir().expect("foreign-expectation fixture");
     let trust = seed_per_user_baseline_with(
         fixture.path(),
         &host_package_content_with(&host_embedded_for("dev.keld.other")),

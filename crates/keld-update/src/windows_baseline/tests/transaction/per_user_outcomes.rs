@@ -3,6 +3,8 @@
 //! These end-to-end tests preserve the original on-disk journal, lease,
 //! rollback and signed-manifest assertions; shared fixture setup stays in parent.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::{
     assert_resolved, begin, commit, observe, receipt, retirement, seed_per_user_baseline, support,
     verifier,
@@ -17,7 +19,7 @@ use crate::windows_baseline::{
 #[test]
 fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versions() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("per-user activation fixture");
+    let fixture = native_install_tempdir().expect("per-user activation fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = verifier(&trust);
 
@@ -90,7 +92,7 @@ fn per_user_updates_commit_through_the_common_trace_and_retire_superseded_versio
 #[test]
 fn per_user_rollback_restores_the_target_retires_the_candidate_and_keeps_the_floor() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("per-user rollback fixture");
+    let fixture = native_install_tempdir().expect("per-user rollback fixture");
     let trust = seed_per_user_baseline(fixture.path());
 
     let attempt = begin(&trust, "2.0.0");
