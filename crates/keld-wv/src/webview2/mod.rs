@@ -366,8 +366,7 @@ pub const WEBVIEW2_STARTUP_BOUND: Duration = EXCLUSIVE_UDF_PROBE_BOUND
     .saturating_add(PROFILE_LAUNCH_DEADLINE)
     .saturating_add(crate::INITIAL_NAVIGATION_DEADLINE);
 
-const LAUNCH_DEADLINE_EXPIRED: &str =
-    "the WebView2 launch deadline expired before the environment or controller completed";
+const LAUNCH_DEADLINE_EXPIRED: &str = "the WebView2 launch deadline expired before environment, controller, or saved-permission setup completed";
 const MESSAGE_WAIT_FAILED: &str = "the Win32 message wait failed while waiting for WebView2";
 const MESSAGE_PUMP_QUIT: &str = "WM_QUIT reached the profile wait before WebView2 completed";
 const BROWSER_EXIT_WAKE_UNREGISTERED: &str = "the browser-exit wake could not be registered, so the release barrier could not observe the browser's exit";
@@ -593,9 +592,23 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
     Ok(())
 }
 
+/// Enforces the original launch budget without resetting it between native steps.
+fn check_launch_deadline(deadline: Instant) -> Result<(), WvError> {
+    if Instant::now() >= deadline {
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("launch-deadline-expired");
+        return Err(profile_failure_with(
+            ProfileErrorKind::LifecycleUnproven,
+            LAUNCH_DEADLINE_EXPIRED,
+        ));
+    }
+    Ok(())
+}
+
 /// Pumps this thread until `receiver` yields or the launch `deadline` expires.
 ///
-/// This bounds `WebView2` launches only ([`PROFILE_LAUNCH_DEADLINE`]). Browser
+/// This bounds `WebView2` startup and saved-permission reconciliation with one
+/// absolute deadline ([`PROFILE_LAUNCH_DEADLINE`]). Browser
 /// shutdown goes through [`wait_for_browser_exit`], which has no correctness
 /// bound while the browser process is alive, only the
 /// [`BROWSER_SHUTDOWN_HANG_GUARD`] kill switch.
@@ -604,14 +617,7 @@ fn wait_for_launch_with_message_pump_until<T>(
     deadline: Instant,
 ) -> Result<T, WvError> {
     loop {
-        if Instant::now() >= deadline {
-            #[cfg(all(feature = "media-acceptance", test))]
-            media_acceptance::observe_com_phase("launch-deadline-expired");
-            return Err(profile_failure_with(
-                ProfileErrorKind::LifecycleUnproven,
-                LAUNCH_DEADLINE_EXPIRED,
-            ));
-        }
+        check_launch_deadline(deadline)?;
         match receiver.try_recv() {
             Ok(value) => return Ok(value),
             Err(TryRecvError::Disconnected) => {
@@ -1671,8 +1677,10 @@ fn environment_creation_error(phase: &'static str, error: &windows::core::Error)
 fn create_controller(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
+    deadline: Instant,
 ) -> Result<ICoreWebView2Controller, WvError> {
-    create_controller_observed(environment, hwnd).map_err(ControllerCreationError::into_wv_error)
+    create_controller_observed_until(environment, hwnd, deadline)
+        .map_err(ControllerCreationError::into_wv_error)
 }
 
 enum ControllerCreationError {
@@ -1712,18 +1720,12 @@ impl fmt::Display for ControllerCreationError {
     }
 }
 
-fn create_controller_observed(
-    environment: &ICoreWebView2Environment,
-    hwnd: HWND,
-) -> Result<ICoreWebView2Controller, ControllerCreationError> {
-    create_controller_observed_until(environment, hwnd, Instant::now() + PROFILE_LAUNCH_DEADLINE)
-}
-
 fn create_controller_observed_until(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
     deadline: Instant,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
+    check_launch_deadline(deadline).map_err(ControllerCreationError::Pump)?;
     let (tx, rx) = mpsc::channel();
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     t2_test_observation::controller_requested();
@@ -3671,6 +3673,9 @@ fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
 
 impl WebEngine for WebView2Engine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
+        let deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
+        #[cfg(all(feature = "media-acceptance", test))]
+        saved_media_permissions::test_control::record_build(deadline);
         let Some(event_loop) = self.event_loop.as_ref() else {
             return Err(WvError::EventLoop(String::from(
                 "run loop already started; create webviews before run_until_closed",
@@ -3693,7 +3698,7 @@ impl WebEngine for WebView2Engine {
             .map_err(|e| WvError::Window(e.to_string()))?;
 
         let hwnd = HWND(window.hwnd() as _);
-        let controller = create_controller(&self.environment, hwnd)?;
+        let controller = create_controller(&self.environment, hwnd, deadline)?;
         // SAFETY: controller was created on this thread a moment ago.
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|err| WvError::Webview(format!("controller returned no webview: {err}")))?;
@@ -3706,7 +3711,7 @@ impl WebEngine for WebView2Engine {
             webview,
         };
         if !self.saved_permissions_reconciled && saved_permission_reconciliation_enabled() {
-            reconcile_saved_media_permissions(&view.webview)?;
+            reconcile_saved_media_permissions(&view.webview, deadline)?;
             self.saved_permissions_reconciled = true;
         }
         self.mark_profile_running()?;
