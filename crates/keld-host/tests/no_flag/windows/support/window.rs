@@ -7,6 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) use census::app_top_level_windows;
+pub(crate) use observation::NativeWindowSnapshot;
+
+mod observation;
 
 /// The independent per-PID top-level census used by product facade acceptance.
 mod census {
