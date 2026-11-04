@@ -68,14 +68,44 @@ struct Evidence {
 thread_local! {
     static EVIDENCE: RefCell<Evidence> = RefCell::new(Evidence::default());
     static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
+    static COM_PHASE_CLOCK: Cell<Option<Instant>> = const { Cell::new(None) };
+    static COM_PUMP_COUNTS: Cell<(u64, u64, u64)> = const { Cell::new((0, 0, 0)) };
 }
 
 /// Flush each phase before the fixture watchdog can terminate the process.
 pub(super) fn observe_com_phase(stage: &'static str) {
     COM_LIFETIME_PHASES.with(|enabled| {
         if enabled.get() {
-            println!("KELD_COM_PHASE stage={stage}");
+            let elapsed = COM_PHASE_CLOCK.with(|clock| {
+                let start = clock.get().unwrap_or_else(|| {
+                    let now = Instant::now();
+                    clock.set(Some(now));
+                    now
+                });
+                start.elapsed()
+            });
+            let (waits, timeouts, posted) = COM_PUMP_COUNTS.with(Cell::get);
+            println!(
+                "KELD_COM_PHASE stage={stage} elapsed_ms={} waits={waits} timeouts={timeouts} posted={posted}",
+                elapsed.as_millis()
+            );
             let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    });
+}
+
+/// Diagnostic counters only: never participates in the production wait decision.
+pub(super) fn observe_com_pump(timed_out: bool, posted: bool) {
+    COM_LIFETIME_PHASES.with(|enabled| {
+        if enabled.get() {
+            COM_PUMP_COUNTS.with(|counts| {
+                let (waits, timeouts, messages) = counts.get();
+                counts.set((
+                    waits + 1,
+                    timeouts + u64::from(timed_out),
+                    messages + u64::from(posted),
+                ));
+            });
         }
     });
 }
@@ -1566,6 +1596,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
 
             COM_LIFETIME_PHASES.with(|enabled| enabled.set(true));
             observe_com_phase("initial-engine-start");
+            println!("KELD_COM_RUNTIME version={}", runtime_version()?);
             let apartment = || {
                 let mut kind = APTTYPE::default();
                 let mut qualifier = APTTYPEQUALIFIER::default();
