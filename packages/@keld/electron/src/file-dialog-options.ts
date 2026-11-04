@@ -91,6 +91,25 @@ function denseArray(input: unknown, max: number, name: string): unknown[] {
   if (!isPlainArray) {
     return invalid(`${name} must be a plain array`);
   }
+  // Bound the own data length before allocating a descriptor for every entry.
+  // Never read input.length: a Proxy get trap is not an option value.
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    lengthDescriptor = Object.getOwnPropertyDescriptor(input, "length");
+  } catch {
+    return invalid(`${name} cannot be inspected safely`);
+  }
+  const initialLength: unknown = lengthDescriptor?.value;
+  if (
+    !lengthDescriptor ||
+    !("value" in lengthDescriptor) ||
+    typeof initialLength !== "number" ||
+    !Number.isInteger(initialLength) ||
+    initialLength < 0 ||
+    initialLength > max
+  ) {
+    return invalid(`${name} exceeds its bounded count`);
+  }
   let descriptors: PropertyDescriptorMap;
   try {
     // TypeScript's array-specific overload does not advertise the symbol
@@ -103,8 +122,12 @@ function denseArray(input: unknown, max: number, name: string): unknown[] {
     return invalid(`${name} cannot be inspected safely`);
   }
   const length = descriptors.length?.value;
-  if (!Number.isInteger(length) || length < 0 || length > max) {
-    return invalid(`${name} exceeds its bounded count`);
+  if (
+    !descriptors.length ||
+    !("value" in descriptors.length) ||
+    length !== initialLength
+  ) {
+    return invalid(`${name} changed its own data length during inspection`);
   }
   for (const key of Reflect.ownKeys(descriptors)) {
     if (key === "length") continue;

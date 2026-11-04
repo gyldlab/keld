@@ -227,3 +227,124 @@ test("byte and count bounds reject malformed extensions without widening native 
   });
   expect(final.default_path).toHaveLength(2000);
 });
+
+test("oversized chooser arrays reject before enumerating element descriptors", () => {
+  for (const [field, max] of [
+    ["properties", 3],
+    ["filters", 32],
+    ["extensions", 32],
+  ] as const) {
+    for (const count of [max + 1, 1_000_000]) {
+      let enumerations = 0;
+      let elementDescriptors = 0;
+      let valueReads = 0;
+      const array = new Proxy(new Array(count), {
+        ownKeys(target) {
+          enumerations++;
+          return Reflect.ownKeys(target);
+        },
+        getOwnPropertyDescriptor(target, key) {
+          if (key !== "length") elementDescriptors++;
+          return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+        get() {
+          valueReads++;
+          throw new Error("array value access is forbidden");
+        },
+      });
+      const options =
+        field === "extensions"
+          ? { filters: [{ name: "File", extensions: array }] }
+          : { [field]: array };
+      expect(() => normalizeOpenDialogOptions(options)).toThrow(
+        "KELD-COMPAT-010",
+      );
+      if (field !== "properties") {
+        expect(() => normalizeSaveDialogOptions(options)).toThrow(
+          "KELD-COMPAT-010",
+        );
+      }
+      expect(enumerations).toBe(0);
+      expect(elementDescriptors).toBe(0);
+      expect(valueReads).toBe(0);
+    }
+  }
+});
+
+test("array descriptor preflight rejects traps and changed lengths without reading values", () => {
+  const throwingLength = new Proxy(["openFile"], {
+    getOwnPropertyDescriptor() {
+      throw new Error("length inspection fault");
+    },
+  });
+  let lengthReads = 0;
+  const changingLength = new Proxy(["openFile"], {
+    getOwnPropertyDescriptor(target, key) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+      if (key === "length" && ++lengthReads > 1) {
+        return { ...descriptor, value: 0 };
+      }
+      return descriptor;
+    },
+  });
+  const throwingKeys = new Proxy(["openFile"], {
+    ownKeys() {
+      throw new Error("enumeration fault");
+    },
+  });
+  const hole = new Array(1);
+  const hidden = Object.defineProperty(["openFile"], "0", {
+    enumerable: false,
+  });
+  const extra = Object.assign(["openFile"], { extra: true });
+  const symbol = Object.assign(["openFile"], { [Symbol("extra")]: true });
+  for (const properties of [
+    throwingLength,
+    changingLength,
+    throwingKeys,
+    hole,
+    hidden,
+    extra,
+    symbol,
+  ]) {
+    expect(() => normalizeOpenDialogOptions({ properties })).toThrow(
+      "KELD-COMPAT-010",
+    );
+  }
+  let valueReads = 0;
+  const valid = new Proxy(["openFile", "openDirectory", "multiSelections"], {
+    get() {
+      valueReads++;
+      throw new Error("value trap");
+    },
+  });
+  expect(normalizeOpenDialogOptions({ properties: valid }).properties).toEqual([
+    "OpenFile",
+    "OpenDirectory",
+    "MultiSelections",
+  ]);
+  expect(valueReads).toBe(0);
+  expect(normalizeOpenDialogOptions({ properties: [] }).properties).toEqual([]);
+});
+
+test("chooser filter and extension counts accept their exact 32-entry limits", () => {
+  const groups = Array.from({ length: 32 }, (_, index) => ({
+    name: `Group ${index}`,
+    extensions: [`type${index}`],
+  }));
+  const extensions = Array.from({ length: 32 }, (_, index) => `type${index}`);
+  for (const filters of [groups, [{ name: "Many extensions", extensions }]]) {
+    for (const normalize of [
+      normalizeOpenDialogOptions,
+      normalizeSaveDialogOptions,
+    ]) {
+      const options = normalize({ filters });
+      expect(options.filters).toEqual(filters);
+      expect(Object.isFrozen(options.filters)).toBe(true);
+      for (const filter of options.filters) {
+        expect(Object.isFrozen(filter)).toBe(true);
+        expect(Object.isFrozen(filter.extensions)).toBe(true);
+      }
+    }
+  }
+});
