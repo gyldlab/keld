@@ -230,3 +230,5 @@ fn gh500_manifest_byte_mutation_refuses_changed_denominator() {
         "changing one manifest byte without updating the denominator must fail"
     );
 }
+
+mod windows_preparation;
