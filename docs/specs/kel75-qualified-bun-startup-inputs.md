@@ -1,10 +1,13 @@
 # Spec: qualified Bun startup selection for the macOS development primary
 Status: draft
-Linear: KEL-75 · Owner: GYLDLAB / @0monish · Updated: 2026-10-31
+Linear: KEL-75 · Owner: GYLDLAB / @0monish · Updated: 2026-11-01
 
 This is a separate proposed amendment to the approved KEL-75 contract. It does
-not amend that approved file by implication. Production implementation requires
-exact-text approval of this text and the failing-first tests in §7. No new
+not amend that approved file by implication. The bounded T1 contract in §4 can
+receive its own exact-text independent review under the user's standing technical
+delegation; that review does not approve the remaining general-tree contract.
+Production implementation requires the applicable exact-text approval and the
+failing-first tests in §7. No new
 launcher, module resolver, import walker, source copier, configuration parser,
 supervisor or approval registry is authorized. GH1037's verification and draft
 publication remain independent.
@@ -507,10 +510,12 @@ below. Each prepared command applies exactly that map with ordinary
 Nothing mutates the process-global environment.
 
 This is a deny-list for this development slice. It is not exhaustive, and the
-allow-list migration stays GH452's. A census test (§7) extracts the
-`BUN_*`/`NODE_*` names present in the pinned binary (the packet counted 181
-strings; presence shows a name exists, not what it does) and fails when one is
-neither classified below nor recorded UNKNOWN.
+allow-list migration stays GH452's. A census test (§7) extracts whole ASCII
+identifier tokens beginning `BUN_` or `NODE_` from the pinned binary and fails
+when a token has no explicit classification. The packet's earlier 181-string
+count did not retain its extraction method; the deterministic qualification
+fixture below records 199 tokens. A byte token does not establish that Bun
+recognizes an environment variable, or what effect it has.
 
 Typed error, proposed: reuse `KELD-CORE-037`, the code every neighbouring
 Guardian refusal already emits (stage config `main.rs:485`, transport checks
@@ -602,6 +607,113 @@ private boot-descriptor schema-3 `graph` field and the v2 Guardian marker (D2)
 are KEL-96 private carrier changes under its wire/schema gate (§8). Browser
 preload/origin and OS containment are unchanged. Windows/Linux keep existing
 behavior and are explicitly unqualified.
+
+### Bounded T1 implementation contract (2026-11-01)
+
+This section selects only the inherited-input and command-construction work in
+T1. Its source basis is the existing shipping macOS Guardian at `78ad148c`.
+It does not admit a source tree, package set, renderer document or application
+preload. The general graph carrier and its descriptor-version allocation remain
+unimplemented and outside this approval. Schema 1/2, the existing seven-argument
+Guardian marker, the permission carrier and all profile behavior remain unchanged.
+
+The implementation uses the existing `run_guarded_primary` entry point with one
+added cold selection step, following the seam already proposed above. After
+validating the host-liveness bootstrap, authenticating the existing registration,
+and honoring the existing pre-generation shutdown check, invoke a `FnOnce`
+selector before `Supervisor::start_prepared`. It returns the existing
+`FnMut(&str) -> Result<Command, RuntimeError>` factory. The factory owns the one
+immutable selection for its lifetime. No second supervisor, lazy per-generation
+capture or additional public entry point is introduced.
+
+For this slice the selection consists only of the Guardian's native environment
+key/value pairs. Retain native `OsString` values without Unicode conversion.
+Refuse `BUN_INSPECT_PRELOAD` or `NODE_PATH` whenever the name is present, including
+empty or non-Unicode values. Use the existing `KELD-CORE-037` failure and name only
+the control and its input class; never include its value. Omit `BUN_OPTIONS`,
+preserving the existing rule. All other inherited pairs are captured once. This
+is the explicitly partial development deny-list, not GH452's future declared
+environment or a complete allow-list.
+
+Every command from that factory clears inherited command environment, applies
+the retained pairs, and then overwrites only the existing `KELD_APP_LINK` with
+that attempt's fresh value. The existing lease still removes the private
+registration variable. The factory never rereads process environment. A native
+environment value is data, never permission, principal or graph identity.
+
+Keep the existing facade define and optional canonical transport preload in
+their current order. Add `--no-env-file` and `--no-install` immediately before
+`run` and the absolute staged entry. Keep the per-generation stage/entry checks
+and root `bunfig.toml`/`.bunfig.toml` refusal. `Command::new("bun")` remains the
+existing development executable selection, so AC2 remains unmet and this slice
+does not claim pinned-runtime acquisition. Every macOS primary constructed by
+this factory receives these controls, including the prepared-entry compatibility
+baseline; Linux, Windows and other Bun roles are unchanged.
+
+Selection failure returns before a generation or candidate child exists.
+Generation command failure retains the existing failed-preparation lease path.
+Shutdown precedence, fresh principal/token creation, revocation, child reaping
+and stage cleanup remain with their existing owners. A new independent runtime
+test must prove selection is called once across a healthy restart and is not
+called after failed authentication or an already accepted initial shutdown.
+The `startup_selection` runtime fixture uses the real registration listener,
+Guardian and Supervisor. It observes the actual first and successor Bun processes,
+changes only a selected fixture input between them, checks distinct digests of
+their actual app-link values, and requires orderly native retirement and reaping.
+Its separate one-nibble wrong-token case requires a real listener rejection and
+the client's typed authentication error, with neither selection nor candidate
+execution observed. The existing initial-shutdown fixtures retain their separate
+ordering oracle. These fixtures are source obligations until executed on macOS.
+
+| Atom and owner | Independent acceptance and one-fault control |
+|---|---|
+| Loader refusal / existing Host factory selection | Isolated subprocesses supply each named control, empty and non-empty; require `KELD-CORE-037` naming that input before any Bun command, canonical preload or entry. Removing the presence gate must fail this oracle. Preserve a real canonical-preload/entry positive. |
+| Frozen environment / Guardian selection and existing factory | Two actual commands expose only redacted environment keys and fixture-owned values. Both match the same retained native map plus their distinct app-link values; later source-map changes do not enter either child. Removing `env_clear` or rereading ambient environment must fail. Native non-Unicode ordinary values remain retained and prohibited values remain refused without disclosure. This command test alone is not real Supervisor restart evidence. |
+| Selection lifecycle / existing runtime | Existing authenticated startup/recovery and pre-generation shutdown fixtures, extended with independent selection observations, prove one capture and preserved transition attribution. Removing or repeating the selection step must fail its own oracle. |
+| Runtime installation / fixed factory arguments | The pinned Bun warm-cache fixture has no `node_modules` in the stage or any ancestor. Missing-package launch refuses before a cache-package marker; removing only `--no-install` restores that marker. Staged `auto = "force"` config still refuses before child creation. Argument inspection alone is insufficient. |
+| Environment-file suppression and census / runtime qualification | Use the permitted existing environment-file control and the fixed Bun 1.4.4 name inventory. An unclassified new name fails the census; UNKNOWN names remain unqualified. No environment file is edited by this contract, and help/version output alone is not a behavior pass. |
+
+The owning Host test module `tests::startup_qualification` binds its census to
+Bun binary SHA-256
+`0a2237cdcfa0d16ef501d9acca9f0026309ef348bea7393a64e8d1e3609565cc`
+(88,660,864 bytes; Bun 1.4.4, revision
+`38afee6c84fcf48c0edb2466aa4b27d287a59c30`). It reads the selected executable
+path from an actual factory child. A different binary fails, never skips. The
+test-only `crates/keld-host/src/tests/fixtures/bun-startup-identifiers.json`
+contains one fixed classification per extracted token. The native macOS
+`/usr/bin/shasum` observer hashes the same already-read binary bytes through
+stdin; it does not reopen the binary path or add a Cargo dependency. Split bytes on every
+byte outside ASCII `[A-Za-z0-9_]`, retain whole tokens starting exactly `BUN_`
+or `NODE_`, preserve case, then sort and deduplicate. The exact set contains
+199 tokens: the three implemented inherited-input dispositions and 196 explicit
+UNKNOWN entries. Historical partial observations of `NODE_ENV` and
+`BUN_INSTALL_CACHE_DIR` remain in the table above; this census does not promote
+them to completed factory qualification. Concatenated tokens remain whole
+UNKNOWN entries, including the prefix-only token `NODE_`. An independent scanner example and a new unclassified-token
+control exercise the inventory gate separately from the binary checksum gate.
+Absence from this token inventory does not establish that Bun ignores a name.
+This is test evidence, not a production environment policy or pinned-runtime
+acquisition, and no UNKNOWN row becomes qualified by passing the census.
+
+Current acceptance limits: the retained E2 environment-file and E5 warm-cache
+experiment directories were unavailable to this continuation. Their historical
+packet observations remain research evidence; neither is a current shipping
+factory behavior pass. Those two acceptance rows remain pending. The separate
+`auto = "force"` regression observes staged-config refusal before constructing
+a Bun command, with a healthy real-Bun counterweight; it does not stand in for
+warm-cache acquisition or network observation. No `.env*` file is created or
+modified by the added tests. These limits do not waive the acceptance rows.
+
+The tracked production delta is limited to the existing Host factory/selector,
+the existing runtime's cold selection seam, its direct callers and owning tests,
+and this exact T1 amendment. No boot metadata block, package/schema parser,
+manifest grant, stage copier, runtime acquisition or dependency change follows.
+Public API review covers the existing runtime function's selector argument;
+security review covers refusal timing and environment conservation. Unsafe and
+wire-protocol changes: none. Full formatting, warning-denied workspace Clippy,
+workspace tests and real macOS startup/recovery remain required. Until their
+actual receipts exist, this is a reviewable implementation contract, not completed
+T1 acceptance, GH593 closure or a draw.io product result.
 
 ## 5. Boundaries
 

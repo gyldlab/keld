@@ -388,16 +388,19 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
     let cleanup_validation = cleanup_root.clone();
     let report = keld_runtime::macos_guardian::run_guarded_primary(
         std::io::stdin(),
-        move |app_link| {
-            guardian_bun_command(
-                &cleanup_validation,
-                &root,
-                &entry,
-                expected_dev,
-                expected_ino,
-                native_facade,
-                app_link,
-            )
+        move || {
+            let environment = freeze_guardian_environment(env::vars_os())?;
+            Ok(move |app_link: &str| {
+                guardian_bun_command(
+                    &cleanup_validation,
+                    &root,
+                    &entry,
+                    (expected_dev, expected_ino),
+                    native_facade,
+                    &environment,
+                    app_link,
+                )
+            })
         },
         std::io::stdout(),
     );
@@ -453,19 +456,46 @@ fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
 }
 
 #[cfg(target_os = "macos")]
+fn freeze_guardian_environment(
+    inherited: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>, keld_runtime::RuntimeError> {
+    let mut frozen = Vec::new();
+    for (name, value) in inherited {
+        // Presence is enough to refuse, including empty and non-Unicode
+        // values. Neither diagnostics nor receipts expose inherited values.
+        let effect = match name.to_str() {
+            Some("BUN_INSPECT_PRELOAD") => Some("select an unqualified preload"),
+            Some("NODE_PATH") => {
+                Some("add a module-resolution root outside the staged application")
+            }
+            Some("BUN_OPTIONS") => continue,
+            _ => None,
+        };
+        if let Some(effect) = effect {
+            return Err(guardian_entry_error(format!(
+                "KELD-CORE-037: inherited Bun loader control {} can {effect}. Unset it for the keld dev launch and relaunch.",
+                name.to_string_lossy()
+            )));
+        }
+        frozen.push((name, value));
+    }
+    Ok(frozen)
+}
+
+#[cfg(target_os = "macos")]
 fn guardian_bun_command(
     cleanup_validation: &Result<PathBuf, String>,
     root: &Path,
     entry: &Path,
-    expected_dev: u64,
-    expected_ino: u64,
+    expected_identity: (u64, u64),
     native_facade: bool,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
-    let reopened = reopen_validated_entry(root, entry, expected_dev, expected_ino)?;
+    let reopened = reopen_validated_entry(root, entry, expected_identity.0, expected_identity.1)?;
     // Advisory same-user dev-boundary check: retain the exact reopened
     // identity until immediately before Supervisor invokes spawn, then
     // close it. Bun resolves the name afterward, so this does not claim
@@ -483,9 +513,11 @@ fn guardian_bun_command(
             root,
             native_facade,
         )?)
-        .arg("run")
+        .args(["--no-env-file", "--no-install", "run"])
         .arg(root.join(entry))
         .current_dir(root)
+        .env_clear()
+        .envs(environment.iter().map(|(name, value)| (name, value)))
         .env("KELD_APP_LINK", app_link)
         .env_remove(keld_runtime::primary::BUN_OPTIONS_ENV)
         .stdin(Stdio::null());
@@ -559,13 +591,15 @@ fn reopen_validated_entry(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    mod startup_qualification;
+
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use super::{
-        dev_stage_cleanup_root_for, guardian_bun_command, parse_guardian_boot_mode,
-        reconcile_guardian_result, reopen_validated_entry,
+        dev_stage_cleanup_root_for, freeze_guardian_environment, guardian_bun_command,
+        parse_guardian_boot_mode, reconcile_guardian_result, reopen_validated_entry,
     };
 
     #[test]
@@ -594,9 +628,9 @@ mod tests {
             )),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            &[],
             "/tmp/link#token",
         )
         .expect_err("failed stage validation must refuse the Bun command");
@@ -613,9 +647,9 @@ mod tests {
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            &[],
             "/tmp/link#token",
         )
         .expect("validated stage must still produce the Bun command");
@@ -624,6 +658,8 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             [
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
+                "--no-env-file".as_ref(),
+                "--no-install".as_ref(),
                 "run".as_ref(),
                 entry.as_os_str()
             ]
@@ -636,9 +672,9 @@ mod tests {
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             relative,
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            &[],
             "/tmp/link#token",
         )
         .expect("canonical sidecar launch");
@@ -648,8 +684,10 @@ mod tests {
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
         assert_eq!(args[1], format!("--preload={}", sidecar.display()).as_str());
-        assert_eq!(args[2], "run");
-        assert_eq!(args[3], entry.as_os_str());
+        assert_eq!(args[2], "--no-env-file");
+        assert_eq!(args[3], "--no-install");
+        assert_eq!(args[4], "run");
+        assert_eq!(args[5], entry.as_os_str());
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         // Bun config can replace a CLI preload. Qualify every generation,
         // including recovery after a previously absent config appears.
@@ -660,9 +698,9 @@ mod tests {
                 &Ok(temp.path().to_path_buf()),
                 temp.path(),
                 relative,
-                identity.dev(),
-                identity.ino(),
+                (identity.dev(), identity.ino()),
                 true,
+                &[],
                 "/tmp/link#token",
             )
             .expect_err("ambient preload override must refuse launch");
@@ -689,9 +727,9 @@ mod tests {
                     &Ok(temp.path().to_path_buf()),
                     temp.path(),
                     std::path::Path::new("entry.ts"),
-                    identity.dev(),
-                    identity.ino(),
+                    (identity.dev(), identity.ino()),
                     native_facade,
+                    &[],
                     "/tmp/link#token",
                 )
                 .expect("raw no-sidecar launch remains supported");
@@ -703,7 +741,12 @@ mod tests {
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
-                expected.extend(["run".into(), entry.as_os_str().to_owned()]);
+                expected.extend([
+                    "--no-env-file".into(),
+                    "--no-install".into(),
+                    "run".into(),
+                    entry.as_os_str().to_owned(),
+                ]);
                 assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             }
         }
@@ -758,9 +801,9 @@ mod tests {
                     &Ok(temp.path().to_path_buf()),
                     temp.path(),
                     std::path::Path::new("entry.ts"),
-                    identity.dev(),
-                    identity.ino(),
+                    (identity.dev(), identity.ino()),
                     native_facade,
+                    &[],
                     "/tmp/link#token",
                 )
                 .expect_err("runtime config must refuse before entry execution");
@@ -778,24 +821,53 @@ mod tests {
     #[test]
     fn guardian_removes_inherited_bun_options_before_the_canonical_preload() {
         let temp = tempfile::tempdir().expect("inherited preload fixture");
+        fs::create_dir(temp.path().join("src")).expect("canonical preload directory");
+        fs::write(
+            temp.path().join("src/kipc-transport.ts"),
+            "console.log('CANONICAL_PRELOAD');\n",
+        )
+        .expect("canonical preload observer");
+        fs::write(
+            temp.path().join("injected.ts"),
+            "console.log('UNQUALIFIED_BUN_OPTIONS_PRELOAD');\n",
+        )
+        .expect("unqualified preload observer");
         let entry = temp.path().join("entry.ts");
-        fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
+        fs::write(
+            &entry,
+            "console.log(process.env.BUN_OPTIONS === undefined ? 'BUN_OPTIONS_ABSENT' : 'BUN_OPTIONS_PRESENT');\n",
+        )
+        .expect("actual child environment observer");
         let identity = fs::metadata(&entry).expect("entry identity");
-        let command = guardian_bun_command(
+        let frozen = freeze_guardian_environment([
+            (
+                "PATH".into(),
+                std::env::var_os("PATH").expect("Bun selection PATH"),
+            ),
+            ("HOME".into(), temp.path().as_os_str().to_owned()),
+            (
+                "BUN_OPTIONS".into(),
+                format!("--preload={}", temp.path().join("injected.ts").display()).into(),
+            ),
+        ])
+        .expect("existing BUN_OPTIONS removal remains supported");
+        let output = guardian_bun_command(
             &Ok(temp.path().to_path_buf()),
             temp.path(),
             std::path::Path::new("entry.ts"),
-            identity.dev(),
-            identity.ino(),
+            (identity.dev(), identity.ino()),
             true,
+            &frozen,
             "/tmp/link#token",
         )
-        .expect("qualified command");
-        assert!(
-            command
-                .get_envs()
-                .any(|(name, value)| name == "BUN_OPTIONS" && value.is_none()),
-            "ambient Bun arguments must be removed at the actual child command"
+        .expect("qualified command")
+        .output()
+        .expect("actual Bun command");
+        assert!(output.status.success(), "Bun failed: {output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("child environment marker"),
+            "CANONICAL_PRELOAD\nBUN_OPTIONS_ABSENT\n",
+            "no inherited preload may precede the canonical preload"
         );
     }
 
@@ -824,6 +896,9 @@ mod tests {
                 "tests::guardian_inherited_preload_child",
                 "--nocapture",
             ])
+            .env_remove("BUN_INSPECT_PRELOAD")
+            .env_remove("NODE_PATH")
+            .env_remove("KELD_GUARDIAN_EXPECT_REFUSAL")
             .env("KELD_GUARDIAN_PRELOAD_FIXTURE", temp.path())
             .env(
                 "BUN_OPTIONS",
@@ -844,24 +919,272 @@ mod tests {
     }
 
     #[test]
+    fn guardian_environment_refusal_preserves_native_values_and_hides_secrets() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let native_value = std::ffi::OsString::from_vec(vec![0xff, b'x']);
+        let retained = freeze_guardian_environment([
+            ("ORDINARY_NATIVE_VALUE".into(), native_value.clone()),
+            (
+                "BUN_OPTIONS".into(),
+                "--preload=SECRET_MUST_NOT_PRINT".into(),
+            ),
+        ])
+        .expect("ordinary native values remain supported");
+        assert_eq!(
+            retained,
+            vec![("ORDINARY_NATIVE_VALUE".into(), native_value.clone())]
+        );
+        for name in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+            for value in [
+                std::ffi::OsString::new(),
+                native_value.clone(),
+                "SECRET_MUST_NOT_PRINT".into(),
+            ] {
+                let error = freeze_guardian_environment([(name.into(), value)])
+                    .expect_err("every present loader-control value must refuse");
+                let rendered = error.to_string();
+                assert!(rendered.contains("KELD-CORE-037"), "{rendered}");
+                assert!(rendered.contains(name), "{rendered}");
+                assert!(!rendered.contains("SECRET_MUST_NOT_PRINT"), "{rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn guardian_loader_control_refusals_have_real_bun_counterweights() {
+        for name in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+            let temp = tempfile::tempdir().expect("real loader-control counterweight");
+            let stage = temp.path().join("stage");
+            fs::create_dir_all(stage.join("src")).expect("canonical sidecar directory");
+            fs::write(
+                stage.join("src/kipc-transport.ts"),
+                "console.log('CANONICAL_PRELOAD');\n",
+            )
+            .expect("canonical preload observer");
+            let foreign = temp.path().join("foreign/guardian-loader-probe");
+            fs::create_dir_all(&foreign).expect("independent foreign package");
+            fs::write(
+                foreign.join("package.json"),
+                r#"{"name":"guardian-loader-probe","main":"index.js"}"#,
+            )
+            .expect("foreign package metadata");
+            fs::write(
+                foreign.join("index.js"),
+                "console.log('FOREIGN_INPUT_EVALUATED');\n",
+            )
+            .expect("foreign code observer");
+            let entry = stage.join("entry.ts");
+            fs::write(
+                &entry,
+                if name == "NODE_PATH" {
+                    "import 'guardian-loader-probe'; console.log('ENTRY_RAN');\n"
+                } else {
+                    "console.log('ENTRY_RAN');\n"
+                },
+            )
+            .expect("entry observer");
+            let value = if name == "NODE_PATH" {
+                temp.path().join("foreign")
+            } else {
+                foreign.join("index.js")
+            };
+            let inherited = vec![
+                (
+                    "PATH".into(),
+                    std::env::var_os("PATH").expect("Bun selection PATH"),
+                ),
+                ("HOME".into(), temp.path().as_os_str().to_owned()),
+            ];
+            let mut rejected = inherited.clone();
+            rejected.push((name.into(), value.as_os_str().to_owned()));
+            let error = freeze_guardian_environment(rejected)
+                .expect_err("foreign loader input must refuse before evaluation");
+            assert!(error.to_string().contains(name), "{error}");
+            let frozen = freeze_guardian_environment(inherited).expect("healthy selection");
+            let identity = fs::metadata(&entry).expect("entry identity");
+            let mut counterweight = guardian_bun_command(
+                &Ok(stage.clone()),
+                &stage,
+                std::path::Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                true,
+                &frozen,
+                "/tmp/link#counterweight",
+            )
+            .expect("same shipping command without the prohibited input");
+            // Test-only negative control: restore exactly the refused input
+            // after selection. It must demonstrably execute the foreign code.
+            let output = counterweight
+                .env(name, value)
+                .output()
+                .expect("actual Bun loader-control counterweight");
+            assert!(output.status.success(), "counterweight failed: {output:?}");
+            let stdout = String::from_utf8(output.stdout).expect("counterweight stdout");
+            assert!(
+                stdout.contains("CANONICAL_PRELOAD\nFOREIGN_INPUT_EVALUATED\nENTRY_RAN\n"),
+                "{name}: {stdout}"
+            );
+        }
+    }
+
+    #[test]
+    fn guardian_commands_reuse_one_frozen_environment_with_fresh_app_links() {
+        let temp = tempfile::tempdir().expect("frozen environment fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(
+            &entry,
+            "console.log(JSON.stringify({keys: Object.keys(process.env).sort(), captured: process.env.KELD_TEST_CAPTURED, link: process.env.KELD_APP_LINK, options: process.env.BUN_OPTIONS ?? null}));\n",
+        )
+        .expect("redacted child environment observer");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        let mut inherited = vec![
+            (
+                "PATH".into(),
+                std::env::var_os("PATH").expect("Bun selection PATH"),
+            ),
+            ("HOME".into(), temp.path().as_os_str().to_owned()),
+            (
+                "BUN_INSTALL_CACHE_DIR".into(),
+                temp.path().join("cache").into_os_string(),
+            ),
+            (
+                "KELD_TEST_CAPTURED".into(),
+                "captured-before-first-command".into(),
+            ),
+            ("BUN_OPTIONS".into(), "--preload=must-not-be-read.ts".into()),
+        ];
+        let frozen =
+            freeze_guardian_environment(inherited.clone()).expect("one environment capture");
+        inherited.push(("LATER_AMBIENT_INPUT".into(), "not-selected".into()));
+        inherited[3].1 = "changed-after-capture".into();
+        let mut expected_keys: Vec<_> = frozen
+            .iter()
+            .map(|(name, _)| name.to_str().expect("fixture key").to_owned())
+            .collect();
+        expected_keys.push("KELD_APP_LINK".into());
+        expected_keys.sort();
+        for app_link in ["/tmp/frozen-link#first", "/tmp/frozen-link#successor"] {
+            let output = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                std::path::Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                true,
+                &frozen,
+                app_link,
+            )
+            .expect("command from fixed selection")
+            .output()
+            .expect("actual Bun environment observer");
+            assert!(
+                output.status.success(),
+                "environment observer failed: {output:?}"
+            );
+            let observed: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("redacted environment JSON");
+            assert_eq!(observed["keys"], serde_json::json!(expected_keys));
+            assert_eq!(observed["captured"], "captured-before-first-command");
+            assert_eq!(observed["link"], app_link);
+            assert!(observed["options"].is_null());
+        }
+    }
+
+    #[test]
+    fn guardian_refuses_inherited_loader_controls_before_constructing_bun() {
+        let temp = tempfile::tempdir().expect("inherited loader-control fixture");
+        fs::create_dir(temp.path().join("src")).expect("sidecar directory");
+        fs::write(
+            temp.path().join("src/kipc-transport.ts"),
+            "console.log('QUALIFIED_CAPTURE');\n",
+        )
+        .expect("canonical preload marker");
+        fs::write(
+            temp.path().join("entry.ts"),
+            "console.log('ORIGINAL_ENTRY_EXECUTED');\n",
+        )
+        .expect("original entry marker");
+        fs::write(
+            temp.path().join("injected.ts"),
+            "console.log('INSPECT_PRELOAD_EXECUTED');\n",
+        )
+        .expect("hostile preload marker");
+        let test_binary = std::env::current_exe().expect("test binary");
+        for name in ["BUN_INSPECT_PRELOAD", "NODE_PATH"] {
+            for value in [
+                std::ffi::OsString::new(),
+                temp.path().join("injected.ts").into_os_string(),
+            ] {
+                let output = std::process::Command::new(&test_binary)
+                    .args([
+                        "--exact",
+                        "tests::guardian_inherited_preload_child",
+                        "--nocapture",
+                    ])
+                    .env_remove("BUN_OPTIONS")
+                    .env_remove("BUN_INSPECT_PRELOAD")
+                    .env_remove("NODE_PATH")
+                    .env("KELD_GUARDIAN_PRELOAD_FIXTURE", temp.path())
+                    .env("KELD_GUARDIAN_EXPECT_REFUSAL", name)
+                    .env(name, &value)
+                    .output()
+                    .expect("isolated loader-control child");
+                assert!(
+                    output.status.success(),
+                    "{name} must refuse, including an empty value: {output:?}"
+                );
+                let stdout = String::from_utf8(output.stdout).expect("refusal output");
+                assert!(
+                    stdout.contains(&format!("LOADER_CONTROL_REFUSED:{name}")),
+                    "{stdout}"
+                );
+                for marker in [
+                    "QUALIFIED_CAPTURE",
+                    "ORIGINAL_ENTRY_EXECUTED",
+                    "INSPECT_PRELOAD_EXECUTED",
+                ] {
+                    assert!(!stdout.contains(marker), "{name}: {stdout}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn guardian_inherited_preload_child() {
         let Some(root) = std::env::var_os("KELD_GUARDIAN_PRELOAD_FIXTURE") else {
             return;
         };
         let root = std::path::PathBuf::from(root);
         let identity = fs::metadata(root.join("entry.ts")).expect("entry identity");
-        let output = guardian_bun_command(
-            &Ok(root.clone()),
-            &root,
-            std::path::Path::new("entry.ts"),
-            identity.dev(),
-            identity.ino(),
-            true,
-            "/tmp/link#token",
-        )
-        .expect("actual shipping Bun command")
-        .output()
-        .expect("execute actual Bun command");
+        let command = freeze_guardian_environment(std::env::vars_os()).and_then(|environment| {
+            guardian_bun_command(
+                &Ok(root.clone()),
+                &root,
+                std::path::Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                true,
+                &environment,
+                "/tmp/link#token",
+            )
+        });
+        if let Ok(name) = std::env::var("KELD_GUARDIAN_EXPECT_REFUSAL") {
+            let Err(error) = command else {
+                panic!("inherited loader control must refuse before Bun exists");
+            };
+            let rendered = error.to_string();
+            assert!(rendered.contains("KELD-CORE-037"), "{rendered}");
+            assert!(
+                rendered.contains("inherited Bun loader control"),
+                "{rendered}"
+            );
+            assert!(rendered.contains(&name), "{rendered}");
+            println!("LOADER_CONTROL_REFUSED:{name}");
+            return;
+        }
+        let output = command
+            .expect("actual shipping Bun command")
+            .output()
+            .expect("execute actual Bun command");
         assert!(output.status.success(), "Bun failed: {output:?}");
         print!("{}", String::from_utf8(output.stdout).expect("Bun stdout"));
     }
