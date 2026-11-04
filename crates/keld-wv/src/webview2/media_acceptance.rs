@@ -70,6 +70,7 @@ thread_local! {
     static COM_LIFETIME_PHASES: Cell<bool> = const { Cell::new(false) };
     static COM_PHASE_CLOCK: Cell<Option<Instant>> = const { Cell::new(None) };
     static COM_PUMP_COUNTS: Cell<(u64, u64, u64)> = const { Cell::new((0, 0, 0)) };
+    static COM_BROWSER_LOG: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
 }
 
 /// Flush each phase before the fixture watchdog can terminate the process.
@@ -90,6 +91,32 @@ pub(super) fn observe_com_phase(stage: &'static str) {
                 elapsed.as_millis()
             );
             let _ = std::io::Write::flush(&mut std::io::stdout());
+            if stage == "launch-deadline-expired" {
+                COM_BROWSER_LOG.with_borrow(|path| {
+                    if let Some(path) = path {
+                        use std::io::{Read as _, Seek as _, SeekFrom};
+                        let output = (|| -> std::io::Result<Vec<u8>> {
+                            let mut file = std::fs::File::open(path)?;
+                            let start = file.metadata()?.len().saturating_sub(65_536);
+                            file.seek(SeekFrom::Start(start))?;
+                            let mut bytes = Vec::new();
+                            file.take(65_536).read_to_end(&mut bytes)?;
+                            Ok(bytes)
+                        })();
+                        match output {
+                            Ok(bytes) => eprintln!(
+                                "KELD_COM_BROWSER_LOG_BEGIN path={}\n{}\nKELD_COM_BROWSER_LOG_END",
+                                path.display(),
+                                String::from_utf8_lossy(&bytes)
+                            ),
+                            Err(error) => eprintln!(
+                                "KELD_COM_BROWSER_LOG_UNAVAILABLE path={} error={error}",
+                                path.display()
+                            ),
+                        }
+                    }
+                });
+            }
         }
     });
 }
@@ -1180,11 +1207,20 @@ mod tests {
         root: &Path,
         selection: crate::profile::WebProfileSelection,
     ) -> Result<WebView2Engine, WvError> {
-        profile_fixture_engine_with_options(
-            root,
-            selection,
-            CoreWebView2EnvironmentOptions::default(),
-        )
+        let options = CoreWebView2EnvironmentOptions::default();
+        if COM_LIFETIME_PHASES.with(Cell::get) {
+            let plan = super::super::windows_profile_plan(root, selection)?;
+            COM_BROWSER_LOG.with_borrow_mut(|path| {
+                *path = Some(plan.user_data_dir.join("chrome_debug.log"));
+            });
+            // SAFETY: unpublished test options; logging changes no guard or sandbox.
+            // https://learn.microsoft.com/microsoft-edge/webview2/concepts/webview-features-flags
+            // https://www.chromium.org/for-testers/enable-logging/
+            unsafe {
+                options.set_additional_browser_arguments("--enable-logging --v=1".to_owned());
+            };
+        }
+        profile_fixture_engine_with_options(root, selection, options)
     }
 
     fn profile_fixture_engine_with_options(
@@ -1955,7 +1991,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
     /// Child role: the engine's own `BrowserProcessExited` is swallowed after
     /// the browser really exits. The release must fail `KELD-WV-009`, name the
     /// host post-exit grace, and do so at that grace measured from its own
-    /// arming instant — never before it, never at an unrelated wall-clock
+    /// arming instant â€” never before it, never at an unrelated wall-clock
     /// bound, and never by hanging until the watchdog. The ceiling is twice
     /// the grace: a kill-switch-sized bound on the loop's wake and the
     /// engine's teardown after the fault, derived from the constant so a
