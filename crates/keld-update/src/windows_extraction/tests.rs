@@ -50,8 +50,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = crate::tests::native_windows::native_install_tempdir()
-            .expect("isolated native extraction fixture");
+        Self::from_temp(
+            crate::tests::native_windows::native_install_tempdir()
+                .expect("isolated native extraction fixture"),
+        )
+    }
+
+    // The caller owns the location/principal choice; construction does not query
+    // a user-profile environment variable for an operator-supplied system root.
+    fn from_temp(temp: TempDir) -> Self {
         let mut identity = expected_identity();
         identity.install_mode = DirectInstallMode::PerUserDirect;
         identity.install_root = temp.path().join("install");
@@ -332,7 +339,8 @@ fn machine_copy_refuses_an_ordinary_process_before_readback() {
 #[ignore = "requires the reviewed operator helper to run this exact selector as LocalSystem"]
 fn system_copy_seals_before_final_writer_flush() {
     keld_guard::require_windows_system_token().expect("actual SYSTEM copy qualification");
-    let fixture = Fixture::new();
+    let fixture =
+        Fixture::from_temp(tempfile::tempdir().expect("isolated SYSTEM extraction fixture"));
     let source_path = fixture.source(b"payload");
     let mut source = open_source(&source_path).expect("locked source");
     let parent = cap_std::fs::Dir::open_ambient_dir(fixture.versions(), ambient_authority())

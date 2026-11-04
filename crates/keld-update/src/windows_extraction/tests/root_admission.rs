@@ -253,3 +253,22 @@ fn reparse_to_protected_target_cannot_substitute_versions_or_update_root() {
     expect_extraction(error, false);
     assert_empty_versions(&update_target.join("versions"));
 }
+
+#[test]
+fn supplied_fixture_preserves_its_temp_location_without_a_user_profile() {
+    // Exercise this ordinary-user construction control in a child with
+    // LOCALAPPDATA absent as well. It does not claim SYSTEM copy qualification.
+    let temp = tempfile::tempdir().expect("caller-owned generic fixture");
+    let root = temp.path().to_owned();
+    let fixture = Fixture::from_temp(temp);
+    assert_eq!(fixture.temp.path(), root.as_path());
+    assert!(
+        fixture.versions().is_dir(),
+        "same native directory construction"
+    );
+    drop(fixture);
+    assert!(
+        !root.exists(),
+        "supplied temporary resource owner still cleans up"
+    );
+}
