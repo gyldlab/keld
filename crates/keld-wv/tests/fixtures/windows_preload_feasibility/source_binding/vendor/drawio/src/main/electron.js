@@ -1,0 +1,4543 @@
+import fs from 'fs';
+import { promises as fsProm } from 'fs';
+import path from 'path';
+import url from 'url';
+import {Menu as menu, shell, dialog, session, screen, ClipboardItem, 
+		clipboard, nativeImage, nativeTheme, ipcMain, app, BrowserWindow} from 'electron';
+import crc from 'crc';
+import zlib from 'zlib';
+import log from'electron-log';
+import { parseDrawioArgs, formatHelp, validFormatRegExp as validFormatRegExpImport } from './args.js';
+import { parseLastWinSize, placeWindowOnDisplays } from './window-bounds.js';
+import { getUpdateChannel } from './update-channel.js';
+import { listExportFiles, lexists, openExportFile } from './export-files.js';
+import { getSystem32Path } from './system-path.js';
+import { writeBackupFile } from './backup-file.js';
+import FileWatcher from './file-watcher.js';
+import elecUpPkg from 'electron-updater';
+const {autoUpdater} = elecUpPkg;
+import {PDFDocument, PDFHexString, PDFName} from '@cantoo/pdf-lib';
+import Store from 'electron-store';
+import ProgressBar from './progress-bar.js';
+import contextMenu from 'electron-context-menu';
+import {spawn, execFile} from 'child_process';
+import {disableUpdate as disUpPkg} from './disableUpdate.js';
+
+let store;
+
+try
+{
+	store = new Store();
+}
+catch (e)
+{
+	console.error('Failed to initialize electron-store:', e);
+	store = null;
+}
+
+// One-shot migration: detect whether this is a fresh install or an update,
+// so we can seed the drawio Configuration's defaultAdaptiveColors accordingly.
+// 'auto' for fresh installs (matches drawio.com behaviour), 'simple' for
+// updates (preserves what desktop users have been seeing historically).
+// Returns 'auto' / 'simple' / 'none' on the first launch with this code,
+// null on every subsequent launch. Safe to call before app.whenReady().
+function detectInitialAdaptiveColorsDefault()
+{
+	if (store == null) return null;
+
+	const MIGRATION_KEY = 'adaptiveColorsDefaultMigrated';
+
+	if (store.get(MIGRATION_KEY)) return null;
+
+	let hadPriorState = store.size > 0;
+
+	if (!hadPriorState)
+	{
+		try
+		{
+			const lsPath = path.join(app.getPath('userData'), 'Local Storage', 'leveldb');
+			hadPriorState = fs.existsSync(lsPath) && fs.readdirSync(lsPath).length > 0;
+		}
+		catch (e)
+		{
+			// If we can't read userData for any reason, fall through and treat
+			// as a fresh install. The preload guard won't overwrite an existing
+			// explicit user choice, so this is safe.
+		}
+	}
+
+	const mode = hadPriorState ? 'simple' : 'auto';
+	store.set(MIGRATION_KEY, app.getVersion());
+	return mode;
+}
+
+const disableUpdate = disUpPkg() ||
+						process.env.DRAWIO_DISABLE_UPDATE === 'true' ||
+						process.argv.indexOf('--disable-update') !== -1 ||
+						fs.existsSync('/.flatpak-info'); //This file indicates running in flatpak sandbox
+const silentUpdate = !disableUpdate && (process.env.DRAWIO_NO_SILENT_UPDATE !== 'true' &&
+										process.argv.indexOf('--no-silent-update') === -1); // Defaults to silent update if not disabled explicitly
+let manualUpdateCheck = false; // Set when the user clicks "Check for updates" so the manual flow stays interactive even when silentUpdate is on
+autoUpdater.logger = log
+autoUpdater.logger.transports.file.level = 'error'
+autoUpdater.logger.transports.console.level = 'error'
+// autoDownload is always false: we trigger downloadUpdate() explicitly so silent vs. interactive paths can branch on manualUpdateCheck
+autoUpdater.autoDownload = false
+autoUpdater.autoInstallOnAppQuit = silentUpdate
+
+const UPDATE_DOWNLOAD_URL = 'https://get.draw.io';
+let updateFailureDialogShown = false;
+
+// Shows a user-facing fallback message when the in-app updater fails for any reason.
+// Deduped within a short window so a single underlying failure (which can fan out into
+// both a sync throw and an 'error' event) doesn't produce stacked dialogs.
+function notifyUpdateFailure(err, context)
+{
+	manualUpdateCheck = false;
+
+	try { log.error('Update failure (' + (context || 'unknown') + '):', err); }
+	catch (e) { /* swallow logger errors */ }
+
+	if (updateFailureDialogShown) return;
+	updateFailureDialogShown = true;
+	setTimeout(() => { updateFailureDialogShown = false; }, 5000);
+
+	try
+	{
+		dialog.showMessageBox(
+		{
+			type: 'error',
+			title: 'Update Error',
+			message: 'There was a problem updating draw.io.',
+			detail: 'Please manually download and update from ' + UPDATE_DOWNLOAD_URL
+		});
+	}
+	catch (dialogErr)
+	{
+		try { log.error('Failed to show update error dialog:', dialogErr); }
+		catch (e) { /* swallow */ }
+	}
+}
+
+// Invokes an autoUpdater method, catching synchronous throws (e.g. NPEs deep inside
+// electron-updater) and unhandled promise rejections, routing both to the fallback dialog.
+function safeUpdaterCall(label, fn)
+{
+	try
+	{
+		const result = fn();
+
+		if (result != null && typeof result.catch === 'function')
+		{
+			result.catch(err => notifyUpdateFailure(err, label));
+		}
+
+		return result;
+	}
+	catch (err)
+	{
+		notifyUpdateFailure(err, label);
+		return null;
+	}
+}
+
+// Wraps an event listener so an exception in the handler can't escape and tear down
+// the updater (or, worse, crash the process via an unhandled exception in a callback).
+function safeUpdaterListener(label, fn)
+{
+	return function(...args)
+	{
+		try
+		{
+			return fn.apply(this, args);
+		}
+		catch (err)
+		{
+			notifyUpdateFailure(err, label);
+		}
+	};
+}
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+
+//Command option to disable hardware acceleration
+if (process.argv.indexOf('--disable-acceleration') !== -1)
+{
+	app.disableHardwareAcceleration();
+}
+
+// Configure context menu for text fields
+contextMenu({
+	showCopyImage: true,
+	showSaveImage: true,
+	showSaveImageAs: true,
+	showLookUpSelection: false,
+	showSearchWithGoogle: false,
+	showCopyLink: false,
+	showSelectAll: true,
+	showPasteAndMatchStyle: true
+});
+
+const __DEV__ = process.env.DRAWIO_ENV === 'dev'
+		
+let windowsRegistry = []
+let cmdQPressed = false
+let firstWinLoaded = false
+let firstWinFilePath = null
+const isMac = process.platform === 'darwin'
+const isWin = process.platform === 'win32'
+
+// Dependencies still start programs by bare name (electron-updater's signature
+// check runs chcp and powershell.exe through cmd.exe). If this variable exists,
+// cmd.exe and libuv skip the working directory when they look for a program
+// [GHSA-qg46-52fx-h7p8]
+if (isWin)
+{
+	process.env.NoDefaultCurrentDirectoryInExePath = '1';
+}
+
+let enableSpellCheck = store != null ? store.get('enableSpellCheck') : false;
+enableSpellCheck = enableSpellCheck != null ? enableSpellCheck : isMac;
+let enableStoreBkp = store != null ? (store.get('enableStoreBkp') != null ? store.get('enableStoreBkp') : true) : false;
+let dialogOpen = false;
+// One-shot value used to seed the drawio Configuration's defaultAdaptiveColors
+// for users running this version for the first time. 'auto' for new installs,
+// 'simple' for updates from a previous desktop version. Null after migration.
+let initialAdaptiveColorsDefault = null;
+const codeDir = path.join(__dirname, '/../../drawio/src/main/webapp');
+const codeUrl = url.pathToFileURL(codeDir).href.replace(/\/.\:\//, str => str.toUpperCase()); // Fix for windows drive letter
+// Production app uses asar archive, so we need to go up two more level. It's extra cautious since asar is read-only anyway.
+const appBaseDir = path.join(__dirname, __dirname.endsWith(path.join('resources', 'app.asar', 'src', 'main')) ?
+								'/../../../../' : '/../../');
+// Paths the user has authorised through trusted UI (file picker, file association,
+// command line). The renderer is not allowed to write to anything else, even via
+// IPC handlers that pass validateSender. Symlinks are resolved before insertion so
+// the realpath of a blessed path is what's actually authorised.
+//
+// Persisted across sessions via electron-store so drawio's "Open Recent" (which
+// fakes an args-obj entirely in the renderer) still works — recent files are
+// only added to the menu after a successful open via trusted UI, so a path in
+// the persisted set is one we previously authorised.
+const BLESSED_PATHS_KEY = 'blessedPaths';
+const BLESSED_PATHS_MAX = 500;
+const blessedPaths = new Set();
+
+if (store != null)
+{
+	try
+	{
+		const persisted = store.get(BLESSED_PATHS_KEY);
+
+		if (Array.isArray(persisted))
+		{
+			for (const p of persisted)
+			{
+				if (typeof p === 'string' && p) blessedPaths.add(p);
+			}
+		}
+	}
+	catch (e) {} // Bad store contents — start with an empty set.
+}
+
+function persistBlessedPaths()
+{
+	if (store == null) return;
+
+	try
+	{
+		let arr = Array.from(blessedPaths);
+
+		// Cap to keep the store bounded; newest insertions win.
+		if (arr.length > BLESSED_PATHS_MAX)
+		{
+			arr = arr.slice(arr.length - BLESSED_PATHS_MAX);
+		}
+
+		store.set(BLESSED_PATHS_KEY, arr);
+	}
+	catch (e) {}
+}
+
+function blessPath(p)
+{
+	if (typeof p !== 'string' || !p) return;
+
+	try
+	{
+		const resolved = path.resolve(p);
+		blessedPaths.add(resolved);
+
+		// Must be the native realpath that canonicalisePath checks against.
+		// Node's JS walker (fs.realpathSync) keeps mapped and subst drive
+		// letters and the case as given, where the native call returns
+		// \\server\share, the substituted folder and the case on disk, so files
+		// on network drives were refused [jgraph/drawio-desktop#2559].
+		try
+		{
+			blessedPaths.add(fs.realpathSync.native(resolved));
+		}
+		catch (e)
+		{
+			// Save As can select a new file in a symlinked directory. Authorise
+			// its canonical destination before the file exists too.
+			try
+			{
+				blessedPaths.add(path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved)));
+			}
+			catch (e2) {} // Some filesystems do not support realpath.
+		}
+
+		persistBlessedPaths();
+	}
+	catch (e) {} // Defensive: blessPath must never throw into a caller's flow.
+}
+
+// Paths declared in the user's configuration (Extras > Edit Configuration):
+// libraries, templates and fonts that point at local files or file:// URLs are
+// fetched through the readFile IPC [jgraph/drawio-desktop#1278]. They are never
+// picked in a file dialog, so they cannot be blessed the way opened files are
+// and get their own read-only set instead. Deliberately not persisted and never
+// consulted by assertWritablePath: the configuration widens what the renderer
+// may read, never what it may write.
+const configReadablePaths = new Set();
+let configReadablePathsPromise = null;
+
+// Collects the config-declared URLs from the renderer. The keys to look at are
+// listed here, in the main process, and only the values of known path-carrying
+// fields are used, so a tampered configuration cannot nominate paths through
+// some other key. Returned values are still just candidates: the caller keeps
+// the ones that name a local file.
+//
+// Runs in the renderer via executeJavaScript (see collectConfigPathsScript), so
+// it must not reference anything outside its own body.
+function collectConfigPaths()
+{
+	try
+	{
+		var urls = [];
+
+		function addUrl(url)
+		{
+			if (typeof url === 'string' && url.length > 0)
+			{
+				urls.push(url);
+			}
+		};
+
+		function addFont(entry)
+		{
+			if (entry != null && typeof entry === 'object')
+			{
+				addUrl(entry.fontUrl);
+			}
+		};
+
+		var config = (typeof Editor !== 'undefined') ? Editor.config : null;
+
+		if (config != null && typeof config === 'object')
+		{
+			addUrl(config.templateFile);
+
+			if (Array.isArray(config.customTemplates))
+			{
+				config.customTemplates.forEach(function(entry)
+				{
+					if (entry != null && typeof entry === 'object')
+					{
+						addUrl(entry.url);
+						addUrl(entry.preview);
+					}
+				});
+			}
+
+			// Library ids are a one-character service prefix (U for a URL,
+			// S for a desktop file) followed by the encoded URL
+			if (Array.isArray(config.defaultCustomLibraries))
+			{
+				config.defaultCustomLibraries.forEach(function(id)
+				{
+					if (typeof id === 'string' && id.length > 1)
+					{
+						var url = id.substring(1);
+
+						try
+						{
+							url = decodeURIComponent(url);
+						}
+						catch (e) {} // Not encoded, use as-is
+
+						addUrl(url);
+					}
+				});
+			}
+
+			// Libraries offered in the More Shapes dialog
+			if (Array.isArray(config.libraries))
+			{
+				config.libraries.forEach(function(section)
+				{
+					if (section != null && typeof section === 'object' &&
+						Array.isArray(section.entries))
+					{
+						section.entries.forEach(function(entry)
+						{
+							if (entry != null && typeof entry === 'object' &&
+								Array.isArray(entry.libs))
+							{
+								entry.libs.forEach(function(lib)
+								{
+									if (lib != null && typeof lib === 'object')
+									{
+										addUrl(lib.url);
+									}
+								});
+							}
+						});
+					}
+				});
+			}
+
+			if (Array.isArray(config.customFonts))
+			{
+				config.customFonts.forEach(addFont);
+			}
+
+			if (Array.isArray(config.defaultFonts))
+			{
+				config.defaultFonts.forEach(addFont);
+			}
+
+			if (typeof config.fontCss === 'string')
+			{
+				var parts = config.fontCss.split('url(');
+
+				for (var i = 1; i < parts.length; i++)
+				{
+					var end = parts[i].indexOf(')');
+
+					if (end > 0)
+					{
+						// Same trimming as Editor.trimCssUrl in the renderer
+						addUrl(parts[i].substring(0, end).
+							replace(/^[\s"']+/, '').replace(/[\s"']+$/, ''));
+					}
+				}
+			}
+		}
+
+		return urls;
+	}
+	catch (e)
+	{
+		return [];
+	}
+};
+
+// Serialised so it can be handed to executeJavaScript, which takes source and
+// not a function. Built from the function above so it stays ordinary,
+// syntax-checked code instead of a string literal with escaped regexes.
+const collectConfigPathsScript = '(' + String(collectConfigPaths) + ')()';
+
+// Returns the filesystem path for URLs that name a local file (file:// URLs,
+// drive, UNC and absolute paths), null otherwise. Mirrors Editor.getLocalFilePath
+// in the renderer, which decides what is routed through the readFile IPC.
+function getLocalFilePath(url)
+{
+	if (typeof url !== 'string')
+	{
+		return null;
+	}
+
+	if (url.substring(0, 7) == 'file://')
+	{
+		let decoded;
+
+		try
+		{
+			decoded = decodeURIComponent(url.substring(7).split(/[?#]/)[0]);
+		}
+		catch (e)
+		{
+			return null;
+		}
+
+		// Removes the leading slash before Windows drive letters (file:///C:/...)
+		return (/^\/[a-zA-Z]:/.test(decoded)) ? decoded.substring(1) : decoded;
+	}
+	else if (/^([a-zA-Z]:[\\\/]|[\\\/])/.test(url))
+	{
+		return url;
+	}
+
+	return null;
+};
+
+// Rebuilds configReadablePaths from the renderer's configuration. Called on a
+// miss in assertReadablePath and reset on every page load, so a configuration
+// edit (which reloads the app) takes effect without a restart.
+function loadConfigReadablePaths()
+{
+	if (configReadablePathsPromise == null)
+	{
+		configReadablePathsPromise = (async function()
+		{
+			const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+
+			if (win == null || win.webContents == null)
+			{
+				return;
+			}
+
+			const urls = await win.webContents.executeJavaScript(collectConfigPathsScript);
+
+			if (!Array.isArray(urls))
+			{
+				return;
+			}
+
+			for (const url of urls)
+			{
+				const local = getLocalFilePath(url);
+
+				if (local == null || local.includes('\0'))
+				{
+					continue;
+				}
+
+				const resolved = path.resolve(local);
+				configReadablePaths.add(resolved);
+
+				try
+				{
+					// Native, as in blessPath
+					configReadablePaths.add(fs.realpathSync.native(resolved));
+				}
+				catch (e) {} // Configured path may not exist, that's fine
+			}
+		})().catch(function()
+		{
+			// Renderer not ready or config unreadable. Drop the cached promise
+			// so the next denied read retries instead of leaving the configured
+			// paths unavailable for the rest of the session.
+			configReadablePathsPromise = null;
+		});
+	}
+
+	return configReadablePathsPromise;
+};
+
+function invalidateConfigReadablePaths()
+{
+	configReadablePathsPromise = null;
+	configReadablePaths.clear();
+};
+
+// fs.statSync that never throws (returns null for missing, deleted-in-between
+// or inaccessible paths) so callers can't crash the main process on a race
+function statSafe(p)
+{
+	try
+	{
+		return (typeof p === 'string' && p) ? fs.statSync(p) : null;
+	}
+	catch (e)
+	{
+		return null;
+	}
+}
+
+// One-shot migration: on first launch with the blessedPaths fix, the renderer's
+// drawio "Open Recent" list (in localStorage at key '.recent') contains paths
+// that were opened in prior versions and so were never blessed. Without this
+// migration, autosave would break for every legacy recent file until the user
+// re-opened it via the file picker. Trust-on-first-use is acceptable here: any
+// attacker who could have poisoned localStorage in a prior version already had
+// the broader (pre-fix) attack surface, so this migration does not widen it.
+const BLESSED_PATHS_MIGRATION_KEY = 'blessedPathsLegacyMigrated';
+
+async function migrateLegacyRecentsOnce(webContents)
+{
+	if (store == null) return;
+	if (store.get(BLESSED_PATHS_MIGRATION_KEY)) return;
+
+	try
+	{
+		const recentsJson = await webContents.executeJavaScript(
+			'try { localStorage.getItem(".recent") } catch (e) { null }');
+
+		if (typeof recentsJson === 'string')
+		{
+			const recents = JSON.parse(recentsJson);
+
+			if (Array.isArray(recents))
+			{
+				for (const entry of recents)
+				{
+					if (entry != null && typeof entry.id === 'string' &&
+						entry.id && fs.existsSync(entry.id))
+					{
+						blessPath(entry.id);
+					}
+				}
+			}
+		}
+	}
+	catch (e) {} // Migration is best-effort; never block app startup.
+
+	try { store.set(BLESSED_PATHS_MIGRATION_KEY, true); } catch (e) {}
+}
+
+// One-shot migration for the read-side path gate: custom libraries added
+// through File > Open Library in versions before blessPath existed are still
+// in the renderer's settings but were never authorised, so assertReadablePath
+// would now refuse to load them into the sidebar. Same trust-on-first-use
+// reasoning as migrateLegacyRecentsOnce, and its own key so it also runs for
+// installs that already completed that migration.
+const BLESSED_LIBRARIES_MIGRATION_KEY = 'blessedLibrariesLegacyMigrated';
+
+// Held so assertReadablePath can wait for the migration instead of refusing a
+// legacy library that the sidebar requests while it is still running
+let legacyLibrariesMigration = null;
+
+async function migrateLegacyLibrariesOnce(webContents)
+{
+	if (store == null) return;
+	if (store.get(BLESSED_LIBRARIES_MIGRATION_KEY)) return;
+
+	try
+	{
+		const settingsJson = await webContents.executeJavaScript(
+			'try { localStorage.getItem(".drawio-config") } catch (e) { null }');
+
+		if (typeof settingsJson === 'string')
+		{
+			const settings = JSON.parse(settingsJson);
+
+			if (settings != null && Array.isArray(settings.customLibraries))
+			{
+				for (const id of settings.customLibraries)
+				{
+					// 'S' is the desktop (local file) library service, the
+					// only one whose id is a filesystem path
+					if (typeof id !== 'string' || id.charAt(0) !== 'S') continue;
+
+					let libPath = id.substring(1);
+
+					try
+					{
+						libPath = decodeURIComponent(libPath);
+					}
+					catch (e) {} // Not encoded, use as-is
+
+					if (libPath && fs.existsSync(libPath))
+					{
+						blessPath(libPath);
+					}
+				}
+			}
+		}
+	}
+	catch (e) {} // Migration is best-effort; never block app startup.
+
+	try { store.set(BLESSED_LIBRARIES_MIGRATION_KEY, true); } catch (e) {}
+}
+let appZoom = 1;
+// Disabled by default
+let isGoogleFontsEnabled = store != null ? (store.get('isGoogleFontsEnabled') != null? store.get('isGoogleFontsEnabled') : false) : false;
+
+// dev=1 makes bootstrap.js load the unminified editor sources, which the
+// packaged app.asar leaves out (see files in electron-builder-*.json), so a
+// packaged build started with DRAWIO_ENV=dev keeps the minified bundles
+const devSources = __DEV__ && fs.existsSync(path.join(codeDir, 'js', 'diagramly', 'Devel.js'));
+
+//Read config file
+var queryObj = {
+	'dev': devSources ? 1 : 0,
+	'test': __DEV__ ? 1 : 0,
+	'gapi': 0,
+	'db': 0,
+	'od': 0,
+	'gh': 0,
+	'gl': 0,
+	'tr': 0,
+	'browser': 0,
+	'picker': 0,
+	'mode': 'device',
+	'export': 'https://convert.diagrams.net/node/export',
+	'disableUpdate': disableUpdate? 1 : 0,
+	'enableSpellCheck': enableSpellCheck? 1 : 0,
+	'enableStoreBkp': enableStoreBkp? 1 : 0,
+	'isGoogleFontsEnabled': isGoogleFontsEnabled? 1 : 0
+};
+
+try
+{
+	if (fs.existsSync(process.cwd() + '/urlParams.json'))
+	{
+		let urlParams = JSON.parse(fs.readFileSync(process.cwd() + '/urlParams.json'));
+		
+		for (var param in urlParams)
+		{
+			queryObj[param] = urlParams[param];
+		}
+	}
+}
+catch(e)
+{
+	console.log('Error in urlParams.json file: ' + e.message);
+}
+
+// Trying sandboxing the renderer for more protection
+//app.enableSandbox(); // This maybe the reason snap stopped working
+
+// Only allow request from the app code itself
+function validateSender (frame)
+{
+	// senderFrame may be null if the frame has navigated or been destroyed
+	// before the IPC handler runs (documented behaviour on IpcMainEvent).
+	if (frame == null) return false;
+	return frame.url.replace(/\/.\:\//, str => str.toUpperCase()).startsWith(codeUrl);
+}
+
+function createWindow (opt = {})
+{
+	let lastWinSizeStr = (store && store.get('lastWinSize')) || '1200,800,0,0,false,false';
+	let lastWinSize = parseLastWinSize(lastWinSizeStr);
+
+	const additionalArguments = [];
+
+	if (initialAdaptiveColorsDefault != null)
+	{
+		additionalArguments.push('--initial-adaptive-colors=' + initialAdaptiveColorsDefault);
+	}
+
+	let options = Object.assign(
+	{
+		// Matches the background of the loading splash to avoid a white flash in dark mode
+		backgroundColor: nativeTheme.shouldUseDarkColors ? '#1B1D1E' : '#F1F3F4',
+		width: lastWinSize.width,
+		height: lastWinSize.height,
+		icon: `${codeDir}/images/drawlogo256.png`,
+		webPreferences: {
+			preload: `${__dirname}/electron-preload.js`,
+			spellcheck: enableSpellCheck,
+			contextIsolation: true,
+			nodeIntegration: false,
+			// webviewTag and webSecurity belong here, not on the top-level
+			// BrowserWindow options, where they are silently ignored
+			webviewTag: false,
+			webSecurity: true,
+			disableBlinkFeatures: 'Auxclick', // Is this needed?
+			additionalArguments: additionalArguments
+		}
+	}, opt)
+	
+	// Displays may have been removed or changed resolution since the window
+	// size was saved, leaving the saved position off-screen or the saved size
+	// too large for the remaining displays [jgraph/drawio-desktop#2282]
+	const bounds = placeWindowOnDisplays(
+		{x: lastWinSize.x, y: lastWinSize.y, width: options.width, height: options.height},
+		screen.getAllDisplays().map(display => display.workArea),
+		screen.getPrimaryDisplay().workArea);
+
+	options.x = bounds.x;
+	options.y = bounds.y;
+	options.width = bounds.width;
+	options.height = bounds.height;
+
+	let mainWindow = new BrowserWindow(options)
+	windowsRegistry.push(mainWindow)
+
+	if (lastWinSize.maximized)
+	{
+		mainWindow.maximize()
+	}
+
+	if (lastWinSize.fullScreen)
+	{
+		mainWindow.setFullScreen(true);
+	}
+
+	if (__DEV__) 
+	{
+		console.log('createWindow', opt)
+	}
+
+	//Cannot be read before app is ready
+	queryObj['appLang'] = app.getLocale();
+
+	let ourl = url.format(
+	{
+		pathname: `${codeDir}/index.html`,
+		protocol: 'file:',
+		query: queryObj,
+		slashes: true
+	})
+	
+	mainWindow.loadURL(ourl)
+
+	// The configuration lives in the renderer, so the local paths it declares
+	// (see loadConfigReadablePaths) must be collected again after every load —
+	// editing the configuration reloads the app
+	mainWindow.webContents.on('did-finish-load', function()
+	{
+		invalidateConfigReadablePaths();
+		legacyLibrariesMigration = migrateLegacyLibrariesOnce(mainWindow.webContents);
+	});
+
+	// File watches are keyed by webContents, so drop this window's watches when
+	// it goes away or navigates: the renderer that armed them is gone and its
+	// fs listeners would keep polling forever [jgraph/drawio-desktop#2541]
+	const watchOwner = mainWindow.webContents;
+
+	watchOwner.on('destroyed', () =>
+	{
+		fileWatcher.unwatchAll(watchOwner);
+	});
+
+	// Only fires once a main frame navigation has committed, so the page that
+	// armed these watches is already gone and an aborted navigation cannot
+	// clear a watch that is still live
+	watchOwner.on('did-navigate', () =>
+	{
+		fileWatcher.unwatchAll(watchOwner);
+	});
+
+	// Intercept Ctrl/Cmd+Shift+V before it reaches the renderer
+	// so paste-without-formatting works even when the web app captures the shortcut
+	mainWindow.webContents.on('before-input-event', (event, input) =>
+	{
+		if (input.type === 'keyDown' && input.key === 'v' &&
+			input.shift && (isMac ? input.meta : input.control) && !input.alt)
+		{
+			event.preventDefault();
+			mainWindow.webContents.pasteAndMatchStyle();
+		}
+	});
+
+	// Open the DevTools.
+	if (__DEV__)
+	{
+		mainWindow.webContents.openDevTools()
+	}
+
+	function rememberWinSize(win)
+	{
+		if (store != null)
+		{
+			const size = win.getSize();
+			const pos = win.getPosition();
+			store.set('lastWinSize', size[0] + ',' + size[1] + ',' + pos[0] + ',' + pos[1] + ',' + win.isMaximized() + ',' + win.isFullScreen());
+		}
+	}
+
+	mainWindow.on('maximize', function()
+	{
+		mainWindow.webContents.send('maximize')
+	});
+
+	mainWindow.on('unmaximize', function()
+	{
+		mainWindow.webContents.send('unmaximize')
+	});
+
+	mainWindow.on('resize', function()
+	{
+		mainWindow.webContents.send('resize')
+	});
+
+	let uniqueIsModifiedId, modifiedModalOpen = false;
+
+	ipcMain.on('isModified-result', async (e, data) =>
+	{
+		if (!validateSender(e.senderFrame) || uniqueIsModifiedId != data.uniqueId || modifiedModalOpen) return null;
+
+		if (data.isModified)
+		{
+			modifiedModalOpen = true;
+			// Button order follows platform conventions, indices are mapped below.
+			// Enter triggers Save, Esc triggers Cancel, Alt+S/Alt+D work on Windows and Linux
+			let saveBtn = 0, cancelBtn, discardBtn, buttons;
+
+			if (isMac)
+			{
+				buttons = ['Save', 'Cancel', 'Discard Changes'];
+				cancelBtn = 1;
+				discardBtn = 2;
+			}
+			else
+			{
+				buttons = ['&Save', '&Discard Changes', 'Cancel'];
+				discardBtn = 1;
+				cancelBtn = 2;
+			}
+
+			// Can't use async function here because it crashes on Linux when win.destroy is called
+			let response = dialog.showMessageBoxSync(
+				mainWindow,
+				{
+					type: 'question',
+					buttons: buttons,
+					defaultId: saveBtn,
+					cancelId: cancelBtn,
+					noLink: true,
+					normalizeAccessKeys: true,
+					title: 'Confirm',
+					message: 'The document has unsaved changes. Do you want to save them?'
+				});
+
+			if (response === saveBtn)
+			{
+				//Save in the renderer (opens Save As dialog for new files), then
+				//close the window unless saving failed or was cancelled
+				const saveUniqueId = uniqueIsModifiedId;
+				mainWindow.webContents.send('saveAndClose', saveUniqueId);
+
+				const saveAndCloseResult = (e, result) =>
+				{
+					if (!validateSender(e.senderFrame) || saveUniqueId != result.uniqueId) return null;
+
+					ipcMain.removeListener('saveAndClose-result', saveAndCloseResult);
+
+					if (result.success && !mainWindow.isDestroyed())
+					{
+						mainWindow.destroy();
+					}
+					else
+					{
+						cmdQPressed = false;
+						modifiedModalOpen = false;
+					}
+				};
+
+				ipcMain.on('saveAndClose-result', saveAndCloseResult);
+			}
+			else if (response === discardBtn)
+			{
+				//If user chose not to save, remove the draft
+				if (data.draftPath != null)
+				{
+					await deleteFile(data.draftPath);
+					mainWindow.destroy();
+				}
+				else
+				{
+					mainWindow.webContents.send('removeDraft');
+
+					ipcMain.once('draftRemoved', (e) =>
+					{
+						if (!validateSender(e.senderFrame)) return null;
+
+						mainWindow.destroy();
+					});
+				}
+			}
+			else
+			{
+				cmdQPressed = false;
+				modifiedModalOpen = false;
+			}
+		}
+		else
+		{
+			mainWindow.destroy();
+		}
+	});
+	
+	mainWindow.on('close', (event) =>
+	{
+		uniqueIsModifiedId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+
+		if (__DEV__)
+		{
+			const index = windowsRegistry.indexOf(mainWindow)
+			console.log('Window on close', index, uniqueIsModifiedId)
+		}
+		
+		const contents = mainWindow.webContents
+
+		if (contents != null)
+		{
+			contents.send('isModified', uniqueIsModifiedId);
+			event.preventDefault();
+		}
+
+		rememberWinSize(mainWindow);
+	})
+
+	// Emitted when the window is closed.
+	mainWindow.on('closed', () =>
+	{
+		const index = windowsRegistry.indexOf(mainWindow)
+		
+		if (__DEV__) 
+		{
+			console.log('Window closed idx:%d', index)
+		}
+		
+		windowsRegistry.splice(index, 1)
+	})
+	
+	return mainWindow
+}
+
+// This method will be called when Electron has finished
+// initialization and is ready to create browser windows.
+// Some APIs can only be used after this event occurs.
+app.whenReady().then(() =>
+{
+	// Determine initial defaultAdaptiveColors for the drawio Configuration
+	// before any window is created so the value is passed to the preload.
+	initialAdaptiveColorsDefault = detectInitialAdaptiveColorsDefault();
+
+	// Enforce our CSP on all contents
+	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
+	{
+		callback({
+			responseHeaders: {
+				...details.responseHeaders,
+				// 'wasm-unsafe-eval' is required to compile the inlined libavoid WASM edge
+				// router; without it this header CSP overrides the more permissive meta CSP
+				// set in ElectronApp.js (the strictest of multiple policies wins)
+				'Content-Security-Policy': ['default-src \'self\'; script-src \'self\' \'wasm-unsafe-eval\'; connect-src \'self\'' +
+				(isGoogleFontsEnabled? ' https://fonts.googleapis.com https://fonts.gstatic.com' : '') + '; img-src * data:; media-src *; font-src * data:; frame-src \'self\'; style-src \'self\' \'unsafe-inline\'' +
+				(isGoogleFontsEnabled? ' https://fonts.googleapis.com' : '') + '; base-uri \'none\';child-src \'self\';object-src \'none\';']
+			}
+		})
+	});
+
+	// Enforce loading file only from our app directory
+	session.defaultSession.webRequest.onBeforeRequest({urls: ['file://*']}, (details, callback) =>
+	{
+		const url = details.url.replace(/\/.\:\//, str => str.toUpperCase());
+
+		if (!url.startsWith(codeUrl))
+		{
+			console.log('Blocked loading file from ' + details.url, url, codeUrl);
+			callback({cancel: true});
+		}
+		else
+		{
+			callback({});
+		}
+	});
+
+	// Registered once, not per window: per-window handlers leaked on window
+	// close and crashed the main process on the next openDevTools message
+	ipcMain.on('openDevTools', (e) =>
+	{
+		if (!validateSender(e.senderFrame)) return null;
+
+		e.sender.openDevTools();
+	})
+
+	ipcMain.on('newfile', (e, arg) =>
+	{
+		if (!validateSender(e.senderFrame)) return null;
+
+		let opts = {};
+
+		if (arg)
+		{
+			if (arg.width)
+			{
+				opts.width = arg.width;
+			}
+
+			if (arg.height)
+			{
+				opts.height = arg.height;
+			}
+		}
+
+		createWindow(opts);
+	})
+	
+    let argv = process.argv
+
+    // https://github.com/electron/electron/issues/4690#issuecomment-217435222
+    if (process.defaultApp != true)
+    {
+        argv.unshift(null)
+    }
+
+	var validFormatRegExp = validFormatRegExpImport;
+	var { opts: options, args: parsedArgs } = parseDrawioArgs(argv);
+
+	if (options.zoom != null)
+	{
+		appZoom = options.zoom;
+	}
+
+    //Start export mode?
+    if (options.export)
+	{
+		// Electron shows an uncaught error in a modal dialog, which stalls a CI
+		// run. Nothing can be trusted after one, so fail the whole export. Also
+		// stops Electron's dialog, which only shows without other listeners
+		process.on('uncaughtException', function(e)
+		{
+			console.error('Error: uncaught exception: ' + ((e != null && e.stack) || e));
+			app.exit(1);
+		});
+
+    	var dummyWin = new BrowserWindow({
+			show : false,
+			webPreferences: {
+				preload: `${__dirname}/electron-preload.js`,
+				contextIsolation: true,
+				nodeIntegration: false,
+				webviewTag: false,
+				webSecurity: true,
+				disableBlinkFeatures: 'Auxclick' // Is this needed?
+			}
+		});
+    	
+    	windowsRegistry.push(dummyWin);
+    	
+		/*ipcMain.on('log', function(event, msg)
+		{
+			console.log(msg);
+		});*/
+	
+    	try
+    	{
+	    	//Prepare arguments and confirm it's valid
+	    	var format = null;
+	    	var outType = null;
+	    	
+	    	//Format & Output
+	    	if (options.output)
+			{
+	    		try
+	    		{
+	    			var outStat = fs.statSync(options.output);
+	    			
+	    			if (outStat.isDirectory())
+					{
+	    				outType = {isDir: true};
+					}
+	    			else //If we can get file stat, then it exists
+					{
+	    				throw 'Error: Output file already exists';
+					}
+	    		}
+	    		catch(e) //on error, file doesn't exist and it is not a dir
+	    		{
+	    			outType = {isFile: true};
+	    			
+	    			format = path.extname(options.output).substr(1);
+					
+					if (!validFormatRegExp.test(format))
+					{
+						format = null;
+					}
+	    		}
+			}
+	    	
+	    	if (format == null)
+			{
+	    		format = options.format;
+			}
+	    	
+	    	let from = null, to = null;
+
+	    	if (options.pageIndex != null)
+			{
+				// The 1-based CLI value arrives shifted to 0-based, so 0, negative and
+				// non-numeric input all land below 0. Page indexes were 0-based before
+				// v27.0.2 and old scripts pass 0 — fail loudly instead of silently
+				// exporting the first page [jgraph/drawio-desktop#2319]
+				if (!(options.pageIndex >= 0))
+				{
+					console.error('Invalid page index: pages are numbered from 1 (0-based before v27.0.2)');
+					process.exit(1);
+				}
+
+	    		from = options.pageIndex;
+				to = options.pageIndex;
+				options.allPages = false;
+			}
+	    	else if (options.pageRange)
+			{
+				const [rangeFrom, rangeTo] = options.pageRange;
+
+				if (options.pageRange.length == 2 && rangeFrom >= 0 && rangeTo >= 0 && rangeFrom <= rangeTo)
+				{
+					from = rangeFrom;
+					to = rangeTo;
+					options.allPages = false;
+				}
+				else
+				{
+					console.error('Invalid page range: expected <from>..<to> with pages numbered from 1 and from ≤ to (0-based before v27.0.2)');
+					process.exit(1);
+				}
+			}
+
+			var expArgs = {
+				format: format,
+				w: options.width > 0 ? options.width : null,
+				h: options.height > 0 ? options.height : null,
+				bg: options.transparent ? 'none' : '#ffffff',
+				from: from,
+				to: to,
+				allPages: (format == 'pdf' || format == 'html') && options.allPages,
+				scale: (options.scale || 1),
+				embedXml: options.embedDiagram? '1' : '0',
+				embedImages: options.embedSvgImages? '1' : '0',
+				embedFonts: (options.embedSvgFonts === true || options.embedSvgFonts === 'true')? '1' : '0',
+				embedCellMetadata: options.embedSvgMetadata? '1' : '0',
+				jpegQuality: options.quality,
+				uncompressed: options.uncompressed,
+				// --theme applies to all formats and wins over the deprecated --svg-theme
+				theme: options.theme != null ? options.theme : options.svgTheme,
+				linkTarget: options.svgLinksTarget,
+				crop: (options.crop && format == 'pdf') ? '1' : '0',
+				// --size page exports images at the full page size instead of
+				// cropping to the diagram content (the render ignores this for
+				// other formats) [jgraph/drawio-desktop#2481]
+				exportType: options.size
+			};
+
+			options.border = options.border > 0 ? options.border : 0;
+
+			if (format === 'pdf') 
+			{
+				expArgs.pageMargin = options.border;
+			}
+			else
+			{
+				expArgs.border = options.border;
+			}
+
+			if (options.layers)
+			{
+				expArgs.extras = JSON.stringify({layers: options.layers.split(',')});
+			}
+
+			if (options.layout)
+			{
+				expArgs.layout = options.layout;
+			}
+
+			if (options.normalize)
+			{
+				expArgs.normalize = true;
+			}
+
+			var paths = parsedArgs;
+			
+			// Remove --no-sandbox arg from the paths
+			if (Array.isArray(paths))
+			{
+				paths = paths.filter(function(path) { return path != null && path != '--no-sandbox'; });
+			}
+
+			// If input files/folders are passed
+			if (paths !== undefined && paths[0] != null)
+			{
+				var files = [];
+
+				// Tracks files found by directory scans (vs listed explicitly)
+				// for the lenient no-diagram-data handling below
+				var scannedFiles = new Set();
+
+				// Directory scans only pick up file types the export can ingest,
+				// so unrelated files don't fail the batch [jgraph/drawio-desktop#2248]
+				var exportableExts = ['.drawio', '.dio', '.xml', '.csv', '.vsdx',
+					'.mmd', '.mermaid', '.png', '.svg', '.pdf'];
+
+				// Symbolic links found by the scan are not followed, they
+				// could point outside the folder [GHSA-2w35-fgjm-2vvh]
+				function addDirectoryFiles(dir, isRecursive)
+				{
+					listExportFiles(dir, isRecursive, exportableExts, function(link)
+					{
+						console.log('Skipping ' + link + ' (symbolic link)');
+					}).forEach(function(filePath)
+					{
+						files.push(filePath);
+						scannedFiles.add(filePath);
+					});
+				}
+				
+				// Each positional argument is an input file or folder to
+				// export [jgraph/drawio-desktop#2433]
+				for (const inPath of paths)
+				{
+					var inStat = null;
+
+					try
+					{
+						inStat = fs.statSync(inPath);
+					}
+					catch(e)
+					{
+						throw 'Error: input file/directory not found: ' + inPath;
+					}
+
+					if (inStat.isFile())
+					{
+						files.push(inPath);
+					}
+					else if (inStat.isDirectory())
+					{
+						addDirectoryFiles(inPath, options.recursive);
+					}
+				}
+
+				// Exporting several files into one output file would just
+				// overwrite it on each export (--check keeps its
+				// counter-suffixed copies instead)
+				if (files.length > 1 && outType != null && outType.isFile && !options.check)
+				{
+					throw 'Error: output must be a folder when exporting multiple files';
+				}
+
+				if (files.length > 0)
+				{
+					var fileIndex = 0;
+					var exportFailed = false;
+					
+					function processOneFile()
+					{
+						var curFile = files[fileIndex];
+						
+						// Ends the vsdx import or the export in progress on timeout
+						var abort = null;
+						var timer = null;
+
+						// Outside the try block so the catch below can call it
+						// (ES modules scope function declarations to their block)
+						function next()
+						{
+							clearTimeout(timer);
+							fileIndex++;
+
+							if (fileIndex < files.length)
+							{
+								processOneFile();
+							}
+							else if (exportFailed)
+							{
+								app.exit(1);
+							}
+							else
+							{
+								cmdQPressed = true;
+								dummyWin.destroy();
+							}
+						};
+
+						// A renderer that never replies must not stall the batch.
+						// One limit for the whole file, vsdx import included
+						if (options.timeout > 0)
+						{
+							// setTimeout fires at once for delays over 2^31 - 1 ms
+							timer = setTimeout(function()
+							{
+								abort('Export timed out after ' + options.timeout + ' seconds');
+							}, Math.min(options.timeout * 1000, 0x7fffffff));
+						}
+
+						try
+						{
+							var ext = path.extname(curFile).toLowerCase();
+
+							let fileContent = fs.readFileSync(curFile, ext === '.png' || ext === '.pdf' || ext === '.vsdx' ? null : 'utf-8');
+
+							// PNG/PDF/SVG files picked up by a directory scan are only
+							// exportable if they contain an embedded diagram; skip the
+							// rest (eg. previous export outputs) instead of failing
+							// the batch. Explicitly listed files still fail loudly
+							// [jgraph/drawio-desktop#2248]
+							if (scannedFiles.has(curFile) &&
+								(ext === '.png' || ext === '.pdf' || ext === '.svg'))
+							{
+								var embXml = null;
+
+								try
+								{
+									if (ext === '.png')
+									{
+										embXml = readPngXml(fileContent);
+									}
+									else if (ext === '.pdf')
+									{
+										embXml = readPdfXml(fileContent);
+									}
+									else
+									{
+										embXml = readSvgXml(fileContent);
+									}
+								}
+								catch (e)
+								{
+									// Malformed file, treated as no diagram data
+								}
+
+								if (embXml == null)
+								{
+									console.log('Skipping ' + curFile + ' (no diagram data)');
+									next();
+									return;
+								}
+							}
+
+							// expArgs is shared across the batch, so content and decode
+							// flags from the previous file must not leak into this one
+							// (eg. a stale csv would hijack the render of the next file)
+							delete expArgs.xml;
+							delete expArgs.csv;
+							delete expArgs.mermaid;
+							delete expArgs.xmlEncoded;
+							delete expArgs.pdfEncoded;
+
+							if (ext === '.vsdx')
+							{
+								// A window per file, so a crashed or stuck importer goes
+								// with it instead of answering for the next file
+								var importWin = new BrowserWindow({
+									show : false,
+									webPreferences: {
+										preload: `${__dirname}/electron-preload.js`,
+										contextIsolation: true,
+										nodeIntegration: false,
+										webviewTag: false,
+										webSecurity: true,
+										disableBlinkFeatures: 'Auxclick'
+									}
+								});
+
+								const contents = importWin.webContents;
+
+								// Ends the import once, on the importer's reply, a renderer
+								// crash or the timeout, whichever comes first
+								function endImport(xml, error)
+								{
+									if (importWin.isDestroyed()) return;
+
+									ipcMain.removeListener('import-success', onImportSuccess);
+									ipcMain.removeListener('import-error', onImportError);
+									importWin.destroy();
+
+									if (xml != null)
+									{
+										expArgs.xml = xml;
+										startExport();
+									}
+									else
+									{
+										console.error('Error: ' + (error || 'cannot import VSDX file') + ': ' + curFile);
+										exportFailed = true;
+										next();
+									}
+								};
+
+								function onImportSuccess(e, xml)
+								{
+									if (!validateSender(e.senderFrame)) return null;
+
+									endImport(xml);
+								};
+
+								function onImportError(e)
+								{
+									if (!validateSender(e.senderFrame)) return null;
+
+									endImport(null);
+								};
+
+								ipcMain.once('import-success', onImportSuccess);
+								ipcMain.once('import-error', onImportError);
+
+								contents.on('render-process-gone', function(e, details)
+								{
+									endImport(null, 'Renderer process gone (' + details.reason + ')');
+								});
+
+								contents.once('did-finish-load', function()
+								{
+									contents.send('import', fileContent);
+								});
+
+								abort = function(msg)
+								{
+									endImport(null, msg);
+								};
+
+								importWin.loadURL(`file://${codeDir}/vsdxImporter.html`);
+							}
+							else
+							{
+								if (ext === '.csv')
+								{
+									expArgs.csv = fileContent;
+								}
+								else if (ext === '.png')
+								{
+									expArgs.xmlEncoded = true;
+									expArgs.xml = Buffer.from(fileContent).toString('base64');
+								}
+								else if (ext === '.pdf')
+								{
+									expArgs.pdfEncoded = true;
+									expArgs.xml = Buffer.from(fileContent).toString('base64');
+								}
+								else if (ext === '.mmd' || ext === '.mermaid')
+								{
+									// Mermaid is converted to a diagram in the renderer
+									// (export3.html loads the Mermaid bundle); export.js
+									// handles the data.mermaid input.
+									expArgs.mermaid = fileContent;
+								}
+								else
+								{
+									expArgs.xml = fileContent;
+								}
+
+								startExport();
+							}
+							
+							function startExport()
+							{
+								var replied = false;
+								var mockEvent = {
+									reply: function(msg, data)
+									{
+										if (replied) return;
+										replied = true;
+
+										try
+										{
+											if (msg == 'export-success')
+											{
+												if (data == null || data.length == 0)
+												{
+													console.error('Error: Empty export data: ' + curFile);
+													exportFailed = true;
+												}
+												else
+												{
+													var outFileName = null;
+
+													if (outType != null)
+													{
+														if (outType.isDir)
+														{
+															outFileName = path.join(options.output, path.basename(curFile,
+																path.extname(curFile))) + '.' + format;
+														}
+														else
+														{
+															outFileName = options.output;
+														}
+													}
+													else
+													{
+														// Output goes next to the input file, whether
+														// passed explicitly or found by a folder scan
+														outFileName = path.join(path.dirname(curFile), path.basename(curFile,
+															path.extname(curFile))) + '.' + format;
+													}
+
+													try
+													{
+														var counter = 0;
+														var realFileName = outFileName;
+
+														if (options.check)
+														{
+															while (lexists(realFileName))
+															{
+																counter++;
+																realFileName = path.join(path.dirname(outFileName), path.basename(outFileName,
+																	path.extname(outFileName))) + '-' + counter + path.extname(outFileName);
+															}
+														}
+
+														// A typed -o file name is used as given, but names made up
+														// from the input name are never written through a symbolic
+														// link planted there [GHSA-2w35-fgjm-2vvh]
+														let fh = openExportFile(realFileName, realFileName == options.output);
+
+														try
+														{
+															fs.writeFileSync(fh, data);
+															fs.fsyncSync(fh);
+														}
+														finally
+														{
+															fs.closeSync(fh);
+														}
+
+														console.log(curFile + ' -> ' + realFileName);
+													}
+													catch(e)
+													{
+														console.error(e.code == 'ELOOP' ? 'Error: output file is a symbolic link: ' + realFileName :
+															'Error writing to file: ' + outFileName);
+														exportFailed = true;
+													}
+												}
+											}
+											else
+											{
+												console.error('Error: ' + (data || 'Export failed') + ': ' + curFile);
+												exportFailed = true;
+											}
+
+											next();
+										}
+										finally
+										{
+											mockEvent.finalize();
+										}
+							    	}
+								};
+
+								// Replaced by exportDiagram once it has a window to close
+								mockEvent.finalize = function() {};
+
+								abort = function(msg)
+								{
+									mockEvent.reply('export-error', msg);
+								};
+
+								if (format === 'html')
+								{
+									var xml = expArgs.xml;
+
+									if (expArgs.xmlEncoded)
+									{
+										var pngBuf = Buffer.from(xml, 'base64');
+										xml = readPngXml(pngBuf);
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in PNG file');
+											return;
+										}
+									}
+									else if (expArgs.pdfEncoded)
+									{
+										xml = readPdfXml(Buffer.from(xml, 'base64'));
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in PDF file');
+											return;
+										}
+									}
+									else if (ext === '.svg')
+									{
+										xml = readSvgXml(xml);
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in SVG file');
+											return;
+										}
+									}
+									// Not truthiness: an empty file would slip through as an
+									// HTML page without a diagram
+									else if (expArgs.csv != null)
+									{
+										mockEvent.reply('export-error', 'CSV to HTML export is not supported');
+										return;
+									}
+									else if (expArgs.mermaid != null)
+									{
+										mockEvent.reply('export-error', 'Mermaid to HTML export is not supported');
+										return;
+									}
+									else if (expArgs.layout)
+									{
+										mockEvent.reply('export-error', 'Layout is not supported for HTML export');
+										return;
+									}
+									else if (expArgs.normalize)
+									{
+										mockEvent.reply('export-error', 'Normalize is not supported for HTML export');
+										return;
+									}
+
+									var title = path.basename(curFile, path.extname(curFile));
+									var htmlData = buildHtmlExport(xml, title, options);
+									mockEvent.reply('export-success', htmlData);
+								}
+								else
+								{
+									exportDiagram(mockEvent, expArgs, true);
+								}
+							};
+						}
+						catch(e)
+						{
+							console.error('Error reading file: ' + curFile);
+							exportFailed = true;
+							next();
+						}
+					}
+					
+					processOneFile();
+				}
+				else
+				{
+					throw 'Error: no exportable files found in the input file/directory';
+				}
+			}
+			else
+			{
+				throw 'Error: An input file must be specified';
+			}
+    	}
+    	catch(e)
+    	{
+    		console.error(e);
+    		app.exit(1);
+    	}
+    	
+    	return;
+	}
+    else if (argv.some(a => a === '-V' || a === '--version')) //To prevent execution when version arg is used
+	{
+		console.log(app.getVersion());
+		app.quit();
+    	return;
+	}
+    else if (argv.some(a => a === '-h' || a === '--help')) //To prevent execution when help arg is used
+	{
+		console.log(formatHelp(app.getVersion()));
+		app.quit();
+    	return;
+	}
+    
+    //Prevent multiple instances of the application (casuses issues with configuration)
+    const gotTheLock = app.requestSingleInstanceLock()
+
+    if (!gotTheLock) 
+    {
+		app.quit()
+    } 
+    else 
+    {
+    	app.on('second-instance', (event, commandLine, workingDirectory) => {
+			// Creating a new window while a save/open dialog is open crashes the app
+			if (dialogOpen) return;
+
+    		//Create another window
+    		let win = createWindow()
+
+			let loadEvtCount = 0;
+			
+			function loadFinished(e)
+			{
+				if (e != null && !validateSender(e.senderFrame)) return null;
+
+				loadEvtCount++;
+				
+				if (loadEvtCount == 2)
+				{
+	    	    	//Open the file if new app request is from opening a file.
+	    	    	//Must be a regular file: the trailing token of a dev-mode
+	    	    	//launch is the app directory ".", and reading a directory
+	    	    	//shows an EISDIR error dialog.
+	    	    	var potFile = commandLine.pop();
+	    	    	var potStat = statSafe(potFile);
+
+	    	    	if (potStat != null && potStat.isFile())
+	    	    	{
+	    	    		// User intent: launched the app from CLI / file association
+	    	    		// while another instance was already running.
+	    	    		blessPath(potFile);
+	    	    		win.webContents.send('args-obj', {args: [potFile]});
+	    	    	}
+				}
+			}
+			
+			//Order of these two events is not guaranteed, so wait for them async.
+			//TOOD There is still a chance we catch another window 'app-load-finished' if user created multiple windows quickly 
+	    	ipcMain.once('app-load-finished', loadFinished);
+    	    
+    	    win.webContents.on('did-finish-load', function()
+    	    {    			
+    	        win.webContents.zoomFactor = appZoom;
+    	        win.webContents.setVisualZoomLevelLimits(1, appZoom);
+				loadFinished();
+    	    });
+    	})
+    }
+
+    let win = createWindow()
+    
+	let loadEvtCount = 0;
+			
+	function loadFinished(e)
+	{
+		if (e != null && !validateSender(e.senderFrame)) return null;
+
+		loadEvtCount++;
+		
+		if (loadEvtCount == 2)
+		{
+			// User intent: paths passed on the command line / file association.
+			if (Array.isArray(parsedArgs))
+			{
+				// Directories cannot be opened as diagrams (reading one shows
+				// an EISDIR error dialog), so drop them here. Nonexistent
+				// paths are kept: they reach the renderer as before.
+				parsedArgs = parsedArgs.filter(a =>
+				{
+					if (typeof a !== 'string' || !a) return false;
+
+					const st = statSafe(a);
+					return st == null || !st.isDirectory();
+				});
+
+				for (const a of parsedArgs)
+				{
+					if (fs.existsSync(a))
+					{
+						blessPath(a);
+					}
+				}
+			}
+
+			//Sending entire program is not allowed in Electron 9 as it is not native JS object
+			win.webContents.send('args-obj', {args: parsedArgs, create: options.create, layout: options.layout, normalize: options.normalize, mermaidImage: options.mermaidImage});
+		}
+	}
+	
+	//Order of these two events is not guaranteed, so wait for them async.
+	//TOOD There is still a chance we catch another window 'app-load-finished' if user created multiple windows quickly 
+	ipcMain.once('app-load-finished', loadFinished);
+
+    win.webContents.on('did-finish-load', function()
+    {
+    	if (firstWinFilePath != null)
+		{
+    		if (parsedArgs != null)
+    		{
+    			parsedArgs.push(firstWinFilePath);
+    		}
+    		else
+			{
+    			parsedArgs = [firstWinFilePath];
+			}
+		}
+
+    	firstWinLoaded = true;
+
+    	migrateLegacyRecentsOnce(win.webContents);
+
+        win.webContents.zoomFactor = appZoom;
+        win.webContents.setVisualZoomLevelLimits(1, appZoom);
+		loadFinished();
+    });
+	
+	function toggleSpellCheck(e)
+	{
+		if (e != null && !validateSender(e.senderFrame)) return null;
+
+		if (store != null)
+		{
+			enableSpellCheck = !enableSpellCheck;
+			store.set('enableSpellCheck', enableSpellCheck);
+		}
+	};
+
+	ipcMain.on('toggleSpellCheck', toggleSpellCheck);
+
+	function toggleStoreBkp(e)
+	{
+		if (e != null && !validateSender(e.senderFrame)) return null;
+
+		if (store != null)
+		{
+			enableStoreBkp = !enableStoreBkp;
+			store.set('enableStoreBkp', enableStoreBkp);
+		}
+	};
+
+	ipcMain.on('toggleStoreBkp', toggleStoreBkp);
+
+	function toggleGoogleFonts(e)
+	{
+		if (e != null && !validateSender(e.senderFrame)) return null;
+
+		if (store != null)
+		{
+			isGoogleFontsEnabled = !isGoogleFontsEnabled;
+			store.set('isGoogleFontsEnabled', isGoogleFontsEnabled);
+		}
+	}
+
+	ipcMain.on('toggleGoogleFonts', toggleGoogleFonts);
+
+	function toggleFullscreen(e)
+	{
+		if (e != null && !validateSender(e.senderFrame)) return null;
+
+		let win = BrowserWindow.getFocusedWindow();
+
+		if (win != null)
+		{
+			win.setFullScreen(!win.isFullScreen());
+		}
+	};
+
+	ipcMain.on('toggleFullscreen', toggleFullscreen);
+
+	function checkForUpdatesFn(e)
+	{
+		if (disableUpdate) return null;
+
+		if (e != null && e.senderFrame != null &&
+			!validateSender(e.senderFrame)) return null;
+
+		manualUpdateCheck = true;
+		safeUpdaterCall('checkForUpdates (manual)', () => autoUpdater.checkForUpdates());
+	};
+
+	var zoomSteps = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1,
+		1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+
+	// Zooms to the next zoom step
+	function zoomInFn()
+	{
+		var zoomFactor = win.webContents.zoomFactor;
+		var newZoomFactor = zoomSteps[zoomSteps.length - 1];
+
+		for (var i = 0; i < zoomSteps.length; i++)
+		{
+			if (zoomSteps[i] - zoomFactor > 0.01)
+			{
+				newZoomFactor = zoomSteps[i];
+				break;
+			}
+		}
+
+		win.webContents.zoomFactor = newZoomFactor;
+	};
+
+	// Zooms to the previous zoom step
+	function zoomOutFn()
+	{
+		var zoomFactor = win.webContents.zoomFactor;
+		var newZoomFactor = zoomSteps[0];
+
+		for (var i = zoomSteps.length - 1; i >= 0; i--)
+		{
+			if (zoomSteps[i] - zoomFactor < -0.01)
+			{
+				newZoomFactor = zoomSteps[i];
+				break;
+			}
+		}
+
+		win.webContents.zoomFactor = newZoomFactor;
+	};
+
+	// Resets the zoom factor
+	function resetZoomFn()
+	{
+		win.webContents.zoomFactor = 1;
+	};
+
+	let checkForUpdates = {
+		label: 'Check for updates',
+		click: checkForUpdatesFn
+	}
+
+	let autoCheckForUpdates = {
+		label: 'Check for Updates Automatically',
+		type: 'checkbox',
+		checked: store == null || store.get('dontCheckUpdates') !== true,
+		click: (menuItem) =>
+		{
+			if (store != null)
+			{
+				store.set('dontCheckUpdates', !menuItem.checked);
+			}
+		}
+	}
+
+	function setUpdateIntervalFn()
+	{
+		const hours = [24, 48, 72, 168];
+		const currentHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
+		const buttons = hours.map(h => h === 168 ? '1 week' : `${h} hours`);
+		buttons.push('Cancel');
+
+		dialog.showMessageBox(win,
+		{
+			type: 'question',
+			title: 'Update Check Interval',
+			message: 'How often should draw.io check for updates?',
+			detail: `Current interval: ${currentHours === 168 ? '1 week' : currentHours + ' hours'}`,
+			buttons: buttons,
+			defaultId: hours.indexOf(currentHours) >= 0 ? hours.indexOf(currentHours) : hours.indexOf(DEFAULT_UPDATE_CHECK_HOURS),
+			cancelId: buttons.length - 1
+		}).then(result =>
+		{
+			if (result.response < hours.length && store != null)
+			{
+				store.set('updateCheckIntervalHours', hours[result.response]);
+			}
+		});
+	}
+
+	let setUpdateInterval = {
+		label: 'Set Update Check Interval...',
+		click: setUpdateIntervalFn
+	}
+
+	let zoomIn = {
+		label: 'Zoom In',
+		click: zoomInFn
+	};
+
+	let zoomOut = {
+		label: 'Zoom Out',
+		click: zoomOutFn
+	};
+
+	let resetZoom = {
+		label: 'Actual Size',
+		click: resetZoomFn
+	};
+
+	ipcMain.on('checkForUpdates', checkForUpdatesFn);
+	ipcMain.on('zoomIn', zoomInFn);
+	ipcMain.on('zoomOut', zoomOutFn);
+	ipcMain.on('resetZoom', resetZoomFn);
+
+	if (isMac)
+	{
+	    let template = [{
+	      label: app.name,
+	      submenu: [
+	        {
+	          label: 'About ' + app.name,
+	          click() { shell.openExternal('https://www.drawio.com'); }
+	        },
+	        {
+	          label: 'Support',
+	          click() { shell.openExternal('https://github.com/jgraph/drawio-desktop/issues'); }
+			},
+			checkForUpdates,
+			autoCheckForUpdates,
+			setUpdateInterval,
+	        { type: 'separator' },
+			resetZoom,
+			zoomIn,
+			zoomOut,
+			{ type: 'separator' },
+	        { role: 'hide' },
+	        { role: 'hideothers' },
+	        { role: 'unhide' },
+			{ type: 'separator' },
+	        { role: 'quit' }
+	      ]
+	    }, {
+	      label: 'File',
+	      submenu: [
+	        { role: 'close' }
+	      ]
+	    }, {
+	      label: 'Edit',
+	      submenu: [
+			{ role: 'undo' },
+			{ role: 'redo' },
+			{ type: 'separator' },
+			{ role: 'cut' },
+			{ role: 'copy' },
+			{ role: 'paste' },
+			{ role: 'pasteAndMatchStyle' },
+			{ role: 'selectAll' }
+	      ]
+	    }]
+	    
+	    if (disableUpdate)
+		{
+			template[0].submenu.splice(2, 3);
+		}
+		
+		const menuBar = menu.buildFromTemplate(template)
+		menu.setApplicationMenu(menuBar)
+	}
+	else //hide  menubar in win/linux
+	{
+		menu.setApplicationMenu(null)
+	}
+	
+	const updateChannel = getUpdateChannel(process.platform, process.arch);
+
+	safeUpdaterCall('setFeedURL', () => autoUpdater.setFeedURL({
+		provider: 'github',
+		repo: 'drawio-desktop',
+		owner: 'jgraph',
+		...(updateChannel != null ? {channel: updateChannel} : {})
+	}))
+	
+	// Cache update check - configurable interval (default: 24 hours)
+	const DEFAULT_UPDATE_CHECK_HOURS = 24;
+	const updateCheckHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
+	const UPDATE_CHECK_INTERVAL = updateCheckHours * 60 * 60 * 1000;
+	const lastUpdateCheck = store?.get('lastUpdateCheck') || 0;
+	const shouldCheckUpdates = Date.now() - lastUpdateCheck > UPDATE_CHECK_INTERVAL;
+	
+	if (!disableUpdate && (store == null || (!store.get('dontCheckUpdates') && shouldCheckUpdates)))
+	{
+		if (store != null)
+		{
+			store.set('lastUpdateCheck', Date.now());
+		}
+		
+		safeUpdaterCall('checkForUpdates (boot)', () => autoUpdater.checkForUpdates());
+	}
+})
+
+//Quit from the dock context menu should quit the application directly
+if (isMac) 
+{
+	app.on('before-quit', function() {
+		cmdQPressed = true;
+	});	
+}
+
+// Quit when all windows are closed.
+app.on('window-all-closed', function ()
+{
+	if (__DEV__) 
+	{
+		console.log('window-all-closed', windowsRegistry.length)
+	}
+	
+	// On OS X it is common for applications and their menu bar
+	// to stay active until the user quits explicitly with Cmd + Q
+	if (cmdQPressed || !isMac)
+	{
+		app.quit()
+	}
+})
+
+app.on('activate', function ()
+{
+	if (__DEV__) 
+	{
+		console.log('app on activate', windowsRegistry.length)
+	}
+	
+	// On OS X it's common to re-create a window in the app when the
+	// dock icon is clicked and there are no other windows open.
+	if (windowsRegistry.length === 0)
+	{
+		createWindow()
+	}
+})
+
+app.on('will-finish-launching', function()
+{
+	app.on("open-file", function(event, filePath)
+	{
+	    event.preventDefault();
+		// Creating a new window while a save/open dialog is open crashes the app
+		if (dialogOpen) return;
+
+		// User intent: OS handed us a path via file association.
+		blessPath(filePath);
+
+	    if (firstWinLoaded)
+	    {
+		    let win = createWindow();
+		    
+			let loadEvtCount = 0;
+			
+			function loadFinished(e)
+			{
+				if (e != null && !validateSender(e.senderFrame)) return null;
+
+				loadEvtCount++;
+				
+				if (loadEvtCount == 2)
+				{
+	    	    	win.webContents.send('args-obj', {args: [filePath]});
+				}
+			}
+			
+			//Order of these two events is not guaranteed, so wait for them async.
+			//TOOD There is still a chance we catch another window 'app-load-finished' if user created multiple windows quickly 
+	    	ipcMain.once('app-load-finished', loadFinished);
+    	    
+		    win.webContents.on('did-finish-load', function()
+		    {
+		        win.webContents.zoomFactor = appZoom;
+		        win.webContents.setVisualZoomLevelLimits(1, appZoom);
+				loadFinished();
+		    });
+	    }
+	    else
+		{
+	    	firstWinFilePath = filePath
+		}
+	});
+});
+ 
+app.on('web-contents-created', (event, contents) => {
+	// Disable navigation. Navigations to about: URLs never reach will-navigate
+	// and cannot be stopped from here, see the navigate listener in electron-preload.js
+	contents.on('will-navigate', (event, navigationUrl) => {
+		event.preventDefault()
+	})
+
+	// Limit creation of new windows (we also override window.open)
+	contents.setWindowOpenHandler(({ url }) => {
+		// We allow external absolute URLs to be open externally (check openExternal for details) and also empty windows (url -> about:blank)
+		if (url.startsWith('about:blank'))
+		{
+			return {
+				action: 'allow',
+				overrideBrowserWindowOptions: {
+					fullscreenable: false,
+					// Child windows inherit the opener's webPreferences, so these
+					// restate the guarantees rather than relying on that inheritance
+					webPreferences: {
+						contextIsolation: true,
+						nodeIntegration: false,
+						webviewTag: false,
+						webSecurity: true
+					}
+				}
+			}
+		} 
+		else if (!openExternal(url))
+		{
+			return {action: 'deny'}
+		}
+	})
+
+	// Disable all webviews
+	contents.on('will-attach-webview', (event, webPreferences, params) => {
+		event.preventDefault()
+	})
+})
+
+autoUpdater.on('error', e => notifyUpdateFailure(e, 'autoUpdater error event'))
+
+autoUpdater.on('update-not-available', safeUpdaterListener('update-not-available', (info) =>
+{
+	if (!manualUpdateCheck) return; // Suppress dialog for boot-time silent checks
+
+	manualUpdateCheck = false;
+	dialog.showMessageBox(
+	{
+		type: 'info',
+		title: 'No updates found',
+		message: 'Your application is up-to-date',
+	})
+}))
+
+// The download listeners below are registered once here, not inside the update prompt
+// callback, so repeated manual checks can't stack duplicates (a second install dialog,
+// writes to closed progress bars). updateProgressBar is null unless a manual download
+// is in progress; the silent boot-time download keeps it null, so these listeners
+// no-op and autoInstallOnAppQuit handles the install without any UI.
+var updateProgressBar = null;
+var updateFirstProg = true;
+
+function reportUpdateError(e)
+{
+	try
+	{
+		updateProgressBar.detail = 'Error occurred while fetching updates. ' + (e && e.message? e.message : e)
+		updateProgressBar._window.setClosable(true);
+	}
+	catch (err)
+	{
+		notifyUpdateFailure(err, 'reportUpdateError');
+	}
+}
+
+autoUpdater.on('error', safeUpdaterListener('download error', e => {
+	if (updateProgressBar == null) return;
+
+	if (updateProgressBar._window != null)
+	{
+		reportUpdateError(e);
+	}
+	else
+	{
+		updateProgressBar.on('ready', function() {
+			reportUpdateError(e);
+		});
+	}
+}))
+
+autoUpdater.on('download-progress', safeUpdaterListener('download-progress', (d) => {
+	if (updateProgressBar == null) return;
+
+	//On mac, download-progress event is not called, so the indeterminate progress will continue until download is finished
+	var percent = d.percent;
+
+	if (percent)
+	{
+		percent = Math.round(percent * 100)/100;
+	}
+
+	if (updateFirstProg)
+	{
+		updateFirstProg = false;
+		updateProgressBar.close();
+
+		var progressBar = new ProgressBar({
+			indeterminate: false,
+			title: 'draw.io Update',
+			text: 'Downloading draw.io update...',
+			detail: `${percent}% ...`,
+			initialValue: percent
+		});
+
+		updateProgressBar = progressBar;
+
+		progressBar
+				.on('completed', function() {
+					progressBar.detail = 'Download completed.';
+				})
+				.on('aborted', function(value) {
+					if (__DEV__)
+					{
+						log.error(`progress aborted... ${value}`);
+					}
+				})
+				.on('progress', function(value) {
+					progressBar.detail = `${value}% ...`;
+				})
+				.on('ready', function() {
+					//InitialValue doesn't set the UI! so this is needed to render it correctly
+					progressBar.value = percent;
+				});
+	}
+	else
+	{
+		updateProgressBar.value = percent;
+	}
+}));
+
+autoUpdater.on('update-downloaded', safeUpdaterListener('update-downloaded', (info) => {
+	if (updateProgressBar == null) return;
+
+	// The window must always be closed here: unlike electron-progressbar,
+	// ProgressBar has no closeOnComplete, so a completed bar stays open
+	// and would cover the install prompt [jgraph/drawio-desktop#2516]
+	updateProgressBar.close()
+	updateProgressBar = null;
+
+	// Ask user to update the app
+	dialog.showMessageBox(
+	{
+		type: 'question',
+		buttons: ['Install', 'Later'],
+		defaultId: 0,
+		message: 'A new version of ' + app.name + ' has been downloaded',
+		detail: 'It will be installed the next time you restart the application',
+	}).then(result =>
+	{
+		if (result.response === 0)
+		{
+			setTimeout(() => safeUpdaterCall('quitAndInstall', () => autoUpdater.quitAndInstall()), 1)
+		}
+	})
+}));
+
+autoUpdater.on('update-available', safeUpdaterListener('update-available', (info) =>
+{
+	// Boot-time silent path: download in the background; autoInstallOnAppQuit handles install
+	if (silentUpdate && !manualUpdateCheck)
+	{
+		safeUpdaterCall('downloadUpdate (silent)', () => autoUpdater.downloadUpdate());
+		return;
+	}
+
+	manualUpdateCheck = false;
+
+	dialog.showMessageBox(
+	{
+		type: 'question',
+		buttons: ['Ok', 'Cancel', 'Don\'t Ask Again'],
+		title: 'Confirm draw.io Update',
+		message: `draw.io update available (${app.getVersion()} → ${info.version}).\n\nWould you like to download and install new version?`,
+		detail: 'Application will automatically restart to apply update after download',
+	}).then( result =>
+	{
+		if (result.response === 0)
+		{
+			// Reset the per-download state targeted by the module-level download listeners
+			if (updateProgressBar != null)
+			{
+				updateProgressBar.close();
+			}
+
+			updateFirstProg = true;
+			updateProgressBar = new ProgressBar({
+				title: 'draw.io Update',
+				text: 'Downloading draw.io update...'
+			});
+
+			safeUpdaterCall('downloadUpdate (manual)', () => autoUpdater.downloadUpdate())
+		}
+		else if (result.response === 2 && store != null)
+		{
+			//save in settings don't check for updates
+			store.set('dontCheckUpdates', true)
+		}
+	})
+}))
+
+//Pdf export
+const MICRON_TO_PIXEL = 264.58 		//264.58 micron = 1 pixel
+const PIXELS_PER_INCH = 100.117		// Usually it is 100 pixels per inch but this give better results
+const PNG_CHUNK_IDAT = 1229209940;
+const LARGE_IMAGE_AREA = 30000000;
+
+//NOTE: Key length must not be longer than 79 bytes (not checked)
+function writePngWithText(origBuff, key, text, compressed, base64encoded)
+{
+	var isDpi = key == 'dpi';
+	var inOffset = 0;
+	var outOffset = 0;
+	var data = text;
+	var dataLen = isDpi? 9 : key.length + data.length + 1; //we add 1 zeros with non-compressed data, for pHYs it's 2 of 4-byte-int + 1 byte
+
+	//prepare compressed data to get its size
+	if (compressed)
+	{
+		// PNG zTXt requires an RFC 1950 zlib datastream, not raw deflate
+		// [jgraph/drawio-desktop#2425]
+		data = zlib.deflateSync(encodeURIComponent(text));
+		dataLen = key.length + data.length + 2; //we add 2 zeros with compressed data
+	}
+
+	// 12 = chunk framing overhead: length(4) + type(4) + CRC(4)
+	var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 12);
+	
+	try
+	{
+		var magic1 = origBuff.readUInt32BE(inOffset);
+		inOffset += 4;
+		var magic2 = origBuff.readUInt32BE(inOffset);
+		inOffset += 4;
+		
+		if (magic1 != 0x89504e47 && magic2 != 0x0d0a1a0a)
+		{
+			throw new Error("PNGImageDecoder0");
+		}
+		
+		outBuff.writeUInt32BE(magic1, outOffset);
+		outOffset += 4;
+		outBuff.writeUInt32BE(magic2, outOffset);
+		outOffset += 4;
+	}
+	catch (e)
+	{
+		log.error(e.message, {stack: e.stack});
+		throw new Error("PNGImageDecoder1");
+	}
+
+	try
+	{
+		while (inOffset < origBuff.length)
+		{
+			var length = origBuff.readInt32BE(inOffset);
+			inOffset += 4;
+			var type = origBuff.readInt32BE(inOffset)
+			inOffset += 4;
+
+			if (type == PNG_CHUNK_IDAT)
+			{
+				// Insert zTXt chunk before IDAT chunk
+				outBuff.writeInt32BE(dataLen, outOffset);
+				outOffset += 4;
+
+				var typeSignature = isDpi? 'pHYs' : (compressed ? "zTXt" : "tEXt");
+				outBuff.write(typeSignature, outOffset);
+
+				// CRC covers chunk type + chunk data — start of range is the type field
+				var crcStart = outOffset;
+				outOffset += 4;
+
+				if (isDpi)
+				{
+					var dpm = Math.round(parseInt(text) / 0.0254) || 3937; //One inch is equal to exactly 0.0254 meters. 3937 is 100dpi
+
+					outBuff.writeInt32BE(dpm, outOffset);
+					outBuff.writeInt32BE(dpm, outOffset + 4);
+					outBuff.writeInt8(1, outOffset + 8);
+					outOffset += 9;
+				}
+				else
+				{
+					outBuff.write(key, outOffset);
+					outOffset += key.length;
+					outBuff.writeInt8(0, outOffset);
+					outOffset ++;
+
+					if (compressed)
+					{
+						outBuff.writeInt8(0, outOffset);
+						outOffset ++;
+						data.copy(outBuff, outOffset);
+					}
+					else
+					{
+						outBuff.write(data, outOffset);
+					}
+
+					outOffset += data.length;
+				}
+
+				var crcVal = 0xffffffff;
+				crcVal = crc.crcjam(outBuff.subarray(crcStart, outOffset), crcVal);
+
+				// CRC
+				outBuff.writeInt32BE(crcVal ^ 0xffffffff, outOffset);
+				outOffset += 4;
+
+				// Writes the IDAT chunk after the zTXt
+				outBuff.writeInt32BE(length, outOffset);
+				outOffset += 4;
+				outBuff.writeInt32BE(type, outOffset);
+				outOffset += 4;
+
+				origBuff.copy(outBuff, outOffset, inOffset);
+
+				// Encodes the buffer using base64 if requested
+				return base64encoded? outBuff.toString('base64') : outBuff;
+			}
+
+			outBuff.writeInt32BE(length, outOffset);
+			outOffset += 4;
+			outBuff.writeInt32BE(type, outOffset);
+			outOffset += 4;
+
+			origBuff.copy(outBuff, outOffset, inOffset, inOffset + length + 4);// +4 to move past the crc
+			
+			inOffset += length + 4;
+			outOffset += length + 4;
+		}
+	}
+	catch (e)
+	{
+		log.error(e.message, {stack: e.stack});
+		throw e;
+	}
+}
+
+// Adds PDF annotations for cell tooltips and notes. Tooltips become
+// invisible read-only button widgets whose /TU alternate field name shows
+// the tooltip on hover in PDF viewers (the standard PDF tooltip mechanism,
+// also read by screen readers). Notes become standard sticky note
+// annotations with a click popup at the bottom left corner of the cell.
+// Rects are in CSS pixels relative to the rendered page, so scaling to
+// PDF points uses the actual page size of the output. Failures are
+// logged and ignored as annotations must not break the export.
+function addDiagramAnnotations(pdfDoc, annots)
+{
+	if (annots == null || !Array.isArray(annots) || annots.length == 0)
+	{
+		return;
+	}
+
+	try
+	{
+		const context = pdfDoc.context;
+		const pages = pdfDoc.getPages();
+		let acroForm = null;
+		let emptyAp = null;
+
+		for (let i = 0; i < annots.length; i++)
+		{
+			const t = annots[i];
+
+			if (t == null || !(t.page >= 1) || t.page > pages.length ||
+				!isFinite(t.x) || !isFinite(t.y) || !(t.w > 0) || !(t.h > 0) ||
+				!(t.pw > 0) || !(t.ph > 0) || typeof t.tip !== 'string' || t.tip == '')
+			{
+				continue;
+			}
+
+			const page = pages[t.page - 1];
+			const pageH = page.getHeight();
+			const sx = page.getWidth() / t.pw;
+			const sy = pageH / t.ph;
+			const text = PDFHexString.fromText(t.tip.substring(0, 4096));
+
+			if (t.type == 'note')
+			{
+				// Sticky note with the standard viewer icon centered on the
+				// bottom left corner of the cell (NoZoom | NoRotate | Print)
+				const ix = Math.max(8, t.x * sx);
+				const iy = Math.max(8, pageH - (t.y + t.h) * sy);
+
+				const note = context.obj({
+					Type: 'Annot',
+					Subtype: 'Text',
+					Rect: [ix - 8, iy - 8, ix + 8, iy + 8],
+					Contents: text,
+					Name: 'Comment',
+					F: 28,
+					C: [1, 0.85, 0.3],
+					P: page.ref
+				});
+				const noteRef = context.register(note);
+
+				const popup = context.obj({
+					Type: 'Annot',
+					Subtype: 'Popup',
+					Rect: [ix + 12, Math.max(0, iy - 90), ix + 192, iy + 20],
+					Parent: noteRef,
+					Open: false
+				});
+				const popupRef = context.register(popup);
+				note.set(PDFName.of('Popup'), popupRef);
+
+				page.node.addAnnot(noteRef);
+				page.node.addAnnot(popupRef);
+			}
+			else
+			{
+				if (emptyAp == null)
+				{
+					// Shared empty appearance stream so viewers render nothing
+					// for the widgets without complaining about a missing
+					// appearance
+					emptyAp = context.register(context.stream('', {
+						Type: 'XObject', Subtype: 'Form', FormType: 1, BBox: [0, 0, 1, 1]
+					}));
+				}
+
+				const widget = context.obj({
+					Type: 'Annot',
+					Subtype: 'Widget',
+					FT: 'Btn',
+					// Pushbutton (bit 17) + read-only (bit 1): no value, no focus
+					Ff: 65537,
+					T: PDFHexString.fromText('tooltip.' + i),
+					TU: text,
+					F: 4,
+					Rect: [t.x * sx, pageH - (t.y + t.h) * sy,
+						(t.x + t.w) * sx, pageH - t.y * sy],
+					P: page.ref,
+					AP: { N: emptyAp }
+				});
+
+				const widgetRef = context.register(widget);
+				page.node.addAnnot(widgetRef);
+
+				if (acroForm == null)
+				{
+					acroForm = pdfDoc.catalog.getOrCreateAcroForm();
+				}
+
+				acroForm.addField(widgetRef);
+			}
+		}
+	}
+	catch (e)
+	{
+		log.error('Failed to add PDF annotations:', e);
+	}
+}
+
+async function mergePdfs(pdfFiles, xml, annots)
+{
+	// Only ever called with a single PDF since the per-page render loop was
+	// removed with [jgraph/drawio-desktop#2170]. Older releases merged the
+	// parts here with the XML as a file attachment, a format readPdfXml
+	// retains support for importing
+
+	// Converts to PDF 1.7 with compression
+	const pdfDoc = await PDFDocument.load(pdfFiles[0]);
+	pdfDoc.setCreator('diagrams.net');
+
+	// KNOWN: Attachments produce smaller files but break
+	// internal links in pdf-lib so using Subject for now
+	if (xml != null)
+	{
+		pdfDoc.setSubject(encodeURIComponent(xml).
+			replace(/\(/g, "\\(").replace(/\)/g, "\\)"));
+	}
+
+	addDiagramAnnotations(pdfDoc, annots);
+
+	// Forces /ObjStm so the hex-encoded Subject is reachable by the PDF
+	// importer [jgraph/drawio-desktop#2394]
+	const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+
+	return Buffer.from(pdfBytes);
+}
+
+function htmlEntities(str)
+{
+	return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function readPngXml(buffer)
+{
+	var offset = 8; // Skip PNG signature
+
+	while (offset < buffer.length)
+	{
+		var length = buffer.readInt32BE(offset);
+		offset += 4;
+		var type = buffer.toString('ascii', offset, offset + 4);
+		offset += 4;
+
+		if (type === 'tEXt' || type === 'zTXt')
+		{
+			var keyEnd = offset;
+
+			while (keyEnd < offset + length && buffer[keyEnd] !== 0)
+			{
+				keyEnd++;
+			}
+
+			var key = buffer.toString('ascii', offset, keyEnd);
+
+			if (key === 'mxGraphModel')
+			{
+				if (type === 'zTXt')
+				{
+					var dataStart = keyEnd + 2; // Skip null + compression method
+					var compressed = buffer.subarray(dataStart, offset + length);
+					var inflated;
+
+					try
+					{
+						inflated = zlib.inflateSync(compressed);
+					}
+					catch (e)
+					{
+						// Fallback for PNGs produced by the pre-fix CLI which
+						// wrote raw deflate instead of zlib datastream
+						// [jgraph/drawio-desktop#2425]
+						inflated = zlib.inflateRawSync(compressed);
+					}
+
+					return decodeURIComponent(inflated.toString());
+				}
+				else
+				{
+					return buffer.toString('utf-8', keyEnd + 1, offset + length);
+				}
+			}
+		}
+
+		offset += length + 4; // Skip data + CRC
+	}
+
+	return null;
+}
+
+function readSvgXml(svgString)
+{
+	// Extracts content attribute from SVG root element
+	var match = /\bcontent="([^"]*)"/.exec(svgString);
+
+	if (match != null && match[1] != null)
+	{
+		var tmp = match[1];
+
+		// Decode HTML entities
+		tmp = tmp.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+			.replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+			.replace(/&#39;/g, "'").replace(/&#x27;/g, "'")
+			.replace(/&#x2F;/g, '/');
+
+		if (tmp.charAt(0) != '<' && tmp.charAt(0) != '%')
+		{
+			tmp = Buffer.from(tmp, 'base64').toString('utf-8');
+		}
+
+		if (tmp.charAt(0) == '%')
+		{
+			tmp = decodeURIComponent(tmp);
+		}
+
+		if (tmp != null && tmp.length > 0)
+		{
+			return tmp;
+		}
+	}
+
+	return null;
+}
+
+function readPdfXml(buffer)
+{
+	var f = buffer.toString('binary');
+	var result = null;
+
+	// Extracts Subject or Embedded file attachment from PDF 1.7
+	if (f.substring(0, 8) == '%PDF-1.7')
+	{
+		// Checks all occurrences as the first may be the /EmbeddedFiles
+		// name tree entry in the document catalog rather than the
+		// /Type /EmbeddedFile stream object with the attached diagram
+		var blockStart = f.indexOf('EmbeddedFile');
+
+		while (blockStart > -1)
+		{
+			var streamStart = f.indexOf('stream', blockStart) + 9;
+			var fileInfo = f.substring(blockStart, streamStart);
+
+			if (fileInfo.indexOf('application#2Fvnd.jgraph.mxfile') > 0)
+			{
+				var streamEnd = f.indexOf('endstream', streamStart - 1);
+
+				try
+				{
+					return zlib.inflateRawSync(
+						Buffer.from(f.substring(streamStart, streamEnd), 'binary')).toString();
+				}
+				catch (e)
+				{
+					// Continue to next occurrence or extraction method
+				}
+			}
+
+			blockStart = f.indexOf('EmbeddedFile', blockStart + 1);
+		}
+
+		var last = f.indexOf('/ObjStm');
+
+		while (last > 0)
+		{
+			var streamStart = f.indexOf('stream', last) + 9;
+			var streamEnd = f.indexOf('endstream', streamStart - 1);
+
+			try
+			{
+				var text = zlib.inflateRawSync(
+					Buffer.from(f.substring(streamStart, streamEnd), 'binary')).toString();
+				var subj = text.indexOf('/Subject <');
+
+				if (subj > 0)
+				{
+					var temp = text.substring(subj + 14, text.indexOf('>', subj));
+
+					if (temp != null)
+					{
+						// Convert hex to ASCII
+						var str = [];
+
+						for (var n = 0; n < temp.length; n += 2)
+						{
+							var code = temp.substr(n, 2);
+
+							if (code != '00')
+							{
+								str.push(String.fromCharCode(parseInt(code, 16)));
+							}
+						}
+
+						result = str.join('');
+					}
+
+					break;
+				}
+			}
+			catch (e)
+			{
+				// Continue to next object stream
+			}
+
+			last = f.indexOf('/ObjStm', last + 1);
+		}
+	}
+
+	// Extracts subject from PDF 1.4
+	if (result == null && f.substring(0, 8) == '%PDF-1.4')
+	{
+		var check = '/Subject (%3Cmxfile';
+		var curline = '';
+		var checked = 0;
+		var pos = 0;
+		var obj = [];
+		var buf = null;
+
+		while (pos < f.length)
+		{
+			var b = f.charCodeAt(pos);
+			pos += 1;
+
+			if (b != 10)
+			{
+				curline += String.fromCharCode(b);
+			}
+
+			if (b == check.charCodeAt(checked))
+			{
+				checked++;
+			}
+			else
+			{
+				checked = 0;
+			}
+
+			if (checked == check.length)
+			{
+				var end = f.indexOf('%3C%2Fmxfile%3E', pos) + 15;
+				pos -= 9;
+
+				if (end > pos)
+				{
+					result = f.substring(pos, end);
+					break;
+				}
+			}
+
+			if (b == 10)
+			{
+				if (curline == 'endobj')
+				{
+					buf = null;
+				}
+				else if (curline.substring(curline.length - 3, curline.length) == 'obj' ||
+					curline == 'xref' || curline == 'trailer')
+				{
+					buf = [];
+					obj[curline.split(' ')[0]] = buf;
+				}
+				else if (buf != null)
+				{
+					buf.push(curline);
+				}
+
+				curline = '';
+			}
+		}
+
+		// Extract XML via references
+		if (result == null && obj != null)
+		{
+			var trailer = obj['trailer'];
+
+			if (trailer != null)
+			{
+				var arr = /.* \/Info (\d+) (\d+) R/g.exec(trailer.join('\n'));
+
+				if (arr != null && arr.length > 0)
+				{
+					var info = obj[arr[1]];
+
+					if (info != null)
+					{
+						arr = /.* \/Subject (\d+) (\d+) R/g.exec(info.join('\n'));
+
+						if (arr != null && arr.length > 0)
+						{
+							var subj = obj[arr[1]];
+
+							if (subj != null)
+							{
+								subj = subj.join('\n');
+								result = subj.substring(1, subj.length - 1);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (result != null)
+	{
+		result = decodeURIComponent(result.
+			replace(/\\\(/g, "(").
+			replace(/\\\)/g, ")"));
+	}
+
+	return result;
+}
+
+function buildHtmlExport(xml, title, options)
+{
+	var data = {};
+
+	if (options.htmlLinkColor && options.htmlLinkColor !== 'none')
+	{
+		data.highlight = options.htmlLinkColor;
+	}
+	else
+	{
+		data.highlight = '#0000ff';
+	}
+
+	if (options.htmlLinkTarget && options.htmlLinkTarget !== 'auto')
+	{
+		data.target = options.htmlLinkTarget === 'blank' ? '_blank' : '_self';
+	}
+
+	if (options.htmlLightbox === false)
+	{
+		data.lightbox = false;
+	}
+
+	data.nav = true;
+	data.resize = true;
+	data.xml = xml;
+
+	var tb = [];
+
+	if (options.allPages)
+	{
+		tb.push('pages');
+	}
+
+	if (options.pageIndex != null && options.pageIndex >= 0)
+	{
+		data.page = options.pageIndex;
+	}
+
+	if (options.htmlZoom !== false)
+	{
+		tb.push('zoom');
+	}
+
+	if (options.htmlLayers !== false)
+	{
+		tb.push('layers');
+	}
+
+	if (options.htmlTags !== false)
+	{
+		tb.push('tags');
+	}
+
+	if (tb.length > 0)
+	{
+		if (options.htmlLightbox !== false)
+		{
+			tb.push('lightbox');
+		}
+
+		data.toolbar = tb.join(' ');
+	}
+
+	if (options.htmlTheme && options.htmlTheme !== 'auto')
+	{
+		data['dark-mode'] = options.htmlTheme;
+	}
+
+	if (options.htmlEditLink)
+	{
+		data.edit = options.htmlEditLink;
+	}
+
+	var fit = options.htmlFit !== false;
+
+	var div = '<div class="mxgraph" style="' +
+		(fit ? 'max-width:100%;' : '') +
+		(tb.length > 0 ? 'border:1px solid transparent;' : '') +
+		'" data-mxgraph="' + htmlEntities(JSON.stringify(data)) + '"></div>';
+
+	var scriptTag = '<script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>';
+
+	return '<!--[if IE]><meta http-equiv="X-UA-Compatible" content="IE=5,IE=9" ><![endif]-->\n' +
+		'<!DOCTYPE html>\n<html>\n<head>\n' +
+		'<title>' + htmlEntities(title) + '</title>\n' +
+		'<meta charset="utf-8"/>\n' +
+		'</head>\n<body>\n' + div + '\n' + scriptTag + '\n</body>\n</html>';
+}
+
+//TODO Use canvas to export images if math is not used to speedup export (no capturePage). Requires change to export3.html also
+function exportDiagram(event, args, directFinalize)
+{
+	if (event != null && event.senderFrame != null &&
+		!validateSender(event.senderFrame)) return null;
+
+	// Only the first reply counts: a renderer that dies while printing or
+	// capturing fails that step too, which replies an error of its own
+	var reply = event.reply;
+	var replied = false;
+
+	event.reply = function()
+	{
+		if (!replied)
+		{
+			replied = true;
+			reply.apply(event, arguments);
+		}
+	};
+
+	var browser = null;
+	
+	try
+	{
+		browser = new BrowserWindow({
+			webPreferences: {
+				preload: `${__dirname}/electron-preload.js`,
+				backgroundThrottling: false,
+				contextIsolation: true,
+				nodeIntegration: false,
+				webviewTag: false,
+				webSecurity: true,
+				disableBlinkFeatures: 'Auxclick', // Is this needed?
+				// Electron 42 offscreen DPR defaults to 1; force 2 so post-capture img.resize() downsamples [jgraph/drawio-desktop#2422]
+				offscreen: { deviceScaleFactor: 2 },
+			},
+			show : false,
+			frame: false,
+			enableLargerThanScreen: true,
+			transparent: args.format == 'png' && (args.bg == null || args.bg == 'none'),
+			parent: windowsRegistry[0] //set parent to first opened window. Not very accurate, but useful when all visible windows are closed
+		});
+
+		browser.loadURL(`file://${codeDir}/export3.html`);
+
+		// A CLI export can time out before the page has loaded
+		if (directFinalize === true)
+		{
+			event.finalize = function()
+			{
+				browser.destroy();
+			};
+		}
+
+		const contents = browser.webContents;
+
+		// A renderer that crashed or was killed (eg. out of memory) never
+		// replies. Not emitted when finalize destroys the window
+		contents.on('render-process-gone', function(e, details)
+		{
+			event.reply('export-error', 'Renderer process gone (' + details.reason + ')');
+		});
+
+		// Resolved diagram XML reported by the renderer (render-finished). For
+		// Mermaid/CSV/layout inputs the CLI never set args.xml (or it's the
+		// pre-layout source), so this is preferred when embedding XML (-e).
+		var resolvedXml = null;
+
+		contents.on('did-finish-load', function()
+	    {
+			//Set finalize here since it is call in the reply below
+			function finalize()
+			{
+				// ipcMain listeners are global, so one left behind would handle
+				// the next export's messages with this destroyed window
+				ipcMain.removeListener('render-finished', renderingFinishHandler);
+				ipcMain.removeListener('export-error', exportErrorHandler);
+				browser.destroy();
+			};
+			
+			if (directFinalize === true)
+			{
+				event.finalize = finalize;
+			}
+			else
+			{
+				//Destroy the window after response being received by caller
+				ipcMain.once('export-finalize', finalize);
+			}
+
+			function renderingFinishHandler(e, renderInfo)
+			{
+				if (!validateSender(e.senderFrame)) return null;
+
+				if (renderInfo == null)
+				{
+					event.reply('export-error');
+					return;
+				}
+
+				if (renderInfo.xml != null)
+				{
+					resolvedXml = renderInfo.xml;
+				}
+
+				var pageCount = renderInfo.pageCount, bounds = null, diagramAnnots = null;
+				//For some reason, Electron 9 doesn't send this object as is without stringifying. Usually when variable is external to function own scope
+				try
+				{
+					bounds = JSON.parse(renderInfo.bounds);
+				}
+				catch(e)
+				{
+					bounds = null;
+				}
+
+				try
+				{
+					diagramAnnots = (renderInfo.annots != null) ?
+						JSON.parse(renderInfo.annots) : null;
+				}
+				catch(e)
+				{
+					diagramAnnots = null;
+				}
+				
+				var pdfOptions = {};
+				var hasError = false;
+				
+				if (bounds == null || bounds.width < 5 || bounds.height < 5) //very small page size never return from printToPDF
+				{
+					//A workaround to detect errors in the input file or being empty file
+					hasError = true;
+				}
+				else
+				{
+					pdfOptions = {
+						preferCSSPageSize: true,
+						printBackground: true
+					}
+				}
+				
+				var base64encoded = args.base64 == '1';
+				
+				if (hasError)
+				{
+					event.reply('export-error');
+				}
+				else if (args.format == 'png' || args.format == 'jpg' || args.format == 'jpeg')
+				{
+					//Adds an extra pixel to prevent scrollbars from showing
+					var newBounds = {width: Math.ceil(bounds.width + bounds.x) + 1, height: Math.ceil(bounds.height + bounds.y) + 1};
+					browser.setBounds(newBounds);
+					
+					//TODO The browser takes sometime to show the graph (also after resize it takes some time to render)
+					//	 	1 sec is most probably enough (for small images, 5 for large ones) BUT not a stable solution
+					setTimeout(function()
+					{
+						// Ended by a CLI timeout in the meantime
+						if (browser.isDestroyed()) return;
+
+						browser.capturePage().then(function(img)
+						{
+							//Image is double the given bounds, so resize is needed!
+							var tScale = 1;
+
+							//If user defined width and/or height, enforce it precisely here. Height override width
+							if (args.h)
+							{
+								tScale = args.h / newBounds.height;
+							}
+							else if (args.w)
+							{
+								tScale = args.w / newBounds.width;
+							}
+							
+							newBounds.width *= tScale;
+							newBounds.height *= tScale;
+							img = img.resize(newBounds);
+
+							var data = args.format == 'png'? img.toPNG() : img.toJPEG(args.jpegQuality || 90);
+							
+							if (args.dpi != null && args.format == 'png')
+							{
+								data = writePngWithText(data, 'dpi', args.dpi);
+							}
+							
+							var embedSource = (resolvedXml != null) ? resolvedXml : args.xml;
+
+							if (args.embedXml == "1" && args.format == 'png' && embedSource != null)
+							{
+								data = writePngWithText(data, "mxGraphModel", embedSource, true,
+										base64encoded);
+							}
+							else
+							{
+								if (base64encoded)
+								{
+									data = data.toString('base64');
+								}
+							}
+							
+							event.reply('export-success', data);
+						});
+					}, bounds.width * bounds.height < LARGE_IMAGE_AREA? 1000 : 5000);
+				}
+				else if (args.format == 'pdf')
+				{
+					if (args.print)
+					{
+						pdfOptions = {
+							// scaleFactor is an integer percent in Chromium (Electron 41+ honors
+							// it in the native macOS print dialog), so pageScale 1 = 100%, not 1%.
+							// The render paginates at pageFormat * pageScale to match the
+							// editor's page breaks, so each rendered page is pageScale times
+							// the physical paper and must shrink by 1 / pageScale to fit one
+							// sheet. Chromium accepts 10-200%, which bounds the printable
+							// page scale to 50%-1000% [jgraph/drawio#5540]
+							scaleFactor: Math.max(10, Math.min(200, Math.round(
+								100 / (args.pageScale > 0 ? args.pageScale : 1)))),
+							printBackground: true,
+							pageSize : {
+								width: args.pageWidth * MICRON_TO_PIXEL,
+								//This height adjustment fixes the output. TODO Test more cases
+								height: (args.pageHeight * 1.025) * MICRON_TO_PIXEL
+							},
+							margins: {
+								marginType: 'none' // no margin
+							}
+						};
+						
+						var printFinished = (success, errorType) =>
+						{
+							//Consider all as success
+							event.reply('export-success', {});
+							// Notify the user with an error if it fails
+							if (!success && errorType != 'Print job canceled')
+							{
+								dialog.showMessageBox(null, {
+									type: 'error',
+									title: 'Printing Error',
+									message: 'There was an error printing. ' + errorType
+								});
+							}
+						};
+
+						contents.print(pdfOptions, (success, errorType) =>
+						{
+							// Electron 43.0 to 43.1 failed webContents.print() with any options on
+							// all platforms as 'Invalid printer settings' (electron/electron#52266,
+							// fixed in 43.2.0 and 44.0.0). Kept as a safety net: retry once without
+							// settings so the native dialog opens and the user sets paper size and
+							// scale there, as before Electron 41.
+							if (!success && errorType == 'Invalid printer settings')
+							{
+								console.log('Print settings rejected by Electron, retrying without settings');
+								contents.print({}, printFinished);
+							}
+							else
+							{
+								printFinished(success, errorType);
+							}
+						});
+					}
+					else
+					{
+						contents.printToPDF(pdfOptions).then(async (data) =>
+						{
+							// The render above already produced a single PDF for the
+							// whole page range (or all pages) with cross-page links
+							// intact. We merge it as-is to normalize the PDF and embed
+							// the diagram XML. Previously the remaining pages of a range
+							// were re-rendered one at a time and appended, which added
+							// duplicate trailing pages and broke internal hyperlinks
+							// [jgraph/drawio-desktop#2170]. "All Pages" was unaffected
+							// because its from/to collapsed to one page, exiting the loop
+							// after the first full-document render.
+							data = await mergePdfs([data], args.embedXml == '1' ?
+								((resolvedXml != null) ? resolvedXml : args.xml) : null,
+								diagramAnnots);
+							event.reply('export-success', data);
+						})
+						.catch((error) => 
+						{
+							event.reply('export-error', error);
+						});
+					}
+				}
+				else if (args.format == 'svg')
+				{
+					contents.send('get-svg-data');
+					
+					ipcMain.once('svg-data', (e, data) =>
+					{
+						if (!validateSender(e.senderFrame)) return null;
+
+						event.reply('export-success', data);
+					});
+				}
+				else
+				{
+					event.reply('export-error', 'Error: Unsupported format');
+				}
+			};
+			
+			// Sent instead of render-finished for input the renderer cannot
+			// convert, eg. invalid Mermaid or an unknown --layout
+			function exportErrorHandler(e, msg)
+			{
+				if (!validateSender(e.senderFrame)) return null;
+
+				event.reply('export-error', msg);
+			};
+
+			ipcMain.once('render-finished', renderingFinishHandler);
+			ipcMain.once('export-error', exportErrorHandler);
+
+			if (args.format == 'xml')
+			{
+				ipcMain.once('xml-data', (e, data) =>
+				{
+					if (!validateSender(e.senderFrame)) return null;
+
+					event.reply('export-success', data);
+				});
+				
+				ipcMain.once('xml-data-error', (e) =>
+				{
+					if (!validateSender(e.senderFrame)) return null;
+
+					event.reply('export-error');
+				});
+			}
+			
+			args.border = args.border || 0;
+			args.scale = args.scale || 1;
+			
+			if (args.filename != null && args.filename != '')
+			{
+				var filename = decodeURIComponent(args.filename);
+
+				if (filename.substring(filename.length - 4) == '.pdf')
+				{
+					filename = filename.substring(0, filename.length - 4);
+				}
+
+				if (filename.substring(filename.length - 7) == '.drawio')
+				{
+					filename = filename.substring(0, filename.length - 7);
+				}
+
+				args.fileTitle = filename;
+			}
+			
+			contents.send('render', args);
+	    });
+	}
+	catch (e)
+	{
+		if (browser != null)
+		{
+			browser.destroy();
+		}
+
+		event.reply('export-error', e);
+		console.log('export-error', e);
+	}
+};
+
+ipcMain.on('export', exportDiagram);
+
+//================================================================
+// Renderer Helper functions
+//================================================================
+
+const { O_SYNC, O_CREAT, O_WRONLY, O_TRUNC, O_RDONLY } = fs.constants;
+const DRAFT_PREFEX = '.$';
+const OLD_DRAFT_PREFEX = '~$';
+const DRAFT_EXT = '.dtmp';
+const BKP_PREFEX = '.$';
+const OLD_BKP_PREFEX = '~$';
+const BKP_EXT = '.bkp';
+
+/**
+ * Checks the file content type
+ * Confirm content is xml, json, pdf, png, jpg, svg, vsdx ...
+ */
+function checkFileContent(body, enc)
+{
+	if (body != null)
+	{
+		let head, headBinay;
+		
+		if (typeof body === 'string')
+		{
+			if (enc === 'base64')
+			{
+				headBinay = Buffer.from(body.substring(0, 22), 'base64');
+				head = headBinay.toString();
+			}
+			else
+			{
+				head = body.substring(0, 16);
+				headBinay = Buffer.from(head);
+			}
+		}
+		else
+		{
+			head = new TextDecoder("utf-8").decode(body.subarray(0, 16));
+			headBinay = body;
+		}
+		
+		let c1 = head[0],
+		c2 = head[1],
+		c3 = head[2],
+		c4 = head[3],
+		c5 = head[4],
+		c6 = head[5],
+		c7 = head[6],
+		c8 = head[7],
+		c9 = head[8],
+		c10 = head[9],
+		c11 = head[10],
+		c12 = head[11],
+		c13 = head[12],
+		c14 = head[13],
+		c15 = head[14],
+		c16 = head[15];
+
+		let cc1 = headBinay[0],
+		cc2 = headBinay[1],
+		cc3 = headBinay[2],
+		cc4 = headBinay[3],
+		cc5 = headBinay[4],
+		cc6 = headBinay[5],
+		cc7 = headBinay[6],
+		cc8 = headBinay[7],
+		cc9 = headBinay[8],
+		cc10 = headBinay[9],
+		cc11 = headBinay[10],
+		cc12 = headBinay[11],
+		cc13 = headBinay[12],
+		cc14 = headBinay[13],
+		cc15 = headBinay[14],
+		cc16 = headBinay[15];
+
+		if (c1 == '<')
+		{
+			// text/html
+			if (c2 == '!'
+					|| ((c2 == 'h'
+							&& (c3 == 't' && c4 == 'm' && c5 == 'l'
+									|| c3 == 'e' && c4 == 'a' && c5 == 'd')
+							|| (c2 == 'b' && c3 == 'o' && c4 == 'd'
+									&& c5 == 'y')))
+					|| ((c2 == 'H'
+							&& (c3 == 'T' && c4 == 'M' && c5 == 'L'
+									|| c3 == 'E' && c4 == 'A' && c5 == 'D')
+							|| (c2 == 'B' && c3 == 'O' && c4 == 'D'
+									&& c5 == 'Y'))))
+			{
+				return true;
+			}
+
+			// application/xml
+			if (c2 == '?' && c3 == 'x' && c4 == 'm' && c5 == 'l'
+					&& c6 == ' ')
+			{
+				return true;
+			}
+			
+			// application/svg+xml
+			if (c2 == 's' && c3 == 'v' && c4 == 'g' && c5 == ' ')
+			{
+				return true;
+			}
+
+			// Embed cases img and iframe
+			if (c2 == 'i' && c3 == 'm' && c4 == 'g' && c5 == ' '
+					|| (c2 == 'i' && c3 == 'f' && c4 == 'r' && c5 == 'a'
+							&& c6 == 'm' && c7 == 'e' && c8 == ' '))
+			{
+				return true;
+			}
+		}
+
+		// big and little (identical) endian UTF-8 encodings, with BOM
+		// application/xml
+		if (cc1 == 0xef && cc2 == 0xbb && cc3 == 0xbf)
+		{
+			if (c4 == '<' && c5 == '?' && c6 == 'x')
+			{
+				return true;
+			}
+		}
+
+		// big and little endian UTF-16 encodings, with byte order mark
+		// application/xml
+		if (cc1 == 0xfe && cc2 == 0xff)
+		{
+			if (cc3 == 0 && c4 == '<' && cc5 == 0 && c6 == '?' && cc7 == 0
+					&& c8 == 'x')
+			{
+				return true;
+			}
+		}
+
+		// application/xml
+		if (cc1 == 0xff && cc2 == 0xfe)
+		{
+			if (c3 == '<' && cc4 == 0 && c5 == '?' && cc6 == 0 && c7 == 'x'
+					&& cc8 == 0)
+			{
+				return true;
+			}
+		}
+
+		// big and little endian UTF-32 encodings, with BOM
+		// application/xml
+		if (cc1 == 0x00 && cc2 == 0x00 && cc3 == 0xfe && cc4 == 0xff)
+		{
+			if (cc5 == 0 && cc6 == 0 && cc7 == 0 && c8 == '<' && cc9 == 0
+					&& cc10 == 0 && cc11 == 0 && c12 == '?' && cc13 == 0
+					&& cc14 == 0 && cc15 == 0 && c16 == 'x')
+			{
+				return true;
+			}
+		}
+
+		// application/xml
+		if (cc1 == 0xff && cc2 == 0xfe && cc3 == 0x00 && cc4 == 0x00)
+		{
+			if (c5 == '<' && cc6 == 0 && cc7 == 0 && cc8 == 0 && c9 == '?'
+					&& cc10 == 0 && cc11 == 0 && cc12 == 0 && c13 == 'x'
+					&& cc14 == 0 && cc15 == 0 && cc16 == 0)
+			{
+				return true;
+			}
+		}
+
+		// application/pdf (%PDF-)
+		if (cc1 == 37 && cc2 == 80 && cc3 == 68 && cc4 == 70 && cc5 == 45)
+		{
+			return true;
+		}
+
+		// image/png
+		if ((cc1 == 137 && cc2 == 80 && cc3 == 78 && cc4 == 71 && cc5 == 13
+				&& cc6 == 10 && cc7 == 26 && cc8 == 10) ||
+			(cc1 == 194 && cc2 == 137 && cc3 == 80 && cc4 == 78 && cc5 == 71 && cc6 == 13 //Our embedded PNG+XML
+				&& cc7 == 10 && cc8 == 26 && cc9 == 10))
+		{
+			return true;
+		}
+
+		// image/jpeg
+		if (cc1 == 0xFF && cc2 == 0xD8 && cc3 == 0xFF)
+		{
+			if (cc4 == 0xE0 || cc4 == 0xEE)
+			{
+				return true;
+			}
+
+			/**
+			 * File format used by digital cameras to store images.
+			 * Exif Format can be read by any application supporting
+			 * JPEG. Exif Spec can be found at:
+			 * http://www.pima.net/standards/it10/PIMA15740/Exif_2-1.PDF
+			 */
+			if ((cc4 == 0xE1) && (c7 == 'E' && c8 == 'x' && c9 == 'i'
+					&& c10 == 'f' && cc11 == 0))
+			{
+				return true;
+			}
+		}
+
+		// image/webp
+		if (cc1 == 0x52 && cc2 == 0x49 && cc3 == 0x46 && cc4 == 0x46)	//RIFF
+		{
+			if (cc9 == 0x57 && cc10 == 0x45 && cc11 == 0x42 && cc12 == 0x50) //WEBP
+			{
+				return true;
+			}
+		}
+
+		// vsdx, vssx (also zip, jar, odt, ods, odp, docx, xlsx, pptx, apk, aar)
+		if (cc1 == 0x50 && cc2 == 0x4B && cc3 == 0x03 && cc4 == 0x04)
+		{
+			return true;
+		}
+		else if (cc1 == 0x50 && cc2 == 0x4B && cc3 == 0x03 && cc4 == 0x06)
+		{
+			return true;
+		}
+
+		// json
+		if (c1 == '{' || c1 == '[')
+		{
+			return true;
+		}
+		
+		// mxfile, mxlibrary, mxGraphModel
+		if (c1 == '<' && c2 == 'm' && c3 == 'x')
+		{
+			return true;
+		}
+	}
+
+	return false;
+};
+
+function isConflict(origStat, stat)
+{
+	return stat != null && origStat != null && stat.mtimeMs != origStat.mtimeMs;
+};
+
+function reqStr(v, name)
+{
+	if (typeof v !== 'string' || !v)
+	{
+		throw new Error('bad arg: ' + name);
+	}
+
+	return v;
+}
+
+// Returns true if `realpath` is a draft- or backup-naming variant of any path
+// in blessedPaths (same directory, basename starts with DRAFT_PREFEX +
+// origBasename or BKP_PREFEX + origBasename). Drafts and backups are
+// derivative — drawio writes them as siblings of files the user opened.
+function isDraftOrBkpOfBlessed(realpath)
+{
+	const dir = path.dirname(realpath);
+	const base = path.basename(realpath);
+
+	for (const blessed of blessedPaths)
+	{
+		if (path.dirname(blessed) !== dir) continue;
+
+		const blessedBase = path.basename(blessed);
+
+		if (base.startsWith(DRAFT_PREFEX + blessedBase) ||
+			base.startsWith(OLD_DRAFT_PREFEX + blessedBase) ||
+			base.startsWith(BKP_PREFEX + blessedBase) ||
+			base.startsWith(OLD_BKP_PREFEX + blessedBase))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Canonicalises a renderer-supplied path for the authorisation checks below:
+// returns both the lexically-resolved path and its realpath, and rejects
+// anything that isn't a usable path or that points inside the app bundle.
+async function canonicalisePath(p)
+{
+	if (typeof p !== 'string' || !p || p.includes('\0'))
+	{
+		throw new Error('path not authorised');
+	}
+
+	const resolved = path.resolve(p);
+	let realpath;
+
+	try
+	{
+		// Native realpath, the same call blessPath and loadConfigReadablePaths
+		// must use for their paths to match
+		realpath = await fsProm.realpath(resolved);
+	}
+	catch (e)
+	{
+		// A dangling or looping symlink is not a new file. Falling back to
+		// its lexical name would authorise writes through that link.
+		let stat;
+
+		try
+		{
+			stat = await fsProm.lstat(resolved);
+		}
+		catch (statError)
+		{
+			if (statError.code !== 'ENOENT') throw statError;
+		}
+
+		if (stat?.isSymbolicLink())
+		{
+			throw new Error('path not authorised');
+		}
+
+		// File doesn't exist yet (e.g. Save As to a new file). Canonicalise
+		// the parent directory so symlinks in the directory chain are still
+		// resolved.
+		try
+		{
+			const parentReal = await fsProm.realpath(path.dirname(resolved));
+			realpath = path.join(parentReal, path.basename(resolved));
+		}
+		catch (e2)
+		{
+			// Neither the file nor its parent could be realpath-canonicalised.
+			// This happens on filesystems whose driver doesn't support the
+			// underlying call (e.g. WinFSP "local" / Cryptomator, some FUSE
+			// mounts), not just on missing paths. realpath is a defence-in-depth
+			// measure against symlink traversal; when it's simply unavailable we
+			// must not deny an otherwise-authorised request, so fall back to the
+			// lexically-resolved path. The path sets are still consulted by the
+			// callers, so only paths the user authorised are accepted.
+			realpath = resolved;
+		}
+	}
+
+	if (realpath.startsWith(appBaseDir))
+	{
+		throw new Error('path not authorised');
+	}
+
+	return {resolved: resolved, realpath: realpath};
+};
+
+// The renderer is semi-untrusted: it parses attacker-controlled diagram XML,
+// .vsdx, SVG, Mermaid, etc. validateSender is necessary but not sufficient,
+// because a renderer-side XSS attacker would also pass it. So write-side IPC
+// handlers must additionally confirm the requested path is one the user has
+// authorised through OS chrome (file picker, file association, argv) — see
+// blessPath. This function realpath-canonicalises the requested path
+// (defeating symlink traversal) and accepts only paths in blessedPaths or
+// their draft/backup siblings.
+async function assertWritablePath(p)
+{
+	const {realpath} = await canonicalisePath(p);
+
+	// Block writes anywhere inside userData (settings store, Local Storage)
+	let userDataDir;
+
+	try
+	{
+		userDataDir = path.resolve(app.getPath('userData'));
+	}
+	catch (e)
+	{
+		userDataDir = null;
+	}
+
+	if (userDataDir && (realpath === userDataDir ||
+		realpath.startsWith(userDataDir + path.sep)))
+	{
+		throw new Error('path not authorised');
+	}
+
+	// The lexical name must never override an unauthorised symlink target.
+	if (blessedPaths.has(realpath))
+	{
+		return;
+	}
+
+	if (isDraftOrBkpOfBlessed(realpath))
+	{
+		return;
+	}
+
+	throw new Error('path not authorised');
+};
+
+// The read side needs the same authorisation as the write side above: without
+// it the renderer can read any file the user can, and diagram content alone is
+// enough to reach it (a cell style's fontSource is fetched through readFile and
+// embedded in exports), so this is not gated on a renderer XSS. Accepts the same
+// paths as assertWritablePath plus the local paths named in the user's
+// configuration, which are loaded on every launch and so are never blessed
+// through a file dialog [jgraph/drawio-desktop#1278].
+async function assertReadablePath(p)
+{
+	const {realpath} = await canonicalisePath(p);
+
+	if (blessedPaths.has(realpath) || configReadablePaths.has(realpath))
+	{
+		return;
+	}
+
+	if (isDraftOrBkpOfBlessed(realpath))
+	{
+		return;
+	}
+
+	// The configuration is read from the renderer, so the first request for a
+	// configured library, template or font can arrive before it has been
+	// collected. Refresh once and re-check before refusing.
+	await loadConfigReadablePaths();
+
+	if (configReadablePaths.has(realpath))
+	{
+		return;
+	}
+
+	// Same for the legacy custom libraries, which the sidebar asks for while
+	// migrateLegacyLibrariesOnce may still be reading them from the renderer
+	if (legacyLibrariesMigration != null)
+	{
+		try { await legacyLibrariesMigration; } catch (e) {}
+
+		if (blessedPaths.has(realpath))
+		{
+			return;
+		}
+	}
+
+	throw new Error('path not authorised');
+};
+
+function getDraftFileName(fileObject)
+{
+	let filePath = fileObject.path;
+	let draftFileName = '', counter = 1, uniquePart = '';
+
+	do
+	{
+		draftFileName = path.join(path.dirname(filePath), DRAFT_PREFEX + path.basename(filePath) + uniquePart + DRAFT_EXT);
+		uniquePart = '_' + counter++;
+	} while (fs.existsSync(draftFileName));
+
+	return draftFileName;
+};
+
+async function getFileDrafts(fileObject)
+{
+	let filePath = fileObject.path;
+
+	// Drafts are siblings derived from filePath, so authorising the file the
+	// drafts belong to authorises the whole set
+	await assertReadablePath(filePath);
+
+	let draftsPaths = [], drafts = [], draftFileName, counter = 1, uniquePart = '';
+
+	do
+	{
+		draftsPaths.push(draftFileName);
+		draftFileName = path.join(path.dirname(filePath), DRAFT_PREFEX + path.basename(filePath) + uniquePart + DRAFT_EXT);
+		uniquePart = '_' + counter++;
+	} while (fs.existsSync(draftFileName)); //TODO this assume continuous drafts names
+
+	//Port old draft files to new prefex
+	counter = 1;
+	uniquePart = '';
+	let draftExists = false;
+
+	do
+	{
+		draftFileName = path.join(path.dirname(filePath), OLD_DRAFT_PREFEX + path.basename(filePath) + uniquePart + DRAFT_EXT);
+		draftExists = fs.existsSync(draftFileName);
+		
+		if (draftExists)
+		{
+			const newDraftFileName = path.join(path.dirname(filePath), DRAFT_PREFEX + path.basename(filePath) + uniquePart + DRAFT_EXT);
+			await fsProm.rename(draftFileName, newDraftFileName);
+			draftsPaths.push(newDraftFileName);
+		}
+
+		uniquePart = '_' + counter++;
+	} while (draftExists); //TODO this assume continuous drafts names
+
+	//Skip the first null element
+	for (let i = 1; i < draftsPaths.length; i++)
+	{
+		try
+		{
+			let stat = await fsProm.lstat(draftsPaths[i]);
+			drafts.push({data: await fsProm.readFile(draftsPaths[i], 'utf8'), 
+						created: stat.ctimeMs,
+						modified: stat.mtimeMs,
+						path: draftsPaths[i]});
+		}
+		catch (e){} // Ignore
+	}
+
+	return drafts;
+};
+
+async function saveDraft(fileObject, data)
+{
+	var draftFileName = fileObject.draftFileName || getDraftFileName(fileObject);
+
+	if (!checkFileContent(data))
+	{
+		throw new Error('Invalid file data');
+	}
+
+	await assertWritablePath(draftFileName);
+
+	let draftFh;
+
+	try
+	{
+		draftFh = await fsProm.open(draftFileName, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+		await fsProm.writeFile(draftFh, data, 'utf8');
+		await draftFh.sync(); // Flush to disk
+	}
+	finally
+	{
+		await draftFh?.close();
+	}
+
+	if (isWin)
+	{
+		try
+		{
+			// Add Hidden attribute:
+			var child = spawn(getSystem32Path('attrib.exe'), ['+h', draftFileName]);
+			child.on('error', function(err)
+			{
+				console.log('hiding draft file error: ' + err);
+			});
+		} catch(e) {}
+	}
+
+	return draftFileName;
+}
+
+// Reads the .bkp backup written before the last overwrite (see saveFile),
+// used for best-effort recovery when the main file fails to load. Returns
+// {data, created, modified, path} or null if no readable backup exists.
+async function getBkpFile(fileObject)
+{
+	let filePath = fileObject.path;
+
+	// The backup is a sibling derived from filePath (see saveFile)
+	await assertReadablePath(filePath);
+
+	let bkpPaths = [
+		path.join(path.dirname(filePath), BKP_PREFEX + path.basename(filePath) + BKP_EXT),
+		path.join(path.dirname(filePath), OLD_BKP_PREFEX + path.basename(filePath) + BKP_EXT)
+	];
+
+	for (let i = 0; i < bkpPaths.length; i++)
+	{
+		try
+		{
+			let stat = await fsProm.lstat(bkpPaths[i]);
+			return {data: await fsProm.readFile(bkpPaths[i], 'utf8'),
+					created: stat.ctimeMs,
+					modified: stat.mtimeMs,
+					path: bkpPaths[i]};
+		}
+		catch (e){} // Ignore, try next prefix / no backup
+	}
+
+	return null;
+};
+
+async function saveFile(fileObject, data, origStat, overwrite, defEnc)
+{
+	if (!checkFileContent(data))
+	{
+		throw new Error('Invalid file data');
+	}
+
+	if (fileObject == null || typeof fileObject.path !== 'string')
+	{
+		throw new Error('bad arg: fileObject.path');
+	}
+
+	await assertWritablePath(fileObject.path);
+
+	var retryCount = 0;
+	var backupCreated = false;
+	var bkpPath = path.join(path.dirname(fileObject.path), BKP_PREFEX + path.basename(fileObject.path) + BKP_EXT);
+	const oldBkpPath = path.join(path.dirname(fileObject.path), OLD_BKP_PREFEX + path.basename(fileObject.path) + BKP_EXT);
+	var writeEnc = defEnc || fileObject.encoding;
+
+	var writeFile = async function()
+	{
+		let fh;
+
+		try
+		{
+			// O_SYNC is for sync I/O and reduce risk of file corruption
+			fh = await fsProm.open(fileObject.path, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+			await fsProm.writeFile(fh, data, writeEnc);
+			await fh.sync(); // Flush to disk
+		}
+		finally
+		{
+			await fh?.close();
+		}
+
+		let stat2 = await fsProm.stat(fileObject.path);
+		// Workaround for possible writing errors is to check the written
+		// contents of the file and retry 3 times before showing an error
+		let writtenData = await fsProm.readFile(fileObject.path, writeEnc);
+		
+		if (data != writtenData)
+		{
+			retryCount++;
+			
+			if (retryCount < 3)
+			{
+				return await writeFile();
+			}
+			else
+			{
+				throw new Error('all saving trials failed');
+			}
+		}
+		else
+		{
+			//We'll keep the backup file in case the original file is corrupted. TODO When should we delete the backup file?
+			if (backupCreated)
+			{
+				//fs.unlink(bkpPath, (err) => {}); //Ignore errors!
+
+				//Delete old backup file with old prefix
+				if (fs.existsSync(oldBkpPath))
+				{
+					try
+					{
+						await assertWritablePath(oldBkpPath);
+						fs.unlink(oldBkpPath, (err) => {}); //Ignore errors
+					}
+					catch (e) {} //Ignore — path failed authorisation, skip cleanup.
+				}
+			}
+
+			return stat2;
+		}
+	};
+	
+	async function doSaveFile(isNew)
+	{
+		if (enableStoreBkp && !isNew)
+		{
+			//Copy file to backup file (after conflict and stat is checked)
+			try
+			{
+				// An unsafe backup is skipped like other backup failures. The
+				// replacement also handles links planted after this check.
+				await assertWritablePath(bkpPath);
+				let fileContent = await fsProm.readFile(fileObject.path, writeEnc);
+				await writeBackupFile(bkpPath, fileContent, writeEnc);
+				backupCreated = true;
+			}
+			catch (e) 
+			{
+				if (__DEV__)
+				{
+					console.log('Backup file writing failed', e); //Ignore
+				}
+			}
+			finally 
+			{
+				if (isWin && backupCreated)
+				{
+					try
+					{
+						// Add Hidden attribute:
+						var child = spawn(getSystem32Path('attrib.exe'), ['+h', bkpPath]);
+						child.on('error', function(err) 
+						{
+							console.log('hiding backup file error: ' + err);
+						});
+					} catch(e) {}
+				}
+			}
+		}
+
+		return await writeFile();
+	};
+	
+	if (overwrite)
+	{
+		return await doSaveFile(true);
+	}
+	else
+	{
+		let stat = fs.existsSync(fileObject.path)?
+					await fsProm.stat(fileObject.path) : null;
+
+		if (stat && isConflict(origStat, stat))
+		{
+			throw new Error('conflict');
+		}
+		else
+		{
+			return await doSaveFile(stat == null);
+		}
+	}
+};
+
+async function writeFile(filePath, data, enc)
+{
+	if (!checkFileContent(data, enc))
+	{
+		throw new Error('Invalid file data');
+	}
+
+	await assertWritablePath(filePath);
+
+	let fh;
+
+	try
+	{
+		// O_SYNC is for sync I/O and reduce risk of file corruption
+		fh = await fsProm.open(filePath, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+		await fsProm.writeFile(fh, data, enc);
+		await fh.sync(); // Flush to disk
+	}
+	finally
+	{
+		await fh?.close();
+	}
+};
+
+function getDocumentsFolder()
+{
+	//On windows, misconfigured Documents folder cause an exception
+	try
+	{
+		return app.getPath('documents');
+	}
+	catch(e) {}
+	
+	return '.';
+};
+
+async function checkFileExists(pathParts)
+{
+	let filePath = path.join(...pathParts);
+
+	await assertReadablePath(filePath);
+
+	return {exists: fs.existsSync(filePath), path: filePath};
+};
+
+async function showOpenDialog(defaultPath, filters, properties)
+{
+	let win = BrowserWindow.getFocusedWindow();
+
+	const result = await dialog.showOpenDialog(win, {
+		defaultPath: defaultPath,
+		filters: filters,
+		properties: properties
+	});
+
+	if (!result.canceled && Array.isArray(result.filePaths))
+	{
+		for (const fp of result.filePaths)
+		{
+			blessPath(fp);
+		}
+	}
+
+	return result;
+};
+
+async function showSaveDialog(defaultPath, filters)
+{
+	let win = BrowserWindow.getFocusedWindow();
+
+	const result = await dialog.showSaveDialog(win, {
+		defaultPath: defaultPath,
+		filters: filters
+	});
+
+	if (!result.canceled)
+	{
+		blessPath(result.filePath);
+	}
+
+	return result;
+};
+
+function dirname(path_p)
+{
+	return path.dirname(path_p);
+}
+
+async function readFile(filename, encoding)
+{
+	await assertReadablePath(filename);
+
+	let data = await fsProm.readFile(filename, encoding);
+
+	// Mermaid (.mmd/.mermaid) files are plain text that checkFileContent does
+	// not recognise as a known diagram format; allow them through by extension
+	// (the renderer converts them to a diagram on open).
+	let isMermaid = /\.(mmd|mermaid)$/i.test(filename);
+
+	if (checkFileContent(data, encoding) || isMermaid)
+	{
+		return data;
+	}
+
+	throw new Error('Invalid file data');
+}
+
+async function fileStat(file)
+{
+	await assertReadablePath(file);
+
+	return await fsProm.stat(file);
+}
+
+async function isFileWritable(file)
+{
+	await assertReadablePath(file);
+
+	try 
+	{
+		await fsProm.access(file, fs.constants.W_OK);
+		return true;
+	}
+	catch (e)
+	{
+		return false;
+	}
+}
+
+// Electron 44 aligned the clipboard module with the W3C Clipboard API: every
+// method returns a promise and write() takes ClipboardItem instances keyed by
+// MIME type instead of the old {image, html} object
+function clipboardAction(method, data)
+{
+	if (method == 'writeText')
+	{
+		return clipboard.writeText(data);
+	}
+	else if (method == 'readText')
+	{
+		return clipboard.readText();
+	}
+	else if (method == 'writeImage')
+	{
+		return clipboard.write([new ClipboardItem({
+			'image/png': new Blob([nativeImage.createFromDataURL(data.dataUrl).toPNG()],
+				{type: 'image/png'}),
+			'text/html': '<img src="' + data.dataUrl + '" width="' + data.w +
+				'" height="' + data.h + '">'
+		})]);
+	}
+}
+
+async function deleteFile(file)
+{
+	await assertWritablePath(file);
+
+	// Reading the header of the file to confirm it is a file we can delete
+	let fh = await fsProm.open(file, O_RDONLY);
+	let buffer = Buffer.allocUnsafe(16);
+	await fh.read(buffer, 0, 16);
+	await fh.close();
+
+	if (checkFileContent(buffer))
+	{
+		await fsProm.unlink(file);
+	}
+}
+
+function windowAction(method)
+{
+	let win = BrowserWindow.getFocusedWindow();
+
+	if (win)
+	{
+		if (method == 'minimize')
+		{
+			win.minimize();
+		}
+		else if (method == 'maximize')
+		{
+			win.maximize();
+		}
+		else if (method == 'unmaximize')
+		{
+			win.unmaximize();
+		}
+		else if (method == 'close')
+		{
+			win.close();
+		}
+		else if (method == 'isMaximized')
+		{
+			return win.isMaximized();
+		}
+		else if (method == 'removeAllListeners')
+		{
+			win.removeAllListeners();
+		}
+	}
+}
+
+const allowedUrls = /^(?:https?|mailto|tel|callto):/i;
+
+function openExternal(url)
+{
+	//Only open http(s), mailto, tel, and callto links
+	if (allowedUrls.test(url))
+	{
+		shell.openExternal(url);
+		return true;
+	}
+
+	return false;
+}
+
+const fileWatcher = new FileWatcher(fs);
+
+// The requesting webContents is watched, not the focused window: the app is
+// often not frontmost when a file is opened, and with more than one window the
+// focused one is not the one that asked [jgraph/drawio-desktop#2541]
+async function watchFile(webContents, filePath)
+{
+	await assertReadablePath(filePath);
+
+	fileWatcher.watch(webContents, filePath, (curr, prev) =>
+	{
+		try
+		{
+			if (webContents.isDestroyed())
+			{
+				fileWatcher.unwatchAll(webContents);
+				return;
+			}
+
+			webContents.send('fileChanged', {
+				path: filePath,
+				curr: curr,
+				prev: prev
+			});
+		}
+		catch (e) {} // Ignore
+	});
+}
+
+function unwatchFile(webContents, filePath)
+{
+	fileWatcher.unwatch(webContents, filePath);
+}
+
+function getLocalFonts()
+{
+	return new Promise((resolve) =>
+	{
+		let file, args;
+
+		if (process.platform === 'win32')
+		{
+			file = getSystem32Path('WindowsPowerShell\\v1.0\\powershell.exe');
+			args = ['-NoProfile', '-command', 'Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }'];
+		}
+		else
+		{
+			file = 'fc-list';
+			args = ['--format=%{family[0]}\\n'];
+		}
+
+		execFile(file, args, {encoding: 'utf8', timeout: 30000}, (err, stdout) =>
+		{
+			if (err)
+			{
+				resolve([]);
+				return;
+			}
+
+			let fonts = stdout.split('\n')
+				.map(f => f.trim())
+				.filter(f => f.length > 0);
+			fonts = [...new Set(fonts)].sort(
+				(a, b) => a.localeCompare(b));
+			resolve(fonts);
+		});
+	});
+}
+
+ipcMain.on("rendererReq", async (event, args) =>
+{
+	if (!validateSender(event.senderFrame)) return null;
+
+	try
+	{
+		let ret = null;
+
+		switch(args.action)
+		{
+		case 'saveFile':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
+			ret = await saveFile(args.fileObject, args.data, args.origStat, args.overwrite, args.defEnc);
+			break;
+		case 'writeFile':
+			reqStr(args.path, 'path');
+			ret = await writeFile(args.path, args.data, args.enc);
+			break;
+		case 'saveDraft':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
+			ret = await saveDraft(args.fileObject, args.data);
+			break;
+		case 'getFileDrafts':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
+			ret = await getFileDrafts(args.fileObject);
+			break;
+		case 'getBkpFile':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
+			ret = await getBkpFile(args.fileObject);
+			break;
+		case 'getDocumentsFolder':
+			ret = await getDocumentsFolder();
+			break;
+		case 'checkFileExists':
+			ret = await checkFileExists(args.pathParts);
+			break;
+		case 'showOpenDialog':
+			dialogOpen = true;
+			ret = await showOpenDialog(args.defaultPath, args.filters, args.properties);
+			ret = ret.filePaths;
+			dialogOpen = false;
+			break;
+		case 'showSaveDialog':
+			dialogOpen = true;
+			ret = await showSaveDialog(args.defaultPath, args.filters);
+			ret = ret.canceled? null : ret.filePath;
+			dialogOpen = false;
+			break;
+		case 'isPluginsEnabled':
+			// External plugins were removed; only built-in plugins remain.
+			// Kept so an older bundled webapp degrades to the disabled
+			// message in the Plugins dialog instead of failing
+			ret = false;
+			break;
+		case 'dirname':
+			reqStr(args.path, 'path');
+			ret = await dirname(args.path);
+			break;
+		case 'readFile':
+			reqStr(args.filename, 'filename');
+			ret = await readFile(args.filename, args.encoding);
+			break;
+		case 'clipboardAction':
+			ret = await clipboardAction(args.method, args.data);
+			break;
+		case 'deleteFile':
+			reqStr(args.file, 'file');
+			ret = await deleteFile(args.file);
+			break;
+		case 'fileStat':
+			reqStr(args.file, 'file');
+			ret = await fileStat(args.file);
+			break;
+		case 'isFileWritable':
+			reqStr(args.file, 'file');
+			ret = await isFileWritable(args.file);
+			break;
+		case 'windowAction':
+			ret = await windowAction(args.method);
+			break;
+		case 'openExternal':
+			ret = await openExternal(args.url);
+			break;
+		case 'watchFile':
+			reqStr(args.path, 'path');
+			ret = await watchFile(event.sender, args.path);
+			break;
+		case 'unwatchFile':
+			reqStr(args.path, 'path');
+			ret = await unwatchFile(event.sender, args.path);
+			break;
+		case 'exit':
+			app.quit();
+			break;
+		case 'getLocalFonts':
+			ret = await getLocalFonts();
+			break;
+		case 'isFullscreen':
+			ret = BrowserWindow.getFocusedWindow()?.isFullScreen() ?? false;
+			break;
+		};
+
+		event.reply('mainResp', {success: true, data: ret, reqId: args.reqId});
+	}
+	catch (e)
+	{
+		event.reply('mainResp', {error: true, msg: e.message, e: e, reqId: args.reqId});
+	}
+});

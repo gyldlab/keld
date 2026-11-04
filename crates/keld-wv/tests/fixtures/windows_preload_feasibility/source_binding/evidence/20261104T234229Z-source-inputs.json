@@ -1,0 +1,159 @@
+{
+    "scope":  "Experimental source fixture verification only; no production or native acceptance",
+    "collected_utc":  "2026-11-04T23:45:18.0244663Z",
+    "machine":  "Ramani",
+    "worktree_base":  "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+    "spec_head":  "20a798976d03e76056c5edf4c0d6fb5775c5659c",
+    "python":  "Python 3.14.1",
+    "node":  "v25.2.1",
+    "powershell":  "5.1.26100.9711",
+    "result_file":  "20261104T234229Z-source-checks.txt",
+    "result_sha256":  "6846789eb856cfabc2a4d1576fc3c11b263ad5f4c298516f4d02df16e7f9667c",
+    "files":  [
+                  {
+                      "path":  "behavior_mutation.py",
+                      "bytes":  1670,
+                      "sha256":  "0fd642df4fa3ee525afd1d8d995e61c8848a878c355825da735efe59fdd153d2"
+                  },
+                  {
+                      "path":  "census_fixture.json",
+                      "bytes":  309,
+                      "sha256":  "4f27714df9be9abf8bff8963a500a73f1239fab787ec14d84ddbe6ef5a94d0ac"
+                  },
+                  {
+                      "path":  "census_golden.json",
+                      "bytes":  843,
+                      "sha256":  "6499a46d06a108bbac9fc8dfcf079cd186d1521c6c0b2ae4749d77ac9daa41fb"
+                  },
+                  {
+                      "path":  "census_project/helper.cjs",
+                      "bytes":  20,
+                      "sha256":  "22bbdaab621a68527a72cb13119a5f8a93efe22a05939b5d48aba6a1835e6f5e"
+                  },
+                  {
+                      "path":  "census_project/keld.config.ts",
+                      "bytes":  38,
+                      "sha256":  "9a1cbb13e8324a69cef26e05bbc24dec9e7f363ec2b4e837fe05eeb45eab17eb"
+                  },
+                  {
+                      "path":  "census_project/keld.permissions.jsonc",
+                      "bytes":  27,
+                      "sha256":  "c29c602d60b584ae3be712e9faf864e02724105ffe7132478ea9ada3c3609d3b"
+                  },
+                  {
+                      "path":  "census_project/main.cjs",
+                      "bytes":  42,
+                      "sha256":  "b89fc1728d42f885d38c5451de22865c706da04ff46e51497bcd0feeb9375108"
+                  },
+                  {
+                      "path":  "census_project/package.json",
+                      "bytes":  47,
+                      "sha256":  "a90a6b77dafe091ff7294111f6ac2fc3441da5d8c4d73ec9b845fdb7b5e9e88b"
+                  },
+                  {
+                      "path":  "census_project/preload-a.js",
+                      "bytes":  41,
+                      "sha256":  "d283381d6807a94db0953322e05e1d01cca366e4be000ba3ce6875dea7104f04"
+                  },
+                  {
+                      "path":  "census_project/preload-b.js",
+                      "bytes":  29,
+                      "sha256":  "5a175852169944f784da6185a7c4a493d1d01bd23c0684fed7914be42e303c55"
+                  },
+                  {
+                      "path":  "census_project/renderer.js",
+                      "bytes":  29,
+                      "sha256":  "0565e9c280edb928576db1e7431df5fe54385f4f3e49e023fb9a3786cccdc742"
+                  },
+                  {
+                      "path":  "classifier_cases.json",
+                      "bytes":  7216,
+                      "sha256":  "2a3389ce8e8b81759e3c481c5de309d6baa473b14f014b5b7d201e773ce5d635"
+                  },
+                  {
+                      "path":  "fixture_census.py",
+                      "bytes":  2119,
+                      "sha256":  "abd4d2e6bf5db5206d4af1b92fcd5f30cf2b3ec406f80d537f8f38e27f32e04b"
+                  },
+                  {
+                      "path":  "input_census_limits.json",
+                      "bytes":  4672,
+                      "sha256":  "cd07f9cbe4b09ea70a575b6b45c5ee4e32f9ab615c81d26fbb948449a7500550"
+                  },
+                  {
+                      "path":  "mutation_check.py",
+                      "bytes":  2436,
+                      "sha256":  "16aa1364380069a08dcaa213dd78067d3fe14165fc6c63a691807d4264ca548c"
+                  },
+                  {
+                      "path":  "no_execution/keld.config.ts",
+                      "bytes":  248,
+                      "sha256":  "22bd7f5fa1d34fcef2d25436cd9f4833420855e70e41510c506a292ed7b7ceb0"
+                  },
+                  {
+                      "path":  "no_execution/main.cjs",
+                      "bytes":  299,
+                      "sha256":  "e656524dec31b0789fee9a14830bb207851a5b75fd069a61741672bfbd078011"
+                  },
+                  {
+                      "path":  "README.md",
+                      "bytes":  8239,
+                      "sha256":  "b58cdb825c4af0def817f36cda4b893bcaa6e08150f29629dccd1ac6191e4c57"
+                  },
+                  {
+                      "path":  "source_audit.py",
+                      "bytes":  3513,
+                      "sha256":  "93da81080aab269661ceb419fea7f9b610ce9b9ca4807b33ddc57e8b6db433e9"
+                  },
+                  {
+                      "path":  "source_behavior.test.mjs",
+                      "bytes":  6221,
+                      "sha256":  "92ff91801e96652046b47ce934a5f3e164b7afec1ba287a5b9fc7e2818b85fc4"
+                  },
+                  {
+                      "path":  "source_behavior_support.mjs",
+                      "bytes":  3559,
+                      "sha256":  "87e61e3abe97d140ff3399e40988e2a2259b6884d61a5dffba5451d435225340"
+                  },
+                  {
+                      "path":  "source_manifest.json",
+                      "bytes":  6776,
+                      "sha256":  "04c6c6ba97c42f6958a95817f5e5882bb21d62f04d6f7eda9788cc29be16057e"
+                  },
+                  {
+                      "path":  "test_source_audit.py",
+                      "bytes":  7755,
+                      "sha256":  "a3362f400d7ffd2622146f454bc863c4bc9c02fbc4fc50c4a334c81d044ca503"
+                  },
+                  {
+                      "path":  "vendor/drawio/electron-builder-win.json",
+                      "bytes":  2143,
+                      "sha256":  "b77ece2d3e390e14aceab666fc196ef788e1a3c266c40d244e7da4d549892749"
+                  },
+                  {
+                      "path":  "vendor/drawio/LICENSE",
+                      "bytes":  35149,
+                      "sha256":  "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+                  },
+                  {
+                      "path":  "vendor/drawio/package.json",
+                      "bytes":  1977,
+                      "sha256":  "c3612ea5534ab3a2be739b2ae40752d13cf497ee401af84e72a0c8c18ac7d077"
+                  },
+                  {
+                      "path":  "vendor/drawio/PROVENANCE.md",
+                      "bytes":  1145,
+                      "sha256":  "44b9913f37d83725574ba022edc06556e46fddfb1a12a2cc3d0df36d3faf4ee5"
+                  },
+                  {
+                      "path":  "vendor/drawio/src/main/electron.js",
+                      "bytes":  119176,
+                      "sha256":  "55505e690d37070344be172a68ad997ab48c687302dc5dee30a988d4f153770d"
+                  },
+                  {
+                      "path":  "vendor/drawio/src/main/electron-preload.js",
+                      "bytes":  3201,
+                      "sha256":  "1091fd21ef727a52ef89bde814aa662eed4a0c3ce32beb858a068a96b285bf98"
+                  }
+              ]
+}

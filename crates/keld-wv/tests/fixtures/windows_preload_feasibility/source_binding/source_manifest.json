@@ -1,0 +1,316 @@
+{
+  "schema": "keld.w1-source-feasibility-fixtures/v1",
+  "evidence_scope": "Experimental input audit and contract fixtures. No production classifier, trust root, grant, transport, or native acceptance.",
+  "spec": {
+    "repository": "gyldlab/keld",
+    "pr": 1307,
+    "head": "20a798976d03e76056c5edf4c0d6fb5775c5659c",
+    "path": "docs/specs/gh1184-windows-preload-facade.md",
+    "status": "draft r17"
+  },
+  "source": {
+    "repository": "jgraph/drawio-desktop",
+    "commit": "2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e",
+    "version": "31.7.0",
+    "license": "GPL-3.0-only",
+    "root": "vendor/drawio"
+  },
+  "files": [
+    {
+      "path": "src/main/electron-preload.js",
+      "bytes": 3201,
+      "git_blob": "44f2f22f159a8a845ff7e573dd10b816383703ec",
+      "sha256": "1091fd21ef727a52ef89bde814aa662eed4a0c3ce32beb858a068a96b285bf98"
+    },
+    {
+      "path": "src/main/electron.js",
+      "bytes": 119176,
+      "git_blob": "b57b5e2047710e829bfc25ab09f32b09ad2114d7",
+      "sha256": "55505e690d37070344be172a68ad997ab48c687302dc5dee30a988d4f153770d"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1977,
+      "git_blob": "95a7e931fc43abc9b42dd3ef0007a1b9c1296c7f",
+      "sha256": "c3612ea5534ab3a2be739b2ae40752d13cf497ee401af84e72a0c8c18ac7d077"
+    },
+    {
+      "path": "electron-builder-win.json",
+      "bytes": 2143,
+      "git_blob": "f724fa9dd99980479da02c7c5553eb0cdb3c0f8e",
+      "sha256": "b77ece2d3e390e14aceab666fc196ef788e1a3c266c40d244e7da4d549892749"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 35149,
+      "git_blob": "f288702d2fa16d3cdf0035b15a9fcbc552cd88e7",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+  ],
+  "hand_reviewed_preload_sites": [
+    {
+      "id": "argv-mode",
+      "lines": [
+        14,
+        15
+      ],
+      "rule": "c",
+      "observation": "Reads process.argv; main supplies additionalArguments at electron.js:707-711."
+    },
+    {
+      "id": "mainResp-routing",
+      "lines": [
+        61,
+        75
+      ],
+      "rule": "b",
+      "observation": "Routes by reqId, forwards selected resp.data or resp.msg/resp.e; inbound payload is not forwarded whole."
+    },
+    {
+      "id": "fileChanged-filter",
+      "lines": [
+        77,
+        85
+      ],
+      "rule": "b",
+      "observation": "Filters by registered path and forwards only curr/prev."
+    },
+    {
+      "id": "request",
+      "lines": [
+        89,
+        103
+      ],
+      "rule": "a",
+      "subclasses": [
+        "preload-assigned reqId",
+        "watchFile branch/delete",
+        "truncation"
+      ],
+      "observation": "Mutates msg, removes listener on watchFile, then sends only msg to literal rendererReq."
+    },
+    {
+      "id": "registerMsgListener",
+      "lines": [
+        104,
+        110
+      ],
+      "rule": "b",
+      "observation": "Forwards one payload argument only; trailing values would be omitted."
+    },
+    {
+      "id": "sendMessage",
+      "lines": [
+        111,
+        114
+      ],
+      "rule": "a",
+      "observation": "Page-selected computed channel and one payload argument; trailing arguments omitted. Channel is UNENUMERABLE."
+    },
+    {
+      "id": "listenOnce",
+      "lines": [
+        115,
+        121
+      ],
+      "rule": "b",
+      "observation": "Forwards one payload argument only; trailing values would be omitted."
+    }
+  ],
+  "hand_reviewed_main_registrations": [
+    {
+      "channel": "isModified-result",
+      "kind": "on",
+      "lines": [
+        851
+      ]
+    },
+    {
+      "channel": "saveAndClose-result",
+      "kind": "on",
+      "lines": [
+        913
+      ]
+    },
+    {
+      "channel": "draftRemoved",
+      "kind": "once",
+      "lines": [
+        927
+      ]
+    },
+    {
+      "channel": "openDevTools",
+      "kind": "on",
+      "lines": [
+        1027
+      ]
+    },
+    {
+      "channel": "newfile",
+      "kind": "on",
+      "lines": [
+        1034
+      ]
+    },
+    {
+      "channel": "import-success",
+      "kind": "once",
+      "lines": [
+        1452
+      ]
+    },
+    {
+      "channel": "import-error",
+      "kind": "once",
+      "lines": [
+        1453
+      ]
+    },
+    {
+      "channel": "app-load-finished",
+      "kind": "once",
+      "lines": [
+        1762,
+        1815,
+        2173
+      ]
+    },
+    {
+      "channel": "toggleSpellCheck",
+      "kind": "on",
+      "lines": [
+        1851
+      ]
+    },
+    {
+      "channel": "toggleStoreBkp",
+      "kind": "on",
+      "lines": [
+        1864
+      ]
+    },
+    {
+      "channel": "toggleGoogleFonts",
+      "kind": "on",
+      "lines": [
+        1877
+      ]
+    },
+    {
+      "channel": "toggleFullscreen",
+      "kind": "on",
+      "lines": [
+        1891
+      ]
+    },
+    {
+      "channel": "checkForUpdates",
+      "kind": "on",
+      "lines": [
+        2012
+      ]
+    },
+    {
+      "channel": "zoomIn",
+      "kind": "on",
+      "lines": [
+        2013
+      ]
+    },
+    {
+      "channel": "zoomOut",
+      "kind": "on",
+      "lines": [
+        2014
+      ]
+    },
+    {
+      "channel": "resetZoom",
+      "kind": "on",
+      "lines": [
+        2015
+      ]
+    },
+    {
+      "channel": "export-finalize",
+      "kind": "once",
+      "lines": [
+        3144
+      ]
+    },
+    {
+      "channel": "svg-data",
+      "kind": "once",
+      "lines": [
+        3349
+      ]
+    },
+    {
+      "channel": "render-finished",
+      "kind": "once",
+      "lines": [
+        3371
+      ]
+    },
+    {
+      "channel": "export-error",
+      "kind": "once",
+      "lines": [
+        3372
+      ]
+    },
+    {
+      "channel": "xml-data",
+      "kind": "once",
+      "lines": [
+        3376
+      ]
+    },
+    {
+      "channel": "xml-data-error",
+      "kind": "once",
+      "lines": [
+        3383
+      ]
+    },
+    {
+      "channel": "export",
+      "kind": "on",
+      "lines": [
+        3426
+      ]
+    },
+    {
+      "channel": "rendererReq",
+      "kind": "on",
+      "lines": [
+        4431
+      ]
+    }
+  ],
+  "candidate_literals_only": [
+    "el:rendererReq"
+  ],
+  "enabled_grants": [],
+  "main_window_site": {
+    "file": "src/main/electron.js",
+    "line": 748,
+    "status": "UNRESOLVED",
+    "reason": "Object.assign plus options variable is outside r17 inline object-literal tie; all sites also await Q2 owner mapping."
+  },
+  "known_required_unadmitted_literals": [
+    "el:app-load-finished",
+    "el:isModified-result"
+  ],
+  "main_code_digest": {
+    "status": "UNRESOLVED",
+    "reason": "Per-file electron.js SHA256 is not aggregate mainDigest; authoritative input census and exact digest encoding remain owner decisions Q15/B10/B11."
+  },
+  "trust_root": {
+    "status": "UNRESOLVED",
+    "owner": "GH1182/GH484",
+    "blocker": "B4"
+  },
+  "source_audit_is_classifier_output": false
+}

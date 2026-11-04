@@ -1,0 +1,1 @@
+const api = () => send('b');
