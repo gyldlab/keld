@@ -134,6 +134,8 @@ function Invoke-MediaOuterDeadlineProbe {
 function Invoke-ProfileRegressionCases {
     param([string]$Binary, [string]$EvidenceRoot)
     $cases = @(
+        'view_focus::windows_app_view_native_active_focus',
+        'view_focus::windows_hello_view_native_active_focus',
         'windows_com_engine_lifetime_subprocess',
         'windows_dev_profile_cleanup_subprocess',
         'windows_busy_ephemeral_scavenge_subprocess',
@@ -146,7 +148,12 @@ function Invoke-ProfileRegressionCases {
         'saved_permission_deadline::windows_empty_saved_permission_collection_still_checks_budget',
         'windows_swallowed_browser_exit_fails_bounded_subprocess',
         'windows_unproven_probe_retains_predecessor_subprocess',
-        'windows_unproven_probe_window_retains_predecessor_subprocess'
+        'windows_unproven_probe_window_retains_predecessor_subprocess',
+        'view_host::windows_app_view_minimize_restore_obligations',
+        'view_host::windows_hello_view_minimize_restore_obligations',
+        'view_position::windows_app_view_native_parent_position',
+        'view_position::windows_hello_view_native_parent_position',
+        'view_retry::windows_view_host_failed_native_steps_remain_retryable'
     )
     # Outer kill switches only; every child bounds itself with its own watchdog.
     # The two swallowed-event cases (host site, probe site) wait out the full
@@ -200,8 +207,8 @@ if ($binaryHash -ne $sourceBinaryHash) {
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
-if ($profileRegressionCount -ne 13) {
-    throw "Expected thirteen Windows profile regressions, observed $profileRegressionCount"
+if ($profileRegressionCount -ne 20) {
+    throw "Expected twenty Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
 $seenNonces = @{}

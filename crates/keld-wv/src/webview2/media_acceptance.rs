@@ -1,6 +1,8 @@
 //! Opt-in Windows fixture. This module is absent from default shipping builds.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub(super) mod host_window_probe;
+
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -1073,6 +1075,10 @@ mod tests {
     mod first_navigation;
     mod profile_release;
     mod saved_permission_deadline;
+    mod view_focus;
+    mod view_host;
+    mod view_position;
+    mod view_retry;
 
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
