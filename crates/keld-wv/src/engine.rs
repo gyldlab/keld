@@ -26,8 +26,10 @@
 
 use crate::WebviewId;
 use crate::error::WvError;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use std::time::Instant;
+#[cfg(any(target_os = "macos", windows))]
+use tao::event::{Event, StartCause};
 
 /// Logical (DPI-independent) size in points.
 ///
@@ -143,12 +145,12 @@ pub enum AppWindowCommand {
 pub enum AppWindowEvent {
     /// Initial renderer navigation completed on the live backend.
     NavigationReady,
-    /// The macOS application loop delivered its actual first Init turn.
+    /// The application loop delivered its actual first Init turn.
     /// The timestamp is sampled on the UI thread, not by the possibly delayed
     /// coordinator. It is not inferred from HELLO, navigation or a queued reply.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     HostInitialized {
-        /// Monotonic observation time of the real first `AppKit` Init turn.
+        /// Monotonic observation time of the real first native Init turn.
         observed_at: Instant,
     },
     /// The primary-window count transitioned from one to zero.
@@ -252,6 +254,38 @@ pub(crate) const fn initial_renderer_pending(registry_managed: bool, closing: bo
     !registry_managed && !closing
 }
 
+/// Tao may deliver Opened before the first `NewEvents(Init)`. Only the genuine
+/// Init turn is a readiness milestone, once.
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) fn first_host_init_turn<T>(event: &Event<'_, T>, emitted: &mut bool) -> bool {
+    if *emitted || !matches!(event, Event::NewEvents(StartCause::Init)) {
+        return false;
+    }
+    *emitted = true;
+    true
+}
+
+#[cfg(all(test, windows))]
+mod first_host_init_turn_tests {
+    use tao::event::{Event, StartCause};
+
+    use super::first_host_init_turn;
+
+    #[test]
+    fn windows_ready_is_only_the_first_real_tao_init_turn() {
+        let mut emitted = false;
+        let opened: Event<'_, ()> = Event::Opened { urls: Vec::new() };
+        assert!(!first_host_init_turn(&opened, &mut emitted));
+        assert!(!emitted, "an earlier event is not the Init turn");
+        let later: Event<'_, ()> = Event::MainEventsCleared;
+        assert!(!first_host_init_turn(&later, &mut emitted));
+        let init: Event<'_, ()> = Event::NewEvents(StartCause::Init);
+        assert!(first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&init, &mut emitted));
+        assert!(!first_host_init_turn(&later, &mut emitted));
+    }
+}
+
 #[cfg(test)]
 mod initial_renderer_tests {
     use std::time::{Duration, Instant};
@@ -289,12 +323,12 @@ mod initial_renderer_tests {
 
 /// The only permitted source of the initial Host-to-app Ready event.
 /// Renderer-declared apps keep their historical navigation milestone.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppReadyTrigger {
     /// Renderer-declared boot becomes Ready only after first navigation.
     NavigationReady,
-    /// macOS facade boot becomes Ready on the actual UI-loop Init turn.
+    /// Facade boot becomes Ready on the actual UI-loop Init turn.
     HostInitialized,
 }
 

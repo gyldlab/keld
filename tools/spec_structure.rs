@@ -65,7 +65,7 @@ const BASELINE_ROWS: usize = 43;
 /// Every baseline path must exist in this commit: the last `main` before the standard.
 /// Moving it forward is legitimate only for a merge of `main` that landed a spec, or
 /// changed a listed one, before the standard.
-const BASELINE_SEAL: &str = "b72e4c19883c097f5683b84efea39e661497a6f8";
+const BASELINE_SEAL: &str = "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc";
 
 /// The ten sections of `docs/agents/spec-template.md`, in order.
 const SECTIONS: [&str; 10] = [

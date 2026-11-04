@@ -2298,9 +2298,10 @@ from the install cache). The runtime resolver is `tsconfig.json`
 architecture §2's named file; treating that file as the resolver is a
 defect. This slice adds an exported `BrowserWindow` subset backed by the
 macOS Host-owned native window registry for creation/adoption, selected
-geometry and state, close/destroy, and recovery events. Linux and Windows
-currently refuse facade-window subscription; this is not a cross-platform
-native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+geometry and state, close/destroy, and recovery events. Linux currently
+refuses facade-window subscription. A Windows product build refuses a
+schema-2 facade boot, and Windows answers no window `Create` yet; this is
+not a cross-platform native window backend. Broader Electron behavior and surfaces (`ipcMain`,
 preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
