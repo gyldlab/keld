@@ -48,16 +48,14 @@ fn control_or_host_exit(control: &TcpListener, host: &mut SeamedHost) -> Option<
     }
 }
 
-/// AC23: one cell for every head from T1 on, launched without the test-admission env,
-/// on an `InstalledApp` persistent project that never builds a window. Either the launch
-/// is refused `KELD-CORE-034` before any `READY` (T1's required outcome), or it reaches
-/// `READY`, the fixture's `Quit` exits 0 and the record reads `idle` (T2's required
-/// outcome, whose zero-controller and descendant-release controls land with T2's
-/// readbacks). Any other outcome is RED: a T1 head that drops the admission check exits
-/// `KELD-WV-009` with the record `starting` (NC 1).
+/// AC23 at T2: the product boot must reach Ready, then Quit must write Idle.
+/// The T1 CORE034 refusal is no longer a passing alternative. This changes that
+/// explicit contract in the same integration as Running and the required witness.
 #[test]
-#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1 (a kel135-profile-test-root host) and KELD_KEL254_INSTALLER_FIXTURE"]
+#[ignore = "signed profile-hook/root Host and installer required"]
 fn windows_product_facade_admission_waits_for_the_release_proof() {
+    use super::sessions::LifecycleObservation;
+    use crate::support::process::{assert_process_signaled, open_process_for_wait};
     let fixture = ProductFixture::schema_two();
     let installed = InstalledApp::install(
         &fixture.project,
@@ -66,26 +64,14 @@ fn windows_product_facade_admission_waits_for_the_release_proof() {
     );
     let root = ProfileTestRoot::new();
     assert_profile_test_root_feature(installed.host(), root.path());
-    let control = TcpListener::bind(("127.0.0.1", 0)).expect("bind installed facade control");
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("installed facade control");
     let mut host = SeamedHost::launch(&installed, root.path(), &control, &[]);
+    host.start_live_stderr();
     let Some(stream) = control_or_host_exit(&control, &mut host) else {
         let (status, stdout, stderr) = host.finish();
-        assert!(
-            !status.success(),
-            "exited 0 with no Bun: {stdout}\n{stderr}"
-        );
-        assert!(stderr.contains("KELD-CORE-034"), "{stdout}\n{stderr}");
-        assert!(
-            stderr.contains("schema 2 is supported on macOS only"),
-            "{stderr}"
-        );
-        println!(
-            "KELD_GH1188_AC23 outcome=refused stderr={}",
-            stderr.trim_end()
-        );
         drop(installed);
         root.remove();
-        return;
+        panic!("T2 product facade refused before Ready: {status}\n{stdout}\n{stderr}");
     };
     let mut writer = stream.try_clone().expect("control writer");
     let mut reader = BufReader::new(stream);
@@ -94,21 +80,55 @@ fn windows_product_facade_admission_waits_for_the_release_proof() {
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
     assert_eq!(read_control_line(&mut reader), "ECHO2");
+    let census = process_tree_report(host.pid);
+    let descendants = census
+        .split_once(" descendants=")
+        .expect("native pre-Quit census")
+        .1;
+    let retained = descendants
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .map(|entry| {
+            let (_, pid) = entry.rsplit_once(':').expect("native descendant name");
+            let (pid, _) = pid.split_once('<').expect("native descendant parent");
+            let pid: u32 = pid.parse().expect("native descendant id");
+            (pid, open_process_for_wait(pid, false))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        retained.iter().any(|(pid, _)| *pid == bun_pid),
+        "Bun absent from pre-Quit census: {census}"
+    );
+    assert_eq!(read_lifecycle_record(root.path()).phase, "running");
     writer.write_all(b"QUIT\n").expect("facade Quit");
-    writer.flush().expect("flush facade Quit");
+    writer.flush().expect("flush Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
     let (status, stdout, stderr) = host.finish();
-    let record = read_lifecycle_record(root.path());
-    println!(
-        "KELD_GH1188_AC23 outcome=ready bun_pid={bun_pid} status={status} phase={}",
-        record.phase
-    );
     assert!(
         status.success(),
-        "Quit of a product facade boot failed with the record {record:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "product facade Quit failed: {status}\n{stdout}\n{stderr}"
     );
-    assert_eq!(record.phase, "idle", "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("KELD_T2_LOOP_EXIT environments=1 controllers=0 armed_by=Quit"),
+        "zero-controller proof missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("KELD_T2_RELEASE_WITNESS completed=true"),
+        "{stderr}"
+    );
+    for (pid, handle) in &retained {
+        assert_process_signaled(handle, &format!("pre-Quit descendant {pid}"));
+    }
+    // Observe Idle after every retained descendant exit, before any recovery launch.
+    assert_eq!(
+        read_lifecycle_record(root.path()),
+        LifecycleObservation::idle()
+    );
+    println!(
+        "KELD_GH1188_AC23 outcome=ready bun_pid={bun_pid} phase=idle environments=1 controllers=0 descendants_released={}",
+        retained.len()
+    );
     drop(installed);
     root.remove();
 }

@@ -181,10 +181,9 @@ const GUARDIAN_OWNER_REPLY_DEADLINE: Duration = Duration::from_secs(6);
 const DEV_LEASE_ENV: &str = "KELD_DEV_LEASE";
 #[cfg(any(target_os = "macos", windows))]
 const NATIVE_WINDOW_FACADE_ENV: &str = "KELD_NATIVE_WINDOW_FACADE";
-/// Child-only test admission of a Windows schema-2 boot (GH-1188 D2): compiled out of
-/// product builds and removed from the Bun child's environment.
+/// Approved D16 host-only descendant: it is deliberately outside every Bun family.
 #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
-const TEST_WINDOWS_ADMIT_FACADE_BOOT_ENV: &str = "KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT";
+const TEST_WINDOWS_ENVIRONMENT_DESCENDANT_ENV: &str = "KELD_TEST_WINDOWS_ENVIRONMENT_DESCENDANT";
 #[cfg(windows)]
 const WINDOWS_DEV_STAGE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
@@ -1342,44 +1341,57 @@ struct RetainedMacSession {
     guard: Option<GuardSnapshot>,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(target_os = "linux")]
 fn facade_boot_platform_error() -> HostAppError {
     HostAppError::new(
         "KELD-CORE-034",
         "facade boot platform",
-        "schema 2 is supported on macOS only",
+        "schema 2 is supported on macOS and Windows only",
         "Remove initialWindow from keld.config.ts to use a renderer-declared boot on this platform.",
     )
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(target_os = "linux")]
 fn ensure_initial_window_supported(initial: &InitialWindow) -> Result<(), HostAppError> {
     if matches!(initial, InitialWindow::None) {
-        #[cfg(windows)]
-        if windows_facade_boot_admitted() {
-            return Ok(());
-        }
         return Err(facade_boot_platform_error());
     }
     Ok(())
 }
 
-/// The one predicate of both Windows facade-boot sites (GH-1188 D2). A product build
-/// answers no: it refuses a schema-2 boot until the release proof lands (T2, AC23).
-/// Only a debug `profile-test-hooks` host launched with
-/// [`TEST_WINDOWS_ADMIT_FACADE_BOOT_ENV`] set to `1` admits one, with every descriptor
-/// rule still applied.
+/// Neither native managed-window support nor a release witness implies the other.
 #[cfg(windows)]
-fn windows_facade_boot_admitted() -> bool {
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    {
-        std::env::var_os(TEST_WINDOWS_ADMIT_FACADE_BOOT_ENV).as_deref()
-            == Some(std::ffi::OsStr::new("1"))
+const fn windows_managed_support(engine: bool, witness: bool) -> bool {
+    engine && witness
+}
+
+/// The actual retained owners used by both admission and the UI-end release call.
+/// This is a borrow of authority installed by the Host, never a reconstructed PID.
+#[cfg(windows)]
+struct WindowsSessionRelease<'a> {
+    host: &'a keld_runtime::windows_job::WindowsHostDeathJob,
+    families: &'a keld_runtime::windows_job::WindowsPrimaryFamilies,
+}
+
+#[cfg(windows)]
+impl WindowsSessionRelease<'_> {
+    fn observe(
+        &self,
+        deadline: Instant,
+    ) -> Result<(), keld_runtime::windows_job::WindowsHostJobError> {
+        self.families.observe_non_family_exit(self.host, deadline)
     }
-    #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
-    {
-        false
-    }
+}
+
+#[cfg(windows)]
+fn windows_native_support(
+    trigger: AppReadyTrigger,
+    witness: Option<&WindowsSessionRelease<'_>>,
+) -> Option<bool> {
+    (trigger == AppReadyTrigger::HostInitialized).then_some(windows_managed_support(
+        WebView2Engine::supports_managed_windows(),
+        witness.is_some(),
+    ))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1477,7 +1489,6 @@ fn validate_windows_boot_files(
     let boot_file = open_relative_file_windows(&root, Path::new(BOOT_FILE), "boot descriptor")?;
     let boot_bytes = read_bounded(boot_file, MAX_BOOT_BYTES, "boot descriptor")?;
     let parsed = parse_boot_bytes(&boot_bytes)?;
-    ensure_initial_window_supported(&parsed.initial)?;
     let entry_file = open_relative_file_windows(&root, &parsed.entry, "entry")?;
     let initial_window = match parsed.initial {
         InitialWindow::Renderer(renderer) => {
@@ -1921,6 +1932,7 @@ fn read_target(mut file: File, kind: &'static str) -> Result<Vec<u8>, HostAppErr
 pub fn run_unprivileged(
     boot: ValidatedBootSelection,
     #[cfg(any(target_os = "macos", windows))] pre_init_terminal: fn(&HostAppError) -> !,
+    #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
 ) -> Result<(), HostRunFailure> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
@@ -1953,7 +1965,7 @@ pub fn run_unprivileged(
             permissions_digest,
         } = boot;
         drop((permissions_file, permissions_digest));
-        run_app_direct(app, None, pre_init_terminal).map_err(HostRunFailure::from)
+        run_app_direct(app, None, pre_init_terminal, host_death_job).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
@@ -1980,6 +1992,7 @@ pub fn run_unprivileged(
 pub fn run_guarded(
     boot: ValidatedBootSelection,
     #[cfg(any(target_os = "macos", windows))] pre_init_terminal: fn(&HostAppError) -> !,
+    #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
 ) -> Result<(), HostRunFailure> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
@@ -2004,7 +2017,13 @@ pub fn run_guarded(
             .map_err(HostAppError::manifest)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
-        run_app_direct(app, Some(&guard_snapshot), pre_init_terminal).map_err(HostRunFailure::from)
+        run_app_direct(
+            app,
+            Some(&guard_snapshot),
+            pre_init_terminal,
+            host_death_job,
+        )
+        .map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "macos")]
     {
@@ -3190,6 +3209,8 @@ struct DirectSessionInputs<'a> {
     windows_profile_mode: WindowsProfileMode,
     #[cfg(windows)]
     pre_init_terminal: fn(&HostAppError) -> !,
+    #[cfg(windows)]
+    host_death_job: &'a keld_runtime::windows_job::WindowsHostDeathJob,
     guard_snapshot: Option<&'a GuardSnapshot>,
 }
 
@@ -3433,7 +3454,7 @@ fn windows_primary_config(
     let config = config.env_remove(keld_wv::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV);
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     let config = config
-        .env_remove(TEST_WINDOWS_ADMIT_FACADE_BOOT_ENV)
+        .env_remove(TEST_WINDOWS_ENVIRONMENT_DESCENDANT_ENV)
         .env_remove(keld_wv::TEST_STALL_BEFORE_INIT_ENV);
     #[cfg(debug_assertions)]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
@@ -3459,6 +3480,23 @@ fn windows_primary_config(
     Ok(config)
 }
 
+/// Spawns only the explicit debug fixture. The Host Job retains descendants;
+/// retaining this direct Child is not a second supervisor or an admission grant.
+#[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+fn spawn_windows_environment_descendant() -> Result<Option<std::process::Child>, HostAppError> {
+    let Some(path) = std::env::var_os(TEST_WINDOWS_ENVIRONMENT_DESCENDANT_ENV) else {
+        return Ok(None);
+    };
+    let child = std::process::Command::new(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|source| app_io("Windows environment-descendant fixture", &source))?;
+    eprintln!("KELD_T2_ENVIRONMENT_DESCENDANT pid={}", child.id());
+    Ok(Some(child))
+}
+
 /// Runs the host's application sessions: a per-process prelude, then a loop of full
 /// sessions on the main thread (KEL-53 §5 `run_app_direct`). A session ends by the
 /// application's Quit, a fatal or CLI lease loss; `next_direct_session` decides whether
@@ -3468,6 +3506,7 @@ fn run_app_direct(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
     #[cfg(windows)] pre_init_terminal: fn(&HostAppError) -> !,
+    #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
 ) -> Result<(), HostAppError> {
     let AppBootSelection {
         root,
@@ -3499,12 +3538,10 @@ fn run_app_direct(
         }
         ValidatedInitialWindow::None => {
             #[cfg(windows)]
-            if windows_facade_boot_admitted() {
+            {
                 None
-            } else {
-                return Err(facade_boot_platform_error());
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             return Err(facade_boot_platform_error());
         }
     };
@@ -3538,6 +3575,8 @@ fn run_app_direct(
         windows_profile_mode,
         #[cfg(windows)]
         pre_init_terminal,
+        #[cfg(windows)]
+        host_death_job,
         guard_snapshot,
     };
     let mut session = (shutdown, dev_lease);
@@ -3606,12 +3645,20 @@ fn run_direct_app_session(
     #[cfg(windows)]
     let ready_trigger = inputs.ready_trigger();
     #[cfg(windows)]
+    let primary_families = keld_runtime::windows_job::WindowsPrimaryFamilies::new();
+    #[cfg(windows)]
+    let release_witness = WindowsSessionRelease {
+        host: inputs.host_death_job,
+        families: &primary_families,
+    };
+    #[cfg(windows)]
     let config = windows_primary_config(
         inputs.root,
         inputs.entry_path,
         ready_trigger == AppReadyTrigger::HostInitialized,
         dev_lease.as_ref(),
-    )?;
+    )?
+    .windows_primary_families(primary_families.clone());
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     let supervisor = run_direct_startup_if_session_running(shutdown, || {
@@ -3691,7 +3738,7 @@ fn run_direct_app_session(
         shutdown.clone(),
         inputs.guard_snapshot,
         #[cfg(windows)]
-        ready_trigger,
+        windows_native_support(ready_trigger, Some(&release_witness)),
     )?;
     primary_owner.attach_router(router.handle())?;
     let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
@@ -3737,6 +3784,8 @@ fn run_direct_app_session(
         initial: NavTarget::Html(html.to_owned()),
         ..WebviewSpec::default()
     });
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    let mut _environment_descendant = None;
     let engine = run_direct_startup_if_session_running(shutdown, || {
         #[cfg(windows)]
         let mut direct_engine = match inputs.windows_profile_mode {
@@ -3744,6 +3793,10 @@ fn run_direct_app_session(
             WindowsProfileMode::EphemeralDev => WebView2Engine::new_dev_ephemeral(),
         }
         .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
+        #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+        {
+            _environment_descendant = spawn_windows_environment_descendant()?;
+        }
         #[cfg(target_os = "linux")]
         let mut direct_engine = direct_engine;
         // A facade boot's first window belongs to the application's later
@@ -3792,12 +3845,24 @@ fn run_direct_app_session(
         }
     };
     #[cfg(windows)]
-    let window_result =
-        engine.run_app_until_quit(window_commands_rx, window_events_tx, ready_trigger, || {
+    let window_result = engine.run_app_until_quit(
+        window_commands_rx,
+        window_events_tx,
+        ready_trigger,
+        || {
             if ready_trigger == AppReadyTrigger::HostInitialized {
                 let _ = init_deadline.set(Instant::now() + keld_wv::INITIAL_MILESTONE_DEADLINE);
             }
-        });
+        },
+        |deadline| {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            eprintln!("KELD_T2_RELEASE_WITNESS entered");
+            let result = release_witness.observe(deadline);
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            eprintln!("KELD_T2_RELEASE_WITNESS completed={}", result.is_ok());
+            result
+        },
+    );
     #[cfg(target_os = "linux")]
     let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
     drop(window_commands_tx);
@@ -7837,7 +7902,7 @@ impl PrimaryRouter {
         shutdown: SessionShutdownState,
         fs: Option<&GuardSnapshot>,
         #[cfg(target_os = "macos")] mac_start: MacBoundStart,
-        #[cfg(windows)] ready_trigger: AppReadyTrigger,
+        #[cfg(windows)] window_native_support: Option<bool>,
     ) -> Result<Self, HostAppError> {
         Self::start_bound_with_fs_setup(
             bound,
@@ -7870,8 +7935,7 @@ impl PrimaryRouter {
             // renderer boot keeps no registry, so navigation still signals Ready.
             #[cfg(windows)]
             &BoundSetup {
-                window_native_support: (ready_trigger == AppReadyTrigger::HostInitialized)
-                    .then_some(false),
+                window_native_support,
             },
         )
     }

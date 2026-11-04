@@ -1634,18 +1634,18 @@ gates.
   reader.
 - **U13 Retired-generation device hook — WITHDRAWN (r8).** The Job census (D7) removed
   the retired-generation list that needed it.
-- **U14 (A10, D7) Census capability and Bun Job creation — decided at T2.** keld-wv has no
-  keld-runtime dependency; it defines a release-witness seam that `finish_profile_release`
-  calls, keld-core implements it with the parameterised `exit_census` (D7), and
-  `keld-host` lends the host-death Job capability (`main.rs:96-104`) to keld-core's run
-  entry (the signature T1 already changes). Open within T2: whether the Windows primary is
-  created suspended and assigned before its first instruction (reuse `WindowsSuspendedChild`)
-  or assigned right after spawn (a child started first is non-family and fails closed).
-  Review gates: public API (keld-runtime, keld-core, keld-wv, keld-host) and unsafe: the
-  existing Job FFI operations are reused, but the `crates/keld-runtime/AGENTS.md` unsafe
-  scope today reads "exit census … terminate+wait non-family only", so the observe policy
-  is a new production path that needs that edit plus independent unsafe evidence on the
-  exact diff.
+- **U14 (A10, D7) T2 choice; exact-diff review required.**
+  keld-wv requires a release callback and gains no keld-runtime dependency.
+  Host lends its retained Job through Core with the remaining absolute grace.
+  Each primary generation reserves enrollment before spawn. The supervisor binds its
+  retained Child to a fresh Job before Spawned or authenticated admission.
+  Assignment is post-spawn, not pre-first-instruction. An earlier descendant remains
+  non-family and blocks release. No parallel launcher or native FFI is added.
+  Retired Jobs remain until native accounting proves them empty.
+  Release seals admission and refuses pending, contended or poisoned enrollment.
+  At most 64 nonempty families are retained; excess admission fails before spawn.
+  Existing Job assignment/census own native policy; safe bookkeeping owns no FFI.
+  Public API and architecture review must cover this composition and native controls.
 - **U15 (D7) Profile handover path — RESOLVED (r9).** The in-host handover runs the same
   census (D7), so one release proof covers every transition.
 - **U16 (A10) Census availability — disclosed.** Members that legitimately outlive the

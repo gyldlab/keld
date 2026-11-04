@@ -16,9 +16,9 @@
 use crate::support::control::{accept_ready_generation, read_control_line};
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
-    DIAGNOSTIC_QUERY_KILL_SWITCH, PIPE_DRAIN_KILL_SWITCH, ProcessTimes, bounded_output,
-    open_process_for_wait, pipe_text_by, process_exists, process_times, read_pipe_on_thread,
-    wait_child, wait_for_process_signal,
+    DIAGNOSTIC_QUERY_KILL_SWITCH, PIPE_DRAIN_KILL_SWITCH, PipeText, ProcessTimes, bounded_output,
+    open_process_for_wait, pipe_line_after, pipe_text_by, process_exists, process_times,
+    read_pipe_on_thread, wait_child, wait_for_process_signal,
 };
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
@@ -121,6 +121,7 @@ pub(super) struct SeamedHost {
     pub(super) host: Child,
     pub(super) pid: u32,
     pub(super) birth: u64,
+    live_stderr: Option<PipeText>,
 }
 
 impl SeamedHost {
@@ -138,6 +139,7 @@ impl SeamedHost {
         let host = installed
             .command()
             .env("KELD_T1B_CONTROL", control_port.to_string())
+            .env_remove("KELD_TEST_WINDOWS_ENVIRONMENT_DESCENDANT")
             .env("KELD_PROFILE_TEST_ROOT", root)
             .env("TEMP", temp)
             .env("TMP", temp)
@@ -146,10 +148,73 @@ impl SeamedHost {
             .stderr(Stdio::piped())
             .spawn()
             .expect("launch the installed host without KELD_DEV_LEASE");
+        Self::from_child(host)
+    }
+
+    /// Adopts an already-launched, test-owned staged Host with the same cleanup owner.
+    pub(super) fn from_child(host: Child) -> Self {
         let pid = host.id();
         let birth = process_times(host.as_raw_handle().cast()).creation;
         assert_ne!(birth, 0, "host creation time");
-        Self { host, pid, birth }
+        Self {
+            host,
+            pid,
+            birth,
+            live_stderr: None,
+        }
+    }
+
+    /// Starts the existing chunk-preserving pipe owner before a native stimulus.
+    pub(super) fn start_live_stderr(&mut self) {
+        assert!(
+            self.live_stderr.is_none(),
+            "stderr already has a live owner"
+        );
+        self.live_stderr = Some(read_pipe_on_thread(
+            self.host.stderr.take().expect("captured stderr"),
+        ));
+    }
+
+    /// Waits for one complete native receipt without consuming final diagnostics.
+    pub(super) fn wait_stderr_line(
+        &mut self,
+        prefix: &str,
+        after: usize,
+        deadline: Instant,
+    ) -> (String, usize) {
+        let pipe = self
+            .live_stderr
+            .as_ref()
+            .expect("start live stderr before stimulus");
+        loop {
+            if let Some(line) = pipe_line_after(pipe, prefix, after) {
+                return line;
+            }
+            assert!(
+                self.host.try_wait().expect("live host state").is_none(),
+                "host exited before {prefix}: {}",
+                pipe_text_by(pipe, Instant::now())
+            );
+            assert!(
+                Instant::now() < deadline,
+                "missing native receipt {prefix}: {}",
+                pipe_text_by(pipe, Instant::now())
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Reads already-captured complete lines without waiting or consuming diagnostics.
+    pub(super) fn stderr_line_if_present(
+        &self,
+        prefix: &str,
+        after: usize,
+    ) -> Option<(String, usize)> {
+        pipe_line_after(
+            self.live_stderr.as_ref().expect("live stderr owner"),
+            prefix,
+            after,
+        )
     }
 
     /// The host is still the process that ran the first session: same creation time,
@@ -187,12 +252,20 @@ impl SeamedHost {
             .expect("captured host stdout")
             .read_to_string(&mut stdout)
             .expect("read host stdout");
-        self.host
-            .stderr
-            .take()
-            .expect("captured host stderr")
-            .read_to_string(&mut stderr)
-            .expect("read host stderr");
+        if let Some(captured) = self.live_stderr.take() {
+            stderr = pipe_text_by(&captured, Instant::now() + PIPE_DRAIN_KILL_SWITCH);
+            assert!(
+                !stderr.contains("<pipe still open") && !stderr.contains("<pipe read failed"),
+                "native stderr capture did not complete: {stderr}"
+            );
+        } else {
+            self.host
+                .stderr
+                .take()
+                .expect("captured host stderr")
+                .read_to_string(&mut stderr)
+                .expect("read host stderr");
+        }
         (status, stdout, stderr)
     }
 }
@@ -209,7 +282,10 @@ impl Drop for SeamedHost {
     fn drop(&mut self) {
         if matches!(self.host.try_wait(), Ok(None)) {
             let stdout = self.host.stdout.take().map(read_pipe_on_thread);
-            let stderr = self.host.stderr.take().map(read_pipe_on_thread);
+            let stderr = self
+                .live_stderr
+                .take()
+                .or_else(|| self.host.stderr.take().map(read_pipe_on_thread));
             // The child handle keeps the PID from reuse until the wait below.
             let tree_kill = bounded_output(
                 Command::new("taskkill.exe").args(["/PID", &self.pid.to_string(), "/T", "/F"]),

@@ -629,6 +629,12 @@ pub(crate) enum RevocationCause {
 
 /// Host-owned authority that is invalidated with one prepared child attempt.
 pub(crate) trait GenerationLease: Send + 'static {
+    /// Binds the retained process before `Spawned`, admission, or capture publication.
+    /// An error uses this supervisor's existing revoke/kill/reap path.
+    fn bind_child(&mut self, _child: &Child) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Records that the prepared child became observable to the supervisor.
     fn child_spawned(&mut self, _pid: u32, _attempt: u32) -> Result<(), RuntimeError> {
         Ok(())
@@ -1348,7 +1354,10 @@ fn supervise<P>(
     let mut attempt: u32 = 1;
     loop {
         let pid = child.id();
-        if let Err(error) = lease.child_spawned(pid, attempt) {
+        if let Err(error) = lease
+            .bind_child(&child)
+            .and_then(|()| lease.child_spawned(pid, attempt))
+        {
             let terminal =
                 match lease.revoke_with_child(RevocationCause::AdmissionFailed, &mut child) {
                     Ok(()) => error,
