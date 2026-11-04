@@ -487,7 +487,9 @@ test("GitHub mergeability never resolves: no fabricated PASS and job reports inc
   expect(s.getReads()).toBe(5); // 2 proof reads + 3 bounded readiness attempts
   expect(s.statuses).toHaveLength(0);
   expect(s.failures).toHaveLength(1);
-  expect(s.warnings.join(" ")).toContain("mergeability pending");
+  expect(s.warnings).toContain(
+    "VeriSentry check not issued on PR #345: mergeability computation timed out",
+  );
 });
 
 test("a genuinely unmergeable PR is skipped without a misleading merge-SHA check", async () => {
@@ -559,7 +561,9 @@ test("a transient 403 Compare Commits outage must NOT poison an otherwise benign
   expect(outage.getCompareReads()).toBe(1);
   expect(outage.statuses).toHaveLength(0);
   expect(outage.failures).toHaveLength(1);
-  expect(outage.warnings.join(" ")).toContain("mergeability pending");
+  expect(outage.warnings).toContain(
+    "VeriSentry check not issued on PR #345: admission proof unavailable (GitHub compare HTTP 403)",
+  );
   const recovered = scenario();
   await expect(recovered.run()).resolves.toBeUndefined();
   expect(recovered.statuses).toHaveLength(1);
@@ -764,4 +768,15 @@ test("cross-batch duplicate parent commits are denied even if other PR list merg
     ),
   ).toBe(false);
   expect(s.statuses.length).toBeGreaterThan(0);
+});
+
+test("PR GET outage reports unavailable admission evidence rather than pending mergeability", async () => {
+  const s = scenario({ failedGet: true });
+  await expect(s.run()).resolves.toBeUndefined();
+  expect(s.getCompareReads()).toBe(0);
+  expect(s.statuses).toHaveLength(0);
+  expect(s.failures).toHaveLength(1);
+  expect(s.warnings).toContain(
+    "VeriSentry check not issued on PR #345: admission proof unavailable (PR GET API unavailable)",
+  );
 });

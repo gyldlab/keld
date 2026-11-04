@@ -100,7 +100,9 @@ re-fetches the same PR up to three times (maximum 1.5 seconds explicit
 wait) without inventing a source-head PASS.
 Unresolved mergeability or missing Compare Commits evidence remains an error
 for retry, never a sticky App FAIL against a benign PR. A prior App FAIL is **not silently upgraded** to PASS by a periodic
-refresh; a fresh PR event or authorized review is required. Every new check
+refresh; re-evaluation requires a fresh configured `pull_request_target`
+event, such as `synchronize`, `edited` or `reopened`. Reviews do not
+trigger re-evaluation. Every new check
 is verified as App ID 5550363 on the current test-merge SHA.
 
 The first trusted-source dry-run over **56 open `main`-targeting PRs** on
@@ -227,6 +229,6 @@ PR text, logs or caches. Retirement does not relax credential handling.
 - [GitHub seven-day required-check freshness and test-merge precedence](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
 - [GitHub scheduled default-branch workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 - [GitHub protected-main push workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push)
-- [Trusted `pull_request_target` source semantics](https://docs.github.com/en/actions/reference/security/securely-using_pull_request_target)
+- [Trusted `pull_request_target` source semantics](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
 - [App installation token inputs](https://github.com/actions/create-github-app-token/blob/main/README.md)
 - [GitHub Actions concurrency behavior and cancellation risks](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
