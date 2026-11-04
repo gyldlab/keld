@@ -1,8 +1,8 @@
 //! Windows backend: `WebView2` via direct windows-rs COM bindings (KEL-65).
 //!
-//! This is the `docs/architecture/05-webview-and-native.md` §1 destination for
-//! the create path — environment, controller, permission handler, and
-//! navigation are Keld-owned COM calls through `webview2-com` — with tao still
+//! This is the `docs/architecture/05-webview-and-native.md` Â§1 destination for
+//! the create path â€” environment, controller, permission handler, and
+//! navigation are Keld-owned COM calls through `webview2-com` â€” with tao still
 //! providing the window and event loop until keld-core owns the command queue.
 //! wry remains the interim scaffolding on macOS only; Windows no longer links
 //! it. Layout still mirrors wry's `competitors/wry/src/webview2/` per-platform
@@ -11,15 +11,15 @@
 //! Why direct COM instead of wry's `InnerWebView` (measured under KEL-65):
 //! wry 0.56.1 unconditionally injects its `window.ipc` bridge script through
 //! a **blocking** cross-process `AddScriptToExecuteOnDocumentCreated`
-//! round-trip against a renderer that is still booting — 96–109 ms for a bridge
+//! round-trip against a renderer that is still booting â€” 96â€“109 ms for a bridge
 //! Keld never uses (kipc has its own transport design). Owning the environment
 //! also drops wry's default `AdditionalBrowserArguments`, which disabled
 //! `SmartScreen` (KEL-66), and makes the KEL-62 initial-bounds fix structural:
 //! the controller gets its size before the first navigation, so Chromium never
 //! composites a zero-sized surface.
 //!
-//! Ordering contract inside `create`: **guard permission handler → devtools
-//! policy → bounds + visibility → navigate**. Content must never run before
+//! Ordering contract inside `create`: **guard permission handler â†’ devtools
+//! policy â†’ bounds + visibility â†’ navigate**. Content must never run before
 //! the `keld-guard` handler is registered (crate `AGENTS.md`), which the
 //! compiler enforces: `navigate_initial` demands the `GuardInstalled` proof
 //! only `install_guarded_media_permissions` can mint.
@@ -33,11 +33,11 @@
 // contract is a single-threaded apartment: the environment, controller, and
 // webview are created on the shipping process main thread (tao's event-loop thread);
 // the ignored media-acceptance libtest uses one dedicated Windows UI thread,
-// and every later use — resize, navigate, eval, devtools, drop — happens on
+// and every later use â€” resize, navigate, eval, devtools, drop â€” happens on
 // that same thread inside engine methods or tao's event loop, satisfying both
 // the COM contract and the crate `AGENTS.md` "UI-thread-only mutations"
 // invariant. Async completions are delivered by `webview2_com::wait_with_pump`,
-// which pumps this thread's message queue — the documented WebView2 callback
+// which pumps this thread's message queue â€” the documented WebView2 callback
 // mechanism (learn.microsoft.com, "Threading model for WebView2 apps").
 // `GetAvailableCoreWebView2BrowserVersionString` is a pure query whose
 // COM-allocated out-string is released exactly once with `CoTaskMemFree`.
@@ -205,7 +205,7 @@ pub fn runtime_version() -> Result<String, WvError> {
 /// it once across both. [`WEBVIEW2_STARTUP_BOUND`] composes those arms.
 ///
 /// Measured on Windows 11 10.0.26300 with runtime 154.x (KEL-132 diagnosis):
-/// environment creation 2–10 ms, controller creation 260–506 ms; hosted CI
+/// environment creation 2â€“10 ms, controller creation 260â€“506 ms; hosted CI
 /// never failed this phase in 165 recorded runs (2026-10-03 to 2026-10-08).
 /// It bounds a hung launch only. Browser shutdown is never charged to it.
 const PROFILE_LAUNCH_DEADLINE: Duration = Duration::from_secs(15);
@@ -1443,9 +1443,9 @@ fn dacl_has_untrusted_access(dacl: &Acl, current_user_sid: &str) -> bool {
 ///
 /// Options are Keld-owned and deliberately the `webview2-com` defaults, which
 /// means **empty** `AdditionalBrowserArguments`: wry's default disabled
-/// `SmartScreen` via `--disable-features=…,msSmartScreenProtection` (KEL-66),
-/// and Keld does not inherit that. Environment creation is cheap (3–6 ms
-/// measured) — it only resolves the runtime; the browser process launches at
+/// `SmartScreen` via `--disable-features=â€¦,msSmartScreenProtection` (KEL-66),
+/// and Keld does not inherit that. Environment creation is cheap (3â€“6 ms
+/// measured) â€” it only resolves the runtime; the browser process launches at
 /// first controller creation (`learn.microsoft.com`, `WebView2` process
 /// model).
 fn create_environment_for_profile(
@@ -1558,6 +1558,17 @@ impl ProfileReleaseFault {
     }
 }
 
+/// The existing observer's attribution decision, independently tested from its pump.
+fn browser_exit_is_relevant(expected: u32, pid: u32, normal: bool, site: ReleaseSite) -> bool {
+    match site {
+        // A normal receipt still needs the current PID. An abnormal environment
+        // event is a fault even when it belongs to an older browser instance.
+        // https://learn.microsoft.com/microsoft-edge/webview2/concepts/process-related-events
+        ReleaseSite::Host => !normal || matching_browser_exit(expected, pid, true),
+        ReleaseSite::Probe => expected != 0 && expected == pid,
+    }
+}
+
 fn observe_profile_browser_exit(
     environment: &ICoreWebView2Environment,
     expected_pid: Arc<AtomicU32>,
@@ -1586,7 +1597,7 @@ fn observe_profile_browser_exit(
         if media_acceptance::swallow_browser_exit(site) {
             return Ok(());
         }
-        if matching_browser_exit(expected, pid, normal) || (expected != 0 && expected == pid) {
+        if browser_exit_is_relevant(expected, pid, normal, site) {
             let result = if normal {
                 Ok(())
             } else {
@@ -1597,6 +1608,10 @@ fn observe_profile_browser_exit(
             };
             tx.send(result)
                 .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
+            #[cfg(all(feature = "media-acceptance", test))]
+            media_acceptance::release_receipt_control::after_native_receipt(
+                &tx, pid, expected, normal, site,
+            )?;
             if let Some(wake) = wake.as_ref() {
                 wake.send_event(WindowsLoopEvent::ProfileReleaseWake)
                     .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
@@ -1670,7 +1685,7 @@ fn environment_creation_error(phase: &'static str, error: &windows::core::Error)
 
 /// Creates the controller that hosts one webview inside `hwnd`.
 ///
-/// This is where the runtime processes actually launch — 313–506 ms measured,
+/// This is where the runtime processes actually launch â€” 313â€“506 ms measured,
 /// and per Microsoft "the bulk of starting a `WebView2` control"
 /// (`WebView2Feedback` #1536). Everything Keld controls happens around it, not
 /// inside it.
@@ -2549,7 +2564,7 @@ struct ProfileReleaseWait {
     normal_exit_observed_at: Cell<Option<Instant>>,
     fault: Cell<Option<ProfileReleaseFault>>,
     post_exit_deadline: Cell<Option<Instant>>,
-    /// The KEL-53 §7 h9 fault fixture: a drained release event is lost instead
+    /// The KEL-53 Â§7 h9 fault fixture: a drained release event is lost instead
     /// of proving release, so the exited browser faults at the post-exit grace
     /// as if `WebView2` never raised the event.
     #[cfg(feature = "profile-test-hooks")]
@@ -2565,7 +2580,7 @@ pub const TEST_STALL_BEFORE_INIT_ENV: &str = "KELD_T1B_STALL_BEFORE_INIT";
 
 /// `KELD_TEST_WINDOWS_BARRIER_GRACE_EXPIRY=1` makes the host site's barrier lose
 /// its `BrowserProcessExited` event under a 1 s post-exit grace, so the handover's
-/// UI end fails typed with `GraceExpired` (KEL-53 §7 "8, 20 (profile handover)",
+/// UI end fails typed with `GraceExpired` (KEL-53 Â§7 "8, 20 (profile handover)",
 /// cell h9). A deterministic fault fixture of the `profile-test-hooks` class,
 /// never in a release build; `keld-core` removes it from the Bun child's
 /// environment through this name.
@@ -2665,43 +2680,56 @@ impl ProfileReleaseWait {
     }
 
     fn poll(&self) {
-        if self.observed.get() || self.fault.get().is_some() {
+        // Normal credit is not terminal: another already-delivered failure can
+        // invalidate release. Only a latched fault prevents further processing.
+        if self.fault.get().is_some() {
             return;
         }
         let Some(receiver) = self.receiver.as_ref() else {
-            self.observed.set(true);
-            self.normal_exit_observed_at.set(Some(Instant::now()));
+            if !self.observed.replace(true) {
+                self.normal_exit_observed_at.set(Some(Instant::now()));
+            }
             return;
         };
         #[cfg(feature = "profile-test-hooks")]
         let withhold_release_event = self.withhold_release_event;
         #[cfg(not(feature = "profile-test-hooks"))]
         let withhold_release_event = false;
-        // The barrier observable is drained first: a queued event is proof of
-        // release whatever the process handle or the grace say.
-        match receiver.try_recv() {
-            Ok(Ok(())) if withhold_release_event => {
-                // The h9 fault fixture: the event is consumed and lost, and the
-                // exited browser is judged by the grace alone below.
-            }
-            Ok(Ok(())) => {
-                self.observed.set(true);
-                self.normal_exit_observed_at.set(Some(Instant::now()));
-                #[cfg(all(feature = "media-acceptance", test))]
-                if let Some(armed_at) = self.armed_at.get() {
-                    media_acceptance::observe_barrier_released(self.site, armed_at.elapsed());
+        // Drain all available native receipts before deciding exit. A normal
+        // event cannot hide a following abnormal event or restart its grace.
+        loop {
+            match receiver.try_recv() {
+                Ok(Ok(())) if withhold_release_event => {}
+                Ok(Ok(())) => {
+                    if !self.observed.replace(true) {
+                        self.normal_exit_observed_at.set(Some(Instant::now()));
+                        #[cfg(all(feature = "media-acceptance", test))]
+                        if let Some(armed_at) = self.armed_at.get() {
+                            media_acceptance::observe_barrier_released(
+                                self.site,
+                                armed_at.elapsed(),
+                            );
+                        }
+                    }
                 }
-                return;
+                Ok(Err(_)) => {
+                    self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    // Once a matching normal receipt was delivered, closure of
+                    // its producer does not erase that fact. Without credit it
+                    // remains the existing fail-closed ObserverDropped outcome.
+                    if !self.observed.get() {
+                        self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
+                    }
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
             }
-            Ok(Err(_)) => {
-                self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
-                return;
-            }
-            Err(TryRecvError::Disconnected) => {
-                self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
-                return;
-            }
-            Err(TryRecvError::Empty) => {}
+        }
+        if self.observed.get() {
+            return;
         }
         let Some(armed_at) = self.armed_at.get() else {
             return;
@@ -2730,6 +2758,24 @@ impl ProfileReleaseWait {
         {
             self.fault.set(Some(ProfileReleaseFault::GraceExpired));
         }
+    }
+
+    /// Apply one receipt decision to the existing Host/hello close owner. Every
+    /// loop poll uses this path so a preterminal fault cannot leave Running or
+    /// wait forever for a later user command. Probe callers retain plain `poll()`.
+    fn poll_host_receipts(
+        &self,
+        views: &mut BTreeMap<u32, View>,
+        stop: Option<&PersistentStopTransition>,
+    ) -> bool {
+        self.poll();
+        if self.fault().is_none() {
+            return false;
+        }
+        commit_profile_stop(stop);
+        views.clear();
+        self.arm();
+        true
     }
 
     /// The next instant the barrier must be re-judged: the post-exit grace
@@ -2807,14 +2853,14 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait) -> Result<(), WvError> {
     release.arm();
     loop {
         release.poll();
-        if release.observed.get() {
-            return Ok(());
-        }
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 fault.context(release.site),
             ));
+        }
+        if release.observed.get() {
+            return Ok(());
         }
         let Some(deadline) = release.next_deadline() else {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
@@ -2964,8 +3010,8 @@ impl WebView2Engine {
     /// `EventLoopBuilder::build`, only the main thread
     /// (`platform_impl/windows/event_loop.rs`); it parks one wait thread per
     /// built loop. The per-monitor DPI policy is a process fact and is accepted
-    /// again. A host runs consecutive application sessions this way (KEL-53 §4
-    /// "Profile handover", *Rollback and restore*; the §7 two-sessions cell).
+    /// again. A host runs consecutive application sessions this way (KEL-53 Â§4
+    /// "Profile handover", *Rollback and restore*; the Â§7 two-sessions cell).
     ///
     /// # Errors
     ///
@@ -3113,13 +3159,13 @@ impl WebView2Engine {
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             *control_flow = ControlFlow::Wait;
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
             match event {
-                // Keld drives the controller size itself — there is no wry
+                // Keld drives the controller size itself â€” there is no wry
                 // WM_SIZE subclass anymore, and tao already delivers resizes
                 // (DPI changes arrive as a scale-factor event followed by this
                 // same `Resized`). Movement and active-focus use that same owner.
@@ -3141,7 +3187,7 @@ impl WebView2Engine {
                 } => {
                     // v0 hello is one window. Drop by id so a second window
                     // would not tear down every view; exit when the map is
-                    // empty. On Windows, closing the last window quits — the
+                    // empty. On Windows, closing the last window quits â€” the
                     // platform convention, and what KEL-57 V1-10 will assert.
                     exit_requested = close_requested_view(
                         &mut views,
@@ -3163,7 +3209,7 @@ impl WebView2Engine {
                     control_flow,
                 );
             }
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
             } else {
@@ -3392,10 +3438,7 @@ impl WebView2Engine {
                 exit_requested = true;
                 release_in_loop.arm();
             }
-            release_in_loop.poll();
-            if release_in_loop.fault().is_some() {
-                exit_requested = true;
-            }
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
                 return;
@@ -3506,7 +3549,7 @@ impl WebView2Engine {
                     control_flow,
                 );
             }
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
             } else {
@@ -3694,7 +3737,7 @@ impl WebEngine for WebView2Engine {
                 spec.size.width,
                 spec.size.height,
             ))
-            // KEL-25/KEL-27: standard Windows caption — minimize, maximize, close.
+            // KEL-25/KEL-27: standard Windows caption â€” minimize, maximize, close.
             .with_resizable(true)
             .with_minimizable(true)
             .with_closable(true)
@@ -3722,7 +3765,7 @@ impl WebEngine for WebView2Engine {
         self.mark_profile_running()?;
 
         // Guard before content: nothing may load until default-deny is wired.
-        // Empty manifest → deny everything (KEL-59). KEL-73: mint the webview
+        // Empty manifest â†’ deny everything (KEL-59). KEL-73: mint the webview
         // id first so capture cannot inherit AppProcess grants.
         let id = self.next_id;
         #[cfg(not(all(feature = "media-acceptance", test)))]
@@ -3747,7 +3790,7 @@ impl WebEngine for WebView2Engine {
         devtools.map_err(|err| WvError::Webview(format!("devtools setting: {err}")))?;
 
         // KEL-62: bounds before navigation. WebView2 starts with a zero-sized
-        // controller, and Chromium does not composite a zero-sized surface —
+        // controller, and Chromium does not composite a zero-sized surface â€”
         // measured as ~640 ms of dead time when the size arrived only from a
         // later window event. This is create-time wiring, so a failure here is
         // a real error, unlike the best-effort live resizes.
@@ -3835,12 +3878,12 @@ impl WebEngine for WebView2Engine {
 
     fn set_bounds(&mut self, id: WebviewId, rect: Rect) -> Result<(), WvError> {
         let view = self.view(id)?;
-        // v0 webviews fill their host window, so bounds apply to the window…
+        // v0 webviews fill their host window, so bounds apply to the windowâ€¦
         view.window
             .set_outer_position(tao::dpi::LogicalPosition::new(rect.x, rect.y));
         view.window
             .set_inner_size(tao::dpi::LogicalSize::new(rect.width, rect.height));
-        // …and the controller follows immediately. Before the run loop starts
+        // â€¦and the controller follows immediately. Before the run loop starts
         // no resize event fires, so waiting for one would leave a stale
         // controller size; `inner_size` reads back what the move actually
         // produced (the OS may clamp).
@@ -3911,6 +3954,7 @@ mod tests {
 
     mod exit_wait_pump;
     mod profile_lifecycle;
+    mod release_receipts;
 
     /// The teardown bound charges the post-release scavenge one full probe (launch
     /// plus release barrier) per leaf it may try, on top of the session's own UI
@@ -4300,7 +4344,7 @@ mod tests {
         handle
     }
 
-    /// The KEL-53 §7 h9 fault fixture: with the release event withheld, a queued
+    /// The KEL-53 Â§7 h9 fault fixture: with the release event withheld, a queued
     /// event no longer proves release and the exited browser faults at the
     /// (zero) grace; the same queued event without the fixture is observed at
     /// the arming poll and nothing faults (the negative control).
@@ -4694,7 +4738,7 @@ mod tests {
 
     /// Keeps the engine type named from the test module so a rename fails the
     /// build here rather than silently orphaning these tests. Constructing one
-    /// needs a tao `EventLoop`, which must be built on the process main thread —
+    /// needs a tao `EventLoop`, which must be built on the process main thread â€”
     /// the harness gives each test its own thread, so the engine itself is
     /// exercised by the GUI pass in KEL-27, not here.
     fn _assert_engine_type(_: Option<&WebView2Engine>) {}
