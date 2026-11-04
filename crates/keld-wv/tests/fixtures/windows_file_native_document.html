@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>W3 native observation fixture</title>
+<body>
+<script>
+  // Owned probe data, never an application identity or an authorization token.
+  const fixtureNonce = "__FIXTURE_NONCE__";
+  window.__w3Fixture = { nonce: fixtureNonce, href: location.href, frames: [] };
+  if (self === top) {
+    let frameReady;
+    window.__w3FrameReady = new Promise((resolve) => { frameReady = resolve; });
+    addEventListener("message", (event) => {
+      const frame = document.getElementById("w3-owned-frame");
+      if (frame && event.source === frame.contentWindow &&
+          event.data && event.data.kind === "w3-owned-frame-ready") {
+        window.__w3Fixture.frames.push(event.data);
+        frameReady();
+      }
+    });
+  } else {
+    parent.postMessage({
+      kind: "w3-owned-frame-ready", nonce: fixtureNonce, href: location.href
+    }, "*");
+  }
+</script>
