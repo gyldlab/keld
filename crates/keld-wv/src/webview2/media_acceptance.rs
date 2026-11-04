@@ -1213,12 +1213,9 @@ mod tests {
             COM_BROWSER_LOG.with_borrow_mut(|path| {
                 *path = Some(plan.user_data_dir.join("chrome_debug.log"));
             });
-            // SAFETY: unpublished test options; logging changes no guard or sandbox.
-            // https://learn.microsoft.com/microsoft-edge/webview2/concepts/webview-features-flags
-            // https://www.chromium.org/for-testers/enable-logging/
-            unsafe {
-                options.set_additional_browser_arguments("--enable-logging --v=1".to_owned());
-            };
+            // Preserve production-default browser options in the acceptance case.
+            // A runtime may emit a diagnostic log on failure; reading it is optional
+            // evidence and never a prerequisite for success or permission admission.
         }
         profile_fixture_engine_with_options(root, selection, options)
     }
