@@ -3144,6 +3144,43 @@ fn a_structure_cell_only_narrows() {
     assert!(Structure::Exempt.loosens(&Structure::Conforms));
 }
 
+// Both native-link tests use this prerequisite policy; their security oracles stay separate.
+fn native_symlink_created(created: std::io::Result<()>) -> bool {
+    // ERROR_PRIVILEGE_NOT_HELD is the one environmental prerequisite, not an
+    // arbitrary Windows filesystem error. The Git-index control always runs.
+    // https://learn.microsoft.com/windows/win32/debug/system-error-codes--1300-1699-
+    match created {
+        Ok(()) => true,
+        Err(error) if cfg!(windows) && error.raw_os_error() == Some(1314) => {
+            eprintln!("native symlink arm not exercised: missing Windows privilege ({error})");
+            false
+        }
+        Err(error) => panic!("native symlink prerequisite failed: {error}"),
+    }
+}
+
+#[test]
+fn only_missing_windows_symlink_privilege_is_unexercised() {
+    assert!(native_symlink_created(Ok(())));
+    let missing_privilege = std::panic::catch_unwind(|| {
+        native_symlink_created(Err(std::io::Error::from_raw_os_error(1314)))
+    });
+    if cfg!(windows) {
+        assert!(!missing_privilege.expect("missing Windows privilege is a reported prerequisite"));
+    } else {
+        assert!(missing_privilege.is_err(), "Unix creation errors must fail");
+    }
+    for code in [2, 3, 5, 87, 183] {
+        assert!(
+            std::panic::catch_unwind(|| {
+                native_symlink_created(Err(std::io::Error::from_raw_os_error(code)))
+            })
+            .is_err(),
+            "unrelated creation failure {code} must not hide a fixture defect"
+        );
+    }
+}
+
 /// Same-source controls: a direct code link is RED, a real in-lane file stays GREEN, and a
 /// real symlink is RED without the index's help.
 #[test]
@@ -3170,14 +3207,9 @@ fn a_real_symlink_cannot_carry_a_link_out_of_the_lane() {
     fixture.write("crates/x/src/lib.rs", "line\n");
     fs::create_dir_all(fixture.root.join("docs")).expect("fixture dir");
     let target = fixture.root.join("crates/x/src/lib.rs");
-    match link(&target, &fixture.root.join("docs/alias.md")) {
-        // Creating a symlink is a privilege on Windows; hosted Linux always proves this arm.
-        Err(error) if cfg!(windows) => eprintln!("symlink arm not exercised: {error}"),
-        created => {
-            created.expect("fixture symlink");
-            link_from_design(&fixture, "../../alias.md");
-            assert_only(&fixture, Rule::LinkCode, "symlink alias");
-        }
+    if native_symlink_created(link(&target, &fixture.root.join("docs/alias.md"))) {
+        link_from_design(&fixture, "../../alias.md");
+        assert_only(&fixture, Rule::LinkCode, "symlink alias");
     }
 }
 
@@ -5562,7 +5594,9 @@ fn outside_census_refuses_real_symlinks_and_linked_ancestors() {
         } else {
             "safe-target/note.md"
         });
-        link(&target, &alias, directory).expect("native symlink prerequisite must be exercised");
+        if !native_symlink_created(link(&target, &alias, directory)) {
+            continue;
+        }
         let rel = if directory {
             "docs/census-real-alias.md/note.md"
         } else {
