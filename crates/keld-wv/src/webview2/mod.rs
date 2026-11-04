@@ -571,7 +571,10 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
     // SAFETY: `message` is writable and each removed message is translated
     // and dispatched once on its owning thread. Contract:
     // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
-    if unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+    let posted = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool();
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::observe_com_pump(wait == WAIT_TIMEOUT, posted);
+    if posted {
         if message.message == WM_QUIT {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -602,6 +605,8 @@ fn wait_for_launch_with_message_pump_until<T>(
 ) -> Result<T, WvError> {
     loop {
         if Instant::now() >= deadline {
+            #[cfg(all(feature = "media-acceptance", test))]
+            media_acceptance::observe_com_phase("launch-deadline-expired");
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 LAUNCH_DEADLINE_EXPIRED,
@@ -1718,6 +1723,8 @@ fn create_controller_observed_until(
     deadline: Instant,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
     let (tx, rx) = mpsc::channel();
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::observe_com_phase("controller-call-enter");
 
     // SAFETY: `environment` was created on this thread (STA) and `hwnd` is a
     // live tao window owned by the caller for the duration of the call. The
@@ -1727,6 +1734,8 @@ fn create_controller_observed_until(
             hwnd,
             &CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
                 move |result, controller| {
+                    #[cfg(all(feature = "media-acceptance", test))]
+                    media_acceptance::observe_com_phase("controller-callback-enter");
                     let controller =
                         result.and(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
                     tx.send(controller)
@@ -1735,6 +1744,8 @@ fn create_controller_observed_until(
             )),
         )
     };
+    #[cfg(all(feature = "media-acceptance", test))]
+    media_acceptance::observe_com_phase("controller-call-returned");
     launched.map_err(ControllerCreationError::Windows)?;
     wait_for_launch_with_message_pump_until(&rx, deadline)
         .map_err(ControllerCreationError::Pump)?
