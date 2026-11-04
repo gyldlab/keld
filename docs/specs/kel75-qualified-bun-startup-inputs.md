@@ -1,6 +1,6 @@
 # Spec: qualified Bun startup selection for the macOS development primary
 Status: draft
-Linear: KEL-75 · Owner: GYLDLAB / @0monish · Updated: 2026-11-01
+Linear: KEL-75 · Owner: GYLDLAB / @0monish · Updated: 2026-11-04
 
 This is a separate proposed amendment to the approved KEL-75 contract. It does
 not amend that approved file by implication. The bounded T1 contract in §4 can
@@ -243,14 +243,18 @@ runtime upgrade is proposed.
     fails before any app or foreign sentinel prints, while the healthy captured
     stage, including its captured root `package.json`, starts. No ancestor of
     the stage root is the project root or lies inside it.
-11. **Graph digest carrier (D2).** Given a Host that validated a schema-3
-    `keld.boot.json` with `graph: {file, content_sha256}`: when the Guardian is
+11. **Graph digest carrier (D2).** Given a Host that validated the
+    KEL-96-allocated graph schema of `keld.boot.json` with
+    `graph: {file, content_sha256}`: when the Guardian is
     launched with a well-formed but different digest, or a bound graph file
     changes after Host validation, the Guardian refuses with the typed error
     naming the graph-digest input class before the first Bun command is
     constructed; when a bound file changes between G1 and G2, G2's preparation
     refuses through the existing failed-preparation lease path. The unchanged
-    control starts and restarts normally.
+    control starts and restarts normally. The composed producer/parser preserves
+    legacy renderer/facade schemas 1/2 and declared-profile renderer/facade schemas
+    3/4. Graph-bearing input relabeled as any of those versions refuses before
+    Bun executes, without discarding `graph` or downgrading profile admission.
 
 ## 4. Design
 
@@ -402,8 +406,15 @@ Host and Guardian are different processes running the same binary; a Rust value
 in the Host is not available in the Guardian. The carrier reuses one existing
 pattern per hop.
 
-1. **CLI → Host.** A new boot-descriptor schema version (3; schemas 1 and 2
-   exist) adds a closed `graph: {file, content_sha256}` object that mirrors
+1. **CLI → Host.** KEL-96 must allocate the explicit graph-descriptor version
+   after composing KEL-78 profile admission. Schemas 1/2 retain legacy
+   renderer/facade semantics; KEL-78 assigns 3/4 to renderer/facade boots with
+   an explicit profile. None of 1/2/3/4 may be reused for graph admission.
+   This draft allocates no number and does not approve or implement a carrier.
+   Before T3, the descriptor owner must record the unused version and its exact
+   boot-kind/profile grammar, then update the producer, closed parser, private
+   carrier documentation and compatibility tests together. The graph version
+   adds a closed `graph: {file, content_sha256}` object that mirrors
    `permissions` (`boot_contract.rs:41–50,140–149`): a fixed literal file name,
    a `sha256:` digest of 64 lowercase hexadecimal digits, and
    `deny_unknown_fields` retained. Producer: `stage_dev_boot`. Parser: the
@@ -607,7 +618,7 @@ as a waiver (GH497 line 79). An installed foreign package remains GH499/R07
 rejection, not auto-install hardening.
 
 Capabilities/manifest: none. Public kipc, principal and grants: unchanged. The
-private boot-descriptor schema-3 `graph` field and the v2 Guardian marker (D2)
+private boot-descriptor `graph` field under the KEL-96-allocated graph schema and the v2 Guardian marker (D2)
 are KEL-96 private carrier changes under its wire/schema gate (§8). Browser
 preload/origin and OS containment are unchanged. Windows/Linux keep existing
 behavior and are explicitly unqualified.
@@ -753,7 +764,7 @@ After approval, the implementation stays inside existing owners and files:
   `macos_guardian/supervision_runner.rs` (`run_guarded_primary` one-shot
   selection).
 - `crates/keld-core/src/app_session.rs` (Guardian argv, Host graph open/hash)
-  and `app_session/boot_contract.rs` (schema 3 `graph`).
+  and `app_session/boot_contract.rs` (the owner-allocated graph schema).
 - `crates/keld-cli/src/boot.rs` `stage_dev_boot` (location, root `package.json`
   capture, graph leaf and descriptor field once GH499's check exists).
 
@@ -777,11 +788,14 @@ or the workspace dependency set. No new crate/helper framework is justified.
   test, then relocate the macOS stage out of the project tree, capture the
   root `package.json`, and update the Host/Guardian stage validators. Compose
   with GH1037's actual normal producer when that artifact exists.
-- [ ] T3 (GH499 + KEL-96 + KEL-75): once GH499's package-set check exists, land
-  the failing-first AC1 and AC11 tests, then write its staged leaf and add
-  descriptor schema 3 `graph`, the v2 Guardian marker, the one-shot Guardian
-  check and the per-generation recheck. Prove package refusal before
-  evaluation and a healthy sibling.
+- [ ] T3 (GH499 + KEL-96 + KEL-75): first compose KEL-78 profile admission
+  and obtain KEL-96's explicit unused graph-schema allocation and exact-text
+  approval. Once GH499's package-set check exists, land the failing-first AC1
+  and AC11 tests, including unchanged schema-1/2/3/4 semantics and refusal of
+  graph-bearing input relabeled as any of those versions. Then write its staged
+  leaf and add the allocated descriptor `graph` field, the v2 Guardian marker,
+  the one-shot Guardian check and the per-generation recheck. Prove package
+  refusal before evaluation and a healthy sibling.
 - [ ] T4: prove selected G1→G2 conservation, hostile ambient changes and fresh
   credential/revocation behavior through the existing Guardian/Supervisor.
   Do not create a new restart loop or infer other-OS/product acceptance.
@@ -803,7 +817,7 @@ land a regression test before the fix"). Rows marked otherwise state why.
 | 7 | Same Host/Guardian session G1→G2. After G1, add or change a package in the live project `node_modules` and change an ambient value; G2 evaluates neither and retains the exact selection, or refuses before its candidate marker. Separate fresh-link/old-token negative proves lifecycle; one pass does not prove the other. | Yes for the live-project change while the stage sits under the project (E3a). |
 | 8–9 | Typed error and bounded existing cleanup after failed preparation; the healthy hello project still starts after relocation. Assert unchanged policy/Guard results and honest unsupported OS/product labels; no retry/deadline relaxation. | No: the healthy project is the existing positive baseline and must stay green through T2. |
 | 10 | Project whose `node_modules/foo`, `tsconfig.json` `paths` shim and `package.json` `imports` target exist only in the live project; a staged entry imports each (three cases). After relocation each fails before its `PROJECT_*_EVALUATED` marker and the app sentinel, and the healthy captured stage starts. Control: the same fixture staged under `<project>/.keld/dev/<nonce>` prints the markers (E3; reproduced 2026-10-31). | Yes on the current `stage_dev_boot` location. |
-| 11 | (a) After Host validation, change one byte of the staged graph leaf before Guardian selection; (b) launch the Guardian with a well-formed wrong digest; (c) change one bound byte between G1 and G2. (a) and (b) refuse before the first Bun command with no candidate marker; (c) refuses in G2's `prepare` through the failed-preparation lease path. Each has an unchanged control that starts. The assertion names the graph-digest input class, so today's 7-argument parser rejecting an 8-argument call as malformed does not count as a pass. | Yes: no carrier exists. |
+| 11 | (a) After Host validation, change one byte of the staged graph leaf before Guardian selection; (b) launch the Guardian with a well-formed wrong digest; (c) change one bound byte between G1 and G2. (a) and (b) refuse before the first Bun command with no candidate marker; (c) refuses in G2's `prepare` through the failed-preparation lease path. Each has an unchanged control that starts. The composed producer/parser must also accept valid legacy renderer1/facade2 and declared-profile renderer3/facade4 inputs with unchanged semantics, accept graph-bearing input only under the owner-allocated graph version, and reject the same graph input relabeled 1/2/3/4 before Bun executes without profile downgrade. The assertion names the graph-digest input class, so today's 7-argument parser rejecting an 8-argument call as malformed does not count as a pass. | Yes: no carrier exists; numeric allocation and composed compatibility evidence remain prerequisites. |
 
 Use temporary resources already owned by the fixtures, observable milestones,
 one builder and real macOS for claimed runtime/OS results. Before each run,
@@ -830,7 +844,7 @@ implementation. None is claimed run by this draft.
   `guardian_stage_cleanup_root`); the loader-control deny-list is explicitly
   non-exhaustive; grants and OS containment remain unchanged and separately
   owned.
-- Wire protocol (private): the boot-descriptor schema-3 `graph` field and the
+- Wire protocol (private): the owner-allocated graph-descriptor `graph` field and the
   v2 Guardian marker with 8 arguments are KEL-96 private carrier/schema changes
   under its wire/schema review (KEL-96 lines 789–790 and 814–817). Public kipc
   wire: none.
@@ -883,6 +897,10 @@ amendment.
 2. **D2 — Host→Guardian carrier (KEL-96 + GH499).** Decided: CLI→Host carries
    a closed `graph: {file, content_sha256}` under a new descriptor schema
    version, mirroring `permissions`, and the Host hashes the bytes it opened.
+   Numeric allocation is NOT decided: KEL-96 must first compose KEL-78's
+   schema-1/2/3/4 contracts and allocate an unused version with an explicit
+   boot-kind/profile grammar. This remains a prerequisite to T3, not permission
+   to use schema 3 or to bypass profile admission.
    Host→Guardian adds one hex-digest argument under the v2 marker (8
    arguments). The Guardian checks the digest once after the authentication
    handshake and before `Supervisor::start_prepared`, and rechecks the bound

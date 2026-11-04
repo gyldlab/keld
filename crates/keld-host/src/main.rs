@@ -713,6 +713,45 @@ mod tests {
     }
 
     #[test]
+    fn guardian_rejects_linked_transport_paths_before_command_construction() {
+        use std::os::unix::fs::symlink;
+
+        let stage = tempfile::tempdir().expect("stage fixture");
+        let foreign = tempfile::tempdir().expect("foreign transport fixture");
+        let entry = stage.path().join("entry.ts");
+        fs::write(&entry, "console.log('ENTRY_RAN');\n").expect("entry fixture");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        let transport = foreign.path().join("kipc-transport.ts");
+        fs::write(&transport, "console.log('FOREIGN_PRELOAD');\n").expect("foreign transport");
+        let make_command = || {
+            guardian_bun_command(
+                &Ok(stage.path().to_path_buf()),
+                stage.path(),
+                std::path::Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                true,
+                &[],
+                "/tmp/link#token",
+            )
+        };
+        let src = stage.path().join("src");
+        fs::create_dir(&src).expect("real src directory");
+        let sidecar = src.join("kipc-transport.ts");
+        symlink(&transport, &sidecar).expect("linked sidecar");
+        let error = make_command().expect_err("linked sidecar must refuse");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        fs::remove_file(&sidecar).expect("remove fixture link");
+        fs::remove_dir(&src).expect("remove empty fixture directory");
+        symlink(foreign.path(), &src).expect("linked src directory");
+        let error = make_command().expect_err("linked src must refuse");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        fs::remove_file(&src).expect("remove fixture directory link");
+        fs::create_dir(&src).expect("restore real src directory");
+        fs::write(&sidecar, "export {};\n").expect("real transport positive");
+        make_command().expect("regular staged transport remains admitted");
+    }
+
+    #[test]
     fn guardian_freezes_mode_with_and_without_a_transport_sidecar() {
         let temp = tempfile::tempdir().expect("boot mode fixture");
         let entry = temp.path().join("entry.ts");
