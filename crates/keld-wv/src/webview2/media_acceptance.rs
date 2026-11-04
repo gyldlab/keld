@@ -1068,9 +1068,11 @@ fn serve_page_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::webview2::PROFILE_LAUNCH_DEADLINE;
 
     mod first_navigation;
     mod profile_release;
+    mod saved_permission_deadline;
 
     /// The renderer-boot loop of every fixture here: Ready is the navigation milestone,
     /// so loop entry arms no Init watch.
@@ -1252,7 +1254,10 @@ mod tests {
         origin: &str,
         expected: COREWEBVIEW2_PERMISSION_STATE,
     ) -> Result<(), WvError> {
-        let settings = super::super::profile_permission_settings(profile)?;
+        let settings = super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?;
         for kind in [
             COREWEBVIEW2_PERMISSION_KIND_CAMERA,
             COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
@@ -1273,18 +1278,19 @@ mod tests {
         profile: &super::super::ICoreWebView2Profile4,
         origin: &str,
     ) -> Result<(), WvError> {
-        if super::super::profile_permission_settings(profile)?
-            .iter()
-            .any(|setting| {
-                setting.origin == origin
-                    && matches!(
-                        setting.kind,
-                        COREWEBVIEW2_PERMISSION_KIND_CAMERA
-                            | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
-                    )
-                    && setting.state == COREWEBVIEW2_PERMISSION_STATE_ALLOW
-            })
-        {
+        if super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?
+        .iter()
+        .any(|setting| {
+            setting.origin == origin
+                && matches!(
+                    setting.kind,
+                    COREWEBVIEW2_PERMISSION_KIND_CAMERA | COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                )
+                && setting.state == COREWEBVIEW2_PERMISSION_STATE_ALLOW
+        }) {
             Err(failure("saved media Allow survived profile restart"))
         } else {
             Ok(())
@@ -1297,7 +1303,10 @@ mod tests {
         kind: COREWEBVIEW2_PERMISSION_KIND,
         expected: COREWEBVIEW2_PERMISSION_STATE,
     ) -> Result<(), WvError> {
-        let settings = super::super::profile_permission_settings(profile)?;
+        let settings = super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?;
         if settings.iter().any(|setting| {
             setting.kind == kind && setting.origin == origin && setting.state == expected
         }) {
@@ -1315,9 +1324,12 @@ mod tests {
         origin: &str,
         kind: COREWEBVIEW2_PERMISSION_KIND,
     ) -> Result<(), WvError> {
-        if super::super::profile_permission_settings(profile)?
-            .iter()
-            .any(|setting| setting.kind == kind && setting.origin == origin)
+        if super::super::profile_permission_settings(
+            profile,
+            Instant::now() + PROFILE_LAUNCH_DEADLINE,
+        )?
+        .iter()
+        .any(|setting| setting.kind == kind && setting.origin == origin)
         {
             Err(failure("control unexpectedly inherited a saved permission"))
         } else {
@@ -1469,6 +1481,25 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
         permission: super::super::SavedPermission,
     }
 
+    impl PreparedSavedGrant {
+        /// Restore and independently read back the native Allow used by the next
+        /// cross-process saved-grant control; both operations keep their own budget.
+        fn restore_allow(&self) -> Result<(), WvError> {
+            super::super::set_profile_permission_state(
+                &self.profile,
+                &self.permission,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
+            )?;
+            assert_saved_permission_state(
+                &self.profile,
+                &self.permission.origin,
+                self.permission.kind,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            )
+        }
+    }
+
     fn prepare_saved_grant_permission(
         engine: &WebView2Engine,
         view_id: crate::WebviewId,
@@ -1496,6 +1527,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 &profile,
                 &permission,
                 COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
             )?;
         }
         if let Some(expected) = expected {
@@ -1588,17 +1620,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
             )));
         }
         if case.phase == "deny" {
-            super::super::set_profile_permission_state(
-                &prepared.profile,
-                &prepared.permission,
-                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-            )?;
-            assert_saved_permission_state(
-                &prepared.profile,
-                &origin,
-                case.kind,
-                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
-            )?;
+            prepared.restore_allow()?;
         }
         println!(
             "KELD_PROFILE_SAVED_RESULT kind={} phase={} origin={origin} result={result}",
@@ -1867,6 +1889,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                         origin: origin.to_owned(),
                     },
                     COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                    Instant::now() + PROFILE_LAUNCH_DEADLINE,
                 )?;
             }
             assert_saved_media_state(&profile, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
@@ -1883,7 +1906,10 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                 profile_fixture_engine(&root, WebProfileSelection::Persistent(identity))?;
             let second = engine.create(&blank_spec())?;
             let reconciled = super::super::webview_profile(&engine.view(second)?.webview)?;
-            for setting in super::super::profile_permission_settings(&reconciled)? {
+            for setting in super::super::profile_permission_settings(
+                &reconciled,
+                Instant::now() + PROFILE_LAUNCH_DEADLINE,
+            )? {
                 println!(
                     "KELD_PROFILE_SAVED_MEDIA observed kind={} state={} origin={}",
                     setting.kind.0, setting.state.0, setting.origin
@@ -1904,6 +1930,7 @@ chrome.webview.postMessage('{nonce}:{phase}:'+prior+':resolved:{track}:'+matchin
                         origin: origin.to_owned(),
                     },
                     COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+                    Instant::now() + PROFILE_LAUNCH_DEADLINE,
                 )?;
             }
             assert_saved_media_state(&reconciled, origin, COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
