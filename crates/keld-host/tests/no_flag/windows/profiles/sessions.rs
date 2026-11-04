@@ -34,9 +34,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
-/// The debug-only S6c evidence trigger (the shape of `KELD_TEST_WINDOWS_LEASE_CENSUS`).
 mod capture_receipts;
 
+/// The debug-only S6c evidence trigger (the shape of `KELD_TEST_WINDOWS_LEASE_CENSUS`).
 const SECOND_SESSION_SEAM: &str = "KELD_TEST_WINDOWS_SECOND_SESSION";
 
 /// One observation of the persistent profile's lifecycle record, as the KEL-135
