@@ -1,9 +1,23 @@
 //! The dev-stage profile must outlive an independently observed non-family child.
 
-use super::*;
+use super::super::sessions::SeamedHost;
+use super::{ENVIRONMENT_DESCENDANT, HOLD, observe_environment_child, observe_loop_end};
+use crate::PRODUCT_DEADLINE;
 use crate::dev_stage_command;
+use crate::support::control::{accept_ready_generation, read_control_line};
+use crate::support::installed::fixture_env;
+use crate::support::process::{
+    assert_process_signaled, open_process_for_wait, terminate_test_process, wait_for_process_signal,
+};
+use crate::support::product::ProductFixture;
+use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
+use crate::support::window::{post_close, wait_for_host_window};
+use std::io::Write as _;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 
 #[test]
 #[ignore = "debug profile-hook Host and native D16 helper required"]

@@ -1,7 +1,18 @@
 //! The signed zero-window Host excludes every real Bun generation, not only the last.
 
-use super::*;
+use super::super::sessions::{LifecycleObservation, SeamedHost, read_lifecycle_record};
+use super::observe_loop_end;
 use crate::support::control::accept_ready_generation_with_descendant;
+use crate::support::control::read_control_line;
+use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
+use crate::support::process::{
+    assert_process_signaled, open_process_for_wait, process_tree_report, wait_for_process_signal,
+};
+use crate::support::product::ProductFixture;
+use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
+use std::io::Write as _;
+use std::net::TcpListener;
+use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 
 #[test]
 #[ignore = "signed profile-hook/root Host and installer required"]
