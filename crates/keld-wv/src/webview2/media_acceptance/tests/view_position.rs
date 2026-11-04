@@ -25,22 +25,87 @@ fn native_rect(hwnd: HWND) -> Result<[i32; 4], WvError> {
     unsafe { GetWindowRect(hwnd, &raw mut r) }.map_err(failure)?;
     Ok([r.left, r.top, r.right, r.bottom])
 }
-fn page_position(webview: &ICoreWebView2) -> Result<[i32; 2], WvError> {
+type PositionReply = mpsc::Receiver<Result<[i32; 2], WvError>>;
+
+fn request_page_position(webview: &ICoreWebView2) -> Result<PositionReply, WvError> {
     let (tx, rx) = mpsc::channel();
     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
-        let _ = tx.send(status.map(|()| value));
+        let result = status
+            .map_err(failure)
+            .and_then(|()| serde_json::from_str(&value).map_err(failure));
+        let _ = tx.send(result);
         Ok(())
     }));
-    // SAFETY: the same-thread live test view owns this callback; the channel result
-    // is independent browser JavaScript data, not the host's expected rectangle.
+    // SAFETY: the fixture owns this live UI-thread view. The completion owns its
+    // sender, not a borrowed output slot. Return to the normal pump after dispatch.
+    // https://learn.microsoft.com/microsoft-edge/webview2/concepts/threading-model
     unsafe { webview.ExecuteScript(&HSTRING::from("[window.screenX, window.screenY]"), &handler) }
         .map_err(failure)?;
-    let text = crate::webview2::wait_for_launch_with_message_pump_until(
-        &rx,
+    Ok(rx)
+}
+
+fn page_position(webview: &ICoreWebView2) -> Result<[i32; 2], WvError> {
+    // Only the initial observation is taken before entering the actual Tao loop.
+    crate::webview2::wait_for_launch_with_message_pump_until(
+        &request_page_position(webview)?,
         Instant::now() + Duration::from_secs(3),
     )?
-    .map_err(failure)?;
-    serde_json::from_str(&text).map_err(failure)
+}
+
+struct PositionSamples {
+    before: [i32; 2],
+    pending: Option<PositionReply>,
+    stale: u32,
+}
+
+impl PositionSamples {
+    fn new(before: [i32; 2]) -> Self {
+        // Deliberately deliver the actual pre-move observation first. A stale
+        // asynchronous read must neither fail early nor count as moved evidence.
+        // Success still requires a subsequent real browser completion below.
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(before)).expect("queue retained native baseline");
+        Self {
+            before,
+            pending: Some(rx),
+            stale: 0,
+        }
+    }
+
+    fn poll(&mut self, browser: &ICoreWebView2) -> Result<Option<[i32; 2]>, WvError> {
+        let Some(pending) = self.pending.as_ref() else {
+            self.pending = Some(request_page_position(browser)?);
+            return Ok(None);
+        };
+        match pending.try_recv() {
+            Ok(result) => {
+                self.pending = None;
+                let position = result?;
+                if position == self.before {
+                    self.stale += 1;
+                    return Ok(None);
+                }
+                Ok(Some(position))
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(failure("page position callback disconnected"))
+            }
+        }
+    }
+}
+
+/// Select the existing loop's real termination input; never bypass its release.
+fn request_fixture_quit(hello: bool, hwnd: HWND, commands: &mpsc::Sender<AppWindowCommand>) {
+    if hello {
+        // SAFETY: post a real close to the fixture-owned window from its UI
+        // loop. Both message payloads are zero; no borrowed pointer escapes.
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    } else {
+        let _ = commands.send(AppWindowCommand::Quit);
+    }
 }
 
 fn position_case(hello: bool) -> Result<(), WvError> {
@@ -67,14 +132,21 @@ fn position_case(hello: bool) -> Result<(), WvError> {
     let verdict = Rc::new(RefCell::new(None));
     let outcome = Rc::clone(&verdict);
     let mut stage = 0;
+    let mut samples = PositionSamples::new(before_page);
     let limit = Instant::now() + Duration::from_secs(10);
     let observer = host_window_probe::install(Box::new(move |point, views, flow| {
-        if stage == 2 {
+        if stage == 3 {
             return;
         }
         let observed = (|| -> Result<(), WvError> {
             if Instant::now() >= limit {
-                return Err(failure("native parent position event deadline"));
+                println!(
+                    "KELD_HOST_POSITION_TIMEOUT stage={stage} stale_samples={}",
+                    samples.stale
+                );
+                return Err(failure(
+                    "native parent move/page position observation deadline",
+                ));
             }
             match (stage, point) {
                 (0, host_window_probe::Point::Idle) => {
@@ -91,16 +163,21 @@ fn position_case(hello: bool) -> Result<(), WvError> {
                     if after_native[..2] == before_native[..2] {
                         return Ok(());
                     }
-                    let after_page = page_position(&browser)?;
-                    println!(
-                        "KELD_HOST_POSITION hello={hello} native_before={before_native:?} native_after={after_native:?} page_before={before_page:?} page_after={after_page:?}"
-                    );
-                    if before_page == after_page {
-                        return Err(failure(
-                            "page screen position stayed stale after real native parent move",
-                        ));
-                    }
                     stage = 2;
+                }
+                (2, host_window_probe::Point::Idle) => {
+                    let Some(after_page) = samples.poll(&browser)? else {
+                        return Ok(());
+                    };
+                    let after_native = native_rect(hwnd)?;
+                    if after_native[..2] == before_native[..2] {
+                        return Err(failure("native parent returned before page observation"));
+                    }
+                    println!(
+                        "KELD_HOST_POSITION hello={hello} native_before={before_native:?} native_after={after_native:?} page_before={before_page:?} page_after={after_page:?} stale_samples={}",
+                        samples.stale
+                    );
+                    stage = 3;
                     *outcome.borrow_mut() = Some(Ok(()));
                 }
                 _ => {}
@@ -108,19 +185,11 @@ fn position_case(hello: bool) -> Result<(), WvError> {
             Ok(())
         })();
         if let Err(error) = observed {
-            stage = 2;
+            stage = 3;
             *outcome.borrow_mut() = Some(Err(error));
         }
-        if stage == 2 {
-            if hello {
-                // SAFETY: post a real close to the fixture-owned window from its UI
-                // loop. Both message payloads are zero; no borrowed pointer escapes.
-                unsafe {
-                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
-            } else {
-                let _ = commands.send(AppWindowCommand::Quit);
-            }
+        if stage == 3 {
+            request_fixture_quit(hello, hwnd, &commands);
         } else {
             *flow = ControlFlow::WaitUntil((Instant::now() + Duration::from_millis(10)).min(limit));
         }
