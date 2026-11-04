@@ -58,6 +58,7 @@ fn ephemeral_release(facade: bool) {
         )
         .env("KELD_PROFILE_TEST_ROOT", root.path())
         .env(ENVIRONMENT_DESCENDANT, &helper)
+        .env("KELD_TEST_WINDOWS_T2_OBSERVE", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut host = SeamedHost::from_child(command.spawn().expect("staged Host"));

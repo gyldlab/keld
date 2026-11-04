@@ -142,6 +142,7 @@ impl SeamedHost {
             .command()
             .env("KELD_T1B_CONTROL", control_port.to_string())
             .env_remove("KELD_TEST_WINDOWS_ENVIRONMENT_DESCENDANT")
+            .env("KELD_TEST_WINDOWS_T2_OBSERVE", "1")
             .env("KELD_PROFILE_TEST_ROOT", root)
             .env("TEMP", temp)
             .env("TMP", temp)

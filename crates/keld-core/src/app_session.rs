@@ -3455,6 +3455,7 @@ fn windows_primary_config(
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     let config = config
         .env_remove(TEST_WINDOWS_ENVIRONMENT_DESCENDANT_ENV)
+        .env_remove(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV)
         .env_remove(keld_wv::TEST_STALL_BEFORE_INIT_ENV);
     #[cfg(debug_assertions)]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
@@ -3844,6 +3845,9 @@ fn run_direct_app_session(
             ));
         }
     };
+    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+    let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
+        == Some(std::ffi::OsStr::new("1"));
     #[cfg(windows)]
     let window_result = engine.run_app_until_quit(
         window_commands_rx,
@@ -3856,10 +3860,14 @@ fn run_direct_app_session(
         },
         |deadline| {
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            eprintln!("KELD_T2_RELEASE_WITNESS entered");
+            if observe_t2_release {
+                eprintln!("KELD_T2_RELEASE_WITNESS entered");
+            }
             let result = release_witness.observe(deadline);
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            eprintln!("KELD_T2_RELEASE_WITNESS completed={}", result.is_ok());
+            if observe_t2_release {
+                eprintln!("KELD_T2_RELEASE_WITNESS completed={}", result.is_ok());
+            }
             result
         },
     );

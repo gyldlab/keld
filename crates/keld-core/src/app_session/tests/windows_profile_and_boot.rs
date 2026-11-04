@@ -264,21 +264,38 @@ fn windows_boot_files_admit_a_schema_2_facade_without_weakening_target_rules() {
         "schema": 2, "name": "Fixture", "entry": "main.ts",
         "permissions": { "file": PERMISSIONS_FILE, "content_sha256": DIGEST },
     });
-    fs::write(root.join(BOOT_FILE), serde_json::to_vec(&facade).expect("facade bytes"))
-        .expect("boot");
-    let error = must_err(validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
-        "admission never permits an absent entry");
-    assert_eq!(error.code(), "KELD-CORE-036", "target checks, not a platform refusal: {error}");
+    fs::write(
+        root.join(BOOT_FILE),
+        serde_json::to_vec(&facade).expect("facade bytes"),
+    )
+    .expect("boot");
+    let error = must_err(
+        validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
+        "admission never permits an absent entry",
+    );
+    assert_eq!(
+        error.code(),
+        "KELD-CORE-036",
+        "target checks, not a platform refusal: {error}"
+    );
     fs::write(root.join("main.ts"), "await new Promise(() => {});\n").expect("entry");
     let selected = validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage)
         .expect("valid Windows product facade admitted");
-    assert!(matches!(selected.app.initial_window, ValidatedInitialWindow::None));
+    assert!(matches!(
+        selected.app.initial_window,
+        ValidatedInitialWindow::None
+    ));
     assert!(!root.join("index.html").exists());
     facade["renderer"] = serde_json::json!("index.html");
-    fs::write(root.join(BOOT_FILE), serde_json::to_vec(&facade).expect("foreign field bytes"))
-        .expect("malformed boot");
-    let error = must_err(validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
-        "schema 2 still rejects a renderer field");
+    fs::write(
+        root.join(BOOT_FILE),
+        serde_json::to_vec(&facade).expect("foreign field bytes"),
+    )
+    .expect("malformed boot");
+    let error = must_err(
+        validate_windows_boot_files(root.clone(), WindowsBootMode::DevStage),
+        "schema 2 still rejects a renderer field",
+    );
     assert_eq!(error.code(), "KELD-CORE-035");
     fs::write(root.join("index.html"), "<p>renderer</p>\n").expect("renderer");
     fs::write(root.join(BOOT_FILE), valid_boot("main.ts", "index.html")).expect("schema 1");
@@ -290,11 +307,16 @@ fn windows_boot_files_admit_a_schema_2_facade_without_weakening_target_rules() {
 #[cfg(windows)]
 fn windows_managed_support_requires_engine_and_release_witness() {
     for (engine, witness, expected) in [
-        (false, false, false), (false, true, false),
-        (true, false, false), (true, true, true),
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
     ] {
-        assert_eq!(crate::app_session::windows_managed_support(engine, witness), expected,
-            "engine={engine} release_witness={witness}");
+        assert_eq!(
+            crate::app_session::windows_managed_support(engine, witness),
+            expected,
+            "engine={engine} release_witness={witness}"
+        );
     }
 }
 

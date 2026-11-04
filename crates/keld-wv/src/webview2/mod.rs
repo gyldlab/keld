@@ -2159,6 +2159,10 @@ fn scavenge_ephemeral_profiles(
     Ok(removed)
 }
 
+/// Explicit opt-in for debug native test receipts; ordinary error output stays unchanged.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub const TEST_WINDOWS_T2_OBSERVE_ENV: &str = "KELD_TEST_WINDOWS_T2_OBSERVE";
+
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod t2_test_observation;
 
