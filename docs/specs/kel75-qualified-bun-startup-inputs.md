@@ -201,8 +201,9 @@ runtime upgrade is proposed.
    once, before the first Bun invocation. Each prepared command, for G1 and
    every restart, carries exactly that map plus the existing per-generation
    `KELD_APP_LINK`; no value is re-read from the process environment after the
-   freeze. `BUN_INSPECT_PRELOAD` or `NODE_PATH` present refuses with the §4
-   typed error. The existing `BUN_OPTIONS` removal is kept. No parent/global
+   freeze. `BUN_INSPECT_PRELOAD`, `NODE_PATH`, `BUN_INSPECT`,
+   `BUN_INSPECT_CONNECT_TO` or `BUN_INSPECT_NOTIFY` present refuses with
+   the §4 typed error. The existing `BUN_OPTIONS` removal is kept. No parent/global
    environment mutation, new bootstrap variable or app-selected authority is
    permitted. Secret values are not printed or stored in receipts.
 6. **No runtime acquisition in this qualified path (D4).** Precondition: the
@@ -502,9 +503,12 @@ global configuration matters.
 
 The Guardian freezes one environment map before the first launch: its inherited
 environment at selection time, with the existing `BUN_OPTIONS` removal applied
-(kept unchanged in this slice). If `BUN_INSPECT_PRELOAD` or `NODE_PATH` is
-present, with any value including empty, selection refuses with the typed error
-below. Each prepared command applies exactly that map with ordinary
+(kept unchanged in this slice). If `BUN_INSPECT_PRELOAD`, `NODE_PATH`,
+`BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO` or `BUN_INSPECT_NOTIFY` is present,
+with any value including empty, selection refuses with the typed error below.
+The three newly denied debugger/inspector inputs were previously UNKNOWN:
+this is a conservative input-admission decision, **not** a claim that their
+runtime effects were reproduced, or that other UNKNOWN names are now safe. Each prepared command applies exactly that map with ordinary
 `Command::env_clear` followed by the map, plus the per-generation
 `KELD_APP_LINK`; the lease's existing registration-variable removal stays.
 Nothing mutates the process-global environment.
@@ -554,7 +558,7 @@ Keld-harness or CI results, and no real Electron package was involved.
 | Project `package.json` `imports` / `type` | E3c, E8c | `imports` target evaluated; a stage-root copy takes precedence | Excluded by stage location; root `package.json` captured; captured `imports` UNKNOWN (above) |
 | `jsconfig.json` | not run | — | UNKNOWN; treated like `tsconfig.json` until run |
 | `tsconfig.json` `extends` outside the stage | not run | — | UNKNOWN |
-| `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO`, `BUN_INSPECT_NOTIFY` | not run | Names present in the binary | UNKNOWN |
+| `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO`, `BUN_INSPECT_NOTIFY` | not run | Names present in pinned Bun; runtime effects **not exercised** | **Refuse when present** (conservative debugger-input policy only; behavior unverified) |
 | `BUN_RUNTIME_TRANSPILER_CACHE_PATH`, `BUN_JSC_*` | not run | Names present in the binary | UNKNOWN |
 | `KELD_NATIVE_WINDOW_FACADE`, `KELD_HOST_OWNS_FACADE_STAGE_CLEANUP` in the child | not run | [I] inherited by the Bun child | UNKNOWN; classification is KEL-96's |
 | Executable selection (`PATH`) | code | `Command::new("bun")` (`main.rs:490`) | Gap: AC2 unmet until KEL-141 |
@@ -628,8 +632,9 @@ capture or additional public entry point is introduced.
 
 For this slice the selection consists only of the Guardian's native environment
 key/value pairs. Retain native `OsString` values without Unicode conversion.
-Refuse `BUN_INSPECT_PRELOAD` or `NODE_PATH` whenever the name is present, including
-empty or non-Unicode values. Use the existing `KELD-CORE-037` failure and name only
+Refuse `BUN_INSPECT_PRELOAD`, `NODE_PATH`, `BUN_INSPECT`,
+`BUN_INSPECT_CONNECT_TO` and `BUN_INSPECT_NOTIFY` whenever the name is present,
+including empty or non-Unicode values. Use the existing `KELD-CORE-037` failure and name only
 the control and its input class; never include its value. Omit `BUN_OPTIONS`,
 preserving the existing rule. All other inherited pairs are captured once. This
 is the explicitly partial development deny-list, not GH452's future declared
@@ -667,7 +672,7 @@ ordering oracle. These fixtures are source obligations until executed on macOS.
 
 | Atom and owner | Independent acceptance and one-fault control |
 |---|---|
-| Loader refusal / existing Host factory selection | Isolated subprocesses supply each named control, empty and non-empty; require `KELD-CORE-037` naming that input before any Bun command, canonical preload or entry. Removing the presence gate must fail this oracle. Preserve a real canonical-preload/entry positive. |
+| Loader refusal / existing Host factory selection | Isolated subprocesses supply all five named controls, empty/nonempty and native non-Unicode values; require `KELD-CORE-037` naming the key, never its value, before constructing a Bun command. Removing one presence gate must fail this oracle. Preserve the real canonical-preload/entry positive. The three newly refused debugger inputs are policy-only; no runtime inspector exploitation is claimed. |
 | Frozen environment / Guardian selection and existing factory | Two actual commands expose only redacted environment keys and fixture-owned values. Both match the same retained native map plus their distinct app-link values; later source-map changes do not enter either child. Removing `env_clear` or rereading ambient environment must fail. Native non-Unicode ordinary values remain retained and prohibited values remain refused without disclosure. This command test alone is not real Supervisor restart evidence. |
 | Selection lifecycle / existing runtime | Existing authenticated startup/recovery and pre-generation shutdown fixtures, extended with independent selection observations, prove one capture and preserved transition attribution. Removing or repeating the selection step must fail its own oracle. |
 | Runtime installation / fixed factory arguments | The pinned Bun warm-cache fixture has no `node_modules` in the stage or any ancestor. Missing-package launch refuses before a cache-package marker; removing only `--no-install` restores that marker. Staged `auto = "force"` config still refuses before child creation. Argument inspection alone is insufficient. |
@@ -685,7 +690,8 @@ contains one fixed classification per extracted token. The native macOS
 stdin; it does not reopen the binary path or add a Cargo dependency. Split bytes on every
 byte outside ASCII `[A-Za-z0-9_]`, retain whole tokens starting exactly `BUN_`
 or `NODE_`, preserve case, then sort and deduplicate. The exact set contains
-199 tokens: the three implemented inherited-input dispositions and 196 explicit
+199 tokens: six implemented inherited-input dispositions (five refused
+loader/inspector controls and one removed `BUN_OPTIONS`) and 193 explicit
 UNKNOWN entries. Historical partial observations of `NODE_ENV` and
 `BUN_INSTALL_CACHE_DIR` remain in the table above; this census does not promote
 them to completed factory qualification. Concatenated tokens remain whole
@@ -695,14 +701,26 @@ Absence from this token inventory does not establish that Bun ignores a name.
 This is test evidence, not a production environment policy or pinned-runtime
 acquisition, and no UNKNOWN row becomes qualified by passing the census.
 
-Current acceptance limits: the retained E2 environment-file and E5 warm-cache
-experiment directories were unavailable to this continuation. Their historical
-packet observations remain research evidence; neither is a current shipping
-factory behavior pass. Those two acceptance rows remain pending. The separate
-`auto = "force"` regression observes staged-config refusal before constructing
-a Bun command, with a healthy real-Bun counterweight; it does not stand in for
-warm-cache acquisition or network observation. No `.env*` file is created or
-modified by the added tests. These limits do not waive the acceptance rows.
+The current E5 regression uses the actual private Guardian command factory and
+an isolated cache populated by real Bun installation from an owned loopback-only
+registry. Its authored package is not Electron. With no stage or ancestor
+`node_modules`, the guarded command must return the actual missing-package error
+before package or entry markers. Removing only `--no-install` must execute both
+markers from that cache. A separately installed-package positive must still run
+with the flag. Local registry request counts stay unchanged during all three
+observations; this does not prove system-wide network denial. A temporary mutation
+of the production flag must fail on the actual child outcome, not an argv check.
+Run the existing exact binary census on the same runner before attributing this
+behavior to the pinned Bun artifact.
+
+The scenario keeps these independent assertions and its existing test selector.
+The adjacent `startup_qualification::warm_cache` fixture owns registry, bounded
+child execution, cache seeding and teardown. No extra launcher or production
+policy is introduced. E2 environment-file suppression remains pending because
+its retained experiment was unavailable and repository rules prohibit editing
+`.env*` files. Neither an argument check nor the separate staged `auto = "force"`
+refusal substitutes for E2. No `.env*` file is created or modified by these tests.
+Other graph, runtime-acquisition and original-app acceptance rows remain open.
 
 The tracked production delta is limited to the existing Host factory/selector,
 the existing runtime's cold selection seam, its direct callers and owning tests,
@@ -751,8 +769,9 @@ or the workspace dependency set. No new crate/helper framework is justified.
   conformance entry first. No production implementation before approval.
 - [ ] T1 (KEL-75, macOS Guardian factory): land the failing-first AC4, AC5 and
   AC6 tests (§7), then add `--no-env-file --no-install`, the frozen
-  environment map, the `BUN_INSPECT_PRELOAD`/`NODE_PATH` refusal and the
-  binary-name census test. Keep the `BUN_OPTIONS` removal and the stage
+  environment map, the five-key `BUN_INSPECT_PRELOAD`/`NODE_PATH`/
+  `BUN_INSPECT`/`BUN_INSPECT_CONNECT_TO`/`BUN_INSPECT_NOTIFY` refusal
+  and the binary-name census test. Keep the `BUN_OPTIONS` removal and the stage
   `bunfig` refusal unchanged. Keep other roles out of scope.
 - [ ] T2 (KEL-96/CLI producer, boundary change): land the failing-first AC10
   test, then relocate the macOS stage out of the project tree, capture the
@@ -779,7 +798,7 @@ land a regression test before the fix"). Rows marked otherwise state why.
 | 2 | Actual executable/stage/entry identity and existing typed refusal. Replace one selected object; no fallback image executes; a valid same-input command stays positive. The executable cell is reported unmet until KEL-141 and is not written against `PATH`. | Executable cell: unmet by design; stage/entry cells are existing tests. |
 | 3 | Census test: extract the `BUN_*`/`NODE_*` names from the pinned binary (revision `38afee6c8`; a different binary fails rather than skips) and require each to be classified in §4 or recorded UNKNOWN. Control: one unclassified name makes it fail. Negative tests for the "Excluded (one run)" rows (parent-folder and global/XDG `bunfig`, `NODE_OPTIONS`) through the real factory command. A self-reimplemented resolver is not the oracle. | Yes: no census exists. |
 | 4 | Extend `guardian_inherited_preload_cannot_run_before_qualified_capture`. Set `BUN_INSPECT_PRELOAD` non-empty, then empty: selection returns the typed error naming the preload class and `INSPECT_PRELOAD_RAN` never prints. Healthy control without the variable prints `CANONICAL_PRELOAD` then `ENTRY_RAN`. Remove only the gate: E1b's order `CANONICAL_PRELOAD`, `INSPECT_PRELOAD_RAN`, `ENTRY_RAN` returns. | Yes: E1b runs today. |
-| 5 | `NODE_PATH` naming a directory with a sentinel package: typed refusal and no `NODE_PATH_PACKAGE_EVALUATED`; remove only the gate and the marker prints (E7a); the canonical preload and entry still run in the healthy control. A real child prints its redacted environment: G1 and G2 each equal the frozen map plus `KELD_APP_LINK`, with no parent mutation. GH452's declared-key/floor cells remain its owner. | Yes: E7a is honored today. |
+| 5 | `NODE_PATH` naming a directory with a sentinel package: typed refusal and no `NODE_PATH_PACKAGE_EVALUATED`; removing only its gate restores the existing E7a marker. Separately supply `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO` and `BUN_INSPECT_NOTIFY` with empty, non-Unicode and marker-looking values to the same freeze and isolated-command refusal tests. Each must yield `KELD-CORE-037` naming only the key before any Bun command; removing one presence gate must make its unit test RED. Do not invoke unqualified debugger behavior or claim it. The healthy canonical preload and entry still run. The two redacted G1/G2 environment maps remain the frozen map plus `KELD_APP_LINK`. GH452's declared-key/floor cells remain its owner. | Yes: current code forwards the three inspector names instead of refusing them. |
 | 6 | Fixture with **no** `node_modules` in the stage or any ancestor (otherwise E6e/E6f mask the negative), an isolated `BUN_INSTALL_CACHE_DIR` holding a tampered cached package under the missing alias's name: the command from the selected factory exits non-zero, `CACHE_PACKAGE_EVALUATED` never prints, and no install/network witness appears. Remove only `--no-install` and the marker prints (E5l). A stage `bunfig.toml` with `[install] auto = "force"` refuses before spawn. Separate positive: a stage whose captured `node_modules` holds the admitted installed alias runs. Help/argv alone cannot pass. | Yes: no `--no-install` today, so E5i evaluates the cached package. |
 | 7 | Same Host/Guardian session G1→G2. After G1, add or change a package in the live project `node_modules` and change an ambient value; G2 evaluates neither and retains the exact selection, or refuses before its candidate marker. Separate fresh-link/old-token negative proves lifecycle; one pass does not prove the other. | Yes for the live-project change while the stage sits under the project (E3a). |
 | 8–9 | Typed error and bounded existing cleanup after failed preparation; the healthy hello project still starts after relocation. Assert unchanged policy/Guard results and honest unsupported OS/product labels; no retry/deadline relaxation. | No: the healthy project is the existing positive baseline and must stay green through T2. |
@@ -888,6 +907,10 @@ amendment.
    `BUN_JSC_*`, `jsconfig.json`, `tsconfig.json` `extends` outside the stage,
    Keld-private variables inherited by the child, and whether the one-run
    exclusions hold elsewhere.
+   The later bounded T1 follow-up in §4 conservatively refuses the three named
+   `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO` and `BUN_INSPECT_NOTIFY` inputs. This
+   preserves the historical D3 record; it does not claim their runtime effects
+   were reproduced or qualify any other UNKNOWN control.
 4. **D4 — narrow no-runtime-acquisition guarantee.** Decided: the
    macOS-primary-only property in AC6 is accepted as GH593's first partial
    delivery, consistent with GH499 A15's auto-install clause and GH502 §7 for
