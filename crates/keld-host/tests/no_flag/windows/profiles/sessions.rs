@@ -35,6 +35,8 @@ use std::time::Instant;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 
 /// The debug-only S6c evidence trigger (the shape of `KELD_TEST_WINDOWS_LEASE_CENSUS`).
+mod capture_receipts;
+
 const SECOND_SESSION_SEAM: &str = "KELD_TEST_WINDOWS_SECOND_SESSION";
 
 /// One observation of the persistent profile's lifecycle record, as the KEL-135
@@ -182,6 +184,19 @@ impl SeamedHost {
         after: usize,
         deadline: Instant,
     ) -> (String, usize) {
+        self.wait_stderr_line_observed(prefix, after, deadline, || {})
+    }
+
+    // The observer makes the first-missing/reader-drain race reproducible using
+    // an actual exited child and its real stderr pipe in the local regression.
+    fn wait_stderr_line_observed(
+        &mut self,
+        prefix: &str,
+        after: usize,
+        deadline: Instant,
+        first_missing: impl FnOnce(),
+    ) -> (String, usize) {
+        let mut first_missing = Some(first_missing);
         let pipe = self
             .live_stderr
             .as_ref()
@@ -190,11 +205,16 @@ impl SeamedHost {
             if let Some(line) = pipe_line_after(pipe, prefix, after) {
                 return line;
             }
-            assert!(
-                self.host.try_wait().expect("live host state").is_none(),
-                "host exited before {prefix}: {}",
-                pipe_text_by(pipe, Instant::now())
-            );
+            if let Some(observe) = first_missing.take() {
+                observe();
+            }
+            if self.host.try_wait().expect("live host state").is_some() {
+                let drained = pipe_text_by(pipe, Instant::now() + PIPE_DRAIN_KILL_SWITCH);
+                if let Some(line) = pipe_line_after(pipe, prefix, after) {
+                    return line;
+                }
+                panic!("host exited before {prefix}: {drained}");
+            }
             assert!(
                 Instant::now() < deadline,
                 "missing native receipt {prefix}: {}",

@@ -1,8 +1,15 @@
 //! Real `WebView2` profile release controls, with synthetic identity, not signed-app admission.
 
-use super::*;
+use super::{
+    FIXTURE_DEADLINE, WebView2Engine, failure, profile_fixture_engine, profile_fixture_root,
+    run_with_watchdog,
+};
+use crate::WvError;
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2 as backend;
+use std::cell::{Cell, RefCell};
+use std::sync::{atomic::Ordering, mpsc};
+use std::time::Instant;
 
 fn raw_phase(plan: &backend::WindowsProfilePlan) -> Result<String, WvError> {
     let bytes = std::fs::read(plan.control_dir.join("profile.lifecycle.v1")).map_err(failure)?;

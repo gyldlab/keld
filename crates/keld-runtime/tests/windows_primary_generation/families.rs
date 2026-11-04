@@ -1,7 +1,13 @@
 //! Process-isolated real Bun restart with the production family enrollment hook.
 
-use super::*;
+use super::{
+    EVENT_DEADLINE, EchoWorker, PrimaryFixture, assert_retired_locator_closed, expect_link_bound,
+    expect_provisioned, expect_revoked, expect_spawned, primary_config,
+};
+use keld_runtime::SupervisorOutcome;
+use keld_runtime::primary::{PrimaryRoleRevocationCause, PrimaryRoleSupervisor};
 use keld_runtime::windows_job::{WindowsPrimaryFamilies, install_host_death_job};
+use std::time::{Duration, Instant};
 
 #[test]
 #[ignore = "real Windows process-lifetime Host Job; execute in its own native process"]

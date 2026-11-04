@@ -1,9 +1,21 @@
 //! Handover must not publish `LastWindowClosed` or construct a successor before release.
 
 use super::super::sessions::engine_constructions;
-use super::*;
+use super::super::sessions::{LifecycleObservation, SeamedHost, read_lifecycle_record};
+use super::{ENVIRONMENT_DESCENDANT, HOLD, observe_environment_child, observe_loop_end};
 use crate::support::control::try_read_control_line;
+use crate::support::control::{accept_ready_generation, read_control_line};
+use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
+use crate::support::process::{
+    assert_process_signaled, open_process_for_wait, terminate_test_process, wait_for_process_signal,
+};
+use crate::support::product::ProductFixture;
+use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
 use crate::support::renderer::HeldRendererRequest;
+use std::io::Write as _;
+use std::net::TcpListener;
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 
 #[test]
 #[ignore = "signed profile-hook Host, installer and native D16 helper required"]
