@@ -1,2 +1,5 @@
 [fmt]
-ignorePatterns = []
+ignorePatterns = [
+  "crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding/vendor/drawio/src/main/electron-preload.js",
+  "crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding/vendor/drawio/src/main/electron.js",
+]

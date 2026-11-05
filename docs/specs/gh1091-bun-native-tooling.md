@@ -55,10 +55,16 @@ semantic tests; formatting and linting are separate contracts from type checking
 
 Repository formatting calls native Bun directly with
 `"**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}"`, including tests, tooling and nonignored
-untracked sources. Root `bunfig.toml` owns formatter configuration; its empty
-`ignorePatterns` adds no exclusions beyond Bun's native ignore rules. The native
-inventory contains no source requiring an additional exclusion. Existing CI tests
-cover all eight extensions, native ignores and unchanged non-JS/TS files.
+untracked sources. Root `bunfig.toml` owns formatter configuration. Its two literal
+`ignorePatterns` preserve the byte-pinned draw.io `electron-preload.js` and
+`electron.js` fixtures under
+`crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding/vendor/drawio/src/main/`.
+The existing direct-native formatter test in `tools/ci_workflow_security.test.ts`
+checks those exclusions, unchanged excluded bytes and continued selection of
+neighboring vendor and authored sources. The fixture's `source_binding/source_audit.py`
+separately verifies source identity when run; formatter exclusion grants no production
+source authority. Existing CI tests cover all eight extensions, native ignores and
+unchanged non-JS/TS files.
 Bun also resolves path-scoped package, Prettier, oxfmt and EditorConfig settings.
 The shared CI input contract admits their verified filenames, including Windows
 case variants, to both local and hosted formatter checks and the generator's
