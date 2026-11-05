@@ -212,7 +212,7 @@ $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $eviden
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
 if ($profileRegressionCount -ne 24) {
-    throw "Expected twenty-two Windows profile regressions, observed $profileRegressionCount"
+    throw "Expected twenty-four Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
 $seenNonces = @{}
