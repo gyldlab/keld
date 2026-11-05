@@ -163,6 +163,7 @@ fn windows_minimized_native_deactivation_reaches_public_focus_before_cleanup() {
     let hwnd = native.hwnd;
     run.retain_descendants();
     let profile = fixture.profile_dir();
+    println!("KELD_GH1188_MINIMIZED_FOCUS_PROFILE {}", profile.display());
 
     // The target must first be genuinely active. Already-unfocused input cannot
     // prove that minimizing propagates a new deactivation through the facade.
@@ -236,6 +237,7 @@ fn windows_minimized_native_deactivation_reaches_public_focus_before_cleanup() {
     fixture.close();
 
     assert!(!profile_remained, "normal Quit left the owned profile");
+    println!("KELD_GH1188_MINIMIZED_FOCUS_CLEANED {}", profile.display());
     assert!(
         observed.invalid.is_none(),
         "INVALID minimized-focus observation; no semantic control credit: {observed:?}"
