@@ -80,35 +80,31 @@ impl ManagedWindows {
         }
     }
 
-    /// Only actual Tao Destroyed dispatch reaches the U18 native-stack hold.
-    /// Deferred U7 events continue to use `stage_destroyed` directly.
-    fn destroyed_window_event(&mut self, window_id: WindowId) -> Result<(), WvError> {
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if self
-            .test_control
-            .as_mut()
-            .is_some_and(|control| !control.dispatch_destroyed(window_id))
-        {
-            return Ok(());
-        }
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let held_hwnd = self.custody.entry(window_id).map(|(hwnd, _)| hwnd);
-        self.stage_destroyed(window_id);
-        // U18: last in the actual Destroyed dispatch, without pumping.
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if let (Some(control), Some(hwnd)) = (self.test_control.as_ref(), held_hwnd) {
-            control.hold_destroyed(hwnd)?;
-        }
-        Ok(())
-    }
-
     pub(in crate::webview2) fn window_event(
         &mut self,
         window_id: WindowId,
         event: &WindowEvent<'_>,
     ) -> Result<(), WvError> {
         if matches!(event, WindowEvent::Destroyed) {
-            return self.destroyed_window_event(window_id);
+            // Only actual Tao Destroyed dispatch reaches the U18 native-stack hold.
+            // Deferred U7 events continue to use stage_destroyed directly.
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if self
+                .test_control
+                .as_mut()
+                .is_some_and(|control| !control.dispatch_destroyed(window_id))
+            {
+                return Ok(());
+            }
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            let held_hwnd = self.custody.entry(window_id).map(|(hwnd, _)| hwnd);
+            self.stage_destroyed(window_id);
+            // U18: last in the actual Destroyed dispatch, without pumping.
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let (Some(control), Some(hwnd)) = (self.test_control.as_ref(), held_hwnd) {
+                control.hold_destroyed(hwnd)?;
+            }
+            return Ok(());
         }
         if self.custody.contains(window_id) {
             if matches!(event, WindowEvent::CloseRequested) {
