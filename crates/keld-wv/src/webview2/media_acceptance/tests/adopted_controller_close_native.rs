@@ -99,6 +99,7 @@ fn drive(
             _ => {}
         }
     }
+    eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=driver-eof trace={trace:?}");
     guard.completed = true;
     Ok(trace)
 }
@@ -116,6 +117,7 @@ fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
     let (outcome, trace) = std::thread::scope(|threads| {
         let driver_commands = commands.clone();
         let driver = threads.spawn(move || drive(&received_events, &driver_commands, deadline));
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-enter");
         let outcome = engine.run_app_until_quit(
             received,
             events,
@@ -126,11 +128,14 @@ fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
                 Ok::<(), WvError>(())
             },
         );
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-return outcome={outcome:?}");
         drop(commands);
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=driver-join-enter");
         let trace = driver
             .join()
             .map_err(|_| failure("managed Close driver panicked"))
             .and_then(std::convert::identity);
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=driver-joined trace={trace:?}");
         (outcome, trace)
     });
     AppRun {
@@ -241,7 +246,12 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
             facts.capture_error
         ))
     })?;
+    eprintln!(
+        "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-enter pid={}",
+        capture.browser_pid
+    );
     let cleanup = native_support::cleanup(capture, &mut witness, deadline);
+    eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=cleanup-return result={cleanup:?}");
     let retired_observer = witness.retire();
     let late = adopted_close_control::Scope::take_facts();
     drop(control);

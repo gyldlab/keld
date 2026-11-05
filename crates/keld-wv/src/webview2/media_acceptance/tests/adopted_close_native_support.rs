@@ -57,7 +57,14 @@ impl ExitWitness {
 
     pub(super) fn retire(mut self) -> Result<(), WvError> {
         if let Some(observation) = self.observation.take() {
-            backend::remove_browser_exit_observer(&observation.environment, observation.token)?;
+            eprintln!(
+                "KELD_ADOPTED_CLOSE_DIAG phase=observer-remove-enter token={}",
+                observation.token
+            );
+            let result =
+                backend::remove_browser_exit_observer(&observation.environment, observation.token);
+            eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=observer-remove-return result={result:?}");
+            result?;
         }
         Ok(())
     }
@@ -102,6 +109,8 @@ pub(super) fn cleanup(
         // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-destroywindow
         unsafe { DestroyWindow(capture.hwnd) }.map_err(failure)?;
     }
+    // Diagnostic state only; the native wait and eligibility decisions are unchanged.
+    let mut reported = None;
     loop {
         witness.drain(capture.browser_pid)?;
         // SAFETY: this exact SYNCHRONIZE handle was captured while alive.
@@ -110,6 +119,14 @@ pub(super) fn cleanup(
         // SAFETY: read-only retirement check of the captured fixture tree.
         let native_dead =
             !is_window(capture.hwnd) && capture.children.iter().all(|hwnd| !is_window(*hwnd));
+        let progress = (witness.normal, process, native_dead);
+        if reported != Some(progress) {
+            eprintln!(
+                "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-progress pid={} normal={} process={process:?} native_dead={native_dead}",
+                capture.browser_pid, witness.normal
+            );
+            reported = Some(progress);
+        }
         if process == WAIT_OBJECT_0 && witness.normal == 1 && native_dead {
             println!(
                 "KELD_ADOPTED_CLOSE_CLEANED pid={} normal_receipt=1 process_signaled=true native_hwnds=0 already_retired={already_retired}",

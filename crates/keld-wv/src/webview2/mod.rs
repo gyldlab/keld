@@ -1668,8 +1668,13 @@ fn observe_profile_browser_exit(
             t2_test_observation::foreign_normal(current, pid);
         }
         if let Some(receipt) = receipt {
-            tx.send(receipt)
-                .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
+            tx.send(receipt).map_err(|_| {
+                #[cfg(all(feature = "media-acceptance", test))]
+                eprintln!(
+                    "KELD_NATIVE_EXIT_OBSERVER_SEND_FAILED site={site:?} pid={pid} current={current:?}"
+                );
+                windows::core::Error::from(E_UNEXPECTED)
+            })?;
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             if let BrowserExitReceipt::Abnormal { instance, source } = receipt {
                 t2_test_observation::abnormal(instance, source);
@@ -3919,10 +3924,16 @@ impl WebView2Engine {
                 exit_requested = true;
             }
         });
+        #[cfg(all(feature = "media-acceptance", test))]
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-loop-return code={code}");
         drop(bridge);
+        #[cfg(all(feature = "media-acceptance", test))]
+        eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-bridge-retired");
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         t2_test_observation::loop_ended(release.armed_at.get().is_some());
         if let Some(fault) = release.fault() {
+            #[cfg(all(feature = "media-acceptance", test))]
+            eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=app-fault-return fault={fault:?}");
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 fault.context(release.site),
