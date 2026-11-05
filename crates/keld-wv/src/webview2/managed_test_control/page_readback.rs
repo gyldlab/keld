@@ -161,17 +161,6 @@ fn compact_readback(value: &str) -> Result<String, WvError> {
     Ok(json.to_string())
 }
 
-// This is the actual callback-delivery owner. The tests exercise its wake
-// boundary with no native resources, including after the receiver has retired.
-fn publish_reply(
-    sender: &mpsc::Sender<windows::core::Result<String>>,
-    result: windows::core::Result<String>,
-    _wake: impl FnOnce() -> windows::core::Result<()>,
-) -> windows::core::Result<()> {
-    let _ = sender.send(result);
-    Ok(())
-}
-
 fn request(id: u32, webview: &ICoreWebView2) -> Result<Reply, WvError> {
     let observing = super::super::t2_test_observation::enabled();
     let (sender, receiver) = mpsc::channel();
@@ -182,7 +171,8 @@ fn request(id: u32, webview: &ICoreWebView2) -> Result<Reply, WvError> {
             let code = status.as_ref().err().map_or(0, |error| error.code().0);
             eprintln!("KELD_D16_PAGE_CALLBACK view={id} result={code}");
         }
-        publish_reply(&sender, status.map(|()| value), || Ok(()))
+        let _ = sender.send(status.map(|()| value));
+        Ok(())
     }));
     // SAFETY: the caller lends a live view on its creating UI/STA thread.
     // The fixed HSTRING lives through the call; the completion owns its sender
