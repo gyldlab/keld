@@ -9,6 +9,28 @@ use crate::facade_window::fixture::assert_retired;
 use crate::support::process::{assert_process_signaled, terminate_test_process};
 use std::time::Instant;
 
+fn constructor_attempted(control: &str, bun_pid: u32) -> bool {
+    let attempts = control
+        .lines()
+        .filter_map(|line| line.strip_prefix("CREATE_ATTEMPT "))
+        .map(|json| {
+            serde_json::from_str::<serde_json::Value>(json)
+                .expect("public constructor attempt JSON")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        attempts.len() <= 1,
+        "duplicate constructor attempt: {attempts:?}"
+    );
+    attempts.first().is_some_and(|value| {
+        assert_eq!(
+            value["pid"], bun_pid,
+            "the same retained Bun made the attempt"
+        );
+        true
+    })
+}
+
 #[test]
 #[ignore = "signed exact-head profile-hook/root Host and installer required"]
 fn windows_installed_browser_crash_stops_admission_without_starting_a_successor() {
@@ -78,26 +100,7 @@ fn windows_installed_browser_crash_stops_admission_without_starting_a_successor(
             finished.accounting.1, baseline.1,
             "no-successor proof failed: the retained Job admitted a process after the settled pre-kill baseline; a larger total cannot identify that process as a browser"
         );
-        let attempts = finished
-            .unread_control
-            .lines()
-            .filter_map(|line| line.strip_prefix("CREATE_ATTEMPT "))
-            .map(|json| {
-                serde_json::from_str::<serde_json::Value>(json)
-                    .expect("public constructor attempt JSON")
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            attempts.len() <= 1,
-            "duplicate constructor attempt: {attempts:?}"
-        );
-        let constructor_attempted = attempts.first().is_some_and(|value| {
-            assert_eq!(
-                value["pid"], bun_pid,
-                "the same retained Bun made the attempt"
-            );
-            true
-        });
+        let constructor_attempted = constructor_attempted(&finished.unread_control, bun_pid);
         let at_risk = matches!(send, Some(Ok(()))) && constructor_attempted;
         let first_source = abnormal
             .as_ref()

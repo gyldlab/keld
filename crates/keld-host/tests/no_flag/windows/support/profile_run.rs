@@ -325,14 +325,7 @@ pub(crate) fn actual_webview_process_for_pid(
     )
 }
 
-fn actual_webview_process_selected(
-    host_pid: u32,
-    expected_host: &Path,
-    expected_udf: &Path,
-    selected_browser: Option<u32>,
-    deadline: Instant,
-) -> Value {
-    const PROCESS_QUERY: &str = r#"
+const ACTUAL_WEBVIEW_PROCESS_QUERY: &str = r#"
 $ErrorActionPreference = 'Stop'
 $hostPid = [int]$env:KELD_PROFILE_HOST_PID
 $selectedBrowser = if ([string]::IsNullOrEmpty($env:KELD_PROFILE_BROWSER_PID)) { 0 } else { [int]$env:KELD_PROFILE_BROWSER_PID }
@@ -360,10 +353,23 @@ foreach ($process in $all) {
 }
 [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; candidates = $candidates } | ConvertTo-Json -Compress))
 "#;
+
+fn actual_webview_process_selected(
+    host_pid: u32,
+    expected_host: &Path,
+    expected_udf: &Path,
+    selected_browser: Option<u32>,
+    deadline: Instant,
+) -> Value {
     loop {
         let mut command = Command::new("powershell.exe");
         command
-            .args(["-NoProfile", "-NonInteractive", "-Command", PROCESS_QUERY])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                ACTUAL_WEBVIEW_PROCESS_QUERY,
+            ])
             .env("KELD_PROFILE_HOST_PID", host_pid.to_string())
             .env("KELD_EXPECTED_UDF", expected_udf);
         if let Some(pid) = selected_browser {

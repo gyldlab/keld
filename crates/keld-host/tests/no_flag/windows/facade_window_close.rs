@@ -1,5 +1,5 @@
 //! AC10: one pending close, and no release guard after a veto or held-last close.
-//! File rendezvous is private to the existing staged role and ProductFixture.
+//! File rendezvous is private to the existing staged role and `ProductFixture`.
 
 use super::fixture::{
     FacadeFixture, FacadeRun, assert_retired, capture, census, number, same_tree,

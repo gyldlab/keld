@@ -66,7 +66,7 @@ fn windows_controller_failure_after_minting_releases_the_hwnd() {
     run.retain_descendants();
     let profile = fixture.profile_dir();
     destroy(&mut run, number(&retry, "id"));
-    assert!(native.live_handles().is_empty());
+    assert_eq!(native.live_handles(), Vec::<usize>::new());
     let trace = run.quit();
     ordered(
         &trace,

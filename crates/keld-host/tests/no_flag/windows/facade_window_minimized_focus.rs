@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// One cursor into FacadeRun's existing reader. A partial line stays in that
+/// One cursor into `FacadeRun`'s existing reader. A partial line stays in that
 /// owner across the observation bound and can finish during cleanup.
 #[derive(Default)]
 struct CapturedRecords {

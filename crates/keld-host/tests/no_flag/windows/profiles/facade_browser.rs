@@ -98,6 +98,74 @@ pub(super) fn healthy_recovery(fixture: &InstalledFacade) {
     );
 }
 
+fn replace(run: &mut InstalledRun<'_>, first: &LiveWindow, gap: u32) -> LiveWindow {
+    run.send(&format!("REPLACE {} {gap}", first.id));
+    assert_eq!(number(&run.read("CLOSED"), "id"), first.id);
+    let value = run.read("REPLACED");
+    assert_eq!(number(&value, "previous"), first.id);
+    assert_eq!(value["previousGeneration"], first.value["generation"]);
+    assert_eq!(value["gapMs"], gap);
+    assert_eq!(value["live"], true);
+    assert_eq!(value["liveCount"], 1);
+    let id = number(&value, "id");
+    assert_ne!(
+        (id, value["generation"].clone()),
+        (first.id, first.value["generation"].clone())
+    );
+    let second = LiveWindow {
+        id,
+        value,
+        native: capture(census(run.pid(), 1)[0], run.pid()),
+    };
+    assert_ne!(second.native.children, Vec::<usize>::new());
+    second
+}
+
+fn assert_current_binding(finished: &FinishedRun, generation: usize, browser_pid: u32) {
+    let bindings = finished
+        .stderr
+        .lines()
+        .filter(|line| line.starts_with("REBIND "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bindings.len(),
+        generation,
+        "one checked binding per actual instance: {}",
+        finished.stderr
+    );
+    assert_eq!(field(bindings[0], "gen"), 1);
+    assert!(
+        finished.stderr.contains(&format!(
+            "RECEIPT_CREDITED gen={generation} pid={browser_pid}",
+        )),
+        "current browser instance never earned release credit: {}",
+        finished.stderr
+    );
+}
+
+fn assert_current_receipt(
+    fixture: &InstalledFacade,
+    finished: &FinishedRun,
+    withheld: bool,
+    browser_pid: u32,
+) {
+    if withheld {
+        assert_stopping(fixture, finished, HOST_GRACE_FAULT);
+        assert!(
+            !finished
+                .stderr
+                .contains(&format!("RECEIPT_CREDITED gen=2 pid={browser_pid}"))
+        );
+    } else {
+        assert_idle(fixture, finished);
+        assert!(
+            finished
+                .stderr
+                .contains(&format!("RECEIPT_CREDITED gen=2 pid={browser_pid}"))
+        );
+    }
+}
+
 #[test]
 #[ignore = "signed exact-head profile-hook/root Host and installer required"]
 fn windows_installed_managed_browser_instances_preserve_independent_generation_credit() {
@@ -119,25 +187,7 @@ fn windows_installed_managed_browser_instances_preserve_independent_generation_c
                 Instant::now() + PRODUCT_DEADLINE,
             );
             run.retain_descendants();
-            run.send(&format!("REPLACE {} {gap}", first.id));
-            assert_eq!(number(&run.read("CLOSED"), "id"), first.id);
-            let value = run.read("REPLACED");
-            assert_eq!(number(&value, "previous"), first.id);
-            assert_eq!(value["previousGeneration"], first.value["generation"]);
-            assert_eq!(value["gapMs"], gap);
-            assert_eq!(value["live"], true);
-            assert_eq!(value["liveCount"], 1);
-            let id = number(&value, "id");
-            assert_ne!(
-                (id, value["generation"].clone()),
-                (first.id, first.value["generation"].clone())
-            );
-            let second = LiveWindow {
-                id,
-                value,
-                native: capture(census(run.pid(), 1)[0], run.pid()),
-            };
-            assert!(!second.native.children.is_empty());
+            let second = replace(&mut run, &first, gap);
             let second_browser = run.browser(Some(first_browser.pid), false);
             let first_exit = first_browser.exit();
             let generation = if second_browser.pid == first_browser.pid {
@@ -181,26 +231,7 @@ fn windows_installed_managed_browser_instances_preserve_independent_generation_c
                 "second browser object after replacement",
             );
             assert_retired(&second.native);
-            let bindings = finished
-                .stderr
-                .lines()
-                .filter(|line| line.starts_with("REBIND "))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                bindings.len(),
-                generation,
-                "one checked binding per actual instance: {}",
-                finished.stderr
-            );
-            assert_eq!(field(bindings[0], "gen"), 1);
-            assert!(
-                finished.stderr.contains(&format!(
-                    "RECEIPT_CREDITED gen={generation} pid={}",
-                    second_browser.pid,
-                )),
-                "current browser instance never earned release credit: {}",
-                finished.stderr
-            );
+            assert_current_binding(&finished, generation, second_browser.pid);
             println!(
                 "KELD_GH1188_AC21_REGIME attempt={attempt} requested_gap_ms={gap} regime={regime} at_risk=1 first_pid={} first_exit={} second_pid={} second_creation={} hwnd_reused={}",
                 first_browser.pid,
@@ -314,19 +345,7 @@ fn windows_installed_current_browser_requires_its_own_normal_receipt() {
             let finished = run.finish();
             assert_process_signaled(&second_browser.handle, "second browser after terminal");
             assert_retired(&second.native);
-            if withheld {
-                assert_stopping(&fixture, &finished, HOST_GRACE_FAULT);
-                assert!(!finished.stderr.contains(&format!(
-                    "RECEIPT_CREDITED gen=2 pid={}",
-                    second_browser.pid
-                )));
-            } else {
-                assert_idle(&fixture, &finished);
-                assert!(finished.stderr.contains(&format!(
-                    "RECEIPT_CREDITED gen=2 pid={}",
-                    second_browser.pid
-                )));
-            }
+            assert_current_receipt(&fixture, &finished, withheld, second_browser.pid);
             break;
         }
         println!("KELD_GH1188_AC21_NC3_COUNTS withheld={withheld} eligible={eligible} void={void}");

@@ -151,7 +151,7 @@ fn windows_electron_browser_window_uses_native_host_and_vetoes_wm_close() {
         .find(|hwnd| usize::try_from(*hwnd).expect("HWND") != first_native.hwnd)
         .expect("second independent native HWND");
     let second_native = capture(second_hwnd, run.pid());
-    assert!(!second_native.children.is_empty());
+    assert_ne!(second_native.children, Vec::<usize>::new());
     assert_eq!(
         fixture.browser(&run)["browser_pid"],
         browser_before["browser_pid"]

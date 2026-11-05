@@ -255,8 +255,8 @@ pub(crate) fn pump() {
     // Dispatch uses the existing system class procedure, never a new WndProc.
     while unsafe { PeekMessageW(&raw mut message, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
         unsafe {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            TranslateMessage(&raw const message);
+            DispatchMessageW(&raw const message);
         }
     }
 }

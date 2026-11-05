@@ -25,8 +25,8 @@ fn release(hold: &Path, build: u64) {
 
 fn initial_window(run: &mut FacadeRun, hold: &Path) -> (Value, usize) {
     run.send("CREATE");
-    let (held, cursor) = run.marker("BUILD_PUMP_HELD ", 0);
-    let build = marker_number(&held);
+    let (marker, cursor) = run.marker("BUILD_PUMP_HELD ", 0);
+    let build = marker_number(&marker);
     release(hold, build);
     let (_, cursor) = run.marker(&format!("BUILD_PUMP_EXIT {build}"), cursor);
     let created = run.read("PUBLIC_CREATED");
@@ -50,8 +50,8 @@ fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
 
     run.send("RAW_CREATE second");
     assert_eq!(run.read("RAW_SENT")["token"], "second");
-    let (held, cursor) = run.marker("BUILD_PUMP_HELD ", cursor);
-    let second_build = marker_number(&held);
+    let (marker, cursor) = run.marker("BUILD_PUMP_HELD ", cursor);
+    let second_build = marker_number(&marker);
     post_close(first_native.hwnd as u64);
     let (_, close_cursor) = run.marker(&format!("PUMP_SAW_CLOSE {}", first_native.hwnd), cursor);
     println!(
@@ -200,10 +200,10 @@ fn backpressure_case(single_hold: bool) {
     let mut held_builds = Vec::new();
     let mut hold_times = Vec::new();
     for index in 0..2 {
-        let Some((held, next)) = held_build_or_terminal(&mut run, cursor) else {
+        let Some((marker, next)) = held_build_or_terminal(&mut run, cursor) else {
             break;
         };
-        let build = marker_number(&held);
+        let build = marker_number(&marker);
         cursor = next;
         let trace = run.trace();
         let parent_gone = !first_native.live_handles().contains(&first_native.hwnd);
@@ -242,14 +242,13 @@ fn backpressure_case(single_hold: bool) {
     };
     let (status, trace, control) = run.finish_observed(Instant::now() + ui_end_kill_switch());
     assert_retired(&first_native);
-    assert!(app_top_level_windows(host_pid).is_empty());
+    assert_eq!(app_top_level_windows(host_pid), []);
     // Retain product deletion as an observation before removing the isolated
     // fixture. An expected failed release keeps its profile; test cleanup must
     // not turn that removal into a product success.
     let profile_retained = profile.exists();
     println!(
-        "KELD_GH1188_AC25_CLEANUP native_windows=0 profile_retained={profile_retained} held_builds={:?}",
-        held_builds,
+        "KELD_GH1188_AC25_CLEANUP native_windows=0 profile_retained={profile_retained} held_builds={held_builds:?}",
     );
     fixture.close();
     assert!(

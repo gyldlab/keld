@@ -1,5 +1,5 @@
 //! AC18 NC2 and AC27(e): actual managed veto and persistent release witnesses.
-//! Uses the installed facade and release_witness owners; no new launch policy.
+//! Uses the installed facade and `release_witness` owners; no new launch policy.
 
 use super::super::facade_browser::{
     allow_close, assert_idle, assert_ready_empty, create, healthy_recovery,
@@ -62,7 +62,7 @@ fn windows_installed_veto_keeps_the_live_profile_running() {
     assert_eq!(closed["count"], 1);
     assert_eq!(closed["contentsDestroyed"], true);
     assert_retired(&window.native);
-    assert!(census(run.pid(), 0).is_empty());
+    assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
     run.send("QUIT");
     run.read("QUIT_ACCEPTED");
     let finished = run.finish();

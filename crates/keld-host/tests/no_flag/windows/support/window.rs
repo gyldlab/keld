@@ -81,7 +81,7 @@ mod census {
 
     /// Observed host infrastructure classes on Windows 11 26300.9711, Tao 0.35.3.
     /// The thread event target and default IME exist without an application window.
-    /// GetClassNameW also reported "MSCTFIME UI" after the real WebView2 focus transfer
+    /// `GetClassNameW` also reported "MSCTFIME UI" after the real `WebView2` focus transfer
     /// (GH1188 c87629 native first-window receipt). This is an observed class filter,
     /// not a cross-version OS guarantee. Unknown and hidden application classes count.
     const HOST_INFRASTRUCTURE_WINDOW_CLASSES: [&str; 3] =

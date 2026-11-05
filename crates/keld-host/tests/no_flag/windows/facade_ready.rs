@@ -580,7 +580,7 @@ mod admitted {
                     host.host_pid(),
                 )
                 .expect("capture-order controller observation");
-                assert!(!native.children.is_empty());
+                assert_ne!(native.children, Vec::<usize>::new());
                 let descendants = retained_descendants(host_pid);
                 command_line(&mut writer, "DESTROY");
                 assert_eq!(

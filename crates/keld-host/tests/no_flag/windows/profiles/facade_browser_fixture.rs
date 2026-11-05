@@ -1,5 +1,5 @@
 //! Installed facade resources and independent process observations for GH1188.
-//! The existing launch gate and WindowsProcessJob own this fixture's family.
+//! The existing launch gate and `WindowsProcessJob` own this fixture's family.
 
 use super::facade_browser_observation::{BrowserObservation, descendants, observe_browser};
 pub(super) use super::facade_browser_observation::{browser_count, field, number};
@@ -18,6 +18,7 @@ use keld_runtime::windows_job::{
     release_host_start_v1,
 };
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -342,7 +343,8 @@ impl InstalledRun<'_> {
                     std::io::ErrorKind::ConnectionReset,
                     "retired control drain failed: {error}"
                 );
-                text.push_str(&format!("\n<retired control reset: {error}>"));
+                write!(text, "\n<retired control reset: {error}>")
+                    .expect("append control diagnostic");
             }
             text
         };

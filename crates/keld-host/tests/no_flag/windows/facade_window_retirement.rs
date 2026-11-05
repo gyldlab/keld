@@ -6,7 +6,7 @@ use super::super::fixture::{
 };
 use super::failed_hwnd_live;
 use crate::PRODUCT_DEADLINE;
-use crate::support::window::post_close;
+use crate::support::window::{NativeWindowSnapshot, post_close};
 use std::fs;
 use std::path::PathBuf;
 use std::thread;
@@ -43,7 +43,7 @@ pub(super) fn case(release: &str) {
     }
     let (mut run, _) = fixture.spawn(&hooks);
     // Install cleanup before any command can enter the native hold.
-    let mut held = HeldNativeRelease {
+    let mut barrier = HeldNativeRelease {
         path: hold.join("release"),
         pending: true,
     };
@@ -87,14 +87,14 @@ pub(super) fn case(release: &str) {
         let parent_live = failed_hwnd_live(hwnd);
         let retained_live = native
             .as_ref()
-            .map(|native| native.live_handles())
+            .map(NativeWindowSnapshot::live_handles)
             .unwrap_or_default();
         println!(
             "KELD_GH1188_AC24_REPLY case={release} hwnd={hwnd} parent_live={parent_live} retained_live={retained_live:?}"
         );
         reply_in_hold = Some((parent_live, retained_live));
     });
-    held.release();
+    barrier.release();
     // Drain the ordinary responses even when the held observation found the
     // semantic defect. A read error is not sensitivity credit for AC24.
     let records = match release {
@@ -105,7 +105,7 @@ pub(super) fn case(release: &str) {
     let parent_at_reply = failed_hwnd_live(hwnd);
     let retained_at_reply = native
         .as_ref()
-        .map(|native| native.live_handles())
+        .map(NativeWindowSnapshot::live_handles)
         .unwrap_or_default();
     // Buffered early responses can precede DestroyWindow's eventual return.
     // Wait for actual retirement before Quit; this wait is cleanup, not proof.
@@ -121,7 +121,7 @@ pub(super) fn case(release: &str) {
         );
         thread::park_timeout(Duration::from_millis(10));
     }
-    assert!(census(run.pid(), 0).is_empty());
+    assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
     let trace = run.quit();
     let product_removed_profile = !profile.exists();
     fixture.close();

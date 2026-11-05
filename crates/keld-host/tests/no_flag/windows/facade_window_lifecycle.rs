@@ -120,14 +120,14 @@ fn last_window_cycle(
     let (status, trace, control) = run.finish_observed(started + ui_end_kill_switch());
     assert_retired(&native);
     assert_eq!(app_top_level_windows(evidence.host_pid), []);
-    let closes = records(&control, "CLOSE_EVENT");
+    let requests = records(&control, "CLOSE_EVENT");
     assert_eq!(
-        closes.len(),
+        requests.len(),
         1,
         "one real WM_CLOSE must reach its facade:\n{control}"
     );
-    assert_eq!(closes[0]["id"], id);
-    assert_eq!(closes[0]["count"], 1);
+    assert_eq!(requests[0]["id"], id);
+    assert_eq!(requests[0]["count"], 1);
     let closed = records(&control, "CLOSED");
     assert_eq!(
         closed.len(),
