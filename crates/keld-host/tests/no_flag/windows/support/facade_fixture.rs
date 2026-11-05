@@ -39,6 +39,7 @@ if (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") !== undefined) throw n
 const transport = await import("./packages/@keld/kipc/src/transport.ts");
 report(`SELECTED ${transport.nativeFacadeBootSelected}`);
 const { app, BrowserWindow } = await import("./packages/@keld/electron/src/index.ts");
+app.on("window-all-closed", () => {});
 let framesOnWindowChannel = 0;
 const prototype = transport.WorkerLink.prototype;
 const call = prototype.call;
@@ -62,14 +63,33 @@ report(`PREQUIT ${quit}`);
 if (quit !== "KELD-COMPAT-012") throw new Error("late package import bypassed the native Quit barrier");
 await app.whenReady();
 report("READY");
-let late = "returned";
-try { new BrowserWindow({ width: 320, height: 240 }); } catch (error) { late = code(error); }
-report(`POST_READY ${late} frames=${framesOnWindowChannel} windows=${BrowserWindow.getAllWindows().length}`);
+let window: InstanceType<typeof BrowserWindow> | undefined;
 for await (const command of createInterface({ input: control })) {
-  if (command !== "QUIT") throw new Error(`unknown control request ${command}`);
-  await app.quit();
-  report("QUIT_ACCEPTED");
-  break;
+  if (command === "CREATE") {
+    if (window) throw new Error("fixture Create requested twice");
+    let late = "returned";
+    try { window = new BrowserWindow({ width: 320, height: 240 }); }
+    catch (error) { late = code(error); }
+    report("POST_READY " + late + " frames=" + framesOnWindowChannel +
+      " windows=" + BrowserWindow.getAllWindows().length);
+  } else if (command === "DESTROY") {
+    if (!window) throw new Error("missing actual facade window");
+    const contents = window.webContents;
+    let closed = 0;
+    let destroyed = 0;
+    window.on("closed", () => { closed += 1; });
+    contents.on("destroyed", () => { destroyed += 1; });
+    window.destroy();
+    await Promise.resolve();
+    report("POST_DESTROY windows=" + BrowserWindow.getAllWindows().length +
+      " closed=" + closed + " contents=" + destroyed);
+  } else if (command === "QUIT") {
+    await app.quit();
+    report("QUIT_ACCEPTED");
+    break;
+  } else {
+    throw new Error("unknown control request " + command);
+  }
 }
 control.end();
 } catch (error) {
@@ -93,20 +113,41 @@ await import("./capture-order-role.ts");
 
 const CAPTURE_ORDER_ROLE: &str = r#"
 import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
 const control = createConnection({ host: "127.0.0.1", port: Number(process.env.KELD_T1B_CONTROL) });
 await new Promise<void>((resolve, reject) => { control.once("connect", resolve); control.once("error", reject); });
-const report = (message: string) => control.write(`${message}\n`);
+const report = (message: string) => control.write(message + "\n");
 const recorded = Reflect.get(globalThis, "__keldCaptureOrder") as { armed: boolean; transportCalls: number };
 try {
-  report(`BOUND ${process.pid}`);
-  report(`MODE ${Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") ?? "absent"} ${nativeFacadeBootSelected}`);
+  report("BOUND " + process.pid);
+  report("MODE " + (Reflect.get(process.env, "KELD_NATIVE_WINDOW_FACADE") ?? "absent") + " " + nativeFacadeBootSelected);
   recorded.armed = true;
   await app.whenReady();
-  windowCall();
-  recorded.armed = false;
-  report(`CAPTURE ${recorded.transportCalls}`);
+  report("READY");
+  let window: ReturnType<typeof windowCall> | undefined;
+  for await (const command of createInterface({ input: control })) {
+    if (command === "CALL") {
+      window = windowCall();
+      recorded.armed = false;
+      report("CAPTURE " + recorded.transportCalls);
+      if (window) report("PUBLIC_CREATED " + window.id);
+    } else if (command === "DESTROY") {
+      if (!window) throw new Error("capture-order fixture has no managed window");
+      const contents = window.webContents;
+      let closed = 0;
+      let destroyed = 0;
+      window.on("closed", () => { closed += 1; });
+      contents.on("destroyed", () => { destroyed += 1; });
+      window.destroy();
+      await Promise.resolve();
+      report("PUBLIC_DESTROYED closed=" + closed + " contents=" + destroyed);
+      break;
+    } else {
+      throw new Error("unknown capture-order command " + command);
+    }
+  }
 } catch (error) {
-  report(`ROLE_ERROR ${String(error)}`);
+  report("ROLE_ERROR " + String(error));
   throw error;
 }
 "#;
@@ -127,7 +168,7 @@ pub(crate) fn stage_capture_order(
     let stage = stage_boot(&fixture.project);
     let role = if facade {
         format!(
-            "import {{ BrowserWindow, app }} from {};\nimport {{ nativeFacadeBootSelected }} from {};\nconst windowCall = () => {{ try {{ new BrowserWindow({{ width: 320, height: 240 }}); }} catch {{ /* answered KELD-CORE-042 */ }} }};\n{CAPTURE_ORDER_ROLE}",
+            "import {{ BrowserWindow, app }} from {};\nimport {{ nativeFacadeBootSelected }} from {};\napp.on(\"window-all-closed\", () => {{}});\nconst windowCall = () => new BrowserWindow({{ width: 320, height: 240 }});\n{CAPTURE_ORDER_ROLE}",
             package_import("packages/@keld/electron/src/index.ts"),
             package_import("packages/@keld/kipc/src/transport.ts"),
         )

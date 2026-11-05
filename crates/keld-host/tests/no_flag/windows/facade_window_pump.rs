@@ -1,0 +1,264 @@
+//! AC25: real Win32 close and FIFO native release across a nested controller pump.
+
+use super::destroy;
+use super::fixture::{
+    FacadeFixture, FacadeRun, NATIVE_HOLD, assert_retired, capture, census, marker_number, number,
+    ordered, same_tree,
+};
+use crate::support::window::{app_top_level_windows, post_close};
+use crate::ui_end_kill_switch;
+use serde_json::Value;
+use std::fs;
+use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
+
+fn release(hold: &Path, build: u64) {
+    fs::write(hold.join(format!("{build}.release")), b"release\n")
+        .expect("release exactly the observed held native build");
+}
+
+fn initial_window(run: &mut FacadeRun, hold: &Path) -> (Value, usize) {
+    run.send("CREATE");
+    let (held, cursor) = run.marker("BUILD_PUMP_HELD ", 0);
+    let build = marker_number(&held);
+    release(hold, build);
+    let (_, cursor) = run.marker(&format!("BUILD_PUMP_EXIT {build}"), cursor);
+    let created = run.read("PUBLIC_CREATED");
+    println!("KELD_GH1188_CREATE {created}");
+    (created, cursor)
+}
+
+#[test]
+fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
+    let fixture = FacadeFixture::new();
+    let hold = fixture.project.root.path().join("pump-hold");
+    fs::create_dir(&hold).expect("owned build-pump hold directory");
+    let (mut run, _) = fixture.spawn(&[(NATIVE_HOLD, format!("build-pump:{}", hold.display()))]);
+    let (created, cursor) = initial_window(&mut run, &hold);
+    let first_id = number(&created, "id");
+    let first_native = capture(census(run.pid(), 1)[0], run.pid());
+    run.retain_descendants();
+    let profile = fixture.profile_dir();
+
+    run.send("RAW_CREATE second");
+    assert_eq!(run.read("RAW_SENT")["token"], "second");
+    let (held, cursor) = run.marker("BUILD_PUMP_HELD ", cursor);
+    let second_build = marker_number(&held);
+    post_close(first_native.hwnd as u64);
+    let (_, close_cursor) = run.marker(&format!("PUMP_SAW_CLOSE {}", first_native.hwnd), cursor);
+    println!(
+        "KELD_GH1188_AC25A at_risk=1 hwnd={} build={second_build}",
+        first_native.hwnd
+    );
+    release(&hold, second_build);
+    run.marker(&format!("BUILD_PUMP_EXIT {second_build}"), close_cursor);
+    // Native FIFO order is asserted below. JS promise and event delivery can
+    // interleave; neither record may be missing, duplicated, or the wrong kind.
+    let records = [run.next(), run.next()];
+    let close = records
+        .iter()
+        .find(|(kind, _)| kind == "CLOSE_EVENT")
+        .expect("buffered native CloseRequested reached the owning facade");
+    assert_eq!(close.1["id"], first_id);
+    assert_eq!(close.1["count"], 1);
+    let built = records
+        .iter()
+        .find(|(kind, _)| kind == "RAW_CREATED")
+        .expect("second native build completed through the real adapter");
+    assert_eq!(built.1["reply"]["variant"], "Created");
+    let second_id = number(&built.1["reply"]["window"], "id");
+    assert_ne!(first_id, second_id);
+    run.send(&format!("VERIFY_VETO {first_id}"));
+    assert_eq!(run.read("VETO_VERIFIED")["reply"], "ReplyStale");
+    same_tree(&first_native, run.pid());
+    let second_hwnd = census(run.pid(), 2)
+        .into_iter()
+        .find(|hwnd| usize::try_from(*hwnd).expect("HWND") != first_native.hwnd)
+        .expect("independent second HWND");
+    let second_native = capture(second_hwnd, run.pid());
+    run.retain_descendants();
+    run.send(&format!("ALLOW {first_id}"));
+    run.read("ALLOW");
+    post_close(first_native.hwnd as u64);
+    assert_eq!(run.read("CLOSE_EVENT")["count"], 2);
+    assert_eq!(run.read("CLOSED")["count"], 1);
+    assert_retired(&first_native);
+    same_tree(&second_native, run.pid());
+    destroy(&mut run, second_id);
+    assert_retired(&second_native);
+    let trace = run.quit();
+    ordered(
+        &trace,
+        &[
+            format!("BUILD_PUMP_EXIT {second_build}"),
+            format!("CLOSE_DISPATCHED {}", first_native.hwnd),
+        ],
+    );
+    let dispatched = format!("CLOSE_DISPATCHED {}", first_native.hwnd);
+    assert_eq!(
+        trace.lines().filter(|line| *line == dispatched).count(),
+        2,
+        "each actual WM_CLOSE must dispatch once:\n{trace}"
+    );
+    assert!(!profile.exists());
+    fixture.close();
+}
+
+#[test]
+fn windows_builds_wait_for_a_pending_release_in_order() {
+    backpressure_case(false);
+}
+
+/// AC25 NC3's timing control: under the no-backpressure mutant, one 12 s hold
+/// must not create the two-hold expiry. FIFO admission itself is the test above.
+#[test]
+fn windows_single_held_build_stays_inside_the_release_bound() {
+    backpressure_case(true);
+}
+
+#[allow(clippy::too_many_lines)] // Keep ordered native stimuli, oracles and cleanup auditable together.
+fn backpressure_case(single_hold: bool) {
+    let fixture = FacadeFixture::new();
+    let hold = fixture.project.root.path().join("fifo-pump-hold");
+    fs::create_dir(&hold).expect("owned FIFO pump hold directory");
+    let (mut run, _) = fixture.spawn(&[(NATIVE_HOLD, format!("build-pump:{}", hold.display()))]);
+    let (created, cursor) = initial_window(&mut run, &hold);
+    let first_id = number(&created, "id");
+    let first_native = capture(census(run.pid(), 1)[0], run.pid());
+    run.retain_descendants();
+    let profile = fixture.profile_dir();
+
+    run.send("RAW_CREATE carrier");
+    run.read("RAW_SENT");
+    let (carrier, mut cursor) = run.marker("BUILD_PUMP_HELD ", cursor);
+    let carrier = marker_number(&carrier);
+    run.send(&format!("RAW_DESTROY {first_id}"));
+    run.read("RAW_DESTROY_SENT");
+    run.send("RAW_CREATE second");
+    run.read("RAW_SENT");
+    run.send("RAW_CREATE third");
+    run.read("RAW_SENT");
+    for command in ["DestroyWindow", "CreateWindow", "CreateWindow"] {
+        let (posted, next) = run.marker("BRIDGE_POSTED ", cursor);
+        assert!(
+            posted.starts_with(&format!("BRIDGE_POSTED {command}")),
+            "fixture command did not enter the live Tao bridge FIFO: {posted}"
+        );
+        cursor = next;
+    }
+    run.capture_control();
+    release(&hold, carrier);
+    let (_, next) = run.marker(&format!("BUILD_PUMP_EXIT {carrier}"), cursor);
+    cursor = next;
+
+    let mut held_builds = Vec::new();
+    let mut hold_times = Vec::new();
+    for index in 0..2 {
+        let (held, next) = run.marker("BUILD_PUMP_HELD ", cursor);
+        let build = marker_number(&held);
+        cursor = next;
+        let trace = run.trace();
+        let parent_gone = !first_native.live_handles().contains(&first_native.hwnd);
+        let destroyed = format!("DESTROYED {}", first_native.hwnd);
+        let deferred_destroy = !trace.lines().any(|line| line == destroyed);
+        println!(
+            "KELD_GH1188_AC25_NC3 build={build} native_parent_gone={parent_gone} destroyed_not_dispatched={deferred_destroy}"
+        );
+        let started = Instant::now();
+        // The approved backlog schedule: each separate build holds 12 s of its
+        // existing 15 s budget. The 5 s raw-call timeout is deliberately not an oracle.
+        if index == 0 || !single_hold {
+            thread::sleep(Duration::from_secs(12));
+        }
+        hold_times.push(started.elapsed());
+        release(&hold, build);
+        held_builds.push(build);
+        // Defer product assertions until Host exit. The no-backpressure mutant
+        // must first fail its native fault/status assertion, not an incidental reply.
+        if let Some((_, next)) = run.marker_or_exit(&format!("BUILD_PUMP_EXIT {build}"), cursor) {
+            cursor = next;
+        }
+    }
+    let host_pid = run.pid();
+    let observed_census = app_top_level_windows(host_pid).len();
+    let request = if run
+        .host
+        .child_mut()
+        .try_wait()
+        .expect("native Host status")
+        .is_none()
+    {
+        Some(run.try_send("QUIT_RAW"))
+    } else {
+        None
+    };
+    let (status, trace, control) = run.finish_observed(Instant::now() + ui_end_kill_switch());
+    assert!(
+        status.success(),
+        "native release backlog faulted:\n{trace}\n{control}"
+    );
+    assert!(
+        !trace.contains("KELD-WV-009"),
+        "native release fault was swallowed:\n{trace}"
+    );
+    assert!(
+        request.is_some_and(|result| result.is_ok()),
+        "healthy Host did not receive raw Quit"
+    );
+    assert_eq!(held_builds.len(), 2);
+    assert!(hold_times[0] >= Duration::from_secs(12));
+    let second = held_builds[0];
+    let third = held_builds[1];
+    if single_hold {
+        assert!(
+            hold_times[1] < Duration::from_secs(12),
+            "INVALID single-hold control: scheduler created a second long hold"
+        );
+        println!(
+            "KELD_GH1188_AC25_SINGLE_HOLD no_release_fault=true first_ms={} second_ms={}",
+            hold_times[0].as_millis(),
+            hold_times[1].as_millis()
+        );
+    } else {
+        assert!(hold_times[1] >= Duration::from_secs(12));
+        ordered(
+            &trace,
+            &[
+                format!("BUILD_PUMP_EXIT {carrier}"),
+                format!("BUILD_DEFERRED {second}"),
+                format!("BUILD_DEFERRED {third}"),
+                format!("DESTROYED {}", first_native.hwnd),
+                format!("TEARDOWN_CONFIRMED {}", first_native.hwnd),
+                "RELEASED ".to_owned(),
+                format!("BUILD_PUMP_HELD {second}"),
+                format!("BUILD_PUMP_EXIT {second}"),
+                format!("BUILD_PUMP_HELD {third}"),
+                format!("BUILD_PUMP_EXIT {third}"),
+            ],
+        );
+        println!(
+            "KELD_GH1188_AC25B at_risk=1 second_hold_ms={} third_hold_ms={}",
+            hold_times[0].as_millis(),
+            hold_times[1].as_millis()
+        );
+    }
+    let closed = control
+        .lines()
+        .filter_map(|line| line.strip_prefix("CLOSED "))
+        .map(|json| serde_json::from_str::<Value>(json).expect("closed receipt JSON"))
+        .filter(|value| value["id"] == first_id)
+        .count();
+    assert_eq!(
+        closed, 1,
+        "A closed more than once or never closed:\n{control}"
+    );
+    assert_eq!(
+        observed_census, 3,
+        "carrier Z, B and C must be independent live native windows"
+    );
+    assert_retired(&first_native);
+    assert_eq!(app_top_level_windows(host_pid), []);
+    assert!(!profile.exists());
+    fixture.close();
+}

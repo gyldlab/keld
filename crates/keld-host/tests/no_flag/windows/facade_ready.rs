@@ -1,6 +1,6 @@
-//! Real Windows schema-two product boots (GH1188 T2). Readiness and release
-//! are admitted without an environment switch. Managed windows remain refused
-//! until the separate T3 native implementation and fault acceptance land.
+//! Real Windows schema-two product boots (GH1188 T2/T3). Readiness, release and
+//! managed construction use the engine's derived support. The pre-create native
+//! census proves Ready still occurs with zero managed windows.
 
 use crate::dev_stage_command;
 use crate::support::product::ProductFixture;
@@ -173,6 +173,7 @@ fn windows_primary_rechecks_the_stage_for_every_generation() {
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 mod admitted {
     use super::{SCHEMA_TWO_CONFIG, refused_output, stage_boot};
+    use crate::facade_window::fixture::{ephemeral_profile_dir, retained_descendants};
     use crate::support::control::{
         accept_control_or_host_failure, accept_ready_generation, parse_hello, read_control_line,
         read_control_line_or_host_failure,
@@ -180,8 +181,11 @@ mod admitted {
     use crate::support::facade_fixture::{
         LATE_PACKAGE_ROLE, junction, stage_capture_order, stage_public_packages,
     };
-    use crate::support::process::{PipeText, pipe_text_by, process_exists, read_pipe_on_thread};
+    use crate::support::process::{
+        PipeText, assert_process_signaled, pipe_text_by, process_exists, read_pipe_on_thread,
+    };
     use crate::support::product::{ProductFixture, StageFixture};
+    use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
     use crate::support::signed_process::SignedStateProcessGuard;
     use crate::support::window::{app_top_level_windows, wait_for_host_window};
     use crate::{PRODUCT_DEADLINE, dev_stage_command, ui_end_kill_switch};
@@ -410,6 +414,7 @@ mod admitted {
     /// so no preload: the first thing this entry does is delete the live environment,
     /// and only the launch define can still select the facade barrier.
     #[test]
+    #[allow(clippy::too_many_lines)] // Keep zero-Ready, transport and native cleanup in the same staged boot.
     fn windows_direct_entry_boot_mode_survives_environment_deletion() {
         for inherited in [None, Some("0"), Some("1"), Some("unknown-caller-value")] {
             let fixture = ProductFixture::new();
@@ -420,8 +425,14 @@ mod admitted {
             fs::remove_file(fixture.project.join("index.html")).expect("no renderer source");
             let stage = stage_boot(&fixture.project);
             stage_public_packages(&stage);
+            let profiles = ProfileTestRoot::new();
+            assert_profile_test_root_feature(stage.host(), profiles.path());
             let (control, port) = listener();
             let mut command = product_command(&stage, &port);
+            command
+                .env("KELD_PROFILE_TEST_ROOT", profiles.path())
+                .env("TEMP", profiles.path().parent().expect("owned temp parent"))
+                .env("TMP", profiles.path().parent().expect("owned temp parent"));
             if let Some(value) = inherited {
                 command.env("KELD_NATIVE_WINDOW_FACADE", value);
             }
@@ -449,31 +460,78 @@ mod admitted {
             assert_zero_app_windows(host_pid);
             assert_eq!(next("PREQUIT", &mut host), "PREQUIT KELD-COMPAT-012");
             assert_eq!(next("READY", &mut host), "READY");
+            // The fixture waits for this command: zero Ready is independently
+            // observable before the supported constructor can create an HWND.
+            assert_zero_app_windows(host_pid);
+            command_line(&mut writer, "CREATE");
             assert_eq!(
                 next("POST_READY", &mut host),
-                "POST_READY KELD-CORE-042 frames=1 windows=0",
-                "D1: the session answers Subscribe and refuses Create until managed windows"
+                "POST_READY returned frames=1 windows=1",
+                "D1/AC6: the same product admission now reaches the managed native builder"
+            );
+            let windows = crate::support::window::app_top_level_windows(host_pid);
+            assert_eq!(windows.len(), 1, "public constructor has no native HWND");
+            let native = crate::support::window::NativeWindowSnapshot::capture(
+                u64::try_from(windows[0].hwnd).expect("observed HWND"),
+                host_pid,
+            )
+            .expect("native facade/controller observation");
+            assert!(
+                !native.children.is_empty(),
+                "public facade has no controller hosting windows"
+            );
+            let descendants = retained_descendants(host_pid);
+            assert!(
+                !descendants.is_empty(),
+                "late-package process census is empty"
+            );
+            let profile = ephemeral_profile_dir(profiles.path());
+            command_line(&mut writer, "DESTROY");
+            assert_eq!(
+                next("POST_DESTROY", &mut host),
+                "POST_DESTROY windows=0 closed=1 contents=1"
+            );
+            assert!(
+                native.live_handles().is_empty(),
+                "Destroy answered before native retirement"
             );
             assert_zero_app_windows(host_pid);
             command_line(&mut writer, "QUIT");
             assert_eq!(next("QUIT_ACCEPTED", &mut host), "QUIT_ACCEPTED");
             let status = host.wait(Instant::now() + ui_end_kill_switch());
             assert!(status.success(), "facade host exited with {status}");
+            for (pid, process) in descendants {
+                assert_process_signaled(&process, &format!("late-package descendant {pid}"));
+            }
+            assert_zero_app_windows(host_pid);
+            assert!(
+                !profile.exists(),
+                "late-package managed profile survived native retirement"
+            );
+            profiles.remove();
         }
     }
 
     /// AC5 NC 1b and AC20: `--preload` for every boot kind whose stage has the sidecar,
     /// so the transport captures its intrinsics before the app's first module.
     #[test]
+    #[allow(clippy::too_many_lines)] // Compare transport capture on both boots with their explicit cleanup.
     fn windows_primary_preloads_the_staged_transport_before_the_first_module() {
         for facade in [true, false] {
             let fixture = StageFixture::legacy_api_ready();
             let stage = stage_capture_order(&fixture, facade);
+            let profiles = ProfileTestRoot::new();
+            assert_profile_test_root_feature(stage.host(), profiles.path());
             let (control, port) = listener();
             let mut command = product_command(&stage, &port);
-            command.env("KELD_NATIVE_WINDOW_FACADE", "1");
+            command
+                .env("KELD_NATIVE_WINDOW_FACADE", "1")
+                .env("KELD_PROFILE_TEST_ROOT", profiles.path())
+                .env("TEMP", profiles.path().parent().expect("owned temp parent"))
+                .env("TMP", profiles.path().parent().expect("owned temp parent"));
             let mut host = spawn_host(&mut command);
-            let (mut reader, _writer) = accept_control(&control, &mut host);
+            let host_pid = host.host_pid();
+            let (mut reader, mut writer) = accept_control(&control, &mut host);
             let bound = read_control_line_or_host_failure(&mut reader, host.child_mut(), "BOUND");
             let bun_pid = bound
                 .strip_prefix("BOUND ")
@@ -491,15 +549,75 @@ mod admitted {
                 },
                 "AC20: the renderer child observes \"0\" under an inherited \"1\""
             );
+            assert_eq!(
+                read_control_line_or_host_failure(&mut reader, host.child_mut(), "READY"),
+                "READY",
+            );
+            if facade {
+                assert_zero_app_windows(host.host_pid());
+            }
+            command_line(&mut writer, "CALL");
             let capture =
                 read_control_line_or_host_failure(&mut reader, host.child_mut(), "CAPTURE");
             assert_eq!(capture, "CAPTURE 0", "facade={facade}");
-            if !facade {
+            let descendants = if facade {
+                assert_eq!(
+                    read_control_line_or_host_failure(
+                        &mut reader,
+                        host.child_mut(),
+                        "PUBLIC_CREATED"
+                    ),
+                    "PUBLIC_CREATED 1",
+                );
+                let windows = crate::support::window::app_top_level_windows(host.host_pid());
+                assert_eq!(
+                    windows.len(),
+                    1,
+                    "capture-order constructor has no native HWND"
+                );
+                let native = crate::support::window::NativeWindowSnapshot::capture(
+                    u64::try_from(windows[0].hwnd).expect("observed HWND"),
+                    host.host_pid(),
+                )
+                .expect("capture-order controller observation");
+                assert!(!native.children.is_empty());
+                let descendants = retained_descendants(host_pid);
+                command_line(&mut writer, "DESTROY");
+                assert_eq!(
+                    read_control_line_or_host_failure(
+                        &mut reader,
+                        host.child_mut(),
+                        "PUBLIC_DESTROYED"
+                    ),
+                    "PUBLIC_DESTROYED closed=1 contents=1",
+                );
+                assert!(
+                    native.live_handles().is_empty(),
+                    "capture-order native resources survived Destroy"
+                );
+                assert_zero_app_windows(host.host_pid());
+                descendants
+            } else {
                 let window =
                     wait_for_host_window(host.host_pid(), Instant::now() + PRODUCT_DEADLINE);
                 assert_ne!(window["handle"].as_u64(), Some(0), "{window}");
-            }
+                retained_descendants(host_pid)
+            };
+            assert!(
+                !descendants.is_empty(),
+                "capture-order process census is empty"
+            );
+            let profile = ephemeral_profile_dir(profiles.path());
             retire(host);
+            for (pid, process) in descendants {
+                assert_process_signaled(&process, &format!("capture-order descendant {pid}"));
+            }
+            assert_zero_app_windows(host_pid);
+            assert!(
+                !profile.exists(),
+                "capture-order profile survived native retirement"
+            );
+            profiles.remove();
         }
     }
 
