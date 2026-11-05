@@ -9,7 +9,7 @@ use crate::support::control::{accept_control_or_host_failure, try_read_control_l
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
     PIPE_DRAIN_KILL_SWITCH, PipeText, assert_process_signaled, open_process_for_wait, pipe_text_by,
-    process_tree_report, read_pipe_on_thread,
+    process_times, process_tree_report, read_pipe_on_thread,
 };
 use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
 use crate::{PRODUCT_DEADLINE, startup_kill_switch, ui_end_kill_switch};
@@ -22,7 +22,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::os::windows::io::OwnedHandle;
+use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -255,9 +255,18 @@ impl InstalledRun<'_> {
 
     pub(super) fn retain_descendants(&mut self) -> String {
         let tree = process_tree_report(self.pid());
-        for (_, pid, _) in descendants(&tree) {
+        for (image, pid, parent) in descendants(&tree) {
             if self.retained.iter().all(|(old, _)| *old != pid) {
-                self.retained.push((pid, open_process_for_wait(pid, false)));
+                let handle = open_process_for_wait(pid, false);
+                let times = process_times(handle.as_raw_handle().cast());
+                println!(
+                    "KELD_GH1188_INSTALLED_RETAIN host={} host_birth={} pid={pid} parent={parent} image={image} birth={} exit={}",
+                    self.pid(),
+                    self.host.birth,
+                    times.creation,
+                    times.exit,
+                );
+                self.retained.push((pid, handle));
             }
         }
         assert!(
@@ -313,6 +322,15 @@ impl InstalledRun<'_> {
         } = self;
         let pid = host.pid;
         let (status, stdout, stderr) = host.finish_by(Instant::now() + ui_end_kill_switch());
+        // Preserve failure evidence before any retained-process assertion can unwind.
+        // This preliminary record does not attest product or fixture cleanup.
+        println!(
+            "KELD_GH1188_INSTALLED_EXIT_OBSERVED host={pid} bun={bun_pid} status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        println!(
+            "KELD_GH1188_INSTALLED_JOB_BEFORE_WAITS host={pid} accounting={:?}",
+            job.process_accounting(),
+        );
         assert_process_signaled(&host_handle, "installed facade Host");
         assert_process_signaled(&bun, "installed facade Bun");
         for (child_pid, handle) in &retained {
