@@ -2,13 +2,14 @@
 //! The existing launch gate and `WindowsProcessJob` own this fixture's family.
 
 use super::facade_browser_observation::{
-    BrowserObservation, descendants, observe_browser, retain_native_descendants,
+    BrowserObservation, observe_browser, retain_native_descendants,
 };
 pub(super) use super::facade_browser_observation::{browser_count, field, number};
 use super::sessions::{LifecycleObservation, SeamedHost, read_lifecycle_record};
 use crate::facade_window::fixture::FacadeFixture;
 use crate::support::control::{accept_control_or_host_failure, try_read_control_line};
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
+use crate::support::process::lineage::terminal_descendant_candidates;
 use crate::support::process::{
     PIPE_DRAIN_KILL_SWITCH, PipeText, assert_process_signaled, open_process_for_wait, pipe_text_by,
     process_times, process_tree_report, read_pipe_on_thread,
@@ -332,6 +333,7 @@ impl InstalledRun<'_> {
             ..
         } = self;
         let pid = host.pid;
+        let host_birth = process_times(host_handle.as_raw_handle().cast()).creation;
         let (status, stdout, stderr) = host.finish_by(Instant::now() + ui_end_kill_switch());
         // Preserve failure evidence before any retained-process assertion can unwind.
         // This preliminary record does not attest product or fixture cleanup.
@@ -380,7 +382,8 @@ impl InstalledRun<'_> {
         drop(writer);
         let census = process_tree_report(pid);
         assert!(
-            census.contains("host_alive=False") && descendants(&census).is_empty(),
+            census.contains("host_alive=False")
+                && terminal_descendant_candidates(&census, pid, host_birth).is_empty(),
             "owned native processes survived Host exit: {census}"
         );
         let deadline = Instant::now() + PRODUCT_DEADLINE;

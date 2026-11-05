@@ -174,11 +174,7 @@ fn capture_candidate_rows<H>(
             };
             // CIM fractions need not be evaluated. Widen by one whole second;
             // equality, uncertainty and overflow always retain strict opening.
-            if let Some(latest) = hints
-                .get(&pid)
-                .copied()
-                .flatten()
-                .and_then(|hint| hint.checked_add(10_000_000))
+            if let Some(latest) = latest_creation_hint(&hints, pid)
                 && latest < parent_birth
             {
                 rejected.insert(pid);
@@ -198,6 +194,61 @@ fn capture_candidate_rows<H>(
     }
     rows.retain(|(_, pid, _)| !rejected.contains(pid));
     (rows, opened)
+}
+
+/// Remaining cleanup obligations after the original Host has exited. Raw PID
+/// ancestry can include an old foreign process whose former parent's PID was
+/// reused by this Host. Only a unique creation hint that is unambiguously older
+/// than the retained Host generation can exclude a row. Unknown or newer rows,
+/// including children of an excluded row, remain obligations. This does not
+/// replace the fixture's retained-handle waits or its final Job accounting.
+pub(crate) fn terminal_descendant_candidates(
+    tree: &str,
+    root_pid: u32,
+    root_birth: u64,
+) -> Vec<(String, u32, u32)> {
+    assert!(
+        root_pid != 0 && root_birth != 0,
+        "retained Host generation required"
+    );
+    let rows = descendants(tree);
+    let listed = rows.iter().map(|(_, pid, _)| *pid).collect::<BTreeSet<_>>();
+    assert!(
+        listed.len() == rows.len() && !listed.contains(&root_pid),
+        "ambiguous native descendant candidates",
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, _, parent)| *parent == root_pid || listed.contains(parent)),
+        "native descendant parent is missing from the snapshot",
+    );
+    let hints = creation_hints(tree);
+    rows.into_iter()
+        .filter(|(_, pid, parent)| {
+            // Match the conservative pre-open rule: one whole second widens the
+            // hint. Equality, uncertain metadata and overflow retain the row.
+            if let Some(latest) = latest_creation_hint(&hints, *pid)
+                && latest < root_birth
+            {
+                println!(
+                    "KELD_GH1188_NATIVE_TERMINAL_REJECT pid={pid} parent={parent} latest_creation={latest} host_birth={root_birth}"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+// One whole second widens a unique CIM hint for both candidate checks.
+// Missing, invalid, duplicated or overflowing hints remain unknown.
+fn latest_creation_hint(hints: &BTreeMap<u32, Option<u64>>, pid: u32) -> Option<u64> {
+    hints
+        .get(&pid)
+        .copied()
+        .flatten()
+        .and_then(|hint| hint.checked_add(10_000_000))
 }
 
 // Missing, malformed, zero or duplicated metadata is deliberately unknown.

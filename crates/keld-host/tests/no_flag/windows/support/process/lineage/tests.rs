@@ -1,5 +1,6 @@
 use super::{
     GenerationEdge, ProcessGeneration, capture_candidate_rows, select_descendant_generations,
+    terminal_descendant_candidates,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -335,5 +336,93 @@ fn installed_lineage_does_not_erase_a_missing_parent_with_metadata() {
     assert_eq!(
         reason,
         "native descendant parent is missing from the snapshot",
+    );
+}
+
+#[test]
+fn installed_terminal_lineage_rejects_the_captured_old_asus_process() {
+    let tree = "process tree of 5540: host_alive=False browser_processes=0 \
+        creation_filetimes=18024:134383662447869630 descendants=AsusOSD.exe:18024<5540";
+    assert!(
+        terminal_descendant_candidates(tree, 5_540, 134_383_911_943_824_983).is_empty(),
+        "the captured process predates the retained Host by hours",
+    );
+}
+
+#[test]
+fn installed_terminal_lineage_keeps_newer_unknown_and_rejected_branch_children() {
+    let tree = census(
+        "2:1,3:110000000,5:120000000",
+        "old.exe:2<1,other.exe:3<1,unknown.exe:4<1,leaf.exe:5<2",
+    );
+    assert_eq!(
+        terminal_descendant_candidates(&tree, 1, 100_000_000),
+        vec![
+            ("other.exe".to_owned(), 3, 1),
+            ("unknown.exe".to_owned(), 4, 1),
+            ("leaf.exe".to_owned(), 5, 2),
+        ],
+        "rejection grants no ownership or exemption to other rows",
+    );
+}
+
+#[test]
+fn installed_terminal_lineage_preserves_uncertain_creation_obligations() {
+    for hint in [
+        "",
+        "2:",
+        "2",
+        "2:0",
+        "2:invalid",
+        "2:18446744073709551616",
+        "2:18446744073709551615",
+        "2:1,2:1",
+        "2:1,2:invalid",
+        "3:1",
+        "2:90000000",
+        "2:99999999",
+        "2:100000000",
+        "2:110000000",
+    ] {
+        assert_eq!(
+            terminal_descendant_candidates(&census(hint, "candidate.exe:2<1"), 1, 100_000_000),
+            vec![("candidate.exe".to_owned(), 2, 1)],
+            "uncertain hint {hint:?} must not erase a cleanup obligation",
+        );
+    }
+}
+
+#[test]
+fn installed_terminal_lineage_does_not_hide_malformed_ancestry() {
+    for rows in [
+        "first.exe:2<1,second.exe:2<1",
+        "root.exe:1<1",
+        "orphan.exe:2<9",
+    ] {
+        assert!(
+            catch_unwind(|| terminal_descendant_candidates(
+                &census("1:1,2:1", rows),
+                1,
+                100_000_000
+            ))
+            .is_err(),
+            "old metadata must not erase an ambiguous or incomplete ancestry report",
+        );
+    }
+    assert!(
+        catch_unwind(|| terminal_descendant_candidates(&census("", ""), 1, 0)).is_err(),
+        "an empty diagnostic report cannot supply the retained Host generation",
+    );
+}
+
+#[test]
+fn installed_terminal_lineage_reconsiders_the_same_pid_in_each_snapshot() {
+    assert!(
+        terminal_descendant_candidates(&census("2:1", "old.exe:2<1"), 1, 100_000_000).is_empty(),
+    );
+    assert_eq!(
+        terminal_descendant_candidates(&census("2:110000000", "new.exe:2<1"), 1, 100_000_000),
+        vec![("new.exe".to_owned(), 2, 1)],
+        "an earlier rejection cannot exempt a later process generation",
     );
 }
