@@ -91,8 +91,8 @@ impl FacadeFixture {
         assert_profile_test_root_feature(stage.host(), profiles.path());
         let control = TcpListener::bind(("127.0.0.1", 0)).expect("facade control listener");
         Self {
-            project,
             stage,
+            project,
             profiles,
             control,
         }
