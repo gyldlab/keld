@@ -2450,7 +2450,7 @@ unsafe extern "system" fn browser_exit_wake(context: *mut core::ffi::c_void, _ti
 /// (`RegisterWaitForSingleObject` contract), so the handle is closed only
 /// after a successful unregistration and leaked otherwise.
 struct BrowserExitWake {
-    wait: HANDLE,
+    wait: Option<HANDLE>,
     proxy: *mut EventLoopProxy<WindowsLoopEvent>,
     process: ManuallyDrop<OwnedHandle>,
 }
@@ -2463,8 +2463,8 @@ impl BrowserExitWake {
         let proxy = Box::into_raw(Box::new(proxy));
         let mut wait = HANDLE::default();
         // SAFETY: `process` is a live owned SYNCHRONIZE handle that this
-        // registration owns and closes only after `Drop` has unregistered the
-        // wait, `browser_exit_wake` has the `WAITORTIMERCALLBACK` ABI,
+        // registration owns and closes only after checked retirement or abort
+        // Drop has unregistered the wait. `browser_exit_wake` has the callback ABI,
         // `context` is the box leaked above, and `WT_EXECUTEONLYONCE` runs the
         // callback at most once on a pool thread; tao's `EventLoopProxy` is
         // `Send + Sync`. Contract:
@@ -2489,7 +2489,7 @@ impl BrowserExitWake {
             ));
         }
         Ok(Self {
-            wait,
+            wait: Some(wait),
             proxy,
             process: ManuallyDrop::new(process),
         })
@@ -2500,25 +2500,57 @@ impl BrowserExitWake {
     }
 }
 
+impl BrowserExitWake {
+    /// Consumes the only registration owner. Failure cannot be retried by Drop.
+    fn retire(mut self) -> Result<(), WvError> {
+        self.retire_registration()
+    }
+
+    fn retire_registration(&mut self) -> Result<(), WvError> {
+        let Some(wait) = self.wait.take() else {
+            return Ok(());
+        };
+        // SAFETY: this exact registration is consumed before the call and never
+        // retried. Blocking cancellation joins its pool callback; the owning UI
+        // thread is not that callback. The process/proxy stay valid throughout.
+        // https://learn.microsoft.com/windows/win32/api/threadpoollegacyapiset/nf-threadpoollegacyapiset-unregisterwaitex
+        let result = unsafe { UnregisterWaitEx(wait, Some(INVALID_HANDLE_VALUE)) };
+        #[cfg(all(feature = "media-acceptance", test))]
+        // SAFETY: these are the registration's original live resources. The
+        // input is the real blocking native result. An injected error takes the
+        // same retain-without-free branch below; only its fixture reclaims them.
+        let result = unsafe {
+            media_acceptance::exit_wake_control::after_native_unregister(
+                result,
+                self.proxy,
+                self.process(),
+            )
+        };
+        if result.is_err() {
+            // Do not reclaim callback context or close the wait's object without
+            // confirmed cancellation. Both are intentionally retained as before,
+            // but the checked caller must now refuse successful profile release.
+            return Err(profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                "browser-exit wait retirement was not confirmed; profile release is unproved",
+            ));
+        }
+        // SAFETY: actual blocking cancellation confirmed that no callback can
+        // still reach this one registered proxy. The consumed token prevents a
+        // second reclamation from Drop, including on a returned error.
+        drop(unsafe { Box::from_raw(self.proxy) });
+        // SAFETY: no native wait can reference this retained process object after
+        // successful cancellation. Only this owner closes its handle, exactly once.
+        unsafe { ManuallyDrop::drop(&mut self.process) };
+        Ok(())
+    }
+}
+
 impl Drop for BrowserExitWake {
     fn drop(&mut self) {
-        // SAFETY: `wait` is this live registration, unregistered once.
-        // INVALID_HANDLE_VALUE blocks until an in-flight callback has
-        // returned, and this is never called from the callback thread.
-        // Contract:
-        // https://learn.microsoft.com/windows/win32/api/threadpoollegacyapiset/nf-threadpoollegacyapiset-unregisterwaitex
-        if unsafe { UnregisterWaitEx(self.wait, Some(INVALID_HANDLE_VALUE)) }.is_ok() {
-            // SAFETY: the box was leaked by `register`; after the blocking
-            // unregistration no callback can observe it, so it is reclaimed
-            // once.
-            drop(unsafe { Box::from_raw(self.proxy) });
-            // SAFETY: the registration that referenced the handle is gone, so
-            // the handle is closed exactly once, here.
-            unsafe { ManuallyDrop::drop(&mut self.process) };
-        }
-        // A failed unregistration leaves the wait live: the box stays leaked
-        // rather than raced, and the handle stays open rather than closed under
-        // a pending wait.
+        // Abort cleanup remains best effort. Success/handover paths call retire
+        // explicitly and propagate failure before Idle or ephemeral deletion.
+        let _ = self.retire_registration();
     }
 }
 
@@ -2657,6 +2689,21 @@ impl ProfileReleaseWait {
             other => other,
         };
         Ok(self)
+    }
+
+    /// The returned loop must have dropped its closure before release can commit.
+    /// No observed normal receipt substitutes for retiring the registered wait.
+    fn retire_loop_wait(self: Rc<Self>) -> Result<Self, WvError> {
+        let mut release = Rc::try_unwrap(self).map_err(|_| {
+            profile_failure_with(
+                ProfileErrorKind::LifecycleUnproven,
+                "browser-exit wait retirement requires sole completed-loop ownership",
+            )
+        })?;
+        if let Some(BrowserProcess::Watched(wake)) = release.process.take() {
+            wake.retire()?;
+        }
+        Ok(release)
     }
 
     /// Starts the barrier after the controllers were closed. Idempotent: the
@@ -3225,6 +3272,7 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
+        let release = release.retire_loop_wait()?;
         #[cfg(all(feature = "media-acceptance", test))]
         media_acceptance::observe_com_phase("stop-synchronized");
         self.finish_profile_release(release.observed.get())?;
@@ -3566,6 +3614,7 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
+        let release = release.retire_loop_wait()?;
         let app_result = if refused_registry_command.load(Ordering::Acquire) {
             Err(WvError::EventLoop(String::from(
                 "Core queued an unsupported registry-window command on Windows; refuse it before the UI queue",
@@ -3953,6 +4002,7 @@ mod tests {
     };
 
     mod exit_wait_pump;
+    mod exit_wake_retirement;
     mod profile_lifecycle;
     mod release_receipts;
 

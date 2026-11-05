@@ -155,7 +155,9 @@ function Invoke-ProfileRegressionCases {
         'view_position::windows_hello_view_native_parent_position',
         'view_retry::windows_view_host_failed_native_steps_remain_retryable',
         'release_receipts::windows_native_exit_credit_cannot_hide_a_queued_fault',
-        'release_receipts::windows_foreign_abnormal_receipt_cannot_be_discarded_as_stale'
+        'release_receipts::windows_foreign_abnormal_receipt_cannot_be_discarded_as_stale',
+        'exit_wake_retirement::windows_app_retirement_is_checked_before_profile_idle',
+        'exit_wake_retirement::windows_hello_retirement_is_checked_before_profile_idle'
     )
     # Outer kill switches only; every child bounds itself with its own watchdog.
     # The two swallowed-event cases (host site, probe site) wait out the full
@@ -209,7 +211,7 @@ if ($binaryHash -ne $sourceBinaryHash) {
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
-if ($profileRegressionCount -ne 22) {
+if ($profileRegressionCount -ne 24) {
     throw "Expected twenty-two Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
