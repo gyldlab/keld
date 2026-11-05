@@ -133,10 +133,6 @@ impl ManagedWindows {
             );
         }
         view.handle_host_window_event(event);
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if matches!(event, WindowEvent::Moved(_)) {
-            observe::parent_moved(id.0);
-        }
         match native_facts(event, || view.window.is_minimized()) {
             NativeFacts::Focus => self.controller_focus(id),
             NativeFacts::BoundsAndFullScreen { maximized } => {

@@ -195,6 +195,8 @@ impl NativeBuild {
             controller,
             webview,
             hidden_for_minimize: std::cell::Cell::new(false),
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            test_view_id: None,
             managed_release,
         };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -221,6 +223,14 @@ impl NativeBuild {
         let id = match next_view_id(&mut next_id) {
             Ok(id) => id,
             Err(source) => return Err(BuildFailure::held(source, BuildResources::View(view))),
+        };
+        // Label this same owner only after the existing allocator checked its ID.
+        // The unchanged BuiltView return below carries exactly this candidate.
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let view = {
+            let mut view = view;
+            view.test_view_id = Some(id);
+            view
         };
         if let Err(error) = self.configure(
             &view,

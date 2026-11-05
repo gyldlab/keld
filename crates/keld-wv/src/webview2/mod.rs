@@ -2491,6 +2491,9 @@ struct View {
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
     hidden_for_minimize: Cell<bool>,
+    /// D16 label only; the checked builder ID remains the sole identity source.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    test_view_id: Option<WebviewId>,
     /// A weak link preserves checked sole-owner release-wait retirement.
     managed_release: Option<std::rc::Weak<ProfileReleaseWait>>,
 }

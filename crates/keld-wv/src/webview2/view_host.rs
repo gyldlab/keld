@@ -50,7 +50,12 @@ impl View {
                 // SAFETY: retained controller on its creation/UI thread. This is
                 // a parent-position notification, not a bounds or navigation change.
                 // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#notifyparentwindowpositionchanged
-                unsafe { self.controller.NotifyParentWindowPositionChanged() }
+                unsafe { self.controller.NotifyParentWindowPositionChanged() }.inspect(|&()| {
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    if let Some(id) = self.test_view_id {
+                        super::t2_test_observation::parent_moved(id.0);
+                    }
+                })
             }
             WindowEvent::Resized(size) => self.resize_for_host(*size),
             WindowEvent::Focused(true) => self.return_focus_if_active(),
