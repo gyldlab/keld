@@ -28,12 +28,26 @@ pub(crate) fn census(pid: u32, count: usize) -> Vec<isize> {
 }
 
 pub(crate) fn capture(hwnd: isize, pid: u32) -> NativeWindowSnapshot {
-    NativeWindowSnapshot::capture(u64::try_from(hwnd).expect("observed positive HWND"), pid)
-        .expect("native HWND/controller tree")
+    capture_observed(hwnd, pid, "capture")
+}
+
+fn capture_observed(hwnd: isize, pid: u32, phase: &str) -> NativeWindowSnapshot {
+    let snapshot =
+        NativeWindowSnapshot::capture(u64::try_from(hwnd).expect("observed positive HWND"), pid)
+            .expect("native HWND/controller tree");
+    println!(
+        "KELD_GH1188_NATIVE_CHILDREN phase={phase} hwnd={hwnd} host={pid} children={:?} details={:?}",
+        snapshot.children, snapshot.child_details
+    );
+    snapshot
 }
 
 pub(crate) fn same_tree(before: &NativeWindowSnapshot, pid: u32) {
-    let after = capture(isize::try_from(before.hwnd).expect("HWND"), pid);
+    let after = capture_observed(
+        isize::try_from(before.hwnd).expect("HWND"),
+        pid,
+        "same-tree",
+    );
     let mut old = before.children.clone();
     let mut new = after.children;
     old.sort_unstable();

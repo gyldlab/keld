@@ -133,6 +133,7 @@ fn windows_host_window_obligations_reach_the_controller() {
         hwnd,
         pid,
         moved.native.window.outer_rect,
+        &restore_input,
     );
     state_until(&mut run, id, deadline, |state| {
         state["focusedId"] == id && geometry_matches(state, &moved.native)
@@ -169,6 +170,7 @@ fn windows_host_window_obligations_reach_the_controller() {
         hwnd,
         pid,
         maximized_native.window.outer_rect,
+        &restore_input,
     );
     let restored_max = state_until(&mut run, id, deadline, |state| {
         state["maximized"] == true && state["focusedId"] == id

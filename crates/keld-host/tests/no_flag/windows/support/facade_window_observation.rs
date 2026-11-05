@@ -67,13 +67,27 @@ pub(super) fn native_until(
     deadline: Instant,
     satisfies: impl Fn(&NativeState) -> bool,
 ) -> NativeState {
+    native_until_observed(hwnd, pid, deadline, satisfies, |_| {})
+}
+
+fn native_until_observed(
+    hwnd: usize,
+    pid: u32,
+    deadline: Instant,
+    satisfies: impl Fn(&NativeState) -> bool,
+    on_timeout: impl Fn(&NativeState),
+) -> NativeState {
     loop {
         let state = native_control::read(hwnd, pid);
         if satisfies(&state) {
             return state;
         }
+        let within_deadline = Instant::now() < deadline;
+        if !within_deadline {
+            on_timeout(&state);
+        }
         assert!(
-            Instant::now() < deadline,
+            within_deadline,
             "INVALID native stimulus: required state was never established; zero at-risk runs: {state:?}"
         );
         native_control::pump();
@@ -233,6 +247,37 @@ pub(super) fn minimized(
     (native, deadline)
 }
 
+// Read existing complete pipe records only. These byte positions order receipt by
+// the test reader; they do not claim that ExecuteScript started after Restore.
+fn restore_pipe_cursor(pipe: &PipeText, mut cursor: usize) -> usize {
+    while let Some((_, next)) = pipe_line_after(pipe, "", cursor) {
+        cursor = next;
+    }
+    cursor
+}
+
+fn restore_page_trace(pipe: &PipeText, phase: &str, view: u64, after: usize) {
+    let mut cursor = after;
+    let mut records = 0;
+    let mut readbacks = 0;
+    let mut tail = std::collections::VecDeque::new();
+    let prefix = format!("PAGE_READBACK {view} ");
+    while let Some((line, next)) = pipe_line_after(pipe, "", cursor) {
+        cursor = next;
+        if line.starts_with(&prefix) || line.starts_with("KELD_D16_PAGE_") {
+            records += 1;
+            readbacks += usize::from(line.starts_with(&prefix));
+            tail.push_back((cursor, line));
+            if tail.len() > 12 {
+                tail.pop_front();
+            }
+        }
+    }
+    println!(
+        "KELD_GH1188_AC26_RESTORE_PIPE phase={phase} view={view} after={after} through={cursor} records={records} readbacks={readbacks} tail={tail:?}"
+    );
+}
+
 pub(super) fn restored(
     pipe: &PipeText,
     pages: &mut Pages,
@@ -240,9 +285,11 @@ pub(super) fn restored(
     hwnd: usize,
     pid: u32,
     expected_rect: [i32; 4],
+    helper: &FocusComparator,
 ) -> (NativeState, Instant) {
     let started = Instant::now();
     let deadline = started + OBSERVATION_BOUND;
+    let before_restore_cursor = restore_pipe_cursor(pipe, pages.cursor);
     println!("KELD_GH1188_AC26_RESTORE_ENTER view={view}");
     native_control::restore(hwnd, pid);
     println!(
@@ -254,10 +301,33 @@ pub(super) fn restored(
         "KELD_GH1188_AC26_RESTORE_NATIVE view={view} elapsed_ms={}",
         started.elapsed().as_millis()
     );
-    pages.wait(pipe, view, deadline, |page| {
+    let visible = pages.wait(pipe, view, deadline, |page| {
         page["visibilityState"] == "visible"
     });
-    let foreground = native_until(hwnd, pid, deadline, |state| state.foreground == hwnd);
+    let visible_native = native_control::read(hwnd, pid);
+    observe_activation_input("restore-visible", &visible_native, hwnd, pid, helper);
+    println!(
+        "KELD_GH1188_AC26_RESTORE_VISIBLE view={view} elapsed_ms={} page_cursor={} before_restore_cursor={before_restore_cursor} already_captured={} actual={visible}",
+        started.elapsed().as_millis(),
+        pages.cursor,
+        pages.cursor <= before_restore_cursor
+    );
+    restore_page_trace(pipe, "visible", view, before_restore_cursor);
+    let foreground = native_until_observed(
+        hwnd,
+        pid,
+        deadline,
+        |state| state.foreground == hwnd,
+        |state| {
+            observe_activation_input("restore-foreground-timeout", state, hwnd, pid, helper);
+            println!(
+                "KELD_GH1188_AC26_RESTORE_FOREGROUND_TIMEOUT view={view} elapsed_ms={} page_cursor={}",
+                started.elapsed().as_millis(),
+                pages.cursor
+            );
+            restore_page_trace(pipe, "foreground-timeout", view, before_restore_cursor);
+        },
+    );
     assert_eq!(
         foreground.window.outer_rect, expected_rect,
         "restore did not recover its prior native frame"

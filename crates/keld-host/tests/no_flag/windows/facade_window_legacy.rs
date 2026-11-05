@@ -70,6 +70,7 @@ fn windows_legacy_window_keeps_the_host_window_obligations() {
         native.hwnd,
         pid,
         moved.native.window.outer_rect,
+        &restore_input,
     );
     drop(restore_input);
     host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid);
@@ -146,6 +147,7 @@ fn windows_hello_window_keeps_the_host_window_obligations() {
         native.hwnd,
         pid,
         moved.native.window.outer_rect,
+        &restore_input,
     );
     drop(restore_input);
     host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid);

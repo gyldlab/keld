@@ -17,6 +17,7 @@ fn failed_hwnd_live(hwnd: u64) -> bool {
         hwnd: usize::try_from(hwnd).expect("failed native HWND"),
         outer_rect: [0; 4],
         children: Vec::new(),
+        child_details: Vec::new(),
     };
     !observation.live_handles().is_empty()
 }
