@@ -8,7 +8,7 @@ const baseRef =
 const headRef = "${{ github.event.pull_request.head.sha || github.sha }}";
 const windowsMediaOracle = "crates/keld-wv/tests/windows_media_guard.ps1";
 const windowsMediaOracleSha256 =
-  "4ddb56f8ee6d8755eeeeb7433dd5bffd74950dd8ae108e07f1541767946ca405";
+  "80b0f9dae7ad3da3ab6175497c3849948b1b1747fd8532c36d8bba4e7028a3f0";
 
 function fail(message: string): never {
   throw new Error(`CI-HYGIENE: ${message}`);
