@@ -1562,6 +1562,14 @@ gates.
   loop too, with one more page value; the approval reads "so AC24 and AC25 are deterministic" and
   "A debug `ExecuteScript` read of the page values AC26 needs" and names no loop. The
   cells these hooks serve stay mandatory at T3's exact head (§6).
+  AC13's initial-inactive fixture uses the same `build-pump` directory and one
+  `<build>.initially-inactive` regular file, sampled once before that HWND is created.
+  Only that exact build uses Tao's `with_focused(false)`, whose Windows first show is
+  `SW_SHOWNOACTIVATE`; the product snapshot and conditional focus return are unchanged.
+  Independent Host-thread activation before and after the build must still keep the
+  anchor active, and the active-child case plus initial-snapshot mutation remain mandatory.
+  This replaces the external style/enabled guard that failed to establish an inactive
+  case on Ramani at 0844e639; it adds no environment name, wait or public behavior.
 - **U19 (A7, D4, D6) Blocking `Create` deadline against the build bound — UNKNOWN; owner: the
   gh531/#528 transport owner, because §5 keeps `packages/@keld/*` out of W2.** `new BrowserWindow()`
   and `destroy()` are blocking calls with `APP_LINK_IO_DEADLINE_MS`, 5 s

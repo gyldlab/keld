@@ -129,6 +129,13 @@ impl TestControl {
         Ok(())
     }
 
+    /// Optional native first-show stimulus, sampled before creating the HWND.
+    pub(super) fn initially_focused(&self, build: u64) -> Result<bool, WvError> {
+        self.native_hold
+            .as_ref()
+            .map_or(Ok(true), |hold| hold.initially_focused(build))
+    }
+
     /// Called after the actual controller request returns, outside its callback,
     /// using the ORIGINAL build deadline. The same native pump drains the queue.
     pub(super) fn hold_build_pump(&self, build: u64, deadline: Instant) -> Result<(), WvError> {

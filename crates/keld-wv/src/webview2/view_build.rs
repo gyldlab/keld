@@ -91,6 +91,17 @@ impl NativeBuild {
             .with_resizable(true)
             .with_minimizable(true)
             .with_closable(true);
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if let (Some(control), Some(build)) = (test_control.as_deref(), managed) {
+            // Tao 0.35.3 retains this flag through hidden construction and uses
+            // SW_SHOWNOACTIVATE for the real first show. No focus fact is supplied.
+            // https://docs.rs/tao/0.35.3/tao/window/struct.WindowBuilder.html#method.with_focused
+            builder = builder.with_focused(
+                control
+                    .initially_focused(build.create.build)
+                    .map_err(BuildFailure::window)?,
+            );
+        }
         if managed.is_none() {
             builder = builder.with_inner_size(LogicalSize::new(spec.size.width, spec.size.height));
         }

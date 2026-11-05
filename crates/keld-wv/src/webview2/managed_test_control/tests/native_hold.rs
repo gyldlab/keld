@@ -52,3 +52,45 @@ fn the_hold_requires_a_real_empty_pump_observation_after_release() {
     assert!(!PUMP.get().active);
     assert_eq!(PUMP.get().posted, None);
 }
+
+#[test]
+fn initial_activation_stimulus_is_one_build_and_build_pump_only() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after Unix epoch")
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "keld-initial-activation-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).expect("create unique fixture directory");
+    let hold = NativeHold::parse(&format!("build-pump:{}", directory.display()))
+        .expect("build-pump fixture");
+    let default = hold.initially_focused(2).expect("missing marker");
+    let marker = directory.join("2.initially-inactive");
+    std::fs::write(&marker, b"inactive\n").expect("exact build marker");
+    let selected: Vec<_> = (1..=3)
+        .map(|build| hold.initially_focused(build).expect("read exact marker"))
+        .collect();
+    let destroyed = NativeHold::parse(&format!("destroyed:{}", directory.display()))
+        .expect("destroyed fixture");
+    let unrelated = destroyed
+        .initially_focused(2)
+        .expect("unrelated hold point");
+    let malformed = directory.join("3.initially-inactive");
+    std::fs::create_dir(&malformed).expect("non-file marker");
+    let rejected = hold.initially_focused(3).is_err();
+    std::fs::remove_dir(malformed).expect("remove non-file marker");
+    std::fs::remove_file(marker).expect("remove exact marker");
+    std::fs::remove_dir(directory).expect("remove empty fixture directory");
+    assert!(default, "ordinary first show retains its existing default");
+    assert_eq!(selected, [true, false, true]);
+    assert!(
+        unrelated,
+        "destroyed holds cannot change initial activation"
+    );
+    assert!(
+        rejected,
+        "malformed stimulus must fail before creating a HWND"
+    );
+}

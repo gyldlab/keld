@@ -8,7 +8,7 @@ use super::fixture::{
 };
 use super::host_observation::OBSERVATION_BOUND;
 use super::initial::capture_native;
-use crate::support::window::initial_focus::{self, NoActivate, ThreadFocus};
+use crate::support::window::initial_focus::{self, ThreadFocus};
 use crate::support::window::native_control::{self, PhysicalCoordinates};
 use crate::support::window::{NativeWindowSnapshot, app_top_level_windows};
 use serde_json::Value;
@@ -77,7 +77,7 @@ struct InitialTrial {
     inactive_after: ThreadFocus,
 }
 
-#[allow(clippy::too_many_lines)] // Keep the native preconditions, snapshot interval and exact style restoration ordered.
+#[allow(clippy::too_many_lines)] // Keep the native preconditions, snapshot interval and normal cleanup ordered.
 fn initial_trial() -> InitialTrial {
     let _coordinates = PhysicalCoordinates::enter();
     let fixture = FacadeFixture::new();
@@ -117,8 +117,14 @@ fn initial_trial() -> InitialTrial {
     assert_retired(&active);
     let anchor_was_active = activate_anchor(&mut run, anchor.hwnd);
 
+    let inactive_build = build.checked_add(1).expect("next exact build identity");
+    fs::write(
+        hold.join(format!("{inactive_build}.initially-inactive")),
+        b"inactive\n",
+    )
+    .expect("request one native first-show stimulus");
     let (build, cursor, inactive) = held_build(&mut run, &[anchor.hwnd], cursor);
-    let mut style = NoActivate::hidden(inactive.hwnd, run.pid());
+    assert_eq!(build, inactive_build, "stimulus belongs to this build only");
     let inactive_before = initial_focus::read(inactive.hwnd, run.pid());
     let (inactive_created, _) = release_build(&mut run, &hold, build, cursor);
     // The fixture has not activated any window since releasing this build.
@@ -131,8 +137,6 @@ fn initial_trial() -> InitialTrial {
         && shown
         && inactive_before.active == anchor.hwnd
         && inactive_after.active == anchor.hwnd;
-    style.restore();
-    drop(style);
     run.retain_descendants();
     destroy(&mut run, number(&inactive_created, "id"));
     assert_retired(&inactive);
@@ -169,7 +173,7 @@ fn windows_initial_focus_snapshots_cover_active_child_and_inactive_windows() {
             trial.inactive_before,
             trial.inactive_after,
         );
-        // Every trial has completed native/process/profile/style cleanup first.
+        // Every trial has completed native/process/profile cleanup first.
         if trial.active {
             active += 1;
             assert_eq!(

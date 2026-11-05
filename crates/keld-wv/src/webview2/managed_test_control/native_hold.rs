@@ -55,6 +55,17 @@ impl NativeHold {
         Ok(Self { point, directory })
     }
 
+    /// Select a real native first-show stimulus for one exact held build.
+    /// This never supplies or repairs the independent Created snapshot.
+    pub(super) fn initially_focused(&self, build: u64) -> Result<bool, WvError> {
+        let inactive = self.point == HoldPoint::BuildPump
+            && control_file_exists(&self.directory.join(format!("{build}.initially-inactive")))?;
+        if inactive {
+            eprintln!("BUILD_INITIAL_INACTIVE {build}");
+        }
+        Ok(!inactive)
+    }
+
     pub(super) fn destroyed(&self, hwnd: isize) -> Result<(), WvError> {
         if self.point != HoldPoint::Destroyed {
             return Ok(());
@@ -64,7 +75,7 @@ impl NativeHold {
         eprintln!("DESTROY_HELD {hwnd}");
         loop {
             check_launch_deadline(deadline)?;
-            if release_exists(&release)? {
+            if control_file_exists(&release)? {
                 eprintln!("DESTROY_HOLD_END {hwnd}");
                 return Ok(());
             }
@@ -85,7 +96,7 @@ impl NativeHold {
         eprintln!("BUILD_PUMP_HELD {build}");
         loop {
             check_launch_deadline(deadline)?;
-            let released = release_exists(&release)?;
+            let released = control_file_exists(&release)?;
             PUMP.with(|state| {
                 let mut value = state.get();
                 value.posted = None;
@@ -113,17 +124,17 @@ impl NativeHold {
     }
 }
 
-fn release_exists(path: &Path) -> Result<bool, WvError> {
+fn control_file_exists(path: &Path) -> Result<bool, WvError> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
         Ok(_) => Err(invalid_hook(
             TEST_WINDOWS_NATIVE_HOLD_ENV,
-            "release path is not a file",
+            "control path is not a file",
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err(invalid_hook(
             TEST_WINDOWS_NATIVE_HOLD_ENV,
-            "release file could not be inspected",
+            "control file could not be inspected",
         )),
     }
 }
