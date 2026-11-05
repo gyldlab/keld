@@ -8,6 +8,7 @@ use crate::WvError;
 use crate::engine::WebEngine as _;
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2 as backend;
+use crate::webview2::startup_retirement::NativeViewBuild;
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
@@ -29,7 +30,7 @@ fn verify_persistent(outcome: Outcome) -> Result<Result<(), WvError>, WvError> {
     let mut engine = profile_fixture_engine(&root, selection)?;
     let initial = raw_phase(&plan)?;
     let zero = engine.views.is_empty()
-        && !engine.view_build_attempted
+        && engine.view_build_attempt == NativeViewBuild::NotAttempted
         && !engine.browser_binding.load().is_bound();
     if outcome == Outcome::QueuedFault {
         let receipt = backend::browser_instance::browser_exit_receipt(
@@ -180,7 +181,7 @@ fn windows_attempted_build_refusal_preserves_engine_for_ordinary_retirement() ->
         let mut engine = profile_fixture_engine(&root, selection)?;
         // This is a direct custody-fact refusal control, not an actual SDK failure.
         // All native resources are the real zero-controller fixture's resources.
-        engine.view_build_attempted = true;
+        engine.view_build_attempt = NativeViewBuild::Attempted;
         let called = Cell::new(false);
         let refused = engine.retire_unstarted_app(|_| {
             called.set(true);
@@ -248,7 +249,7 @@ fn windows_retired_preparation_refuses_create_before_state_changes() -> Result<(
         let plain = engine.create(&super::blank_spec());
         let app = engine.create_app(&super::blank_spec(), std::sync::mpsc::channel().0);
         let after = raw_phase(&plan)?;
-        let unchanged = !engine.view_build_attempted
+        let unchanged = engine.view_build_attempt == NativeViewBuild::NotAttempted
             && engine
                 .navigation_ready
                 .load(std::sync::atomic::Ordering::Acquire)

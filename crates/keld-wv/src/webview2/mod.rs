@@ -3201,7 +3201,7 @@ pub struct WebView2Engine {
     navigation_diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     app_window_created: bool,
     /// Any pre-loop native build attempt disables zero-controller startup retirement.
-    view_build_attempted: bool,
+    view_build_attempt: startup_retirement::NativeViewBuild,
     saved_permissions_reconciled: bool,
     #[cfg(feature = "profile-test-hooks")]
     barrier_grace_expiry: bool,
@@ -3355,7 +3355,7 @@ impl WebView2Engine {
             navigation_failed: Arc::new(AtomicBool::new(false)),
             navigation_diagnostic: Arc::new(Mutex::new(FirstNavigationDiagnostic::new())),
             app_window_created: false,
-            view_build_attempted: false,
+            view_build_attempt: startup_retirement::NativeViewBuild::NotAttempted,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
             barrier_grace_expiry: false,
@@ -4155,7 +4155,7 @@ fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
 impl WebEngine for WebView2Engine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
         self.creation_event_loop()?;
-        self.view_build_attempted = true;
+        self.view_build_attempt = startup_retirement::NativeViewBuild::Attempted;
         self.mark_profile_running()?;
         let event_loop = self.creation_event_loop()?;
         let navigation =

@@ -12,6 +12,12 @@ use super::{
 };
 use crate::WvError;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeViewBuild {
+    NotAttempted,
+    Attempted,
+}
+
 impl WebView2Engine {
     /// Retires a prepared zero-controller application engine before loop entry.
     ///
@@ -33,7 +39,7 @@ impl WebView2Engine {
         release_witness: impl FnOnce(Instant) -> Result<(), E>,
     ) -> Result<(), WvError> {
         if self.event_loop.is_none()
-            || self.view_build_attempted
+            || self.view_build_attempt != NativeViewBuild::NotAttempted
             || !self.views.is_empty()
             || self.app_window_created
             || self.pending_app_events.is_some()
