@@ -47,6 +47,7 @@
 #[cfg(all(feature = "media-acceptance", test))]
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
+mod view_host;
 
 use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
@@ -67,7 +68,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tao::dpi::PhysicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
@@ -78,9 +78,9 @@ use tao::window::{Window, WindowBuilder};
 #[cfg(all(feature = "media-acceptance", test))]
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile4;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
-    COREWEBVIEW2_WEB_ERROR_STATUS, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-    ICoreWebView2_2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
+    COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL, COREWEBVIEW2_WEB_ERROR_STATUS,
+    CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2_2,
+    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
     ICoreWebView2EnvironmentOptions,
 };
 #[cfg(test)]
@@ -2364,26 +2364,10 @@ struct View {
     window: Window,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
+    hidden_for_minimize: Cell<bool>,
 }
 
 impl View {
-    /// Sizes the controller to fill the window's client area.
-    ///
-    /// Best-effort by design: a transient failure during a live resize must
-    /// not tear down the event loop, and the next resize event re-applies the
-    /// correct bounds anyway.
-    fn fit_controller(&self, size: PhysicalSize<u32>) {
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: i32::try_from(size.width).unwrap_or(i32::MAX),
-            bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
-        };
-        // SAFETY: controller was created on this thread and `RECT` is plain
-        // data passed by value.
-        let _ = unsafe { self.controller.SetBounds(rect) };
-    }
-
     fn browser_process_id(&self) -> Option<u32> {
         webview_browser_process_id(&self.webview)
     }
@@ -3126,6 +3110,8 @@ impl WebView2Engine {
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
         let code = event_loop.run_return(move |event, _, control_flow| {
+            #[cfg(all(feature = "media-acceptance", test))]
+            let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             *control_flow = ControlFlow::Wait;
             release_in_loop.poll();
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
@@ -3136,15 +3122,15 @@ impl WebView2Engine {
                 // Keld drives the controller size itself — there is no wry
                 // WM_SIZE subclass anymore, and tao already delivers resizes
                 // (DPI changes arrive as a scale-factor event followed by this
-                // same `Resized`).
+                // same `Resized`). Movement and active-focus use that same owner.
                 Event::WindowEvent {
                     window_id,
-                    event: WindowEvent::Resized(size),
+                    event: ref native_event,
                     ..
-                } => {
+                } if !matches!(native_event, WindowEvent::CloseRequested) => {
                     for view in views.values() {
                         if view.window.id() == window_id {
-                            view.fit_controller(size);
+                            view.handle_host_window_event(native_event);
                         }
                     }
                 }
@@ -3168,6 +3154,14 @@ impl WebView2Engine {
                     }
                 }
                 _ => {}
+            }
+            #[cfg(all(feature = "media-acceptance", test))]
+            if !exit_requested {
+                media_acceptance::host_window_probe::after_dispatch(
+                    native_probe_point,
+                    &views,
+                    control_flow,
+                );
             }
             release_in_loop.poll();
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
@@ -3379,6 +3373,8 @@ impl WebView2Engine {
             }
         }
         let code = event_loop.run_return(move |event, _, control_flow| {
+            #[cfg(all(feature = "media-acceptance", test))]
+            let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             if first_loop_turn {
                 first_loop_turn = false;
                 navigation_diagnostic
@@ -3475,12 +3471,12 @@ impl WebView2Engine {
                 }
                 Event::WindowEvent {
                     window_id,
-                    event: WindowEvent::Resized(size),
+                    event: ref native_event,
                     ..
-                } => {
+                } if !matches!(native_event, WindowEvent::CloseRequested) => {
                     for view in views.values() {
                         if view.window.id() == window_id {
-                            view.fit_controller(size);
+                            view.handle_host_window_event(native_event);
                         }
                     }
                 }
@@ -3501,6 +3497,14 @@ impl WebView2Engine {
                     }
                 }
                 _ => {}
+            }
+            #[cfg(all(feature = "media-acceptance", test))]
+            if !exit_requested {
+                media_acceptance::host_window_probe::after_dispatch(
+                    native_probe_point,
+                    &views,
+                    control_flow,
+                );
             }
             release_in_loop.poll();
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
@@ -3709,6 +3713,7 @@ impl WebEngine for WebView2Engine {
             window,
             controller,
             webview,
+            hidden_for_minimize: Cell::new(false),
         };
         if !self.saved_permissions_reconciled && saved_permission_reconciliation_enabled() {
             reconcile_saved_media_permissions(&view.webview, deadline)?;
@@ -3790,11 +3795,8 @@ impl WebEngine for WebView2Engine {
 
         // Keyboard focus lands in the page, matching what wry's build did and
         // what a single-webview window should do.
-        // SAFETY: controller lives on this thread; best-effort like a resize.
-        let _ = unsafe {
-            view.controller
-                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
-        };
+        // Best effort, and never steal activation from another top-level window.
+        let _ = view.return_focus_if_active();
 
         self.next_id += 1;
         self.views.insert(id, view);
