@@ -19,6 +19,8 @@ use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 mod ephemeral;
 mod family_recovery;
 mod handover;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod managed;
 
 const ENVIRONMENT_DESCENDANT: &str = "KELD_TEST_WINDOWS_ENVIRONMENT_DESCENDANT";
 const HOLD: Duration = Duration::from_secs(2);

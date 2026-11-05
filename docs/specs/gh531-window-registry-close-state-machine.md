@@ -28,9 +28,11 @@ Sections 4.a to 4.h map to the ticket's sections (a) to (h).
 Non-goals:
 
 - Linux (F02-T12, parked). Window-channel calls on that host fail with a typed error.
-- Windows, which `docs/specs/gh1188-windows-window-adapter.md` owns. A product build
-  refuses a schema-2 boot until that spec's T2, and a window `Create` answers
-  `KELD-CORE-042` until its T3.
+- Windows native implementation, which `docs/specs/gh1188-windows-window-adapter.md`
+  owns. Its T2 admits a schema-2 zero-window Ready boot, and its T3 adapter executes
+  the shared registry's create/fact/close/destroy contract. This document remains
+  the sole shared identity and close-policy owner; the Windows spec owns adapter
+  qualification and release-safety gates.
 - Multiple views per window, `BrowserView`, `WebContentsView` (Tier 3).
 - Window-bound roles (KEL-75/T4). This spec only keeps the close transition at which
   KEL-75's `WindowClosing(w)` tombstone is linearized.
@@ -706,7 +708,7 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-039` | a registry counter is exhausted (`WindowId`, `WindowGeneration` or `close_seq`; the detail names it) | F02-T2 |
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
-| `KELD-CORE-042` | window calls unsupported on this platform (Linux, F02-T12; Windows until gh1188 T3) | F02-T2 |
+| `KELD-CORE-042` | window calls unsupported on this platform (Linux, F02-T12; an engine that does not provide native managed-window support) | F02-T2 |
 | `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
 | `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
@@ -1486,9 +1488,14 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   F01-T3's concern.
 - Linux: window `CALL`s answer the unsupported-platform `ERR`. The backend never
   receives the new commands. F02-T12 owns this platform.
-- Windows: `docs/specs/gh1188-windows-window-adapter.md` owns this platform. Until its
-  T3 the same `ERR` answers window `CALL`s, the backend receives none of the new
-  commands, and a test-admitted facade session answers `Subscribe`.
+- Windows: `docs/specs/gh1188-windows-window-adapter.md` owns the native adapter.
+  T2 admits a schema-2 zero-window facade session; T3 executes the shared window
+  commands and reports native facts under the Core-minted identity and generation.
+  Tao converts `WM_CLOSE` to `CloseRequested`; only the shared registry decides
+  whether to cancel or destroy. The adapter owns HWND/controller retirement and
+  the checked native release witness, with exact-head acceptance required by that
+  Windows spec. No Windows-specific wire, public facade, registry or close policy
+  is introduced.
 
 ### Runtime seam
 

@@ -351,7 +351,11 @@ foreach ($process in $all) {
   $folder = if ([string]::IsNullOrEmpty($actual)) { '' } else { [IO.Path]::GetFullPath($actual).TrimEnd('\') }
   $nested = [IO.Path]::GetFullPath((Join-Path $expected 'EBWebView')).TrimEnd('\')
   if ([string]::IsNullOrEmpty($folder) -or ($folder -ine $expected -and $folder -ine $nested)) { continue }
-  [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual; candidates = $candidates } | ConvertTo-Json -Compress))
+  $image = $process.ExecutablePath
+  if ([string]::IsNullOrEmpty($image)) { throw 'actual browser image path is unavailable' }
+  $imageFile = Get-Item -LiteralPath $image
+  $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+  [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; browser_created_utc = $process.CreationDate.ToUniversalTime().ToString('o'); browser_image = $image; browser_image_version = $imageFile.VersionInfo.FileVersion; browser_image_sha256 = $imageHash; browser_image_bytes = $imageFile.Length; user_data_folder = $actual; candidates = $candidates } | ConvertTo-Json -Compress))
   exit 0
 }
 [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; candidates = $candidates } | ConvertTo-Json -Compress))
@@ -397,6 +401,33 @@ foreach ($process in $all) {
                     || same_windows_path(Path::new(folder), &expected_udf.join("EBWebView")),
                 "observed WebView2 UDF differs from expected path: {evidence}"
             );
+            for field in [
+                "browser_image",
+                "browser_image_version",
+                "browser_created_utc",
+            ] {
+                assert!(
+                    evidence[field]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "actual browser artifact field {field} is unavailable: {evidence}"
+                );
+            }
+            assert!(
+                evidence["browser_image_sha256"]
+                    .as_str()
+                    .is_some_and(|value| {
+                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    }),
+                "actual browser image hash is invalid: {evidence}"
+            );
+            assert!(
+                evidence["browser_image_bytes"]
+                    .as_u64()
+                    .is_some_and(|bytes| bytes > 0),
+                "actual browser image is empty: {evidence}"
+            );
+            println!("KELD_GH1188_NATIVE_ARTIFACTS {evidence}");
             return evidence;
         }
         assert!(

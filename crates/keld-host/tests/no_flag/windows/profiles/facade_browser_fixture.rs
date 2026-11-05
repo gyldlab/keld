@@ -132,7 +132,8 @@ impl InstalledFacade {
     }
 
     pub(super) fn lifecycle(&self) -> LifecycleObservation {
-        // Call only at Ready, or after the exact Host has retired.
+        // Read only at a write-free boundary: Ready, acknowledged veto, a live
+        // non-family member blocking release, or after the exact Host retired.
         read_lifecycle_record(self.root.path())
     }
 

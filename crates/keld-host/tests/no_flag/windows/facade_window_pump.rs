@@ -5,13 +5,18 @@ use super::fixture::{
     FacadeFixture, FacadeRun, NATIVE_HOLD, assert_retired, capture, census, marker_number, number,
     ordered, same_tree,
 };
+use crate::support::window::native_control::PhysicalCoordinates;
 use crate::support::window::{app_top_level_windows, post_close};
-use crate::ui_end_kill_switch;
+use crate::{PRODUCT_DEADLINE, ui_end_kill_switch};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[path = "facade_window_pump_observation.rs"]
+mod observation;
+use observation::{held_build_or_terminal, later_bounds_after_pump, pump_record};
 
 fn release(hold: &Path, build: u64) {
     fs::write(hold.join(format!("{build}.release")), b"release\n")
@@ -30,7 +35,9 @@ fn initial_window(run: &mut FacadeRun, hold: &Path) -> (Value, usize) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // Preserve the native FIFO acknowledgment and post-cleanup missing-event assertion.
 fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
+    let _coordinates = PhysicalCoordinates::enter();
     let fixture = FacadeFixture::new();
     let hold = fixture.project.root.path().join("pump-hold");
     fs::create_dir(&hold).expect("owned build-pump hold directory");
@@ -53,25 +60,47 @@ fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
     );
     release(&hold, second_build);
     run.marker(&format!("BUILD_PUMP_EXIT {second_build}"), close_cursor);
-    // Native FIFO order is asserted below. JS promise and event delivery can
-    // interleave; neither record may be missing, duplicated, or the wrong kind.
-    let records = [run.next(), run.next()];
-    let close = records
-        .iter()
-        .find(|(kind, _)| kind == "CLOSE_EVENT")
-        .expect("buffered native CloseRequested reached the owning facade");
-    assert_eq!(close.1["id"], first_id);
-    assert_eq!(close.1["count"], 1);
-    let built = records
-        .iter()
-        .find(|(kind, _)| kind == "RAW_CREATED")
-        .expect("second native build completed through the real adapter");
-    assert_eq!(built.1["reply"]["variant"], "Created");
-    let second_id = number(&built.1["reply"]["window"], "id");
+    // A dropped CloseRequested must not turn this cell into a missing-record
+    // timeout. RAW_CREATED still arrives, and a subsequent independently moved
+    // Bounds user fact proves the preceding native/Core FIFO was consumed.
+    let mut closes = Vec::new();
+    let built = pump_record(
+        &mut run,
+        "RAW_CREATED",
+        &mut closes,
+        Instant::now() + PRODUCT_DEADLINE,
+    );
+    assert_eq!(built["reply"]["variant"], "Created");
+    let second_id = number(&built["reply"]["window"], "id");
     assert_ne!(first_id, second_id);
-    run.send(&format!("VERIFY_VETO {first_id}"));
-    assert_eq!(run.read("VETO_VERIFIED")["reply"], "ReplyStale");
-    same_tree(&first_native, run.pid());
+    let state = later_bounds_after_pump(&mut run, first_id, first_native.hwnd, &mut closes);
+    let prior_close_count = state["close"]
+        .as_u64()
+        .expect("public close callback count");
+    let veto = if prior_close_count > 0 {
+        run.send(&format!("VERIFY_VETO {first_id}"));
+        Some(pump_record(
+            &mut run,
+            "VETO_VERIFIED",
+            &mut closes,
+            Instant::now() + PRODUCT_DEADLINE,
+        ))
+    } else {
+        None
+    };
+    let first_after_pump = capture(
+        isize::try_from(first_native.hwnd).expect("original HWND"),
+        run.pid(),
+    );
+    let mut original_children = first_native.children.clone();
+    let mut retained_children = first_after_pump.children.clone();
+    original_children.sort_unstable();
+    retained_children.sort_unstable();
+    assert_eq!(
+        original_children, retained_children,
+        "the original controller must survive"
+    );
+    same_tree(&first_after_pump, run.pid());
     let second_hwnd = census(run.pid(), 2)
         .into_iter()
         .find(|hwnd| usize::try_from(*hwnd).expect("HWND") != first_native.hwnd)
@@ -81,13 +110,31 @@ fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
     run.send(&format!("ALLOW {first_id}"));
     run.read("ALLOW");
     post_close(first_native.hwnd as u64);
-    assert_eq!(run.read("CLOSE_EVENT")["count"], 2);
+    assert_eq!(run.read("CLOSE_EVENT")["count"], prior_close_count + 1);
     assert_eq!(run.read("CLOSED")["count"], 1);
     assert_retired(&first_native);
     same_tree(&second_native, run.pid());
     destroy(&mut run, second_id);
     assert_retired(&second_native);
     let trace = run.quit();
+    assert_retired(&first_native);
+    assert_retired(&first_after_pump);
+    assert!(!profile.exists());
+    fixture.close();
+    // First disputed assertion. The drop-first-post-build-close mutant reaches
+    // this with its later accepted close and normal native/profile cleanup done.
+    assert_eq!(
+        closes.len(),
+        1,
+        "buffered native CloseRequested was lost or duplicated: {closes:?}; settled={state}"
+    );
+    assert_eq!(closes[0]["id"], first_id);
+    assert_eq!(closes[0]["count"], 1);
+    assert_eq!(state["close"], 1);
+    assert_eq!(
+        veto.expect("one actual close was vetoed")["reply"],
+        "ReplyStale"
+    );
     ordered(
         &trace,
         &[
@@ -101,8 +148,6 @@ fn windows_close_buffered_during_a_controller_pump_is_delivered_once() {
         2,
         "each actual WM_CLOSE must dispatch once:\n{trace}"
     );
-    assert!(!profile.exists());
-    fixture.close();
 }
 
 #[test]
@@ -155,7 +200,9 @@ fn backpressure_case(single_hold: bool) {
     let mut held_builds = Vec::new();
     let mut hold_times = Vec::new();
     for index in 0..2 {
-        let (held, next) = run.marker("BUILD_PUMP_HELD ", cursor);
+        let Some((held, next)) = held_build_or_terminal(&mut run, cursor) else {
+            break;
+        };
         let build = marker_number(&held);
         cursor = next;
         let trace = run.trace();
@@ -194,6 +241,17 @@ fn backpressure_case(single_hold: bool) {
         None
     };
     let (status, trace, control) = run.finish_observed(Instant::now() + ui_end_kill_switch());
+    assert_retired(&first_native);
+    assert!(app_top_level_windows(host_pid).is_empty());
+    // Retain product deletion as an observation before removing the isolated
+    // fixture. An expected failed release keeps its profile; test cleanup must
+    // not turn that removal into a product success.
+    let profile_retained = profile.exists();
+    println!(
+        "KELD_GH1188_AC25_CLEANUP native_windows=0 profile_retained={profile_retained} held_builds={:?}",
+        held_builds,
+    );
+    fixture.close();
     assert!(
         status.success(),
         "native release backlog faulted:\n{trace}\n{control}"
@@ -257,8 +315,8 @@ fn backpressure_case(single_hold: bool) {
         observed_census, 3,
         "carrier Z, B and C must be independent live native windows"
     );
-    assert_retired(&first_native);
-    assert_eq!(app_top_level_windows(host_pid), []);
-    assert!(!profile.exists());
-    fixture.close();
+    assert!(
+        !profile_retained,
+        "healthy product release kept the ephemeral profile"
+    );
 }
