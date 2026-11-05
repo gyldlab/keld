@@ -168,3 +168,62 @@ impl FacadeFixture {
         self.profiles.remove();
     }
 }
+
+#[cfg(all(test, feature = "profile-test-hooks"))]
+mod tests {
+    use super::FacadeFixture;
+    use std::fs;
+
+    fn assert_project_retired(explicit_close: bool) {
+        let fixture = FacadeFixture::new();
+        let project = fixture.project.root.path().to_path_buf();
+        let profiles = fixture
+            .profiles
+            .path()
+            .parent()
+            .expect("owned profile temporary directory")
+            .to_path_buf();
+        if explicit_close {
+            fixture.close();
+        } else {
+            drop(fixture);
+        }
+        let project_remained = project.try_exists().expect("inspect owned project");
+        let profiles_remained = profiles.try_exists().expect("inspect owned profiles");
+        // Recover only this test's retained paths after every owner has dropped.
+        // An intended RED must not leave a fixture behind or hide a cleanup error.
+        if project_remained {
+            fs::remove_dir_all(&project).expect("recover released test project");
+        }
+        if profiles_remained {
+            fs::remove_dir_all(&profiles).expect("recover released test profiles");
+        }
+        assert!(
+            !project.exists() && !profiles.exists(),
+            "recovery must finish"
+        );
+        println!(
+            "KELD_FACADE_FIXTURE_RETIRED explicit_close={explicit_close} project_remained={project_remained} profiles_remained={profiles_remained} recovered=true project={} profiles={}",
+            project.display(),
+            profiles.display()
+        );
+        assert!(
+            !profiles_remained,
+            "fixture must retire its profile directory"
+        );
+        assert!(
+            !project_remained,
+            "fixture must retire its project after releasing stage handles"
+        );
+    }
+
+    #[test]
+    fn closed_facade_fixture_releases_stage_before_project() {
+        assert_project_retired(true);
+    }
+
+    #[test]
+    fn dropped_facade_fixture_releases_stage_before_project() {
+        assert_project_retired(false);
+    }
+}
