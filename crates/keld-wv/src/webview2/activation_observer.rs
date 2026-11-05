@@ -32,6 +32,8 @@ impl EngineEventLoop {
         // Focused after focus moved to a WebView child. No MSG is dereferenced.
         // https://docs.rs/tao/0.35.3/tao/platform/windows/trait.EventLoopBuilderExtWindows.html#tymethod.with_msg_hook
         builder.with_msg_hook(move |_| {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            super::t2_test_observation::outer_dispatch_boundary();
             hook.observe();
             false
         });

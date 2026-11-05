@@ -12,11 +12,13 @@ struct Counts {
     controllers: u64,
     releasing: usize,
     armed_by: Option<&'static str>,
+    outer_dispatch_epoch: u64,
 }
 
 thread_local! {
     static COUNTS: Cell<Counts> = const { Cell::new(Counts {
         observing: false, environments: 0, controllers: 0, releasing: 0, armed_by: None,
+        outer_dispatch_epoch: 0,
     }) };
 }
 
@@ -48,6 +50,17 @@ pub(super) fn controller_requested() {
 
 pub(super) fn enabled() -> bool {
     COUNTS.get().observing
+}
+
+/// Records Tao's existing outer-message hook; nested native pumps do not call it.
+/// Observation only: the epoch never admits work or changes release decisions.
+pub(super) fn outer_dispatch_boundary() {
+    COUNTS.update(|mut counts| {
+        if counts.observing {
+            counts.outer_dispatch_epoch = counts.outer_dispatch_epoch.saturating_add(1);
+        }
+        counts
+    });
 }
 
 pub(super) fn releasing(count: usize) {
@@ -127,8 +140,19 @@ pub(super) fn abnormal(
 
 /// Diagnostics at existing call boundaries only; no admission or release credit.
 pub(super) fn native_release_step(step: &'static str, result: Option<i32>) {
-    if enabled() {
-        eprintln!("KELD_D16_RELEASE_STEP step={step} result={result:?}");
+    let counts = COUNTS.get();
+    if counts.observing {
+        if matches!(
+            step,
+            "process-failed.body-return" | "adopted-close.enter" | "adopted-close.return"
+        ) {
+            eprintln!(
+                "KELD_D16_RELEASE_STEP step={step} result={result:?} outer_dispatch_epoch={}",
+                counts.outer_dispatch_epoch
+            );
+        } else {
+            eprintln!("KELD_D16_RELEASE_STEP step={step} result={result:?}");
+        }
     }
 }
 
