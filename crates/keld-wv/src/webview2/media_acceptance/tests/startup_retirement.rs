@@ -246,7 +246,7 @@ fn windows_retired_preparation_refuses_create_before_state_changes() -> Result<(
         engine
             .navigation_failed
             .store(true, std::sync::atomic::Ordering::Release);
-        let plain = engine.create(&super::blank_spec());
+        let direct_result = engine.create(&super::blank_spec());
         let app = engine.create_app(&super::blank_spec(), std::sync::mpsc::channel().0);
         let after = raw_phase(&plan)?;
         let unchanged = engine.view_build_attempt == NativeViewBuild::NotAttempted
@@ -256,12 +256,12 @@ fn windows_retired_preparation_refuses_create_before_state_changes() -> Result<(
             && engine
                 .navigation_failed
                 .load(std::sync::atomic::Ordering::Acquire);
-        let refused = matches!((&plain, &app),
+        let refused = matches!((&direct_result, &app),
             (Err(WvError::EventLoop(first)), Err(WvError::EventLoop(second)))
             if first == "run loop already started; create webviews before run_until_closed"
                 && first == second);
         println!(
-            "KELD_T3_PREPARED_SEALED before={before} after={after} profile_released={profile_released} unchanged={unchanged} refused={refused} plain={plain:?} app={app:?}"
+            "KELD_T3_PREPARED_SEALED before={before} after={after} profile_released={profile_released} unchanged={unchanged} refused={refused} plain={direct_result:?} app={app:?}"
         );
         drop(engine);
         std::fs::remove_dir_all(&root).map_err(failure)?;
