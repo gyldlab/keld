@@ -236,14 +236,7 @@ impl NativeBuild {
             view.test_view_id = Some(id);
             view
         };
-        if let Err(error) = Self::configure(
-            &view,
-            id,
-            spec,
-            managed.map(|_| proxy),
-            navigation,
-            deadline,
-        ) {
+        if let Err(error) = Self::configure(&view, id, spec, managed.map(|_| proxy), navigation) {
             return Err(BuildFailure::held(error, BuildResources::View(view)));
         }
         let snapshot = match managed.is_some().then(|| snapshot(&view)).transpose() {
@@ -279,7 +272,6 @@ impl NativeBuild {
         spec: &WebviewSpec,
         managed_proxy: Option<&EventLoopProxy<WindowsLoopEvent>>,
         navigation: Option<InitialNavigation>,
-        deadline: Instant,
     ) -> Result<(), WvError> {
         #[cfg(not(all(feature = "media-acceptance", test)))]
         let manifest = keld_guard::PermissionsManifest::default();
