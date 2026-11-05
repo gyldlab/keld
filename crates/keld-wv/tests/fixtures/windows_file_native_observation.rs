@@ -146,6 +146,9 @@ fn check_evaluations(receipt: &Value) -> Result<(), String> {
     )?;
     // Pin the observed native unawaited-Promise control, rather than accepting any
     // unequal value (including an absent result). This is not a facade contract.
+    // Observed on Windows x86_64 with WebView2 156.0.4314.58; pinned receipts:
+    // https://github.com/gyldlab/keld/issues/1185#issuecomment-6658423316
+    // Those receipts did not capture the Windows build or Chromium/CDP version.
     require(
         evals["execute_promise"]["body"] == json!({}),
         "ExecuteScript Promise control did not return the observed empty object",
@@ -186,6 +189,9 @@ fn check_evaluations(receipt: &Value) -> Result<(), String> {
         // With returnByValue, a rejected Promise can carry the serialized Error
         // value ({}) in result; the identifying error is in exceptionDetails.
         // A synchronous throw may instead return the error RemoteObject twice.
+        // Observed on Windows x86_64 with WebView2 156.0.4314.58; pinned receipts:
+        // https://github.com/gyldlab/keld/issues/1185#issuecomment-6658423316
+        // Windows build and Chromium/CDP version were not captured in those receipts.
         require(
             matches_error(&body["result"])
                 || (name == "cdp_reject" && body["result"] == json!({"type":"object","value":{}})),
