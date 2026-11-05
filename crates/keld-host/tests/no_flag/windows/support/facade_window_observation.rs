@@ -215,7 +215,7 @@ pub(super) fn minimized(
     pid: u32,
 ) -> (NativeState, Instant) {
     let deadline = Instant::now() + OBSERVATION_BOUND;
-    native_control::minimize(hwnd, pid);
+    native_control::minimize(hwnd, pid, deadline);
     native_until(hwnd, pid, deadline, |state| state.minimized);
     println!("KELD_GH1188_AC26_MINIMIZE at_risk=1 view={view}");
     pages.wait(pipe, view, deadline, |page| {
@@ -223,9 +223,16 @@ pub(super) fn minimized(
     });
     // The initial IsIconic transition can precede foreground settlement. Sample
     // the actual minimized/deactivated state within the same original bound.
-    let native = native_until(hwnd, pid, deadline, |state| {
-        state.minimized && state.foreground != hwnd
-    });
+    let native = native_until_observed(
+        hwnd,
+        pid,
+        deadline,
+        |state| state.minimized && state.foreground != hwnd,
+        |state| {
+            let focus = crate::support::window::initial_focus::read(hwnd, pid);
+            println!("KELD_GH1188_MINIMIZE_TIMEOUT native={state:?} host_thread={focus:?}");
+        },
+    );
     // Foreground ownership can differ from the Host UI queue's activation.
     // D11 samples GetActiveWindow on that queue, so establish the matching
     // cross-thread observation before treating a missing public fact as RED.

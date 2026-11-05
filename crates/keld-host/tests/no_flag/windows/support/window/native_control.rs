@@ -11,9 +11,8 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GUITHREADINFO, GetClientRect,
     GetForegroundWindow, GetGUIThreadInfo, IsChild, IsIconic, IsZoomed, MSG, PM_REMOVE,
-    PeekMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetForegroundWindow, SetWindowPos, ShowWindowAsync, TranslateMessage, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    PeekMessageW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow,
+    SetWindowPos, TranslateMessage, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 use super::NativeWindowSnapshot;
@@ -181,29 +180,14 @@ pub(crate) fn resize_by(hwnd: usize, pid: u32, dw: i32, dh: i32) {
     );
 }
 
-pub(crate) fn minimize(hwnd: usize, pid: u32) {
-    post_show_state(hwnd, pid, SW_MINIMIZE);
+pub(crate) fn minimize(hwnd: usize, pid: u32, deadline: Instant) {
+    let _ = target(hwnd, pid);
+    native_restore::minimize(hwnd, pid, deadline);
 }
 
 pub(crate) fn restore(hwnd: usize, pid: u32, deadline: Instant) {
     let _ = target(hwnd, pid);
     native_restore::restore(hwnd, pid, deadline);
-}
-
-fn post_show_state(hwnd: usize, pid: u32, command: i32) {
-    let raw = target(hwnd, pid);
-    // SAFETY: the original live fixture belongs to another UI thread. Windows
-    // specifies ShowWindowAsync for that boundary; it posts the unchanged show
-    // command without a synchronous cross-thread dispatch. Success proves only
-    // admission: callers still require actual IsIconic/page/focus observations.
-    // https://learn.microsoft.com/windows/win32/winmsg/about-windows#multithread-applications
-    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-showwindowasync
-    assert_ne!(
-        unsafe { ShowWindowAsync(raw, command) },
-        0,
-        "post owned native show-state operation: {}",
-        std::io::Error::last_os_error()
-    );
 }
 
 pub(crate) fn foreground(hwnd: usize, pid: u32) {

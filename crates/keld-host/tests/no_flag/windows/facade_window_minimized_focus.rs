@@ -182,7 +182,7 @@ fn windows_minimized_native_deactivation_reaches_public_focus_before_cleanup() {
     // The existing full controller row separately proves hidden-page visibility.
     // These read-only native queries do not post a product message.
     let deadline = Instant::now() + OBSERVATION_BOUND;
-    native_control::minimize(hwnd, pid);
+    native_control::minimize(hwnd, pid, deadline);
     let native_input = loop {
         let native = native_control::read(hwnd, pid);
         let actual = initial_focus::read(hwnd, pid);
