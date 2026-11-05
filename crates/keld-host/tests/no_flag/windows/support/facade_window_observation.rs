@@ -241,9 +241,19 @@ pub(super) fn restored(
     pid: u32,
     expected_rect: [i32; 4],
 ) -> (NativeState, Instant) {
-    let deadline = Instant::now() + OBSERVATION_BOUND;
+    let started = Instant::now();
+    let deadline = started + OBSERVATION_BOUND;
+    println!("KELD_GH1188_AC26_RESTORE_ENTER view={view}");
     native_control::restore(hwnd, pid);
+    println!(
+        "KELD_GH1188_AC26_RESTORE_RETURN view={view} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
     native_until(hwnd, pid, deadline, |state| !state.minimized);
+    println!(
+        "KELD_GH1188_AC26_RESTORE_NATIVE view={view} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
     pages.wait(pipe, view, deadline, |page| {
         page["visibilityState"] == "visible"
     });
