@@ -30,8 +30,8 @@ pub(crate) struct DescendantObservation {
 
 /// The diagnostic graph supplies candidates, not ownership. Retain each kernel
 /// object before the final graph query, then check every parent generation.
-/// https://learn.microsoft.com/windows/win32/cimwin32prov/win32-process
-/// https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
+/// <https://learn.microsoft.com/windows/win32/cimwin32prov/win32-process>
+/// <https://learn.microsoft.com/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information>
 pub(crate) fn retain_native_descendants(
     root: &mut Child,
     expected_birth: u64,
