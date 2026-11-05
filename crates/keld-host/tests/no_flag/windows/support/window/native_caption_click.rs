@@ -2,10 +2,11 @@
 //! Global input cannot be atomically addressed to an HWND. Immediate eligibility
 //! checks and actual tagged delivery are required; partial input is always INVALID.
 
+use std::io::Write;
 use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{POINT, RECT};
+use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -13,11 +14,13 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput, VK_LBUTTON,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
-    GetMessageExtraInfo, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, HTCAPTION,
-    HWND_TOP, IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SM_CXPADDEDBORDER,
-    SM_CYCAPTION, SM_CYFRAME, SM_SWAPBUTTON, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW,
-    SetCursorPos, SetWindowPos, TranslateMessage, WM_NCHITTEST, WM_NCLBUTTONDOWN, WindowFromPoint,
+    DispatchMessageW, GUITHREADINFO, GW_HWNDPREV, GetCursorPos, GetForegroundWindow,
+    GetGUIThreadInfo, GetMessageExtraInfo, GetSystemMetrics, GetWindow, GetWindowInfo,
+    GetWindowRect, GetWindowThreadProcessId, HTCAPTION, HWND_NOTOPMOST, HWND_TOPMOST, IsWindow,
+    IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SM_CXPADDEDBORDER, SM_CYCAPTION, SM_CYFRAME,
+    SM_SWAPBUTTON, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, SetCursorPos,
+    SetWindowPos, TranslateMessage, WINDOWINFO, WM_NCHITTEST, WM_NCLBUTTONDOWN, WS_EX_TOPMOST,
+    WindowFromPoint,
 };
 
 use super::FocusComparator;
@@ -28,7 +31,7 @@ const CLICK_TAG: usize = 0x4b45_4c44;
 impl FocusComparator {
     pub(crate) fn click_caption(&self, deadline: Instant) {
         super::pump();
-        raise_without_activation(self);
+        let placement = CaptionPlacement::expose(self);
         let point = caption_point(self);
         require_caption(self, point);
         require_released_input();
@@ -80,6 +83,7 @@ impl FocusComparator {
             checked_release(input_size);
             panic!("INVALID caption delivery: tagged_downs={observed}; no restore qualification");
         }
+        placement.finish();
         println!(
             "KELD_GH1188_AC26_OWNED_CAPTION_CLICK helper={} pid={} point={},{} inserted=3 tagged_downs=1 released=true",
             self.hwnd(),
@@ -90,33 +94,126 @@ impl FocusComparator {
     }
 }
 
-fn raise_without_activation(helper: &FocusComparator) {
-    assert!(live_on_owner_thread(helper), "INVALID comparator identity");
-    // SAFETY: numeric readback only; the previous foreground owner is not mutated.
+// Borrows the existing HWND owner only while preparing one caption click.
+// Every qualified return restores the normal z-order band before SW_RESTORE.
+struct CaptionPlacement<'a> {
+    helper: &'a FocusComparator,
+    restore_normal: bool,
+}
+
+impl<'a> CaptionPlacement<'a> {
+    fn expose(helper: &'a FocusComparator) -> Self {
+        assert!(live_on_owner_thread(helper), "INVALID comparator identity");
+        assert_eq!(
+            topmost_state(helper),
+            Some(false),
+            "INVALID comparator did not start in the normal z-order band"
+        );
+        // Arm before the native mutation so a failed readback or input assertion
+        // still attempts demotion before the existing owner destroys its HWND.
+        let placement = Self {
+            helper,
+            restore_normal: true,
+        };
+        trace_placement(helper, "before_topmost");
+        let placed = place_without_activation(helper, HWND_TOPMOST, true);
+        trace_placement(helper, "after_topmost");
+        assert!(placed, "INVALID temporary owned-caption placement");
+        placement
+    }
+
+    fn finish(mut self) {
+        // SAFETY: numeric readback only. The completed tagged click, not either
+        // positioning call, must have made this retained helper foreground.
+        assert_eq!(
+            unsafe { GetForegroundWindow() },
+            self.helper.0,
+            "INVALID caption click lost foreground before demotion"
+        );
+        self.restore_normal = false;
+        let restored = place_without_activation(self.helper, HWND_NOTOPMOST, false);
+        trace_placement(self.helper, "after_notopmost");
+        assert!(
+            restored,
+            "INVALID owned-caption demotion or foreground changed before Restore"
+        );
+        // SAFETY: final numeric readback also rejects a foreground change between
+        // the pre-demotion eligibility check and the position helper's sample.
+        assert_eq!(
+            unsafe { GetForegroundWindow() },
+            self.helper.0,
+            "INVALID comparator is not foreground after normal-band restoration"
+        );
+    }
+}
+
+impl Drop for CaptionPlacement<'_> {
+    fn drop(&mut self) {
+        if self.restore_normal {
+            let restored = place_without_activation(self.helper, HWND_NOTOPMOST, false);
+            // Do not panic again during unwind. The existing FocusComparator
+            // remains the sole HWND owner and destroys it after this borrow ends.
+            let _ = writeln!(
+                std::io::stderr(),
+                "KELD_GH1188_AC26_CAPTION_DEMOTION unwind=true restored={restored} helper={}",
+                self.helper.hwnd()
+            );
+        }
+    }
+}
+
+fn place_without_activation(helper: &FocusComparator, band: HWND, topmost: bool) -> bool {
+    if !live_on_owner_thread(helper) {
+        return false;
+    }
+    // SAFETY: read only the foreground identity; never mutate that other HWND.
     let foreground = unsafe { GetForegroundWindow() };
-    // SAFETY: reorder only this guard's original same-thread HWND in the normal
-    // z-order band. No move, size, topmost state or activation is requested.
-    assert_ne!(
-        unsafe {
-            SetWindowPos(
-                helper.0,
-                HWND_TOP,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            )
-        },
-        0,
-        "INVALID owned-caption placement"
-    );
-    // SAFETY: readback cannot activate any HWND. A concurrent foreground change
-    // also refuses this preparation, rather than manufacturing input eligibility.
-    assert_eq!(
-        unsafe { GetForegroundWindow() },
-        foreground,
-        "INVALID owned-caption placement changed foreground"
+    // SAFETY: change only this borrowed original same-thread HWND's z-order band.
+    // No move, size or activation; no foreign HWND, global policy or owner chain.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setwindowpos
+    let placed = unsafe {
+        SetWindowPos(
+            helper.0,
+            band,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    };
+    placed != 0
+        && live_on_owner_thread(helper)
+        && topmost_state(helper) == Some(topmost)
+        // SAFETY: a concurrent foreground change refuses eligibility too.
+        && unsafe { GetForegroundWindow() } == foreground
+}
+
+fn topmost_state(helper: &FocusComparator) -> Option<bool> {
+    let mut info = WINDOWINFO {
+        cbSize: u32::try_from(std::mem::size_of::<WINDOWINFO>()).ok()?,
+        ..WINDOWINFO::default()
+    };
+    // SAFETY: initialized stack output is borrowed only for this synchronous
+    // read of the retained HWND. Failure cannot qualify either z-order state.
+    (unsafe { GetWindowInfo(helper.0, &raw mut info) } != 0)
+        .then_some(info.dwExStyle & WS_EX_TOPMOST != 0)
+}
+
+fn trace_placement(helper: &FocusComparator, phase: &str) {
+    // SAFETY: read-only identities only. The preceding HWND is a diagnostic;
+    // it is never dereferenced, retained as an owner, or used for a mutation.
+    let (foreground, preceding) = unsafe {
+        (
+            GetForegroundWindow() as usize,
+            GetWindow(helper.0, GW_HWNDPREV) as usize,
+        )
+    };
+    println!(
+        "KELD_GH1188_AC26_CAPTION_PLACEMENT phase={phase} helper={} foreground={foreground} preceding={preceding} topmost={:?} live={}",
+        helper.hwnd(),
+        topmost_state(helper),
+        live_on_owner_thread(helper)
     );
 }
 
