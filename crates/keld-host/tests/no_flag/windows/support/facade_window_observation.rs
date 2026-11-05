@@ -163,7 +163,7 @@ pub(super) fn prepare_restore_input(hwnd: usize, pid: u32) -> FocusComparator {
         "INVALID restore preparation: minimize must already be deactivated; native={before:?} host_thread={host:?}"
     );
     let deadline = Instant::now() + OBSERVATION_BOUND;
-    let helper = FocusComparator::new();
+    let helper = FocusComparator::for_caption_input();
     helper.click_caption(deadline);
     let input = native_until(hwnd, pid, deadline, |state| {
         state.minimized && state.foreground == helper.hwnd()

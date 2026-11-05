@@ -197,17 +197,25 @@ pub(crate) fn foreground(hwnd: usize, pid: u32) {
     unsafe { SetForegroundWindow(raw) };
 }
 
-/// A different-process native comparator: the test process owns this built-in
-/// `STATIC` HWND, while the product Host owns the target. No second `WebView` exists.
+/// A different-process native comparator: this guard owns a built-in system
+/// HWND while the product Host owns the target. No second webview exists.
 pub(crate) struct FocusComparator(HWND);
 
 impl FocusComparator {
     pub(crate) fn new() -> Self {
-        let class: Vec<_> = "STATIC\0".encode_utf16().collect();
+        Self::with_system_class("STATIC\0")
+    }
+
+    pub(crate) fn for_caption_input() -> Self {
+        Self::with_system_class("BUTTON\0")
+    }
+
+    fn with_system_class(class_name: &'static str) -> Self {
+        let class: Vec<_> = class_name.encode_utf16().collect();
         let title: Vec<_> = "KELD AC26 owned focus comparator\0"
             .encode_utf16()
             .collect();
-        // SAFETY: built-in STATIC class, initialized NUL-terminated strings and
+        // SAFETY: fixed built-in STATIC/BUTTON class, initialized NUL-terminated strings and
         // null optional owners. Created and destroyed on this one test thread.
         let hwnd = unsafe {
             CreateWindowExW(

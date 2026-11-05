@@ -15,9 +15,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
     GetMessageExtraInfo, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, HTCAPTION,
-    IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SM_CXPADDEDBORDER, SM_CYCAPTION,
-    SM_CYFRAME, SM_SWAPBUTTON, SendMessageW, SetCursorPos, TranslateMessage, WM_NCHITTEST,
-    WM_NCLBUTTONDOWN, WindowFromPoint,
+    HWND_TOP, IsWindow, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SM_CXPADDEDBORDER,
+    SM_CYCAPTION, SM_CYFRAME, SM_SWAPBUTTON, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW,
+    SetCursorPos, SetWindowPos, TranslateMessage, WM_NCHITTEST, WM_NCLBUTTONDOWN, WindowFromPoint,
 };
 
 use super::FocusComparator;
@@ -28,6 +28,7 @@ const CLICK_TAG: usize = 0x4b45_4c44;
 impl FocusComparator {
     pub(crate) fn click_caption(&self, deadline: Instant) {
         super::pump();
+        raise_without_activation(self);
         let point = caption_point(self);
         require_caption(self, point);
         require_released_input();
@@ -87,6 +88,36 @@ impl FocusComparator {
             point.y
         );
     }
+}
+
+fn raise_without_activation(helper: &FocusComparator) {
+    assert!(live_on_owner_thread(helper), "INVALID comparator identity");
+    // SAFETY: numeric readback only; the previous foreground owner is not mutated.
+    let foreground = unsafe { GetForegroundWindow() };
+    // SAFETY: reorder only this guard's original same-thread HWND in the normal
+    // z-order band. No move, size, topmost state or activation is requested.
+    assert_ne!(
+        unsafe {
+            SetWindowPos(
+                helper.0,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        },
+        0,
+        "INVALID owned-caption placement"
+    );
+    // SAFETY: readback cannot activate any HWND. A concurrent foreground change
+    // also refuses this preparation, rather than manufacturing input eligibility.
+    assert_eq!(
+        unsafe { GetForegroundWindow() },
+        foreground,
+        "INVALID owned-caption placement changed foreground"
+    );
 }
 
 fn live_on_owner_thread(helper: &FocusComparator) -> bool {
@@ -163,7 +194,8 @@ fn require_caption(helper: &FocusComparator, point: POINT) {
     };
     assert_eq!(
         under_point, helper.0,
-        "INVALID caption is occluded or foreign"
+        "INVALID caption is occluded or foreign; point=({}, {}) native_hit={hit}",
+        point.x, point.y
     );
     assert_eq!(
         hit,
