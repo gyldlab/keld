@@ -6,6 +6,9 @@ pub(crate) use project::{FacadeFixture, LastWindowAction};
 
 #[path = "facade_native_observation.rs"]
 mod native;
+
+#[path = "facade_release_observation.rs"]
+mod release_observation;
 pub(crate) use native::{
     assert_retired, capture, census, ephemeral_profile_dir, retained_descendants, same_tree,
 };
@@ -217,44 +220,6 @@ impl FacadeRun {
             self.retained.iter().any(|(pid, _)| *pid == self.bun_pid),
             "live Bun missing from independent native census"
         );
-    }
-
-    /// AC24's approved 2 s duration oracle, not synchronization by sleep.
-    pub(crate) fn assert_no_release_during_hold(&self) {
-        assert!(
-            self.control_capture.is_none(),
-            "hold requires exclusive synchronous control reader"
-        );
-        self.reader
-            .get_ref()
-            .set_nonblocking(true)
-            .expect("nonblocking held reply probe");
-        let until = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < until {
-            assert!(
-                self.reader.buffer().is_empty(),
-                "reply already buffered while DestroyWindow held"
-            );
-            let mut byte = [0_u8; 1];
-            match self.reader.get_ref().peek(&mut byte) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                result => panic!(
-                    "reply or EOF while DestroyWindow still held: {result:?}\n{}",
-                    self.trace()
-                ),
-            }
-            let trace = self.trace();
-            assert!(
-                !trace.lines().any(|line| line.starts_with("RELEASED ")
-                    || line.starts_with("FAILED_BUILD_ANSWERED ")),
-                "release published inside WM_DESTROY:\n{trace}"
-            );
-            thread::park_timeout(Duration::from_millis(10));
-        }
-        self.reader
-            .get_ref()
-            .set_nonblocking(false)
-            .expect("restore control reads");
     }
 
     pub(crate) fn finish(self, deadline: Instant) -> (ExitStatus, String) {

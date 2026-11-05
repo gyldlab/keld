@@ -172,7 +172,24 @@ pub(super) fn minimized(
     let native = native_until(hwnd, pid, deadline, |state| {
         state.minimized && state.foreground != hwnd
     });
-    println!("KELD_GH1188_AC26_MINIMIZED_FOCUS at_risk=1 view={view}");
+    // Foreground ownership can differ from the Host UI queue's activation.
+    // D11 samples GetActiveWindow on that queue, so establish the matching
+    // cross-thread observation before treating a missing public fact as RED.
+    loop {
+        let focus = crate::support::window::initial_focus::read(hwnd, pid);
+        if focus.active != hwnd {
+            println!(
+                "KELD_GH1188_AC26_MINIMIZED_FOCUS at_risk=1 view={view} host_thread={focus:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "INVALID Host-thread deactivation: zero at-risk focus runs; actual={focus:?}"
+        );
+        native_control::pump();
+        thread::park_timeout(Duration::from_millis(10));
+    }
     (native, deadline)
 }
 

@@ -102,6 +102,11 @@ fn stop_bridge_does_not_return_before_its_held_worker_retires() {
     // produces an actual premature completion receipt.
     let before_release = completion.recv_timeout(Duration::from_millis(100));
     release_worker.send(()).expect("allow worker retirement");
+    // The omit-join control can already have reported completion. Consume the
+    // worker's own final acknowledgement before the intended semantic failure.
+    ended
+        .recv_timeout(Duration::from_secs(2))
+        .expect("released worker must acknowledge cleanup before assertions");
     let after_release = if before_release.is_ok() {
         Ok(())
     } else {
@@ -116,5 +121,47 @@ fn stop_bridge_does_not_return_before_its_held_worker_retires() {
     assert!(
         after_release.is_ok(),
         "retirement must finish after worker release: {after_release:?}"
+    );
+}
+
+#[test]
+fn pre_stopped_bridge_retires_without_dispatching_queued_terminal() {
+    let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
+    builder.with_any_thread(true).with_dpi_aware(false);
+    let event_loop = builder.build();
+    let (commands, receiver) = mpsc::channel();
+    commands
+        .send(AppWindowCommand::Fatal)
+        .expect("queue terminal before the worker exists");
+    let stop = Arc::new(AtomicBool::new(true));
+    let terminal_intent = Arc::new(AtomicBool::new(false));
+    let bridge = spawn_app_wake_bridge(
+        receiver,
+        event_loop.create_proxy(),
+        Arc::clone(&stop),
+        Arc::clone(&terminal_intent),
+    )
+    .expect("start pre-stopped worker");
+    drop(bridge);
+
+    // A queued terminal lets even the old loop terminate; no stuck-worker
+    // timeout is the negative oracle. Keep Sender and Tao alive until cleanup.
+    let cleanup_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut cleanup_confirmed = false;
+    while std::time::Instant::now() < cleanup_deadline {
+        if Arc::strong_count(&stop) == 1 && commands.send(AppWindowCommand::Fatal).is_err() {
+            cleanup_confirmed = true;
+            break;
+        }
+        thread::yield_now();
+    }
+    assert!(
+        cleanup_confirmed,
+        "pre-stopped worker must positively retire its captures and receiver"
+    );
+    drop(event_loop);
+    assert!(
+        !terminal_intent.load(Ordering::Acquire),
+        "a pre-stopped bridge dispatched a queued terminal instead of retiring"
     );
 }

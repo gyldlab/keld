@@ -2,12 +2,11 @@
 //! evidence that the unrun production paths satisfy the T3 admission gate.
 
 use super::fixture::{
-    BUILD_FAILURE, FacadeFixture, NATIVE_HOLD, capture, census, marker_number, number, ordered,
+    BUILD_FAILURE, FacadeFixture, capture, census, marker_number, number, ordered,
 };
 use super::{create, destroy};
-use crate::support::window::{NativeWindowSnapshot, app_top_level_windows, post_close};
+use crate::support::window::{NativeWindowSnapshot, app_top_level_windows};
 use crate::{PRODUCT_DEADLINE, ui_end_kill_switch};
-use std::fs;
 use std::time::{Duration, Instant};
 
 /// `IsWindow` only, using the reviewed observer's conservative liveness query.
@@ -208,113 +207,20 @@ fn windows_terminal_waits_for_pending_releases() {
     }
 }
 
+#[path = "facade_window_retirement.rs"]
+mod retirement;
+
 #[test]
 fn windows_release_waits_for_native_teardown() {
-    for release in ["close", "destroy", "failed-build"] {
-        let fixture = FacadeFixture::new();
-        let hold = fixture.project.root.path().join("native-hold");
-        fs::create_dir(&hold).expect("run-owned native hold directory");
-        let mut hooks = vec![(NATIVE_HOLD, format!("destroyed:{}", hold.display()))];
-        if release == "failed-build" {
-            hooks.push((BUILD_FAILURE, "hwnd".to_owned()));
-        }
-        let (mut run, _) = fixture.spawn(&hooks);
-        let native = if release == "failed-build" {
-            None
-        } else {
-            create(&mut run);
-            Some(capture(census(run.pid(), 1)[0], run.pid()))
-        };
-        run.retain_descendants();
-        let profile = fixture.profile_dir();
-        match release {
-            "close" => {
-                run.send("ALLOW 1");
-                run.read("ALLOW");
-                post_close(native.as_ref().expect("created close HWND").hwnd as u64);
-                assert_eq!(run.read("CLOSE_EVENT")["count"], 1);
-            }
-            "destroy" => {
-                run.send("RAW_DESTROY 1");
-                run.read("RAW_DESTROY_SENT");
-            }
-            _ => {
-                run.send("RAW_CREATE failed");
-                run.read("RAW_SENT");
-            }
-        }
-        let (held, _) = run.marker("DESTROY_HELD ", 0);
-        let hwnd = marker_number(&held);
-        assert!(
-            failed_hwnd_live(hwnd),
-            "INVALID AC24 {release}: no TRUE IsWindow at DESTROY_HELD; zero at-risk runs"
-        );
-        if let Some(native) = &native {
-            assert_eq!(hwnd, native.hwnd as u64);
-        }
-        println!("KELD_GH1188_AC24 case={release} at_risk=1 hwnd={hwnd}");
-        run.assert_no_release_during_hold();
-        fs::write(hold.join("release"), b"release\n").expect("release owned native hold");
-        match release {
-            "close" => {
-                assert_eq!(run.read("CLOSED")["count"], 1);
-            }
-            "destroy" => {
-                // Raw async Destroy's fact dispatch and promise continuations can
-                // have either JS scheduling order; both must follow native teardown.
-                let first = run.next();
-                let second = run.next();
-                let records = [first, second];
-                assert!(
-                    records
-                        .iter()
-                        .any(|(kind, value)| kind == "CLOSED" && value["count"] == 1)
-                );
-                assert!(
-                    records
-                        .iter()
-                        .any(|(kind, value)| kind == "DESTROY_REPLY"
-                            && value["reply"] == "Destroyed")
-                );
-            }
-            _ => {
-                assert_eq!(
-                    run.read("RAW_ERROR")["code"],
-                    "KELD-CORE-041",
-                    "U7 fault must answer the actual build error, not a call timeout"
-                );
-            }
-        }
-        assert!(
-            !failed_hwnd_live(hwnd),
-            "reply published with the parent HWND still live"
-        );
-        if let Some(native) = &native {
-            assert!(native.live_handles().is_empty());
-        }
-        assert_eq!(app_top_level_windows(run.pid()), []);
-        let trace = run.quit();
-        let before = if release == "failed-build" {
-            format!("FAILED_BUILD_DESTROYED {hwnd}")
-        } else {
-            format!("DESTROYED {hwnd}")
-        };
-        let after = if release == "failed-build" {
-            "FAILED_BUILD_ANSWERED ".to_owned()
-        } else {
-            "RELEASED ".to_owned()
-        };
-        ordered(
-            &trace,
-            &[
-                before,
-                format!("DESTROY_HELD {hwnd}"),
-                format!("DESTROY_HOLD_END {hwnd}"),
-                format!("TEARDOWN_CONFIRMED {hwnd}"),
-                after,
-            ],
-        );
-        assert!(!profile.exists());
-        fixture.close();
-    }
+    retirement::case("close");
+}
+
+#[test]
+fn windows_destroy_waits_for_native_teardown() {
+    retirement::case("destroy");
+}
+
+#[test]
+fn windows_failed_build_waits_for_native_teardown() {
+    retirement::case("failed-build");
 }
