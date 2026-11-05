@@ -1285,8 +1285,8 @@ Two consumer-specific notes:
   - `packages/@keld/electron/src/app.test.ts`;
   - `crates/keld-compat/src/` and `crates/keld-compat/Cargo.toml`;
   - `.gitattributes`, `.editorconfig` and `tools/`. There is one exception:
-    `tools/ci-inputs.json` registers the support modules as Rust readers and rebinds
-    its digests. Its `rust_source_census` fails closed on any new crate file, so T2
+    `tools/ci-inputs.json` registers the support modules as Rust readers (it recorded
+    digests until GH-1275). Its `rust_source_census` fails closed on any new crate file, so T2
     needs this edit (amended in T2, #640). In T3, the `corpus_citation.rs` reader also
     gains the `.gitattributes` input edge, because its D5 check runs
     `git hash-object`. `tools/test_ci_local.py` gains the router contract case
