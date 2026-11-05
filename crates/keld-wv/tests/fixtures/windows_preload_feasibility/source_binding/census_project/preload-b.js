@@ -1,1 +1,1 @@
-const api = () => send('b');
+const api = () => send("b");
