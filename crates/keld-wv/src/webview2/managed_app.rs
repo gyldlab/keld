@@ -270,6 +270,8 @@ fn close_managed_resources<V, K: Ord + Copy, E>(
     send: impl FnMut(AppWindowEvent) -> Result<(), E>,
 ) -> Result<(), E> {
     views.clear();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    observe::native_release_step("managed-stop.views-cleared", None);
     after_views_closed();
     custody.refuse_deferred(send)
 }

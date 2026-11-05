@@ -2,6 +2,7 @@
 //! observer; it never installs a `WndProc` or changes production window policy.
 
 use std::ptr;
+use std::time::Instant;
 use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
@@ -10,7 +11,7 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, DispatchMessageW, GUITHREADINFO, GetClientRect,
     GetForegroundWindow, GetGUIThreadInfo, IsChild, IsIconic, IsZoomed, MSG, PM_REMOVE,
-    PeekMessageW, SW_MINIMIZE, SW_RESTORE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    PeekMessageW, SW_MINIMIZE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SetForegroundWindow, SetWindowPos, ShowWindowAsync, TranslateMessage, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
 };
@@ -19,6 +20,9 @@ use super::NativeWindowSnapshot;
 
 #[path = "native_caption_click.rs"]
 mod native_caption_click;
+
+#[path = "native_restore.rs"]
+mod native_restore;
 
 /// `GetWindowRect` otherwise reports the caller's virtualized coordinate space.
 /// This guard changes only the native test thread and restores its prior context.
@@ -181,8 +185,9 @@ pub(crate) fn minimize(hwnd: usize, pid: u32) {
     post_show_state(hwnd, pid, SW_MINIMIZE);
 }
 
-pub(crate) fn restore(hwnd: usize, pid: u32) {
-    post_show_state(hwnd, pid, SW_RESTORE);
+pub(crate) fn restore(hwnd: usize, pid: u32, deadline: Instant) {
+    let _ = target(hwnd, pid);
+    native_restore::restore(hwnd, pid, deadline);
 }
 
 fn post_show_state(hwnd: usize, pid: u32, command: i32) {

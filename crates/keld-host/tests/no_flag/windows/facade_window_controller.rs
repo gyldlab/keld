@@ -188,10 +188,9 @@ fn windows_host_window_obligations_reach_the_controller() {
 
     // SW_RESTORE on the maximized, non-minimized owned window restores its normal
     // frame, then the independent no-move resize exercises the existing fitter.
-    native_control::restore(hwnd, pid);
-    state_until(&mut run, id, Instant::now() + OBSERVATION_BOUND, |state| {
-        state["maximized"] == false
-    });
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    native_control::restore(hwnd, pid, deadline);
+    state_until(&mut run, id, deadline, |state| state["maximized"] == false);
     let resized = host_observation::resized(run.stderr(), &mut pages, view, hwnd, pid);
     state_until(&mut run, id, resized.deadline, |state| {
         geometry_matches(state, &resized.native)

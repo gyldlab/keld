@@ -64,10 +64,17 @@ pub(super) fn close_adopted(
     #[cfg(all(feature = "media-acceptance", test))]
     let observed =
         super::media_acceptance::adopted_close_control::before(controller, release.is_some());
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    super::t2_test_observation::native_release_step("adopted-close.enter", None);
     // SAFETY: callers own the adopted controller on its creating UI/STA thread.
     // This runs exactly once from View or standalone failed-build custody.
     // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#close
     let result = unsafe { controller.Close() };
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    super::t2_test_observation::native_release_step(
+        "adopted-close.return",
+        Some(result.as_ref().err().map_or(0, |error| error.code().0)),
+    );
     #[cfg(all(feature = "media-acceptance", test))]
     let result = super::media_acceptance::adopted_close_control::after(result, observed);
     record_adopted_close_result(result, release);

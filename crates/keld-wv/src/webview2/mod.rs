@@ -3176,6 +3176,8 @@ impl Drop for View {
     fn drop(&mut self) {
         // The shared custodian closes on this UI thread before Window drops.
         controller_custody::close_adopted(&self.controller, self.managed_release.as_ref());
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        t2_test_observation::native_release_step("view-drop.close-returned", None);
     }
 }
 

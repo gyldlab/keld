@@ -168,6 +168,8 @@ fn process_failed_handler(
         if queue_process_failed(&sender, instance, kind)? {
             wake()?;
         }
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        super::t2_test_observation::native_release_step("process-failed.body-return", Some(0));
         Ok(())
     }))
 }

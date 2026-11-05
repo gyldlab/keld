@@ -125,6 +125,13 @@ pub(super) fn abnormal(
     }
 }
 
+/// Diagnostics at existing call boundaries only; no admission or release credit.
+pub(super) fn native_release_step(step: &'static str, result: Option<i32>) {
+    if enabled() {
+        eprintln!("KELD_D16_RELEASE_STEP step={step} result={result:?}");
+    }
+}
+
 pub(super) fn foreign_normal(current: super::browser_instance::BrowserInstance, pid: u32) {
     if COUNTS.get().observing {
         eprintln!(

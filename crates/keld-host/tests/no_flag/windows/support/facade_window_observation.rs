@@ -230,6 +230,9 @@ pub(super) fn minimized(
     // D11 samples GetActiveWindow on that queue, so establish the matching
     // cross-thread observation before treating a missing public fact as RED.
     loop {
+        // Pair the native and thread observations in this iteration. These
+        // read-only calls are sequential, not an atomic Windows snapshot.
+        let native_at_focus = native_control::read(hwnd, pid);
         let focus = crate::support::window::initial_focus::read(hwnd, pid);
         if focus.active != hwnd {
             println!(
@@ -239,7 +242,7 @@ pub(super) fn minimized(
         }
         assert!(
             Instant::now() < deadline,
-            "INVALID Host-thread deactivation: zero at-risk focus runs; actual={focus:?}"
+            "INVALID Host-thread deactivation: zero at-risk focus runs; actual={focus:?} native={native_at_focus:?}"
         );
         native_control::pump();
         thread::park_timeout(Duration::from_millis(10));
@@ -291,7 +294,7 @@ pub(super) fn restored(
     let deadline = started + OBSERVATION_BOUND;
     let before_restore_cursor = restore_pipe_cursor(pipe, pages.cursor);
     println!("KELD_GH1188_AC26_RESTORE_ENTER view={view}");
-    native_control::restore(hwnd, pid);
+    native_control::restore(hwnd, pid, deadline);
     println!(
         "KELD_GH1188_AC26_RESTORE_RETURN view={view} elapsed_ms={}",
         started.elapsed().as_millis()
