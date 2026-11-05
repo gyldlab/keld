@@ -55,7 +55,7 @@ pub(super) fn destroy(run: &mut InstalledRun<'_>, window: &LiveWindow) {
     assert_eq!(finished["closed"], 1);
     assert_eq!(finished["contentsDestroyed"], 1);
     assert_retired(&window.native);
-    assert_eq!(census(run.pid(), 0), []);
+    assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
 }
 
 pub(super) fn allow_close(run: &mut InstalledRun<'_>, window: &LiveWindow) {
@@ -69,7 +69,7 @@ pub(super) fn allow_close(run: &mut InstalledRun<'_>, window: &LiveWindow) {
     assert_eq!(number(&closed, "id"), window.id);
     assert_eq!(closed["count"], 1);
     assert_retired(&window.native);
-    assert_eq!(census(run.pid(), 0), []);
+    assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
 }
 
 pub(super) fn healthy_recovery(fixture: &InstalledFacade) {

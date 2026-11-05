@@ -86,7 +86,6 @@ use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::EventLoopBuilderExtWindows;
-use tao::platform::windows::WindowExtWindows;
 use tao::window::Window;
 
 #[cfg(all(feature = "media-acceptance", test))]
@@ -113,7 +112,7 @@ use webview2_com::{
 use webview2_com::{PermissionRequestedEventHandler, wait_with_pump};
 use windows::Win32::Foundation::{
     E_POINTER, E_UNEXPECTED, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INVALID_STATE,
-    FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, RECT, WAIT_FAILED, WAIT_TIMEOUT,
+    FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
@@ -154,6 +153,7 @@ use crate::engine::{
     WebView2EngineExt, WebviewSpec,
 };
 use crate::error::WvError;
+#[cfg(all(feature = "media-acceptance", test))]
 use crate::media::webview_media_principal;
 use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, ProfileLifecycleAction,

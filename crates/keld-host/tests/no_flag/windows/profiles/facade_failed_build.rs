@@ -17,7 +17,7 @@ fn windows_installed_managed_zero_window_quit_releases_profile() {
     let fixture = InstalledFacade::new();
     let mut run = fixture.start(&[]);
     assert_ready_empty(&fixture, &run);
-    assert_eq!(census(run.pid(), 0), []);
+    assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
     run.retain_descendants();
     run.send("QUIT");
     run.read("QUIT_ACCEPTED");
@@ -52,7 +52,7 @@ fn windows_installed_failed_view_keeps_its_browser_release_obligation() {
             refused["windows"], 0,
             "failed construction published a public window"
         );
-        assert_eq!(census(run.pid(), 0), []);
+        assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
         run.capture_control();
         run.send("QUIT");
         // A checked release failure may terminate the link before Quit replies.
