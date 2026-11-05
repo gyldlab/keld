@@ -18,7 +18,7 @@ use windows::Win32::System::Threading::WaitForSingleObject;
 use super::observation;
 
 const CHILD: &str = "windows_file_native_probe_child";
-const CHILD_MARKER: &str = "w3-q22-native-v1";
+const CHILD_MARKER: &str = "w3-q22-native-v2";
 
 fn create_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = OpenOptions::new()
@@ -215,17 +215,38 @@ fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Res
     native.wait_event("navigation-completed")?;
     receipt["pages"]["page"] = read_page(native)?;
     native.phase("evaluation");
-    let value =
-        serde_json::to_string(&format!("settled-{nonce}")).map_err(|error| error.to_string())?;
-    let promise = format!("new Promise(resolve => queueMicrotask(() => resolve({value})))");
+    let expression = |prefix: &str| {
+        serde_json::to_string(&format!("{prefix}-{nonce}")).map_err(|error| error.to_string())
+    };
+    let value = expression("execute-string")?;
     receipt["evaluations"]["execute_string"] = native.evaluate(&value, false)?;
-    receipt["evaluations"]["execute_promise"] = native.evaluate(&promise, false)?;
+    let value = expression("execute-promise")?;
+    receipt["evaluations"]["execute_promise"] = native.evaluate(
+        &format!("new Promise(resolve => queueMicrotask(() => resolve({value})))"),
+        false,
+    )?;
+    let value = expression("cdp-string")?;
     receipt["evaluations"]["cdp_string"] = native.evaluate(&value, true)?;
-    receipt["evaluations"]["cdp_promise"] = native.evaluate(&promise, true)?;
-    let error =
-        serde_json::to_string(&format!("throw-{nonce}")).map_err(|error| error.to_string())?;
+    let value = expression("cdp-promise")?;
+    receipt["evaluations"]["cdp_promise"] = native.evaluate(
+        &format!("new Promise(resolve => queueMicrotask(() => resolve({value})))"),
+        true,
+    )?;
+    let error = expression("throw")?;
     receipt["evaluations"]["cdp_throw"] = native.evaluate(
         &format!("(() => {{ throw new TypeError({error}); }})()"),
+        true,
+    )?;
+    let error = expression("reject")?;
+    receipt["evaluations"]["cdp_reject"] = native.evaluate(
+        &format!(
+            "new Promise((_, reject) => queueMicrotask(() => reject(new RangeError({error}))))"
+        ),
+        true,
+    )?;
+    let value = expression("cdp-recovery")?;
+    receipt["evaluations"]["cdp_recovery"] = native.evaluate(
+        &format!("new Promise(resolve => queueMicrotask(() => resolve({value})))"),
         true,
     )?;
     Ok(())

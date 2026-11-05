@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-pub(super) const SCHEMA: &str = "keld.w3-q22-native-observation/v1";
+pub(super) const SCHEMA: &str = "keld.w3-q22-native-observation/v2";
 
 fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {
@@ -125,7 +125,6 @@ fn checked_header_observations(receipt: &Value) -> Result<(), String> {
 
 fn check_evaluations(receipt: &Value) -> Result<(), String> {
     let nonce = receipt["nonce"].as_str().ok_or("missing fixture nonce")?;
-    let expected = format!("settled-{nonce}");
     let evals = &receipt["evaluations"];
     for name in [
         "execute_string",
@@ -133,33 +132,67 @@ fn check_evaluations(receipt: &Value) -> Result<(), String> {
         "cdp_string",
         "cdp_promise",
         "cdp_throw",
+        "cdp_reject",
+        "cdp_recovery",
     ] {
         require(
-            evals[name]["hresult"] == "S_OK",
-            "native evaluation callback failed or is missing",
+            evals[name]["hresult"] == "S_OK" && evals[name].get("body").is_some(),
+            "native evaluation callback or result body failed or is missing",
         )?;
     }
     require(
-        evals["execute_string"]["body"] == expected,
-        "ExecuteScript string control did not execute",
+        evals["execute_string"]["body"] == format!("execute-string-{nonce}"),
+        "ExecuteScript string control did not execute its own expression",
     )?;
+    // Pin the observed native unawaited-Promise control, rather than accepting any
+    // unequal value (including an absent result). This is not a facade contract.
     require(
-        evals["execute_promise"]["body"] != expected,
-        "ExecuteScript Promise control did not distinguish settled delivery",
+        evals["execute_promise"]["body"] == json!({}),
+        "ExecuteScript Promise control did not return the observed empty object",
     )?;
-    for name in ["cdp_string", "cdp_promise"] {
+    for (name, prefix) in [
+        ("cdp_string", "cdp-string"),
+        ("cdp_promise", "cdp-promise"),
+        ("cdp_recovery", "cdp-recovery"),
+    ] {
+        let body = &evals[name]["body"];
         require(
-            evals[name]["body"]["result"]["value"] == expected,
-            "actual CDP value did not settle to the fixture value",
+            body.get("exceptionDetails").is_none()
+                && body["result"]["type"] == "string"
+                && body["result"]["value"] == format!("{prefix}-{nonce}"),
+            "actual CDP value is missing, exceptional or from another expression",
         )?;
     }
-    let error = evals["cdp_throw"]["body"]["exceptionDetails"]["exception"]["description"]
-        .as_str()
-        .ok_or("missing actual script exception")?;
-    require(
-        error.contains(&format!("throw-{nonce}")),
-        "script exception belongs to another expression",
-    )
+    for (name, class, prefix) in [
+        ("cdp_throw", "TypeError", "throw"),
+        ("cdp_reject", "RangeError", "reject"),
+    ] {
+        let body = &evals[name]["body"];
+        let expected = format!("{class}: {prefix}-{nonce}");
+        let matches_error = |error: &Value| {
+            error["type"] == "object"
+                && error["subtype"] == "error"
+                && error["className"] == class
+                && error.get("value").is_none()
+                && error["description"]
+                    .as_str()
+                    .and_then(|description| description.lines().next())
+                    == Some(expected.as_str())
+        };
+        require(
+            matches_error(&body["exceptionDetails"]["exception"]),
+            "script exception is missing or belongs to another expression",
+        )?;
+        // With returnByValue, a rejected Promise can carry the serialized Error
+        // value ({}) in result; the identifying error is in exceptionDetails.
+        // A synchronous throw may instead return the error RemoteObject twice.
+        require(
+            matches_error(&body["result"])
+                || (name == "cdp_reject" && body["result"] == json!({"type":"object","value":{}})),
+            "script error result is missing or contradicts its exception",
+        )?;
+    }
+    Ok(())
 }
 
 fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {

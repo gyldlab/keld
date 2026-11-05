@@ -80,10 +80,19 @@ fn sample() -> Value {
         "host_request":{"uri":"file:///D:/owned/doc.html","sent_value":"attempt","create_hresult":"S_OK","navigate_hresult":"S_OK","input_header":{"state":"present","value":"attempt"}},
         "pages":{"host-header":page,"plain":page,"page":page,"iframe":{"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[{"nonce":"probe","href":"file:///D:/owned/doc.html"}]}},
         "evaluations":{
-            "execute_string":{"hresult":"S_OK","body":"settled-probe"},"execute_promise":{"hresult":"S_OK","body":{}},
-            "cdp_string":{"hresult":"S_OK","body":{"result":{"value":"settled-probe"}}},
-            "cdp_promise":{"hresult":"S_OK","body":{"result":{"value":"settled-probe"}}},
-            "cdp_throw":{"hresult":"S_OK","body":{"exceptionDetails":{"exception":{"description":"TypeError: throw-probe"}}}}
+            "execute_string":{"hresult":"S_OK","body":"execute-string-probe"},
+            "execute_promise":{"hresult":"S_OK","body":{}},
+            "cdp_string":{"hresult":"S_OK","body":{"result":{"type":"string","value":"cdp-string-probe"}}},
+            "cdp_promise":{"hresult":"S_OK","body":{"result":{"type":"string","value":"cdp-promise-probe"}}},
+            "cdp_throw":{"hresult":"S_OK","body":{
+                "result":{"type":"object","subtype":"error","className":"TypeError","description":"TypeError: throw-probe\n    at <anonymous>:1:16"},
+                "exceptionDetails":{"exception":{"type":"object","subtype":"error","className":"TypeError","description":"TypeError: throw-probe\n    at <anonymous>:1:16"}}
+            }},
+            "cdp_reject":{"hresult":"S_OK","body":{
+                "result":{"type":"object","subtype":"error","className":"RangeError","description":"RangeError: reject-probe\n    at <anonymous>:1:42"},
+                "exceptionDetails":{"exception":{"type":"object","subtype":"error","className":"RangeError","description":"RangeError: reject-probe\n    at <anonymous>:1:42"}}
+            }},
+            "cdp_recovery":{"hresult":"S_OK","body":{"result":{"type":"string","value":"cdp-recovery-probe"}}}
         },
         "cleanup":{"fatal_process_exit_required":false,"controller_closed":true,"window_destroyed":true,"profile_removed":true,"com_uninitialized":true,"faults":[]}
     })
@@ -190,5 +199,186 @@ fn a_header_on_the_same_uri_iframe_refutes_attribution() {
     assert_eq!(
         assess(&receipt).expect("complete contaminated control")["q22_a_b_header_propagation_observed"],
         false
+    );
+}
+
+#[test]
+fn missing_execute_promise_body_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["execute_promise"]
+        .as_object_mut()
+        .expect("evaluation object")
+        .remove("body");
+    assert!(
+        assess(&receipt).is_err(),
+        "missing native result was accepted"
+    );
+}
+
+#[test]
+fn mixed_success_and_exception_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_string"]["body"]["exceptionDetails"] = json!({});
+    assert!(
+        assess(&receipt).is_err(),
+        "contradictory success was accepted"
+    );
+}
+
+#[test]
+fn wrong_success_result_type_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_promise"]["body"]["result"]["type"] = json!("object");
+    assert!(
+        assess(&receipt).is_err(),
+        "wrong native result type was accepted"
+    );
+}
+
+#[test]
+fn stack_only_error_marker_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_throw"]["body"]["exceptionDetails"]["exception"]["description"] =
+        json!("TypeError: unrelated\n    at throw-probe (unrelated.js:1:1)");
+    assert!(
+        assess(&receipt).is_err(),
+        "stack text impersonated the error value"
+    );
+}
+
+#[test]
+fn copied_cdp_completion_cannot_pass() {
+    for (target, source) in [
+        ("cdp_promise", "cdp_string"),
+        ("cdp_string", "cdp_promise"),
+        ("cdp_recovery", "cdp_promise"),
+    ] {
+        let mut receipt = sample();
+        receipt["evaluations"][target] = receipt["evaluations"][source].clone();
+        assert!(assess(&receipt).is_err(), "{source} impersonated {target}");
+    }
+}
+
+#[test]
+fn missing_rejected_promise_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]
+        .as_object_mut()
+        .expect("evaluations")
+        .remove("cdp_reject");
+    assert!(
+        assess(&receipt).is_err(),
+        "unobserved rejection was accepted"
+    );
+}
+
+#[test]
+fn throw_substituted_for_rejection_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_reject"] = receipt["evaluations"]["cdp_throw"].clone();
+    assert!(
+        assess(&receipt).is_err(),
+        "synchronous throw replaced Promise rejection"
+    );
+}
+
+#[test]
+fn missing_post_error_recovery_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]
+        .as_object_mut()
+        .expect("evaluations")
+        .remove("cdp_recovery");
+    assert!(
+        assess(&receipt).is_err(),
+        "unobserved recovery was accepted"
+    );
+}
+
+#[test]
+fn unawaited_cdp_promise_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_promise"]["body"]["result"] =
+        json!({"type":"object","subtype":"promise","objectId":"unsettled"});
+    assert!(
+        assess(&receipt).is_err(),
+        "Promise handle replaced its settled value"
+    );
+}
+
+#[test]
+fn error_result_disagrees_with_exception_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_reject"]["body"]["result"]["description"] =
+        json!("RangeError: unrelated");
+    assert!(
+        assess(&receipt).is_err(),
+        "inconsistent error result was accepted"
+    );
+}
+
+#[test]
+fn previous_receipt_schema_cannot_qualify_extended_matrix() {
+    let mut receipt = sample();
+    receipt["schema"] = json!("keld.w3-q22-native-observation/v1");
+    assert_eq!(
+        assess(&receipt).expect_err("old receipt must be requalified"),
+        "wrong or missing native receipt schema"
+    );
+}
+
+#[test]
+fn rejected_promise_serialized_error_is_valid() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_reject"]["body"]["result"] = json!({"type":"object","value":{}});
+    assert!(
+        assess(&receipt).is_ok(),
+        "valid by-value Error representation was refused"
+    );
+}
+
+#[test]
+fn serialized_rejection_without_exception_cannot_pass() {
+    let mut receipt = sample();
+    let body = &mut receipt["evaluations"]["cdp_reject"]["body"];
+    body["result"] = json!({"type":"object","value":{}});
+    body.as_object_mut()
+        .expect("body")
+        .remove("exceptionDetails");
+    assert!(
+        assess(&receipt).is_err(),
+        "serialized value replaced error evidence"
+    );
+}
+
+#[test]
+fn serialized_rejection_with_foreign_error_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_reject"]["body"]["result"] = json!({"type":"object","value":{}});
+    receipt["evaluations"]["cdp_reject"]["body"]["exceptionDetails"]["exception"]["description"] =
+        json!("RangeError: foreign");
+    assert!(
+        assess(&receipt).is_err(),
+        "another rejection impersonated this expression"
+    );
+}
+
+#[test]
+fn serialized_result_is_not_the_observed_synchronous_throw() {
+    let mut receipt = sample();
+    receipt["evaluations"]["cdp_throw"]["body"]["result"] = json!({"type":"object","value":{}});
+    assert!(
+        assess(&receipt).is_err(),
+        "Promise representation replaced the throw control"
+    );
+}
+
+#[test]
+fn null_execute_promise_body_cannot_pass() {
+    let mut receipt = sample();
+    receipt["evaluations"]["execute_promise"]["body"] = Value::Null;
+    assert!(
+        assess(&receipt).is_err(),
+        "null replaced the observed Promise object"
     );
 }
