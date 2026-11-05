@@ -60,3 +60,74 @@ fn missing_or_wrongly_typed_page_values_cannot_be_printed_as_observations() {
         assert!(compact_readback(bad).is_err(), "invalid observation: {bad}");
     }
 }
+
+#[test]
+fn callback_wakes_only_after_publishing_the_actual_page_result() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let woke = std::cell::Cell::new(false);
+    super::publish_reply(&sender, Ok("actual page result".to_owned()), || {
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("reply precedes wake")
+                .expect("actual result"),
+            "actual page result"
+        );
+        woke.set(true);
+        Ok(())
+    })
+    .expect("callback delivery");
+    assert!(
+        woke.get(),
+        "accepted page callback never woke its event loop"
+    );
+}
+
+#[test]
+fn callback_error_also_wakes_with_the_original_failure() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let woke = std::cell::Cell::new(false);
+    let code = windows::Win32::Foundation::E_UNEXPECTED;
+    super::publish_reply(&sender, Err(windows::core::Error::from(code)), || {
+        assert_eq!(
+            receiver
+                .try_recv()
+                .expect("failure precedes wake")
+                .expect_err("script failed")
+                .code(),
+            code
+        );
+        woke.set(true);
+        Ok(())
+    })
+    .expect("failure delivery");
+    assert!(woke.get(), "failed page callback never woke its event loop");
+}
+
+#[test]
+fn callback_cannot_report_success_when_its_live_receiver_cannot_be_woken() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let code = windows::Win32::Foundation::E_UNEXPECTED;
+    let error = super::publish_reply(&sender, Ok("actual".to_owned()), || {
+        Err(windows::core::Error::from(code))
+    })
+    .expect_err("a failed live-receiver wake must be returned");
+    assert_eq!(error.code(), code);
+    assert_eq!(
+        receiver
+            .try_recv()
+            .expect("published reply")
+            .expect("actual result"),
+        "actual"
+    );
+}
+
+#[test]
+fn callback_after_receiver_retirement_never_posts_another_wake() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(receiver);
+    super::publish_reply(&sender, Ok("retired".to_owned()), || {
+        panic!("retired page callback must not post a wake")
+    })
+    .expect("receiver retirement is complete");
+}
