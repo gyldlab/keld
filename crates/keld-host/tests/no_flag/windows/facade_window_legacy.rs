@@ -61,8 +61,8 @@ fn windows_legacy_window_keeps_the_host_window_obligations() {
     let profile = ephemeral_profile_dir(root.path());
     let mut pages = Pages::default();
     let moved = host_observation::moved(&stderr, &mut pages, 1, native.hwnd, pid);
-    let helper = host_observation::restore_predecessor(native.hwnd, pid);
-    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid, &helper);
+    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid);
+    let restore_input = host_observation::prepare_restore_input(native.hwnd, pid);
     host_observation::restored(
         &stderr,
         &mut pages,
@@ -71,8 +71,8 @@ fn windows_legacy_window_keeps_the_host_window_obligations() {
         pid,
         moved.native.window.outer_rect,
     );
-    host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid, &helper);
-    drop(helper);
+    drop(restore_input);
+    host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid);
     println!("KELD_GH1188_AC26 route=renderer controller_oracles_complete=true");
 
     writer.write_all(b"QUIT\n").expect("legacy raw Quit");
@@ -137,8 +137,8 @@ fn windows_hello_window_keeps_the_host_window_obligations() {
     assert!(!retained.is_empty(), "hello has no browser process at risk");
     let profile = ephemeral_profile_dir(root.path());
     let moved = host_observation::moved(&stderr, &mut pages, 1, native.hwnd, pid);
-    let helper = host_observation::restore_predecessor(native.hwnd, pid);
-    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid, &helper);
+    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid);
+    let restore_input = host_observation::prepare_restore_input(native.hwnd, pid);
     host_observation::restored(
         &stderr,
         &mut pages,
@@ -147,8 +147,8 @@ fn windows_hello_window_keeps_the_host_window_obligations() {
         pid,
         moved.native.window.outer_rect,
     );
-    host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid, &helper);
-    drop(helper);
+    drop(restore_input);
+    host_observation::focus_cycle(&stderr, &mut pages, 1, native.hwnd, pid);
     println!("KELD_GH1188_AC26 route=hello controller_oracles_complete=true");
 
     post_close(native.hwnd as u64);
