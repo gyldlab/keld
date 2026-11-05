@@ -153,12 +153,27 @@ pub(super) fn moved(
     }
 }
 
+/// Keep one test-owned foreground predecessor alive across minimize/restore.
+/// Call only after the move oracle; each minimize verifies its actual selection.
+pub(super) fn restore_predecessor(hwnd: usize, pid: u32) -> FocusComparator {
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    let helper = FocusComparator::new();
+    helper.activate();
+    native_until(hwnd, pid, deadline, |state| {
+        state.foreground == helper.hwnd()
+    });
+    native_control::foreground(hwnd, pid);
+    native_until(hwnd, pid, deadline, |state| state.foreground == hwnd);
+    helper
+}
+
 pub(super) fn minimized(
     pipe: &PipeText,
     pages: &mut Pages,
     view: u64,
     hwnd: usize,
     pid: u32,
+    helper: &FocusComparator,
 ) -> (NativeState, Instant) {
     let deadline = Instant::now() + OBSERVATION_BOUND;
     native_control::minimize(hwnd, pid);
@@ -167,11 +182,15 @@ pub(super) fn minimized(
     pages.wait(pipe, view, deadline, |page| {
         page["visibilityState"] == "hidden"
     });
-    // The initial IsIconic transition can precede foreground settlement. Sample
-    // the actual minimized/deactivated state within the same original bound.
+    // The initial IsIconic transition can precede foreground settlement. Require
+    // the retained test-owned predecessor within the same original bound.
     let native = native_until(hwnd, pid, deadline, |state| {
-        state.minimized && state.foreground != hwnd
+        state.minimized && state.foreground == helper.hwnd()
     });
+    println!(
+        "KELD_GH1188_AC26_RESTORE_PREDECESSOR view={view} hwnd={}",
+        helper.hwnd()
+    );
     // Foreground ownership can differ from the Host UI queue's activation.
     // D11 samples GetActiveWindow on that queue, so establish the matching
     // cross-thread observation before treating a missing public fact as RED.
@@ -226,13 +245,19 @@ pub(super) fn restored(
     (native, deadline)
 }
 
-pub(super) fn focus_cycle(pipe: &PipeText, pages: &mut Pages, view: u64, hwnd: usize, pid: u32) {
+pub(super) fn focus_cycle(
+    pipe: &PipeText,
+    pages: &mut Pages,
+    view: u64,
+    hwnd: usize,
+    pid: u32,
+    helper: &FocusComparator,
+) {
     let before = native_control::read(hwnd, pid);
     assert!(
         before.foreground == hwnd && before.focus_is_child,
         "INVALID focus-return input; target/page must initially own focus: {before:?}"
     );
-    let helper = FocusComparator::new();
     helper.activate();
     let deadline = Instant::now() + OBSERVATION_BOUND;
     native_until(hwnd, pid, deadline, |state| {
@@ -256,7 +281,6 @@ pub(super) fn focus_cycle(pipe: &PipeText, pages: &mut Pages, view: u64, hwnd: u
         "KELD_GH1188_AC26_RETURNED_FOCUS view={view} child_hwnd={}",
         after.focus
     );
-    drop(helper);
 }
 
 pub(super) fn resized(

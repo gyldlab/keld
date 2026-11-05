@@ -114,7 +114,9 @@ fn windows_host_window_obligations_reach_the_controller() {
     let before_minimize = state_until(&mut run, id, moved.deadline, |state| {
         geometry_matches(state, &moved.native)
     });
-    let (_, deadline) = host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid);
+    let helper = host_observation::restore_predecessor(hwnd, pid);
+    let (_, deadline) =
+        host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid, &helper);
     let minimized = state_until(&mut run, id, deadline, |state| {
         state["position"] == before_minimize["position"]
             && state["size"] == before_minimize["size"]
@@ -147,7 +149,8 @@ fn windows_host_window_obligations_reach_the_controller() {
         maximized_native.maximized,
         "public maximize did not affect the native window"
     );
-    let (_, deadline) = host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid);
+    let (_, deadline) =
+        host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid, &helper);
     let minimized_max = state_until(&mut run, id, deadline, |state| {
         state["maximized"] == true
             && state["size"] == maximized["size"]
@@ -174,7 +177,8 @@ fn windows_host_window_obligations_reach_the_controller() {
         "maximized restore sampled the Moved event before Tao restored its state"
     );
     println!("KELD_GH1188_AC26_MAXIMIZED_RESTORE at_risk=1");
-    host_observation::focus_cycle(run.stderr(), &mut pages, view, hwnd, pid);
+    host_observation::focus_cycle(run.stderr(), &mut pages, view, hwnd, pid, &helper);
+    drop(helper);
     state_until(&mut run, id, Instant::now() + OBSERVATION_BOUND, |state| {
         state["focusedId"] == id
     });
