@@ -145,6 +145,10 @@ impl ManagedWindows {
                 },
             ),
             NativeFacts::QueuedFocus => {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if observe::enabled() {
+                    eprintln!("FOCUS_QUEUED {} minimized_geometry", id.0);
+                }
                 // Minimize can change activation without another Tao Focused
                 // event after keyboard focus moved into the WebView child.
                 // Reuse the controller notification: its consumer re-finds the
@@ -194,12 +198,18 @@ impl ManagedWindows {
         let Some(view) = self.views.get(&id.0) else {
             return Ok(());
         };
+        let focused = view.is_active();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if observe::enabled() {
+            eprintln!(
+                "FOCUS_SAMPLED {} hwnd={} active={focused}",
+                id.0,
+                view.window.hwnd()
+            );
+        }
         send(
             &self.events,
-            AppWindowEvent::WindowFocus {
-                view: id,
-                focused: view.is_active(),
-            },
+            AppWindowEvent::WindowFocus { view: id, focused },
         )
     }
 
