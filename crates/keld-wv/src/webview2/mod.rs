@@ -435,6 +435,8 @@ enum WindowsLoopEvent {
     ProfileReleaseWake,
     DeferredBuildWake,
     ControllerFocus(WebviewId),
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    PageReadbackWake,
 }
 
 struct PersistentPurgeOwner {
@@ -3383,7 +3385,8 @@ impl WebView2Engine {
             barrier_grace_expiry,
         )?;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let page_readback = managed_test_control::PageReadback::from_env()?;
+        let page_readback =
+            managed_test_control::PageReadback::from_env(event_loop.native.create_proxy())?;
         let browser_binding = Arc::new(BrowserBinding::new());
         let browser_exit = observe_profile_browser_exit(
             &environment,
