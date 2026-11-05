@@ -8,12 +8,12 @@ use super::super::facade_browser_fixture::{InstalledFacade, InstalledRun, number
 use super::super::sessions::LifecycleObservation;
 use super::{ENVIRONMENT_DESCENDANT, HOLD, observe_environment_child, observe_loop_end};
 use crate::PRODUCT_DEADLINE;
-use crate::facade_window::fixture::{assert_retired, census, ordered, same_tree};
+use crate::facade_window::fixture::{assert_retired, census, ordered, pre_close_tree, same_tree};
 use crate::support::installed::fixture_env;
 use crate::support::process::{
     assert_process_signaled, open_process_for_wait, terminate_test_process, wait_for_process_signal,
 };
-use crate::support::window::{NativeWindowSnapshot, post_close};
+use crate::support::window::post_close;
 use serde_json::Value;
 use std::os::windows::io::OwnedHandle;
 use std::time::{Duration, Instant};
@@ -30,13 +30,10 @@ fn windows_installed_veto_keeps_the_live_profile_running() {
     let browser = run.browser(None, false);
     run.retain_descendants();
 
+    let before_close = pre_close_tree(&window.native, run.pid());
     println!(
-        "KELD_GH1188_VETO_PRE_STIMULUS hwnd={} native={:?}",
+        "KELD_GH1188_VETO_PRE_STIMULUS hwnd={} native={before_close:?}",
         window.native.hwnd,
-        NativeWindowSnapshot::capture(
-            u64::try_from(window.native.hwnd).expect("retained owned HWND"),
-            run.pid(),
-        ),
     );
 
     post_close(u64::try_from(window.native.hwnd).expect("retained owned HWND"));
@@ -55,7 +52,7 @@ fn windows_installed_veto_keeps_the_live_profile_running() {
     // Cancel and the subsequent stale Allow have both been consumed. No terminal
     // or build is pending, so the persistent record is quiescent, not polled.
     let veto_record = fixture.lifecycle();
-    same_tree(&window.native, run.pid());
+    same_tree(&before_close, run.pid());
     assert_eq!(wait_for_process_signal(&browser.handle, 0), WAIT_TIMEOUT);
     let retained_browser = run.browser(Some(browser.pid), false);
     assert_eq!(retained_browser.pid, browser.pid);
@@ -71,6 +68,7 @@ fn windows_installed_veto_keeps_the_live_profile_running() {
     assert_eq!(closed["count"], 1);
     assert_eq!(closed["contentsDestroyed"], true);
     assert_retired(&window.native);
+    assert_retired(&before_close);
     assert_eq!(census(run.pid(), 0), Vec::<isize>::new());
     run.send("QUIT");
     run.read("QUIT_ACCEPTED");

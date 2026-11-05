@@ -2,13 +2,13 @@
 //! File rendezvous is private to the existing staged role and `ProductFixture`.
 
 use super::fixture::{
-    FacadeFixture, FacadeRun, assert_retired, capture, census, number, same_tree,
+    FacadeFixture, FacadeRun, assert_retired, capture, census, number, pre_close_tree, same_tree,
 };
 use super::initial::capture_native;
 use super::{create, destroy};
 use crate::PRODUCT_DEADLINE;
 use crate::support::window::native_control::{self, PhysicalCoordinates};
-use crate::support::window::{NativeWindowSnapshot, app_top_level_windows, post_close};
+use crate::support::window::{app_top_level_windows, post_close};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -99,10 +99,10 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
     assert_eq!(run.read("CLOSE_HOLD_ARMED")["id"], id);
     let release = ReleaseCloseOnDrop(root.join("release"));
     let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let before_close = pre_close_tree(&native, run.pid());
     println!(
-        "KELD_GH1188_DUPLICATE_CLOSE_PRE_STIMULUS hwnd={} native={:?}",
+        "KELD_GH1188_DUPLICATE_CLOSE_PRE_STIMULUS hwnd={} native={before_close:?}",
         native.hwnd,
-        NativeWindowSnapshot::capture(native.hwnd as u64, run.pid()),
     );
     post_close(native.hwnd as u64);
     let pending = close_record(&mut run, &root, "pending", deadline);
@@ -123,10 +123,14 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
     )
     .expect("second native close was dispatched while the first callback was held");
 
+    let after_duplicate = capture(
+        isize::try_from(native.hwnd).expect("original HWND"),
+        run.pid(),
+    );
+    let live_after_duplicate = before_close.live_handles().len();
     println!(
-        "KELD_GH1188_DUPLICATE_CLOSE_PRE_MOVE hwnd={} native={:?}",
+        "KELD_GH1188_DUPLICATE_CLOSE_PRE_MOVE hwnd={} native={after_duplicate:?}",
         native.hwnd,
-        NativeWindowSnapshot::capture(native.hwnd as u64, run.pid()),
     );
 
     // This later Bounds event uses the same UI Sender and Core event FIFO as
@@ -163,14 +167,19 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
     run.send(&format!("VERIFY_VETO {id}"));
     let veto = run.read("VETO_VERIFIED");
     let after = capture(census(run.pid(), 1)[0], run.pid());
-    let mut original_children = native.children.clone();
+    let live_after_veto = before_close.live_handles().len();
+    let mut original_children = before_close.children.clone();
+    let mut pending_children = after_duplicate.children.clone();
     let mut remaining_children = after.children.clone();
     original_children.sort_unstable();
+    pending_children.sort_unstable();
     remaining_children.sort_unstable();
     let browser_after = fixture.browser(&run);
     fixture.assert_lease_held();
     destroy(&mut run, id);
     assert_retired(&native);
+    assert_retired(&before_close);
+    assert_retired(&after_duplicate);
     assert_retired(&after);
     let trace = run.quit();
     assert_eq!(app_top_level_windows(host_pid), Vec::new());
@@ -191,7 +200,13 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
     assert_eq!(veto["reply"], "ReplyStale");
     assert_eq!(veto["pending"], Value::Null);
     assert_eq!(veto["closed"], 0);
+    assert_eq!(native.hwnd, before_close.hwnd);
+    assert_eq!(before_close.hwnd, after_duplicate.hwnd);
     assert_eq!(native.hwnd, after.hwnd);
+    assert_eq!(before_close.outer_rect, after_duplicate.outer_rect);
+    assert_eq!(live_after_duplicate, before_close.children.len() + 1);
+    assert_eq!(live_after_veto, before_close.children.len() + 1);
+    assert_eq!(original_children, pending_children);
     assert_eq!(original_children, remaining_children);
     assert_eq!(browser["browser_pid"], browser_after["browser_pid"]);
     println!(
@@ -225,17 +240,19 @@ fn windows_vetoed_and_followup_windows_outlive_the_release_guard() {
     let original = capture(census(run.pid(), 1)[0], run.pid());
     run.retain_descendants();
     let profile = fixture.profile_dir();
+    let before_close = pre_close_tree(&original, run.pid());
     post_close(original.hwnd as u64);
     assert_eq!(run.read("CLOSE_EVENT")["count"], 1);
     run.send(&format!("VERIFY_VETO {id}"));
     assert_eq!(run.read("VETO_VERIFIED")["reply"], "ReplyStale");
-    guard_survival(&mut run, &original);
+    guard_survival(&mut run, &before_close);
     run.send(&format!("ALLOW {id}"));
     run.read("ALLOW");
     post_close(original.hwnd as u64);
     assert_eq!(run.read("CLOSE_EVENT")["count"], 2);
     assert_eq!(run.read("CLOSED")["count"], 1);
     assert_retired(&original);
+    assert_retired(&before_close);
     assert_eq!(app_top_level_windows(run.pid()), []);
 
     let successor = create(&mut run);

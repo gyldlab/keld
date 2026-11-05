@@ -10,7 +10,8 @@ mod native;
 #[path = "facade_release_observation.rs"]
 mod release_observation;
 pub(crate) use native::{
-    assert_retired, capture, census, ephemeral_profile_dir, retained_descendants, same_tree,
+    assert_retired, capture, census, ephemeral_profile_dir, pre_close_tree, retained_descendants,
+    same_tree,
 };
 
 use crate::support::control::{

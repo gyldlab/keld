@@ -42,6 +42,43 @@ fn capture_observed(hwnd: isize, pid: u32, phase: &str) -> NativeWindowSnapshot 
     snapshot
 }
 
+/// Freeze the complete tree once at the close boundary without losing any
+/// creation-time child. Later close observations still require exact equality.
+pub(crate) fn pre_close_tree(before: &NativeWindowSnapshot, pid: u32) -> NativeWindowSnapshot {
+    let current = capture_observed(
+        isize::try_from(before.hwnd).expect("original HWND"),
+        pid,
+        "pre-close",
+    );
+    assert_eq!(
+        before.outer_rect, current.outer_rect,
+        "startup changed the native frame"
+    );
+    assert!(
+        !before.children.is_empty(),
+        "original controller children absent"
+    );
+    assert!(
+        before
+            .children
+            .iter()
+            .all(|child| current.children.contains(child)),
+        "startup retired or reparented an original controller child"
+    );
+    assert_eq!(
+        before.live_handles().len(),
+        before.children.len() + 1,
+        "startup retired an original native HWND"
+    );
+    println!(
+        "KELD_GH1188_STARTUP_TREE hwnd={} original_children={} pre_close_children={}",
+        before.hwnd,
+        before.children.len(),
+        current.children.len(),
+    );
+    current
+}
+
 pub(crate) fn same_tree(before: &NativeWindowSnapshot, pid: u32) {
     let after = capture_observed(
         isize::try_from(before.hwnd).expect("HWND"),

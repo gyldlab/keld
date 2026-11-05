@@ -176,3 +176,56 @@ fn native_window_observer_refuses_maximum_plus_one_instead_of_truncating() {
     assert!(census.overflow);
     assert_eq!(census.handles.len(), EXPECTED_MAX_CHILDREN);
 }
+
+#[test]
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+fn native_close_boundary_keeps_startup_additions_in_the_exact_set() {
+    use crate::facade_window::fixture::{pre_close_tree, same_tree};
+    let root = OwnedTestWindow::new(ptr::null_mut());
+    let original = OwnedTestWindow::new(root.0);
+    let created = root.capture();
+    let added = OwnedTestWindow::new(root.0);
+    let before_close = pre_close_tree(&created, std::process::id());
+    assert_eq!(before_close.children.len(), 2);
+    same_tree(&before_close, std::process::id());
+    drop(added);
+    assert!(std::panic::catch_unwind(|| same_tree(&before_close, std::process::id())).is_err());
+    drop(original);
+    drop(root);
+    assert_eq!(before_close.live_handles(), [] as [usize; 0]);
+}
+
+#[test]
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+fn native_close_boundary_rejects_original_child_loss_before_close() {
+    use crate::facade_window::fixture::pre_close_tree;
+    let root = OwnedTestWindow::new(ptr::null_mut());
+    let original = OwnedTestWindow::new(root.0);
+    let created = root.capture();
+    drop(original);
+    assert!(std::panic::catch_unwind(|| pre_close_tree(&created, std::process::id())).is_err());
+    drop(root);
+    assert_eq!(created.live_handles(), [] as [usize; 0]);
+}
+
+#[test]
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+fn native_close_boundary_rejects_added_or_replaced_children_after_close() {
+    use crate::facade_window::fixture::{pre_close_tree, same_tree};
+    let root = OwnedTestWindow::new(ptr::null_mut());
+    let original = OwnedTestWindow::new(root.0);
+    let created = root.capture();
+    let before_close = pre_close_tree(&created, std::process::id());
+    let replacement = OwnedTestWindow::new(root.0);
+    assert_ne!(
+        original.0, replacement.0,
+        "simultaneously live handles must differ"
+    );
+    assert!(std::panic::catch_unwind(|| same_tree(&before_close, std::process::id())).is_err());
+    drop(original);
+    assert_eq!(root.capture().children.len(), before_close.children.len());
+    assert!(std::panic::catch_unwind(|| same_tree(&before_close, std::process::id())).is_err());
+    drop(replacement);
+    drop(root);
+    assert_eq!(before_close.live_handles(), [] as [usize; 0]);
+}

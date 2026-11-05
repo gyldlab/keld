@@ -32,7 +32,8 @@ mod pump;
 use crate::support::process::{assert_process_signaled, open_process_for_wait};
 use crate::support::window::{app_top_level_windows, post_close};
 use fixture::{
-    FacadeFixture, FacadeRun, assert_retired, capture, census, number, ordered, same_tree,
+    FacadeFixture, FacadeRun, assert_retired, capture, census, number, ordered, pre_close_tree,
+    same_tree,
 };
 use serde_json::Value;
 use std::thread;
@@ -175,39 +176,8 @@ fn windows_electron_browser_window_uses_native_host_and_vetoes_wm_close() {
     // WebView2 may add hosting children during startup. Preserve every original
     // HWND through the duration oracle, then freeze the complete current tree
     // immediately before WM_CLOSE. Close cancellation still requires exact sets.
-    let [first_native, second_native] = [&first_native, &second_native].map(|before| {
-        let current = capture(
-            isize::try_from(before.hwnd).expect("original HWND"),
-            run.pid(),
-        );
-        assert_eq!(
-            before.outer_rect, current.outer_rect,
-            "startup changed the native frame"
-        );
-        assert!(
-            !before.children.is_empty(),
-            "original controller children absent"
-        );
-        assert!(
-            before
-                .children
-                .iter()
-                .all(|child| current.children.contains(child)),
-            "startup retired or reparented an original controller child"
-        );
-        assert_eq!(
-            before.live_handles().len(),
-            before.children.len() + 1,
-            "startup retired an original native HWND"
-        );
-        println!(
-            "KELD_GH1188_STARTUP_TREE hwnd={} original_children={} pre_close_children={}",
-            before.hwnd,
-            before.children.len(),
-            current.children.len()
-        );
-        current
-    });
+    let [first_native, second_native] =
+        [&first_native, &second_native].map(|before| pre_close_tree(before, run.pid()));
     assert!(
         run.host
             .child_mut()
