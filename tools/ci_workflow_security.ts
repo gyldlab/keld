@@ -1138,7 +1138,7 @@ const reviewedWorkflowActionRefs = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
-  "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+  "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
   "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
