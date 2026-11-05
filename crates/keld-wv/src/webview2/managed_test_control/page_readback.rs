@@ -59,6 +59,9 @@ impl PageReadback {
                 Ok(result) => {
                     let value = result.map_err(|error| WvError::Script(error.to_string()))?;
                     let value = compact_readback(&value)?;
+                    if super::super::t2_test_observation::enabled() {
+                        eprintln!("KELD_D16_PAGE_COMPLETED view={id}");
+                    }
                     eprintln!("PAGE_READBACK {id} {value}");
                     completed.push(*id);
                 }
@@ -83,9 +86,16 @@ impl PageReadback {
                 "interval exceeds the native clock range",
             )
         })?);
+        if super::super::t2_test_observation::enabled() {
+            eprintln!(
+                "KELD_D16_PAGE_TICK live={} pending={}",
+                live.len(),
+                self.pending.len()
+            );
+        }
         for (id, webview) in live {
             if let std::collections::btree_map::Entry::Vacant(entry) = self.pending.entry(id) {
-                entry.insert(request(webview)?);
+                entry.insert(request(id, webview)?);
             }
         }
         Ok(())
@@ -151,11 +161,16 @@ fn compact_readback(value: &str) -> Result<String, WvError> {
     Ok(json.to_string())
 }
 
-fn request(webview: &ICoreWebView2) -> Result<Reply, WvError> {
+fn request(id: u32, webview: &ICoreWebView2) -> Result<Reply, WvError> {
+    let observing = super::super::t2_test_observation::enabled();
     let (sender, receiver) = mpsc::channel();
     let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, value| {
         // The loop owns the receiver only while the view is live. The callback
         // owns no borrowed output slot, native object, or loop reference.
+        if observing {
+            let code = status.as_ref().err().map_or(0, |error| error.code().0);
+            eprintln!("KELD_D16_PAGE_CALLBACK view={id} result={code}");
+        }
         let _ = sender.send(status.map(|()| value));
         Ok(())
     }));
@@ -164,8 +179,16 @@ fn request(webview: &ICoreWebView2) -> Result<Reply, WvError> {
     // and returns without pumping. No COM interface escapes to another thread.
     // https://learn.microsoft.com/microsoft-edge/webview2/concepts/threading-model
     // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#executescript
-    unsafe { webview.ExecuteScript(&HSTRING::from(SCRIPT), &handler) }
-        .map_err(|error| WvError::Script(error.to_string()))?;
+    if observing {
+        eprintln!("KELD_D16_PAGE_REQUEST_ENTER view={id}");
+    }
+    // SAFETY: the same borrowed UI-thread webview, fixed string and existing callback owner.
+    let accepted = unsafe { webview.ExecuteScript(&HSTRING::from(SCRIPT), &handler) };
+    if observing {
+        let code = accepted.as_ref().err().map_or(0, |error| error.code().0);
+        eprintln!("KELD_D16_PAGE_REQUEST_RETURN view={id} result={code}");
+    }
+    accepted.map_err(|error| WvError::Script(error.to_string()))?;
     Ok(receiver)
 }
 

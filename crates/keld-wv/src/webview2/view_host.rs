@@ -45,7 +45,20 @@ impl View {
     /// Best-effort host events operate only on this live UI-thread view. A failed
     /// hide/show/bounds call never commits a transition that prevents its retry.
     pub(super) fn handle_host_window_event(&self, event: &WindowEvent<'_>) {
-        let _ = match event {
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let observed = matches!(
+            event,
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) | WindowEvent::Focused(_)
+        );
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if observed && super::t2_test_observation::enabled() {
+            eprintln!(
+                "KELD_D16_HOST_EVENT view={:?} event={event:?} hidden_before={}",
+                self.test_view_id,
+                self.hidden_for_minimize.get()
+            );
+        }
+        let result = match event {
             WindowEvent::Moved(_) => {
                 // SAFETY: retained controller on its creation/UI thread. This is
                 // a parent-position notification, not a bounds or navigation change.
@@ -61,16 +74,36 @@ impl View {
             WindowEvent::Focused(true) => self.return_focus_if_active(),
             _ => Ok(()),
         };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if observed {
+            self.trace_host_step("event.return", Some(&result));
+        }
+        let _ = result;
     }
 
     fn resize_for_host(&self, size: PhysicalSize<u32>) -> windows::core::Result<()> {
         // Tao0.35.3 queries IsIconic, rather than inferring minimize from 0x0.
-        if self.window.is_minimized() {
+        let minimized = self.window.is_minimized();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if super::t2_test_observation::enabled() {
+            eprintln!(
+                "KELD_D16_RESIZE view={:?} size={size:?} minimized={minimized} hidden_before={}",
+                self.test_view_id,
+                self.hidden_for_minimize.get()
+            );
+        }
+        if minimized {
             // SAFETY: BOOL by value; controller remains owned on this UI thread.
             // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#get_isvisible
             #[cfg(all(feature = "media-acceptance", test))]
             test_control::before(test_control::Step::Hide)?;
-            unsafe { self.controller.SetIsVisible(false) }?;
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            self.trace_host_step("hide.enter", None);
+            // SAFETY: unchanged visibility value on the same retained UI-thread controller.
+            let result = unsafe { self.controller.SetIsVisible(false) };
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            self.trace_host_step("hide.return", Some(&result));
+            result?;
             self.hidden_for_minimize.set(true);
             return Ok(());
         }
@@ -80,7 +113,13 @@ impl View {
             // SAFETY: same retained UI-thread controller; no asynchronous result borrow.
             #[cfg(all(feature = "media-acceptance", test))]
             test_control::before(test_control::Step::Show)?;
-            unsafe { self.controller.SetIsVisible(true) }?;
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            self.trace_host_step("show.enter", None);
+            // SAFETY: unchanged visibility value on the same retained UI-thread controller.
+            let result = unsafe { self.controller.SetIsVisible(true) };
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            self.trace_host_step("show.return", Some(&result));
+            result?;
             self.return_focus_if_active()?;
             self.hidden_for_minimize.set(false);
         }
@@ -101,7 +140,14 @@ impl View {
         // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#put_bounds
         #[cfg(all(feature = "media-acceptance", test))]
         test_control::before(test_control::Step::Bounds)?;
-        unsafe { self.controller.SetBounds(rect) }
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.trace_host_step("bounds.enter", None);
+        // SAFETY: the same retained UI-thread controller and plain initialized RECT.
+        let result = unsafe { self.controller.SetBounds(rect) };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.trace_host_step("bounds.return", Some(&result));
+        result?;
+        Ok(())
     }
 
     pub(super) fn return_focus_if_active(&self) -> windows::core::Result<()> {
@@ -109,7 +155,16 @@ impl View {
         // authority to activate this window after a different HWND became active.
         // Keyboard focus may be on the WebView child without deactivating its parent.
         // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getactivewindow
-        if !self.is_active() {
+        let active = self.is_active();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if super::t2_test_observation::enabled() {
+            eprintln!(
+                "KELD_D16_FOCUS view={:?} active={active} hidden_before={}",
+                self.test_view_id,
+                self.hidden_for_minimize.get()
+            );
+        }
+        if !active {
             return Ok(());
         }
         // SAFETY: controller, top-level window and active-window query belong to
@@ -117,9 +172,28 @@ impl View {
         // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#movefocus
         #[cfg(all(feature = "media-acceptance", test))]
         test_control::before(test_control::Step::Focus)?;
-        unsafe {
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.trace_host_step("focus.enter", None);
+        // SAFETY: the same retained UI-thread controller and unchanged focus reason.
+        let result = unsafe {
             self.controller
                 .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+        };
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        self.trace_host_step("focus.return", Some(&result));
+        result?;
+        Ok(())
+    }
+
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    fn trace_host_step(&self, step: &str, result: Option<&windows::core::Result<()>>) {
+        if super::t2_test_observation::enabled() {
+            let code = result.map(|value| value.as_ref().err().map_or(0, |error| error.code().0));
+            eprintln!(
+                "KELD_D16_HOST_STEP view={:?} step={step} hidden={} result={code:?}",
+                self.test_view_id,
+                self.hidden_for_minimize.get()
+            );
         }
     }
 }
