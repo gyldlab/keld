@@ -70,9 +70,8 @@ impl ManagedWindows {
                         ),
                     );
                 };
-                // Reserve outside focus dispatch for every current live view,
-                // including any still-pending observation of a retired view.
-                self.pending_focus.reserve(self.views.len() + 1);
+                // New membership and its Created snapshot supersede a hook sample.
+                self.activation_observer.invalidate();
                 self.views.insert(built.id.0, built.view);
                 send(
                     &self.events,

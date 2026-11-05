@@ -625,7 +625,7 @@ fn run_case(
     // a dedicated UI/message thread; every COM object and callback remains on
     // this same fixture thread.
     event_loop.with_any_thread(true);
-    let event_loop = event_loop.build();
+    let event_loop = super::activation_observer::EngineEventLoop::build(&mut event_loop);
     // This fixture retains environment/observer clones after dropping its
     // engine; its own COM reference must outlive those clones as well.
     let _com = super::initialize_com_sta()?;
@@ -1328,7 +1328,7 @@ mod tests {
         let (com, profile) = super::super::prepare_profile_before_event_loop(root, selection)?;
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_any_thread(true).with_dpi_aware(false);
-        let event_loop = builder.build();
+        let event_loop = super::super::activation_observer::EngineEventLoop::build(&mut builder);
         let environment =
             super::super::create_environment_for_profile_with_options(&profile, options)?;
         WebView2Engine::from_selected_environment(com, event_loop, environment, profile)

@@ -15,13 +15,22 @@ use crate::{WebviewId, WvError};
 #[cfg(all(feature = "media-acceptance", test))]
 pub(super) mod test_control;
 
+/// Read this UI thread's activation once for a coherent native observation.
+pub(super) fn active_window() -> HWND {
+    // SAFETY: GetActiveWindow observes only this thread's active window.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getactivewindow
+    unsafe { GetActiveWindow() }
+}
+
 impl View {
     /// Activation belongs to the top-level HWND even when a `WebView` child has
     /// keyboard focus. Read only on the window's UI thread.
     pub(super) fn is_active(&self) -> bool {
-        // SAFETY: GetActiveWindow observes only this thread's active window.
-        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getactivewindow
-        (unsafe { GetActiveWindow() }) == HWND(self.window.hwnd() as _)
+        self.is_active_at(active_window())
+    }
+
+    pub(super) fn is_active_at(&self, active: HWND) -> bool {
+        active == HWND(self.window.hwnd() as _)
     }
 
     /// Sizes the controller to fill the window's client area.

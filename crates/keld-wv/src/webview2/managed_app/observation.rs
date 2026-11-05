@@ -13,13 +13,13 @@ use tao::event::WindowEvent;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use tao::platform::windows::WindowExtWindows as _;
 use tao::window::WindowId;
+use windows::Win32::Foundation::HWND;
 
 /// The native facts refreshed by this event. Core still owns state filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeFacts {
     None,
     Focus,
-    QueuedFocus,
     BoundsAndFullScreen { maximized: bool },
 }
 
@@ -32,7 +32,7 @@ fn native_facts(event: &WindowEvent<'_>, minimized: impl FnOnce() -> bool) -> Na
         | WindowEvent::Resized(_)
         | WindowEvent::ScaleFactorChanged { .. } => {
             if minimized() {
-                NativeFacts::QueuedFocus
+                NativeFacts::None
             } else {
                 NativeFacts::BoundsAndFullScreen {
                     maximized: matches!(event, WindowEvent::Resized(_)),
@@ -142,30 +142,7 @@ impl ManagedWindows {
             observe::parent_moved(id.0);
         }
         match native_facts(event, || view.window.is_minimized()) {
-            NativeFacts::Focus => send(
-                &self.events,
-                AppWindowEvent::WindowFocus {
-                    view: id,
-                    focused: view.is_active(),
-                },
-            ),
-            NativeFacts::QueuedFocus => {
-                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                if observe::enabled() {
-                    eprintln!("FOCUS_QUEUED {} minimized_geometry", id.0);
-                }
-                // Minimize can change activation without another Tao Focused
-                // event after keyboard focus moved into the WebView child.
-                // Reuse the controller notification: its consumer re-finds the
-                // live view and samples the Host UI queue's actual activation.
-                self.proxy
-                    .send_event(WindowsLoopEvent::ControllerFocus(id))
-                    .map_err(|_| {
-                        WvError::EventLoop(String::from(
-                            "failed to queue managed activation observation",
-                        ))
-                    })
-            }
+            NativeFacts::Focus => self.controller_focus(id),
             NativeFacts::BoundsAndFullScreen { maximized } => {
                 let observed = snapshot(view)?;
                 send(
@@ -199,32 +176,28 @@ impl ManagedWindows {
         }
     }
 
-    /// A controller callback can run inside a native activation transition.
-    /// Retain observation work until Tao has drained the current event batch.
-    pub(in crate::webview2) fn queue_controller_focus(&mut self, id: WebviewId) {
-        if self.views.contains_key(&id.0) && !self.pending_focus.contains(&id.0) {
-            debug_assert!(self.pending_focus.len() < self.pending_focus.capacity());
-            self.pending_focus.push(id.0);
+    /// One native sample, compared against the current live map. Core owns
+    /// public focus state and suppresses unchanged or no-longer-owned facts.
+    pub(in crate::webview2) fn observe_activation(&self, active: HWND) -> Result<(), WvError> {
+        for (id, view) in &self.views {
+            send(
+                &self.events,
+                AppWindowEvent::WindowFocus {
+                    view: WebviewId(*id),
+                    focused: view.is_active_at(active),
+                },
+            )?;
         }
+        Ok(())
     }
 
-    pub(in crate::webview2) fn flush_controller_focus(&mut self) -> Result<(), WvError> {
-        // Keep the capacity reserved during construction. Focus dispatch does
-        // not allocate, and Core remains the sole state/deduplication owner.
-        let mut pending = std::mem::take(&mut self.pending_focus);
-        let result = pending
-            .iter()
-            .try_for_each(|id| self.controller_focus(WebviewId(*id)));
-        pending.clear();
-        self.pending_focus = pending;
-        result
-    }
-
-    fn controller_focus(&self, id: WebviewId) -> Result<(), WvError> {
+    pub(in crate::webview2) fn controller_focus(&self, id: WebviewId) -> Result<(), WvError> {
         let Some(view) = self.views.get(&id.0) else {
             return Ok(());
         };
         let focused = view.is_active();
+        // This direct observation is newer than the last outer-hook sample.
+        self.activation_observer.invalidate();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if observe::enabled() {
             eprintln!(

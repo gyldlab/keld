@@ -38,8 +38,8 @@ fn minimized_windows_suppress_geometry_facts_but_keep_focus_observation() {
     for event in geometry {
         assert_eq!(
             native_facts(&event, || true),
-            NativeFacts::QueuedFocus,
-            "minimized native geometry queues activation while suppressing geometry facts",
+            NativeFacts::None,
+            "minimized geometry is suppressed; outer native activation has its own observer",
         );
     }
     for focused in [true, false] {

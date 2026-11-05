@@ -44,6 +44,7 @@
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod activation_observer;
 mod browser_instance;
 mod managed_app;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -60,6 +61,7 @@ pub use managed_test_control::{
     TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV,
 };
 
+use activation_observer::{ActivationObserver, EngineEventLoop};
 use browser_instance::{BrowserBinding, BrowserExitReceipt, browser_exit_receipt};
 #[cfg(test)]
 use browser_instance::{BrowserExitSource, BrowserInstance};
@@ -1544,6 +1546,7 @@ enum ProfileReleaseFault {
     WakeRetireFailed,
     RebindUnproven,
     ReleasingExpired,
+    ActivationObservationFailed,
 }
 
 impl ProfileReleaseFault {
@@ -1597,6 +1600,12 @@ impl ProfileReleaseFault {
             }
             (Self::ReleasingExpired, ReleaseSite::Probe) => {
                 "the exclusive-UDF probe has no releasing window, so this fault is never latched there"
+            }
+            (Self::ActivationObservationFailed, ReleaseSite::Host) => {
+                "the host activation observer could not read its live owner or forward native focus"
+            }
+            (Self::ActivationObservationFailed, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe has no managed activation observer"
             }
         }
     }
@@ -3184,6 +3193,8 @@ pub struct WebView2Engine {
     managed_test_control: Option<managed_test_control::TestControl>,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     page_readback: Option<managed_test_control::PageReadback>,
+    /// The loop hook owns no native resources; its managed binding is weak.
+    activation_observer: Rc<ActivationObserver>,
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<WindowsLoopEvent>>,
     /// Last field: all owned COM interfaces and windows drop before this count.
@@ -3257,7 +3268,7 @@ impl WebView2Engine {
         );
         let mut builder = EventLoopBuilder::<WindowsLoopEvent>::with_user_event();
         builder.with_dpi_aware(false);
-        let event_loop = builder.build();
+        let event_loop = EngineEventLoop::build(&mut builder);
         let environment_result = create_environment_for_profile(&profile);
         #[cfg(feature = "profile-test-root")]
         if let Err(error) = &environment_result {
@@ -3303,10 +3314,15 @@ impl WebView2Engine {
 
     fn from_environment(
         com: ComSta,
-        event_loop: EventLoop<WindowsLoopEvent>,
+        event_loop: EngineEventLoop,
         environment: ICoreWebView2Environment,
     ) -> Self {
+        let EngineEventLoop {
+            native: event_loop,
+            observer: activation_observer,
+        } = event_loop;
         Self {
+            activation_observer,
             _com: com,
             event_loop: Some(event_loop),
             environment,
@@ -3335,7 +3351,7 @@ impl WebView2Engine {
 
     fn from_selected_environment(
         com: ComSta,
-        event_loop: EventLoop<WindowsLoopEvent>,
+        event_loop: EngineEventLoop,
         environment: ICoreWebView2Environment,
         profile: SelectedWindowsProfile,
     ) -> Result<Self, WvError> {
@@ -3343,7 +3359,7 @@ impl WebView2Engine {
         let barrier_grace_expiry = barrier_grace_expiry_requested();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let managed_test_control = managed_test_control::TestControl::from_env(
-            event_loop.create_proxy(),
+            event_loop.native.create_proxy(),
             barrier_grace_expiry,
         )?;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3352,7 +3368,7 @@ impl WebView2Engine {
         let browser_exit = observe_profile_browser_exit(
             &environment,
             Arc::clone(&browser_binding),
-            Some(event_loop.create_proxy()),
+            Some(event_loop.native.create_proxy()),
             ReleaseSite::Host,
         )?;
         let mut engine = Self::from_environment(com, event_loop, environment);
@@ -3660,18 +3676,22 @@ impl WebView2Engine {
         };
         let release = Rc::new(release.with_loop_wake(proxy.clone())?);
         let release_in_loop = Rc::clone(&release);
-        let mut managed = managed_app::ManagedWindows::new(
+        let managed = Rc::new(RefCell::new(managed_app::ManagedWindows::new(
             view_build::NativeBuild {
                 environment: self.environment.clone(),
                 next_id: self.next_id,
                 saved_permissions_reconciled: self.saved_permissions_reconciled,
             },
             events.clone(),
-            proxy,
+            proxy.clone(),
+            Rc::clone(&self.activation_observer),
             self.browser_exit_sender.clone(),
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             self.managed_test_control.take(),
-        );
+        )));
+        if facade {
+            self.activation_observer.attach(&managed, &release, proxy)?;
+        }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let mut page_readback = self.page_readback.take();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3687,6 +3707,9 @@ impl WebView2Engine {
             }
         }
         let code = event_loop.run_return(move |event, target, control_flow| {
+            // The hook runs only between outer message dispatches. This is the
+            // existing sole mutable owner for each backend callback.
+            let mut managed = managed.borrow_mut();
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             if first_loop_turn {
@@ -3805,11 +3828,7 @@ impl WebView2Engine {
                     managed.deferred_wake(target, &release_in_loop, ending)
                 }
                 Event::UserEvent(WindowsLoopEvent::ControllerFocus(id)) => {
-                    managed.queue_controller_focus(id);
-                    Ok(())
-                }
-                Event::MainEventsCleared if facade && !ending => {
-                    managed.flush_controller_focus()
+                    managed.controller_focus(id)
                 }
                 Event::WindowEvent { window_id, event: ref native_event, .. } if facade => {
                     managed.window_event(window_id, native_event)
@@ -5055,6 +5074,7 @@ mod tests {
             ProfileReleaseFault::WakeRetireFailed,
             ProfileReleaseFault::RebindUnproven,
             ProfileReleaseFault::ReleasingExpired,
+            ProfileReleaseFault::ActivationObservationFailed,
         ];
         let mut contexts = std::collections::BTreeSet::new();
         for site in [ReleaseSite::Host, ReleaseSite::Probe] {
