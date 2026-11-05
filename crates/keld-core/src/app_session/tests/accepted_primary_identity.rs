@@ -6,7 +6,7 @@ use super::*;
 use keld_runtime::primary::{
     BoundPrimaryGeneration, PrimaryRoleConfig, PrimaryRoleSupervisor, RoleOwner,
 };
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::{BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 
 const BOUND: Duration = Duration::from_secs(20);
@@ -99,10 +99,7 @@ impl Drop for AcceptedRole {
 fn read_control(control: &mut BufReader<TcpStream>) -> String {
     let mut line = String::new();
     assert!(
-        control
-            .read_line(&mut line)
-            .expect("actual controlled role reply")
-            > 0
+        std::io::BufRead::read_line(control, &mut line).expect("actual controlled role reply") > 0
     );
     line.trim_end().to_owned()
 }
