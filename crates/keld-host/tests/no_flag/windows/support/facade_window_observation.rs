@@ -159,12 +159,30 @@ pub(super) fn restore_predecessor(hwnd: usize, pid: u32) -> FocusComparator {
     let deadline = Instant::now() + OBSERVATION_BOUND;
     let helper = FocusComparator::new();
     helper.activate();
-    native_until(hwnd, pid, deadline, |state| {
+    let predecessor = native_until(hwnd, pid, deadline, |state| {
         state.foreground == helper.hwnd()
     });
+    observe_activation_input("predecessor", &predecessor, hwnd, pid, &helper);
     native_control::foreground(hwnd, pid);
-    native_until(hwnd, pid, deadline, |state| state.foreground == hwnd);
+    let target = native_until(hwnd, pid, deadline, |state| state.foreground == hwnd);
+    observe_activation_input("target", &target, hwnd, pid, &helper);
     helper
+}
+
+/// Read-only input diagnostics; this performs no activation or message pumping.
+fn observe_activation_input(
+    phase: &str,
+    native: &NativeState,
+    hwnd: usize,
+    pid: u32,
+    helper: &FocusComparator,
+) {
+    let host = crate::support::window::initial_focus::read(hwnd, pid);
+    let comparator = crate::support::window::initial_focus::read(helper.hwnd(), std::process::id());
+    println!(
+        "KELD_GH1188_AC26_ACTIVATION_INPUT phase={phase} target={hwnd} helper={} native={native:?} host_thread={host:?} helper_thread={comparator:?}",
+        helper.hwnd()
+    );
 }
 
 pub(super) fn minimized(
@@ -182,10 +200,16 @@ pub(super) fn minimized(
     pages.wait(pipe, view, deadline, |page| {
         page["visibilityState"] == "hidden"
     });
+    let after_hidden = native_control::read(hwnd, pid);
+    observe_activation_input("after-hidden", &after_hidden, hwnd, pid, helper);
     // The initial IsIconic transition can precede foreground settlement. Require
     // the retained test-owned predecessor within the same original bound.
     let native = native_until(hwnd, pid, deadline, |state| {
-        state.minimized && state.foreground == helper.hwnd()
+        let eligible = state.minimized && state.foreground == helper.hwnd();
+        if !eligible && Instant::now() >= deadline {
+            observe_activation_input("minimize-input-expired", state, hwnd, pid, helper);
+        }
+        eligible
     });
     println!(
         "KELD_GH1188_AC26_RESTORE_PREDECESSOR view={view} hwnd={}",
