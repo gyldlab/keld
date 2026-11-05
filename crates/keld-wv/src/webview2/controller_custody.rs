@@ -46,7 +46,10 @@ impl NativeController {
         // creating UI/STA thread. This guard alone owns this unadopted interface.
         // Close runs before the COM reference is released and never a second time.
         // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#close
-        let _ = unsafe { self.controller.Close() };
+        let result = unsafe { self.controller.Close() };
+        #[cfg(all(feature = "media-acceptance", test))]
+        super::media_acceptance::observe_controller_close_result(&result);
+        let _ = result;
     }
 }
 
@@ -55,6 +58,8 @@ pub(super) fn completion(
     controller: Option<ICoreWebView2Controller>,
     release: Option<Weak<ProfileReleaseWait>>,
 ) -> windows::core::Result<PendingController> {
+    #[cfg(all(feature = "media-acceptance", test))]
+    super::media_acceptance::observe_controller_completion(&status, controller.as_ref());
     wrap_completion(
         status,
         controller.map(|controller| NativeController {

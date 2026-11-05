@@ -76,8 +76,83 @@ thread_local! {
     static COM_BROWSER_LOG: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
 }
 
+#[derive(Default)]
+struct ControllerCustodyEvidence {
+    active: bool,
+    expire_after_call: Option<Instant>,
+    calls: u32,
+    returns: u32,
+    callbacks: u32,
+    completions: Vec<(i32, bool, u32)>,
+    close_results: Vec<i32>,
+    retained: Option<super::ICoreWebView2Controller>,
+    browser_exits: Vec<(u32, bool)>,
+}
+
+thread_local! {
+    static CONTROLLER_CUSTODY_EVIDENCE: RefCell<ControllerCustodyEvidence> =
+        RefCell::new(ControllerCustodyEvidence::default());
+}
+
+fn observe_controller_phase(stage: &'static str) {
+    let expire = CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if !facts.active {
+            return None;
+        }
+        match stage {
+            "controller-call-enter" => facts.calls += 1,
+            "controller-call-returned" => {
+                facts.returns += 1;
+                return facts.expire_after_call.take();
+            }
+            "controller-callback-enter" => facts.callbacks += 1,
+            _ => {}
+        }
+        None
+    });
+    if let Some(deadline) = expire {
+        // Deliberate deadline-expiry stimulus, not a sleep or an estimate of
+        // callback progress. Do not pump: the production wait must abandon
+        // an accepted native request before its completion is dispatched.
+        while Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+    }
+}
+
+pub(super) fn observe_controller_completion(
+    status: &windows::core::Result<()>,
+    controller: Option<&super::ICoreWebView2Controller>,
+) {
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            // SAFETY: read-only current-thread identity; no handle is opened.
+            let thread = unsafe { GetCurrentThreadId() };
+            facts.completions.push((
+                status.as_ref().err().map_or(0, |error| error.code().0),
+                controller.is_some(),
+                thread,
+            ));
+            // Keep an independent reference so final COM release cannot mask
+            // an omitted explicit Close in the unclaimed-controller owner.
+            facts.retained = controller.cloned();
+        }
+    });
+}
+
+pub(super) fn observe_controller_close_result(result: &windows::core::Result<()>) {
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            facts
+                .close_results
+                .push(result.as_ref().err().map_or(0, |error| error.code().0));
+        }
+    });
+}
+
 /// Flush each phase before the fixture watchdog can terminate the process.
 pub(super) fn observe_com_phase(stage: &'static str) {
+    observe_controller_phase(stage);
     COM_LIFETIME_PHASES.with(|enabled| {
         if enabled.get() {
             let elapsed = COM_PHASE_CLOCK.with(|clock| {
@@ -203,6 +278,11 @@ pub(super) fn observe_production_effect(
 }
 
 pub(super) fn observe_browser_exit(actual: u32, expected: u32, normal: bool) {
+    CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
+        if facts.active {
+            facts.browser_exits.push((actual, normal));
+        }
+    });
     println!("KELD_MEDIA_BROWSER_EXIT pid={actual} expected={expected} normal={normal}");
 }
 
@@ -1078,6 +1158,7 @@ mod tests {
     use super::*;
     use crate::webview2::PROFILE_LAUNCH_DEADLINE;
 
+    mod controller_custody_native;
     mod exit_wake_retirement;
     mod first_navigation;
     mod profile_release;

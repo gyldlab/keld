@@ -12,7 +12,10 @@ use crate::{AppWindowCommand, WebEngine, WvError};
 use std::sync::mpsc;
 use tao::platform::windows::WindowExtWindows as _;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::WindowsAndMessaging::{
+    DestroyWindow, GetWindowThreadProcessId, IsWindow, PostMessageW, WM_CLOSE,
+};
 
 fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
     let root = profile_fixture_root("exit-wake-retirement");
@@ -30,6 +33,20 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
         let id = engine.create(&blank_spec())?;
         let initial = raw_phase(&plan)?;
         let hwnd = HWND(engine.views[&id.0].window.hwnd() as _);
+        // SAFETY: read the exact live fixture parent on its creating thread.
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-iswindow
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid
+        let (initially_live, owner_thread) = unsafe {
+            (
+                IsWindow(Some(hwnd)).as_bool(),
+                GetWindowThreadProcessId(hwnd, None),
+            )
+        };
+        if !initially_live || owner_thread == 0 {
+            return Err(failure(
+                "ineligible terminal HWND probe: parent was not live",
+            ));
+        }
         let (commands, receiver) = mpsc::channel();
         let (events, _events_alive) = mpsc::channel();
         let result = if hello {
@@ -42,6 +59,32 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
             commands.send(AppWindowCommand::Quit).map_err(failure)?;
             run_renderer_until_quit(engine, receiver, events)
         };
+        // First operation after the consumed engine returns: no pump or
+        // profile read can turn an eventually-destroyed HWND into a pass.
+        // SAFETY: read-only query of the captured fixture HWND.
+        let hwnd_live_at_return = unsafe { IsWindow(Some(hwnd)) }.as_bool();
+        println!(
+            "KELD_TERMINAL_HWND hello={hello} inject={inject_error} hwnd={} live_at_return={hwnd_live_at_return}",
+            hwnd.0 as usize
+        );
+        if hwnd_live_at_return {
+            // Cleanup the retained native parent before asserting the frozen
+            // result. Only the original UI thread can destroy this fixture.
+            // SAFETY: both identity queries are read-only.
+            let (current_owner, current_thread) =
+                unsafe { (GetWindowThreadProcessId(hwnd, None), GetCurrentThreadId()) };
+            if current_owner != owner_thread || current_owner != current_thread {
+                return Err(failure("terminal HWND cleanup ownership is unproved"));
+            }
+            // SAFETY: original same-thread fixture parent, after its Rust owner
+            // was consumed; no pointer payload or external window is touched.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-destroywindow
+            unsafe { DestroyWindow(hwnd) }.map_err(failure)?;
+            // SAFETY: independent post-cleanup query, not the semantic sample.
+            if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+                return Err(failure("terminal HWND cleanup did not finish"));
+            }
+        }
         let phase = raw_phase(&plan)?;
         let facts = exit_wake_control::Scope::observations()?;
         let (receipts, injected_receipts) = release_receipt_control::Scope::observations();
@@ -81,6 +124,11 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
         {
             return Err(failure(
                 "healthy checked native wait retirement did not preserve normal Idle",
+            ));
+        }
+        if hwnd_live_at_return {
+            return Err(failure(
+                "terminal returned while its captured native parent was still live",
             ));
         }
         Ok(())
