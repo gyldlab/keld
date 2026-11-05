@@ -227,13 +227,19 @@ fn check_cleanup(receipt: &Value) -> Result<(), String> {
 fn host_header_observations(receipt: &Value) -> Result<(bool, bool), String> {
     let request = &receipt["host_request"];
     require(
-        request["uri"] == receipt["uri"] && request["sent_value"] == receipt["nonce"],
+        request["uri"] == receipt["uri"] && request["sent_value"] == receipt["attempt_nonce"],
         "Host request did not target its fixture",
     )?;
     let created = request["create_hresult"]
         .as_str()
         .ok_or("no native CreateWebResourceRequest result")?;
-    let nonce = receipt["nonce"].as_str().ok_or("missing nonce")?;
+    let nonce = receipt["attempt_nonce"]
+        .as_str()
+        .ok_or("missing native attempt marker")?;
+    require(
+        receipt["attempt_nonce"] != receipt["nonce"],
+        "native attempt marker is exposed as the page fixture nonce",
+    )?;
     let mut host_start_header = false;
     let mut host_resource_header = false;
     if created == "S_OK" {
@@ -325,8 +331,8 @@ pub(super) fn assess(receipt: &Value) -> Result<Value, String> {
         "q22_a_header_in_native_navigation_start": host_start_header,
         "q22_b_header_in_owned_document_resource_request": host_resource_header,
         "same_uri_page_frame_and_plain_controls_without_header": controls_absent,
-        "q22_prerequisites_observed": host_start_header && host_resource_header && controls_absent,
-        "scope": "raw native feasibility only; no file containment, facade delivery, identity retirement, B22 authority or product acceptance"
+        "q22_a_b_header_propagation_observed": host_start_header && host_resource_header && controls_absent,
+        "scope": "raw native header feasibility only; no concurrent same-URI association race, reload semantics, file containment, facade delivery, identity retirement, B22 authority or product acceptance"
     }))
 }
 

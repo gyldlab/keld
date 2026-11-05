@@ -29,7 +29,8 @@ use windows::core::{BOOL, HSTRING, Interface, PCWSTR, PWSTR, w};
 type NativeResult<T> = windows::core::Result<T>;
 type Completion<T> = Rc<RefCell<Option<NativeResult<T>>>>;
 type SharedTrace = Rc<RefCell<Trace>>;
-const HEADER: &str = "X-Keld-W3-Probe-Attempt";
+// Observe the exact draft-r18 candidate; this fixture never treats it as authority.
+const HEADER: &str = "X-Keld-Host-Attempt";
 
 #[derive(Debug)]
 struct Trace {
