@@ -231,7 +231,26 @@ export function enclosingDip(rect: Rect, scale: number): Rect {
   );
   const right = Math.ceil((rect.x + rect.width) / scale);
   const bottom = Math.ceil((rect.y + rect.height) / scale);
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  const width = right - left;
+  const height = bottom - top;
+  // The shared DesktopFacts codec requires signed i32 origins and positive
+  // u32 sizes. Refuse a projected overflow before allocating a display ID.
+  requireFact(
+    Number.isInteger(left) &&
+      left >= -0x8000_0000 &&
+      left <= 0x7fff_ffff &&
+      Number.isInteger(top) &&
+      top >= -0x8000_0000 &&
+      top <= 0x7fff_ffff &&
+      Number.isInteger(width) &&
+      width > 0 &&
+      width <= 0xffff_ffff &&
+      Number.isInteger(height) &&
+      height > 0 &&
+      height <= 0xffff_ffff,
+    "projected logical rectangle is not representable by shared DesktopFacts",
+  );
+  return { x: left, y: top, width, height };
 }
 
 /**

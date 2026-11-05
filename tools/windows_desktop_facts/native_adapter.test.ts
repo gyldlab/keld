@@ -281,6 +281,21 @@ test("failed appearance status and contradicted scheme never become usable facts
   expect(() => nativeFacts(contradicted, text)).toThrow(/contradicts/);
 });
 
+test("an unencodable projected rectangle fails before it consumes an identity", () => {
+  const sample = raw();
+  const native = sample.sample.desktop.displays[0]!;
+  native.bounds.width = 100_000_000;
+  native.workArea.width = 100_000_000;
+  native.physicalMode.width = 100_000_000;
+  sample.sample.desktop.primaryWorkAreaViaSpi.width = 100_000_000;
+  native.dpi = { x: 1, y: 1, deviceScaleFactor: 1 / 96 };
+  const ids = new NativeDisplayIds();
+  // Physical RECT dimensions fit the native i32/u32 shape, but projected
+  // logical width (9.6 billion) cannot fit the shared DesktopFacts u32 field.
+  expect(() => nativeFacts(sample, text, ids)).toThrow(/representable/);
+  expect(ids.retainedIdentities).toBe(0);
+});
+
 test("rectangle validation completes before identity allocation", () => {
   const invalid = raw();
   invalid.sample.desktop.displays[0]!.workArea.width = 0;
