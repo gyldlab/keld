@@ -217,10 +217,14 @@ impl NativeBuild {
         {
             return Err(BuildFailure::held(error, BuildResources::View(view)));
         }
-        // Keep failed setup from consuming the next internal view identity.
-        // D12 retains post-HWND custody while this checked candidate is local.
-        let mut next_id = self.next_id;
-        let id = match next_view_id(&mut next_id) {
+        // Reconciliation has no view principal yet. Its failure preserves the
+        // first ID for the healthy retry under the same construction deadline.
+        if let Err(source) = self.reconcile_permissions(&view, deadline) {
+            return Err(BuildFailure::held(source, BuildResources::View(view)));
+        }
+        // D4 consumes the checked identity before a guard can capture it.
+        // Any later failure retains native custody but never reuses that ID.
+        let id = match next_view_id(&mut self.next_id) {
             Ok(id) => id,
             Err(source) => return Err(BuildFailure::held(source, BuildResources::View(view))),
         };
@@ -232,7 +236,7 @@ impl NativeBuild {
             view.test_view_id = Some(id);
             view
         };
-        if let Err(error) = self.configure(
+        if let Err(error) = Self::configure(
             &view,
             id,
             spec,
@@ -258,12 +262,18 @@ impl NativeBuild {
                 ));
             }
         }
-        self.next_id = next_id;
         Ok(BuiltView { id, view, snapshot })
     }
 
+    fn reconcile_permissions(&mut self, view: &View, deadline: Instant) -> Result<(), WvError> {
+        if !self.saved_permissions_reconciled && saved_permission_reconciliation_enabled() {
+            reconcile_saved_media_permissions(&view.webview, deadline)?;
+            self.saved_permissions_reconciled = true;
+        }
+        Ok(())
+    }
+
     fn configure(
-        &mut self,
         view: &View,
         id: WebviewId,
         spec: &WebviewSpec,
@@ -271,10 +281,6 @@ impl NativeBuild {
         navigation: Option<InitialNavigation>,
         deadline: Instant,
     ) -> Result<(), WvError> {
-        if !self.saved_permissions_reconciled && saved_permission_reconciliation_enabled() {
-            reconcile_saved_media_permissions(&view.webview, deadline)?;
-            self.saved_permissions_reconciled = true;
-        }
         #[cfg(not(all(feature = "media-acceptance", test)))]
         let manifest = keld_guard::PermissionsManifest::default();
         #[cfg(all(feature = "media-acceptance", test))]
