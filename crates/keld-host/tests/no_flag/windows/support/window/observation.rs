@@ -18,6 +18,7 @@ pub(crate) struct NativeWindowSnapshot {
     pub(crate) outer_rect: [i32; 4],
     pub(crate) children: Vec<usize>,
     /// Read-only metadata from the same enumeration; never window authority.
+    #[cfg(feature = "profile-test-hooks")]
     pub(crate) child_details: Vec<String>,
 }
 
@@ -58,6 +59,7 @@ impl NativeWindowSnapshot {
             hwnd,
             outer_rect: [rect.left, rect.top, rect.right, rect.bottom],
             children: census.handles,
+            #[cfg(feature = "profile-test-hooks")]
             child_details: census.details,
         })
     }
