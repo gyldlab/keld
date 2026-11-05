@@ -1,0 +1,53 @@
+{
+  "docs": {
+    "docs/specs/gh1186-windows-desktop-facts.md": {
+      "beforeSha256": "1bee2637b5154b7de6602412e06c03e09c1c0e48c3cb34bea44a0ddaf8b991de",
+      "afterSha256": "3f1ee84253b112016370d69684a67ed52d93c72a51e67c8bbda440f382286d47",
+      "onlyNamedDeltaProvenByReverseHash": true
+    },
+    "tools/windows_desktop_facts/integration-notes.md": {
+      "beforeSha256": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+      "afterSha256": "2f64643a4a99e525c232b3042cf7a07f702c6c0c37a95c32b432caf606a0d01f",
+      "onlyNamedDeltaProvenByReverseHash": true
+    },
+    "tools/windows_desktop_facts/EVIDENCE.md": {
+      "beforeSha256": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+      "afterSha256": "a0209fd846e91c5a44c7f5f0b88123ba338af1aa92e2b042b3745811b4094f40",
+      "onlyNamedDeltaProvenByReverseHash": true
+    }
+  },
+  "unchangedPriorReviewedFiles": [
+    "tools/windows_desktop_facts/README.md",
+    "docs/engineering/keld-error-codes.md",
+    "tools/windows_desktop_facts/integration.patch"
+  ],
+  "corpus": {
+    "sha256": "2dd4bc12d0175e976239f1b1c4ca0b187b3c236db60cf0b8255b4e5f768fa553",
+    "additions": 7,
+    "deletions": 0,
+    "onlyCanonicalSection": true
+  },
+  "index": {
+    "sha256": "efda14c72ea64584fd0ec054c9343c0ab6dce6816c6197cf00278725526711de",
+    "equalsHeadBytes": true
+  },
+  "generatorLogHashesMatch": true,
+  "refuterRecordSha256": "ae7cd45f3d7498ec19d8e605885001783e722cfcb4b576b17ce57281679886f4",
+  "refuterLogsAndFrozenSourcesMatch": true,
+  "seamReceipt": {
+    "lead": {
+      "baseRefName": "agent/gh-1188-release-receipt-drain-20261104",
+      "headRefName": "agent/gh-1188-exit-wake-retirement-20261105",
+      "headRefOid": "2aed1f944a072d2c84469924c107b3ca5df9bc13",
+      "isDraft": true,
+      "state": "OPEN"
+    },
+    "leadSourceBlob": "922c33231a1c96298cf0a48f0806ba8958dcfd22",
+    "patchSha256": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d",
+    "applyCheckExit": 0,
+    "stdout": "",
+    "stderr": "",
+    "productDiff": ""
+  },
+  "publishedReviewDirectoryExists": true
+}

@@ -1,0 +1,275 @@
+{
+  "sourceBytesPreservedIn": "Exact original paths recorded per file; initial collection is additionally archived at D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-evidence-original-bytes.zip",
+  "onlyTransformation": "CRLF to LF; originalLineSeparators plus zero-based crlfLineIndices for mixed separators reconstruct exact original bytes",
+  "files": {
+    "original-timeout-refutation.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\p2-timeout-refutation\\run\\receipt.json",
+      "capturedSha256": "5bb7b43389f0400639984c1941c6c6ebd268e753c25f006c775e431deb8ec5dd",
+      "publishedSha256": "6f556c233d4f3a207cd46e10d85662584746e9f10258525b86ba427a0f696dee",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-review.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\review-summary.json",
+      "capturedSha256": "5f0c99cbdc8dc0f45ff059fdf9ad34b68f2ba54235054e9aafcd9b03c57223a0",
+      "publishedSha256": "5f0c99cbdc8dc0f45ff059fdf9ad34b68f2ba54235054e9aafcd9b03c57223a0",
+      "captureHadCRLF": false,
+      "originalLineSeparators": "LF"
+    },
+    "process-suite.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\suite-final-f961\\receipt.json",
+      "capturedSha256": "d8474d3fa71d5188b807b53547d2aa1584ab65698410fc402f1d2dc4b06471d5",
+      "publishedSha256": "047accceb515188fa10207f558c9893d453f7dbf46f83e2c82d7a8c6555d31d0",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-suite.log": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\suite-final-f961\\unittest.log",
+      "capturedSha256": "d8bb5809b8cfed1fb172fccda37b982fc0cfc68ed58881a8f54df0ea1494315c",
+      "publishedSha256": "1041c2945f3b28e7f57de21ffe86ddaaaa71da3374d01b064f843acba8e5b99d",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-caller.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\caller-final-f961\\receipt.json",
+      "capturedSha256": "9760eea06cbfdc8d6654c53f2c6dc4948e918b4299014f7b86771c87d1d72373",
+      "publishedSha256": "802c06e12d308d4a87cc575bf46d0fadbe77e25b38399a230b6d2da9cf2dcf4d",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-query-comparison.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\query-comparison-receipt.json",
+      "capturedSha256": "62c4ee93c815ad27558e2a6abcb1c4a3c2312de0be0575ab75206be9ebba1ba7",
+      "publishedSha256": "07bcc4856283eebaa8978490fa905bbad14f9cb120cd0db9c9d8715374541c81",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-stale-zero-before.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\stale-zero-run\\receipt.json",
+      "capturedSha256": "a11fcf00ae57c920aa7ac004f1e6f5541c7db341dfa8d9f3c3de6a5a4e99f7e1",
+      "publishedSha256": "7c3b9c450b8f2f365476f713c085f0bb8c848dcfe47d24b5b336944bf916ec9c",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "process-author-fix.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\author-stale-zero-fix.json",
+      "capturedSha256": "6b0cd6c6166efdfe093c5913f527a1f83bfb8f59526760f029c7013d2e0a1a11",
+      "publishedSha256": "6b0cd6c6166efdfe093c5913f527a1f83bfb8f59526760f029c7013d2e0a1a11",
+      "captureHadCRLF": false,
+      "originalLineSeparators": "LF"
+    },
+    "process-author-suite.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\unittest.log",
+      "capturedSha256": "cff40e97c2d567e6cb92932805a7b33434ce3271e9f8ecb25a5545d354a1aa1a",
+      "publishedSha256": "a36ebb1c6512ec528dd9f2e2f5994bde8ceef537e7878122f08a33a77d117467",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "registry-copy.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-copy-receipt.json",
+      "capturedSha256": "3d15c2a35e8b61d895c3f40eb1287fe4b84ed1e660e406e5f0d91b4e3c3f8fb1",
+      "publishedSha256": "6d21411153de50a282aa72df2a015552dd604a4dd0fff1786aa410f3482466fa",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "registry-tests.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-tests.json",
+      "capturedSha256": "b66136b037cf0832113222fdd6f827105ffd8f3a3e1946a56b383683599c13d7",
+      "publishedSha256": "3d9903d37834ea9b67cd56d315ffc18cd3aa6302207a54a978bbbcc776854ca4",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "registry-tests.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-tests.log",
+      "capturedSha256": "4da458680d5ff00ebea617aa99304d5a35b1cdc5bc51a62705dc39d4222c3c64",
+      "publishedSha256": "dc4ecc63411ca55b21ac02579afcfacf8807b5f631493c9d00fd55b5578f40c0",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        25
+      ]
+    },
+    "workspace-tests.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-tests-complete.json",
+      "capturedSha256": "ad9807815941881ae77e2f245a283aadf3762142ed3745e641483dd18047aa13",
+      "publishedSha256": "97d0ccef4a9ed20a9f9f9043c3fb5ccdddf4bcc9329d481c7c9bcf3151656492",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "workspace-failures.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-failure-groups.json",
+      "capturedSha256": "95c06e010702b592cd7a93f4c8dbc7ec83a33be1e1e2da21c13d92eba29d6ca2",
+      "publishedSha256": "50efb90da5b4157038abc2810594ac637bb4cb320aef4598900d9762804e6968",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "formatter-diagnosis.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\diagnosis-summary.json",
+      "capturedSha256": "a27387bc7dc0661def1d8fb81528f1086fc79d93612bd524d2886f6aaf5d2436",
+      "publishedSha256": "a27387bc7dc0661def1d8fb81528f1086fc79d93612bd524d2886f6aaf5d2436",
+      "captureHadCRLF": false,
+      "originalLineSeparators": "LF"
+    },
+    "formatter-receipt.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\receipt.json",
+      "capturedSha256": "4bc96946ceae65322c23708873436606a597747313dc840ed0ac5c985296b9fc",
+      "publishedSha256": "5b0bac77329d1ac284e448e090c359dac27c689de017f2b32b81c49a76f2c934",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "formatter-boundary.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-control.json",
+      "capturedSha256": "aa2af8cf81bc838d7f7e8e6386661a9efca4dfaea2d822227fdd4c719a8323b1",
+      "publishedSha256": "e9418cdac9d8911f6b9dba4e3ec0289b17e5e1b169548aab11d95596dd9f8727",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "seam-pr1400.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\seam-pr1400\\receipt.json",
+      "capturedSha256": "316e95a8a3672a26590454c3af5ad11289c5f4579dc6a0e5fe9f56fb73968c37",
+      "publishedSha256": "c47939bbd68099dfe9294d45d3c77d56a9fc6558b4d6f03ba06079823b52cd42",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "cache-reconciliation.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\cache-reconciliation.json",
+      "capturedSha256": "28821afc46c08900e496f9879e967d1ddbc7ae183a4c6efee2e79ed9ca0a7584",
+      "publishedSha256": "b6ac32dc1f0f8ed1c75c0e115218c074492a7528dafe721e2c9ca8a2e32c35eb",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "stale-zero-before-regression.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\stale-zero-before-fix\\test_zero_census_cannot_precede_bootstrap_exit_observation-9ca1a954\\exercise.json",
+      "capturedSha256": "3f7f63a3908072a46ccc7bf9ff7b7c0993d98036c62a6a96e6416d75b9dee1a1",
+      "publishedSha256": "82628c5634f1c40bb17f7420e293f4b359ff2ec91716eca44baaf55ef14b0760",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "stale-zero-after-regression.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6\\exercise.json",
+      "capturedSha256": "ffb71c7ec7a5da77ab4e2b1fa2ac6f6295442cfa7910cc80c20df39721446fb3",
+      "publishedSha256": "d26333289ae5f7ae31f4fe015a5814d46812c8cfcfc7f94480ed3ef8c46748c3",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "query-failure-after-regression.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_query_failure_still_reaps_unenrolled_bootstrap-fa775bc2\\exercise.json",
+      "capturedSha256": "f3b7a6415fe128deb14515cd00fc98fd9312df6cabdac5f4a830debeb40f0b84",
+      "publishedSha256": "9f6df9520204bab3ffdb51d2762bf60f2cdc5e2b0c1d86e13a593fb5aad67d9d",
+      "captureHadCRLF": true,
+      "originalLineSeparators": "CRLF"
+    },
+    "stale-zero-independent.json": {
+      "originalPath": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-stale-zero-refuter-61105\\final-disposition.json",
+      "capturedSha256": "ae7cd45f3d7498ec19d8e605885001783e722cfcb4b576b17ce57281679886f4",
+      "publishedSha256": "79e3fe8335dc2ccd7b2a93cb47c1dc629db0ed7e7939c227d8fc71c3c2d6fe20",
+      "originalLineSeparators": "CRLF"
+    },
+    "contract-review.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\review-summary.json",
+      "capturedSha256": "03b9e1ddc08940e87393de33486451933304350f79ca80553fad9f9005186f52",
+      "publishedSha256": "03b9e1ddc08940e87393de33486451933304350f79ca80553fad9f9005186f52",
+      "originalLineSeparators": "LF"
+    },
+    "contract-review-sources.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\source-verification.json",
+      "capturedSha256": "6c08e2c4b956d10540b20a12b10582510bc43a45481e102521c3f815b880f8e6",
+      "publishedSha256": "6c08e2c4b956d10540b20a12b10582510bc43a45481e102521c3f815b880f8e6",
+      "originalLineSeparators": "LF"
+    },
+    "publication-gates.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-gates.json",
+      "capturedSha256": "4ef7a7d6b0f2c4ba588745a28a4f350db5f93ac6593944580b5fbd7e4a0169d4",
+      "publishedSha256": "4ef7a7d6b0f2c4ba588745a28a4f350db5f93ac6593944580b5fbd7e4a0169d4",
+      "originalLineSeparators": "LF"
+    },
+    "publication-format.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-fmt-check.log",
+      "capturedSha256": "8e1e71a577ff6bf049b6dcb6dbf9a5fa0b6591a05749c54201d83748207d7338",
+      "publishedSha256": "c4f0cf8d165eacc6122e5bd8de295567e2ab02791df3050eb538f150f6a7ebc1",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        7
+      ]
+    },
+    "publication-doc-placeholders.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-doc-placeholders-check.log",
+      "capturedSha256": "63a077c2a986c8677bd088dbbb12ac3effb5b222378c209f863795525bfd5313",
+      "publishedSha256": "023af230bc149c4190897beaaaf7d123bdd02bb719c49a3b725dfb1f740dd6bb",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        4
+      ]
+    },
+    "publication-hygiene.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-hygiene.log",
+      "capturedSha256": "50f4cf28c2f75185d800b4e1506f2445cd1094a7c4f7650754ec6b58e720a8f4",
+      "publishedSha256": "d7980756604f774bf985a24ee5a103a837b347a3226184284054bbacfc63840e",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        365,
+        366,
+        367,
+        368,
+        369,
+        525
+      ]
+    },
+    "publication-stale-llms.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-llms-check.log",
+      "capturedSha256": "ece87f98a8ddccd85eddcc7e00a07caa179a0d6953336c7bc75f0bbbb11e1e58",
+      "publishedSha256": "6ca28520f1b7672848f3e2f92286c7e560d1c6b894139f76935675a4934e5af3",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        5
+      ]
+    },
+    "registry-generated.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-generated.json",
+      "capturedSha256": "ac05d552261d0b03c3984aa8fc24ae94d872058aecf8d05e0ffa289740e38c43",
+      "publishedSha256": "ac05d552261d0b03c3984aa8fc24ae94d872058aecf8d05e0ffa289740e38c43",
+      "originalLineSeparators": "LF"
+    },
+    "registry-generate.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms.log",
+      "capturedSha256": "1a9109d98ca8dd6175a7997ee778a8fa469261013fc892a85ee068bcedb44b1c",
+      "publishedSha256": "b6ef9840e2c1f645afa6a79992583464af3089fb5587c31d8bcd6da701a84b53",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        3
+      ]
+    },
+    "registry-generator-tests.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-test.log",
+      "capturedSha256": "e03d42a8e63ff124385769999923dbbf2a6a1356eedf936973b1953ecef7f10f",
+      "publishedSha256": "7a06a107139ae8d9d9223182ef4c73ed65c68760c52f6b1d3d1c2b07caa8f54d",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        14
+      ]
+    },
+    "registry-generated-check.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-check.log",
+      "capturedSha256": "961f6e4e22f67b1013956b0c79062951bdeccab6b5fd23d61fee1bc330b0f7a6",
+      "publishedSha256": "f22905a56ae608e230c6567e66ce83ccd17dcc42d905075743fc88dec46a351b",
+      "originalLineSeparators": "mixed",
+      "crlfLineIndices": [
+        3
+      ]
+    },
+    "contract-delta-review.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\delta-review.json",
+      "capturedSha256": "fe034ca8547c5bfe06625c298a1b99230a88d853d815a78b6fd9ec98f82b3ecd",
+      "publishedSha256": "fe034ca8547c5bfe06625c298a1b99230a88d853d815a78b6fd9ec98f82b3ecd",
+      "originalLineSeparators": "LF"
+    },
+    "contract-delta-sources.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\delta-source-verification.json",
+      "capturedSha256": "2c0af8c6e6f5216a42d75a6f5dbcec07f34b777395142dce1ddbf81406316f12",
+      "publishedSha256": "2c0af8c6e6f5216a42d75a6f5dbcec07f34b777395142dce1ddbf81406316f12",
+      "originalLineSeparators": "LF"
+    }
+  },
+  "excludedDuplicate": "Canonical reserved 049 text remains in the actual registry and exact immutable-source receipt; duplicate trailing-blank section capture retained outside the patch.",
+  "excludedGeneratedDiff": "The exact seven-line generated delta remains directly visible in this Git commit; original raw diff and its SHA256 remain in registry-generated.json evidence."
+}

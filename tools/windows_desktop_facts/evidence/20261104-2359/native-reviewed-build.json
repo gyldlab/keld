@@ -1,0 +1,82 @@
+{
+  "checks": [
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "tools/windows_desktop_facts/native/Cargo.toml",
+        "--check"
+      ],
+      "exit": 0,
+      "elapsedSeconds": 0.3529543876647949,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-review-check-0.log"
+    },
+    {
+      "argv": [
+        "cargo",
+        "build",
+        "--manifest-path",
+        "tools/windows_desktop_facts/native/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--target-dir",
+        "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105"
+      ],
+      "exit": 0,
+      "elapsedSeconds": 1.6344656944274902,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-review-check-1.log"
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "tools/windows_desktop_facts/native/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--target-dir",
+        "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105"
+      ],
+      "exit": 0,
+      "elapsedSeconds": 1.038848638534546,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-review-check-2.log"
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "tools/windows_desktop_facts/native/Cargo.toml",
+        "--locked",
+        "--offline",
+        "--target-dir",
+        "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "elapsedSeconds": 0.5747189521789551,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-review-check-3.log"
+    },
+    {
+      "argv": [
+        "bun",
+        "fmt",
+        "--no-script",
+        "tools/windows_desktop_facts/native_adapter.test.ts",
+        "tools/windows_desktop_facts/verify_native.test.ts",
+        "tools/windows_desktop_facts/oracle.cjs"
+      ],
+      "exit": 0,
+      "elapsedSeconds": 0.05746650695800781,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-review-check-4.log"
+    }
+  ],
+  "executable": {
+    "path": "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "sha256": "947ed40f2c9be6dca101b5feb9b626eac11611c93d7767185aa88da60c6336f0"
+  }
+}

@@ -1,0 +1,189 @@
+{
+  "schema": "keld.w4-publication-review/v1",
+  "reviewer": "/root/w4_publish_review",
+  "system": "ChatGPT",
+  "model": "GPT-6 Astra Pro",
+  "lens": "Final documentation, contract boundaries, reserved catalog provenance",
+  "completedUtc": "2026-11-05T01:19:30.285191+00:00",
+  "decision": "GO for the exact reviewed documentation/catalog proposal; no production activation or merge approval",
+  "findings": [],
+  "sourceHead": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "branch": "agent/gh-1186-windows-desktop-feasibility-20261105",
+  "sourceHashesBefore": {
+    "docs/specs/gh1186-windows-desktop-facts.md": "1bee2637b5154b7de6602412e06c03e09c1c0e48c3cb34bea44a0ddaf8b991de",
+    "tools/windows_desktop_facts/integration-notes.md": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+    "tools/windows_desktop_facts/EVIDENCE.md": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+    "tools/windows_desktop_facts/README.md": "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+    "docs/engineering/keld-error-codes.md": "331e44028d44459a795a896a2ccb2932fd4fcfa98a949198730986a763124f13",
+    "tools/windows_desktop_facts/integration.patch": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d"
+  },
+  "sourceHashesAfter": {
+    "docs/specs/gh1186-windows-desktop-facts.md": "1bee2637b5154b7de6602412e06c03e09c1c0e48c3cb34bea44a0ddaf8b991de",
+    "tools/windows_desktop_facts/integration-notes.md": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+    "tools/windows_desktop_facts/EVIDENCE.md": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+    "tools/windows_desktop_facts/README.md": "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+    "docs/engineering/keld-error-codes.md": "331e44028d44459a795a896a2ccb2932fd4fcfa98a949198730986a763124f13",
+    "tools/windows_desktop_facts/integration.patch": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d"
+  },
+  "unchanged": true,
+  "catalog": {
+    "canonicalCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "canonicalPath": "docs/engineering/keld-error-codes.md",
+    "independentlyReadImmutableMacObject": true,
+    "sectionSha256": "0609c6fe4ed72bc88a007b71eaf8c30c19cb2092dffc60f402d0a80de277f0f4",
+    "workingSectionEqualsImmutable": true,
+    "diff": {
+      "additions": 7,
+      "deletions": 0
+    },
+    "scopePreserved": "GH481 macOS S1; original 5-second caller transport error not relabeled 049",
+    "claimUrl": "https://github.com/gyldlab/keld/issues/1186#issuecomment-6646655855",
+    "sharedNoticeUrl": "https://github.com/gyldlab/keld/issues/481#issuecomment-6646686232"
+  },
+  "contractChecks": {
+    "approvedSharedDecisionsRead": [
+      "https://github.com/gyldlab/keld/issues/481#issuecomment-6556306946",
+      "https://github.com/gyldlab/keld/issues/481#issuecomment-6557264649",
+      "https://github.com/gyldlab/keld/issues/446#issuecomment-6371650353"
+    ],
+    "windowsSelectorStillUnapproved": true,
+    "specStillDraft": true,
+    "fixtureDoesNotClaimCoreAdmission": true,
+    "originalFirstSampleReceiptCoreAdmissionProven": false,
+    "coreGenerationFenceNotClaimed": true,
+    "workerLinkCounterIndependentlyRead": "e09b packages/@keld/kipc/src/transport.ts #nextCorr = 1",
+    "postInitGapIndependentlyRead": "e09b crates/keld-core/src/app_session.rs DesktopObserved branch refuses init_seen or desktop_seen; initial receiver only permits one desktop exception",
+    "readyAndDeadlinesUnchanged": true,
+    "noNewMirrorOrGetterRpcClaim": true,
+    "actualNativeFactsDistinctFromSyntheticUpdates": true,
+    "nativeWrapperRerunStillQueuedAndUnclaimed": true,
+    "processTimeoutFindingPreciselyLimitedToFalseCleanupEvidence": true
+  },
+  "evidenceChecks": {
+    "nativeFacts": "Raw display/work/DPI/theme, WinRT scale, original held-Subscribe timestamps and Electron oracle records agree with the report.",
+    "negativeControls": "Unaware coordinates differ from physical mode; invalid monitor, DPI enum and high-contrast size have actual native failures, exit 1, and no sample.",
+    "workspaceSummary": "1820 tests run: 1706 passed (3 slow), 114 failed, 82 skipped",
+    "registryFocusedRerun": "9 tests run: 9 passed, 0 skipped; exit 0",
+    "volumeAnchorRefusalCountInRawLog": 110,
+    "qf1MissingMarkerFailures": 2,
+    "qf1UnderlyingCause": "not verified; correctly stated unknown",
+    "formatterEvidence": "Same source/Bun shows zero-file false success under ignored managed ancestry; outside ancestry and own Git-boundary controls reject. Existing receipts read; no test re-execution.",
+    "processSuiteReceipt": {
+      "testsRun": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsedSeconds": 10.61025550001068
+    },
+    "processCallerReceipt": {
+      "timeoutSeconds": 1,
+      "observedReturnSeconds": 1.0227555999881588,
+      "jobActiveAfter": 0,
+      "healthyFollowupExit": 7
+    },
+    "publishedManifestFilesVerified": 33,
+    "stagedManifestBlobsVerified": 33,
+    "captureByteReconstructionsVerified": 31,
+    "nativeReviewSourceHashesVerified": 9,
+    "processReviewSourceHashesVerified": 4
+  },
+  "scopeChecks": {
+    "outOfScopeChanges": [],
+    "productDiffEmpty": true,
+    "integrationPatchAdditions": 17,
+    "integrationPatchRemovals": 4,
+    "patchUnapplied": true
+  },
+  "evidence": [
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\shared-registry-049.md",
+      "sha256": "0609c6fe4ed72bc88a007b71eaf8c30c19cb2092dffc60f402d0a80de277f0f4"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-copy-receipt.json",
+      "sha256": "3d15c2a35e8b61d895c3f40eb1287fe4b84ed1e660e406e5f0d91b4e3c3f8fb1"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-tests.json",
+      "sha256": "b66136b037cf0832113222fdd6f827105ffd8f3a3e1946a56b383683599c13d7"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-tests.log",
+      "sha256": "4da458680d5ff00ebea617aa99304d5a35b1cdc5bc51a62705dc39d4222c3c64"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-tests-complete.json",
+      "sha256": "ad9807815941881ae77e2f245a283aadf3762142ed3745e641483dd18047aa13"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-tests-complete.log",
+      "sha256": "a7a00b854188fb66def824b9cadb0601e821b0bc8adff98cbf0948e41d54779b"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-failure-groups.json",
+      "sha256": "95c06e010702b592cd7a93f4c8dbc7ec83a33be1e1e2da21c13d92eba29d6ca2"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\diagnosis-summary.json",
+      "sha256": "a27387bc7dc0661def1d8fb81528f1086fc79d93612bd524d2886f6aaf5d2436"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-control.json",
+      "sha256": "aa2af8cf81bc838d7f7e8e6386661a9efca4dfaea2d822227fdd4c719a8323b1"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-01\\native-first-sample.json",
+      "sha256": "dfc205fcaea95c7f6a7f94ae893e882e120b9a0c0af7aa3ab1bf3f402cc5fb3c"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-01\\electron.json",
+      "sha256": "11148b8228926ddcbb4a07368b45f3f35ad00ee46b26c43600c5b8445b6624f6"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-cleanup.json",
+      "sha256": "a5edcf96504f4893413601f85bccf7d2e71da2a090ffe1d9ce079b030ddcf28d"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\suite-final-f961\\receipt.json",
+      "sha256": "d8474d3fa71d5188b807b53547d2aa1584ab65698410fc402f1d2dc4b06471d5"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\caller-final-f961\\receipt.json",
+      "sha256": "9760eea06cbfdc8d6654c53f2c6dc4948e918b4299014f7b86771c87d1d72373"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\native-review.json",
+      "sha256": "feda21c04ef846ab9792d47a40a4b694543616417d023673cf5a13c9a60a3e8e"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\evidence\\20261104-2359\\SHA256.json",
+      "sha256": "c451675f14f3a29e53b4f6296ee5dff79170761bb46320a273d941c917967ba8"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\evidence\\20261104-2359\\line-ending-receipt.json",
+      "sha256": "a3830e88e6c432ffb1e1fc2c2715f3369a31a227b5993265fe9ae857f9ce1a6f"
+    }
+  ],
+  "limits": [
+    "No native, GUI, build or test was executed by this reviewer; existing independent executions and raw evidence were inspected.",
+    "This is a documentation/provenance lens and does not substitute for the isolated-context behavioral code-review gate.",
+    "Review binds exact file hashes at base df99602e with uncommitted W4 additions; root must retain source binding or obtain delta review for later changes.",
+    "No owner approval is conferred for portable S1 publication, Windows identity/units/appearance semantics, immutable selector, post-Init admission, or real Core generation fencing.",
+    "The full workspace test gate remains failed. Focused registry success is not a passing full rerun.",
+    "No fresh final-wrapper native run is claimed; root coordinates the separate serialized slot."
+  ],
+  "currentDocumentationReceipt": {
+    "applicability": "not-applicable: immutable internal source and recorded execution consistency review; no new external semantic selected",
+    "context7": "not-applicable: no new external API or tool behavior decision",
+    "officialPrimary": "Immutable gyldlab/keld S1 commit and recorded approved issue comments; retrieved 2026-11-05",
+    "supportedClaim": "Exact reserved catalog text and explicit shared-contract boundaries",
+    "fallbackBlocker": "Production owner gates and local full-workspace failure remain open"
+  },
+  "resources": {
+    "repositorySourceEdited": false,
+    "guiLaunched": false,
+    "nativeProbeLaunched": false,
+    "foreignProcessesSignalled": false,
+    "reviewJsonRetained": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115"
+  }
+}

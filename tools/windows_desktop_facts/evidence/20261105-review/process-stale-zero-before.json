@@ -1,0 +1,30 @@
+{
+  "subjectSha256": "3629a50dfc872c43f665426a96e20732b3df1dd6a8cd5cbb577f9e685e587a4e",
+  "harnessSha256": "d54a5a05ef04a25822998f2ac85eddc6254110ef21e0cca2809fc1efda226351",
+  "desktopQueriesLaunched": false,
+  "foreignProcessesSignalled": false,
+  "repositoryEdited": false,
+  "ctypesSizes": {
+    "_BasicLimits": 64,
+    "_IoCounters": 48,
+    "_ExtendedLimits": 144,
+    "_Accounting": 48
+  },
+  "firstActualJobCount": 0,
+  "leafPid": 20136,
+  "leafWaitBeforeAcknowledgement": 258,
+  "bootstrapExit": 0,
+  "actualJobCountAfterBootstrapExit": 1,
+  "leafWaitBeforeCleanupReturns": 258,
+  "cleanupResult": [
+    0,
+    false
+  ],
+  "actualJobCountAfterCleanupReturn": 1,
+  "leafWaitAfterCleanupReturn": 258,
+  "countCalls": 1,
+  "leafWaitAfterJobClose": 0,
+  "leafExitAfterJobClose": 0,
+  "elapsedSeconds": 0.21145869998144917,
+  "classification": "confirmed"
+}

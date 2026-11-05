@@ -1,0 +1,4 @@
+{
+  "jobActiveAtClose": 0,
+  "cleanupError": "owned cleanup could not be proven: injected Job query failure"
+}

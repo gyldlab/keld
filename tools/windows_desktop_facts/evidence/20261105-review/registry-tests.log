@@ -1,0 +1,26 @@
+   Compiling keld-guard v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-guard)
+   Compiling keld-ipc v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-ipc)
+   Compiling keld-pack v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-pack)
+   Compiling keld-update v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-update)
+   Compiling keld-native v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-native)
+   Compiling keld-runtime v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-runtime)
+   Compiling keld-wv v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-wv)
+   Compiling keld-core v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-core)
+   Compiling keld-cli v0.0.1 (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\crates\keld-cli)
+   Compiling tempfile v3.27.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.82s
+────────────
+ Nextest run ID a17831db-635e-49f2-ac95-70df4510f0d1 with nextest profile: ci
+    Starting 9 tests across 1 binary
+        PASS [   0.012s] (1/9) keld-cli::error_registry duplicate_code_in_registry_text_is_an_error
+        PASS [   0.024s] (2/9) keld-cli::error_registry extract_accepts_hyphenated_and_compact_forms
+        PASS [   0.036s] (3/9) keld-cli::error_registry empty_registry_with_no_codes_parses_empty
+        PASS [   0.043s] (4/9) keld-cli::error_registry empty_fix_in_registry_text_is_an_error
+        PASS [   0.059s] (5/9) keld-cli::error_registry api_emitter_is_scanned_without_a_rust_shadow
+        PASS [   0.059s] (6/9) keld-cli::error_registry registry_file_exists_and_is_unique_with_fixes
+        PASS [   0.072s] (7/9) keld-cli::error_registry extract_ignores_kel_issues_and_short_tails
+        PASS [   0.094s] (8/9) keld-cli::error_registry electron_emitter_is_scanned_without_a_rust_shadow
+        PASS [   5.159s] (9/9) keld-cli::error_registry scanned_source_codes_match_registry
+────────────
+     Summary [   5.164s] 9 tests run: 9 passed, 0 skipped
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-daf9e20080ef47a9a9406151c8b0ffa4

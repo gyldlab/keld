@@ -1,0 +1,31 @@
+bun test v1.4.4 (38afee6c8)
+
+tools\windows_desktop_facts\subscribe_contract.test.ts:
+43 | }
+44 | async function assertPending(peer: Fixture): Promise<void> {
+45 |   await peer.fence();
+46 |   const state = await peer.request("checkpoint");
+47 |   assert.equal(state.settled, false, "valid Subscribe must remain pending before sample");
+48 |   assert.equal(state.readyCount, 0, "no facade Ready before accepted replay");
+              ^
+AssertionError: no facade Ready before accepted replay
+
+1 !== 0
+
+ generatedMessage: false,
+     actual: 1,
+   expected: 0,
+   operator: "strictEqual",
+       diff: "simple",
+       code: "ERR_ASSERTION"
+
+      at assertPending (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_contract.test.ts:48:10)
+      at D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_contract.test.ts:87:13
+      at withFixture (D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_support\host.ts:237:11)
+      at D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105\tools\windows_desktop_facts\subscribe_contract.test.ts:83:11
+(fail) W4 shared client contract; scripted Host, real named pipe > adversarial raw Ready before the sample cannot bypass pending Subscribe [353.00ms]
+
+ 0 pass
+ 8 filtered out
+ 1 fail
+Ran 1 test across 1 file. [467.00ms]

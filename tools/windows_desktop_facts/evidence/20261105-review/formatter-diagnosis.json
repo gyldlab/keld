@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "chatgpt-w4-desktop-20261105",
+  "owner": "w4_process_fix",
+  "scope": "Read-only product-source diagnosis; owned non-GUI fixture apps and evidence only.",
+  "sourceHead": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "originMainAtInspection": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "sourceHashes": {
+    "tools/workspace.py": "6f0ef1b2565351842a3c459dd671469ec3dadb52b776496fc94d33a1ed1d50a7",
+    "crates/keld-cli/src/create.rs": "65a4b3748567df775d70eda9ba985555c4462fb867f0af51c72ec3e9a352b71f",
+    "crates/keld-cli/templates/hello/package.json": "84e42722c24f78c735d908e280755070ef955ea577085df5d0a77dbb036d40c1"
+  },
+  "originalFailure": {
+    "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-tests.log",
+    "receipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\workspace-tests.json",
+    "test": "create::tests::created_app_native_formatter_checks_repairs_and_is_idempotent",
+    "assertion": "crates/keld-cli/src/create.rs:270: unformatted app passed",
+    "managedScratch": "D:\\WORK\\keld\\.keld-work\\tmp\\l8mc0smw",
+    "preserved": true
+  },
+  "formatterFinding": {
+    "classification": "confirmed",
+    "cause": "Managed scratch is inside the primary repository's ignored /.keld-work/ tree. Bun fmt honors ancestor Git ignore rules, selects no source files, exits 0 and leaves deliberately unformatted source unchanged.",
+    "bunPath": "C:\\Users\\dnc\\.bun\\bin\\bun.exe",
+    "bunVersion": "1.4.4",
+    "bunSha256": "cb1d8e6564e655e49d30cead359750a1cbbd12f42651caa4b62244d7bd93c244",
+    "matchesRepositoryPin": true,
+    "pinnedToolSelectionCorrectionNeeded": false,
+    "reproduction": "Same actual built keld.exe create command, same package, same Bun binary and same unformatted bytes in both apps.",
+    "matrix": [
+      {
+        "context": "managed scratch",
+        "app": "D:\\WORK\\keld\\.keld-work\\tmp\\w4-formatter-7squvz3p\\formatted-app",
+        "freshCheck": 0,
+        "unformattedCheck": 0,
+        "directGlobCheck": 0,
+        "explicitFileCheck": 0,
+        "repairChangedSource": false,
+        "ignoreRule": ".gitignore:2:/.keld-work/"
+      },
+      {
+        "context": "OS temporary directory",
+        "app": "C:\\Users\\dnc\\AppData\\Local\\Temp\\w4-formatter-1l6b9xgv\\formatted-app",
+        "freshCheck": 0,
+        "unformattedCheck": 1,
+        "directGlobCheck": 1,
+        "explicitFileCheck": 1,
+        "repairChangedSource": true,
+        "afterRepairCheck": 0
+      }
+    ],
+    "samePathControl": {
+      "onlyChange": "git init --quiet --template= in the owned disposable managed app",
+      "sourceBytesUnchanged": true,
+      "gitCheckIgnoreExit": 1,
+      "formatCheckExit": 1,
+      "diagnosis": "A local repository boundary removes the ancestor ignore rule and restores rejection without changing Bun, package scripts, PATH or source bytes."
+    },
+    "receipts": [
+      "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\receipt.json",
+      "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-control.json"
+    ],
+    "limitations": "Full original Rust test was not rerun here; root's full-workspace run remained the sole Cargo/nextest owner. Comparison with lead's earlier pass was not independently inspected."
+  },
+  "managedScratchRelocation": {
+    "supportedTaskLocalOverride": false,
+    "evidence": [
+      "tools/workspace.py Context.root: self.primary / DIRECTORY; DIRECTORY is .keld-work.",
+      "allocate_scratch: parent = safe_path(ctx.root / 'tmp'); no alternate root argument.",
+      "run: child_env overwrites TMPDIR, TEMP and TMP with the allocated scratch.",
+      "run --help exposes only task, --session and --log-limit-mib.",
+      "safe_path rejects symlink/reparse ancestors; context rejects Git directory override variables.",
+      "docs/onboarding/05-development-guide.md Local agent workspace documents only primary/.keld-work/tmp/<short-token>.",
+      ".agents/coordination.md assigns session scratch/log ownership to work-run."
+    ],
+    "blocker": "The D: primary cannot select an independent managed C: scratch root using any current supported CLI option or environment setting.",
+    "updaterContext": "Root reports existing updater guard refusals: volume anchor grants mutation to S-1-5-11. This subtask did not reproduce updater tests or alter ACLs.",
+    "nextOwner": "Root/workspace maintainer",
+    "nextAction": "Keep baseline failures visible and choose a separately owned workspace change supporting qualified external scratch, or another approved environment. Do not use ACL weakening, junctions, or hidden TEMP overrides as a pass.",
+    "separateAcceptanceChecks": [
+      "Formatter: planted source is discovered, check exits 1 without changing bytes, repair changes bytes, next check exits 0.",
+      "Updater: actual selected volume and ancestor ACLs satisfy existing production guard unchanged.",
+      "Managed workspace: allocated external scratch, if added by its owner, retains session identity, path qualification, custody and cleanup evidence."
+    ],
+    "caveat": "A real C: primary would still use ignored .keld-work scratch, so it does not alone resolve formatter discovery. A C: linked worktree attached to the D: primary still gets D: scratch."
+  },
+  "documentation": {
+    "retrieved": "2026-11-05",
+    "context7": {
+      "library": "/oven-sh/bun",
+      "query": "bun fmt .gitignore every .gitignore in repository whichever directory run from ignore files",
+      "role": "discovery only"
+    },
+    "primary": "https://bun.com/docs/format",
+    "supportedClaim": "Bun 1.4.4 formatter honors all .gitignore files in a repository regardless of invocation directory; --check returns 1 when selected files need formatting."
+  },
+  "resources": {
+    "ownedApps": "Retained at the two exact app paths above for review; source generators and receipts are retained in this directory.",
+    "allInvocationsObservedJobZero": true
+  },
+  "productSourceEdited": false,
+  "productTestEdited": false,
+  "templateEdited": false,
+  "globalEnvironmentChanged": false,
+  "aclChanged": false,
+  "guardBypassed": false,
+  "cargoLaunched": false,
+  "guiLaunched": false,
+  "foreignProcessesSignalled": false
+}

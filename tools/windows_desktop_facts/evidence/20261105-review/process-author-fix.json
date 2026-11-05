@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "chatgpt-w4-desktop-20261105",
+  "owner": "w4_process_fix",
+  "scope": "Confirmed stale-zero cleanup race only; two fixture files, no product change.",
+  "sourceFrozen": true,
+  "sources": [
+    {
+      "path": "tools/windows_desktop_facts/owned_process.py",
+      "sha256": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2"
+    },
+    {
+      "path": "tools/windows_desktop_facts/test_owned_process.py",
+      "sha256": "92ac0fd71c8eb50b602f3ae065f33efeb6223c23dcfc1d2cfbd77d8f1258f9b7"
+    }
+  ],
+  "supersedesSourceFreeze": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\author-receipt.json",
+  "preservedPreCorrection": {
+    "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\owned_process-before-stale-zero-fix.py",
+    "sha256": "3629a50dfc872c43f665426a96e20732b3df1dd6a8cd5cbb577f9e685e587a4e"
+  },
+  "change": "Observe bootstrap completion before reading the Job census that can authorize zero; only observation order and explanatory comment changed in helper.",
+  "apiChanged": false,
+  "executionDeadlinesChanged": false,
+  "cleanupDeadlineChanged": false,
+  "regression": {
+    "name": "test_zero_census_cannot_precede_bootstrap_exit_observation",
+    "mechanism": "Real run_owned timeout entry with existing pre-enrollment event gate. Deliver an actual initial Job count0 only after bootstrap enrolls, creates a held descendant and exits. Neither count nor poll values are fabricated.",
+    "before": {
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\stale-zero-before-fix\\unittest.log",
+      "receipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\stale-zero-before-fix\\test_zero_census_cannot_precede_bootstrap_exit_observation-9ca1a954\\exercise.json",
+      "expectedFailureExit": 1,
+      "firstActualJobCount": 0,
+      "bootstrapWaitAfterEnrollment": 0,
+      "jobAfterBootstrapExit": 1,
+      "leafWaitAfterBootstrapExit": 258,
+      "reportedJobZero": 0,
+      "reportedForcedCleanup": false,
+      "independentJobActiveAtClose": 1,
+      "leafWaitAfterOwnerReturn": 0,
+      "leafExitAfterOwnerReturn": 0,
+      "meaning": "Assertion rejects stale success-shaped census; last-handle close eventually kills the owned leaf, which is not accepted as prior zero proof."
+    },
+    "after": {
+      "receipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6\\exercise.json",
+      "firstActualJobCount": 0,
+      "bootstrapWaitAfterEnrollment": 0,
+      "jobAfterBootstrapExit": 1,
+      "leafWaitAfterBootstrapExit": 258,
+      "reportedJobZero": 0,
+      "reportedForcedCleanup": true,
+      "independentJobActiveAtClose": 0,
+      "leafWaitAfterOwnerReturn": 0,
+      "leafExitAfterOwnerReturn": 1,
+      "elapsedSeconds": 1.4239764000230934
+    }
+  },
+  "verification": {
+    "command": "python -B -m unittest discover -s tools/windows_desktop_facts -p test_owned_process.py -v",
+    "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\unittest.log",
+    "tests": 11,
+    "passed": 11,
+    "exit": 0,
+    "seconds": 11.811,
+    "inheritedStdioTimeoutSeconds": 1,
+    "inheritedStdioElapsedSeconds": 1.0201562999864109,
+    "inheritedStdioReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_timeout_reaps_descendant_retaining_stdio-8c42844d\\exercise.json",
+    "queryFailureReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_query_failure_still_reaps_unenrolled_bootstrap-fa775bc2\\exercise.json",
+    "queryFailureStillRefuses": "owned cleanup could not be proven: injected Job query failure",
+    "nonWindowsDiscovery": "Passed; all11 tests explicitly skipped on Linux."
+  },
+  "independentFindingReceipt": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-process-review-1d04b87a\\stale-zero-run\\receipt.json",
+  "independentReviewStatus": "Final caller/refuter rerun is owned by root and independent reviewers; author does not claim it completed.",
+  "originalFailuresPreserved": true,
+  "productFilesEdited": false,
+  "guiLaunched": false,
+  "foreignProcessesSignalled": false,
+  "committed": false
+}

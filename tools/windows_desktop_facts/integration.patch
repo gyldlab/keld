@@ -1,0 +1,39 @@
+diff --git a/crates/keld-wv/src/webview2/mod.rs b/crates/keld-wv/src/webview2/mod.rs
+--- a/crates/keld-wv/src/webview2/mod.rs
++++ b/crates/keld-wv/src/webview2/mod.rs
+@@ -3357,2 +3357,3 @@
+         ready_trigger: AppReadyTrigger,
++        mut capture_desktop_at_init: Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>,
+         on_loop_entry: impl FnOnce(),
+@@ -3432,3 +3433,3 @@
+                 && first_host_init_turn(&event, &mut host_init_emitted)
+-                && !report_host_initialized(&events)
++                && !report_host_initialized(&events, capture_desktop_at_init.take())
+             {
+@@ -3599,3 +3600,15 @@
+ /// so nothing can ever observe Ready; the caller ends the session fatally.
+-fn report_host_initialized(events: &Sender<AppWindowEvent>) -> bool {
++/// The Host-selected capture executes here on the real Init turn. Its explicit
++/// unavailable result uses the same desktop event and cannot fabricate facts.
++fn report_host_initialized(
++    events: &Sender<AppWindowEvent>,
++    capture_desktop_at_init: Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>,
++) -> bool {
++    if let Some(capture) = capture_desktop_at_init
++        && events
++            .send(AppWindowEvent::DesktopObserved { facts: capture() })
++            .is_err()
++    {
++        return false;
++    }
+     events
+@@ -4886,3 +4899,3 @@
+         let before = std::time::Instant::now();
+-        assert!(super::report_host_initialized(&events));
++        assert!(super::report_host_initialized(&events, None));
+         match receiver.try_recv() {
+@@ -4896,3 +4909,3 @@
+         assert!(
+-            !super::report_host_initialized(&events),
++            !super::report_host_initialized(&events, None),
+             "a dropped coordinator can never publish Ready"

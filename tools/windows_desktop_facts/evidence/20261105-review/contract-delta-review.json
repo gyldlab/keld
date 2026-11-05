@@ -1,0 +1,142 @@
+{
+  "schema": "keld.w4-publication-delta-review/v1",
+  "reviewer": "/root/w4_publish_review",
+  "system": "ChatGPT",
+  "model": "GPT-6 Astra Pro",
+  "lens": "Generated catalog corpus and final documentation evidence delta",
+  "completedUtc": "2026-11-05T01:23:41.501270+00:00",
+  "decision": "GO for this exact delta; no new actionable findings",
+  "findings": [],
+  "priorReview": {
+    "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\review-summary.json",
+    "sha256": "03b9e1ddc08940e87393de33486451933304350f79ca80553fad9f9005186f52",
+    "preserved": true
+  },
+  "sourceHead": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+  "sourceSha256": {
+    "docs/specs/gh1186-windows-desktop-facts.md": "3f1ee84253b112016370d69684a67ed52d93c72a51e67c8bbda440f382286d47",
+    "tools/windows_desktop_facts/integration-notes.md": "2f64643a4a99e525c232b3042cf7a07f702c6c0c37a95c32b432caf606a0d01f",
+    "tools/windows_desktop_facts/EVIDENCE.md": "a0209fd846e91c5a44c7f5f0b88123ba338af1aa92e2b042b3745811b4094f40",
+    "tools/windows_desktop_facts/README.md": "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+    "docs/engineering/keld-error-codes.md": "331e44028d44459a795a896a2ccb2932fd4fcfa98a949198730986a763124f13",
+    "tools/windows_desktop_facts/integration.patch": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d",
+    "llms-full.txt": "2dd4bc12d0175e976239f1b1c4ca0b187b3c236db60cf0b8255b4e5f768fa553",
+    "llms.txt": "efda14c72ea64584fd0ec054c9343c0ab6dce6816c6197cf00278725526711de"
+  },
+  "deltaProof": {
+    "docs/specs/gh1186-windows-desktop-facts.md": {
+      "beforeSha256": "1bee2637b5154b7de6602412e06c03e09c1c0e48c3cb34bea44a0ddaf8b991de",
+      "afterSha256": "3f1ee84253b112016370d69684a67ed52d93c72a51e67c8bbda440f382286d47",
+      "onlyNamedDeltaProvenByReverseHash": true
+    },
+    "tools/windows_desktop_facts/integration-notes.md": {
+      "beforeSha256": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+      "afterSha256": "2f64643a4a99e525c232b3042cf7a07f702c6c0c37a95c32b432caf606a0d01f",
+      "onlyNamedDeltaProvenByReverseHash": true
+    },
+    "tools/windows_desktop_facts/EVIDENCE.md": {
+      "beforeSha256": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+      "afterSha256": "a0209fd846e91c5a44c7f5f0b88123ba338af1aa92e2b042b3745811b4094f40",
+      "onlyNamedDeltaProvenByReverseHash": true
+    }
+  },
+  "generatedCorpus": {
+    "onlyCanonical049SectionAdded": true,
+    "additions": 7,
+    "deletions": 0,
+    "removingSectionReproducesHeadBytes": true,
+    "indexByteIdenticalToHead": true,
+    "claimUrl": "https://github.com/gyldlab/keld/issues/1186#issuecomment-6646939854"
+  },
+  "generatorChecks": {
+    "currentWorkingTreeGeneratorRebuilt": true,
+    "generatorSourceUnchanged": true,
+    "generatorSourceSha256": "70fff629dc61b3088f0ea3128c27acf215bb72dbce2896d0e15e0cf33e880501",
+    "generateExit": 0,
+    "unitTestExit": 0,
+    "unitTests": 6,
+    "unitFailures": 0,
+    "freshnessExit": 0,
+    "originalStaleOutputFailurePreserved": true,
+    "logHashesVerified": true
+  },
+  "documentationChecks": {
+    "scopeAddsOnlyGeneratedCorpusConsequence": true,
+    "refuterFindingClaimMatchesRawReceipts": true,
+    "failurePathOnlyQualificationPreserved": true,
+    "normalHealthyAcceptanceOrPersistentEscapeNotClaimed": true,
+    "independentOldTargetedTest": "1 test, expected assertion failure: Job count before close 1",
+    "independentFixedTargetedTest": "1 test passed: Job count before close 0",
+    "refuterFinalHelperSha256": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2",
+    "pr1400ContextCheckOnly": true,
+    "pr1400Head": "2aed1f944a072d2c84469924c107b3ca5df9bc13",
+    "nativeRerunStillQueued": true,
+    "coreGenerationAndOwnerGatesStillOpen": true
+  },
+  "scopeChecks": {
+    "productDiffEmpty": true,
+    "readmeCatalogAndIntegrationPatchUnchanged": true,
+    "publishedReviewDirectoryExists": true
+  },
+  "evidence": [
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\review-summary.json",
+      "sha256": "03b9e1ddc08940e87393de33486451933304350f79ca80553fad9f9005186f52"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115\\delta-source-verification.json",
+      "sha256": "2c0af8c6e6f5216a42d75a6f5dbcec07f34b777395142dce1ddbf81406316f12"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-generated.json",
+      "sha256": "ac05d552261d0b03c3984aa8fc24ae94d872058aecf8d05e0ffa289740e38c43"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-generated.diff",
+      "sha256": "220a0f7151b3a307c45cf69479cf9a039eb3a9cd0b360b74423de5a35d96cc67"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms.log",
+      "sha256": "1a9109d98ca8dd6175a7997ee778a8fa469261013fc892a85ee068bcedb44b1c"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-test.log",
+      "sha256": "e03d42a8e63ff124385769999923dbbf2a6a1356eedf936973b1953ecef7f10f"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-check.log",
+      "sha256": "961f6e4e22f67b1013956b0c79062951bdeccab6b5fd23d61fee1bc330b0f7a6"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-llms-check.log",
+      "sha256": "ece87f98a8ddccd85eddcc7e00a07caa179a0d6953336c7bc75f0bbbb11e1e58"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\seam-pr1400\\receipt.json",
+      "sha256": "316e95a8a3672a26590454c3af5ad11289c5f4579dc6a0e5fe9f56fb73968c37"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-stale-zero-refuter-61105\\final-disposition.json",
+      "sha256": "ae7cd45f3d7498ec19d8e605885001783e722cfcb4b576b17ce57281679886f4"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-stale-zero-refuter-61105\\old-targeted.log",
+      "sha256": "8bfe0726311822dbcda3eff63fd04c83f457e73e5111688e6ff811296d305d4d"
+    },
+    {
+      "path": "D:\\WORK\\keld\\.keld-work\\sessions\\chatgpt-w4-desktop-20261105\\closeout\\independent-stale-zero-refuter-61105\\fixed-targeted.log",
+      "sha256": "e9574c1bf8384cf69b691088451588ca22be543a131786b184db5d0099f2da1d"
+    }
+  ],
+  "verificationNote": "The first verification command completed all assertions and wrote delta-source-verification.json, then encountered a CP1252 display error while printing the old PowerShell log. The retained log was subsequently read with its actual encoding and its assertion/count verified. No source, gate, or test behavior was changed.",
+  "limits": [
+    "No tests, builds, GUI or native probe launched by this reviewer.",
+    "This delta review retains the previous documentation/provenance scope; it is not production activation, merge approval, or a replacement behavioral code review.",
+    "Any subsequent source/report changes need their own exact delta binding."
+  ],
+  "resources": {
+    "repositorySourceEdited": false,
+    "foreignProcessesSignalled": false,
+    "reviewReceiptsRetained": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-review-20261105-0115"
+  }
+}

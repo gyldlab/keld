@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2",
+    "--control",
+    "failed-dpi"
+  ],
+  "pid": 5160,
+  "exit": 1,
+  "startedUnix": 1793836757.8248188,
+  "completedUnix": 1793836757.8442976,
+  "ownedDirectChildTimeout": false
+}

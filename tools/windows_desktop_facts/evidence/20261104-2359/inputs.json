@@ -1,0 +1,16 @@
+{
+  "probe": {
+    "path": "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "sha256": "947ed40f2c9be6dca101b5feb9b626eac11611c93d7767185aa88da60c6336f0"
+  },
+  "oracle": {
+    "path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\electron-44.4.5\\electron.exe",
+    "sha256": "bd14928e0728366fd3f41499cb398ff3f4304dab259a3e605077899a6f8c748e"
+  },
+  "script": {
+    "path": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\oracle.cjs",
+    "sha256": "eea1e66bcafdbe450f8128582a034e9d20b589c4820dc40552ff711b1cee0e13"
+  },
+  "sharedCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+  "globalSettingsChanged": false
+}

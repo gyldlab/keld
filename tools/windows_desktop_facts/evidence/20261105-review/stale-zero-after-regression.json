@@ -1,0 +1,31 @@
+{
+  "firstActualJobCount": 0,
+  "bootstrapWaitAfterEnrollment": 0,
+  "jobAfterBootstrapExit": 1,
+  "leafWaitAfterBootstrapExit": 258,
+  "jobActiveAtClose": 0,
+  "result": {
+    "argv": [
+      "C:\\Users\\dnc\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+      "-B",
+      "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\test_owned_process.py",
+      "--fixture",
+      "orphan",
+      "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6"
+    ],
+    "returncode": null,
+    "target_pid": 15104,
+    "bootstrap_pid": 11316,
+    "bootstrap_returncode": 0,
+    "stdout_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6\\target.stdout",
+    "stderr_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6\\target.stderr",
+    "metadata_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\owned-process-checks\\run04\\test_zero_census_cannot_precede_bootstrap_exit_observation-02243bb6\\metadata.json",
+    "timed_out": true,
+    "forced_cleanup": true,
+    "elapsed_seconds": 1.4239764000230934,
+    "job_active_after": 0,
+    "setup_error": null
+  },
+  "leafWaitAfterOwnerReturn": 0,
+  "leafExitAfterOwnerReturn": 1
+}

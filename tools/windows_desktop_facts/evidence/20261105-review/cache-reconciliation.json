@@ -1,0 +1,8 @@
+{
+  "reason": "managed workspace refuses nested .keld-work",
+  "source": "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\.keld-work\\build\\gh1186-w4-native-20261105",
+  "destination": "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105",
+  "preservedExeSha256": "57037eac055bd0ab55c54b262ddfc1e6ee147b4f207752eb3ce324c8cd2d7a64",
+  "emptyParentsRemoved": true,
+  "foreignCachesTouched": false
+}
