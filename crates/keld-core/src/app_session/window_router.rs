@@ -821,7 +821,7 @@ impl PrimaryRouterHandle {
                     "legacy lifecycle fact entered managed registry dispatch",
                 ));
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             AppWindowEvent::HostInitialized { .. } => {
                 return Err(app_detail(
                     "window native event",
