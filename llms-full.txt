@@ -2214,7 +2214,14 @@ Keld migrate report — my-electron-app
 
 Nothing else. No `src-tauri/`, no Rust files, no new IDL in the migration path.
 
-`keld.config.ts` sketch:
+`keld.config.ts` destination sketch (not the current parser contract):
+
+Current boot consumers use root fields such as `name` and `entry`; the original-app
+integration also owns root `version`. The draft
+[local macOS packaging successor](../specs/macos-local-app-packaging.md) proposes one
+root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
+does not make the nested `app` example below a second accepted metadata source.
+That successor remains approval-pending; this note establishes no packaging support.
 
 ```ts
 import { defineConfig } from "@keld/cli";
@@ -3249,6 +3256,17 @@ use the [source-build quick-start](../onboarding/README.md#run-the-current-demo)
 the [product-status ledger](../engineering/product-status.md#packages) owns package maturity.
 
 ## 3. keld-pack: packaging & cross-compilation
+
+**Current versus proposed:** `keld-pack` implements the separately scoped Windows
+update/container primitives; format names alone do not implement installers.
+[GH-1404's draft local macOS successor](../specs/macos-local-app-packaging.md)
+proposes native Apple `codesign` and `hdiutil` for a local ad-hoc `.app`/DMG,
+with a new reviewed installed-bundle admission contract. It is not yet approved or
+implemented, and it does not weaken publisher identity, Strict or public-release
+requirements. The formats and cross-host signing below remain longer-term targets;
+the future Windows/Linux packaging records [GH-1405](https://github.com/gyldlab/keld/issues/1405)
+and [GH-1406](https://github.com/gyldlab/keld/issues/1406) are design-only and defer
+their implementation and final installer-format choices.
 
 - Formats: macOS `.app`/`.dmg` (+ notarization via rcodesign — pure Rust, no Xcode
   needed for CI), Windows NSIS + MSI (WiX-free Rust authoring, Deno proved viability),
