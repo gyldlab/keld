@@ -1,5 +1,8 @@
-use super::{GenerationEdge, ProcessGeneration, select_descendant_generations};
-use std::collections::BTreeSet;
+use super::{
+    GenerationEdge, ProcessGeneration, capture_candidate_rows, select_descendant_generations,
+};
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const fn process(pid: u32, birth: u64) -> ProcessGeneration {
     ProcessGeneration { pid, birth }
@@ -107,4 +110,230 @@ fn installed_lineage_rejects_missing_or_ambiguous_identity_evidence() {
             "unproved lineage cannot produce a successful retained census",
         );
     }
+}
+
+fn census(hints: &str, rows: &str) -> String {
+    format!(
+        "process tree of 1: host_alive=True browser_processes=0 creation_filetimes={hints} descendants={rows}"
+    )
+}
+
+#[test]
+fn installed_lineage_rejects_an_ancient_unretained_process_before_open() {
+    let root = process(1, 100_000_000);
+    let tree = census(
+        "2:110000000,6880:1,9:130000000",
+        "old.exe:6880<2,leaf.exe:9<6880,parent.exe:2<1",
+    );
+    let mut handles = BTreeMap::new();
+    let mut opened = Vec::new();
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        capture_candidate_rows(
+            &tree,
+            root,
+            &mut handles,
+            |pid| {
+                opened.push(pid);
+                assert_eq!(
+                    pid, 2,
+                    "simulated access denied for an impossible candidate"
+                );
+                110_000_000
+            },
+            |birth| *birth,
+        )
+    }));
+    assert!(
+        outcome.is_ok(),
+        "an impossible unretained process reached the strict native opener",
+    );
+    let (rows, changed) = outcome.unwrap();
+    assert!(changed);
+    assert_eq!(
+        opened,
+        [2],
+        "only the plausible parent needs a native handle"
+    );
+    assert_eq!(rows, vec![("parent.exe".to_owned(), 2, 1)]);
+    assert_eq!(handles.keys().copied().collect::<Vec<_>>(), [2]);
+}
+
+#[test]
+fn installed_lineage_checks_the_opened_parent_before_a_later_stale_child() {
+    let root = process(1, 100_000_000);
+    // The child is newer than the Host, but older than the actual parent.
+    // The parent's CIM hint is deliberately insufficient: only its kernel
+    // birth, supplied by the retained fake handle, can reject this edge.
+    let tree = census(
+        "6880:300000000,2:200000000",
+        "old.exe:6880<2,parent.exe:2<1",
+    );
+    let mut handles = BTreeMap::new();
+    let mut opened = Vec::new();
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        capture_candidate_rows(
+            &tree,
+            root,
+            &mut handles,
+            |pid| {
+                opened.push(pid);
+                assert_eq!(pid, 2, "simulated access denied after PID reuse");
+                500_000_000
+            },
+            |birth| *birth,
+        )
+    }));
+    assert!(
+        outcome.is_ok(),
+        "root-age filtering opened a child older than its retained parent",
+    );
+    let (rows, changed) = outcome.unwrap();
+    assert!(changed);
+    assert_eq!(opened, [2]);
+    assert_eq!(rows, vec![("parent.exe".to_owned(), 2, 1)]);
+}
+
+#[test]
+fn installed_lineage_preserves_denial_for_unknown_or_plausible_creation() {
+    let root = process(1, 100_000_000);
+    for hint in [
+        "",
+        "2:",
+        "2",
+        "2:0",
+        "2:invalid",
+        "2:18446744073709551616",
+        "2:18446744073709551615",
+        "2:1,2:1",
+        "2:1,2:invalid",
+        "3:1",
+        "2:90000000",
+        "2:99999999",
+        "2:100000000",
+        "2:110000000",
+    ] {
+        let tree = census(hint, "candidate.exe:2<1");
+        let mut handles = BTreeMap::<u32, u64>::new();
+        let mut opened = Vec::new();
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            capture_candidate_rows(
+                &tree,
+                root,
+                &mut handles,
+                |pid| {
+                    opened.push(pid);
+                    panic!("simulated access denied remains fatal");
+                },
+                |birth| *birth,
+            )
+        }));
+        assert!(outcome.is_err(), "creation hint {hint:?} hid native denial");
+        assert_eq!(opened, [2], "unknown evidence must still reach the opener");
+    }
+}
+
+#[test]
+fn installed_lineage_never_replaces_a_retained_handle_with_a_creation_hint() {
+    let root = process(1, 100_000_000);
+    let mut handles = BTreeMap::from([(2, 110_000_000)]);
+    let (rows, opened) = capture_candidate_rows(
+        &census("2:1", "retained.exe:2<1"),
+        root,
+        &mut handles,
+        |_| panic!("a retained native handle must not be reopened"),
+        |birth| *birth,
+    );
+    assert!(!opened);
+    assert_eq!(rows, vec![("retained.exe".to_owned(), 2, 1)]);
+    assert_eq!(handles[&2], 110_000_000);
+}
+
+#[test]
+fn installed_lineage_reconsiders_a_rejected_pid_in_the_next_snapshot() {
+    let root = process(1, 100_000_000);
+    let mut handles = BTreeMap::<u32, u64>::new();
+    let mut opened = Vec::new();
+    let first = catch_unwind(AssertUnwindSafe(|| {
+        capture_candidate_rows(
+            &census("2:1", "old.exe:2<1"),
+            root,
+            &mut handles,
+            |_| panic!("the first snapshot proves an impossible edge"),
+            |birth| *birth,
+        )
+    }));
+    assert!(
+        first.is_ok(),
+        "a rejected snapshot attempted native opening"
+    );
+    assert_eq!(first.unwrap(), (Vec::new(), false));
+    let (rows, changed) = capture_candidate_rows(
+        &census("2:110000000", "new.exe:2<1"),
+        root,
+        &mut handles,
+        |pid| {
+            opened.push(pid);
+            110_000_000
+        },
+        |birth| *birth,
+    );
+    assert!(changed);
+    assert_eq!(opened, [2]);
+    assert_eq!(rows, vec![("new.exe".to_owned(), 2, 1)]);
+}
+
+#[test]
+fn installed_lineage_creation_hint_cannot_grant_native_ownership() {
+    let root = process(1, 100_000_000);
+    let mut handles = BTreeMap::new();
+    let (rows, opened) = capture_candidate_rows(
+        &census("2:110000000", "candidate.exe:2<1"),
+        root,
+        &mut handles,
+        |_| 90_000_000,
+        |birth| *birth,
+    );
+    assert!(opened);
+    assert_eq!(rows, vec![("candidate.exe".to_owned(), 2, 1)]);
+    let edges = [edge(rows[0].1, rows[0].2, handles[&2])];
+    assert!(
+        select_descendant_generations(root, root, &edges)
+            .unwrap()
+            .is_empty(),
+        "a plausible metadata date must not override the retained kernel generation",
+    );
+}
+
+#[test]
+fn installed_lineage_does_not_erase_a_missing_parent_with_metadata() {
+    let root = process(1, 100_000_000);
+    let mut handles = BTreeMap::from([(2, 200_000_000)]);
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let (rows, _) = capture_candidate_rows(
+            &census("3:1", "candidate.exe:3<2"),
+            root,
+            &mut handles,
+            |_| 50_000_000,
+            |birth| *birth,
+        );
+        let edges = rows
+            .iter()
+            .map(|(_, pid, parent)| edge(*pid, *parent, handles[pid]))
+            .collect::<Vec<_>>();
+        select_descendant_generations(root, root, &edges)
+    }));
+    let reason = match outcome {
+        Ok(result) => result
+            .expect_err("metadata erased the missing-parent failure")
+            .to_owned(),
+        Err(payload) => payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .expect("the ancestry guard returns a diagnostic string"),
+    };
+    assert_eq!(
+        reason,
+        "native descendant parent is missing from the snapshot",
+    );
 }

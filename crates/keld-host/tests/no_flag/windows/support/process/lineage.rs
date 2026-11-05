@@ -49,16 +49,14 @@ pub(crate) fn retain_native_descendants(
             "native ancestry did not stabilize within its existing observation bound"
         );
         assert!(tree.contains("host_alive=True"), "Host is not live: {tree}");
-        let rows = descendants(&tree);
-        let missing = rows
-            .iter()
-            .filter(|(_, pid, _)| !handles.contains_key(pid))
-            .map(|(_, pid, _)| *pid)
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            for pid in missing {
-                handles.insert(pid, open_process_for_wait(pid, false));
-            }
+        let (rows, opened) = capture_candidate_rows(
+            &tree,
+            expected_root,
+            &mut handles,
+            |pid| open_process_for_wait(pid, false),
+            |handle: &OwnedHandle| process_times(handle.as_raw_handle().cast()).creation,
+        );
+        if opened {
             // An open process handle keeps that process object/identifier alive.
             // A later graph query therefore cannot substitute a recycled PID.
             continue;
@@ -115,6 +113,28 @@ pub(crate) fn retain_native_descendants(
             .collect();
         return (tree, retained);
     }
+}
+
+// Keep opening and final native admission separate: the test seam exercises the
+// exact opener ordering used by the real retained-handle owner.
+fn capture_candidate_rows<H>(
+    tree: &str,
+    _root: ProcessGeneration,
+    handles: &mut BTreeMap<u32, H>,
+    mut open: impl FnMut(u32) -> H,
+    _birth: impl FnMut(&H) -> u64,
+) -> (Vec<(String, u32, u32)>, bool) {
+    let rows = descendants(tree);
+    let missing = rows
+        .iter()
+        .filter(|(_, pid, _)| !handles.contains_key(pid))
+        .map(|(_, pid, _)| *pid)
+        .collect::<Vec<_>>();
+    let opened = !missing.is_empty();
+    for pid in missing {
+        handles.insert(pid, open(pid));
+    }
+    (rows, opened)
 }
 
 fn select_descendant_generations(
