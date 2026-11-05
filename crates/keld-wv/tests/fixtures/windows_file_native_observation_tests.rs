@@ -75,7 +75,7 @@ fn sample() -> Value {
     let page = json!({"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[]});
     json!({
         "schema":SCHEMA,"helper":"windows_file_native_probe_child","errors":[],"runtime_version":"fixture-observer-calibration","devtools_enabled_readback":false,
-        "message_pump_calibration":{"ready_before_queue_drained":true,"returned_on_readiness":true,"queued":100,"remaining_at_readiness":100,"readiness_polls":2},
+        "message_pump_calibration":{"ready_before_queue_drained":true,"returned_on_readiness":true,"queued":100,"remaining_at_readiness":99,"readiness_polls":3},
         "nonce":"probe","attempt_nonce":"attempt","uri":"file:///D:/owned/doc.html","browser_pid":1234,"events":events,
         "host_request":{"uri":"file:///D:/owned/doc.html","sent_value":"attempt","create_hresult":"S_OK","navigate_hresult":"S_OK","input_header":{"state":"present","value":"attempt"}},
         "pages":{"host-header":page,"plain":page,"page":page,"iframe":{"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[{"nonce":"probe","href":"file:///D:/owned/doc.html"}]}},

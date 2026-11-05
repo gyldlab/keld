@@ -314,12 +314,8 @@ pub(super) fn assess(receipt: &Value) -> Result<Value, String> {
     require(
         pump["returned_on_readiness"] == true
             && pump["queued"] == 100
-            && pump["remaining_at_readiness"]
-                .as_u64()
-                .is_some_and(|remaining| (1..=100).contains(&remaining))
-            && pump["readiness_polls"]
-                .as_u64()
-                .is_some_and(|polls| polls >= 2),
+            && pump["remaining_at_readiness"] == 99
+            && pump["readiness_polls"] == 3,
         "native message-pump readiness calibration is missing or failed",
     )?;
     checked_header_observations(receipt)?;
