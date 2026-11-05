@@ -42,7 +42,14 @@ Keld migrate report — my-electron-app
 
 Nothing else. No `src-tauri/`, no Rust files, no new IDL in the migration path.
 
-`keld.config.ts` sketch:
+`keld.config.ts` destination sketch (not the current parser contract):
+
+Current boot consumers use root fields such as `name` and `entry`; the original-app
+integration also owns root `version`. The draft
+[local macOS packaging successor](../specs/macos-local-app-packaging.md) proposes one
+root `id` alongside those fields and a bounded literal `keld.build.ts` subset. It
+does not make the nested `app` example below a second accepted metadata source.
+That successor remains approval-pending; this note establishes no packaging support.
 
 ```ts
 import { defineConfig } from "@keld/cli";
