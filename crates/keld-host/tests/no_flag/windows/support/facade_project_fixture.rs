@@ -34,8 +34,9 @@ impl LastWindowAction {
 }
 
 pub(crate) struct FacadeFixture {
-    pub(crate) project: ProductFixture,
+    // Stage pins must retire before the project's TempDir, including on unwind.
     pub(crate) stage: keld_cli::boot::DevBootStage,
+    pub(crate) project: ProductFixture,
     profiles: ProfileTestRoot,
     control: TcpListener,
 }
@@ -165,7 +166,19 @@ impl FacadeFixture {
     }
 
     pub(crate) fn close(self) {
-        self.profiles.remove();
+        let Self {
+            stage,
+            project,
+            profiles,
+            control,
+        } = self;
+        drop(control);
+        drop(stage);
+        profiles.remove();
+        project
+            .root
+            .close()
+            .expect("remove facade project after stage retirement");
     }
 }
 
