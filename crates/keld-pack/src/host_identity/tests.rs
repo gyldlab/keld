@@ -48,7 +48,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::IdentityContainerMissing,
             "KELD-PACK-007",
-            "Rebuild with `keld build`",
+            "packaging integration must use `keld-pack`",
         ),
         (
             PackError::IdentityContainerDuplicate,
@@ -68,7 +68,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::IdentityContainerInvalid { detail: "d" },
             "KELD-PACK-011",
-            "reinstall the signed package or rebuild with `keld build`",
+            "correct the packaging integration",
         ),
         (
             PackError::IdentityContainerRead {
@@ -83,6 +83,15 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         let text = error.to_string();
         assert!(text.starts_with(&format!("{code}: ")), "{text}");
         assert!(text.contains(fix), "{text}");
+        assert!(
+            !text.contains("keld build"),
+            "{code} recommends a reserved CLI verb: {text}"
+        );
+        if matches!(code, "KELD-PACK-007" | "KELD-PACK-011") {
+            assert!(text.contains("trusted signed package"), "{text}");
+            assert!(text.contains("unsigned prebuilt"), "{text}");
+            assert!(text.contains("before signing"), "{text}");
+        }
         // The same container serves keld-host.exe and keld-updater-helper.exe (KEL-19
         // container spec §1), so no text names the host alone.
         assert!(

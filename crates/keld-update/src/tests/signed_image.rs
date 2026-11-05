@@ -298,3 +298,27 @@ fn container_error_has_stable_code_and_reinstall_guidance() {
         "{text}"
     );
 }
+
+/// The updater's outer remedy is insufficient if an embedded keld-pack error
+/// still tells the operator to run the reserved `keld build` command.
+#[test]
+fn nested_container_remedies_reject_unavailable_build_command() {
+    let pack_errors = [
+        keld_pack::PackError::IdentityContainerMissing,
+        keld_pack::PackError::IdentityContainerInvalid {
+            detail: "non-canonical test container",
+        },
+    ];
+    for pack in pack_errors {
+        let error = UpdateError::ExpectedIdentityContainer {
+            pack_code: pack.code(),
+            detail: pack.to_string(),
+        };
+        let text = error.to_string();
+        assert!(text.contains(pack.code()), "{text}");
+        assert!(!text.contains("keld build"), "{text}");
+        assert!(text.contains("Reinstall the signed package"), "{text}");
+        assert!(text.contains("keld-pack"), "{text}");
+        assert!(text.contains("before signing"), "{text}");
+    }
+}
