@@ -200,6 +200,10 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
 }
 
 fn check_cleanup(receipt: &Value) -> Result<(), String> {
+    require(
+        receipt["cleanup"]["fatal_process_exit_required"] == false,
+        "native creation cleanup requires fatal helper exit",
+    )?;
     let pid = receipt["browser_pid"]
         .as_u64()
         .ok_or("missing native browser PID")?;
@@ -305,6 +309,18 @@ pub(super) fn assess(receipt: &Value) -> Result<Value, String> {
     require(
         receipt["devtools_enabled_readback"] == false,
         "DevTools-disabled configuration was not read back",
+    )?;
+    let pump = &receipt["message_pump_calibration"];
+    require(
+        pump["returned_on_readiness"] == true
+            && pump["queued"] == 100
+            && pump["remaining_at_readiness"]
+                .as_u64()
+                .is_some_and(|remaining| (1..=100).contains(&remaining))
+            && pump["readiness_polls"]
+                .as_u64()
+                .is_some_and(|polls| polls >= 2),
+        "native message-pump readiness calibration is missing or failed",
     )?;
     checked_header_observations(receipt)?;
     successful_navigation(receipt, "plain")?;

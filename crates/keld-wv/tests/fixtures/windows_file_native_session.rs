@@ -84,8 +84,20 @@ fn pump_until(deadline: Instant, mut ready: impl FnMut() -> bool) -> bool {
             let _ = MsgWaitForMultipleObjectsEx(None, millis, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
         let mut message = MSG::default();
-        // SAFETY: message is writable; all messages are dispatched on their owning thread.
-        while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+        // Revisit readiness/deadline even if every dispatch adds another message.
+        // These cooperative checks cannot preempt a single blocking native call;
+        // the separate helper-process watchdog remains the final bound.
+        for _ in 0..32 {
+            if ready() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // SAFETY: message is writable; messages remain on their owning thread.
+            if !unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                break;
+            }
             // SAFETY: PeekMessage initialized this MSG on this thread.
             unsafe {
                 let _ = TranslateMessage(&raw const message);
@@ -153,6 +165,9 @@ impl Session {
     }
     pub(super) fn events(&self) -> Vec<Value> {
         self.trace.borrow().events.clone()
+    }
+    pub(super) fn creation_is_pending(&self) -> bool {
+        self.pending_environment.is_some() || self.pending_controller.is_some()
     }
     fn view(&self) -> Result<&wv::ICoreWebView2, String> {
         self.webview
@@ -433,6 +448,18 @@ impl Session {
         let mut faults = Vec::new();
         let mut closed = false;
         self.collect_late_creations(&mut faults);
+        if self.creation_is_pending() {
+            // An accepted callback can still acquire COM references. In particular,
+            // CoUninitialize may itself dispatch pending COM messages. Preserve the
+            // apartment, window and references until the private helper exits; this
+            // fatal outcome is not cancellation or orderly native cleanup.
+            let cleanup = json!({"fatal_process_exit_required":true,"controller_closed":false,
+                "window_destroyed":false,"profile_removed":false,"com_uninitialized":false,"faults":faults});
+            self.trace
+                .borrow_mut()
+                .record("cleanup-result", cleanup.clone());
+            return cleanup;
+        }
         if let Some(controller) = self.controller.take() {
             // SAFETY: controller was created by this STA; Close is the native shutdown operation.
             match unsafe { controller.Close() } {
@@ -489,7 +516,7 @@ impl Session {
                 )),
             }
         }
-        let cleanup = json!({"controller_closed":closed,"window_destroyed":window_destroyed,"profile_removed":profile_removed,"com_uninitialized":!self.com_initialized,"faults":faults});
+        let cleanup = json!({"fatal_process_exit_required":false,"controller_closed":closed,"window_destroyed":window_destroyed,"profile_removed":profile_removed,"com_uninitialized":!self.com_initialized,"faults":faults});
         self.trace
             .borrow_mut()
             .record("cleanup-result", cleanup.clone());
@@ -499,10 +526,33 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if self.com_initialized || self.window.is_some() || self.controller.is_some() {
+        if self.com_initialized
+            || self.window.is_some()
+            || self.controller.is_some()
+            || self.creation_is_pending()
+        {
             // Emergency unwind still uses owned Close and the original deadline. It cannot turn
             // a missing receipt, panic, or incomplete observation into a passing parent test.
-            let _ = self.shutdown();
+            let cleanup = self.shutdown();
+            if self.creation_is_pending() {
+                // This type exists only inside the exact private helper process.
+                // Preserve a fallback failure if unwinding prevented the full receipt.
+                // Exit before implicit field drops can release a late interface after
+                // its apartment has been torn down. The profile remains for reconciliation.
+                if let Some(root) = self.profile.parent() {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::File::create_new(root.join("fatal-cleanup.json"))
+                    {
+                        let _ = file.write_all(cleanup.to_string().as_bytes());
+                        let _ = file.sync_all();
+                    }
+                }
+                std::process::exit(2);
+            }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "windows_file_native_session_tests.rs"]
+mod tests;

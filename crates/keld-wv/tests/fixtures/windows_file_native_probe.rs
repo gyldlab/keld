@@ -27,7 +27,9 @@ fn create_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .open(path)
         .map_err(|error| format!("create {}: {error}", path.display()))?;
     file.write_all(bytes)
-        .map_err(|error| format!("write {}: {error}", path.display()))
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("sync {}: {error}", path.display()))
 }
 
 fn fixture_uri(path: &Path) -> Result<String, String> {
@@ -47,7 +49,7 @@ fn fixture_uri(path: &Path) -> Result<String, String> {
 }
 
 fn source_manifest() -> Value {
-    let sources: [(&str, &[u8]); 8] = [
+    let sources: [(&str, &[u8]); 9] = [
         (
             "tests/windows_file_native_probe.rs",
             include_bytes!("../windows_file_native_probe.rs"),
@@ -59,6 +61,10 @@ fn source_manifest() -> Value {
         (
             "tests/fixtures/windows_file_native_session.rs",
             include_bytes!("windows_file_native_session.rs"),
+        ),
+        (
+            "tests/fixtures/windows_file_native_session_tests.rs",
+            include_bytes!("windows_file_native_session_tests.rs"),
         ),
         (
             "tests/fixtures/windows_file_native_callbacks.rs",
@@ -264,6 +270,13 @@ pub(super) fn child_entry() -> Result<(), String> {
                 "browser override variable names present; no environment modified: {overrides:?}"
             ));
         }
+        receipt["message_pump_calibration"] = session::Session::observe_message_pump()?;
+        if receipt["message_pump_calibration"]["ready_before_queue_drained"] != true {
+            return Err(
+                "native message pump drained its queued messages before revisiting readiness"
+                    .into(),
+            );
+        }
         native.start()?;
         scenarios(&native, &mut receipt, &nonce)
     })();
@@ -278,9 +291,19 @@ pub(super) fn child_entry() -> Result<(), String> {
     let assessment = observation::assess(&receipt);
     receipt["assessment"] = json!(assessment.as_ref().ok());
     receipt["assessment_error"] = json!(assessment.as_ref().err());
-    create_file(
+    let written = create_file(
         &root.join("receipt.json"),
         &serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
-    )?;
+    );
+    if let Err(error) = &written {
+        eprintln!("native receipt persistence failed: {error}");
+    }
+    if native.creation_is_pending() {
+        // Accepted creation has not quiesced. The receipt is durably failed; leave
+        // apartment/window/interface state intact until this private process exits.
+        // Parent/independent cleanup must reconcile any remaining owned profile/PIDs.
+        std::process::exit(2);
+    }
+    written?;
     assessment.map(|_| ())
 }

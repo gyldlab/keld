@@ -3,16 +3,66 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use webview2_com::Microsoft::Web::WebView2::Win32 as wv;
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::IStream;
+use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::WindowsAndMessaging::{
+    MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, WM_APP,
+};
 use windows::core::{HSTRING, Interface, w};
 
-use super::{Completion, HEADER, Session, callbacks, failure, hresult};
+use super::{Completion, HEADER, Session, callbacks, failure, hresult, pump_until};
 
 impl Session {
+    #[allow(unsafe_code)] // Private helper-thread queue calibration, before any COM/window allocation.
+    pub(in super::super) fn observe_message_pump() -> Result<Value, String> {
+        const MESSAGE: u32 = WM_APP + 0x1185;
+        const QUEUED: u32 = 100;
+        let mut message = MSG::default();
+        // SAFETY: this creates/accesses only the current private helper thread's queue.
+        unsafe {
+            let _ = PeekMessageW(&raw mut message, None, MESSAGE, MESSAGE, PM_NOREMOVE);
+        }
+        // SAFETY: obtain this live thread's ID solely to post its private calibration messages.
+        let thread = unsafe { GetCurrentThreadId() };
+        let posted = (|| {
+            for _ in 0..QUEUED {
+                // SAFETY: no pointer payload; fixed private ID on this same helper thread.
+                unsafe { PostThreadMessageW(thread, MESSAGE, WPARAM(0), LPARAM(0)) }
+                    .map_err(|error| failure("post owned pump calibration", &error))?;
+            }
+            Ok::<(), String>(())
+        })();
+        let mut polls = 0;
+        let returned = posted.is_ok()
+            && pump_until(Instant::now() + Duration::from_secs(1), || {
+                polls += 1;
+                polls >= 2
+            });
+        let mut remaining = 0;
+        for _ in 0..=QUEUED {
+            // SAFETY: remove only this calibration's private message ID. No external
+            // window/input or unrelated thread message is consumed by this cleanup.
+            if !unsafe { PeekMessageW(&raw mut message, None, MESSAGE, MESSAGE, PM_REMOVE) }
+                .as_bool()
+            {
+                break;
+            }
+            remaining += 1;
+        }
+        posted?;
+        Ok(
+            json!({"queued":QUEUED,"remaining_at_readiness":remaining,"readiness_polls":polls,"returned_on_readiness":returned,
+            "ready_before_queue_drained":returned && remaining > 0 && remaining <= QUEUED,
+            "scope":"real private thread queue; readiness revisitation, not preemption or a late WebView2 callback"}),
+        )
+    }
+
     #[allow(unsafe_code)] // Test-only native request construction and navigation; no trust decision is made.
     pub(in super::super) fn host_request(&self, nonce: &str) -> Result<Value, String> {
         let environment = self
