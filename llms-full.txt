@@ -2296,15 +2296,18 @@ from the install cache). The runtime resolver is `tsconfig.json`
 `compilerOptions.paths` (`electron` → `@keld/electron`'s `src/index.ts`).
 `bunfig.toml` is still written with the same mapping so it matches
 architecture §2's named file; treating that file as the resolver is a
-defect. This slice adds an exported `BrowserWindow` subset backed by the
-macOS Host-owned native window registry for creation/adoption, selected
-geometry and state, close/destroy, and recovery events. Linux currently
-refuses facade-window subscription. Windows admits schema-2 zero-window boots
-through Host Ready and the retained-family release witness (GH-1188 T2).
-Windows still refuses managed window `Create` with `KELD-CORE-042`: its native
-managed-window support remains false until T3. This is not a cross-platform
-native window backend. Broader Electron behavior and surfaces (`ipcMain`,
-preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
+defect. This slice exports a `BrowserWindow` subset backed by the
+shared Core Window Registry for creation/adoption, selected geometry and state,
+close/destroy, and recovery events. The macOS and Windows native adapters execute
+that registry's commands. Windows schema-2 boots publish Host Ready with zero
+windows (GH-1188 T2); the T3 adapter creates a Win32 HWND and WebView2 controller,
+reports native facts, and routes Tao `CloseRequested` through the shared close-veto
+state machine. Native retirement must complete before the profile lease is released.
+The Windows adapter and its exact-head acceptance gates are owned by
+[`gh1188-windows-window-adapter.md`](../specs/gh1188-windows-window-adapter.md);
+source support alone does not establish completed native qualification. Linux still
+refuses facade-window subscription. Broader Electron behavior and surfaces (`ipcMain`,
+preload/`contextBridge`, …) remain separate slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
 
