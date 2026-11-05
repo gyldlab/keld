@@ -32,27 +32,56 @@ def launch(binary, case, config, expected_nonzero=False):
     out_dir = Path(config["outDir"])
     write_json(case / "config.json", config)
     command = [str(binary), "--config", str(case / "config.json")]
-    with (case / "stdout.txt").open("w", encoding="utf-8") as stdout:
-        with (case / "stderr.txt").open("w", encoding="utf-8") as stderr:
-            process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+    confirmed_exit = False
+    native_error = None
+    try:
+        with (case / "stdout.txt").open("w", encoding="utf-8") as stdout:
+            with (case / "stderr.txt").open("w", encoding="utf-8") as stderr:
+                process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
+                try:
+                    code = process.wait(timeout=90)
+                    confirmed_exit = True
+                except subprocess.TimeoutExpired:
+                    write_json(case / "outer-timeout.json", {
+                        "pid": process.pid, "command": command,
+                        "state": "quarantined; process may still run",
+                        "cleanup": "unconfirmed; no following case launched",
+                    })
+                    raise RuntimeError("Native process exceeded outer bound; no cancellation inferred")
+        write_json(case / "process.json", {"pid": process.pid, "exitCode": code, "command": command})
+        result_path = out_dir / "result.json"
+        if not result_path.is_file():
+            raise RuntimeError(f"Native result missing after exit {code}: {result_path}")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if (code != 0) is not expected_nonzero:
+            raise RuntimeError(f"Unexpected native exit {code}; inspect {case}")
+        return result
+    except Exception as error:
+        native_error = error
+        raise
+    finally:
+        # A confirmed exit requires this independent observation even if native
+        # output is absent, malformed, unsuccessful, or cannot be recorded.
+        # An outer timeout deliberately leaves confirmed_exit false.
+        if confirmed_exit:
             try:
-                code = process.wait(timeout=90)
-            except subprocess.TimeoutExpired:
-                write_json(case / "outer-timeout.json", {
-                    "pid": process.pid, "command": command,
-                    "state": "quarantined; process may still run",
-                    "cleanup": "unconfirmed; no following case launched",
-                })
-                raise RuntimeError("Native process exceeded outer bound; no cancellation inferred")
-    write_json(case / "process.json", {"pid": process.pid, "exitCode": code, "command": command})
-    result_path = out_dir / "result.json"
-    if not result_path.is_file():
-        raise RuntimeError(f"Native result missing after exit {code}: {result_path}")
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    if (code != 0) is not expected_nonzero:
-        raise RuntimeError(f"Unexpected native exit {code}; inspect {case}")
-    observe_resources(case, out_dir / "profile")
-    return result
+                observe_resources(case, out_dir / "profile")
+            except Exception as census_error:
+                errors = {
+                    "native": ({"type": type(native_error).__name__,
+                                "message": str(native_error)}
+                               if native_error is not None else None),
+                    "census": {"type": type(census_error).__name__,
+                               "message": str(census_error)},
+                }
+                message = f"Independent process census failed: {census_error}"
+                if native_error is not None:
+                    message = f"{type(native_error).__name__}: {native_error}; {message}"
+                try:
+                    write_json(case / "exit-failures.json", errors)
+                except OSError as receipt_error:
+                    message += f"; failure receipt could not be written: {receipt_error}"
+                raise RuntimeError(message) from (native_error or census_error)
 
 
 def run(binary, output, slot_receipt):

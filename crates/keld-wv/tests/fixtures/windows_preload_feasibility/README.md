@@ -52,6 +52,11 @@ Native cleanup must observe controller close, browser-exit notification, held
 process handles and profile/window release. A separate Windows process census
 includes command lines for the owned profile, including crashpad.
 
+Every confirmed child exit triggers that census, even when the native result is
+missing, malformed or unsuccessful. Original and census failures are retained
+together. `test_process_exit_census.py` exercises this bookkeeping with controlled
+Python children and a mock census entry marker; it supplies no native cleanup proof.
+
 | Cases                         | Independent observation and limit                                                                                                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Wrong bundle digest           | A single expected-digest change produces a specific pre-native source rejection, no registrations/navigation/messages and no native allocation                                          |
@@ -89,8 +94,9 @@ just work-run gh-1184-w1-feasibility-20261105 --session chatgpt-w1-feasibility-2
 ```
 
 The native driver's default output uses the workspace tool's private temporary
-directory. Its `matrix.json`, each native `result.json` / `trace.jsonl`,
-process exit and post-exit process census are retained. Run commands and their
+directory. Pass `--output <fresh-owned-directory>` to select an explicit retained
+capture location. Preserve its `matrix.json`, each native `result.json` /
+`trace.jsonl`, process exit and post-exit process census. Run commands and their
 exit status are also captured by the existing workspace runner.
 
 ## Evidence and open gates
