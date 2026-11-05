@@ -1,0 +1,8 @@
+
+..\..\..\.git\keld-closeout\chatgpt-w4-desktop-20261105\native-run-04-control\native-control.test.ts:
+(pass) actual captured work area rejects a one-pixel outside-monitor copy before ID allocation [1.26ms]
+
+ 1 pass
+ 0 fail
+ 8 expect() calls
+Ran 1 test across 1 file. [22.00ms]

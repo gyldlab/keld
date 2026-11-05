@@ -1,0 +1,454 @@
+{
+  "sourceHead": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "policy": "Repository text auto/eol=lf. Raw Windows captures remain under the owned closeout directory; publication differs only by explicit CRLF normalization. Capture and publication hashes are separate.",
+  "files": {
+    "native-run-04/electron.json": {
+      "capturedSha256": "b037e5316c30064a2f445d37b6fa7d91211febaf524e9df0cf4d419328aefa78",
+      "publishedSha256": "b037e5316c30064a2f445d37b6fa7d91211febaf524e9df0cf4d419328aefa78",
+      "captureBytes": 8629,
+      "publishedBytes": 8629,
+      "transformation": "none"
+    },
+    "native-run-04/electron.owned.json": {
+      "capturedSha256": "113f7da118d9824834e75ff35f949777843079487d7255d8ecb131c56ad27bfc",
+      "publishedSha256": "8b6bb600e57c996e2889785470d81ab08343d70199401351a32b78ec55da2491",
+      "captureBytes": 651,
+      "publishedBytes": 633,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/electron.process.json": {
+      "capturedSha256": "17ad58432a0dd7aa8187fce0ab653ae9c759563a4ed15127b6247c632126c446",
+      "publishedSha256": "969e8bb938b1017435b7761182e97953d091a10c709c2f4cd4a29aab3c225ca9",
+      "captureBytes": 794,
+      "publishedBytes": 775,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/electron.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/electron.stdout": {
+      "capturedSha256": "fb5969337503225278a90581d43c655e26f8edc4b03dc54725d10379ee8dd67f",
+      "publishedSha256": "1468433b3b971f1801a6aa6c83cead419dafadd00c5f2c69e7fc5b161e6f14e9",
+      "captureBytes": 8631,
+      "publishedBytes": 8630,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/failed-dpi.json": {
+      "capturedSha256": "58c4794f1e91c1b27e2d997a8961eb24aec471d25623c95b94c60e5525c73096",
+      "publishedSha256": "a458f0b3c5d70f463a8aa2d5d34c835e6134a2452ef75e16fb8b85f00160709a",
+      "captureBytes": 924,
+      "publishedBytes": 884,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/failed-dpi.owned.json": {
+      "capturedSha256": "b8c29a55b88e6d7e4e59c627871889694ec6f6f3192a5bb12e879bce6090cbe2",
+      "publishedSha256": "8e01cf07ce5b683ccfdd4015ab0ba997ec3f9477ae6dbafd6c44f71cd9758ff6",
+      "captureBytes": 484,
+      "publishedBytes": 464,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/failed-dpi.process.json": {
+      "capturedSha256": "89f1a741482866a51c2dea9ad0bb7d44c71f9b57cfac64ca74d4f60f5d0642ef",
+      "publishedSha256": "0416470c978815d807ec2a0bc12cc7ff6a8e88764fec5691e231072c63106010",
+      "captureBytes": 629,
+      "publishedBytes": 608,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/failed-dpi.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/failed-dpi.stdout": {
+      "capturedSha256": "df8fb4676a27a7272e05e615eb274e972720e61f802d315018f35784f1d30954",
+      "publishedSha256": "df8fb4676a27a7272e05e615eb274e972720e61f802d315018f35784f1d30954",
+      "captureBytes": 679,
+      "publishedBytes": 679,
+      "transformation": "none"
+    },
+    "native-run-04/high-contrast-size.json": {
+      "capturedSha256": "ce537d1f6f8c62192d3b85d30ad801a220ffc9ea3c60627d53ca7fce82ca55e8",
+      "publishedSha256": "1b66e42d364b08178674419d0aee53babfb4f5dc19d459215fef115f7ff8e588",
+      "captureBytes": 948,
+      "publishedBytes": 908,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/high-contrast-size.owned.json": {
+      "capturedSha256": "e03d5e19d04d23e0e92de156e12972005a3c30ef380fc4c8fd2aec985398c913",
+      "publishedSha256": "d2bb037be369bc8ddc029a43fbdf484cfcbde2bd069df7cf12a2ab86943003e0",
+      "captureBytes": 493,
+      "publishedBytes": 473,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/high-contrast-size.process.json": {
+      "capturedSha256": "462cd02d344d29b8edbd2871fa97ed77a0ef6f5287872ad3c65bf048bd32be70",
+      "publishedSha256": "54353bfbe4e4d703edde8dde52b07a56a1728a592299a657922df3796fbdcef1",
+      "captureBytes": 645,
+      "publishedBytes": 624,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/high-contrast-size.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/high-contrast-size.stdout": {
+      "capturedSha256": "ea9732b25245dd0ff0482f8cd919d2be0090fb6fe0da6e4ff54cb8cd332187ad",
+      "publishedSha256": "ea9732b25245dd0ff0482f8cd919d2be0090fb6fe0da6e4ff54cb8cd332187ad",
+      "captureBytes": 703,
+      "publishedBytes": 703,
+      "transformation": "none"
+    },
+    "native-run-04/inputs.json": {
+      "capturedSha256": "dff50ff7486d883250ee4508192116c4e6146c004108108f107cf87a2b33692f",
+      "publishedSha256": "9449e60c9cf37f79ecfd498af306f3690f2e1ecdbfc09af0ab40b75c201a435b",
+      "captureBytes": 787,
+      "publishedBytes": 771,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/invalid-monitor.json": {
+      "capturedSha256": "abf8f66bad1f4cd94ac9d01a081489a29797a932fdf2549cc25b68eb0401d2d9",
+      "publishedSha256": "e274dcd4225bb3b149ad16d62de072e3dfc7da37135a652e82d1d133bc99bf3e",
+      "captureBytes": 920,
+      "publishedBytes": 880,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/invalid-monitor.owned.json": {
+      "capturedSha256": "3019db6884875de94a99d86a3f5491cef5016d7c0529dc99d25a9ddc3b1b40e2",
+      "publishedSha256": "c207893231fb1e67fd339e6d76c9dd6c19c14379d92bc83518dabf9038b1162a",
+      "captureBytes": 489,
+      "publishedBytes": 469,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/invalid-monitor.process.json": {
+      "capturedSha256": "8bcd6cfb2bcebddc09f501141ae92b5473df3fd2b7341cce49500cd2d11f3eef",
+      "publishedSha256": "db0b72394a3e6c56a394db6d8a0f7d7bfdbce66d35817088b9798985a553256a",
+      "captureBytes": 639,
+      "publishedBytes": 618,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/invalid-monitor.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/invalid-monitor.stdout": {
+      "capturedSha256": "c9af63b9ed7dcef9919eae179f54fd1623bc87fe73f42b7ac6488d4e65ef047e",
+      "publishedSha256": "c9af63b9ed7dcef9919eae179f54fd1623bc87fe73f42b7ac6488d4e65ef047e",
+      "captureBytes": 675,
+      "publishedBytes": 675,
+      "transformation": "none"
+    },
+    "native-run-04/manifest.json": {
+      "capturedSha256": "27059007039153b08b91be6b4f86a3afde080de999a2e1ab7c3b1ed902b3817f",
+      "publishedSha256": "600627329c9bff7098e8b114d59b992129f69ac53ce57f0caa52366f2de91514",
+      "captureBytes": 4022,
+      "publishedBytes": 3976,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/native-first-sample.json": {
+      "capturedSha256": "0aa95eee0e62c611f88fa7a93cd7b9091ab86ac4bdacabced6c22a611e235802",
+      "publishedSha256": "0aa95eee0e62c611f88fa7a93cd7b9091ab86ac4bdacabced6c22a611e235802",
+      "captureBytes": 4565,
+      "publishedBytes": 4565,
+      "transformation": "none"
+    },
+    "native-run-04/pmv2.json": {
+      "capturedSha256": "8bc68204254ca8b66f0d031d9d6f92bdac3ca14d30732f442a2fa89ac72c6828",
+      "publishedSha256": "2585a750533d0ba05d47faf3c7a723d26c61bfe6bbe241e8e21b0596ee91d11d",
+      "captureBytes": 3108,
+      "publishedBytes": 2981,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/pmv2.owned.json": {
+      "capturedSha256": "7c405071faa3834c3dc0a110ec5f64ad016782812d4e7cd8f965a17af3c69e97",
+      "publishedSha256": "1b4a38dd079b4ba0881985558a6cd1cb0af9b5160dd52faadfe4f2db70343ecc",
+      "captureBytes": 448,
+      "publishedBytes": 430,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/pmv2.process.json": {
+      "capturedSha256": "887c5dbbe902d657ee91e4506cc5d6d4222d64a06d4317bc3a4c8f55e347b6d9",
+      "publishedSha256": "468dccb5ed22935e697f568b4cfd3681c9b61042afb2377fed2f8f5d9c466045",
+      "captureBytes": 587,
+      "publishedBytes": 568,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/pmv2.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/pmv2.stdout": {
+      "capturedSha256": "a99b391bdda751a272df49b0d932909cf2787d4ccca9a8c4fd6a477bcd5ee7a7",
+      "publishedSha256": "a99b391bdda751a272df49b0d932909cf2787d4ccca9a8c4fd6a477bcd5ee7a7",
+      "captureBytes": 1745,
+      "publishedBytes": 1745,
+      "transformation": "none"
+    },
+    "native-run-04/subscribe-native.owned.json": {
+      "capturedSha256": "9423a81ead0566ae2674c65e80d9178b283f31fee50f9f58fd8721a15c6396b0",
+      "publishedSha256": "fde27fcf00db009ccc4cd8cea0223c0e77b7875fe20729bafc394e23a2b88ac6",
+      "captureBytes": 521,
+      "publishedBytes": 501,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/subscribe-native.process.json": {
+      "capturedSha256": "00daf5fa6d4b186153e1594c45e7e40a3a672377ccd9c6b3dc907cabb6130dc2",
+      "publishedSha256": "2b976dca4652fd90e3db2d11868e906bdba7d2e51dda8f4d2baeacc7476ee918",
+      "captureBytes": 672,
+      "publishedBytes": 651,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/subscribe-native.stderr": {
+      "capturedSha256": "aba03785387e73beb1e2e78029e6c0fa8724c6c4aa78554687ce678fdf408243",
+      "publishedSha256": "aba03785387e73beb1e2e78029e6c0fa8724c6c4aa78554687ce678fdf408243",
+      "captureBytes": 232,
+      "publishedBytes": 232,
+      "transformation": "none"
+    },
+    "native-run-04/subscribe-native.stdout": {
+      "capturedSha256": "af2f3ef88453d49a803e2a1851386bbc6882a131c457ec8ab7e9549611da4cd7",
+      "publishedSha256": "af2f3ef88453d49a803e2a1851386bbc6882a131c457ec8ab7e9549611da4cd7",
+      "captureBytes": 229,
+      "publishedBytes": 229,
+      "transformation": "none"
+    },
+    "native-run-04/unaware.json": {
+      "capturedSha256": "ff53ea83f81100b56bb9123991c5573978e3788f5f228f8dba55fc4ca31a65c3",
+      "publishedSha256": "5e7cc4f659f4d6d5502555e8f40e58efa30fbbb54b10f96fb4666b68e3c1265a",
+      "captureBytes": 3134,
+      "publishedBytes": 3007,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/unaware.owned.json": {
+      "capturedSha256": "32c2d85693198a7cd216ef2ea0c6bb6f3424518adda25f0fe4829653fc9c78df",
+      "publishedSha256": "d8b66378ea5313a817ca4507d64d5ed3d10a2cded5066a6fadf908ccb7bcaee8",
+      "captureBytes": 451,
+      "publishedBytes": 433,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/unaware.process.json": {
+      "capturedSha256": "7d94750d443c4b7210782560b62d32a80718c536713784d844a44decd3a81265",
+      "publishedSha256": "2b27b321adafc89ad36dd04a0eb6c19d611296a70597d40e2810cc0f7acc60b4",
+      "captureBytes": 592,
+      "publishedBytes": 573,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/unaware.stderr": {
+      "capturedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "publishedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "captureBytes": 0,
+      "publishedBytes": 0,
+      "transformation": "none"
+    },
+    "native-run-04/unaware.stdout": {
+      "capturedSha256": "50a85eae3fad7eeb5cf1a42f898e92d96dabd8c7135b3d167405da2e7fcc4f3d",
+      "publishedSha256": "50a85eae3fad7eeb5cf1a42f898e92d96dabd8c7135b3d167405da2e7fcc4f3d",
+      "captureBytes": 1771,
+      "publishedBytes": 1771,
+      "transformation": "none"
+    },
+    "native-run-04/verify-native.owned.json": {
+      "capturedSha256": "9e22d66a39b9840131b48efb9c8a41686547c729601fa854e00fb831845ee19a",
+      "publishedSha256": "6d9483e4073cd4fb0fa65afd3f6d751b8b5f5ec9ac2f04485ddf9aff5065c676",
+      "captureBytes": 475,
+      "publishedBytes": 457,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/verify-native.process.json": {
+      "capturedSha256": "c766914fbf41b285c7f27e0c1a430a781663811464c0812c7b83b78875da55cc",
+      "publishedSha256": "21709530ae60a9cb2d919ba81630c552e783ea885cd2bf2a1324f10adc5c80fe",
+      "captureBytes": 622,
+      "publishedBytes": 603,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04/verify-native.stderr": {
+      "capturedSha256": "d16530891f8a8b0ef57f4b73997d4c9e901b1a25a6578e08b6237f522f1b8168",
+      "publishedSha256": "d16530891f8a8b0ef57f4b73997d4c9e901b1a25a6578e08b6237f522f1b8168",
+      "captureBytes": 890,
+      "publishedBytes": 890,
+      "transformation": "none"
+    },
+    "native-run-04/verify-native.stdout": {
+      "capturedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "captureBytes": 28,
+      "publishedBytes": 28,
+      "transformation": "none"
+    },
+    "native-run-04-control/current-observed.json": {
+      "capturedSha256": "d5676782ab2a79345b5b86d161f2cc0fabb68998f10ba6d5ba1a1075570fda7e",
+      "publishedSha256": "d5676782ab2a79345b5b86d161f2cc0fabb68998f10ba6d5ba1a1075570fda7e",
+      "captureBytes": 405,
+      "publishedBytes": 405,
+      "transformation": "none"
+    },
+    "native-run-04-control/current.process.json": {
+      "capturedSha256": "0a003c7903728f828bab72886719d4dfcf11817ceb19da15d02677f789acbac5",
+      "publishedSha256": "063042009e552df3c23f046162d240d658976378f61b7300350abe09edadecb1",
+      "captureBytes": 451,
+      "publishedBytes": 433,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-control/current.stderr": {
+      "capturedSha256": "cd98bfa47d5067658205385bc6946f19c629ed64d1ba5f77f2b16565643ca1d9",
+      "publishedSha256": "cd98bfa47d5067658205385bc6946f19c629ed64d1ba5f77f2b16565643ca1d9",
+      "captureBytes": 278,
+      "publishedBytes": 278,
+      "transformation": "none"
+    },
+    "native-run-04-control/current.stdout": {
+      "capturedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "captureBytes": 28,
+      "publishedBytes": 28,
+      "transformation": "none"
+    },
+    "native-run-04-control/native-control.test.ts.txt": {
+      "capturedSha256": "f6ca447f4a1b70ea1e54a7e2107cc7614d3ba7b31360e6eddd68d8d8ab93d47f",
+      "publishedSha256": "f6ca447f4a1b70ea1e54a7e2107cc7614d3ba7b31360e6eddd68d8d8ab93d47f",
+      "captureBytes": 2433,
+      "publishedBytes": 2433,
+      "transformation": "none"
+    },
+    "native-run-04-control/old-native_adapter.ts.txt": {
+      "capturedSha256": "40e93e55c31e3e84357f80344e357d4b9007c4852e486d7254c39481164bf4a4",
+      "publishedSha256": "40e93e55c31e3e84357f80344e357d4b9007c4852e486d7254c39481164bf4a4",
+      "captureBytes": 12541,
+      "publishedBytes": 12541,
+      "transformation": "none"
+    },
+    "native-run-04-control/old-observed.json": {
+      "capturedSha256": "fc1b764432c41cc0d516cf0c80c063a2504e88c3fa2ceb01af9760a436bbff31",
+      "publishedSha256": "fc1b764432c41cc0d516cf0c80c063a2504e88c3fa2ceb01af9760a436bbff31",
+      "captureBytes": 641,
+      "publishedBytes": 641,
+      "transformation": "none"
+    },
+    "native-run-04-control/old.process.json": {
+      "capturedSha256": "3368b5ba5ec508c7c4929513d8dbad184001a15196828b3c394a8c50edc65a45",
+      "publishedSha256": "dea4f905888c16c0396bec131fea4c7e8bcb2c734fb94cc5ad0c68836f034093",
+      "captureBytes": 450,
+      "publishedBytes": 432,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-control/old.stderr": {
+      "capturedSha256": "22684bced036357e5802f05556d06e60e1ce8b5dc0c929c369b2f04abeadd479",
+      "publishedSha256": "22684bced036357e5802f05556d06e60e1ce8b5dc0c929c369b2f04abeadd479",
+      "captureBytes": 897,
+      "publishedBytes": 897,
+      "transformation": "none"
+    },
+    "native-run-04-control/old.stdout": {
+      "capturedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "captureBytes": 28,
+      "publishedBytes": 28,
+      "transformation": "none"
+    },
+    "native-run-04-control/receipt.json": {
+      "capturedSha256": "a05d130b571e6d98ab78f5a72d0308609387603ca61902394b489fc882ae0532",
+      "publishedSha256": "1ab1a44cfdfb814979237304c746544b7e8cc63501f62a869a5776830315b60a",
+      "captureBytes": 2224,
+      "publishedBytes": 2162,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-driver.json": {
+      "capturedSha256": "84c8a3ba2bbcd0317f6ebf31d56d734b5bc9fcd9405f944a88b0faf366c4cb4a",
+      "publishedSha256": "84c8a3ba2bbcd0317f6ebf31d56d734b5bc9fcd9405f944a88b0faf366c4cb4a",
+      "captureBytes": 991,
+      "publishedBytes": 991,
+      "transformation": "none"
+    },
+    "native-run-04-driver.log": {
+      "capturedSha256": "314d55f04aeba1e4034f995d3b0e7bc2f2f84c2e3fbd31724b300934a220c483",
+      "publishedSha256": "212d0631a6448596c66650ebe652945ff42a19f4721ea32fb18bf5d847797021",
+      "captureBytes": 325,
+      "publishedBytes": 323,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-sources.json": {
+      "capturedSha256": "cb0b9ec71306e9ae556674aaf260c0a01b26e8811d72fc40bc145b7e19effc99",
+      "publishedSha256": "cb0b9ec71306e9ae556674aaf260c0a01b26e8811d72fc40bc145b7e19effc99",
+      "captureBytes": 4412,
+      "publishedBytes": 4412,
+      "transformation": "none"
+    },
+    "native-run-04-pre-census.json": {
+      "capturedSha256": "633ee1378920f37054c9a4c4aafd1fbb2c43c006ccc5b4828e4e2373a12da248",
+      "publishedSha256": "8658ed05d970e7ed62a490bf2c0659e4c1e77d54469e8e3265e724119cf34313",
+      "captureBytes": 6397,
+      "publishedBytes": 6296,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-post-census.json": {
+      "capturedSha256": "8b10a9cabac2fddd2cd5ae10e8920f749b4cc51c4a91c74548fe2ba05c8a402f",
+      "publishedSha256": "aa437db636588f39cd14779d2e344f407974c2ca46c8309700d6fc9592376ec1",
+      "captureBytes": 6398,
+      "publishedBytes": 6297,
+      "transformation": "CRLF to LF only"
+    },
+    "native-run-04-cleanup.json": {
+      "capturedSha256": "0b9209420b1b836054c85a2e394988f9e735848855b14c94c2f925f1249a15f4",
+      "publishedSha256": "0b9209420b1b836054c85a2e394988f9e735848855b14c94c2f925f1249a15f4",
+      "captureBytes": 938,
+      "publishedBytes": 938,
+      "transformation": "none"
+    },
+    "native_run_04_driver_327.py.txt": {
+      "capturedSha256": "c46f54fed92957044b14ffa48097f229c103bf16b7380ab2e18838ac66d443c8",
+      "publishedSha256": "c46f54fed92957044b14ffa48097f229c103bf16b7380ab2e18838ac66d443c8",
+      "captureBytes": 2522,
+      "publishedBytes": 2522,
+      "transformation": "none"
+    },
+    "native_run_04_control.py.txt": {
+      "capturedSha256": "fc29b959c8ad91186c069fa65641b5ee81a45efbc5ef05a9a1d187bf3aab8b6c",
+      "publishedSha256": "fc29b959c8ad91186c069fa65641b5ee81a45efbc5ef05a9a1d187bf3aab8b6c",
+      "captureBytes": 2304,
+      "publishedBytes": 2304,
+      "transformation": "none"
+    },
+    "native_run_04_control_v2.py.txt": {
+      "capturedSha256": "8f510a0f741ce3367ae980ff9f544b0d6993b52d6f246476cfac812f304eb7de",
+      "publishedSha256": "8f510a0f741ce3367ae980ff9f544b0d6993b52d6f246476cfac812f304eb7de",
+      "captureBytes": 2651,
+      "publishedBytes": 2651,
+      "transformation": "none"
+    },
+    "native_run_04_census.ps1.txt": {
+      "capturedSha256": "cb080c4aa763fcc66a94644b3b4d0af3a9089d13ffb7e6306cf3689bfbf69697",
+      "publishedSha256": "cb080c4aa763fcc66a94644b3b4d0af3a9089d13ffb7e6306cf3689bfbf69697",
+      "captureBytes": 1339,
+      "publishedBytes": 1339,
+      "transformation": "none"
+    },
+    "native_run_04_cleanup.py.txt": {
+      "capturedSha256": "31fd947e225725638b7c360cc97b2e95e88e0a9b1f2a12947db08c32f9e589ae",
+      "publishedSha256": "31fd947e225725638b7c360cc97b2e95e88e0a9b1f2a12947db08c32f9e589ae",
+      "captureBytes": 2771,
+      "publishedBytes": 2771,
+      "transformation": "none"
+    },
+    "independent-native04-review.json": {
+      "capturedSha256": "48729d6194bbf211ca11a29d5991eeae54879c3aaaa2209649d651163802d961",
+      "publishedSha256": "48729d6194bbf211ca11a29d5991eeae54879c3aaaa2209649d651163802d961",
+      "captureBytes": 11782,
+      "publishedBytes": 11782,
+      "transformation": "none"
+    }
+  }
+}

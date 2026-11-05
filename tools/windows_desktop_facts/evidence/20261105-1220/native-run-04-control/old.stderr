@@ -1,0 +1,21 @@
+
+..\..\..\.git\keld-closeout\chatgpt-w4-desktop-20261105\native-run-04-control\native-control.test.ts:
+25 |     actualBoundsX: display.bounds.x,
+26 |     error: error ? String(error) : null,
+27 |     accepted: accepted ?? null,
+28 |   };
+29 |   writeFileSync(process.env.W4_NATIVE_CONTROL_RESULT!, JSON.stringify(observed, null, 2) + "\n");
+30 |   expect(String(error)).toContain("single-primary work area extends outside");
+                             ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "single-primary work area extends outside"
+Received: "undefined"
+
+      at <anonymous> (D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105\native-run-04-control\native-control.test.ts:30:25)
+(fail) actual captured work area rejects a one-pixel outside-monitor copy before ID allocation [1.45ms]
+
+ 0 pass
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [37.00ms]

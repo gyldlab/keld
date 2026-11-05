@@ -1,0 +1,528 @@
+{
+  "schema": "keld.w4-current-hosted-audit/v1",
+  "head": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "pr": 1401,
+  "pr_draft": true,
+  "pr_state": "open",
+  "branch": "agent/gh-1186-windows-desktop-feasibility-20261105",
+  "first_observed_at": "2026-11-05T12:16:05Z",
+  "second_observed_at": "2026-11-05T12:18:20.620771+00:00",
+  "snapshot_count": 2,
+  "run": {
+    "id": 42024632668,
+    "run_attempt": 1,
+    "event": "pull_request",
+    "status": "in_progress",
+    "conclusion": null,
+    "url": "https://github.com/gyldlab/keld/actions/runs/42024632668"
+  },
+  "binding": {
+    "checked_out_merge": "2da367af2056898627a3e47e4270aa5e17a0de64",
+    "base": "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+    "head_tree": "bd10386cd585ed599f751cbff21dd97d48825c85",
+    "merge_tree": "bd10386cd585ed599f751cbff21dd97d48825c85",
+    "same_tree": true,
+    "checkout_observed_in_logs": [
+      "router",
+      "codeowners",
+      "ubuntu",
+      "windows-media",
+      "windows"
+    ],
+    "mac_clippy_checkout_not_yet_read": "Job still in progress at bounded second snapshot; no completed log or final counts claimed."
+  },
+  "ci_job_counts": {
+    "first": {
+      "success": 22,
+      "in_progress": 3
+    },
+    "second": {
+      "success": 23,
+      "in_progress": 2
+    },
+    "second_job_total": 25,
+    "aggregate_note": "CI required is expected after selected dependencies complete; it was not emitted at either observation."
+  },
+  "jobs": [
+    {
+      "id": 127235940389,
+      "name": "gitleaks",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:15Z",
+      "completed_at": "2026-11-05T12:09:31Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127235940389"
+    },
+    {
+      "id": 127235940824,
+      "name": "change router",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:15Z",
+      "completed_at": "2026-11-05T12:09:37Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127235940824"
+    },
+    {
+      "id": 127235940935,
+      "name": "Router contract tests",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:15Z",
+      "completed_at": "2026-11-05T12:11:09Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127235940935"
+    },
+    {
+      "id": 127235941033,
+      "name": "dependency review",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:15Z",
+      "completed_at": "2026-11-05T12:09:21Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127235941033"
+    },
+    {
+      "id": 127236130146,
+      "name": "rustfmt",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:00Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130146"
+    },
+    {
+      "id": 127236130244,
+      "name": "Linux GUI smoke test (Xvfb)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:11:26Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130244"
+    },
+    {
+      "id": 127236130274,
+      "name": "bun test (TypeScript, macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:40Z",
+      "completed_at": "2026-11-05T12:11:18Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130274"
+    },
+    {
+      "id": 127236130292,
+      "name": "Mermaid validation + pinned render",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:37Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130292"
+    },
+    {
+      "id": 127236130294,
+      "name": "cargo-deny",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:09:58Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130294"
+    },
+    {
+      "id": 127236130314,
+      "name": "MSRV",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:40Z",
+      "completed_at": "2026-11-05T12:10:53Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130314"
+    },
+    {
+      "id": 127236130341,
+      "name": "clippy + test (macos-latest)",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": null,
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130341"
+    },
+    {
+      "id": 127236130344,
+      "name": "Windows WebView2 media acceptance",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:15:40Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130344"
+    },
+    {
+      "id": 127236130350,
+      "name": "clippy + test (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:17:35Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130350"
+    },
+    {
+      "id": 127236130361,
+      "name": "workspace contracts (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:46Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130361"
+    },
+    {
+      "id": 127236130366,
+      "name": "bun test (TypeScript, windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:11:32Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130366"
+    },
+    {
+      "id": 127236130385,
+      "name": "CodeQL (javascript-typescript)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:28Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130385"
+    },
+    {
+      "id": 127236130395,
+      "name": "clippy + test (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:14:20Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130395"
+    },
+    {
+      "id": 127236130404,
+      "name": "CodeQL (rust)",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-11-05T12:10:49Z",
+      "completed_at": null,
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130404"
+    },
+    {
+      "id": 127236130421,
+      "name": "workspace contracts (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:40Z",
+      "completed_at": "2026-11-05T12:12:06Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130421"
+    },
+    {
+      "id": 127236130423,
+      "name": "CodeQL (actions)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:17Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130423"
+    },
+    {
+      "id": 127236130440,
+      "name": "workspace contracts (ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:10:05Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130440"
+    },
+    {
+      "id": 127236130478,
+      "name": "doctests (windows-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:10:00Z",
+      "completed_at": "2026-11-05T12:11:50Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130478"
+    },
+    {
+      "id": 127236130552,
+      "name": "bun test (TypeScript, ubuntu-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:11:12Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130552"
+    },
+    {
+      "id": 127236130644,
+      "name": "doctests (macos-latest)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:10:55Z",
+      "completed_at": "2026-11-05T12:12:08Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130644"
+    },
+    {
+      "id": 127236130671,
+      "name": "CODEOWNERS + templates",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-05T12:09:39Z",
+      "completed_at": "2026-11-05T12:11:00Z",
+      "html_url": "https://github.com/gyldlab/keld/actions/runs/42024632668/job/127236130671"
+    }
+  ],
+  "counts": {
+    "router": {
+      "nextest_subinvocations": 0,
+      "nextest_tests_run": 0,
+      "nextest_passed": 0,
+      "nextest_skipped": 0,
+      "nextest_summary_lines": [],
+      "checkout_lines": [
+        "2026-11-05T12:09:20.9438406Z HEAD is now at 2da367af Merge 327122ea784f51a01c3ed177d95835eb157e61aa into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      ],
+      "python_summary_lines": [
+        "2026-11-05T12:11:06.0493840Z Ran 38 tests in 20.275s"
+      ],
+      "scope": "Nextest sums count these per-package invocations only; targeted Cargo/Python gates are retained separately, not added as unique tests."
+    },
+    "codeowners": {
+      "nextest_subinvocations": 0,
+      "nextest_tests_run": 0,
+      "nextest_passed": 0,
+      "nextest_skipped": 0,
+      "nextest_summary_lines": [],
+      "checkout_lines": [
+        "2026-11-05T12:09:44.4914860Z HEAD is now at 2da367af Merge 327122ea784f51a01c3ed177d95835eb157e61aa into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      ],
+      "python_summary_lines": [
+        "2026-11-05T12:09:59.5665710Z Ran 37 tests in 0.929s",
+        "2026-11-05T12:10:01.9449605Z Ran 19 tests in 2.271s",
+        "2026-11-05T12:10:23.4195025Z Ran 58 tests in 21.278s",
+        "2026-11-05T12:10:57.9305351Z Ran 32 tests in 16.136s"
+      ],
+      "scope": "Nextest sums count these per-package invocations only; targeted Cargo/Python gates are retained separately, not added as unique tests."
+    },
+    "ubuntu": {
+      "nextest_subinvocations": 12,
+      "nextest_tests_run": 1283,
+      "nextest_passed": 1283,
+      "nextest_skipped": 5,
+      "nextest_summary_lines": [
+        "2026-11-05T12:11:43.1252758Z      Summary [   9.483s] 202 tests run: 202 passed, 2 skipped",
+        "2026-11-05T12:11:48.8811908Z      Summary [   1.116s] 97 tests run: 97 passed, 0 skipped",
+        "2026-11-05T12:12:02.3375461Z      Summary [   8.808s] 222 tests run: 222 passed, 0 skipped",
+        "2026-11-05T12:12:03.4659338Z      Summary [   0.107s] 85 tests run: 85 passed, 0 skipped",
+        "2026-11-05T12:13:25.6194990Z      Summary [  77.247s] 28 tests run: 28 passed, 0 skipped",
+        "2026-11-05T12:13:46.1367391Z      Summary [  17.828s] 272 tests run: 272 passed, 1 skipped",
+        "2026-11-05T12:13:47.4486242Z      Summary [   0.064s] 41 tests run: 41 passed, 0 skipped",
+        "2026-11-05T12:13:48.1155016Z      Summary [   0.056s] 42 tests run: 42 passed, 0 skipped",
+        "2026-11-05T12:14:03.5465077Z      Summary [  12.559s] 147 tests run: 147 passed, 2 skipped",
+        "2026-11-05T12:14:06.0420354Z      Summary [   0.953s] 77 tests run: 77 passed, 0 skipped",
+        "2026-11-05T12:14:06.5519191Z      Summary [   0.006s] 4 tests run: 4 passed, 0 skipped",
+        "2026-11-05T12:14:10.6968478Z      Summary [   2.090s] 66 tests run: 66 passed, 0 skipped"
+      ],
+      "checkout_lines": [
+        "2026-11-05T12:09:43.2454361Z HEAD is now at 2da367a Merge 327122ea784f51a01c3ed177d95835eb157e61aa into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      ],
+      "python_summary_lines": [],
+      "scope": "Nextest sums count these per-package invocations only; targeted Cargo/Python gates are retained separately, not added as unique tests."
+    },
+    "windows-media": {
+      "nextest_subinvocations": 1,
+      "nextest_tests_run": 107,
+      "nextest_passed": 107,
+      "nextest_skipped": 11,
+      "nextest_summary_lines": [
+        "2026-11-05T12:10:44.6950457Z      Summary [   1.465s] 107 tests run: 107 passed, 11 skipped"
+      ],
+      "checkout_lines": [
+        "2026-11-05T12:09:47.9002663Z HEAD is now at 2da367a Merge 327122ea784f51a01c3ed177d95835eb157e61aa into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      ],
+      "python_summary_lines": [],
+      "scope": "Nextest sums count these per-package invocations only; targeted Cargo/Python gates are retained separately, not added as unique tests."
+    },
+    "windows": {
+      "nextest_subinvocations": 12,
+      "nextest_tests_run": 1819,
+      "nextest_passed": 1819,
+      "nextest_skipped": 82,
+      "nextest_summary_lines": [
+        "2026-11-05T12:12:05.7798557Z      Summary [  13.079s] 189 tests run: 189 passed, 2 skipped",
+        "2026-11-05T12:12:19.7034989Z      Summary [   2.675s] 98 tests run: 98 passed, 0 skipped",
+        "2026-11-05T12:12:37.3395503Z      Summary [   8.226s] 229 tests run: 229 passed, 2 skipped",
+        "2026-11-05T12:12:40.3597348Z      Summary [   0.496s] 139 tests run: 139 passed, 3 skipped",
+        "2026-11-05T12:14:27.8939991Z      Summary [  95.277s] 63 tests run: 63 passed, 20 skipped",
+        "2026-11-05T12:14:57.7682594Z      Summary [  21.864s] 391 tests run: 391 passed, 1 skipped",
+        "2026-11-05T12:15:11.3587086Z      Summary [  10.085s] 52 tests run: 52 passed, 1 skipped",
+        "2026-11-05T12:15:13.5606233Z      Summary [   0.616s] 54 tests run: 54 passed, 4 skipped",
+        "2026-11-05T12:15:36.8512664Z      Summary [  16.264s] 214 tests run: 214 passed, 16 skipped",
+        "2026-11-05T12:16:45.8596725Z      Summary [  59.840s] 278 tests run: 278 passed, 31 skipped",
+        "2026-11-05T12:16:52.6705095Z      Summary [   0.134s] 12 tests run: 12 passed, 2 skipped",
+        "2026-11-05T12:16:57.9419912Z      Summary [   0.663s] 100 tests run: 100 passed, 0 skipped"
+      ],
+      "checkout_lines": [
+        "2026-11-05T12:09:46.9806047Z HEAD is now at 2da367a Merge 327122ea784f51a01c3ed177d95835eb157e61aa into df99602ef10abd2cd6f3b5c633ba6d1cffee97bc"
+      ],
+      "python_summary_lines": [],
+      "scope": "Nextest sums count these per-package invocations only; targeted Cargo/Python gates are retained separately, not added as unique tests."
+    }
+  },
+  "required_live_contexts": [
+    {
+      "context": "gatekeeper",
+      "app_id": 15368,
+      "observed": "success",
+      "check_id": 127235686858,
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024634944/job/127235686858"
+    },
+    {
+      "context": "title-lint",
+      "app_id": 15368,
+      "observed": "success",
+      "check_id": 127235686336,
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024634944/job/127235686336"
+    },
+    {
+      "context": "CI required",
+      "app_id": 15368,
+      "observed": "pending/not yet emitted",
+      "check_id": null,
+      "details_url": null
+    }
+  ],
+  "live_main_protection": {
+    "strict": true,
+    "enforce_admins": true,
+    "required_approvals": 1,
+    "require_code_owner_reviews": true,
+    "require_last_push_approval": true,
+    "dismiss_stale_reviews": true,
+    "required_conversation_resolution": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false,
+    "pull_request_bypass_users": [
+      "amishabenramani",
+      "0monish"
+    ]
+  },
+  "rulesets": [
+    {
+      "id": 26261486,
+      "name": "KELD VeriSentry trusted App admission",
+      "enforcement": "disabled",
+      "source_type": "Repository",
+      "source": "gyldlab/keld"
+    },
+    {
+      "id": 22483865,
+      "name": "Keld CodeQL alert admission",
+      "enforcement": "disabled",
+      "source_type": "Repository",
+      "source": "gyldlab/keld"
+    },
+    {
+      "id": 22554457,
+      "name": "Keld PR entry remains required",
+      "enforcement": "active",
+      "source_type": "Repository",
+      "source": "gyldlab/keld"
+    }
+  ],
+  "active_pr_ruleset": {
+    "id": 22554457,
+    "name": "Keld PR entry remains required",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "gyldlab/keld",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "refs/heads/main"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "pull_request",
+        "parameters": {
+          "required_approving_review_count": 0,
+          "dismiss_stale_reviews_on_push": false,
+          "required_reviewers": [],
+          "require_code_owner_review": false,
+          "dismissal_restriction": {
+            "enabled": false,
+            "allowed_actors": []
+          },
+          "require_last_push_approval": false,
+          "required_review_thread_resolution": false,
+          "require_extra_approval_for_unattributed_changes": true,
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
+        }
+      }
+    ],
+    "node_id": "RRS_lACqUmVwb3NpdG9yec5LCQ8nzgFYJ1k",
+    "created_at": "2026-09-08T20:21:21.296+05:30",
+    "updated_at": "2026-09-11T12:25:57.886+05:30",
+    "bypass_actors": [],
+    "current_user_can_bypass": "never",
+    "_links": {
+      "self": {
+        "href": "https://api.github.com/repos/gyldlab/keld/rulesets/22554457"
+      },
+      "html": {
+        "href": "https://github.com/gyldlab/keld/rules/22554457"
+      }
+    }
+  },
+  "diagnostic_checks": [
+    {
+      "id": 127235727025,
+      "name": "KELD VeriSentry publisher",
+      "status": "completed",
+      "conclusion": "failure",
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024634776/job/127235727025"
+    },
+    {
+      "id": 127235690524,
+      "name": "KELD VeriSentry publisher",
+      "status": "completed",
+      "conclusion": "failure",
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024629688/job/127235690524"
+    },
+    {
+      "id": 127235654316,
+      "name": "CI provenance",
+      "status": "completed",
+      "conclusion": "failure",
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024634776/job/127235654316"
+    },
+    {
+      "id": 127235638369,
+      "name": "CI provenance",
+      "status": "completed",
+      "conclusion": "failure",
+      "details_url": "https://github.com/gyldlab/keld/actions/runs/42024629688/job/127235638369"
+    }
+  ],
+  "diagnostic_scope": "Current-head CI provenance and VeriSentry failures are observed. Neither context is a required main-protection context. VeriSentry trusted-App and CodeQL alert-admission rulesets are disabled; the active PR-entry ruleset contains no extra status checks. The separate selected CodeQL (rust) CI job still blocks the CI-required aggregate while pending. No security/trust completion or reason for diagnostic failure is inferred.",
+  "preserved_old_failure": {
+    "head": "48e3f168716ea8ba25ac6c1bfb35ab213c022b2e",
+    "path": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/hosted-48e3-diagnosis/diagnosis.json",
+    "sha256": "db3e81122140acfaad04b487ac2adfecc37a5a0f5f7ebb4c69ede214610122df",
+    "unchanged": true
+  },
+  "scope": {
+    "read_only_remote_actions": true,
+    "workflows_rerun_or_cancelled": false,
+    "source_or_policy_changes": false,
+    "local_tests_or_windows_native": false,
+    "no_further_polling": true,
+    "limits": "This is the bounded current hosted snapshot, not full CI green, a replacement of historical local failures, production W4 approval, or merge authorization."
+  }
+}

@@ -1,0 +1,29 @@
+from pathlib import Path
+import hashlib,json,os,subprocess,time
+repo=Path(r"D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105")
+evidence=Path(r"D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105")
+out=evidence/"native-run-04"
+assert not out.exists(),"preserve existing native evidence"
+assert not (evidence/"native-run-04-driver.json").exists()
+assert not subprocess.check_output(["git","status","--porcelain"],cwd=repo),"native run requires clean committed inputs"
+probe=Path(r"D:\WORK\keld\.keld-work\build\gh1186-w4-native-20261105\debug\keld-windows-desktop-facts-probe.exe")
+oracle=evidence/"electron-44.4.5/electron.exe"
+assert hashlib.sha256(probe.read_bytes()).hexdigest()=="947ed40f2c9be6dca101b5feb9b626eac11611c93d7767185aa88da60c6336f0"
+assert hashlib.sha256(oracle.read_bytes()).hexdigest()=="bd14928e0728366fd3f41499cb398ff3f4304dab259a3e605077899a6f8c748e"
+source={str(p.relative_to(repo)).replace("\\","/"):hashlib.sha256(p.read_bytes()).hexdigest() for p in (repo/"tools/windows_desktop_facts").rglob("*") if p.is_file() and "evidence" not in p.parts and "__pycache__" not in p.parts}
+head=subprocess.check_output(["git","rev-parse","HEAD"],cwd=repo,text=True).strip()
+assert head=="327122ea784f51a01c3ed177d95835eb157e61aa","unexpected source"
+source_record={"head":head,"files":source,"probeSha256":hashlib.sha256(probe.read_bytes()).hexdigest(),"oracleSha256":hashlib.sha256(oracle.read_bytes()).hexdigest()}
+(evidence/"native-run-04-sources.json").write_text(json.dumps(source_record,indent=2)+"\n",encoding="utf-8",newline="\n")
+env=dict(os.environ);env["W4_RUN_NATIVE"]="1"
+cmd=["python","-B","tools/workspace.py","run","gh-1186-windows-desktop-feasibility-20261105","--session","chatgpt-w4-desktop-20261105","--",
+"python","-B","tools/windows_desktop_facts/run_native.py","--probe",str(probe),"--shared",str(evidence/"shared-s1"),"--oracle-exe",str(oracle),"--out",str(out)]
+start=time.time()
+with (evidence/"native-run-04-driver.log").open("xb") as log:
+ p=subprocess.Popen(cmd,cwd=repo,env=env,stdout=log,stderr=subprocess.STDOUT)
+ print(json.dumps({"pid":p.pid,"head":head,"command":cmd}),flush=True)
+ code=p.wait()
+receipt={"argv":cmd,"pid":p.pid,"exit":code,"head":head,"startedUnix":start,"completedUnix":time.time(),"sourceManifest":str(evidence/"native-run-04-sources.json")}
+(evidence/"native-run-04-driver.json").write_text(json.dumps(receipt,indent=2)+"\n",encoding="utf-8",newline="\n")
+print(json.dumps(receipt),flush=True)
+raise SystemExit(code)

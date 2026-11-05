@@ -1,0 +1,2 @@
+bun test v1.4.4 (38afee6c8)
+W4_NATIVE_SUBSCRIBE {"order":"Subscribe -> native sample -> DesktopSnapshot -> Subscribed -> raw Ready -> facade Ready","originalCallerDeadlineMs":5000,"sampleMs":482.3778,"coreAdmissionProven":false}

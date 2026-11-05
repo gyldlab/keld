@@ -1,0 +1,42 @@
+import { expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const sample = JSON.parse(readFileSync(process.env.W4_NATIVE_CONTROL_RECEIPT!, "utf8")).sample;
+const { nativeFacts, NativeDisplayIds } = await import(pathToFileURL(process.env.W4_ADAPTER_MODULE!).href);
+test("actual captured work area rejects a one-pixel outside-monitor copy before ID allocation", () => {
+  const ids = new NativeDisplayIds();
+  const first = nativeFacts(sample.raw, sample.textScale, ids);
+  expect(first).toEqual(sample.facts);
+  expect(ids.retainedIdentities).toBe(1);
+  const altered = structuredClone(sample.raw);
+  const display = altered.sample.desktop.displays[0];
+  display.nativePaths[0].targetId = (display.nativePaths[0].targetId ^ 1) >>> 0;
+  display.workArea.x = display.bounds.x - 1;
+  altered.sample.desktop.primaryWorkAreaViaSpi.x = display.workArea.x;
+  let error: unknown;
+  let accepted: unknown;
+  try { accepted = nativeFacts(altered, sample.textScale, ids); } catch (caught) { error = caught; }
+  const observed: Record<string, unknown> = {
+    scope: "mutated copy of actual native04 input; no new OS sample or settings write",
+    variant: process.env.W4_NATIVE_CONTROL_VARIANT,
+    originalIdentityCount: 1,
+    afterInvalidIdentityCount: ids.retainedIdentities,
+    changedWorkAreaX: display.workArea.x,
+    actualBoundsX: display.bounds.x,
+    error: error ? String(error) : null,
+    accepted: accepted ?? null,
+  };
+  writeFileSync(process.env.W4_NATIVE_CONTROL_RESULT!, JSON.stringify(observed, null, 2) + "\n");
+  expect(String(error)).toContain("single-primary work area extends outside");
+  expect(ids.retainedIdentities).toBe(1);
+  display.workArea = structuredClone(sample.raw.sample.desktop.displays[0].workArea);
+  altered.sample.desktop.primaryWorkAreaViaSpi = structuredClone(sample.raw.sample.desktop.primaryWorkAreaViaSpi);
+  const repaired = nativeFacts(altered, sample.textScale, ids);
+  expect(repaired.primary_id).toBe(2);
+  expect(repaired.displays[0].work_area).toEqual(first.displays[0].work_area);
+  expect(ids.retainedIdentities).toBe(2);
+  expect(nativeFacts(sample.raw, sample.textScale, ids)).toEqual(first);
+  observed.repairedIdentityCount = ids.retainedIdentities;
+  observed.repairedPrimaryId = repaired.primary_id;
+  writeFileSync(process.env.W4_NATIVE_CONTROL_RESULT!, JSON.stringify(observed, null, 2) + "\n");
+});

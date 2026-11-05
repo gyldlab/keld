@@ -1,0 +1,62 @@
+{
+  "head": "327122ea784f51a01c3ed177d95835eb157e61aa",
+  "nativeReceiptSha256": "0aa95eee0e62c611f88fa7a93cd7b9091ab86ac4bdacabced6c22a611e235802",
+  "testSha256": "f6ca447f4a1b70ea1e54a7e2107cc7614d3ba7b31360e6eddd68d8d8ab93d47f",
+  "results": {
+    "old": {
+      "exit": 1,
+      "jobActiveAfter": 0,
+      "adapterSha256": "40e93e55c31e3e84357f80344e357d4b9007c4852e486d7254c39481164bf4a4",
+      "observed": {
+        "scope": "mutated copy of actual native04 input; no new OS sample or settings write",
+        "variant": "old",
+        "originalIdentityCount": 1,
+        "afterInvalidIdentityCount": 2,
+        "changedWorkAreaX": -1,
+        "actualBoundsX": 0,
+        "error": null,
+        "accepted": {
+          "primary_id": 2,
+          "displays": [
+            {
+              "id": 2,
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1536,
+                "height": 864
+              },
+              "work_area": {
+                "x": -1,
+                "y": 0,
+                "width": 1537,
+                "height": 816
+              },
+              "scale_factor": 1.25
+            }
+          ],
+          "should_use_dark_colors": false
+        }
+      }
+    },
+    "current": {
+      "exit": 0,
+      "jobActiveAfter": 0,
+      "adapterSha256": "69fcce20d638ca2ad0cb0dedf708d29358d0a6d78ac7f66ad298f185527e029f",
+      "observed": {
+        "scope": "mutated copy of actual native04 input; no new OS sample or settings write",
+        "variant": "current",
+        "originalIdentityCount": 1,
+        "afterInvalidIdentityCount": 1,
+        "changedWorkAreaX": -1,
+        "actualBoundsX": 0,
+        "error": "Error: W4 feasibility unavailable: single-primary work area extends outside its monitor",
+        "accepted": null,
+        "repairedIdentityCount": 2,
+        "repairedPrimaryId": 2
+      }
+    }
+  },
+  "scope": "actual native04 input, mutated copy only; no OS sample or settings write",
+  "harnessCorrection": "First wrapper expected exit; run_owned metadata uses targetExit. Original expected-failure execution retained and audited; only green arm launched by v2."
+}

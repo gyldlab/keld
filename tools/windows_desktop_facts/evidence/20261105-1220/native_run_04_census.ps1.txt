@@ -1,0 +1,11 @@
+param([Parameter(Mandatory=$true)][ValidateSet('pre','post')][string]$Phase)
+$ErrorActionPreference='Stop'
+$path='D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105\native-run-04-'+$Phase+'-census.json'
+if (Test-Path -LiteralPath $path) { throw 'Preserve existing census' }
+$all=@(Get-CimInstance Win32_Process)
+$candidates=@($all | Where-Object { $_.Name -match '^(keld.*|electron|bun|cargo|just|rustc|cargo-nextest)\.exe$' } | Select-Object ProcessId,ParentProcessId,Name,CreationDate,ExecutablePath,CommandLine)
+$webviews=@($all | Where-Object Name -eq 'msedgewebview2.exe' | Select-Object ProcessId,ParentProcessId,Name,CreationDate,ExecutablePath)
+$ownNative=@($candidates | Where-Object { $_.Name -eq 'keld-windows-desktop-facts-probe.exe' -or ($_.ExecutablePath -like '*chatgpt-w4-desktop-20261105*electron.exe') -or ($_.Name -eq 'bun.exe' -and $_.CommandLine -like '*windows_desktop_facts*') })
+$r=[ordered]@{utc=[DateTime]::UtcNow.ToString('o');phase=$Phase;ownNativeCount=$ownNative.Count;candidateCount=$candidates.Count;existingWebviews=$webviews;candidates=$candidates}
+[IO.File]::WriteAllText($path,($r | ConvertTo-Json -Depth 7),(New-Object Text.UTF8Encoding($false)))
+[ordered]@{utc=$r.utc;phase=$Phase;ownNativeCount=$ownNative.Count;webviewCount=$webviews.Count;candidates=$candidates} | ConvertTo-Json -Depth 5
