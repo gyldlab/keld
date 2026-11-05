@@ -8,7 +8,7 @@ use super::initial::capture_native;
 use super::{create, destroy};
 use crate::PRODUCT_DEADLINE;
 use crate::support::window::native_control::{self, PhysicalCoordinates};
-use crate::support::window::{app_top_level_windows, post_close};
+use crate::support::window::{NativeWindowSnapshot, app_top_level_windows, post_close};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -99,6 +99,11 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
     assert_eq!(run.read("CLOSE_HOLD_ARMED")["id"], id);
     let release = ReleaseCloseOnDrop(root.join("release"));
     let deadline = Instant::now() + PRODUCT_DEADLINE;
+    println!(
+        "KELD_GH1188_DUPLICATE_CLOSE_PRE_STIMULUS hwnd={} native={:?}",
+        native.hwnd,
+        NativeWindowSnapshot::capture(native.hwnd as u64, run.pid()),
+    );
     post_close(native.hwnd as u64);
     let pending = close_record(&mut run, &root, "pending", deadline);
     assert_eq!(pending["id"], id);
@@ -117,6 +122,12 @@ fn windows_pending_duplicate_wm_close_emits_one_close_event() {
         deadline,
     )
     .expect("second native close was dispatched while the first callback was held");
+
+    println!(
+        "KELD_GH1188_DUPLICATE_CLOSE_PRE_MOVE hwnd={} native={:?}",
+        native.hwnd,
+        NativeWindowSnapshot::capture(native.hwnd as u64, run.pid()),
+    );
 
     // This later Bounds event uses the same UI Sender and Core event FIFO as
     // the duplicate close. Its applied mirror state acknowledges Core consumption
