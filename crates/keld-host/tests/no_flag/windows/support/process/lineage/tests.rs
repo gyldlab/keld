@@ -417,8 +417,9 @@ fn installed_terminal_lineage_does_not_hide_malformed_ancestry() {
 
 #[test]
 fn installed_terminal_lineage_reconsiders_the_same_pid_in_each_snapshot() {
-    assert!(
-        terminal_descendant_candidates(&census("2:1", "old.exe:2<1"), 1, 100_000_000).is_empty(),
+    assert_eq!(
+        terminal_descendant_candidates(&census("2:1", "old.exe:2<1"), 1, 100_000_000),
+        Vec::<(String, u32, u32)>::new(),
     );
     assert_eq!(
         terminal_descendant_candidates(&census("2:110000000", "new.exe:2<1"), 1, 100_000_000),
