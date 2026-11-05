@@ -1,0 +1,90 @@
+{
+  "schema": "keld.w4-native-census-projection/v1",
+  "sourceHead": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "projection": "Recorded counts and exact PID/creation-string pairs only; foreign executable paths and command lines omitted.",
+  "creationDateEncoding": "Original captured CreationDate string preserved without reinterpretation.",
+  "rawCaptures": {
+    "pre": {
+      "file": "native-run-02-pre-census.json",
+      "sha256": "6330e6ecbe50e154cbd94854f1082c0a46c020ad95b3c6bc3af0807fae8dab61"
+    },
+    "post": {
+      "file": "native-run-02-post-census.json",
+      "sha256": "6bfaad54b2a1a75f6d604caf21ba14e3545f42958aa818f286b357e4e9fdb5ee"
+    }
+  },
+  "pre": {
+    "utc": "2026-11-05T01:50:36.3509894Z",
+    "phase": "pre",
+    "ownNativeCount": 0,
+    "candidateCount": 0,
+    "existingWebviewsCount": 13,
+    "existingWebviewIdentities": [
+      {
+        "processId": 3012,
+        "creationDate": "/Date(1793727702147)/"
+      },
+      {
+        "processId": 4976,
+        "creationDate": "/Date(1793727702579)/"
+      },
+      {
+        "processId": 7592,
+        "creationDate": "/Date(1793789697221)/"
+      },
+      {
+        "processId": 9544,
+        "creationDate": "/Date(1793789695789)/"
+      },
+      {
+        "processId": 10636,
+        "creationDate": "/Date(1793727702578)/"
+      },
+      {
+        "processId": 11108,
+        "creationDate": "/Date(1793789695581)/"
+      },
+      {
+        "processId": 13864,
+        "creationDate": "/Date(1793727702655)/"
+      },
+      {
+        "processId": 13988,
+        "creationDate": "/Date(1793727702069)/"
+      },
+      {
+        "processId": 15300,
+        "creationDate": "/Date(1793727702848)/"
+      },
+      {
+        "processId": 17528,
+        "creationDate": "/Date(1793829084119)/"
+      },
+      {
+        "processId": 18556,
+        "creationDate": "/Date(1793789695731)/"
+      },
+      {
+        "processId": 18620,
+        "creationDate": "/Date(1793789695504)/"
+      },
+      {
+        "processId": 21364,
+        "creationDate": "/Date(1793789707842)/"
+      }
+    ],
+    "candidateIdentities": []
+  },
+  "post": {
+    "utc": "2026-11-05T01:51:28.2914316Z",
+    "phase": "post",
+    "ownNativeCount": 0,
+    "candidateCount": 0,
+    "existingWebviewsCount": 13,
+    "preservedBaselineIdentityCount": 13,
+    "sameIdentitySetAsPre": true,
+    "missingBaselineIdentities": [],
+    "newIdentities": [],
+    "candidateIdentities": []
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2",
+    "--control",
+    "high-contrast-size"
+  ],
+  "pid": 15712,
+  "exit": 1,
+  "bootstrapPid": 19180,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.13697599997976795,
+  "setupError": null,
+  "startedUnix": 1793843482.6031451,
+  "completedUnix": 1793843482.742167,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02\\high-contrast-size.owned.json"
+}

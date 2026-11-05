@@ -1,0 +1,40 @@
+
+tools\windows_desktop_facts\native_adapter.test.ts:
+(pass) physical work area and DPI/text scale feed enclosing logical rectangles [0.49ms]
+(pass) enclosing conversion uses edges for negative and fractional boundaries [0.10ms]
+(pass) identity follows full native key across handle/GDI rename and removal/recovery [0.15ms]
+(pass) clone target order is canonical; changed tuple/path is a distinct identity [0.14ms]
+(pass) 32 lifetime identities fit; 33 is refused without eviction or aliasing [1.12ms]
+(pass) refuses failed source instead of publishing default facts [0.06ms]
+(pass) refuses unaware source instead of publishing default facts [0.02ms]
+(pass) refuses fake DPI fallback instead of publishing default facts [0.02ms]
+(pass) refuses wrong physical units instead of publishing default facts [0.02ms]
+(pass) refuses wrong work area instead of publishing default facts [0.02ms]
+(pass) refuses forced colors instead of publishing default facts [0.01ms]
+(pass) refuses unqualified multiple monitors instead of publishing default facts [0.04ms]
+(pass) refuses missing theme instead of publishing default facts [0.02ms]
+(pass) invalid or registry-only text scale cannot become a default 1 [0.11ms]
+(pass) the real shared owner applies these facts, rejects stale epochs and retires [12.22ms]
+(pass) invalid native identity words are refused without allocating [0.10ms]
+(pass) failed appearance status and contradicted scheme never become usable facts [0.10ms]
+(pass) rectangle validation completes before identity allocation [0.10ms]
+
+tools\windows_desktop_facts\subscribe_contract.test.ts:
+(pass) W4 shared client contract; scripted Host, real named pipe > valid early Subscribe stays pending and receives facts before correlated acceptance [72.93ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > adversarial raw Ready before the sample cannot bypass pending Subscribe [66.11ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > definitive source failure settles the pending correlation with the existing typed error [65.72ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > the original 5000 ms caller deadline retires an unsatisfied subscription [5065.46ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > a regressing desktop epoch on the real link fails closed without replacing the latest value [66.91ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > ordered update survives role retirement and a fresh role receives the latest replay [133.50ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > an unselected role refuses a window event through its unchanged receive table [68.57ms]
+(pass) W4 shared client contract; scripted Host, real named pipe > a wrong HELLO token fails before any subscription or mirror is installed [63.47ms]
+(skip) W4 native first sample is taken after a valid held Subscribe and precedes facade Ready
+
+1 tests skipped:
+(skip) W4 native first sample is taken after a valid held Subscribe and precedes facade Ready
+
+ 26 pass
+ 1 skip
+ 0 fail
+ 82 expect() calls
+Ran 27 tests across 2 files. [5.89s]

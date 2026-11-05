@@ -1,0 +1,393 @@
+{
+  "oracle": "gh1186-w4-electron",
+  "electronVersion": "44.4.5",
+  "chromeVersion": "152.0.7977.130",
+  "nodeVersion": "24.21.0",
+  "processType": "browser",
+  "platform": "win32",
+  "arch": "x64",
+  "electronRunAsNodeEnv": null,
+  "samples": [
+    {
+      "label": "afterReady_beforeAnyWindow",
+      "tMs": 1793843483090,
+      "windowsOpen": 0,
+      "shouldUseDarkColors": false,
+      "shouldUseHighContrastColors": false,
+      "shouldUseInvertedColorScheme": false,
+      "inForcedColorsMode": false,
+      "shouldUseDarkColorsForSystemIntegratedUI": false,
+      "prefersReducedTransparency": false,
+      "themeSource": "system",
+      "primary": {
+        "id": 4007710180,
+        "label": "",
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 864
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 816
+        },
+        "size": {
+          "width": 1536,
+          "height": 864
+        },
+        "workAreaSize": {
+          "width": 1536,
+          "height": 816
+        },
+        "scaleFactor": 1.25,
+        "rotation": 0,
+        "internal": true,
+        "nativeOrigin": {
+          "x": 0,
+          "y": 0
+        },
+        "displayFrequency": 144,
+        "colorDepth": 24,
+        "allKeys": [
+          "accelerometerSupport",
+          "bounds",
+          "colorDepth",
+          "colorSpace",
+          "depthPerComponent",
+          "detected",
+          "displayFrequency",
+          "id",
+          "internal",
+          "label",
+          "maximumCursorSize",
+          "monochrome",
+          "nativeOrigin",
+          "rotation",
+          "scaleFactor",
+          "size",
+          "touchSupport",
+          "workArea",
+          "workAreaSize"
+        ]
+      },
+      "all": [
+        {
+          "id": 4007710180,
+          "label": "",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1536,
+            "height": 864
+          },
+          "workArea": {
+            "x": 0,
+            "y": 0,
+            "width": 1536,
+            "height": 816
+          },
+          "size": {
+            "width": 1536,
+            "height": 864
+          },
+          "workAreaSize": {
+            "width": 1536,
+            "height": 816
+          },
+          "scaleFactor": 1.25,
+          "rotation": 0,
+          "internal": true,
+          "nativeOrigin": {
+            "x": 0,
+            "y": 0
+          },
+          "displayFrequency": 144,
+          "colorDepth": 24,
+          "allKeys": [
+            "accelerometerSupport",
+            "bounds",
+            "colorDepth",
+            "colorSpace",
+            "depthPerComponent",
+            "detected",
+            "displayFrequency",
+            "id",
+            "internal",
+            "label",
+            "maximumCursorSize",
+            "monochrome",
+            "nativeOrigin",
+            "rotation",
+            "scaleFactor",
+            "size",
+            "touchSupport",
+            "workArea",
+            "workAreaSize"
+          ]
+        }
+      ],
+      "primaryWorkAreaDipToScreenRect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1020
+      },
+      "primaryBoundsDipToScreenRect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      }
+    },
+    {
+      "label": "afterHiddenWindowConstructed",
+      "tMs": 1793843483122,
+      "windowsOpen": 1,
+      "shouldUseDarkColors": false,
+      "shouldUseHighContrastColors": false,
+      "shouldUseInvertedColorScheme": false,
+      "inForcedColorsMode": false,
+      "shouldUseDarkColorsForSystemIntegratedUI": false,
+      "prefersReducedTransparency": false,
+      "themeSource": "system",
+      "primary": {
+        "id": 4007710180,
+        "label": "",
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 864
+        },
+        "workArea": {
+          "x": 0,
+          "y": 0,
+          "width": 1536,
+          "height": 816
+        },
+        "size": {
+          "width": 1536,
+          "height": 864
+        },
+        "workAreaSize": {
+          "width": 1536,
+          "height": 816
+        },
+        "scaleFactor": 1.25,
+        "rotation": 0,
+        "internal": true,
+        "nativeOrigin": {
+          "x": 0,
+          "y": 0
+        },
+        "displayFrequency": 144,
+        "colorDepth": 24,
+        "allKeys": [
+          "accelerometerSupport",
+          "bounds",
+          "colorDepth",
+          "colorSpace",
+          "depthPerComponent",
+          "detected",
+          "displayFrequency",
+          "id",
+          "internal",
+          "label",
+          "maximumCursorSize",
+          "monochrome",
+          "nativeOrigin",
+          "rotation",
+          "scaleFactor",
+          "size",
+          "touchSupport",
+          "workArea",
+          "workAreaSize"
+        ]
+      },
+      "all": [
+        {
+          "id": 4007710180,
+          "label": "",
+          "bounds": {
+            "x": 0,
+            "y": 0,
+            "width": 1536,
+            "height": 864
+          },
+          "workArea": {
+            "x": 0,
+            "y": 0,
+            "width": 1536,
+            "height": 816
+          },
+          "size": {
+            "width": 1536,
+            "height": 864
+          },
+          "workAreaSize": {
+            "width": 1536,
+            "height": 816
+          },
+          "scaleFactor": 1.25,
+          "rotation": 0,
+          "internal": true,
+          "nativeOrigin": {
+            "x": 0,
+            "y": 0
+          },
+          "displayFrequency": 144,
+          "colorDepth": 24,
+          "allKeys": [
+            "accelerometerSupport",
+            "bounds",
+            "colorDepth",
+            "colorSpace",
+            "depthPerComponent",
+            "detected",
+            "displayFrequency",
+            "id",
+            "internal",
+            "label",
+            "maximumCursorSize",
+            "monochrome",
+            "nativeOrigin",
+            "rotation",
+            "scaleFactor",
+            "size",
+            "touchSupport",
+            "workArea",
+            "workAreaSize"
+          ]
+        }
+      ],
+      "primaryWorkAreaDipToScreenRect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1020
+      },
+      "primaryBoundsDipToScreenRect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      }
+    }
+  ],
+  "shouldUseDarkColors": false,
+  "shouldUseHighContrastColors": false,
+  "themeSource": "system",
+  "primary": {
+    "id": 4007710180,
+    "label": "",
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 864
+    },
+    "workArea": {
+      "x": 0,
+      "y": 0,
+      "width": 1536,
+      "height": 816
+    },
+    "size": {
+      "width": 1536,
+      "height": 864
+    },
+    "workAreaSize": {
+      "width": 1536,
+      "height": 816
+    },
+    "scaleFactor": 1.25,
+    "rotation": 0,
+    "internal": true,
+    "nativeOrigin": {
+      "x": 0,
+      "y": 0
+    },
+    "displayFrequency": 144,
+    "colorDepth": 24,
+    "allKeys": [
+      "accelerometerSupport",
+      "bounds",
+      "colorDepth",
+      "colorSpace",
+      "depthPerComponent",
+      "detected",
+      "displayFrequency",
+      "id",
+      "internal",
+      "label",
+      "maximumCursorSize",
+      "monochrome",
+      "nativeOrigin",
+      "rotation",
+      "scaleFactor",
+      "size",
+      "touchSupport",
+      "workArea",
+      "workAreaSize"
+    ]
+  },
+  "all": [
+    {
+      "id": 4007710180,
+      "label": "",
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1536,
+        "height": 864
+      },
+      "workArea": {
+        "x": 0,
+        "y": 0,
+        "width": 1536,
+        "height": 816
+      },
+      "size": {
+        "width": 1536,
+        "height": 864
+      },
+      "workAreaSize": {
+        "width": 1536,
+        "height": 816
+      },
+      "scaleFactor": 1.25,
+      "rotation": 0,
+      "internal": true,
+      "nativeOrigin": {
+        "x": 0,
+        "y": 0
+      },
+      "displayFrequency": 144,
+      "colorDepth": 24,
+      "allKeys": [
+        "accelerometerSupport",
+        "bounds",
+        "colorDepth",
+        "colorSpace",
+        "depthPerComponent",
+        "detected",
+        "displayFrequency",
+        "id",
+        "internal",
+        "label",
+        "maximumCursorSize",
+        "monochrome",
+        "nativeOrigin",
+        "rotation",
+        "scaleFactor",
+        "size",
+        "touchSupport",
+        "workArea",
+        "workAreaSize"
+      ]
+    }
+  ]
+}

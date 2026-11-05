@@ -4,7 +4,27 @@ Status: tested native feasibility and draft contract; production Windows activat
 
 Owning issue: [GH1186](https://github.com/gyldlab/keld/issues/1186). The task branch is `agent/gh-1186-windows-desktop-feasibility-20261105`, based on main `df99602ef10abd2cd6f3b5c633ba6d1cffee97bc`. All production files remain unchanged. The [draft specification](../../docs/specs/gh1186-windows-desktop-facts.md) and [unapplied integration notes](integration-notes.md) define the proposal and exact dependencies.
 
-## Native run and custody
+## Final reviewed-wrapper native rerun
+
+The final committed fixture at `29f99d62cf227e5244672cef6094c6a31a240e94` was executed again on 2026-11-05 from 01:51:19Z to 01:51:23Z through managed work-run `run-15f25933a14e4f5c97c78421eafc75ae`. The [bounded acquisition](https://github.com/gyldlab/keld/issues/1188#issuecomment-6647411719) followed W3's explicit cleanup/yield and W2's queue agreement. W4 [released the device](https://github.com/gyldlab/keld/issues/1188#issuecomment-6647424705) after actual cleanup at 01:51:28Z; W2 retained immediate next priority.
+
+The final wrapper sequence passed in 4.416388 seconds. The held-Subscribe native test passed once and all six fresh receipt/oracle assertions passed. The probe and oracle executable hashes are unchanged from those below. The complete native identity, physical rectangles, DPI, actual WinRT text scale, appearance and qualified shared facts matched the original independently acquired values; they were read again rather than taken from an old receipt.
+
+| Final-run boundary | Monotonic time in the test process |
+| --- | ---: |
+| Valid Subscribe observed | 94.3557 ms |
+| First native sample started | 96.1543 ms |
+| Native and WinRT sampling completed | 609.8055 ms |
+| Desktop applied and Subscribe settled | 612.5453 ms |
+| Facade Ready observed | 613.1395 ms |
+
+Sampling took 513.6512 ms. The original 5,000-ms caller deadline remained active. The scripted-Host/client boundary is unchanged and `coreAdmissionProven` remains false.
+
+All 8 invocation Jobs were observed empty with no timeout, setup error or forced cleanup. Pre/post census recorded zero owned native processes and preserved all 13 baseline WebView PID/creation identities. The private oracle profile's measured file identity and creation time were revalidated; all 67 entries were checked for reparse points, the profile was removed and absence verified. The outside cleanup sentinel stayed byte-identical. No global setting, foreign process or existing cache was changed.
+
+[Fresh native receipts and source/cleanup bindings](evidence/20261105-0151) preserve this execution separately from the original run and all failure-first controls.
+
+## Original native run and custody
 
 The lead released Ramani at [23:58:07Z](https://github.com/gyldlab/keld/issues/1188#issuecomment-6645606390). W4 [acquired the next bounded slot](https://github.com/gyldlab/keld/issues/1188#issuecomment-6645615070), then [released it to W3](https://github.com/gyldlab/keld/issues/1188#issuecomment-6645637829) after verification and cleanup. No competing agent's process was signalled.
 
@@ -81,8 +101,8 @@ Both deliberate shared-source mutations were confined to owned copies. The origi
 | Exact unmodified S1 desktop codec/mirror suite | 27 pass, 186 expectations |
 | W4 conversion/identity/refusal tests with shared export selected | 18 pass, 82 expectations |
 | Real Windows named-pipe client contract | 8 pass; current combined non-native run 26 pass, 7 explicitly gated native cases skipped |
-| Native pending-Subscribe test | 1 pass; 8 non-native cases filtered |
-| Fresh native receipt/oracle assertions | 6 pass |
+| Native pending-Subscribe test | 1 pass in each of two fresh native runs; 8 non-native cases filtered per run |
+| Fresh native receipt/oracle assertions | 6 pass in each fresh native run |
 | Restored Ready/deadline controls | 2 pass after the two expected mutant failures |
 | Shared export helper | Exact 11-file / 211,352-byte export, real Windows junction and Unix symlink checks pass; changed pin, nonempty output and missing immutable commit refused |
 | Root Cargo format, documentation-placeholder check, hygiene and llms check | Pass |
@@ -115,9 +135,11 @@ The serialized [W4 gate lease](https://github.com/gyldlab/keld/issues/1188#issue
 
 The source-code registry failure was caused by this fixture using S1's already reserved 049 result while main lacked its catalog row. The exact canonical row was copied after a narrow ownership claim; the complete nine-test registry binary then passed. This fixes that identified gate without changing the error number, meaning or production selection. A focused pass is not relabeled as a fresh passing whole-workspace run. The catalog addition made the generated corpus stale, and that original check failure is retained. Rebuilding the current generator adds exactly the same seven-line entry to `llms-full.txt`; `llms.txt` is unchanged. All six generator tests and the subsequent freshness check pass.
 
-The remaining 113 failures are outside the W4 source scope, with two updater causes still unverified. The generated-app formatter sees the ancestor `/.keld-work/` ignore rule in managed temporary storage and silently selects zero files. Identical app bytes and the same pinned Bun 1.4.4 outside that ancestor correctly fail, repair, then pass; an own-app Git boundary control isolates the cause. Of the 112 Windows updater failures, 110 explicitly refuse their root because the D: volume anchor grants mutation to authenticated users (SID `S-1-5-11`). That refusal preserves the existing guard. The other two fail because `QF1_COORDINATOR_READY` was not observed; their underlying cause was not separately verified, and they are not counted as proven instances of the volume-anchor refusal. The current workspace manager fixes scratch beneath the primary checkout and provides no supported task-local scratch-root override. No ACL, global environment, ignore rule, guard, or test was altered to hide either failure. The workspace owner must provide an approved test context or correct scratch admission/discovery before this local gate can pass.
+The remaining 113 failures are outside the W4 source scope, with two updater causes still unverified. The generated-app formatter sees the ancestor `/.keld-work/` ignore rule in managed temporary storage and silently selects zero files. Identical app bytes and the same pinned Bun 1.4.4 outside that ancestor correctly fail, repair, then pass; an own-app Git boundary control isolates the cause. Of the 112 Windows updater failures, 110 explicitly refuse their root because the D: volume anchor grants mutation to authenticated users (SID `S-1-5-11`). That refusal preserves the existing guard. The other two fail because `QF1_COORDINATOR_READY` was not observed; their underlying cause was not separately verified, and they are not counted as proven instances of the volume-anchor refusal. The current workspace manager fixes scratch beneath the primary checkout and provides no supported task-local scratch-root override. No ACL, global environment, ignore rule, guard, or test was altered to hide either failure. The workspace owner must reconcile the qualified fixture contexts before this local gate can pass.
 
-The updated process wrapper has passed actual harmless child-process checks. A fresh native wrapper sequence is queued after the other agents' reserved turns; its result will be added separately. The original measured desktop run remains the native evidence in this checkpoint.
+After that execution, the W2 lead identified two existing corrections on its unmerged stack: [984a5d59](https://github.com/gyldlab/keld/commit/984a5d59e7a088c306c4dfa6dc9a33dc87db4448) gives the generated-app formatter fixture an explicit Git boundary plus an ignored-parent control; [05f87d5d](https://github.com/gyldlab/keld/commit/05f87d5d23770119f751edc2cffb657249339331) isolates the separate Python formatter-order fixture from an ancestor Cargo workspace. W4 read both immutable diffs and confirmed that they are in PR1400/2aed but absent from this branch's main base. Reconcile those existing corrections through their owner; no duplicate W4 source fix is included. Their targeted W2 results do not replace this branch's failed full-suite result and do not address the volume-anchor or unverified QF1 causes. The context handoff and correction are recorded on [KEL-245](https://linear.app/gyldlab-keld/issue/KEL-245/process-contain-agent-worktrees-evidence-and-scratch-under-one-local).
+
+The final process wrapper passed both the independent harmless process checks and the fresh native sequence above. The earlier successful run and every failure-first receipt remain preserved; the final wrapper result is not inferred from the old runner.
 
 ## Exact remaining dependency
 

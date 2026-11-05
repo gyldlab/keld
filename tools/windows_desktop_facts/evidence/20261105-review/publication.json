@@ -268,6 +268,60 @@
       "capturedSha256": "2c0af8c6e6f5216a42d75a6f5dbcec07f34b777395142dce1ddbf81406316f12",
       "publishedSha256": "2c0af8c6e6f5216a42d75a6f5dbcec07f34b777395142dce1ddbf81406316f12",
       "originalLineSeparators": "LF"
+    },
+    "current-client-review.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\review.json",
+      "capturedSha256": "6b84441c442569743355c8f39378cdd62c4c05bdb4217a3ce115bede6fc36903",
+      "publishedSha256": "6b84441c442569743355c8f39378cdd62c4c05bdb4217a3ce115bede6fc36903",
+      "originalLineSeparators": "LF"
+    },
+    "current-client-sources.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\source-binding.json",
+      "capturedSha256": "239a870372478ce2d0e04a5993d01e4c4e6c94ad30aca305c026830ee11fa306",
+      "publishedSha256": "3e4be860acac926c1d0ff18463ae89585b9ea0e6f9e586b887c21d64cbbe90ff",
+      "originalLineSeparators": "CRLF"
+    },
+    "current-client-run.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\work-run-result.json",
+      "capturedSha256": "6a9052c42633880c49010b1ee289f5ee8fdeee8f17afbe69ca568d507d9e4c89",
+      "publishedSha256": "12619006f21432e0f7b2919375de37fe7aceff25e56c3892b5c811a7ebfce618",
+      "originalLineSeparators": "CRLF"
+    },
+    "current-client-stdout.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\work-run-stdout.log",
+      "capturedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "publishedSha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "originalLineSeparators": "LF"
+    },
+    "current-client-stderr.log": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\work-run-stderr.log",
+      "capturedSha256": "57e917fdabb0a64f8a7eb501935a961b2efeb5317fc8193a49c4aa5738beb73f",
+      "publishedSha256": "57e917fdabb0a64f8a7eb501935a961b2efeb5317fc8193a49c4aa5738beb73f",
+      "originalLineSeparators": "LF"
+    },
+    "upstream-fixture-fixes.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\upstream-fixture-fixes.json",
+      "capturedSha256": "ce1a6228e304f972a0b80f3cee6772adf6f4ee2b8b625f295b95cb144e78b67a",
+      "publishedSha256": "ce1a6228e304f972a0b80f3cee6772adf6f4ee2b8b625f295b95cb144e78b67a",
+      "originalLineSeparators": "LF"
+    },
+    "ci-diagnosis-29f99d62.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\w4-ci-diagnosis-receipt-29f99d62.txt",
+      "capturedSha256": "fae67ec9202357e3d525f7ac5343decceef6588f5a9e9ddc2565a52950317332",
+      "publishedSha256": "cf142489ed727d650dd52d396c6e6f8c026a5cfba591a1502ce979b9822bc67f",
+      "transformation": "JSON exactText UTF-8 encoding reconstructs the original bytes; envelope labels the historical scope"
+    },
+    "native02-publication-review.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\review-shared-client-20261105-0200-a4f2\\delta-verification.json",
+      "capturedSha256": "a30383354213b270a8d977f03d9996b88595f0cf19aa1c97846b3b4319a9c8ae",
+      "publishedSha256": "a30383354213b270a8d977f03d9996b88595f0cf19aa1c97846b3b4319a9c8ae",
+      "originalLineSeparators": "LF"
+    },
+    "ci-current-policy-29f99d62.json": {
+      "originalPath": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\w4-ci-owner-followup-receipt-29f99d62.json",
+      "capturedSha256": "30b97494b52cab55576bca4bd5f1b3bc07999fc39f6f7de1f94d88a0bf0c0190",
+      "publishedSha256": "69214f421abbf63c5cfcba6aaa771eef4b7bf05319a88f1cd059a9ae613b5150",
+      "transformation": "Selected public GitHub facts only; exact live settings and required-job observations retained, private tracker content omitted. Original receipt preserved outside Git."
     }
   },
   "excludedDuplicate": "Canonical reserved 049 text remains in the actual registry and exact immutable-source receipt; duplicate trailing-blank section capture retained outside the patch.",

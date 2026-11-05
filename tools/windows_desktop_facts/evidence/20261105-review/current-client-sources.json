@@ -1,0 +1,138 @@
+{
+    "schema":  "keld.isolated-review-source-binding/v1",
+    "reviewer":  "w4_current_client_review",
+    "observed_utc":  "2026-11-05T02:00:24.3311939Z",
+    "review_head":  "29f99d62cf227e5244672cef6094c6a31a240e94",
+    "base":  "df99602ef10abd2cd6f3b5c633ba6d1cffee97bc",
+    "observed_head":  "29f99d62cf227e5244672cef6094c6a31a240e94",
+    "sources":  [
+                    {
+                        "path":  "tools/windows_desktop_facts/native_adapter.ts",
+                        "git_blob":  "50f8c1a09bc4e53d94ee69755ed01a451ba6c6ee",
+                        "sha256":  "fb125587b67c3a0aa8891c9df363b3b4ef60429487d9eeedba841abe55bb1f7d",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/native_adapter.test.ts",
+                        "git_blob":  "0e9b8b773b159e4c52ef779733fb8d81ad518b7a",
+                        "sha256":  "4bbb07fa6d2815d273deb1ab154582ff66cce5f0054ee53317e8b8149bec2561",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/subscribe_contract.test.ts",
+                        "git_blob":  "5ce377a281e96d1eed2cfc92089aadc796eda50f",
+                        "sha256":  "4c02e4f9dc76efad221a18cc8def83f0839486c594984ea8f12ed34866686c80",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/subscribe_support/host.ts",
+                        "git_blob":  "df7d45b7c92cac707f4b8db06367d6473ec0af0b",
+                        "sha256":  "eb2d329263148a941556e70f66cb64d6272d5cfb405dd32c84b2a0e98ae54660",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/subscribe_support/role.ts",
+                        "git_blob":  "b1ed6249c5c458633b7e39ea02f70f5c008a6b93",
+                        "sha256":  "5262b836d343d9cb7155918705dbbfacd4f373ab19dcef252ae955b3dc80a065",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/verify_native.test.ts",
+                        "git_blob":  "965188b9fb7f80452f40c13a3403c08cdd821a15",
+                        "sha256":  "ed9712d6e74fe551cbb29cac0ef8d7994e420b2089942d1edbba03d2682e1586",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/prepare_shared.py",
+                        "git_blob":  "a2adb8c348cbf012e1472cb23d2c09a2390c3740",
+                        "sha256":  "78a009aca5ceeb5797c3d9a1af738a344396f625ba43023af4fdb3e6c253e312",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/shared-pin.json",
+                        "git_blob":  "ec85c3d812bc5b24ef509577f1dffe0bb8c95d53",
+                        "sha256":  "786db34212582da83af3de66d1cb77a4a6bed9ca2847a18260f579346ed05f4a",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/integration.patch",
+                        "git_blob":  "b80a5cc9f89c489d310190ba101cefd2b29e7853",
+                        "sha256":  "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/README.md",
+                        "git_blob":  "64980eeeb739205c87e24074ec0605dc19bf91b7",
+                        "sha256":  "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+                        "matches_review_head":  true
+                    },
+                    {
+                        "path":  "tools/windows_desktop_facts/integration-notes.md",
+                        "git_blob":  "9269c550dc39ce7f4c21bdc6125c2cad181530e6",
+                        "sha256":  "2f64643a4a99e525c232b3042cf7a07f702c6c0c37a95c32b432caf606a0d01f",
+                        "matches_review_head":  true
+                    }
+                ],
+    "shared_commit":  "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "shared_root":  "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\shared-s1",
+    "dependencies":  [
+                         {
+                             "path":  "packages/@keld/api/src/window-source.ts",
+                             "git_blob":  "b526d8d30796ac6fef8d3c23aecba6324b9b4009",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/window-codec.ts",
+                             "git_blob":  "987bb7f8a73afd86a7de0924ecfb4ae05055e5ad",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/kipc/src/transport.ts",
+                             "git_blob":  "fbc747706a056c2f4c6b1d01dde07a75f4d5a5d1",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/kipc/package.json",
+                             "git_blob":  "9686efb07b4e978e3ae2168b3630fd5cdc744e35",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/window-desktop-source.test.ts",
+                             "git_blob":  "0daa93ff3b7e668ad69eb3b015e853c667c39b11",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "crates/keld-ipc/tests/fixtures/desktop-v0.tsv",
+                             "git_blob":  "606bafb60e8c59eea7de422c410309acf9a192a6",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/link.ts",
+                             "git_blob":  "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/echo-call.ts",
+                             "git_blob":  "29f77d9151cab65d2dd7f003101cae6fec5ccd9a",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/dialog.generated.ts",
+                             "git_blob":  "bf49ef662e336f46416fd4169b2032f149d1b38e",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/api/src/mirror.ts",
+                             "git_blob":  "3fa355e4d1496b369391d925529ff6578d06f431",
+                             "matches_pin":  true
+                         },
+                         {
+                             "path":  "packages/@keld/kipc/test/app-link-host.ts",
+                             "git_blob":  "44bcb200fb43a1a22108d656ab3640edfd5924ac",
+                             "matches_pin":  true
+                         }
+                     ],
+    "worktree_status":  [
+                            " M tools/windows_desktop_facts/EVIDENCE.md"
+                        ]
+}

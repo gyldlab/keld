@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--mode",
+    "pmv2"
+  ],
+  "pid": 20928,
+  "exit": 0,
+  "bootstrapPid": 13376,
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.15241599999717437,
+  "setupError": null,
+  "startedUnix": 1793843481.964598,
+  "completedUnix": 1793843482.1190467,
+  "ownedProcessReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02\\pmv2.owned.json"
+}

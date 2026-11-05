@@ -1,0 +1,29 @@
+{
+  "argv": [
+    "python",
+    "-B",
+    "tools/workspace.py",
+    "run",
+    "gh-1186-windows-desktop-feasibility-20261105",
+    "--session",
+    "chatgpt-w4-desktop-20261105",
+    "--",
+    "python",
+    "-B",
+    "tools/windows_desktop_facts/run_native.py",
+    "--probe",
+    "D:\\WORK\\keld\\.keld-work\\build\\gh1186-w4-native-20261105\\debug\\keld-windows-desktop-facts-probe.exe",
+    "--shared",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\shared-s1",
+    "--oracle-exe",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\electron-44.4.5\\electron.exe",
+    "--out",
+    "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02"
+  ],
+  "pid": 21392,
+  "exit": 0,
+  "head": "29f99d62cf227e5244672cef6094c6a31a240e94",
+  "startedUnix": 1793843479.378151,
+  "completedUnix": 1793843483.794539,
+  "sourceManifest": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\native-run-02-sources.json"
+}
