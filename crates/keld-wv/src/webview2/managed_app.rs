@@ -25,6 +25,10 @@ use super::{managed_test_control::TestControl, t2_test_observation as observe};
 mod build;
 mod observation;
 
+#[cfg(test)]
+#[path = "managed_app/tests/stop_order.rs"]
+mod stop_order_tests;
+
 pub(super) struct ManagedWindows {
     views: BTreeMap<u32, View>,
     custody: ManagedCustody,
@@ -99,25 +103,30 @@ impl ManagedWindows {
         observe::releasing(self.custody.len());
     }
 
-    /// Existing terminal/fault authority has already committed Stopping.
+    /// D7 closes managed controllers before the terminal/fault owner commits
+    /// Stopping. Deferred refusals then observe that committed state.
     /// Parked answers remain owned until independent native retirement.
-    pub(super) fn stop(&mut self) -> Result<(), WvError> {
-        self.views.clear();
+    pub(super) fn stop(&mut self, after_views_closed: impl FnOnce()) -> Result<(), WvError> {
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
-        self.custody.refuse_deferred(|event| {
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            if let AppWindowEvent::WindowBuildFailed { build, .. } = &event {
-                observe::build_refused(*build);
-            }
-            send_failure(
-                events,
-                event,
+        close_managed_resources(
+            &mut self.views,
+            &mut self.custody,
+            after_views_closed,
+            |event| {
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                test_control,
-            )
-        })
+                if let AppWindowEvent::WindowBuildFailed { build, .. } = &event {
+                    observe::build_refused(*build);
+                }
+                send_failure(
+                    events,
+                    event,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    test_control,
+                )
+            },
+        )
     }
 
     pub(super) fn exit_ready(&self, terminal: bool, barrier_ready: bool) -> bool {
@@ -243,6 +252,20 @@ impl ManagedWindows {
             }
         }
     }
+}
+
+/// One resource/queue sequence for the production stop path and pure Drop
+/// witnesses. The callback belongs to the existing terminal/fault authority;
+/// this helper neither commits policy nor arms a release barrier.
+fn close_managed_resources<V, K: Ord + Copy, E>(
+    views: &mut BTreeMap<u32, V>,
+    custody: &mut ManagedCustody<K>,
+    after_views_closed: impl FnOnce(),
+    send: impl FnMut(AppWindowEvent) -> Result<(), E>,
+) -> Result<(), E> {
+    views.clear();
+    after_views_closed();
+    custody.refuse_deferred(send)
 }
 
 /// Every failed build answer passes this function, including immediate refusal

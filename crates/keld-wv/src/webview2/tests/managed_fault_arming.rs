@@ -5,7 +5,6 @@ use super::{
     test_binding,
 };
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[test]
@@ -19,28 +18,26 @@ fn a_fault_closes_every_owner_before_arming_and_repeated_poll_never_renews() {
         Duration::from_hours(1),
         Duration::from_hours(1),
     );
-    let mut legacy_views = BTreeMap::new();
     let legacy_retired = Cell::new(false);
     let managed_retired = Cell::new(false);
     let callback_count = Cell::new(0);
 
-    // The callback boundary represents both native owners. Actual HWND/COM
-    // teardown remains the facade-native fixture's independent obligation.
+    // The full fault-reaction callback closes both owners and then arms the
+    // shared barrier. Actual HWND/COM teardown remains the native fixture's duty.
     sender
         .send(abnormal_receipt())
         .expect("native fault receipt");
-    assert!(
-        release.poll_host_receipts_with(&mut legacy_views, None, || {
-            assert_eq!(
-                release.armed_at.get(),
-                None,
-                "the barrier armed before managed Close"
-            );
-            assert!(!legacy_retired.replace(true));
-            assert!(!managed_retired.replace(true));
-            callback_count.set(callback_count.get() + 1);
-        })
-    );
+    assert!(release.poll_host_receipts_with(|| {
+        assert_eq!(
+            release.armed_at.get(),
+            None,
+            "the barrier armed before managed Close"
+        );
+        assert!(!legacy_retired.replace(true));
+        assert!(!managed_retired.replace(true));
+        callback_count.set(callback_count.get() + 1);
+        release.arm();
+    }));
     assert!(legacy_retired.get() && managed_retired.get());
     assert_eq!(callback_count.get(), 1, "the close owner must actually run");
     let first = release
@@ -48,20 +45,19 @@ fn a_fault_closes_every_owner_before_arming_and_repeated_poll_never_renews() {
         .get()
         .expect("armed after every controller closed");
 
-    assert!(
-        release.poll_host_receipts_with(&mut legacy_views, None, || {
-            assert!(
-                legacy_retired.get() && managed_retired.get(),
-                "no owner resurrected"
-            );
-            assert_eq!(
-                release.armed_at.get(),
-                Some(first),
-                "a repeated fault cannot renew its bound"
-            );
-            callback_count.set(callback_count.get() + 1);
-        })
-    );
+    assert!(release.poll_host_receipts_with(|| {
+        assert!(
+            legacy_retired.get() && managed_retired.get(),
+            "no owner resurrected"
+        );
+        assert_eq!(
+            release.armed_at.get(),
+            Some(first),
+            "a repeated fault cannot renew its bound"
+        );
+        callback_count.set(callback_count.get() + 1);
+        release.arm();
+    }));
     assert_eq!(
         callback_count.get(),
         2,
@@ -81,9 +77,8 @@ fn a_healthy_poll_does_not_close_managed_resources_or_arm_shutdown() {
         Duration::from_hours(1),
         Duration::from_hours(1),
     );
-    let mut legacy_views = BTreeMap::new();
     let closed = Cell::new(false);
-    assert!(!release.poll_host_receipts_with(&mut legacy_views, None, || closed.set(true)));
+    assert!(!release.poll_host_receipts_with(|| closed.set(true)));
     assert!(!closed.get());
     assert_eq!(release.armed_at.get(), None);
 }

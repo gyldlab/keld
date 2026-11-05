@@ -2938,25 +2938,21 @@ impl ProfileReleaseWait {
         views: &mut BTreeMap<u32, View>,
         stop: Option<&PersistentStopTransition>,
     ) -> bool {
-        self.poll_host_receipts_with(views, stop, || {})
+        self.poll_host_receipts_with(|| {
+            commit_profile_stop(stop);
+            views.clear();
+            self.arm();
+        })
     }
 
-    /// Close all live controller custodians before starting the shared barrier.
-    /// The callback extends this owner to managed views without another fault cell.
-    fn poll_host_receipts_with(
-        &self,
-        views: &mut BTreeMap<u32, View>,
-        stop: Option<&PersistentStopTransition>,
-        before_arm: impl FnOnce(),
-    ) -> bool {
+    /// Keep the existing first-fault decision while each native owner performs
+    /// its ordered stop reaction before arming this same release barrier.
+    fn poll_host_receipts_with(&self, on_fault: impl FnOnce()) -> bool {
         self.poll();
         if self.fault().is_none() {
             return false;
         }
-        commit_profile_stop(stop);
-        views.clear();
-        before_arm();
-        self.arm();
+        on_fault();
         true
     }
 
@@ -3889,7 +3885,7 @@ impl WebView2Engine {
                 exit_requested = true;
             }
         });
-        stop_app_wake_bridge(&stop_bridge, bridge);
+        drop(bridge);
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         t2_test_observation::loop_ended(release.armed_at.get().is_some());
         if let Some(fault) = release.fault() {
@@ -3953,18 +3949,19 @@ fn stop_app_views(
     release: &ProfileReleaseWait,
     fatal: &AtomicBool,
 ) {
-    commit_profile_stop(stop);
-    views.clear();
-    if let Err(error) = managed.stop() {
+    if let Err(error) = managed.stop(|| {
+        commit_profile_stop(stop);
+        views.clear();
+    }) {
         eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
         fatal.store(true, Ordering::Release);
     }
     release.arm();
 }
 
-/// Extends the existing first-fault reaction with the managed custodians.
-/// The existing owner closes legacy views first and arms only after this
-/// callback has closed managed controllers and answered every deferred build.
+/// The existing first-fault decision uses the same ordered stop owner as Quit
+/// and Fatal: managed controllers close before Stopping; deferred answers drain
+/// before this owner's release barrier is armed.
 fn poll_app_receipts(
     views: &mut BTreeMap<u32, View>,
     managed: &mut managed_app::ManagedWindows,
@@ -3972,11 +3969,8 @@ fn poll_app_receipts(
     release: &ProfileReleaseWait,
     fatal: &AtomicBool,
 ) -> bool {
-    release.poll_host_receipts_with(views, stop, || {
-        if let Err(error) = managed.stop() {
-            eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
-            fatal.store(true, Ordering::Release);
-        }
+    release.poll_host_receipts_with(|| {
+        stop_app_views(views, managed, stop, release, fatal);
     })
 }
 
@@ -4045,18 +4039,37 @@ fn finish_app_run(
     }
 }
 
+/// Owns the existing bridge stop/join obligation across every early return.
+#[must_use]
+struct AppWakeBridge {
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for AppWakeBridge {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            stop_app_wake_bridge(&self.stop, worker);
+        }
+    }
+}
+
 fn spawn_app_wake_bridge(
     commands: Receiver<AppWindowCommand>,
     proxy: EventLoopProxy<WindowsLoopEvent>,
     stop: Arc<AtomicBool>,
     terminal_intent: Arc<AtomicBool>,
-) -> Result<thread::JoinHandle<()>, WvError> {
+) -> Result<AppWakeBridge, WvError> {
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     let observing = t2_test_observation::enabled();
-    thread::Builder::new()
+    let worker_stop = Arc::clone(&stop);
+    let worker = thread::Builder::new()
         .name("keld-wv-windows-app-wake".to_owned())
         .spawn(move || {
             loop {
+                if worker_stop.load(Ordering::Acquire) {
+                    return;
+                }
                 match commands.recv_timeout(Duration::from_millis(100)) {
                     Ok(command) => {
                         let terminal =
@@ -4073,7 +4086,7 @@ fn spawn_app_wake_bridge(
                             return;
                         }
                     }
-                    Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => return,
+                    Err(RecvTimeoutError::Timeout) if worker_stop.load(Ordering::Acquire) => return,
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
                         terminal_intent.store(true, Ordering::Release);
@@ -4083,7 +4096,11 @@ fn spawn_app_wake_bridge(
                 }
             }
         })
-        .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))
+        .map_err(|error| WvError::EventLoop(format!("failed to start app wake bridge: {error}")))?;
+    Ok(AppWakeBridge {
+        stop,
+        worker: Some(worker),
+    })
 }
 
 fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
