@@ -52,7 +52,7 @@ pub(crate) fn same_tree(before: &NativeWindowSnapshot, pid: u32) {
 pub(crate) fn assert_retired(before: &NativeWindowSnapshot) {
     assert_eq!(
         before.live_handles(),
-        [],
+        Vec::<usize>::new(),
         "Host answered before native HWND/child teardown"
     );
 }
