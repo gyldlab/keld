@@ -563,7 +563,7 @@ fn fmt_expectation_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Resul
 fn fmt_container_error(f: &mut fmt::Formatter<'_>, detail: &str) -> fmt::Result {
     write!(
         f,
-        "KELD-UPDATE-019: the signed image's expected-identity container was refused ({detail}). Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container."
+        "KELD-UPDATE-019: the signed image's expected-identity container was refused ({detail}). Reinstall the signed package. The packaging integration must use keld-pack to embed the expected identity in the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing; the installed image refuses to run until it carries exactly one valid container."
     )
 }
 
