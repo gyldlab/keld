@@ -3493,12 +3493,7 @@ impl WebView2Engine {
                     && !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline)
                 {
                     *control_flow = ControlFlow::WaitUntil(deadline);
-                    if t2_test_observation::enabled() {
-                        eprintln!(
-                            "KELD_D16_PAGE_SCHEDULE now={:?} deadline={deadline:?}",
-                            Instant::now()
-                        );
-                    }
+                    t2_test_observation::page_scheduled(deadline);
                 }
             }
         });
@@ -3922,12 +3917,7 @@ impl WebView2Engine {
                     && !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline)
                 {
                     *control_flow = ControlFlow::WaitUntil(deadline);
-                    if t2_test_observation::enabled() {
-                        eprintln!(
-                            "KELD_D16_PAGE_SCHEDULE now={:?} deadline={deadline:?}",
-                            Instant::now()
-                        );
-                    }
+                    t2_test_observation::page_scheduled(deadline);
                 }
             }
             // U7's independent wake is posted once, after the actual exit

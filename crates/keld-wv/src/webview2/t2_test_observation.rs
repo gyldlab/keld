@@ -185,6 +185,15 @@ pub(super) fn parent_moved(view: u32) {
     }
 }
 
+pub(super) fn page_scheduled(deadline: std::time::Instant) {
+    if enabled() {
+        eprintln!(
+            "KELD_D16_PAGE_SCHEDULE now={:?} deadline={deadline:?}",
+            std::time::Instant::now()
+        );
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/t2_arming_observation.rs"]
 mod tests;
