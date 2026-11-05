@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) use census::app_top_level_windows;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub(crate) use observation::NativeWindowSnapshot;
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
