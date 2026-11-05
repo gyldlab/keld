@@ -154,14 +154,19 @@ pub(crate) fn wait_child(child: &mut Child, deadline: Instant) -> ExitStatus {
 /// reused PID can add an unrelated process, which only widens the report.
 pub(crate) fn process_tree_report(root_pid: u32) -> String {
     let script = format!(
-        "$all=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name); \
+        "$all=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate); \
          $tree=@{{}}; $tree[[uint32]{root_pid}]=$true; $grew=$true; \
          while ($grew) {{ $grew=$false; foreach ($p in $all) {{ \
            if ($p.ProcessId -ne {root_pid} -and -not $tree.ContainsKey([uint32]$p.ProcessId) -and $tree.ContainsKey([uint32]$p.ParentProcessId)) {{ $tree[[uint32]$p.ProcessId]=$true; $grew=$true }} }} }}; \
          $desc=@($all | Where-Object {{ $_.ProcessId -ne {root_pid} -and $tree.ContainsKey([uint32]$_.ProcessId) }}); \
          $browser=@($desc | Where-Object {{ $_.Name -eq 'msedgewebview2.exe' }}); \
-         'host_alive=' + [bool]($all | Where-Object {{ $_.ProcessId -eq {root_pid} }}) + \
+         $created=@($desc | ForEach-Object {{ $ticks=''; \
+        if ($_.CreationDate -is [datetime] -and $_.CreationDate.Kind -ne [DateTimeKind]::Unspecified) {{ \
+        try {{ $ticks=$_.CreationDate.ToUniversalTime().ToFileTimeUtc() }} catch {{ $ticks='' }} }}; \
+        [string]$_.ProcessId + ':' + $ticks }}); \
+        'host_alive=' + [bool]($all | Where-Object {{ $_.ProcessId -eq {root_pid} }}) + \
          ' browser_processes=' + $browser.Count + \
+        ' creation_filetimes=' + ($created -join ',') + \
          ' descendants=' + (($desc | ForEach-Object {{ $_.Name + ':' + $_.ProcessId + '<' + $_.ParentProcessId }}) -join ',')"
     );
     match bounded_output(

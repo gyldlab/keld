@@ -49,6 +49,16 @@ pub(crate) fn retain_native_descendants(
             "native ancestry did not stabilize within its existing observation bound"
         );
         assert!(tree.contains("host_alive=True"), "Host is not live: {tree}");
+        // Anchor negative metadata checks to the original retained kernel object.
+        assert_eq!(
+            process_times(root.as_raw_handle().cast()).creation,
+            expected_birth,
+            "the original retained Host generation changed",
+        );
+        assert!(
+            root.try_wait().expect("query the retained Host").is_none(),
+            "Host exited before native ancestry capture",
+        );
         let (rows, opened) = capture_candidate_rows(
             &tree,
             expected_root,
@@ -115,26 +125,103 @@ pub(crate) fn retain_native_descendants(
     }
 }
 
-// Keep opening and final native admission separate: the test seam exercises the
-// exact opener ordering used by the real retained-handle owner.
+// This pass can only reject an impossible unretained candidate. A retained
+// parent HANDLE supplies its kernel birth; CIM never grants ownership or
+// replaces an existing handle. Recompute rejection for every graph snapshot.
 fn capture_candidate_rows<H>(
     tree: &str,
-    _root: ProcessGeneration,
+    root: ProcessGeneration,
     handles: &mut BTreeMap<u32, H>,
     mut open: impl FnMut(u32) -> H,
-    _birth: impl FnMut(&H) -> u64,
+    mut birth: impl FnMut(&H) -> u64,
 ) -> (Vec<(String, u32, u32)>, bool) {
-    let rows = descendants(tree);
-    let missing = rows
+    let mut rows = descendants(tree);
+    let listed = rows.iter().map(|(_, pid, _)| *pid).collect::<BTreeSet<_>>();
+    assert!(
+        listed.len() == rows.len() && !listed.contains(&root.pid),
+        "ambiguous native descendant candidates",
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, _, parent)| *parent == root.pid || listed.contains(parent)),
+        "native descendant parent is missing from the snapshot",
+    );
+    let hints = creation_hints(tree);
+    let mut pending = rows
         .iter()
         .filter(|(_, pid, _)| !handles.contains_key(pid))
-        .map(|(_, pid, _)| *pid)
+        .map(|(_, pid, parent)| (*pid, *parent))
         .collect::<Vec<_>>();
-    let opened = !missing.is_empty();
-    for pid in missing {
-        handles.insert(pid, open(pid));
+    let mut rejected = BTreeSet::new();
+    let mut opened = false;
+    while !pending.is_empty() {
+        let before = pending.len();
+        pending.retain(|&(pid, parent)| {
+            if rejected.contains(&parent) {
+                rejected.insert(pid);
+                println!(
+                    "KELD_GH1188_NATIVE_LINEAGE_PREOPEN_REJECT pid={pid} parent={parent} reason=rejected_ancestor"
+                );
+                return false;
+            }
+            let parent_birth = if parent == root.pid {
+                Some(root.birth)
+            } else {
+                handles.get(&parent).map(&mut birth)
+            };
+            let Some(parent_birth) = parent_birth else {
+                return true;
+            };
+            // CIM fractions need not be evaluated. Widen by one whole second;
+            // equality, uncertainty and overflow always retain strict opening.
+            if let Some(latest) = hints
+                .get(&pid)
+                .copied()
+                .flatten()
+                .and_then(|hint| hint.checked_add(10_000_000))
+                && latest < parent_birth
+            {
+                rejected.insert(pid);
+                println!(
+                    "KELD_GH1188_NATIVE_LINEAGE_PREOPEN_REJECT pid={pid} parent={parent} latest_creation={latest} parent_birth={parent_birth}"
+                );
+                return false;
+            }
+            handles.insert(pid, open(pid));
+            opened = true;
+            false
+        });
+        assert!(
+            pending.len() < before,
+            "native descendant parent is missing or cyclic before capture",
+        );
     }
+    rows.retain(|(_, pid, _)| !rejected.contains(pid));
     (rows, opened)
+}
+
+// Missing, malformed, zero or duplicated metadata is deliberately unknown.
+// Date conversion happens on the same CIM snapshot as the diagnostic PID graph.
+fn creation_hints(tree: &str) -> BTreeMap<u32, Option<u64>> {
+    let Some((prefix, _)) = tree.split_once(" descendants=") else {
+        return BTreeMap::new();
+    };
+    let Some((_, values)) = prefix.split_once(" creation_filetimes=") else {
+        return BTreeMap::new();
+    };
+    let mut hints = BTreeMap::new();
+    for value in values.split(',') {
+        let (pid, ticks) = value.split_once(':').unwrap_or((value, ""));
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        let hint = ticks.parse::<u64>().ok().filter(|ticks| *ticks != 0);
+        hints
+            .entry(pid)
+            .and_modify(|hint| *hint = None)
+            .or_insert(hint);
+    }
+    hints
 }
 
 fn select_descendant_generations(
