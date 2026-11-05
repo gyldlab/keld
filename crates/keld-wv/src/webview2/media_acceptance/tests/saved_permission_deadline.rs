@@ -26,7 +26,7 @@ fn with_live_profile(
     })
 }
 
-fn with_engine(
+pub(super) fn with_engine(
     work: impl FnOnce(&mut WebView2Engine) -> Result<(), WvError>,
 ) -> Result<(), WvError> {
     let root = profile_fixture_root("permission-deadline");

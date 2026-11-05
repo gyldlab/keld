@@ -1168,6 +1168,7 @@ mod tests {
     use crate::webview2::PROFILE_LAUNCH_DEADLINE;
 
     mod adopted_controller_close_native;
+    mod build_identity;
     mod controller_custody_native;
     mod exit_wake_retirement;
     mod first_navigation;
