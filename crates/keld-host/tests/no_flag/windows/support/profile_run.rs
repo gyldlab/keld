@@ -302,9 +302,40 @@ pub(crate) fn actual_webview_process(
     expected_udf: &Path,
     deadline: Instant,
 ) -> Value {
+    actual_webview_process_selected(host_pid, expected_host, expected_udf, None, deadline)
+}
+
+/// Validates one independently selected, already-retained browser object when
+/// an older browser from the same environment may still be alive.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) fn actual_webview_process_for_pid(
+    host_pid: u32,
+    expected_host: &Path,
+    expected_udf: &Path,
+    browser_pid: u32,
+    deadline: Instant,
+) -> Value {
+    assert_ne!(browser_pid, 0, "selected browser identity");
+    actual_webview_process_selected(
+        host_pid,
+        expected_host,
+        expected_udf,
+        Some(browser_pid),
+        deadline,
+    )
+}
+
+fn actual_webview_process_selected(
+    host_pid: u32,
+    expected_host: &Path,
+    expected_udf: &Path,
+    selected_browser: Option<u32>,
+    deadline: Instant,
+) -> Value {
     const PROCESS_QUERY: &str = r#"
 $ErrorActionPreference = 'Stop'
 $hostPid = [int]$env:KELD_PROFILE_HOST_PID
+$selectedBrowser = if ([string]::IsNullOrEmpty($env:KELD_PROFILE_BROWSER_PID)) { 0 } else { [int]$env:KELD_PROFILE_BROWSER_PID }
 $expected = [IO.Path]::GetFullPath($env:KELD_EXPECTED_UDF).TrimEnd('\')
 $all = @(Get-CimInstance Win32_Process)
 $observedHost = $all | Where-Object { [int]$_.ProcessId -eq $hostPid } | Select-Object -First 1
@@ -313,6 +344,7 @@ $candidates = @()
 foreach ($process in $all) {
   if ($process.Name -ne 'msedgewebview2.exe' -or [string]::IsNullOrEmpty($process.CommandLine)) { continue }
   if ([int]$process.ParentProcessId -ne $hostPid) { continue }
+  if ($selectedBrowser -ne 0 -and [int]$process.ProcessId -ne $selectedBrowser) { continue }
   $match = [regex]::Match($process.CommandLine, '--user-data-dir(?:=|\s+)(?:"([^"]+)"|(\S+))')
   $actual = if ($match.Groups[1].Success) { $match.Groups[1].Value } elseif ($match.Groups[2].Success) { $match.Groups[2].Value } else { '' }
   $candidates += @{ browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual }
@@ -325,18 +357,24 @@ foreach ($process in $all) {
 [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; candidates = $candidates } | ConvertTo-Json -Compress))
 "#;
     loop {
-        let output = Command::new("powershell.exe")
+        let mut command = Command::new("powershell.exe");
+        command
             .args(["-NoProfile", "-NonInteractive", "-Command", PROCESS_QUERY])
             .env("KELD_PROFILE_HOST_PID", host_pid.to_string())
-            .env("KELD_EXPECTED_UDF", expected_udf)
-            .output()
-            .expect("query actual WebView2 process and command line");
+            .env("KELD_EXPECTED_UDF", expected_udf);
+        if let Some(pid) = selected_browser {
+            command.env("KELD_PROFILE_BROWSER_PID", pid.to_string());
+        } else {
+            command.env_remove("KELD_PROFILE_BROWSER_PID");
+        }
+        let output = super::process::bounded_output(&mut command, deadline)
+            .expect("bounded actual WebView2 process and command-line query");
         assert!(
             output.status.success(),
             "WebView2 process query failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            output.stderr
         );
-        let stdout = String::from_utf8(output.stdout).expect("process query output UTF-8");
+        let stdout = output.stdout;
         let evidence: Value = serde_json::from_str(stdout.trim()).expect("process query JSON");
         if let (Some(host_image), Some(browser_pid), Some(parent_pid), Some(folder)) = (
             evidence["host_image"].as_str(),

@@ -16,6 +16,23 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Instant;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LastWindowAction {
+    Hold,
+    DefaultQuit,
+    DrawIoQuit,
+}
+
+impl LastWindowAction {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::DefaultQuit => "default",
+            Self::DrawIoQuit => "drawio",
+        }
+    }
+}
+
 pub(crate) struct FacadeFixture {
     pub(crate) project: ProductFixture,
     pub(crate) stage: keld_cli::boot::DevBootStage,
@@ -25,6 +42,10 @@ pub(crate) struct FacadeFixture {
 
 impl FacadeFixture {
     pub(crate) fn new() -> Self {
+        Self::with_last_window_action(LastWindowAction::Hold)
+    }
+
+    pub(crate) fn with_last_window_action(action: LastWindowAction) -> Self {
         let project = ProductFixture::schema_two();
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -36,9 +57,13 @@ impl FacadeFixture {
         };
         let source = format!(
             "import {{ app, BrowserWindow }} from {};\n\
-             import {{ app as hostApp, getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow, onWindowFactApplied }} from {};\n{}",
+             import {{ app as hostApp, getWindowSnapshots, getDispatchedPendingWindowCloses, invokeWindow, invokeWindowBlocking, onWindowFactApplied }} from {};\nconst lastWindowAction: string = {};\nconst closeHoldRoot: string = {};\nconst closeHoldDeadlineMs = {};\n{}",
             import("packages/@keld/electron/src/index.ts"),
             import("packages/@keld/api/src/app.ts"),
+            serde_json::to_string(action.as_str()).expect("fixed fixture last-window action"),
+            serde_json::to_string(&project.project.join("close-hold"))
+                .expect("owned fixture close hold"),
+            PRODUCT_DEADLINE.as_millis(),
             include_str!("../fixtures/facade-window.ts"),
         );
         bundle_public_role(
@@ -97,6 +122,8 @@ impl FacadeFixture {
             .env_remove(NATIVE_HOLD)
             .env_remove("KELD_TEST_WINDOWS_PAGE_READBACK")
             .env_remove("KELD_TEST_WINDOWS_HANG_GUARD_SECS")
+            .env_remove("KELD_TEST_WINDOWS_BARRIER_GRACE_EXPIRY")
+            .env_remove("KELD_TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (name, value) in hooks {

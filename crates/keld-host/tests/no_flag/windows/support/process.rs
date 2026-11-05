@@ -80,7 +80,7 @@ pub(crate) fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
         | PROCESS_QUERY_LIMITED_INFORMATION
         | if terminate { PROCESS_TERMINATE } else { 0 };
     // SAFETY: PID belongs to a live test-owned process. Access permits wait and
-    // exit-status observation plus optional host-only termination. The returned
+    // exit-status observation plus optional fixture-owned process termination. The returned
     // handle is converted once.
     let raw = unsafe { OpenProcess(access, 0, pid) };
     assert!(
@@ -93,11 +93,12 @@ pub(crate) fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
 }
 
 pub(crate) fn terminate_test_process(process: &OwnedHandle) {
-    // SAFETY: this is the live test-owned host handle opened with terminate access.
+    // SAFETY: this is the retained, independently validated fixture-owned process
+    // handle opened with terminate access; no name-wide or unretained PID kill.
     assert_ne!(
         unsafe { TerminateProcess(process.as_raw_handle().cast(), 1) },
         0,
-        "terminate only the no-flag host: {}",
+        "terminate only the retained fixture-owned process: {}",
         std::io::Error::last_os_error()
     );
 }

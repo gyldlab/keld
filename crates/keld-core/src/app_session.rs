@@ -3456,7 +3456,11 @@ fn windows_primary_config(
     let config = config
         .env_remove(TEST_WINDOWS_ENVIRONMENT_DESCENDANT_ENV)
         .env_remove(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV)
-        .env_remove(keld_wv::TEST_STALL_BEFORE_INIT_ENV);
+        .env_remove(keld_wv::TEST_STALL_BEFORE_INIT_ENV)
+        .env_remove(keld_wv::TEST_WINDOWS_FAIL_BUILD_ENV)
+        .env_remove(keld_wv::TEST_WINDOWS_NATIVE_HOLD_ENV)
+        .env_remove(keld_wv::TEST_WINDOWS_PAGE_READBACK_ENV)
+        .env_remove(keld_wv::TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV);
     #[cfg(debug_assertions)]
     let config = if std::env::var_os("KELD_TEST_WINDOWS_LEASE_CENSUS").as_deref()
         == Some(std::ffi::OsStr::new("1"))

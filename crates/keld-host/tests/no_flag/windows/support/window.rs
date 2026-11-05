@@ -10,6 +10,9 @@ pub(crate) use census::app_top_level_windows;
 pub(crate) use observation::NativeWindowSnapshot;
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+#[path = "window/native_initial_focus.rs"]
+pub(crate) mod initial_focus;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 pub(crate) mod native_control;
 mod observation;
 

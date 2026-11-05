@@ -2,7 +2,7 @@
 
 #[path = "facade_project_fixture.rs"]
 mod project;
-pub(crate) use project::FacadeFixture;
+pub(crate) use project::{FacadeFixture, LastWindowAction};
 
 #[path = "facade_native_observation.rs"]
 mod native;

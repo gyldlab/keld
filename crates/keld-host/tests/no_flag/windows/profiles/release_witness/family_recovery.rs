@@ -98,7 +98,7 @@ fn family_quit(restart: bool) {
     writer.flush().expect("flush Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let (counts, _) = observe_loop_end(&mut host, 0, 0);
+    let (counts, _) = observe_loop_end(&mut host, 0, 0, "Quit");
     let (status, stdout, stderr) = host.finish();
     let phase = read_lifecycle_record(root.path());
     println!(

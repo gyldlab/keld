@@ -2,6 +2,8 @@
 // package-private window adapter are prepended by the Windows stage fixture.
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const control = createConnection({
   host: "127.0.0.1", port: Number(process.env.KELD_T1B_CONTROL),
@@ -19,7 +21,28 @@ const order: string[] = [];
 app.on("ready", () => { readyEvents += 1; });
 app.on("web-contents-created", () => { creationEvents.push("contents"); });
 app.on("browser-window-created", () => { creationEvents.push("window"); });
-app.on("window-all-closed", () => { allClosed += 1; order.push("all"); });
+if (lastWindowAction === "hold") {
+  app.on("window-all-closed", () => { allClosed += 1; order.push("all"); });
+} else if (lastWindowAction === "drawio") {
+  app.on("window-all-closed", () => {
+    allClosed += 1;
+    order.push("all");
+    report("LAST_WINDOW_QUIT", {
+      action: lastWindowAction, platform: process.platform,
+      liveCount: BrowserWindow.getAllWindows().length, count: allClosed,
+    });
+    // The pinned draw.io listener requests the public facade Quit on non-macOS.
+    if (process.platform !== "darwin") {
+      void app.quit().then(
+        () => report("AUTO_QUIT_ACCEPTED"),
+        (error) => report("AUTO_QUIT_ERROR", { code: code(error) }),
+      );
+    }
+  });
+} else if (lastWindowAction !== "default") {
+  throw new Error("unrecognized fixed last-window fixture action");
+}
+// The default arm deliberately registers no window-all-closed listener.
 
 type Tracked = {
   win: InstanceType<typeof BrowserWindow>;
@@ -32,6 +55,62 @@ type Tracked = {
   closeSeq: bigint | null;
   insideClosedContents: boolean | null;
 };
+
+// Fixture-only rendezvous. The real callback still sends its ordinary verdict
+// only after returning. No Host policy, native hook or permission is added.
+let heldCloseId: number | null = null;
+let closeHoldUsed = false;
+const closePark = new Int32Array(new SharedArrayBuffer(4));
+function holdRecord(name: string, value: unknown) {
+  const path = join(closeHoldRoot, name + ".json");
+  const temporary = path + ".tmp";
+  writeFileSync(temporary, JSON.stringify(value));
+  renameSync(temporary, path);
+}
+function holdCloseDecision(value: Tracked) {
+  if (heldCloseId !== value.ref.id) return;
+  heldCloseId = null;
+  const deadline = performance.now() + closeHoldDeadlineMs;
+  try {
+    holdRecord("pending", {
+      id: value.ref.id, generation: String(value.ref.incarnation),
+      sequence: String(value.closeSeq), count: value.close,
+    });
+    let observed = false;
+    while (!existsSync(join(closeHoldRoot, "release"))) {
+      if (performance.now() >= deadline) throw new Error("fixture close-decision hold expired");
+      const drain = join(closeHoldRoot, "drain.json");
+      if (!observed && existsSync(drain)) {
+        const target = JSON.parse(readFileSync(drain, "utf8"));
+        if (!Number.isFinite(target.x) || !Number.isFinite(target.y))
+          throw new Error("invalid owned native move target");
+        // A harmless existing setter lets the one transport apply retained
+        // state records while this user callback remains synchronous. It does
+        // not request another close, send a verdict, or dispatch user listeners.
+        const reply = invokeWindowBlocking({
+          variant: "SetFullScreen", window: value.ref, full_screen: false,
+        });
+        if (reply.variant !== "Accepted") throw new Error("fixture drain setter was refused");
+        const snapshot = getWindowSnapshots().find((item) =>
+          item.window.id === value.ref.id && item.window.incarnation === value.ref.incarnation);
+        const bounds = snapshot?.state.bounds;
+        if (bounds && Math.abs(bounds.x - target.x) <= 1 && Math.abs(bounds.y - target.y) <= 1) {
+          observed = true;
+          holdRecord("observed", {
+            id: value.ref.id, generation: String(value.ref.incarnation),
+            pending: snapshot?.pending_close === null ? null : String(snapshot?.pending_close),
+            count: value.close, bounds,
+          });
+        }
+      }
+      Atomics.wait(closePark, 0, 0, 10);
+    }
+  } catch (error) {
+    holdRecord("error", { code: code(error), detail: String(error) });
+    throw error;
+  }
+}
+
 function contentsOf(win: InstanceType<typeof BrowserWindow>) { return win.webContents; }
 const tracked = new Map<number, Tracked>();
 const initialStates = new Map<number, unknown>();
@@ -67,6 +146,7 @@ function attach(win: InstanceType<typeof BrowserWindow>): Tracked {
     value.closeSeq = getWindowSnapshots().find((item) =>
       item.window.id === value.ref.id)?.pending_close ?? null;
     if (value.veto) event.preventDefault();
+    holdCloseDecision(value);
     order.push("close:" + win.id);
     report("CLOSE_EVENT", { id: win.id, count: value.close, seq: value.closeSeq });
   });
@@ -109,6 +189,17 @@ function state(value: Tracked) {
     facts: factCounts.get(value.ref.id) ?? null,
   };
 }
+async function initialCreatedWasDispatched(id: number): Promise<void> {
+  if (initialStates.has(id)) return;
+  await new Promise<void>((resolve) => {
+    const stop = onWindowFactApplied((fact) => {
+      if (fact.variant === "Created" && fact.window.id === id) {
+        stop();
+        resolve();
+      }
+    });
+  });
+}
 async function refused(request: Parameters<typeof invokeWindow>[0]): Promise<string> {
   try { await invokeWindow(request); return "returned"; } catch (error) { return code(error); }
 }
@@ -120,22 +211,25 @@ report("BOUND", { pid: process.pid, link: process.env.KELD_APP_LINK });
 try {
   await app.whenReady();
   const recovered = BrowserWindow.getAllWindows().map((win) => state(attach(win)));
-  report("READY", { ready: app.isReady(), readyEvents, windows: recovered });
+  report("READY", { ready: app.isReady(), readyEvents, windows: recovered, lastWindowAction });
   for await (const command of createInterface({ input: control })) {
     const [verb, first, second] = command.split(" ");
-    if (verb === "CREATE" || verb === "CREATE_CHECKED") {
+    if (["CREATE", "CREATE_CHECKED", "CREATE_X", "CREATE_Y"].includes(verb)) {
       if (verb === "CREATE_CHECKED") report("CREATE_ATTEMPT", { pid: process.pid });
       const started = performance.now();
       const before = creationEvents.length;
       try {
+        const position = verb === "CREATE_X" ? { x: 37 }
+          : verb === "CREATE_Y" ? { y: 91 } : { x: 37, y: 91 };
         const win = new BrowserWindow({
-          width: 640, height: 480, x: 37, y: 91,
+          width: 640, height: 480, ...position,
           webPreferences: { contextIsolation: true, nodeIntegration: false, webSecurity: true },
         });
+        const roundTripMs = performance.now() - started;
         const value = attach(win);
+        await initialCreatedWasDispatched(win.id);
         report("PUBLIC_CREATED", {
-          ...state(value), creation: creationEvents.slice(before),
-          roundTripMs: performance.now() - started,
+          ...state(value), creation: creationEvents.slice(before), roundTripMs,
         });
       } catch (error) {
         // Base #1400 answers CORE-042 here. The test's first desired Create assertion
@@ -163,10 +257,11 @@ try {
           width: 640, height: 480, x: 37, y: 91,
           webPreferences: { contextIsolation: true, nodeIntegration: false, webSecurity: true },
         });
+        const roundTripMs = performance.now() - started;
+        await initialCreatedWasDispatched(successor.id);
         report("REPLACED", {
           previous: previous.ref.id, previousGeneration: previous.ref.incarnation,
-          gapMs, actualGapMs, ...state(attach(successor)),
-          roundTripMs: performance.now() - started,
+          gapMs, actualGapMs, ...state(attach(successor)), roundTripMs,
         });
       } catch (error) {
         report("REPLACE_ERROR", {
@@ -174,6 +269,18 @@ try {
           roundTripMs: performance.now() - started,
         });
       }
+    } else if (verb === "HOLD_CLOSE") {
+      const value = item(first);
+      if (closeHoldUsed) throw new Error("fixture close hold is one-shot");
+      mkdirSync(closeHoldRoot, { recursive: true });
+      const probe = join(closeHoldRoot, "access-probe");
+      writeFileSync(probe, "owned fixture access", { flag: "wx" });
+      if (readFileSync(probe, "utf8") !== "owned fixture access")
+        throw new Error("owned fixture access readback failed");
+      unlinkSync(probe);
+      heldCloseId = value.ref.id;
+      closeHoldUsed = true;
+      report("CLOSE_HOLD_ARMED", { id: value.ref.id });
     } else if (verb === "ALLOW") {
       item(first).veto = false;
       report("ALLOW", { id: Number(first) });

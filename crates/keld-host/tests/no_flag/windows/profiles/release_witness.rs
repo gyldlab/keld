@@ -125,7 +125,12 @@ fn hold_persistent_release(
     facade: bool,
 ) -> (String, Duration) {
     let host_handle = open_process_for_wait(host.pid, false);
-    let (counts, _) = observe_loop_end(host, cursor, u8::from(!facade));
+    let (counts, _) = observe_loop_end(
+        host,
+        cursor,
+        u8::from(!facade),
+        if facade { "Quit" } else { "none" },
+    );
     assert_eq!(
         wait_for_process_signal(helper_handle, 0),
         WAIT_TIMEOUT,
@@ -182,7 +187,14 @@ fn observe_environment_child(
     (pid, handle, cursor)
 }
 
-fn observe_loop_end(host: &mut SeamedHost, after: usize, controllers: u8) -> (String, usize) {
+// A legacy native close arms before its later Quit. Only a terminal that
+// performs the first actual arm earns terminal provenance.
+fn observe_loop_end(
+    host: &mut SeamedHost,
+    after: usize,
+    controllers: u8,
+    expected_armed_by: &str,
+) -> (String, usize) {
     let (counts, cursor) = host.wait_stderr_line(
         "KELD_T2_LOOP_EXIT ",
         after,
@@ -190,7 +202,7 @@ fn observe_loop_end(host: &mut SeamedHost, after: usize, controllers: u8) -> (St
     );
     assert!(
         counts.contains(&format!(
-            "environments=1 controllers={controllers} armed_by=Quit"
+            "environments=1 controllers={controllers} armed_by={expected_armed_by}"
         )),
         "{counts}"
     );

@@ -6,16 +6,24 @@
 
 #[path = "facade_window_baseline.rs"]
 mod baseline;
+#[path = "facade_window_close.rs"]
+mod close;
 #[path = "facade_window_controller.rs"]
 mod controller;
 #[path = "facade_window_faults.rs"]
 mod faults;
 #[path = "support/facade_window_fixture.rs"]
 pub(crate) mod fixture;
+#[path = "facade_window_focus.rs"]
+mod focus;
 #[path = "support/facade_window_observation.rs"]
 mod host_observation;
+#[path = "facade_window_initial.rs"]
+mod initial;
 #[path = "facade_window_legacy.rs"]
 mod legacy;
+#[path = "facade_window_lifecycle.rs"]
+mod lifecycle;
 #[path = "facade_window_pump.rs"]
 mod pump;
 
@@ -68,6 +76,7 @@ fn windows_ready_zero_then_first_browser_window_has_a_native_controller() {
         .expect("u64 Host generation");
     assert!(generation > 0, "registry generation must be Host-minted");
     let native = capture(census(run.pid(), 1)[0], run.pid());
+    let initial = initial::capture_native(native.hwnd, run.pid());
     assert!(
         !native.children.is_empty(),
         "a top-level HWND alone is not a WebView2 controller"
@@ -105,6 +114,7 @@ fn windows_ready_zero_then_first_browser_window_has_a_native_controller() {
         "successful native retirement left the owned ephemeral profile"
     );
     fixture.close();
+    initial::assert_created_geometry(&created, &initial, Some(37.0), Some(91.0));
 }
 
 #[test]

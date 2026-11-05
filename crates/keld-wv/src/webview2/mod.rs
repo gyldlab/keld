@@ -44,14 +44,28 @@
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod browser_instance;
+mod managed_app;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod managed_test_control;
+mod managed_windows;
 #[cfg(all(feature = "media-acceptance", test))]
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
+mod view_build;
 mod view_host;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub use managed_test_control::{
+    TEST_WINDOWS_FAIL_BUILD_ENV, TEST_WINDOWS_NATIVE_HOLD_ENV, TEST_WINDOWS_PAGE_READBACK_ENV,
+    TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV,
+};
 
+use browser_instance::{BrowserBinding, BrowserExitReceipt, browser_exit_receipt};
+#[cfg(test)]
+use browser_instance::{BrowserExitSource, BrowserInstance};
 use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -62,9 +76,9 @@ use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -73,7 +87,7 @@ use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::EventLoopBuilderExtWindows;
 use tao::platform::windows::WindowExtWindows;
-use tao::window::{Window, WindowBuilder};
+use tao::window::Window;
 
 #[cfg(all(feature = "media-acceptance", test))]
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile4;
@@ -131,9 +145,6 @@ use windows_permissions::constants::{AccessRights, SeObjectType, SecurityInforma
 use windows_permissions::utilities::current_process_sid;
 use windows_permissions::wrappers::{ConvertSidToStringSid, GetSecurityInfo};
 use windows_permissions::{Acl, LocalBox, SecurityDescriptor};
-
-#[cfg(not(all(feature = "media-acceptance", test)))]
-use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
 pub use crate::engine::AppReadyTrigger;
@@ -419,6 +430,8 @@ struct SelectedWindowsProfile {
 enum WindowsLoopEvent {
     App(AppWindowCommand),
     ProfileReleaseWake,
+    DeferredBuildWake,
+    ControllerFocus(WebviewId),
 }
 
 struct PersistentPurgeOwner {
@@ -571,6 +584,8 @@ fn pump_message_or_handle(handles: Option<&[HANDLE]>, milliseconds: u32) -> Resu
     // and dispatched once on its owning thread. Contract:
     // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-peekmessagew
     let posted = unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    managed_test_control::observe_pump_message(posted, message.message, message.hwnd.0 as isize);
     #[cfg(all(feature = "media-acceptance", test))]
     media_acceptance::observe_com_pump(wait == WAIT_TIMEOUT, posted);
     if posted {
@@ -1482,7 +1497,8 @@ fn create_environment_for_profile_with_options_until(
 }
 
 struct BrowserExitObservation {
-    receiver: Receiver<Result<(), WvError>>,
+    receiver: Receiver<BrowserExitReceipt>,
+    sender: Weak<Sender<BrowserExitReceipt>>,
     environment: ICoreWebView2Environment5,
     token: i64,
 }
@@ -1520,10 +1536,14 @@ enum ProfileReleaseFault {
     /// The expected browser process was still alive when
     /// [`BROWSER_SHUTDOWN_HANG_GUARD`] expired after `Close`.
     HangGuardExpired,
-    /// The event named the expected process with an abnormal exit kind.
+    /// A native browser failure or abnormal environment exit was delivered.
     AbnormalExit,
     /// The observer was dropped before the event was delivered.
     ObserverDropped,
+    UnidentifiedController,
+    WakeRetireFailed,
+    RebindUnproven,
+    ReleasingExpired,
 }
 
 impl ProfileReleaseFault {
@@ -1543,16 +1563,40 @@ impl ProfileReleaseFault {
                 "the exclusive-UDF probe browser process was still alive when the shutdown hang guard expired"
             }
             (Self::AbnormalExit, ReleaseSite::Host) => {
-                "BrowserProcessExited reported an abnormal host browser exit"
+                "the host browser process failed or exited abnormally"
             }
             (Self::AbnormalExit, ReleaseSite::Probe) => {
-                "BrowserProcessExited reported an abnormal exclusive-UDF probe browser exit"
+                "the exclusive-UDF probe browser process failed or exited abnormally"
             }
             (Self::ObserverDropped, ReleaseSite::Host) => {
                 "the host BrowserProcessExited observer was dropped before the event"
             }
             (Self::ObserverDropped, ReleaseSite::Probe) => {
                 "the exclusive-UDF probe BrowserProcessExited observer was dropped before the event"
+            }
+            (Self::UnidentifiedController, ReleaseSite::Host) => {
+                "a host WebView2 controller exists but its browser process could not be identified"
+            }
+            (Self::UnidentifiedController, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe controller exists but its browser process could not be identified"
+            }
+            (Self::WakeRetireFailed, ReleaseSite::Host) => {
+                "the host browser exit wake could not be unregistered before a rebind"
+            }
+            (Self::WakeRetireFailed, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe browser exit wake could not be unregistered"
+            }
+            (Self::RebindUnproven, ReleaseSite::Host) => {
+                "the host browser instance could not be rebound to a watched handle"
+            }
+            (Self::RebindUnproven, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe browser instance could not be bound to a watched handle"
+            }
+            (Self::ReleasingExpired, ReleaseSite::Host) => {
+                "a host window's native teardown was not confirmed within the releasing bound"
+            }
+            (Self::ReleasingExpired, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe has no releasing window, so this fault is never latched there"
             }
         }
     }
@@ -1571,7 +1615,7 @@ fn browser_exit_is_relevant(expected: u32, pid: u32, normal: bool, site: Release
 
 fn observe_profile_browser_exit(
     environment: &ICoreWebView2Environment,
-    expected_pid: Arc<AtomicU32>,
+    binding: Arc<BrowserBinding>,
     wake: Option<EventLoopProxy<WindowsLoopEvent>>,
     site: ReleaseSite,
 ) -> Result<BrowserExitObservation, WvError> {
@@ -1579,6 +1623,10 @@ fn observe_profile_browser_exit(
         .cast()
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     let (tx, rx) = mpsc::channel();
+    // Only the native environment observer keeps a strong sender. Per-view
+    // ProcessFailed callbacks use this same channel without concealing its loss.
+    let tx = Arc::new(tx);
+    let sender = Arc::downgrade(&tx);
     let mut token = 0_i64;
     let handler = BrowserProcessExitedEventHandler::create(Box::new(move |_, args| {
         let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
@@ -1589,28 +1637,29 @@ fn observe_profile_browser_exit(
             args.BrowserProcessId(&raw mut pid)?;
             args.BrowserProcessExitKind(&raw mut kind)?;
         }
-        let expected = expected_pid.load(Ordering::Acquire);
+        let current = binding.load();
         let normal = kind == COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL;
         #[cfg(all(feature = "media-acceptance", test))]
-        media_acceptance::observe_browser_exit(pid, expected, normal);
+        media_acceptance::observe_browser_exit(pid, current.pid, normal);
         #[cfg(all(feature = "media-acceptance", test))]
         if media_acceptance::swallow_browser_exit(site) {
             return Ok(());
         }
-        if browser_exit_is_relevant(expected, pid, normal, site) {
-            let result = if normal {
-                Ok(())
-            } else {
-                Err(profile_failure_with(
-                    ProfileErrorKind::LifecycleUnproven,
-                    ProfileReleaseFault::AbnormalExit.context(site),
-                ))
-            };
-            tx.send(result)
+        let receipt = browser_exit_receipt(current, pid, normal, site);
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if normal && receipt.is_none() {
+            t2_test_observation::foreign_normal(current, pid);
+        }
+        if let Some(receipt) = receipt {
+            tx.send(receipt)
                 .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let BrowserExitReceipt::Abnormal { instance, source } = receipt {
+                t2_test_observation::abnormal(instance, source);
+            }
             #[cfg(all(feature = "media-acceptance", test))]
             media_acceptance::release_receipt_control::after_native_receipt(
-                &tx, pid, expected, normal, site,
+                &tx, pid, current, normal, site,
             )?;
             if let Some(wake) = wake.as_ref() {
                 wake.send_event(WindowsLoopEvent::ProfileReleaseWake)
@@ -1625,6 +1674,7 @@ fn observe_profile_browser_exit(
         .map_err(|_| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
     Ok(BrowserExitObservation {
         receiver: rx,
+        sender,
         environment: environment5,
         token,
     })
@@ -1683,6 +1733,8 @@ fn environment_creation_error(phase: &'static str, error: &windows::core::Error)
     WvError::Webview(format!("WebView2 environment {phase} failed: {error}"))
 }
 
+mod controller_custody;
+
 /// Creates the controller that hosts one webview inside `hwnd`.
 ///
 /// This is where the runtime processes actually launch — 313–506 ms measured,
@@ -1735,13 +1787,38 @@ impl fmt::Display for ControllerCreationError {
     }
 }
 
+/// Returns unclaimed custody; the native builder adopts it exactly once before
+/// its immediate CoreWebView2/binding/D12 owner transfer.
+fn create_controller_for_build(
+    environment: &ICoreWebView2Environment,
+    hwnd: HWND,
+    deadline: Instant,
+    managed_release: Option<std::rc::Weak<ProfileReleaseWait>>,
+) -> Result<controller_custody::PendingController, WvError> {
+    create_controller_owned_until(environment, hwnd, deadline, managed_release)
+        .map_err(ControllerCreationError::into_wv_error)
+}
+
+/// Existing hello/probe callers retain their raw-controller and error contracts.
 fn create_controller_observed_until(
     environment: &ICoreWebView2Environment,
     hwnd: HWND,
     deadline: Instant,
 ) -> Result<ICoreWebView2Controller, ControllerCreationError> {
+    create_controller_owned_until(environment, hwnd, deadline, None)?
+        .adopt()
+        .map_err(ControllerCreationError::Pump)
+}
+
+fn create_controller_owned_until(
+    environment: &ICoreWebView2Environment,
+    hwnd: HWND,
+    deadline: Instant,
+    managed_release: Option<std::rc::Weak<ProfileReleaseWait>>,
+) -> Result<controller_custody::PendingController, ControllerCreationError> {
     check_launch_deadline(deadline).map_err(ControllerCreationError::Pump)?;
     let (tx, rx) = mpsc::channel();
+    let callback_release = managed_release.clone();
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     t2_test_observation::controller_requested();
     #[cfg(all(feature = "media-acceptance", test))]
@@ -1757,8 +1834,11 @@ fn create_controller_observed_until(
                 move |result, controller| {
                     #[cfg(all(feature = "media-acceptance", test))]
                     media_acceptance::observe_com_phase("controller-callback-enter");
-                    let controller =
-                        result.and(controller.ok_or_else(|| windows::core::Error::from(E_POINTER)));
+                    let controller = controller_custody::completion(
+                        result,
+                        controller,
+                        callback_release.clone(),
+                    );
                     tx.send(controller)
                         .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
                 },
@@ -1768,11 +1848,18 @@ fn create_controller_observed_until(
     #[cfg(all(feature = "media-acceptance", test))]
     media_acceptance::observe_com_phase("controller-call-returned");
     launched.map_err(ControllerCreationError::Windows)?;
-    wait_for_launch_with_message_pump_until(&rx, deadline)
-        .map_err(ControllerCreationError::Pump)?
-        .map_err(ControllerCreationError::Windows)
+    let waited = wait_for_launch_with_message_pump_until(&rx, deadline);
+    controller_custody::finish_wait(waited, rx, || {
+        // A successful native request still owns a completion obligation even
+        // when this wait ends before its callback. Do not let an unbound
+        // managed session claim the zero-controller release exemption.
+        if let Some(release) = managed_release.as_ref().and_then(std::rc::Weak::upgrade) {
+            release.latch_fault(ProfileReleaseFault::RebindUnproven);
+        }
+    })
+    .map_err(ControllerCreationError::Pump)?
+    .map_err(ControllerCreationError::Windows)
 }
-
 fn webview_browser_process_id(webview: &ICoreWebView2) -> Option<u32> {
     let mut pid = 0_u32;
     // SAFETY: the webview is live on its creating STA thread.
@@ -1929,10 +2016,10 @@ fn prove_exclusive_udf_released_on_hwnd(
         Ok(environment) => environment,
         Err(error) => return ExclusiveUdfRelease::Unproven(error),
     };
-    let expected_pid = Arc::new(AtomicU32::new(0));
+    let binding = Arc::new(BrowserBinding::new());
     let observation = match observe_profile_browser_exit(
         &environment,
-        Arc::clone(&expected_pid),
+        Arc::clone(&binding),
         None,
         ReleaseSite::Probe,
     ) {
@@ -1942,7 +2029,7 @@ fn prove_exclusive_udf_released_on_hwnd(
     let outcome = probe_exclusive_udf_with_observer(
         &environment,
         window,
-        &expected_pid,
+        Arc::clone(&binding),
         observation.receiver,
         launch_deadline,
     );
@@ -1958,8 +2045,8 @@ fn prove_exclusive_udf_released_on_hwnd(
 fn probe_exclusive_udf_with_observer(
     environment: &ICoreWebView2Environment,
     window: HWND,
-    expected_pid: &AtomicU32,
-    receiver: Receiver<Result<(), WvError>>,
+    binding: Arc<BrowserBinding>,
+    receiver: Receiver<BrowserExitReceipt>,
     launch_deadline: Instant,
 ) -> ExclusiveUdfRelease {
     let controller = match create_controller_observed_until(environment, window, launch_deadline) {
@@ -1974,9 +2061,7 @@ fn probe_exclusive_udf_with_observer(
     // Opened before `Close`: the kernel object, not the reusable id,
     // identifies the probe browser from here on.
     let process = pid.and_then(open_browser_process);
-    if let Some(pid) = pid {
-        expected_pid.store(pid, Ordering::Release);
-    }
+    let binding_result = pid.map_or(Ok(()), |pid| binding.bind_once(pid));
     // SAFETY: the recovery controller is live on this STA and is closed once,
     // whether or not its webview or browser id could be read.
     let closed = unsafe { controller.Close() };
@@ -1988,13 +2073,16 @@ fn probe_exclusive_udf_with_observer(
             PROBE_BROWSER_ID_MISSING,
         ));
     }
+    if let Err(error) = binding_result {
+        return ExclusiveUdfRelease::Unproven(error);
+    }
     if closed.is_err() {
         return ExclusiveUdfRelease::Unproven(profile_failure_with(
             ProfileErrorKind::LifecycleUnproven,
             PROBE_CLOSE_FAILED,
         ));
     }
-    let release = ProfileReleaseWait::new(Some(receiver), process, ReleaseSite::Probe);
+    let release = ProfileReleaseWait::new(Some(receiver), binding, process, ReleaseSite::Probe);
     match wait_for_browser_exit(&release) {
         Ok(()) => ExclusiveUdfRelease::Released,
         Err(error) => ExclusiveUdfRelease::Unproven(error),
@@ -2413,7 +2501,7 @@ fn open_browser_process(pid: u32) -> Option<OwnedHandle> {
 /// before any controller is closed.
 fn remember_browser_process_id(
     views: &BTreeMap<u32, View>,
-    expected_browser_pid: &AtomicU32,
+    binding: &BrowserBinding,
 ) -> Result<Option<OwnedHandle>, WvError> {
     if views.is_empty() {
         return Ok(None);
@@ -2422,7 +2510,7 @@ fn remember_browser_process_id(
         .values()
         .find_map(View::browser_process_id)
         .ok_or_else(|| profile_failure(ProfileErrorKind::LifecycleUnproven))?;
-    expected_browser_pid.store(pid, Ordering::Release);
+    binding.bind_once(pid)?;
     Ok(open_browser_process(pid))
 }
 
@@ -2584,8 +2672,10 @@ impl BrowserProcess {
 /// always wins over both, and the barrier starts at [`Self::arm`], after the
 /// controllers were closed.
 struct ProfileReleaseWait {
-    receiver: Option<Receiver<Result<(), WvError>>>,
-    process: Option<BrowserProcess>,
+    receiver: Option<Receiver<BrowserExitReceipt>>,
+    binding: Arc<BrowserBinding>,
+    process: RefCell<Option<BrowserProcess>>,
+    ambiguous: Cell<bool>,
     site: ReleaseSite,
     grace: Duration,
     hang_guard: Duration,
@@ -2601,6 +2691,8 @@ struct ProfileReleaseWait {
     /// as if `WebView2` never raised the event.
     #[cfg(feature = "profile-test-hooks")]
     withhold_release_event: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    withhold_later_generation_receipt: bool,
 }
 
 /// Parks a [`AppReadyTrigger::HostInitialized`] boot's UI thread after loop setup and
@@ -2632,12 +2724,14 @@ fn barrier_grace_expiry_requested() -> bool {
 
 impl ProfileReleaseWait {
     fn new(
-        receiver: Option<Receiver<Result<(), WvError>>>,
+        receiver: Option<Receiver<BrowserExitReceipt>>,
+        binding: Arc<BrowserBinding>,
         process: Option<OwnedHandle>,
         site: ReleaseSite,
     ) -> Self {
         Self::with_bounds(
             receiver,
+            binding,
             process,
             site,
             BROWSER_EXIT_GRACE,
@@ -2646,7 +2740,8 @@ impl ProfileReleaseWait {
     }
 
     fn with_bounds(
-        receiver: Option<Receiver<Result<(), WvError>>>,
+        receiver: Option<Receiver<BrowserExitReceipt>>,
+        binding: Arc<BrowserBinding>,
         process: Option<OwnedHandle>,
         site: ReleaseSite,
         grace: Duration,
@@ -2654,7 +2749,9 @@ impl ProfileReleaseWait {
     ) -> Self {
         Self {
             receiver,
-            process: process.map(BrowserProcess::Polled),
+            binding,
+            process: RefCell::new(process.map(BrowserProcess::Polled)),
+            ambiguous: Cell::new(false),
             site,
             grace,
             hang_guard,
@@ -2665,6 +2762,8 @@ impl ProfileReleaseWait {
             post_exit_deadline: Cell::new(None),
             #[cfg(feature = "profile-test-hooks")]
             withhold_release_event: false,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            withhold_later_generation_receipt: false,
         }
     }
 
@@ -2677,12 +2776,23 @@ impl ProfileReleaseWait {
         self
     }
 
+    /// AC21 NC3 loses normal receipts for generation 2 and later. The existing h9
+    /// control continues to lose every normal receipt; engine construction
+    /// rejects requesting both controls together.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    fn withholding_later_generation_receipt(mut self, grace: Duration) -> Self {
+        self.withhold_later_generation_receipt = true;
+        self.grace = grace;
+        self
+    }
+
     /// Registers the wake that drives [`Self::poll`] from the tao loop once
     /// the browser process exits; the registration then owns the handle.
     /// Without a handle there is nothing to wait on and the post-exit grace
     /// is armed at [`Self::arm`] instead.
     fn with_loop_wake(mut self, proxy: EventLoopProxy<WindowsLoopEvent>) -> Result<Self, WvError> {
-        self.process = match self.process.take() {
+        let process = self.process.get_mut();
+        *process = match process.take() {
             Some(BrowserProcess::Polled(process)) => Some(BrowserProcess::Watched(
                 BrowserExitWake::register(process, proxy)?,
             )),
@@ -2700,7 +2810,7 @@ impl ProfileReleaseWait {
                 "browser-exit wait retirement requires sole completed-loop ownership",
             )
         })?;
-        if let Some(BrowserProcess::Watched(wake)) = release.process.take() {
+        if let Some(BrowserProcess::Watched(wake)) = release.process.get_mut().take() {
             wake.retire()?;
         }
         Ok(release)
@@ -2716,7 +2826,8 @@ impl ProfileReleaseWait {
     }
 
     fn browser_exited(&self) -> bool {
-        let Some(process) = self.process.as_ref() else {
+        let process = self.process.borrow();
+        let Some(process) = process.as_ref() else {
             return true;
         };
         // SAFETY: `process` is a live owned SYNCHRONIZE handle; a zero timeout
@@ -2742,14 +2853,26 @@ impl ProfileReleaseWait {
         let withhold_release_event = self.withhold_release_event;
         #[cfg(not(feature = "profile-test-hooks"))]
         let withhold_release_event = false;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let withhold_later_generation_receipt = self.withhold_later_generation_receipt;
+        #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+        let withhold_later_generation_receipt = false;
         // Drain all available native receipts before deciding exit. A normal
         // event cannot hide a following abnormal event or restart its grace.
         loop {
             match receiver.try_recv() {
-                Ok(Ok(())) if withhold_release_event => {}
-                Ok(Ok(())) => {
+                Ok(BrowserExitReceipt::Normal(instance))
+                    if withhold_release_event
+                        || (withhold_later_generation_receipt && instance.generation >= 2)
+                        || self.ambiguous.get()
+                        || !instance.is_bound()
+                        || instance != self.binding.load() => {}
+                Ok(BrowserExitReceipt::Normal(instance)) => {
                     if !self.observed.replace(true) {
                         self.normal_exit_observed_at.set(Some(Instant::now()));
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        t2_test_observation::receipt_credited(instance);
+                        let _ = instance;
                         #[cfg(all(feature = "media-acceptance", test))]
                         if let Some(armed_at) = self.armed_at.get() {
                             media_acceptance::observe_barrier_released(
@@ -2759,8 +2882,8 @@ impl ProfileReleaseWait {
                         }
                     }
                 }
-                Ok(Err(_)) => {
-                    self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
+                Ok(BrowserExitReceipt::Abnormal { .. }) => {
+                    self.latch_fault(ProfileReleaseFault::AbnormalExit);
                     return;
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -2768,7 +2891,7 @@ impl ProfileReleaseWait {
                     // its producer does not erase that fact. Without credit it
                     // remains the existing fail-closed ObserverDropped outcome.
                     if !self.observed.get() {
-                        self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
+                        self.latch_fault(ProfileReleaseFault::ObserverDropped);
                     }
                     return;
                 }
@@ -2794,7 +2917,7 @@ impl ProfileReleaseWait {
                 );
             } else if Instant::now() >= armed_at + self.hang_guard {
                 // Alive past the kill switch: a liveness fact, not a release.
-                self.fault.set(Some(ProfileReleaseFault::HangGuardExpired));
+                self.latch_fault(ProfileReleaseFault::HangGuardExpired);
                 return;
             }
         }
@@ -2803,7 +2926,7 @@ impl ProfileReleaseWait {
             .get()
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            self.fault.set(Some(ProfileReleaseFault::GraceExpired));
+            self.latch_fault(ProfileReleaseFault::GraceExpired);
         }
     }
 
@@ -2815,12 +2938,24 @@ impl ProfileReleaseWait {
         views: &mut BTreeMap<u32, View>,
         stop: Option<&PersistentStopTransition>,
     ) -> bool {
+        self.poll_host_receipts_with(views, stop, || {})
+    }
+
+    /// Close all live controller custodians before starting the shared barrier.
+    /// The callback extends this owner to managed views without another fault cell.
+    fn poll_host_receipts_with(
+        &self,
+        views: &mut BTreeMap<u32, View>,
+        stop: Option<&PersistentStopTransition>,
+        before_arm: impl FnOnce(),
+    ) -> bool {
         self.poll();
         if self.fault().is_none() {
             return false;
         }
         commit_profile_stop(stop);
         views.clear();
+        before_arm();
         self.arm();
         true
     }
@@ -2868,10 +3003,8 @@ impl ProfileReleaseWait {
         Ok(deadline)
     }
 
-    fn exit_ready(&self, expected_pid: &AtomicU32) -> bool {
-        expected_pid.load(Ordering::Acquire) == 0
-            || self.observed.get()
-            || self.fault.get().is_some()
+    fn exit_ready(&self) -> bool {
+        !self.binding.load().is_bound() || self.observed.get() || self.fault.get().is_some()
     }
 
     /// Schedules the loop's next wake: the post-exit grace once the handle is
@@ -2913,7 +3046,11 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait) -> Result<(), WvError> {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
         };
         let process = match release.post_exit_deadline.get() {
-            None => release.process.as_ref().map(|process| [process.raw()]),
+            None => release
+                .process
+                .borrow()
+                .as_ref()
+                .map(|process| [process.raw()]),
             Some(_) => None,
         };
         pump_message_or_handle(
@@ -2959,20 +3096,13 @@ fn scavenge_after_release(root: Option<PathBuf>) -> Result<(), WvError> {
 fn close_requested_view(
     views: &mut BTreeMap<u32, View>,
     window_id: tao::window::WindowId,
-    expected_browser_pid: &AtomicU32,
     stop: Option<&PersistentStopTransition>,
 ) -> bool {
     let closes_last = views.len() == 1 && views.values().any(|view| view.window.id() == window_id);
     if closes_last {
         commit_profile_stop(stop);
     }
-    views.retain(|_, view| {
-        let keep = view.window.id() != window_id;
-        if !keep && let Some(pid) = view.browser_process_id() {
-            expected_browser_pid.store(pid, Ordering::Release);
-        }
-        keep
-    });
+    views.retain(|_, view| view.window.id() != window_id);
     views.is_empty()
 }
 
@@ -2998,10 +3128,11 @@ pub struct WebView2Engine {
     environment: ICoreWebView2Environment,
     /// Retained validated directory handles and native exclusive lease.
     profile: Option<SelectedWindowsProfile>,
-    browser_exit: Option<Receiver<Result<(), WvError>>>,
+    browser_exit: Option<Receiver<BrowserExitReceipt>>,
+    browser_exit_sender: Weak<Sender<BrowserExitReceipt>>,
     browser_exit_environment: Option<ICoreWebView2Environment5>,
     browser_exit_token: Option<i64>,
-    expected_browser_pid: Arc<AtomicU32>,
+    browser_binding: Arc<BrowserBinding>,
     next_id: u32,
     pending_app_events: Option<Sender<AppWindowEvent>>,
     navigation_ready: Arc<AtomicBool>,
@@ -3009,6 +3140,14 @@ pub struct WebView2Engine {
     navigation_diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     app_window_created: bool,
     saved_permissions_reconciled: bool,
+    #[cfg(feature = "profile-test-hooks")]
+    barrier_grace_expiry: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    withhold_later_generation_receipt: bool,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    managed_test_control: Option<managed_test_control::TestControl>,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    page_readback: Option<managed_test_control::PageReadback>,
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<WindowsLoopEvent>>,
     /// Last field: all owned COM interfaces and windows drop before this count.
@@ -3028,12 +3167,11 @@ impl fmt::Debug for WebView2Engine {
 impl WebView2Engine {
     /// Whether this backend implements managed window build/close/release.
     ///
-    /// The release-witness integration alone does not implement managed windows.
-    /// Core combines this native fact with its actual borrowed release witness.
-    /// GH1188 T3 changes it only with the complete managed-window/fault proof.
+    /// Core combines this native implementation fact with its actual borrowed
+    /// release witness. The adapter never grants capability without that witness.
     #[must_use]
     pub const fn supports_managed_windows() -> bool {
-        false
+        true
     }
 
     /// Creates the engine, its event loop, and the shared environment.
@@ -3138,9 +3276,10 @@ impl WebView2Engine {
             environment,
             profile: None,
             browser_exit: None,
+            browser_exit_sender: Weak::new(),
             browser_exit_environment: None,
             browser_exit_token: None,
-            expected_browser_pid: Arc::new(AtomicU32::new(0)),
+            browser_binding: Arc::new(BrowserBinding::new()),
             views: BTreeMap::new(),
             next_id: 1,
             pending_app_events: None,
@@ -3149,6 +3288,14 @@ impl WebView2Engine {
             navigation_diagnostic: Arc::new(Mutex::new(FirstNavigationDiagnostic::new())),
             app_window_created: false,
             saved_permissions_reconciled: false,
+            #[cfg(feature = "profile-test-hooks")]
+            barrier_grace_expiry: false,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            withhold_later_generation_receipt: false,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            managed_test_control: None,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            page_readback: None,
         }
     }
 
@@ -3158,19 +3305,40 @@ impl WebView2Engine {
         environment: ICoreWebView2Environment,
         profile: SelectedWindowsProfile,
     ) -> Result<Self, WvError> {
-        let expected_browser_pid = Arc::new(AtomicU32::new(0));
+        #[cfg(feature = "profile-test-hooks")]
+        let barrier_grace_expiry = barrier_grace_expiry_requested();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let withhold_later_generation_receipt =
+            managed_test_control::later_generation_withholding_requested(barrier_grace_expiry)?;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let managed_test_control =
+            managed_test_control::TestControl::from_env(event_loop.create_proxy())?;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let page_readback = managed_test_control::PageReadback::from_env()?;
+        let browser_binding = Arc::new(BrowserBinding::new());
         let browser_exit = observe_profile_browser_exit(
             &environment,
-            Arc::clone(&expected_browser_pid),
+            Arc::clone(&browser_binding),
             Some(event_loop.create_proxy()),
             ReleaseSite::Host,
         )?;
         let mut engine = Self::from_environment(com, event_loop, environment);
         engine.profile = Some(profile);
+        #[cfg(feature = "profile-test-hooks")]
+        {
+            engine.barrier_grace_expiry = barrier_grace_expiry;
+        }
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        {
+            engine.withhold_later_generation_receipt = withhold_later_generation_receipt;
+            engine.managed_test_control = Some(managed_test_control);
+            engine.page_readback = Some(page_readback);
+        }
         engine.browser_exit = Some(browser_exit.receiver);
+        engine.browser_exit_sender = browser_exit.sender;
         engine.browser_exit_environment = Some(browser_exit.environment);
         engine.browser_exit_token = Some(browser_exit.token);
-        engine.expected_browser_pid = expected_browser_pid;
+        engine.browser_binding = browser_binding;
         // The verified environment and exit observer exist before Running is
         // durable. Zero-controller sessions must use the same stop/idle chain.
         engine.mark_profile_running()?;
@@ -3192,22 +3360,33 @@ impl WebView2Engine {
         };
         let scavenge_root = ephemeral_scavenge_root(self.profile.as_ref());
         let mut views = std::mem::take(&mut self.views);
-        let expected_browser_pid = Arc::clone(&self.expected_browser_pid);
-        let browser = remember_browser_process_id(&views, &expected_browser_pid)?;
+        let browser_binding = Arc::clone(&self.browser_binding);
+        let browser = remember_browser_process_id(&views, &browser_binding)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
         let release = Rc::new(
-            ProfileReleaseWait::new(self.browser_exit.take(), browser, ReleaseSite::Host)
-                .with_loop_wake(event_loop.create_proxy())?,
+            ProfileReleaseWait::new(
+                self.browser_exit.take(),
+                Arc::clone(&browser_binding),
+                browser,
+                ReleaseSite::Host,
+            )
+            .with_loop_wake(event_loop.create_proxy())?,
         );
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let mut page_readback = self.page_readback.take();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let page_readback_error = Rc::new(std::cell::RefCell::new(None));
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let page_readback_error_in_loop = Rc::clone(&page_readback_error);
         let code = event_loop.run_return(move |event, _, control_flow| {
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             *control_flow = ControlFlow::Wait;
             exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
-            if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
+            if exit_requested && release_in_loop.exit_ready() {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
@@ -3239,7 +3418,6 @@ impl WebView2Engine {
                     exit_requested = close_requested_view(
                         &mut views,
                         window_id,
-                        &expected_browser_pid,
                         stop_in_loop.as_ref(),
                     );
                     if exit_requested {
@@ -3256,11 +3434,29 @@ impl WebView2Engine {
                     control_flow,
                 );
             }
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Some(readback) = page_readback.as_mut()
+                && let Err(error) = readback.tick(Instant::now(),
+                    views.iter().map(|(id, view)| (WebviewId(*id), &view.webview)))
+            {
+                *page_readback_error_in_loop.borrow_mut() = Some(error);
+                commit_profile_stop(stop_in_loop.as_ref());
+                views.clear();
+                release_in_loop.arm();
+                exit_requested = true;
+            }
             exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
-            if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
+            if exit_requested && release_in_loop.exit_ready() {
                 *control_flow = ControlFlow::Exit;
             } else {
                 release_in_loop.schedule(control_flow);
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if let Some(deadline) = page_readback.as_ref()
+                    .and_then(managed_test_control::PageReadback::next_deadline)
+                    && !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline)
+                {
+                    *control_flow = ControlFlow::WaitUntil(deadline);
+                }
             }
         });
         #[cfg(all(feature = "media-acceptance", test))]
@@ -3281,6 +3477,10 @@ impl WebView2Engine {
         scavenge_after_release(scavenge_root)?;
         #[cfg(all(feature = "media-acceptance", test))]
         media_acceptance::observe_com_phase("profile-scavenge-complete");
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if let Some(error) = page_readback_error.borrow_mut().take() {
+            return Err(error);
+        }
         if code == 0 {
             Ok(())
         } else {
@@ -3300,7 +3500,7 @@ impl WebView2Engine {
         release_observed: bool,
         witness: impl FnOnce() -> Result<(), WvError>,
     ) -> Result<(), WvError> {
-        let expected_pid = self.expected_browser_pid.load(Ordering::Acquire);
+        let expected_pid = self.browser_binding.load().pid;
         if expected_pid != 0 && !release_observed {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
         }
@@ -3397,7 +3597,7 @@ impl WebView2Engine {
     /// Returns [`WvError::Navigate`] when initial navigation fails or exceeds
     /// its deadline, and [`WvError::EventLoop`] for duplicate run, fatal
     /// session command, or a non-zero tao exit.
-    #[allow(clippy::too_many_lines)] // one UI loop keeps terminal intent, controller drop, and profile-release ordering contiguous
+    #[allow(clippy::too_many_lines)] // native custody and terminal ordering share this UI-loop owner
     pub fn run_app_until_quit<E: fmt::Display>(
         mut self,
         commands: Receiver<AppWindowCommand>,
@@ -3417,7 +3617,7 @@ impl WebView2Engine {
         let terminal_intent = Arc::new(AtomicBool::new(false));
         let bridge = spawn_app_wake_bridge(
             commands,
-            proxy,
+            proxy.clone(),
             Arc::clone(&stop_bridge),
             Arc::clone(&terminal_intent),
         )?;
@@ -3436,177 +3636,262 @@ impl WebView2Engine {
             .loop_setup_started();
         let navigation_diagnostic = Arc::clone(&self.navigation_diagnostic);
         let terminal_intent_in_loop = Arc::clone(&terminal_intent);
+        let facade = ready_trigger == AppReadyTrigger::HostInitialized;
         let mut views = std::mem::take(&mut self.views);
-        let expected_browser_pid = Arc::clone(&self.expected_browser_pid);
-        let browser = remember_browser_process_id(&views, &expected_browser_pid)?;
+        let browser = remember_browser_process_id(&views, &self.browser_binding)?;
         let stop_transition = PersistentStopTransition::from_profile(self.profile.as_ref());
         let stop_in_loop = stop_transition.clone();
-        let release = ProfileReleaseWait::new(self.browser_exit.take(), browser, ReleaseSite::Host);
+        let release = ProfileReleaseWait::new(
+            self.browser_exit.take(),
+            Arc::clone(&self.browser_binding),
+            browser,
+            ReleaseSite::Host,
+        );
         #[cfg(feature = "profile-test-hooks")]
-        let release = if barrier_grace_expiry_requested() {
+        let release = if self.barrier_grace_expiry {
             release.withholding_release_event(TEST_BARRIER_GRACE_EXPIRY_GRACE)
         } else {
             release
         };
-        let release = Rc::new(release.with_loop_wake(event_loop.create_proxy())?);
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let release = if self.withhold_later_generation_receipt {
+            release.withholding_later_generation_receipt(TEST_BARRIER_GRACE_EXPIRY_GRACE)
+        } else {
+            release
+        };
+        let release = Rc::new(release.with_loop_wake(proxy.clone())?);
         let release_in_loop = Rc::clone(&release);
+        let mut managed = managed_app::ManagedWindows::new(
+            view_build::NativeBuild {
+                environment: self.environment.clone(),
+                next_id: self.next_id,
+                saved_permissions_reconciled: self.saved_permissions_reconciled,
+            },
+            events.clone(),
+            proxy,
+            self.browser_exit_sender.clone(),
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            self.managed_test_control.take(),
+        );
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let mut page_readback = self.page_readback.take();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let mut terminal_has_run = false;
         let mut exit_requested = false;
         let mut first_loop_turn = true;
         let mut host_init_emitted = false;
-        // Arm the host's external Init watch only after loop setup has succeeded.
-        // The watch is independent of Tao's pre-Init proxy availability.
         on_loop_entry();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if ready_trigger == AppReadyTrigger::HostInitialized
-            && std::env::var_os(TEST_STALL_BEFORE_INIT_ENV).is_some()
-        {
-            // Private child-only failure control. The coordinator must terminate
-            // this process: the UI thread cannot service a proxy or unwind.
+        if facade && std::env::var_os(TEST_STALL_BEFORE_INIT_ENV).is_some() {
             loop {
                 std::thread::park();
             }
         }
-        let code = event_loop.run_return(move |event, _, control_flow| {
+        let code = event_loop.run_return(move |event, target, control_flow| {
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             if first_loop_turn {
                 first_loop_turn = false;
-                navigation_diagnostic
-                    .lock()
+                navigation_diagnostic.lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .first_loop_turn();
             }
-            if ready_trigger == AppReadyTrigger::HostInitialized
-                && first_host_init_turn(&event, &mut host_init_emitted)
+            if facade && first_host_init_turn(&event, &mut host_init_emitted)
                 && !report_host_initialized(&events)
             {
                 fatal_in_loop.store(true, Ordering::Release);
-                commit_profile_stop(stop_in_loop.as_ref());
-                views.clear();
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
                 exit_requested = true;
-                release_in_loop.arm();
             }
-            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
-            if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
+
+            // Failure-first release owner remains authoritative. A normal
+            // receipt never conceals an abnormal receipt arriving behind it.
+            if poll_app_receipts(&mut views, &mut managed, stop_in_loop.as_ref(),
+                &release_in_loop, &fatal_in_loop)
+            {
+                exit_requested = true;
+            }
+            if let Err(error) = managed.publish_retired() {
+                eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+                fatal_in_loop.store(true, Ordering::Release);
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
+                exit_requested = true;
+            }
+            // U7 consumes on a later callback through the real staging owner.
+            // It cannot publish until a subsequent callback's top.
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            managed.consume_deferred_destroyed();
+            managed.expire(&release_in_loop, Instant::now());
+            if poll_app_receipts(&mut views, &mut managed, stop_in_loop.as_ref(),
+                &release_in_loop, &fatal_in_loop)
+            {
+                exit_requested = true;
+            }
+            if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
-            let terminal = matches!(
-                event,
-                Event::UserEvent(WindowsLoopEvent::App(
-                    AppWindowCommand::Quit | AppWindowCommand::Fatal,
-                ))
-            ) || terminal_intent_in_loop.load(Ordering::Acquire);
-            if navigation_failed.load(Ordering::Acquire) {
-                commit_profile_stop(stop_in_loop.as_ref());
-                views.clear();
+
+            let terminal = exit_requested || terminal_intent_in_loop.load(Ordering::Acquire)
+                || matches!(event, Event::UserEvent(WindowsLoopEvent::App(
+                    AppWindowCommand::Quit | AppWindowCommand::Fatal
+                )));
+            let initial_renderer = crate::engine::initial_renderer_pending(facade, exit_requested);
+            if navigation_failed.load(Ordering::Acquire) && initial_renderer {
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
                 exit_requested = true;
-                release_in_loop.arm();
-                release_in_loop.schedule(control_flow);
-                return;
             }
-            if navigation_ready.load(Ordering::Acquire) || views.is_empty() {
-                *control_flow = ControlFlow::Wait;
-            } else if crate::navigation_deadline_expired(
-                false,
-                !views.is_empty(),
-                terminal,
-                Instant::now(),
-                navigation_deadline,
-            ) {
-                navigation_diagnostic
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .deadline_elapsed();
-                navigation_timed_out_in_loop.store(true, Ordering::Release);
-                commit_profile_stop(stop_in_loop.as_ref());
-                views.clear();
-                exit_requested = true;
-                release_in_loop.arm();
-                release_in_loop.schedule(control_flow);
-                return;
-            } else {
-                *control_flow = ControlFlow::WaitUntil(navigation_deadline);
+            *control_flow = ControlFlow::Wait;
+            if initial_renderer && !navigation_ready.load(Ordering::Acquire) && !views.is_empty() {
+                if crate::navigation_deadline_expired(
+                    false, true, terminal, Instant::now(), navigation_deadline,
+                ) {
+                    navigation_diagnostic.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .deadline_elapsed();
+                    navigation_timed_out_in_loop.store(true, Ordering::Release);
+                    stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                        &release_in_loop, &fatal_in_loop);
+                    exit_requested = true;
+                } else if !exit_requested {
+                    *control_flow = ControlFlow::WaitUntil(navigation_deadline);
+                }
             }
-            match event {
-                Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::Quit)) => {
+            let ending = exit_requested || terminal_intent_in_loop.load(Ordering::Acquire)
+                || release_in_loop.fault().is_some();
+            let operation = match event {
+                Event::UserEvent(WindowsLoopEvent::App(command @
+                    (AppWindowCommand::Quit | AppWindowCommand::Fatal))) => {
                     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                    t2_test_observation::terminal("Quit");
-                    commit_profile_stop(stop_in_loop.as_ref());
-                    views.clear();
-                    exit_requested = true;
-                    release_in_loop.arm();
-                }
-                Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::Fatal)) => {
+                    let terminal_name =
+                        if command == AppWindowCommand::Quit { "Quit" } else { "Fatal" };
                     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-                    t2_test_observation::terminal("Fatal");
-                    fatal_in_loop.store(true, Ordering::Release);
-                    commit_profile_stop(stop_in_loop.as_ref());
-                    views.clear();
+                    let was_armed = release_in_loop.armed_at.get().is_some();
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    {
+                        terminal_has_run = true;
+                        t2_test_observation::terminal(terminal_name);
+                    }
+                    if command == AppWindowCommand::Fatal {
+                        fatal_in_loop.store(true, Ordering::Release);
+                    }
+                    stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                        &release_in_loop, &fatal_in_loop);
+                    // Read the real barrier transition: dequeuing Quit alone
+                    // cannot claim that its release barrier was armed.
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    t2_test_observation::terminal_arming(
+                        terminal_name, was_armed, release_in_loop.armed_at.get().is_some(),
+                    );
                     exit_requested = true;
-                    release_in_loop.arm();
+                    Ok(())
                 }
-                Event::UserEvent(WindowsLoopEvent::App(
-                    AppWindowCommand::CreateWindow { .. }
-                    | AppWindowCommand::SetMaximized { .. }
-                    | AppWindowCommand::SetFullScreen { .. }
-                    | AppWindowCommand::DestroyWindow { .. },
-                )) => {
-                    // Core refuses these before enqueue under GH-531. Preserve
-                    // the real browser/profile release tail on invariant fault.
-                    refused_in_loop.store(true, Ordering::Release);
-                    commit_profile_stop(stop_in_loop.as_ref());
-                    views.clear();
-                    exit_requested = true;
-                    release_in_loop.arm();
+                Event::UserEvent(WindowsLoopEvent::App(command)) => {
+                    if facade {
+                        managed.command(command, target, &release_in_loop,
+                            exit_requested || release_in_loop.fault().is_some(),
+                            terminal_intent_in_loop.load(Ordering::Acquire))
+                    } else {
+                        refused_in_loop.store(true, Ordering::Release);
+                        stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                            &release_in_loop, &fatal_in_loop);
+                        exit_requested = true;
+                        Ok(())
+                    }
+                }
+                Event::UserEvent(WindowsLoopEvent::DeferredBuildWake) => {
+                    managed.deferred_wake(target, &release_in_loop, ending)
+                }
+                Event::UserEvent(WindowsLoopEvent::ControllerFocus(id)) => {
+                    managed.controller_focus(id)
+                }
+                Event::WindowEvent { window_id, event: ref native_event, .. } if facade => {
+                    managed.window_event(window_id, native_event)
                 }
                 Event::WindowEvent {
-                    window_id,
-                    event: ref native_event,
-                    ..
-                } if !matches!(native_event, WindowEvent::CloseRequested) => {
+                    window_id, event: WindowEvent::CloseRequested, ..
+                } => {
+                    if close_requested_view(&mut views, window_id, stop_in_loop.as_ref()) {
+                        release_in_loop.arm();
+                        let _ = events.send(AppWindowEvent::LastWindowClosed);
+                    }
+                    Ok(())
+                }
+                Event::WindowEvent { window_id, event: ref native_event, .. } => {
                     for view in views.values() {
                         if view.window.id() == window_id {
                             view.handle_host_window_event(native_event);
                         }
                     }
+                    Ok(())
                 }
-                Event::WindowEvent {
-                    window_id,
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    let last_window_closed = close_requested_view(
-                        &mut views,
-                        window_id,
-                        &expected_browser_pid,
-                        stop_in_loop.as_ref(),
-                    );
-                    if last_window_closed {
-                        release_in_loop.arm();
-                        let _ = events.send(AppWindowEvent::LastWindowClosed);
-                    }
-                }
-                _ => {}
+                _ => Ok(()),
+            };
+            if let Err(error) = operation {
+                eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+                fatal_in_loop.store(true, Ordering::Release);
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
+                exit_requested = true;
             }
             #[cfg(all(feature = "media-acceptance", test))]
             if !exit_requested {
                 media_acceptance::host_window_probe::after_dispatch(
-                    native_probe_point,
-                    &views,
-                    control_flow,
+                    native_probe_point, &views, control_flow,
                 );
             }
-            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
-            if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Some(readback) = page_readback.as_mut()
+                && let Err(error) = readback.tick(Instant::now(),
+                    views.iter().map(|(id, view)| (WebviewId(*id), &view.webview))
+                        .chain(managed.live_webviews()))
+            {
+                eprintln!("KELD_WV_PAGE_READBACK_FAILED {error}");
+                fatal_in_loop.store(true, Ordering::Release);
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
+                exit_requested = true;
+            }
+            if poll_app_receipts(&mut views, &mut managed, stop_in_loop.as_ref(),
+                &release_in_loop, &fatal_in_loop)
+            {
+                exit_requested = true;
+            }
+            if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
                 *control_flow = ControlFlow::Exit;
             } else {
                 release_in_loop.schedule(control_flow);
+                managed.schedule(control_flow,
+                    exit_requested || terminal_intent_in_loop.load(Ordering::Acquire)
+                        || release_in_loop.fault().is_some());
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if let Some(deadline) = page_readback.as_ref()
+                    .and_then(managed_test_control::PageReadback::next_deadline)
+                    && !matches!(*control_flow, ControlFlow::WaitUntil(current) if current <= deadline)
+                {
+                    *control_flow = ControlFlow::WaitUntil(deadline);
+                }
+            }
+            // U7's independent wake is posted once, after the actual exit
+            // decision, and never consumes/publishes in this callback.
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Err(error) = managed.post_deferred_destroyed(
+                terminal_has_run,
+                release_in_loop.fault().is_some() || release_in_loop.exit_ready(),
+            ) {
+                eprintln!("KELD_WV_DEFERRED_DESTROYED_FAILED {error}");
+                fatal_in_loop.store(true, Ordering::Release);
+                stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+                    &release_in_loop, &fatal_in_loop);
+                exit_requested = true;
             }
         });
         stop_app_wake_bridge(&stop_bridge, bridge);
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        t2_test_observation::loop_ended();
+        t2_test_observation::loop_ended(release.armed_at.get().is_some());
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -3617,7 +3902,7 @@ impl WebView2Engine {
         let release = release.retire_loop_wait()?;
         let app_result = if refused_registry_command.load(Ordering::Acquire) {
             Err(WvError::EventLoop(String::from(
-                "Core queued an unsupported registry-window command on Windows; refuse it before the UI queue",
+                "Core queued a registry-window command on a renderer boot; refuse it before the UI queue",
             )))
         } else {
             finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
@@ -3625,10 +3910,8 @@ impl WebView2Engine {
         self.finish_profile_release_with(release.observed.get(), || {
             release_witness(release.release_witness_deadline()?).map_err(|error| {
                 eprintln!("KELD_WV_RELEASE_WITNESS_FAILED {error}");
-                profile_failure_with(
-                    ProfileErrorKind::LifecycleUnproven,
-                    "the host non-family process release witness failed; profile ownership is retained",
-                )
+                profile_failure_with(ProfileErrorKind::LifecycleUnproven,
+                    "the host non-family process release witness failed; profile ownership is retained")
             })
         })?;
         scavenge_after_release(scavenge_root)?;
@@ -3660,6 +3943,41 @@ const fn app_window_slot_available(created: bool, pending: bool, has_views: bool
 
 const fn initial_navigation_failure_is_fatal(initial_ready: bool) -> bool {
     !initial_ready
+}
+
+/// Managed and renderer views close before the existing barrier is armed.
+fn stop_app_views(
+    views: &mut BTreeMap<u32, View>,
+    managed: &mut managed_app::ManagedWindows,
+    stop: Option<&PersistentStopTransition>,
+    release: &ProfileReleaseWait,
+    fatal: &AtomicBool,
+) {
+    commit_profile_stop(stop);
+    views.clear();
+    if let Err(error) = managed.stop() {
+        eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+        fatal.store(true, Ordering::Release);
+    }
+    release.arm();
+}
+
+/// Extends the existing first-fault reaction with the managed custodians.
+/// The existing owner closes legacy views first and arms only after this
+/// callback has closed managed controllers and answered every deferred build.
+fn poll_app_receipts(
+    views: &mut BTreeMap<u32, View>,
+    managed: &mut managed_app::ManagedWindows,
+    stop: Option<&PersistentStopTransition>,
+    release: &ProfileReleaseWait,
+    fatal: &AtomicBool,
+) -> bool {
+    release.poll_host_receipts_with(views, stop, || {
+        if let Err(error) = managed.stop() {
+            eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+            fatal.store(true, Ordering::Release);
+        }
+    })
 }
 
 fn finish_app_run_flags(
@@ -3733,6 +4051,8 @@ fn spawn_app_wake_bridge(
     stop: Arc<AtomicBool>,
     terminal_intent: Arc<AtomicBool>,
 ) -> Result<thread::JoinHandle<()>, WvError> {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    let observing = t2_test_observation::enabled();
     thread::Builder::new()
         .name("keld-wv-windows-app-wake".to_owned())
         .spawn(move || {
@@ -3744,8 +4064,12 @@ fn spawn_app_wake_bridge(
                         if terminal {
                             terminal_intent.store(true, Ordering::Release);
                         }
-                        let _ = proxy.send_event(WindowsLoopEvent::App(command));
-                        if terminal {
+                        let posted = proxy.send_event(WindowsLoopEvent::App(command)).is_ok();
+                        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                        if posted {
+                            t2_test_observation::bridge_posted(observing, command);
+                        }
+                        if !posted || terminal {
                             return;
                         }
                     }
@@ -3769,130 +4093,46 @@ fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
 
 impl WebEngine for WebView2Engine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
-        let deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
-        #[cfg(all(feature = "media-acceptance", test))]
-        saved_media_permissions::test_control::record_build(deadline);
-        let Some(event_loop) = self.event_loop.as_ref() else {
-            return Err(WvError::EventLoop(String::from(
-                "run loop already started; create webviews before run_until_closed",
-            )));
-        };
-        let window = WindowBuilder::new()
-            .with_title(&spec.title)
-            // Logical (DPI-independent) points. tao declares per-monitor-v2 DPI
-            // awareness for the process, so this is scaled by the monitor's
-            // factor rather than bitmap-stretched by the OS.
-            .with_inner_size(tao::dpi::LogicalSize::new(
-                spec.size.width,
-                spec.size.height,
-            ))
-            // KEL-25/KEL-27: standard Windows caption — minimize, maximize, close.
-            .with_resizable(true)
-            .with_minimizable(true)
-            .with_closable(true)
-            .build(event_loop)
-            .map_err(|e| WvError::Window(e.to_string()))?;
-
-        let hwnd = HWND(window.hwnd() as _);
-        let controller = create_controller(&self.environment, hwnd, deadline)?;
-        // SAFETY: controller was created on this thread a moment ago.
-        let webview = unsafe { controller.CoreWebView2() }
-            .map_err(|err| WvError::Webview(format!("controller returned no webview: {err}")))?;
-        // Into a `View` before any further fallible step: its `Drop` closes the
-        // controller, so an early `?` return below cannot leak the browser-side
-        // resources behind a half-built webview.
-        let view = View {
-            window,
-            controller,
-            webview,
-            hidden_for_minimize: Cell::new(false),
-        };
-        if !self.saved_permissions_reconciled && saved_permission_reconciliation_enabled() {
-            reconcile_saved_media_permissions(&view.webview, deadline)?;
-            self.saved_permissions_reconciled = true;
-        }
         self.mark_profile_running()?;
-
-        // Guard before content: nothing may load until default-deny is wired.
-        // Empty manifest → deny everything (KEL-59). KEL-73: mint the webview
-        // id first so capture cannot inherit AppProcess grants.
-        let id = self.next_id;
-        #[cfg(not(all(feature = "media-acceptance", test)))]
-        let manifest = PermissionsManifest::default();
-        #[cfg(all(feature = "media-acceptance", test))]
-        let manifest = media_acceptance::fixture_manifest();
-        let guard = install_guarded_media_permissions(
-            &view.webview,
-            manifest,
-            webview_media_principal(WebviewId(id)),
-        )?;
-
-        // Devtools follow the build profile, like the macOS backend: wired in
-        // debug, off in release until keld-guard owns `web.devtools`. WebView2
-        // defaults them to on, so release must opt out explicitly.
-        // SAFETY: settings object is used and dropped on this thread.
-        let devtools = unsafe {
-            view.webview
-                .Settings()
-                .and_then(|settings| settings.SetAreDevToolsEnabled(cfg!(debug_assertions)))
+        let event_loop = self.event_loop.as_ref().ok_or_else(|| {
+            WvError::EventLoop(String::from(
+                "run loop already started; create webviews before run_until_closed",
+            ))
+        })?;
+        let navigation =
+            self.pending_app_events
+                .as_ref()
+                .map(|events| view_build::InitialNavigation {
+                    proxy: event_loop.create_proxy(),
+                    events: events.clone(),
+                    ready: Arc::clone(&self.navigation_ready),
+                    failed: Arc::clone(&self.navigation_failed),
+                    diagnostic: Arc::clone(&self.navigation_diagnostic),
+                });
+        let mut builder = view_build::NativeBuild {
+            environment: self.environment.clone(),
+            next_id: self.next_id,
+            saved_permissions_reconciled: self.saved_permissions_reconciled,
         };
-        devtools.map_err(|err| WvError::Webview(format!("devtools setting: {err}")))?;
-
-        // KEL-62: bounds before navigation. WebView2 starts with a zero-sized
-        // controller, and Chromium does not composite a zero-sized surface —
-        // measured as ~640 ms of dead time when the size arrived only from a
-        // later window event. This is create-time wiring, so a failure here is
-        // a real error, unlike the best-effort live resizes.
-        let size = view.window.inner_size();
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: i32::try_from(size.width).unwrap_or(i32::MAX),
-            bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
-        };
-        // SAFETY: controller lives on this thread; `RECT` is plain data, and
-        // `SetIsVisible` takes a BOOL by value.
-        let shown = unsafe {
-            view.controller
-                .SetBounds(rect)
-                .and_then(|()| view.controller.SetIsVisible(true))
-        };
-        shown.map_err(|err| WvError::Webview(format!("initial bounds: {err}")))?;
-
-        if let Some(events) = self.pending_app_events.as_ref() {
-            install_app_navigation_handler(
-                &view.webview,
-                events.clone(),
-                Arc::clone(&self.navigation_ready),
-                Arc::clone(&self.navigation_failed),
-                Arc::clone(&self.navigation_diagnostic),
-                self.event_loop
-                    .as_ref()
-                    .ok_or_else(|| {
-                        WvError::EventLoop(String::from(
-                            "window UI loop unavailable during navigation",
-                        ))
-                    })?
-                    .create_proxy(),
-            )?;
+        let result = builder.build(
+            event_loop,
+            event_loop.create_proxy(),
+            spec,
+            None,
+            navigation,
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            None,
+        );
+        self.next_id = builder.next_id;
+        self.saved_permissions_reconciled = builder.saved_permissions_reconciled;
+        let built = result.map_err(|failure| failure.source)?;
+        if self.views.contains_key(&built.id.0) {
+            return Err(WvError::Window(String::from(
+                "native view identity collision",
+            )));
         }
-
-        if self.pending_app_events.is_some() {
-            self.navigation_diagnostic
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .dispatch_attempted();
-        }
-        navigate_initial(&guard, &spec.initial)?;
-
-        // Keyboard focus lands in the page, matching what wry's build did and
-        // what a single-webview window should do.
-        // Best effort, and never steal activation from another top-level window.
-        let _ = view.return_focus_if_active();
-
-        self.next_id += 1;
-        self.views.insert(id, view);
-        Ok(WebviewId(id))
+        self.views.insert(built.id.0, built.view);
+        Ok(built.id)
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
@@ -4003,6 +4243,7 @@ mod tests {
 
     mod exit_wait_pump;
     mod exit_wake_retirement;
+    mod managed_fault_arming;
     mod profile_lifecycle;
     mod release_receipts;
 
@@ -4366,22 +4607,45 @@ mod tests {
     }
 
     type ReleaseChannel = (
-        std::sync::mpsc::Sender<Result<(), WvError>>,
-        std::sync::mpsc::Receiver<Result<(), WvError>>,
+        std::sync::mpsc::Sender<super::BrowserExitReceipt>,
+        std::sync::mpsc::Receiver<super::BrowserExitReceipt>,
     );
 
     fn release_channel() -> ReleaseChannel {
         std::sync::mpsc::channel()
     }
 
+    fn test_binding() -> std::sync::Arc<super::BrowserBinding> {
+        let binding = std::sync::Arc::new(super::BrowserBinding::new());
+        binding.bind_once(7).expect("one explicit test binding");
+        binding
+    }
+
+    const fn normal_receipt() -> super::BrowserExitReceipt {
+        super::BrowserExitReceipt::Normal(super::BrowserInstance {
+            generation: 1,
+            pid: 7,
+        })
+    }
+
+    const fn abnormal_receipt() -> super::BrowserExitReceipt {
+        super::BrowserExitReceipt::Abnormal {
+            instance: super::BrowserInstance {
+                generation: 1,
+                pid: 7,
+            },
+            source: super::BrowserExitSource::Environment,
+        }
+    }
+
     /// The production handle helper on this live test process: unsignaled.
-    fn alive_process_handle() -> std::os::windows::io::OwnedHandle {
+    pub(super) fn alive_process_handle() -> std::os::windows::io::OwnedHandle {
         open_browser_process(std::process::id()).expect("open this test process")
     }
 
     /// The production handle helper on a `cmd /c exit 0` child, opened before
     /// it is reaped and returned after it has really terminated: signaled.
-    fn exited_process_handle() -> std::os::windows::io::OwnedHandle {
+    pub(super) fn exited_process_handle() -> std::os::windows::io::OwnedHandle {
         let mut child = std::process::Command::new("cmd.exe")
             .args(["/d", "/c", "exit", "0"])
             .stdin(std::process::Stdio::null())
@@ -4403,9 +4667,12 @@ mod tests {
     fn withheld_release_event_faults_at_the_grace_despite_a_queued_event() {
         let hang_guard = std::time::Duration::from_hours(1);
         let (sender, receiver) = release_channel();
-        sender.send(Ok(())).expect("queue the release event");
+        sender
+            .send(normal_receipt())
+            .expect("queue the release event");
         let withheld = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(exited_process_handle()),
             ReleaseSite::Host,
             hang_guard,
@@ -4432,9 +4699,12 @@ mod tests {
         );
 
         let (sender, receiver) = release_channel();
-        sender.send(Ok(())).expect("queue the release event");
+        sender
+            .send(normal_receipt())
+            .expect("queue the release event");
         let plain = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(exited_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::ZERO,
@@ -4459,6 +4729,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::ZERO,
@@ -4488,8 +4759,7 @@ mod tests {
             super::ControlFlow::WaitUntil(armed_at + hang_guard),
             "the loop waits for the exit event, the process wake or the hang guard, never a correctness deadline"
         );
-        let expected = std::sync::atomic::AtomicU32::new(7);
-        assert!(!release.exit_ready(&expected));
+        assert!(!release.exit_ready());
     }
 
     /// The shutdown hang guard is the only bound while the browser is alive:
@@ -4503,6 +4773,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let immediate = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Probe,
             std::time::Duration::from_hours(1),
@@ -4522,8 +4793,7 @@ mod tests {
             None,
             "a hang-guard expiry never arms the grace"
         );
-        let expected = std::sync::atomic::AtomicU32::new(7);
-        assert!(immediate.exit_ready(&expected));
+        assert!(immediate.exit_ready());
         let mut control_flow = super::ControlFlow::Wait;
         immediate.schedule(&mut control_flow);
         assert_eq!(
@@ -4544,6 +4814,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::from_hours(1),
@@ -4592,6 +4863,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::from_hours(1),
@@ -4619,6 +4891,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(exited_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::from_hours(1),
@@ -4650,6 +4923,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let expired = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(exited_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::ZERO,
@@ -4658,8 +4932,7 @@ mod tests {
         expired.arm();
         assert_eq!(expired.fault(), Some(ProfileReleaseFault::GraceExpired));
         assert!(!expired.observed.get());
-        let expected = std::sync::atomic::AtomicU32::new(7);
-        assert!(expired.exit_ready(&expected));
+        assert!(expired.exit_ready());
         let mut control_flow = super::ControlFlow::Wait;
         expired.schedule(&mut control_flow);
         assert_eq!(
@@ -4674,9 +4947,12 @@ mod tests {
     #[test]
     fn queued_exit_event_is_drained_before_the_grace_is_judged() {
         let (sender, receiver) = release_channel();
-        sender.send(Ok(())).expect("queue the release event");
+        sender
+            .send(normal_receipt())
+            .expect("queue the release event");
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(exited_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::ZERO,
@@ -4691,10 +4967,11 @@ mod tests {
     fn abnormal_exit_and_dropped_observer_fail_while_the_browser_is_alive() {
         let (sender, receiver) = release_channel();
         sender
-            .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+            .send(abnormal_receipt())
             .expect("queue the abnormal exit");
         let abnormal = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::from_hours(1),
@@ -4708,6 +4985,7 @@ mod tests {
         drop(sender);
         let dropped = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             Some(alive_process_handle()),
             ReleaseSite::Host,
             std::time::Duration::from_hours(1),
@@ -4715,8 +4993,7 @@ mod tests {
         );
         dropped.arm();
         assert_eq!(dropped.fault(), Some(ProfileReleaseFault::ObserverDropped));
-        let expected = std::sync::atomic::AtomicU32::new(7);
-        assert!(dropped.exit_ready(&expected));
+        assert!(dropped.exit_ready());
     }
 
     /// Without a process handle there is no liveness proof, so the grace is
@@ -4726,6 +5003,7 @@ mod tests {
         let (_sender, receiver) = release_channel();
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             None,
             ReleaseSite::Host,
             std::time::Duration::ZERO,
@@ -4748,6 +5026,10 @@ mod tests {
             ProfileReleaseFault::HangGuardExpired,
             ProfileReleaseFault::AbnormalExit,
             ProfileReleaseFault::ObserverDropped,
+            ProfileReleaseFault::UnidentifiedController,
+            ProfileReleaseFault::WakeRetireFailed,
+            ProfileReleaseFault::RebindUnproven,
+            ProfileReleaseFault::ReleasingExpired,
         ];
         let mut contexts = std::collections::BTreeSet::new();
         for site in [ReleaseSite::Host, ReleaseSite::Probe] {

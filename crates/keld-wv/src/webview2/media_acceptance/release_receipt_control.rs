@@ -1,9 +1,9 @@
 //! One labelled fault appended after a real native matching normal callback.
 #![forbid(unsafe_code)]
 
-use crate::WvError;
-use crate::profile::ProfileErrorKind;
-use crate::webview2::{ReleaseSite, browser_exit_is_relevant, profile_failure};
+use crate::webview2::{
+    BrowserExitReceipt, BrowserExitSource, BrowserInstance, ReleaseSite, browser_exit_is_relevant,
+};
 use std::cell::Cell;
 use std::sync::mpsc::Sender;
 
@@ -44,12 +44,13 @@ impl Drop for Scope {
 }
 
 pub(in crate::webview2) fn after_native_receipt(
-    sender: &Sender<Result<(), WvError>>,
+    sender: &Sender<BrowserExitReceipt>,
     pid: u32,
-    expected: u32,
+    current: BrowserInstance,
     normal: bool,
     site: ReleaseSite,
 ) -> windows::core::Result<()> {
+    let expected = current.pid;
     let Some(mode) = MODE.get() else {
         return Ok(());
     };
@@ -74,7 +75,13 @@ pub(in crate::webview2) fn after_native_receipt(
     );
     if admitted {
         sender
-            .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+            .send(BrowserExitReceipt::Abnormal {
+                instance: BrowserInstance {
+                    generation: current.generation,
+                    pid: fault_pid,
+                },
+                source: BrowserExitSource::Environment,
+            })
             .map_err(|_| windows::core::Error::from(crate::webview2::E_UNEXPECTED))?;
         FAULTS_SENT.set(FAULTS_SENT.get() + 1);
     }

@@ -77,7 +77,12 @@ fn ephemeral_release(facade: bool) {
     }
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let (counts, _) = observe_loop_end(&mut host, cursor, u8::from(!facade));
+    let (counts, _) = observe_loop_end(
+        &mut host,
+        cursor,
+        u8::from(!facade),
+        if facade { "Quit" } else { "none" },
+    );
     let held = hold_ephemeral_profile(&host, &helper_handle, &profile);
     let (status, stdout, stderr) = host.finish();
     assert!(

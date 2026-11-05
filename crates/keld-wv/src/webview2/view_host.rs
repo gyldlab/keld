@@ -2,17 +2,28 @@
 
 use tao::dpi::PhysicalSize;
 use tao::event::WindowEvent;
+use tao::event_loop::EventLoopProxy;
 use tao::platform::windows::WindowExtWindows as _;
+use webview2_com::FocusChangedEventHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{E_UNEXPECTED, HWND, RECT};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 
-use super::View;
+use super::{ICoreWebView2Controller, View, WindowsLoopEvent};
+use crate::{WebviewId, WvError};
 
 #[cfg(all(feature = "media-acceptance", test))]
 pub(super) mod test_control;
 
 impl View {
+    /// Activation belongs to the top-level HWND even when a WebView child has
+    /// keyboard focus. Read only on the window's UI thread.
+    pub(super) fn is_active(&self) -> bool {
+        // SAFETY: GetActiveWindow observes only this thread's active window.
+        // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getactivewindow
+        (unsafe { GetActiveWindow() }) == HWND(self.window.hwnd() as _)
+    }
+
     /// Sizes the controller to fill the window's client area.
     ///
     /// Best-effort by design: a transient failure during a live resize must
@@ -80,12 +91,11 @@ impl View {
     }
 
     pub(super) fn return_focus_if_active(&self) -> windows::core::Result<()> {
-        let hwnd = HWND(self.window.hwnd() as _);
         // SAFETY: thread-local activation query. A queued Focused(true) is not
         // authority to activate this window after a different HWND became active.
         // Keyboard focus may be on the WebView child without deactivating its parent.
         // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getactivewindow
-        if unsafe { GetActiveWindow() } != hwnd {
+        if !self.is_active() {
             return Ok(());
         }
         // SAFETY: controller, top-level window and active-window query belong to
@@ -98,4 +108,31 @@ impl View {
                 .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
         }
     }
+}
+
+pub(super) fn install_controller_focus(
+    controller: &ICoreWebView2Controller,
+    id: WebviewId,
+    proxy: &EventLoopProxy<WindowsLoopEvent>,
+) -> Result<(), WvError> {
+    for gained in [true, false] {
+        let proxy = proxy.clone();
+        let handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
+            proxy
+                .send_event(WindowsLoopEvent::ControllerFocus(id))
+                .map_err(|_| windows::core::Error::from(E_UNEXPECTED))
+        }));
+        let mut token = 0;
+        // SAFETY: controller and both callbacks are retained on the UI thread.
+        // Close stops controller event callbacks before the Window is dropped.
+        let result = unsafe {
+            if gained {
+                controller.add_GotFocus(&handler, &mut token)
+            } else {
+                controller.add_LostFocus(&handler, &mut token)
+            }
+        };
+        result.map_err(|error| WvError::Webview(format!("controller focus observer: {error}")))?;
+    }
+    Ok(())
 }

@@ -1,15 +1,25 @@
 //! Pure ownership controls; actual wait cancellation/profile proofs are native.
 
-use super::{ProfileReleaseFault, ProfileReleaseWait, ReleaseSite, release_channel};
+use super::{
+    ProfileReleaseFault, ProfileReleaseWait, ReleaseSite, normal_receipt, release_channel,
+    test_binding,
+};
+use crate::webview2::BrowserBinding;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[test]
 fn zero_controller_owner_retires_without_inventing_native_credit() {
-    let release = Rc::new(ProfileReleaseWait::new(None, None, ReleaseSite::Host));
+    let release = Rc::new(ProfileReleaseWait::new(
+        None,
+        Arc::new(BrowserBinding::new()),
+        None,
+        ReleaseSite::Host,
+    ));
     let result = release
         .retire_loop_wait()
         .expect("no native registration to retire");
-    assert!(result.process.is_none());
+    assert!(result.process.borrow().is_none());
     assert!(!result.observed.get());
     assert_eq!(result.normal_exit_observed_at.get(), None);
     assert_eq!(result.fault(), None);
@@ -20,10 +30,11 @@ fn successful_retirement_preserves_normal_credit_timestamp_and_existing_fault() 
     let (sender, receiver) = release_channel();
     let release = Rc::new(ProfileReleaseWait::new(
         Some(receiver),
+        test_binding(),
         None,
         ReleaseSite::Host,
     ));
-    sender.send(Ok(())).expect("owner input");
+    sender.send(normal_receipt()).expect("owner input");
     release.poll();
     release.arm();
     let normal_at = release.normal_exit_observed_at.get();
@@ -41,7 +52,12 @@ fn successful_retirement_preserves_normal_credit_timestamp_and_existing_fault() 
 
 #[test]
 fn retained_loop_reference_prevents_successful_retirement() {
-    let release = Rc::new(ProfileReleaseWait::new(None, None, ReleaseSite::Host));
+    let release = Rc::new(ProfileReleaseWait::new(
+        None,
+        Arc::new(BrowserBinding::new()),
+        None,
+        ReleaseSite::Host,
+    ));
     let unfinished_loop = Rc::clone(&release);
     let error = release
         .retire_loop_wait()

@@ -10,7 +10,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -553,10 +552,10 @@ fn run_case(
     // SAFETY: thread ID query is unconditional.
     let tid = unsafe { GetCurrentThreadId() };
     let environment = fixture_environment(directory)?;
-    let expected_browser_pid = Arc::new(AtomicU32::new(0));
+    let browser_binding = Arc::new(super::BrowserBinding::new());
     let browser_exit = super::observe_profile_browser_exit(
         &environment,
-        Arc::clone(&expected_browser_pid),
+        Arc::clone(&browser_binding),
         None,
         super::ReleaseSite::Host,
     )?;
@@ -600,7 +599,7 @@ fn run_case(
         "KELD_MEDIA_VIEW id={} browser_pid={browser_pid}",
         media_id.0
     );
-    expected_browser_pid.store(browser_pid, Ordering::Release);
+    browser_binding.bind_once(browser_pid)?;
     let registration = EVIDENCE.with_borrow(|e| e.registration);
     let Some((identity, token)) = registration else {
         return Err(failure("production constructor did not register media"));
@@ -623,7 +622,12 @@ fn run_case(
     engine.destroy(media_id)?;
     println!("KELD_MEDIA_CLOSED waiting_for={browser_pid}");
     drop(engine);
-    wait_with_pump(browser_exit.receiver).map_err(failure)??;
+    let receipt = wait_with_pump(browser_exit.receiver).map_err(failure)?;
+    if receipt != super::BrowserExitReceipt::Normal(browser_binding.load()) {
+        return Err(failure(
+            "the media browser did not deliver its bound normal exit receipt",
+        ));
+    }
     super::remove_browser_exit_observer(&browser_exit.environment, browser_exit.token)?;
     drop(browser_exit.environment);
     drop(environment);

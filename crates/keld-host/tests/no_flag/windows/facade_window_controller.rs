@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn state_until(
+pub(super) fn state_until(
     run: &mut FacadeRun,
     id: u64,
     deadline: Instant,
@@ -73,14 +73,15 @@ fn windows_host_window_obligations_reach_the_controller() {
     let initial_state = state_until(&mut run, id, Instant::now() + OBSERVATION_BOUND, |state| {
         state["createdState"].is_object()
     });
-    if initial.foreground == hwnd {
+    let ui_focus = crate::support::window::initial_focus::read(hwnd, pid);
+    if ui_focus.active == hwnd {
         println!("KELD_GH1188_AC13 initial_active_at_risk=1 initial_inactive_at_risk=0");
         assert_eq!(
             initial_state["createdState"]["focused"], true,
             "Created snapshot used top-level keyboard focus instead of activation"
         );
         assert!(
-            initial.focus_is_child,
+            ui_focus.focus_is_child,
             "initial native keyboard focus did not enter the WebView"
         );
         assert_eq!(
