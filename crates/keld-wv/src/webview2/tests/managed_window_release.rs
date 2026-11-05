@@ -21,8 +21,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
         .expect("park");
     let mut answers = Vec::new();
     let mut native_reads = 0;
-    assert_eq!(custody.len(), 1);
-    assert!(!custody.is_empty());
+    assert_eq!((custody.len(), custody.is_empty()), (1, false));
     assert_eq!(
         custody.publish_staged_with(
             |_| {
@@ -37,7 +36,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
         Ok(0),
     );
     assert_eq!(native_reads, 0, "a parked entry has no Destroyed receipt");
-    assert!(answers.is_empty());
+    assert_eq!(answers, Vec::<AppWindowEvent>::new());
     assert_eq!(
         custody.next_deadline(now),
         Some(now + RELEASING_DESTROYED_BOUND)
@@ -77,7 +76,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
         Ok(0),
         "the HWND may still exist after WM_DESTROY",
     );
-    assert!(answers.is_empty());
+    assert_eq!(answers, Vec::<AppWindowEvent>::new());
     assert!(custody.contains(1));
     assert!(!custody.exit_ready(true, true));
 
@@ -97,8 +96,7 @@ fn parked_then_staged_then_native_absent_is_one_ordered_release() {
         Ok(1),
     );
     assert_eq!(answers, [AppWindowEvent::WindowReleased { view }]);
-    assert_eq!(custody.len(), 0);
-    assert!(custody.is_empty());
+    assert_eq!((custody.len(), custody.is_empty()), (0, true));
     assert!(!custody.contains(1));
     assert_eq!(custody.next_deadline(now), None);
     assert_eq!(
@@ -281,13 +279,16 @@ fn both_release_kinds_expire_at_the_original_bound_in_both_stages() {
     }
     let deadline = now + RELEASING_DESTROYED_BOUND;
     let mut expired = Vec::new();
+    let just_before = deadline
+        .checked_sub(Duration::from_nanos(1))
+        .expect("expiry has a preceding instant");
     assert_eq!(
-        custody.expire(deadline - Duration::from_nanos(1), |key, hwnd| {
+        custody.expire(just_before, |key, hwnd| {
             expired.push((key, hwnd));
         }),
         0
     );
-    assert!(expired.is_empty());
+    assert_eq!(expired, Vec::<(u8, isize)>::new());
     assert_eq!(
         custody.expire(deadline, |key, hwnd| expired.push((key, hwnd))),
         4
@@ -321,7 +322,9 @@ fn staging_or_repeated_wakes_never_renew_the_parked_clock() {
         custody.stage_destroyed(1, || true),
         StageResult::Staged { .. }
     ));
-    let almost_expired = original_deadline - Duration::from_millis(2);
+    let almost_expired = original_deadline
+        .checked_sub(Duration::from_millis(2))
+        .expect("parked deadline has a preceding instant");
     assert_eq!(
         custody.next_deadline(almost_expired),
         Some(original_deadline)

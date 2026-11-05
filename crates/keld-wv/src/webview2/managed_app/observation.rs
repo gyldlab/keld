@@ -10,6 +10,7 @@ use super::{ManagedWindows, send};
 use crate::engine::AppWindowEvent;
 use crate::{WebviewId, WvError};
 use tao::event::WindowEvent;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use tao::platform::windows::WindowExtWindows as _;
 use tao::window::WindowId;
 

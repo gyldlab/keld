@@ -124,9 +124,8 @@ fn a_successful_delivery_transfers_close_responsibility_only_on_adoption() {
     let waited =
         wait_for_launch_with_message_pump_until(&receiver, Instant::now() + Duration::from_secs(1));
     let result = finish_wait(waited, receiver, || panic!("completed request is resolved"));
-    let guard = match result {
-        Ok(Ok(guard)) => guard,
-        _ => panic!("successful controller completion"),
+    let Ok(Ok(guard)) = result else {
+        panic!("successful controller completion");
     };
     assert!(
         trace.events.borrow().is_empty(),

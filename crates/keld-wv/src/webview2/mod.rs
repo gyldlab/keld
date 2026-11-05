@@ -3102,6 +3102,16 @@ fn close_requested_view(
     views.is_empty()
 }
 
+fn event_loop_status(code: i32) -> Result<(), WvError> {
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(WvError::EventLoop(format!(
+            "event loop exited with status {code}"
+        )))
+    }
+}
+
 /// Forward standalone native facts and preserve its existing last-window stop rule.
 fn standalone_window_event(
     views: &mut BTreeMap<u32, View>,
@@ -3472,13 +3482,7 @@ impl WebView2Engine {
         if let Some(error) = page_readback_error.borrow_mut().take() {
             return Err(error);
         }
-        if code == 0 {
-            Ok(())
-        } else {
-            Err(WvError::EventLoop(format!(
-                "event loop exited with status {code}"
-            )))
-        }
+        event_loop_status(code)
     }
 
     fn finish_profile_release(&mut self, release_observed: bool) -> Result<(), WvError> {

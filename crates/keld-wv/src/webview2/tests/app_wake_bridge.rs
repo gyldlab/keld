@@ -1,4 +1,4 @@
-//! Real bridge ownership tests; no WebView2 controller or COM is created.
+//! Real bridge ownership tests; no `WebView2` controller or COM is created.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};

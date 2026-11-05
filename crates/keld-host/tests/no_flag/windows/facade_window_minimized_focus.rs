@@ -90,6 +90,9 @@ fn observe_focus(
     deadline: Instant,
 ) -> FocusObservation {
     let id = number(created, "id");
+    let started = deadline
+        .checked_sub(OBSERVATION_BOUND)
+        .expect("minimize bound has a start");
     let mut observed = FocusObservation::default();
     while Instant::now() < deadline {
         if !observed.pending {
@@ -124,7 +127,7 @@ fn observe_focus(
                 observed.samples += 1;
                 println!(
                     "KELD_GH1188_MINIMIZED_FOCUS_SAMPLE elapsed_ms={} host_thread={focus:?} state={value}",
-                    (Instant::now() - (deadline - OBSERVATION_BOUND)).as_millis()
+                    started.elapsed().as_millis()
                 );
                 observed.last = Some(value);
                 if satisfied {
