@@ -141,13 +141,13 @@ pub(in crate::webview2) fn before(
     // Do not hold the RefCell borrow across any COM call or native observation.
     let captured = capture(controller);
     STATE.with_borrow_mut(|state| {
-        if state.facts.calls != 1 {
-            state.facts.capture_error = Some(String::from("more than one adopted Close"));
-        } else {
+        if state.facts.calls == 1 {
             match captured {
                 Ok(capture) => state.facts.capture = Some(capture),
                 Err(error) => state.facts.capture_error = Some(error),
             }
+        } else {
+            state.facts.capture_error = Some(String::from("more than one adopted Close"));
         }
     });
     true

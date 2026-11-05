@@ -38,12 +38,12 @@ impl Drop for DriverGuard<'_> {
 }
 
 fn drive(
-    events: Receiver<AppWindowEvent>,
-    commands: Sender<AppWindowCommand>,
+    events: &Receiver<AppWindowEvent>,
+    commands: &Sender<AppWindowCommand>,
     deadline: Instant,
 ) -> Result<DriverTrace, WvError> {
     let mut guard = DriverGuard {
-        commands: &commands,
+        commands,
         completed: false,
     };
     let mut trace = DriverTrace::default();
@@ -115,7 +115,7 @@ fn run_managed(engine: backend::WebView2Engine, deadline: Instant) -> AppRun {
     let (events, received_events) = mpsc::channel();
     let (outcome, trace) = std::thread::scope(|threads| {
         let driver_commands = commands.clone();
-        let driver = threads.spawn(move || drive(received_events, driver_commands, deadline));
+        let driver = threads.spawn(move || drive(&received_events, &driver_commands, deadline));
         let outcome = engine.run_app_until_quit(
             received,
             events,
