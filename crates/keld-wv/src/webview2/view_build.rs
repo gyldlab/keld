@@ -215,8 +215,10 @@ impl NativeBuild {
         {
             return Err(BuildFailure::held(error, BuildResources::View(view)));
         }
-        // Reuse checked identity arithmetic; D12 retains post-HWND custody.
-        let id = match next_view_id(&mut self.next_id) {
+        // Keep failed setup from consuming the next internal view identity.
+        // D12 retains post-HWND custody while this checked candidate is local.
+        let mut next_id = self.next_id;
+        let id = match next_view_id(&mut next_id) {
             Ok(id) => id,
             Err(source) => return Err(BuildFailure::held(source, BuildResources::View(view))),
         };
@@ -246,6 +248,7 @@ impl NativeBuild {
                 ));
             }
         }
+        self.next_id = next_id;
         Ok(BuiltView { id, view, snapshot })
     }
 
