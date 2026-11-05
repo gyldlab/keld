@@ -3352,7 +3352,14 @@ impl AppNativeState {
         if let Some(pending) = self.pending_call.as_ref()
             && pending.locals_before == 0
         {
-            if pending.admission != AppCallAdmission::Accepted || self.pending_send.is_some() {
+            // An application callback can enqueue its next effect before the
+            // containing main event physically releases. Keep the existing
+            // charged call until Core's exact EventReleased; controls and local
+            // registrations still progress, and currentness is rechecked below.
+            if pending.admission != AppCallAdmission::Accepted
+                || self.pending_send.is_some()
+                || self.pending_event.is_some()
+            {
                 return Ok(None);
             }
             let pending = self
