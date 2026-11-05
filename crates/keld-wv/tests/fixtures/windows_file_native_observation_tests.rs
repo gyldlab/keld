@@ -13,7 +13,7 @@ fn sample() -> Value {
     let mut events = Vec::new();
     for (phase, id) in [("host-header", 11), ("plain", 12), ("page", 13)] {
         let header = if phase == "host-header" {
-            json!({"state":"present","value":"probe"})
+            json!({"state":"present","value":"attempt"})
         } else {
             json!({"state":"absent"})
         };
@@ -75,8 +75,8 @@ fn sample() -> Value {
     let page = json!({"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[]});
     json!({
         "schema":SCHEMA,"helper":"windows_file_native_probe_child","errors":[],"runtime_version":"fixture-observer-calibration","devtools_enabled_readback":false,
-        "nonce":"probe","uri":"file:///D:/owned/doc.html","browser_pid":1234,"events":events,
-        "host_request":{"uri":"file:///D:/owned/doc.html","sent_value":"probe","create_hresult":"S_OK","navigate_hresult":"S_OK","input_header":{"state":"present","value":"probe"}},
+        "nonce":"probe","attempt_nonce":"attempt","uri":"file:///D:/owned/doc.html","browser_pid":1234,"events":events,
+        "host_request":{"uri":"file:///D:/owned/doc.html","sent_value":"attempt","create_hresult":"S_OK","navigate_hresult":"S_OK","input_header":{"state":"present","value":"attempt"}},
         "pages":{"host-header":page,"plain":page,"page":page,"iframe":{"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[{"nonce":"probe","href":"file:///D:/owned/doc.html"}]}},
         "evaluations":{
             "execute_string":{"hresult":"S_OK","body":"settled-probe"},"execute_promise":{"hresult":"S_OK","body":{}},
@@ -113,12 +113,12 @@ fn fabricated_completion_order_cannot_pass() {
 fn measured_header_loss_is_refutation_not_a_missing_observation() {
     let mut receipt = sample();
     assert_eq!(
-        assess(&receipt).expect("complete calibration")["q22_prerequisites_observed"],
+        assess(&receipt).expect("complete calibration")["q22_a_b_header_propagation_observed"],
         true
     );
     receipt["events"][0]["data"]["header"] = json!({"state":"absent"});
     assert_eq!(
-        assess(&receipt).expect("complete negative observation")["q22_prerequisites_observed"],
+        assess(&receipt).expect("complete negative observation")["q22_a_b_header_propagation_observed"],
         false
     );
 }
@@ -132,7 +132,7 @@ fn native_method_rejection_is_preserved_as_refutation() {
         .expect("array")
         .retain(|event| event["phase"] != "host-header");
     assert_eq!(
-        assess(&receipt).expect("rejection plus healthy controls")["q22_prerequisites_observed"],
+        assess(&receipt).expect("rejection plus healthy controls")["q22_a_b_header_propagation_observed"],
         false
     );
 }
@@ -173,7 +173,7 @@ fn a_header_on_the_same_uri_iframe_refutes_attribution() {
     let mut receipt = sample();
     receipt["events"][15]["data"]["header"] = json!({"state":"present","value":"probe"});
     assert_eq!(
-        assess(&receipt).expect("complete contaminated control")["q22_prerequisites_observed"],
+        assess(&receipt).expect("complete contaminated control")["q22_a_b_header_propagation_observed"],
         false
     );
 }

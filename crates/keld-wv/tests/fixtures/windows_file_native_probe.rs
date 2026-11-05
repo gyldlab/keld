@@ -180,7 +180,10 @@ fn read_page(native: &session::Session) -> Result<Value, String> {
 
 fn scenarios(native: &session::Session, receipt: &mut Value, nonce: &str) -> Result<(), String> {
     native.phase("host-header");
-    let request = native.host_request(nonce)?;
+    let attempt = receipt["attempt_nonce"]
+        .as_str()
+        .ok_or("missing native attempt marker")?;
+    let request = native.host_request(attempt)?;
     receipt["host_request"] = request.clone();
     if request["navigate_hresult"] == "S_OK" {
         native.wait_event("navigation-completed")?;
@@ -234,6 +237,9 @@ pub(super) fn child_entry() -> Result<(), String> {
     if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("invalid fixture nonce".into());
     }
+    let mut attempt_bytes = [0_u8; 16];
+    getrandom::fill(&mut attempt_bytes).map_err(|error| format!("attempt marker: {error}"))?;
+    let attempt_nonce = format!("{:032x}", u128::from_le_bytes(attempt_bytes));
     let document =
         include_str!("windows_file_native_document.html").replace("__FIXTURE_NONCE__", &nonce);
     let document_path = root.join("owned-document.html");
@@ -242,7 +248,7 @@ pub(super) fn child_entry() -> Result<(), String> {
     let profile = root.join("owned-webview2-profile");
     let mut native = session::Session::new(&profile, uri.clone(), document.into_bytes());
     let mut receipt = json!({"schema":observation::SCHEMA,"helper":CHILD,"source":source_manifest(),"helper_pid":std::process::id(),
-        "nonce":nonce,"uri":uri,"pages":{},"evaluations":{},"errors":[],
+        "nonce":nonce,"attempt_nonce":attempt_nonce,"uri":uri,"pages":{},"evaluations":{},"errors":[],
         "scope":"raw WebView2 feasibility; no Keld facade, file parser, document/role admission or transport delivery"});
     let result = (|| {
         let overrides: Vec<_> = std::env::vars_os()
