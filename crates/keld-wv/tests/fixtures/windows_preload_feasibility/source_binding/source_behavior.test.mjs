@@ -1,5 +1,6 @@
 // Preparation evidence only. No production classifier, facade, bridge or native oracle.
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import {
   CORPUS,
@@ -73,6 +74,15 @@ test("F-C omission and F-J truncation visibly lose supplied arguments", () => {
   truncated.api.sendMessage("fixture-channel", "first", "second", "third");
   assert.deepEqual(truncated.sends, [["fixture-channel", "first"]]);
   assert.deepEqual(caseById("F-J").expected_rules, ["a"]);
+});
+
+test("F-D normalizes the first argument and preserves trailing values", () => {
+  const h = runCase("F-D", { path });
+  const trailing = { exactIdentity: true };
+  h.api.save("folder/../document.drawio", trailing, "last");
+  assert.deepEqual(h.sends, [["save", "document.drawio", trailing, "last"]]);
+  assert.equal(h.sends[0][2], trailing);
+  assert.deepEqual(caseById("F-D").expected_rules, ["a"]);
 });
 
 test("F-B2 excludes only the event and preserves all inbound values", () => {

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent
 FAULTS = {
     "omit-rest-only": "F-B forwards every argument after the channel",
     "mislabel-omitted-arguments": "F-C omission and F-J truncation",
+    "bypass-normalize-only": "F-D normalizes the first argument",
 }
 
 
@@ -28,9 +29,13 @@ def main() -> int:
     if fault == "omit-rest-only":
         case = next(item for item in corpus["cases"] if item["id"] == "F-B")
         case["source"] = "({ sendMessage: (c, x) => send(c, x) })"
-    else:
+    elif fault == "mislabel-omitted-arguments":
         case = next(item for item in corpus["cases"] if item["id"] == "F-C")
         case["expected_rules"] = []
+    else:
+        case = next(item for item in corpus["cases"] if item["id"] == "F-D")
+        assert case["source"].count("path.normalize(p)") == 1
+        case["source"] = case["source"].replace("path.normalize(p)", "p")
     with tempfile.TemporaryDirectory(prefix=".w1-test-", dir=ROOT) as temporary:
         mutated = Path(temporary) / "corpus.json"
         mutated.write_text(json.dumps(corpus), encoding="utf-8")
