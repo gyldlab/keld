@@ -16,7 +16,7 @@ use crate::{WebviewId, WvError};
 pub(super) mod test_control;
 
 impl View {
-    /// Activation belongs to the top-level HWND even when a WebView child has
+    /// Activation belongs to the top-level HWND even when a `WebView` child has
     /// keyboard focus. Read only on the window's UI thread.
     pub(super) fn is_active(&self) -> bool {
         // SAFETY: GetActiveWindow observes only this thread's active window.
@@ -127,9 +127,9 @@ pub(super) fn install_controller_focus(
         // Close stops controller event callbacks before the Window is dropped.
         let result = unsafe {
             if gained {
-                controller.add_GotFocus(&handler, &mut token)
+                controller.add_GotFocus(&handler, &raw mut token)
             } else {
-                controller.add_LostFocus(&handler, &mut token)
+                controller.add_LostFocus(&handler, &raw mut token)
             }
         };
         result.map_err(|error| WvError::Webview(format!("controller focus observer: {error}")))?;

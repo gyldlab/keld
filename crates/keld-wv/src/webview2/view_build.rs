@@ -14,6 +14,7 @@ use tao::window::WindowBuilder;
 use windows::Win32::Foundation::HWND;
 
 use super::browser_instance::BrowserExitReceipt;
+use super::controller_custody::PendingController;
 use super::managed_windows::DeferredCreate;
 use super::navigation_diagnostics::FirstNavigationDiagnostic;
 use super::view_host::install_controller_focus;
@@ -67,9 +68,9 @@ impl NativeBuild {
     pub(super) fn build(
         &mut self,
         target: &EventLoopWindowTarget<WindowsLoopEvent>,
-        proxy: EventLoopProxy<WindowsLoopEvent>,
+        proxy: &EventLoopProxy<WindowsLoopEvent>,
         spec: &WebviewSpec,
-        managed: Option<ManagedBuild<'_>>,
+        managed: Option<&ManagedBuild<'_>>,
         navigation: Option<InitialNavigation>,
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))] mut test_control: Option<
             &mut TestControl,
@@ -77,7 +78,7 @@ impl NativeBuild {
     ) -> Result<BuiltView, BuildFailure> {
         let deadline = Instant::now() + PROFILE_LAUNCH_DEADLINE;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let mut build_attempt = managed.as_ref().and_then(|build| {
+        let mut build_attempt = managed.and_then(|build| {
             test_control
                 .as_deref_mut()
                 .map(|control| control.begin_build(build.create.build))
@@ -93,7 +94,7 @@ impl NativeBuild {
         if managed.is_none() {
             builder = builder.with_inner_size(LogicalSize::new(spec.size.width, spec.size.height));
         }
-        if let Some(build) = managed.as_ref() {
+        if let Some(build) = managed {
             // An omitted axis preserves the OS-chosen position. Apply either
             // supplied axis after creation, when that position can be sampled.
             if let (Some(x), Some(y)) = (build.create.x, build.create.y) {
@@ -104,10 +105,10 @@ impl NativeBuild {
             .build(target)
             .map_err(|error| BuildFailure::window(WvError::Window(error.to_string())))?;
         let hwnd = HWND(window.hwnd() as _);
-        if let Some(build) = managed.as_ref() {
-            if let Err(error) = correct_outer_frame(&window, &build.create) {
-                return Err(BuildFailure::held(error, BuildResources::Window(window)));
-            }
+        if let Some(build) = managed
+            && let Err(error) = correct_outer_frame(&window, &build.create)
+        {
+            return Err(BuildFailure::held(error, BuildResources::Window(window)));
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let (Some(control), Some(attempt)) =
@@ -117,14 +118,14 @@ impl NativeBuild {
         {
             return Err(BuildFailure::held(error, BuildResources::Window(window)));
         }
-        let controller_result = if let Some(build) = managed.as_ref() {
+        let controller_result = if let Some(build) = managed {
             create_controller_for_build(
                 &self.environment,
                 hwnd,
                 deadline,
                 Some(Rc::downgrade(build.release)),
             )
-            .and_then(|controller| controller.adopt())
+            .and_then(PendingController::adopt)
         } else {
             create_controller(&self.environment, hwnd, deadline)
         };
@@ -135,13 +136,11 @@ impl NativeBuild {
             }
         };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if let (Some(control), Some(attempt), Some(build)) = (
-            test_control.as_deref_mut(),
-            build_attempt.as_mut(),
-            managed.as_ref(),
-        ) && control
-            .fail_at(attempt, BuildPoint::Webview, window.id(), window.hwnd())
-            .is_err()
+        if let (Some(control), Some(attempt), Some(build)) =
+            (test_control.as_deref_mut(), build_attempt.as_mut(), managed)
+            && control
+                .fail_at(attempt, BuildPoint::Webview, window.id(), window.hwnd())
+                .is_err()
         {
             // This point replaces CoreWebView2: the controller exists, but its
             // browser identity cannot be read. Use the existing D8 fault latch.
@@ -155,7 +154,7 @@ impl NativeBuild {
         let webview = match unsafe { controller.CoreWebView2() } {
             Ok(webview) => webview,
             Err(error) => {
-                let error = managed.as_ref().map_or_else(
+                let error = managed.map_or_else(
                     || WvError::Webview(format!("controller returned no webview: {error}")),
                     |build| build.release.latch_unidentified_controller(),
                 );
@@ -165,7 +164,7 @@ impl NativeBuild {
                 ));
             }
         };
-        if let Some(build) = managed.as_ref() {
+        if let Some(build) = managed {
             let bound = build
                 .release
                 .bind_controller(&webview, proxy.clone())
@@ -202,7 +201,7 @@ impl NativeBuild {
             return Err(BuildFailure::held(error, BuildResources::View(view)));
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        if let (Some(control), Some(build)) = (test_control.as_deref(), managed.as_ref())
+        if let (Some(control), Some(build)) = (test_control.as_deref(), managed)
             && let Err(error) = control.hold_build_pump(build.create.build, deadline)
         {
             return Err(BuildFailure::held(error, BuildResources::View(view)));
@@ -216,7 +215,7 @@ impl NativeBuild {
             &view,
             id,
             spec,
-            managed.as_ref().map(|_| &proxy),
+            managed.map(|_| proxy),
             navigation,
             deadline,
         ) {
@@ -226,7 +225,7 @@ impl NativeBuild {
             Ok(snapshot) => snapshot,
             Err(source) => return Err(BuildFailure::held(source, BuildResources::View(view))),
         };
-        if let Some(build) = managed.as_ref() {
+        if let Some(build) = managed {
             build.release.poll();
             if let Some(fault) = build.release.fault() {
                 return Err(BuildFailure::held(

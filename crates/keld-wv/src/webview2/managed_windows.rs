@@ -286,7 +286,7 @@ impl<K: Ord + Copy> ManagedCustody<K> {
         mut is_window: impl FnMut(isize) -> bool,
         mut send: impl FnMut(isize, Releasing, AppWindowEvent) -> Result<(), E>,
     ) -> Result<usize, E> {
-        let mut sent = 0;
+        let mut published = 0;
         let mut first_error = None;
         self.releasing.retain(|_, entry| {
             if first_error.is_some() || !entry.staged || is_window(entry.hwnd) {
@@ -296,12 +296,12 @@ impl<K: Ord + Copy> ManagedCustody<K> {
             // a failed send requires the loop's existing Fatal reaction and must
             // never cause another attempt of this same owed answer.
             match send(entry.hwnd, entry.answer, entry.answer.event()) {
-                Ok(()) => sent += 1,
+                Ok(()) => published += 1,
                 Err(error) => first_error = Some(error),
             }
             false
         });
-        first_error.map_or(Ok(sent), Err)
+        first_error.map_or(Ok(published), Err)
     }
 }
 

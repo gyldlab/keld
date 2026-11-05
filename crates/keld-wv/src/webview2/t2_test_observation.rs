@@ -3,6 +3,8 @@
 
 use std::cell::Cell;
 
+use crate::engine::AppWindowCommand;
+
 #[derive(Clone, Copy, Default)]
 struct Counts {
     observing: bool,
@@ -132,11 +134,10 @@ pub(super) fn foreign_normal(current: super::browser_instance::BrowserInstance, 
     }
 }
 
-pub(super) fn bridge_posted(observing: bool, command: crate::engine::AppWindowCommand) {
+pub(super) fn bridge_posted(observing: bool, command: AppWindowCommand) {
     if !observing {
         return;
     }
-    use crate::engine::AppWindowCommand;
     let name = match command {
         AppWindowCommand::CreateWindow { .. } => "CreateWindow",
         AppWindowCommand::DestroyWindow { .. } => "DestroyWindow",

@@ -69,9 +69,11 @@ impl ManagedWindows {
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
-        let result = self.custody.publish_staged(|_hwnd, owed, event| {
+        let result = self.custody.publish_staged(|hwnd, owed, event| {
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            observe::teardown_confirmed(_hwnd);
+            observe::teardown_confirmed(hwnd);
+            #[cfg(not(all(feature = "profile-test-hooks", debug_assertions)))]
+            let _ = hwnd;
             match owed {
                 Releasing::Destroy(view) => {
                     let result = send(events, event);

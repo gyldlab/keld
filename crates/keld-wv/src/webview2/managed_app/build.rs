@@ -30,9 +30,9 @@ impl ManagedWindows {
         };
         match self.builder.build(
             target,
-            self.proxy.clone(),
+            &self.proxy,
             &spec,
-            Some(ManagedBuild {
+            Some(&ManagedBuild {
                 create,
                 release,
                 sender: self.receipt_sender.clone(),

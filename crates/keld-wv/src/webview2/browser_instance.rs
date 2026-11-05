@@ -62,7 +62,7 @@ impl BrowserBinding {
 
     /// Legacy hello binds at loop entry, and the recovery probe binds once.
     /// An idempotent second observation of that same legacy identity is allowed;
-    /// managed rebinding belongs exclusively to ProfileReleaseWait.
+    /// managed rebinding belongs exclusively to `ProfileReleaseWait`.
     pub(super) fn bind_once(&self, pid: u32) -> Result<(), WvError> {
         let current = self.load();
         if pid == 0 || (current.is_bound() && current != (BrowserInstance { generation: 1, pid })) {
@@ -299,7 +299,7 @@ impl ProfileReleaseWait {
         Ok(())
     }
 
-    /// Install on the just-bound CoreWebView2 before View construction. Closing
+    /// Install on the just-bound `CoreWebView2` before `View` construction. Closing
     /// its controller retires this callback; there is no second token owner.
     pub(super) fn install_process_failed(
         &self,

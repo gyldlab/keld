@@ -33,6 +33,7 @@ pub const TEST_WINDOWS_PAGE_READBACK_ENV: &str = "KELD_TEST_WINDOWS_PAGE_READBAC
 pub(super) struct TestControl {
     failure: failure::FailureControl<WindowId>,
     native_hold: Option<native_hold::NativeHold>,
+    withhold_later_generation_receipt: bool,
     deferred_destroyed_proxy: EventLoopProxy<WindowsLoopEvent>,
 }
 
@@ -40,7 +41,10 @@ impl TestControl {
     /// The proxy belongs to this hook, not the browser wait or a dying HWND.
     pub(super) fn from_env(
         deferred_destroyed_proxy: EventLoopProxy<WindowsLoopEvent>,
+        all_generations: bool,
     ) -> Result<Self, WvError> {
+        let withhold_later_generation_receipt =
+            later_generation_withholding_requested(all_generations)?;
         let failure = read_env(TEST_WINDOWS_FAIL_BUILD_ENV)?
             .as_deref()
             .map(failure::FailureSpec::parse)
@@ -52,8 +56,14 @@ impl TestControl {
         Ok(Self {
             failure: failure::FailureControl::new(failure),
             native_hold,
+            withhold_later_generation_receipt,
             deferred_destroyed_proxy,
         })
+    }
+
+    /// Apply the captured receipt test control to the existing release owner.
+    pub(super) const fn withholds_later_generation_receipts(&self) -> bool {
+        self.withhold_later_generation_receipt
     }
 
     /// Claim the next-build fault at build entry, even if an earlier real step

@@ -1853,7 +1853,7 @@ fn create_controller_owned_until(
         // A successful native request still owns a completion obligation even
         // when this wait ends before its callback. Do not let an unbound
         // managed session claim the zero-controller release exemption.
-        if let Some(release) = managed_release.as_ref().and_then(std::rc::Weak::upgrade) {
+        if let Some(release) = managed_release.and_then(|release| release.upgrade()) {
             release.latch_fault(ProfileReleaseFault::RebindUnproven);
         }
     })
@@ -3102,6 +3102,38 @@ fn close_requested_view(
     views.is_empty()
 }
 
+/// Forward standalone native facts and preserve its existing last-window stop rule.
+fn standalone_window_event(
+    views: &mut BTreeMap<u32, View>,
+    event: &Event<'_, WindowsLoopEvent>,
+    stop: Option<&PersistentStopTransition>,
+    release: &ProfileReleaseWait,
+) -> Option<bool> {
+    let Event::WindowEvent {
+        window_id, event, ..
+    } = event
+    else {
+        return None;
+    };
+    if matches!(event, WindowEvent::CloseRequested) {
+        // Drop only the addressed view; the standalone Windows path exits
+        // after its last view closes, with the existing stop transition first.
+        let exit_requested = close_requested_view(views, *window_id, stop);
+        if exit_requested {
+            release.arm();
+        }
+        Some(exit_requested)
+    } else {
+        // The existing owner drives controller bounds, movement and focus.
+        for view in views.values() {
+            if view.window.id() == *window_id {
+                view.handle_host_window_event(event);
+            }
+        }
+        None
+    }
+}
+
 impl Drop for View {
     fn drop(&mut self) {
         // SAFETY: dropped on the engine thread (module note). `Close` releases
@@ -3138,8 +3170,6 @@ pub struct WebView2Engine {
     saved_permissions_reconciled: bool,
     #[cfg(feature = "profile-test-hooks")]
     barrier_grace_expiry: bool,
-    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-    withhold_later_generation_receipt: bool,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     managed_test_control: Option<managed_test_control::TestControl>,
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3287,8 +3317,6 @@ impl WebView2Engine {
             #[cfg(feature = "profile-test-hooks")]
             barrier_grace_expiry: false,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            withhold_later_generation_receipt: false,
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             managed_test_control: None,
             #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
             page_readback: None,
@@ -3304,11 +3332,10 @@ impl WebView2Engine {
         #[cfg(feature = "profile-test-hooks")]
         let barrier_grace_expiry = barrier_grace_expiry_requested();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let withhold_later_generation_receipt =
-            managed_test_control::later_generation_withholding_requested(barrier_grace_expiry)?;
-        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let managed_test_control =
-            managed_test_control::TestControl::from_env(event_loop.create_proxy())?;
+        let managed_test_control = managed_test_control::TestControl::from_env(
+            event_loop.create_proxy(),
+            barrier_grace_expiry,
+        )?;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let page_readback = managed_test_control::PageReadback::from_env()?;
         let browser_binding = Arc::new(BrowserBinding::new());
@@ -3326,7 +3353,6 @@ impl WebView2Engine {
         }
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         {
-            engine.withhold_later_generation_receipt = withhold_later_generation_receipt;
             engine.managed_test_control = Some(managed_test_control);
             engine.page_readback = Some(page_readback);
         }
@@ -3386,41 +3412,10 @@ impl WebView2Engine {
                 *control_flow = ControlFlow::Exit;
                 return;
             }
-            match event {
-                // Keld drives the controller size itself — there is no wry
-                // WM_SIZE subclass anymore, and tao already delivers resizes
-                // (DPI changes arrive as a scale-factor event followed by this
-                // same `Resized`). Movement and active-focus use that same owner.
-                Event::WindowEvent {
-                    window_id,
-                    event: ref native_event,
-                    ..
-                } if !matches!(native_event, WindowEvent::CloseRequested) => {
-                    for view in views.values() {
-                        if view.window.id() == window_id {
-                            view.handle_host_window_event(native_event);
-                        }
-                    }
-                }
-                Event::WindowEvent {
-                    window_id,
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => {
-                    // v0 hello is one window. Drop by id so a second window
-                    // would not tear down every view; exit when the map is
-                    // empty. On Windows, closing the last window quits — the
-                    // platform convention, and what KEL-57 V1-10 will assert.
-                    exit_requested = close_requested_view(
-                        &mut views,
-                        window_id,
-                        stop_in_loop.as_ref(),
-                    );
-                    if exit_requested {
-                        release_in_loop.arm();
-                    }
-                }
-                _ => {}
+            if let Some(closed) = standalone_window_event(
+                &mut views, &event, stop_in_loop.as_ref(), &release_in_loop,
+            ) {
+                exit_requested = closed;
             }
             #[cfg(all(feature = "media-acceptance", test))]
             if !exit_requested {
@@ -3650,7 +3645,11 @@ impl WebView2Engine {
             release
         };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-        let release = if self.withhold_later_generation_receipt {
+        let release = if self
+            .managed_test_control
+            .as_ref()
+            .is_some_and(managed_test_control::TestControl::withholds_later_generation_receipts)
+        {
             release.withholding_later_generation_receipt(TEST_BARRIER_GRACE_EXPIRY_GRACE)
         } else {
             release
@@ -4137,7 +4136,7 @@ impl WebEngine for WebView2Engine {
         };
         let result = builder.build(
             event_loop,
-            event_loop.create_proxy(),
+            &event_loop.create_proxy(),
             spec,
             None,
             navigation,
