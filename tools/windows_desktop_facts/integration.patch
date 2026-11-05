@@ -1,39 +1,65 @@
 diff --git a/crates/keld-wv/src/webview2/mod.rs b/crates/keld-wv/src/webview2/mod.rs
 --- a/crates/keld-wv/src/webview2/mod.rs
 +++ b/crates/keld-wv/src/webview2/mod.rs
-@@ -3357,2 +3357,3 @@
+@@ -3636,6 +3636,7 @@
+         commands: Receiver<AppWindowCommand>,
+         events: Sender<AppWindowEvent>,
          ready_trigger: AppReadyTrigger,
 +        mut capture_desktop_at_init: Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>,
          on_loop_entry: impl FnOnce(),
-@@ -3432,3 +3433,3 @@
-                 && first_host_init_turn(&event, &mut host_init_emitted)
+         release_witness: impl FnOnce(Instant) -> Result<(), E>,
+     ) -> Result<(), WvError> {
+@@ -3741,7 +3742,7 @@
+                     .first_loop_turn();
+             }
+             if facade && first_host_init_turn(&event, &mut host_init_emitted)
 -                && !report_host_initialized(&events)
 +                && !report_host_initialized(&events, capture_desktop_at_init.take())
              {
-@@ -3599,3 +3600,15 @@
+                 fatal_in_loop.store(true, Ordering::Release);
+                 stop_app_views(&mut views, &mut managed, stop_in_loop.as_ref(),
+@@ -3974,10 +3975,24 @@
+ /// the Core receiver may be descheduled past the absolute first-Init deadline even
+ /// when this genuine event happened on time. `false` means Core's receiver is gone,
  /// so nothing can ever observe Ready; the caller ends the session fatally.
 -fn report_host_initialized(events: &Sender<AppWindowEvent>) -> bool {
-+/// The Host-selected capture executes here on the real Init turn. Its explicit
-+/// unavailable result uses the same desktop event and cannot fabricate facts.
++/// The optional Host-owned capture is performed on genuine first Init.
++/// Publish its result before HostInitialized, retaining the existing milestone timestamp.
 +fn report_host_initialized(
 +    events: &Sender<AppWindowEvent>,
 +    capture_desktop_at_init: Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>,
 +) -> bool {
-+    if let Some(capture) = capture_desktop_at_init
-+        && events
-+            .send(AppWindowEvent::DesktopObserved { facts: capture() })
-+            .is_err()
++    // Bind the native first-Init timestamp to completed sampling, not to enqueue timing.
++    // Some(None) is a real unavailable sample and still publishes DesktopObserved.
++    let captured = capture_desktop_at_init.map(|capture| capture());
++    let observed_at = Instant::now();
++    if let Some(facts) = captured
++        && events.send(AppWindowEvent::DesktopObserved { facts }).is_err()
 +    {
 +        return false;
 +    }
      events
-@@ -4886,3 +4899,3 @@
+         .send(AppWindowEvent::HostInitialized {
+-            observed_at: Instant::now(),
++            observed_at,
+         })
+         .is_ok()
+ }
+@@ -5284,7 +5299,7 @@
+     fn host_initialized_report_is_sampled_once_and_detects_a_gone_coordinator() {
+         let (events, receiver) = std::sync::mpsc::channel();
          let before = std::time::Instant::now();
 -        assert!(super::report_host_initialized(&events));
 +        assert!(super::report_host_initialized(&events, None));
          match receiver.try_recv() {
-@@ -4896,3 +4909,3 @@
+             Ok(super::AppWindowEvent::HostInitialized { observed_at }) => {
+                 assert!(observed_at >= before, "the UI turn samples the instant");
+@@ -5294,7 +5309,7 @@
+         assert!(receiver.try_recv().is_err(), "one report is one milestone");
+         drop(receiver);
          assert!(
 -            !super::report_host_initialized(&events),
 +            !super::report_host_initialized(&events, None),
              "a dropped coordinator can never publish Ready"
+         );
+     }

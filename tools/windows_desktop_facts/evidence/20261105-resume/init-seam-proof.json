@@ -1,0 +1,251 @@
+{
+  "schema": "keld.w4-init-helper-proof/v1",
+  "completed_at": "2026-11-05T11:32:54.129476+00:00",
+  "source_ref": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+  "source_blob": "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+  "source_sha256": "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "variants": {
+    "v2": {
+      "patch_sha256": "ba87decaf3157ba07be47f6edb02c657e3cf240fa43fc09f0a6ac253593ab25a",
+      "applied_source_sha256": "33d2679e897da1d65305582c0daf5875ea8da1c76415c58a3d33241375175621",
+      "helper_sha256": "8f28d7008e59cdcf93cc73202b09dbafd661fc8661f2f0d0d29e9683aaf11277",
+      "first_init_take_call_present": true
+    },
+    "v3": {
+      "patch_sha256": "e0b5ceca8c735e57d03f4088550d4de40cfebbc719572c16985fcc6543a76a27",
+      "applied_source_sha256": "bdf4eefb17e2b3be55c55e86b9f44ffa865693c68884ece3f58171f3aa418807",
+      "helper_sha256": "bd93e882c6f24ce71c7830f860569bfe1c5577673d026ba617961b9350f04b24",
+      "first_init_take_call_present": true
+    }
+  },
+  "observations": [
+    {
+      "variant": "v2",
+      "selected_test": "timely_capture_keeps_timestamp_across_post_enqueue_preemption",
+      "exit_code": 101,
+      "expected_exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "variant": "v3",
+      "selected_test": null,
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "variant": "before_sample",
+      "selected_test": "genuinely_slow_capture_is_not_backdated",
+      "exit_code": 101,
+      "expected_exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "variant": "noop",
+      "selected_test": null,
+      "exit_code": 101,
+      "expected_exit_code": 101,
+      "passed": 0,
+      "failed": 8,
+      "ignored": 0
+    }
+  ],
+  "commands": [
+    {
+      "name": "v2-git-init",
+      "argv": [
+        "git",
+        "init",
+        "--quiet",
+        "--initial-branch=proof-only"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v2",
+      "exit_code": 0,
+      "elapsed_seconds": 0.00966004197834991,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "v2-patch-check",
+      "argv": [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "--check",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/publication/v2.patch"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v2",
+      "exit_code": 0,
+      "elapsed_seconds": 0.0052190419810358435,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "v2-patch-apply",
+      "argv": [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/publication/v2.patch"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v2",
+      "exit_code": 0,
+      "elapsed_seconds": 0.004636792000383139,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "v3-git-init",
+      "argv": [
+        "git",
+        "init",
+        "--quiet",
+        "--initial-branch=proof-only"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v3",
+      "exit_code": 0,
+      "elapsed_seconds": 0.007294999988516793,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "v3-patch-check",
+      "argv": [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "--check",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/publication/v3.patch"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v3",
+      "exit_code": 0,
+      "elapsed_seconds": 0.004687499982537702,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "v3-patch-apply",
+      "argv": [
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/publication/v3.patch"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/v3",
+      "exit_code": 0,
+      "elapsed_seconds": 0.004404541978146881,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "rustc-version",
+      "argv": [
+        "/Users/centillionaire/.cargo/bin/rustc",
+        "--version",
+        "--verbose"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 0,
+      "elapsed_seconds": 0.04488416700041853,
+      "stdout_sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "compile",
+      "argv": [
+        "/Users/centillionaire/.cargo/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Dwarnings",
+        "--crate-name",
+        "w4_init_seam_proof",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-generated.rs",
+        "-o",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-proof"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 0,
+      "elapsed_seconds": 0.7102415419940371,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "run-v2",
+      "argv": [
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-proof",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact",
+        "timely_capture_keeps_timestamp_across_post_enqueue_preemption"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 101,
+      "elapsed_seconds": 0.5290366659755819,
+      "stdout_sha256": "8ad02d004b1ee4a6431836c20de697a5baaf74b5f99ce17f6d95d278d715b8c9",
+      "stderr_sha256": "287f402ace1d13acbb9f1a382af3c43312f5ff88fcf2e9faff53a1b3602b4d94"
+    },
+    {
+      "name": "run-v3",
+      "argv": [
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-proof",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 0,
+      "elapsed_seconds": 0.00881775000016205,
+      "stdout_sha256": "d56ac05b1c4a9445609b0e00147c2e272640851b967044bb212dfe35243f8534",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "run-before_sample",
+      "argv": [
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-proof",
+        "--test-threads=1",
+        "--nocapture",
+        "--exact",
+        "genuinely_slow_capture_is_not_backdated"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 101,
+      "elapsed_seconds": 0.007041957986075431,
+      "stdout_sha256": "4521be589f2af8550ac4be4e46117ca98e24ec3575508975509c8a7dc6c1de55",
+      "stderr_sha256": "7ac83cc200234cbbd381b7e70eec845a479c2f412f510b9270679e0bfc178b6e"
+    },
+    {
+      "name": "run-noop",
+      "argv": [
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01/init-seam-proof",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/execution-publication-01",
+      "exit_code": 101,
+      "elapsed_seconds": 0.006674750009551644,
+      "stdout_sha256": "1fa0f1e8e1c01f8770526f540998239ced053611842ec6b514e6c3325e55a133",
+      "stderr_sha256": "3dea9ce64e16157f155dd4e3d088820d958d865f64a1fddf2f92288e5740e1ee"
+    }
+  ],
+  "harness_sha256": "ff583e3bb9755049281f32480ff2988bc7e6bc3a70974ca6fd7893c98157624c",
+  "driver_sha256": "2a25684182437d0970f93c254c1b8dabb9b76ffc4c09a033662080770347a3d3",
+  "generated_sha256": "a32167f6b43228b1dac2d2b24e016ced28dc39757b1a4bca0d9c6b21c3576416",
+  "binary_sha256": "8c6cd61dcb2d22e3fec355ef8d2701d6cad3b9d8bb02b83a1b8382b65ba59d31",
+  "limits": [
+    "Exact extracted helper bodies compile in isolation with an opaque facts token.",
+    "Instant is a deterministic injected clock; no actual scheduler preemption is claimed.",
+    "Sender delegates to real std::sync::mpsc then applies the controlled post-enqueue hook.",
+    "First-init guard/Option.take call site is source checked, not an executed tao native loop.",
+    "No Windows APIs, Core generation/admission, public Ready, deadlines or native cleanup are qualified."
+  ]
+}

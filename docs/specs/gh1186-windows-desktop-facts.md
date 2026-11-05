@@ -28,7 +28,7 @@ Explicit non-goals:
 | [GH481 follow-up](https://github.com/gyldlab/keld/issues/481#issuecomment-6557264649) | At most one preceding desktop event on the existing Init deadline; macOS-only development selection. |
 | [GH446 Ready approval](https://github.com/gyldlab/keld/issues/446#issuecomment-6371650353) | Facade Ready requires raw Ready, applied replay and accepted correlated Subscribe. |
 
-Inspected source bases are main `df99602ef10abd2cd6f3b5c633ba6d1cffee97bc`, the immutable S1 implementation `e09b520eaee1e4bd69bd0bde2137ec52f0fed18a`, and the lead's evolving PR1397. The first mechanical seam check used `50dcc36afc0a10fcfe97846d244ff63342de35c0`; PR1397 subsequently advanced to `a12b996bb75105da8e2f1b54eb8a8cbe309d5dbb`. Applicability is rechecked before handoff and never implies compilation.
+Inspected source bases are main `df99602ef10abd2cd6f3b5c633ba6d1cffee97bc`, immutable S1 `e09b520eaee1e4bd69bd0bde2137ec52f0fed18a`, and tested W2 PR1403 `fe9a4ab8d69823c8ead58281ab1715a811a75835`. Earlier PR1397/PR1400 applicability checks are historical. Current-head equivalence is recorded below and never implies complete integration or compilation.
 
 S1 exists in the Mac composition and is absent from current main and PR1397. The exact eleven shared fixture inputs are pinned by Git blob in [shared-pin.json](../../tools/windows_desktop_facts/shared-pin.json). They are exported without edits for testing, not committed as a second implementation. The shared owner must publish a portable dependency. Do not cherry-pick the 50-file S1 composition wholesale.
 
@@ -85,6 +85,8 @@ The isolated Rust executable is a standalone workspace under `tools/windows_desk
 
 The current adapter admits one primary logical display whose physical origin is (0,0). It refuses mixed-display layouts and forced colors while retaining their raw evidence. For qualified input, effective scale is device scale × native text scale. A DIP is a device-independent pixel. Logical rectangle edges are floor(left / scale), floor(top / scale), ceil(right / scale), ceil(bottom / scale); width/height are differences of those enclosing edges. The conversion is tested against the actual oracle and negative/fractional deterministic cases.
 
+The conservative single-primary proposal requires the physical work area to remain within its monitor before identity allocation. GH481 must approve or amend this bounded qualification rule; it is not asserted as a universal Windows guarantee.
+
 Native failure, malformed identity, missing/contradicted appearance, nonphysical coordinates, invalid scale, impossible rectangle or unsupported projection produces unavailable. There is no synthetic desktop fallback.
 
 ### Proposed Host-session display IDs
@@ -115,7 +117,7 @@ The first selected replay is one existing-writer batch: desktop snapshot, all su
 
 ### Runtime seam and post-Init gap
 
-The [unapplied patch](../../tools/windows_desktop_facts/integration.patch) proposes only a Host-supplied `Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>` at the existing W2 native entry. Outer None means unselected. A selected capture returning None means native unavailable. The capture runs once on genuine first Init, emits the existing DesktopObserved, then timestamps HostInitialized. No app-supplied environment toggle selects it.
+The [unapplied patch](../../tools/windows_desktop_facts/integration.patch) proposes only a Host-supplied `Option<Box<dyn FnOnce() -> Option<crate::AppDesktopFacts>>>` at the existing W2 native entry. Outer None means unselected. A selected capture returning None means native unavailable. The capture runs once on genuine first Init. After capture completes, it records the timestamp before sending DesktopObserved and then HostInitialized with that recorded time. Time before capture would backdate slow work; time after the first enqueue could make timely work late. No app-supplied environment toggle selects it.
 
 This is not a standalone compiling patch. Its prerequisite definitions and caller changes are enumerated in [integration-notes.md](../../tools/windows_desktop_facts/integration-notes.md). The lead applies it only after exact-hunk agreement and approval. It must compose with the lead's current release/lifecycle changes.
 
@@ -186,3 +188,5 @@ None on production: this PR is unimported feasibility code and documentation. Lo
 4. GH481/GH446: approve the separate post-Init refresh/invalidation admission path without any Ready, watchdog, epoch or role-retirement change.
 5. Shared owner: publish the portable S1 subset and both window-only consumer fixes at an immutable public review head. The current exact Mac-local object is a test dependency, not a consumable merged baseline.
 6. W2 lead: apply/rebase the small first-Init patch only after the preceding decisions and current release baseline are qualified; run the actual Core/native P1–P5 tests.
+
+Current-head binding at 2026-11-05 11:36:57Z: W2 PR1403 `f7b5848556154aa1c356a214270e342369267c0e` has the same `webview2/mod.rs` blob `ec493b0bc16250a19dd4cc0d8615d7870a364748` as the actual tested fe9a input. The draft v3 helper results carry forward only for that unchanged source; portable composition and P1-P5 approval remain pending.

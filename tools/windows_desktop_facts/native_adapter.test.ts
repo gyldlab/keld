@@ -309,3 +309,20 @@ test("rectangle validation completes before identity allocation", () => {
     enclosingDip({ x: Number.MAX_SAFE_INTEGER, y: 0, width: 1, height: 1 }, 1),
   ).toThrow(/edge overflow/);
 });
+
+test("off-monitor primary work area refuses before identity allocation", () => {
+  const ids = new NativeDisplayIds();
+  const malformed = raw();
+  malformed.sample.desktop.displays[0]!.workArea.x = -1;
+  malformed.sample.desktop.primaryWorkAreaViaSpi.x = -1;
+  malformed.sample.desktop.displays[0]!.nativePaths[0]!.targetId = 99;
+  expect(() => nativeFacts(malformed, text, ids)).toThrow(
+    "single-primary work area extends outside",
+  );
+  expect(ids.retainedIdentities).toBe(0);
+  const repaired = structuredClone(malformed);
+  repaired.sample.desktop.displays[0]!.workArea.x = 0;
+  repaired.sample.desktop.primaryWorkAreaViaSpi.x = 0;
+  expect(nativeFacts(repaired, text, ids).primary_id).toBe(1);
+  expect(ids.retainedIdentities).toBe(1);
+});

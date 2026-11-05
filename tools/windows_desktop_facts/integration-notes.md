@@ -1,10 +1,24 @@
 # W4 integration proposal — unapplied owner handoff
 
-Status: review proposal and mechanically checked patch fragment. This file does not approve Windows desktop activation.
+Status: draft executable proposal. The current conditional v3 supersedes the historical fragments below. No Windows product activation or shared-owner approval is implied.
 
 Owning issue: [GH1186](https://github.com/gyldlab/keld/issues/1186). Shared contract owners: [GH481](https://github.com/gyldlab/keld/issues/481), [GH446](https://github.com/gyldlab/keld/issues/446), and the existing GH531 window subscription. The GH1188/W2 lead owns application of any native-loop or Core-coordinator change.
 
-## Exact source bases
+## Current conditional v3
+
+Actual tested immutable W2 PR1403 input: `fe9a4ab8d69823c8ead58281ab1715a811a75835`, `webview2/mod.rs` blob `ec493b0bc16250a19dd4cc0d8615d7870a364748`. The current `integration.patch` has 20 additions/5 removals in five hunks; SHA-256 `e0b5ceca8c735e57d03f4088550d4de40cfebbc719572c16985fcc6543a76a27`. It remains unapplied and is not independently buildable: the portable desktop types/event, callers and Core admission are absent from this base.
+
+At 2026-11-05 11:36:57Z, current pushed PR1403 was OPEN/draft at `f7b5848556154aa1c356a214270e342369267c0e`. Its native-loop source has the identical blob and SHA-256 `03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370`. The unchanged patch targets only that file; the existing application and bounded helper proof carry forward by exact input equivalence, not a relabeled rerun.
+
+The private optional Host callback is taken once under the existing genuine first-Init guard. Its result preserves three states: no callback means unselected/no desktop event; a callback returning `None` publishes a genuine unavailable observation; populated facts publish the snapshot. The callback runs synchronously on the UI owner and must not re-enter that owner's borrowed context.
+
+The corrected order is **capture completes, timestamp is recorded, DesktopObserved is sent, then HostInitialized carries that timestamp**. A scheduling pause after the first enqueue must not make timely completed capture late. Genuinely slow capture must still expire, so recording time before capture is also wrong. This follows the retained e09b S1 producer and owner specification, without a new clock/deadline exception.
+
+[The exact-source v3 review](https://github.com/gyldlab/keld/issues/1186#issuecomment-6656342047) records isolated check/apply success and unchanged failure-to-fatal/Option behavior. The source-derived helper fixture and its actual commands, results and limitations are described in EVIDENCE.md. They do not establish Windows UI execution, Core admission or old-generation completion fencing.
+
+The preceding v2 (SHA-256 `ba87decaf3157ba07be47f6edb02c657e3cf240fa43fc09f0a6ac253593ab25a`, 15 additions/4 removals) applies to fe9a but timestamps after the first enqueue. It is retained only as the negative input `integration-v2-negative.patch`. Before production application, W2 must recheck its then-current source and qualify the complete approved composition. Do not apply this fragment to the W4 product tree to manufacture compilation.
+
+## Historical source bases
 
 | Source | Inspected revision | Meaning |
 | --- | --- | --- |
@@ -16,9 +30,9 @@ Owning issue: [GH1186](https://github.com/gyldlab/keld/issues/1186). Shared cont
 
 The complete e09b commit changes 50 files. Do not cherry-pick that entire composition into the W4 tree. The shared owner must publish or explicitly compose the portable subset onto the approved lead baseline. W4 feasibility uses immutable existing shared-source inputs; it must not create another maintained mirror.
 
-## What integration.patch contains
+## Historical v1 fragment (superseded)
 
-The patch contains five hunks in `crates/keld-wv/src/webview2/mod.rs`: 17 additions and 4 removals. It is an **unapplied native seam fragment**, not a complete buildable Windows feature.
+The original v1 patch contained five hunks in `crates/keld-wv/src/webview2/mod.rs`: 17 additions and 4 removals. This section is historical; current v3 ordering is specified above.
 
 The only proposed entry-point parameter is an optional, Host-supplied first-Init capture:
 
@@ -32,7 +46,7 @@ On the actual Tao first Init turn, the selected callback is taken and invoked ex
 
 The patch deliberately does not choose a Windows selector encoding, add a sampler stub, manufacture launch facts, add a public Ready event, or implement post-Init refreshes. It depends on the owner work described below. All callers of the changed method require coordinated updates by the W2/Core owner. Existing/unqualified paths must pass `None`; only an approved selected Host path may pass the native capture.
 
-### Mechanical checks executed
+### Historical mechanical checks
 
 - All five old hunk ranges match the exact fetched PR1397 `50dcc36a` source, including original line numbers. The source blob is `83ddb34abf2dfc78a685324af44c44912d31658f`.
 - On Ramani, `git apply --check tools/windows_desktop_facts/integration.patch` passed against this worktree's `df99602e` source. This is a context/applicability check, not application or compilation.
@@ -45,14 +59,7 @@ The later PR1397 head `a12b996bb75105da8e2f1b54eb8a8cbe309d5dbb` was fetched by 
 
 The lead's subsequent draft PR1400 was also checked at `2aed1f944a072d2c84469924c107b3ca5df9bc13` on `agent/gh-1188-exit-wake-retirement-20261105` (base: the PR1397 branch). Its native-loop blob was `922c33231a1c96298cf0a48f0806ba8958dcfd22`. The identical patch passed another isolated context check, with an empty product diff. This records applicability to that exact evolving head, not approval of its lifecycle changes or authority to apply the seam.
 
-The checked command is repeatable from the task worktree:
-
-```powershell
-git apply --check tools/windows_desktop_facts/integration.patch
-git apply --numstat tools/windows_desktop_facts/integration.patch
-```
-
-A successful context check must not be reported as a compiling integrated slice: main and PR1397 do not yet define the Windows desktop event/types.
+The current fragment must be checked against its reviewed W2 source in an isolated directory, as the helper driver does. Do not replay the historical v1 command against the W4 product tree. A context check is not a compiling integrated slice.
 
 ## Required shared-owner composition, split from the native seam
 
@@ -132,3 +139,4 @@ Request the GH481/GH531 owner, acting under the recorded 0monish delegation, to 
 Required falsifiers for integrated owner work include a valid authenticated Subscribe before any sample, unavailable with zero replay, ordered update/invalidation, latest-facts-plus-survivors recovery replay, retired role/document refusal, equal-epoch contradiction and regression, identical-correlation duplicate rejection, and stale late-native completion. Check both real window-only consumers. Check selected first-Init ordering and both deadline boundaries through the real coordinator, including a duplicate-desktop attempt to postpone expiry. Keep unselected Windows behavior as a negative control.
 
 Native observations and synthetic identity/codec controls must be reported separately. Real global display/theme-change qualification remains a separate serialized native slot; do not change global settings just to produce evidence. No statement in this handoff authorizes W4 to modify the lead's shared files, merge main, or enable auto-merge.
+The executable single-primary proposal also refuses a physical work area outside its monitor before identity allocation. This is a conservative qualification rule, not a universal MONITORINFO guarantee. GH481 must approve or amend it before production integration.

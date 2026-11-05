@@ -333,6 +333,19 @@ export function nativeFacts(
         (theme.appsUseLightTheme.value === 0 ? "dark" : "light"),
     "native appearance query failed or contradicts effective scheme",
   );
+  // The qualified single-primary work area may not extend
+  // beyond its physical monitor. Reject before allocating a lifetime ID.
+  requireFact(
+    Number.isSafeInteger(native.workArea.x + native.workArea.width) &&
+      Number.isSafeInteger(native.workArea.y + native.workArea.height) &&
+      native.workArea.x >= native.bounds.x &&
+      native.workArea.y >= native.bounds.y &&
+      native.workArea.x + native.workArea.width <=
+        native.bounds.x + native.bounds.width &&
+      native.workArea.y + native.workArea.height <=
+        native.bounds.y + native.bounds.height,
+    "single-primary work area extends outside its monitor",
+  );
   const scale = native.dpi.deviceScaleFactor * textScale.value;
   const bounds = enclosingDip(native.bounds, scale);
   const workArea = enclosingDip(native.workArea, scale);

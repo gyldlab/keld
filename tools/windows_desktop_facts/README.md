@@ -166,6 +166,20 @@ The proposed nonzero u32 display ID is an opaque Host-session association with t
 
 This one-shot native evidence does not prove global notification delivery, mixed-DPI multi-monitor layout, both physical appearance modes, production startup integration, or production Core recovery. Ordered updates and replay at the shared client boundary use clearly labeled scripted facts. No display, theme, registry, or accessibility setting is changed to manufacture evidence.
 
-`integration.patch` was authored against PR1397 `50dcc36afc0a10fcfe97846d244ff63342de35c0` and mechanically checked against the task's original `df99602e` base. The lead PR subsequently advanced to `a12b996bb75105da8e2f1b54eb8a8cbe309d5dbb`. The owning lead must recheck current composition context before applying the fragment. The patch remains unapplied and depends on shared S1 composition, narrow desktop cfg changes, immutable Windows selection, and the approved first-sample ordering.
+The current conditional `integration.patch` has 20 additions and 5 removals. It was tested against PR1403 `fe9a4ab8d69823c8ead58281ab1715a811a75835` and bound to current head `f7b5848556154aa1c356a214270e342369267c0e` by identical native-loop source bytes. The patch remains unapplied and depends on shared S1 composition, narrow desktop cfg changes, immutable Windows selection, and the approved first-sample ordering. W2 must recheck its source before applying it.
 
 The exact S1 coordinator admits only its initial desktop event; its router's later-update support is not proof of a production post-Init delivery path. That path, Windows identity/units/appearance conversion, and Windows activation require the shared owners' review. Read [integration-notes.md](integration-notes.md) for the precise dependency map. Keep the work draft/open; no merge or auto-merge is part of this fixture.
+## 5. Replay the conditional first-Init helper proof
+
+`verify_init_seam.py` extracts the exact private helper from a pinned Git source after applying each actual patch in an isolated directory. `init_seam_harness.rs` compiles it with a deterministic clock and Rust's real channel. The retained `integration-v2-negative.patch` is an intentionally failing historical proposal, never a production patch.
+
+With a source repository containing the reviewed immutable object, run:
+
+```powershell
+python -B tools/windows_desktop_facts/verify_init_seam.py --repo D:\WORK\keld --source-ref ec493b0bc16250a19dd4cc0d8615d7870a364748 --expected-source-sha256 03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370 --patch tools/windows_desktop_facts/integration.patch --red-patch tools/windows_desktop_facts/integration-v2-negative.patch --harness tools/windows_desktop_facts/init_seam_harness.rs --out D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105\init-seam-fresh
+if ($LASTEXITCODE -ne 0) { throw 'First-Init helper proof failed; preserve its receipts.' }
+```
+
+Use a new output directory. The driver requires the exact reviewed source hash and records the compiler, patched input, generated source, binary, commands and test results. Expected outcomes are v2: one failed timing assertion; v3: eight passing cases; timestamp-before-capture mutation: one failed slow-capture assertion; no-op mutation: all eight cases fail. A compiler or selection error is not an expected negative result.
+
+The proof establishes capture completion before timestamping, then desktop enqueue before Init enqueue. It also distinguishes an omitted callback from unavailable facts and refuses disconnected receivers. It injects time to expose the queue boundary; it does not claim real scheduler preemption. The native first-Init guard and `.take()` call site are inspected as source, not executed by this harness. Windows APIs, Core generation admission, facade Ready and the real deadlines require their separate owner-integrated tests.
