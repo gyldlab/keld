@@ -1871,8 +1871,8 @@ export function checkWorkflowSecurity(source: string): void {
   const reviewedStepInventories: Record<string, string> = {
     fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
     "windows-media":
-      "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
-    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
+      "385b68e1ef567912453c5a08eaa7e7d678f48444956115ade2ad110ffac2b0d8",
+    check: "8bd943e6da9daab6bb0e34469a3d7db55feac9f5e23e20b8e455a08f6ed4228c",
     "codeql-rust":
       "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
     "codeql-javascript-typescript":
