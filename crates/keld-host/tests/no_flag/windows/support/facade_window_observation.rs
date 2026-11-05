@@ -164,7 +164,7 @@ pub(super) fn prepare_restore_input(hwnd: usize, pid: u32) -> FocusComparator {
     );
     let deadline = Instant::now() + OBSERVATION_BOUND;
     let helper = FocusComparator::new();
-    helper.activate();
+    helper.click_caption(deadline);
     let input = native_until(hwnd, pid, deadline, |state| {
         state.minimized && state.foreground == helper.hwnd()
     });

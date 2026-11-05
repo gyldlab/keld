@@ -17,6 +17,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::NativeWindowSnapshot;
 
+#[path = "native_caption_click.rs"]
+mod native_caption_click;
+
 /// `GetWindowRect` otherwise reports the caller's virtualized coordinate space.
 /// This guard changes only the native test thread and restores its prior context.
 pub(crate) struct PhysicalCoordinates(DPI_AWARENESS_CONTEXT);
