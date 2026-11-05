@@ -122,17 +122,32 @@ fn select_descendant_generations(
     observed_root: ProcessGeneration,
     edges: &[GenerationEdge],
 ) -> Result<BTreeSet<ProcessGeneration>, &'static str> {
-    // Regression seam: preserve the previous PID-only ancestry decision.
-    // The test-first artifact deliberately has no generation checks yet.
-    if expected_root.pid == 0 {
-        return Err("the retained Host PID is absent");
+    if expected_root.pid == 0 || expected_root.birth == 0 || observed_root != expected_root {
+        return Err("the original retained Host generation changed");
     }
-    let _ = observed_root;
+    let mut listed = BTreeMap::new();
+    for edge in edges {
+        if edge.process.pid == expected_root.pid
+            || edge.process.birth == 0
+            || listed.insert(edge.process.pid, edge.process).is_some()
+        {
+            return Err("ambiguous native descendant generations");
+        }
+    }
+    if edges
+        .iter()
+        .any(|edge| edge.parent != expected_root.pid && !listed.contains_key(&edge.parent))
+    {
+        return Err("native descendant parent is missing from the snapshot");
+    }
     let mut admitted = BTreeMap::from([(expected_root.pid, expected_root)]);
     loop {
         let before = admitted.len();
         for edge in edges {
-            if admitted.contains_key(&edge.parent) && edge.process.pid != expected_root.pid {
+            if let Some(parent) = admitted.get(&edge.parent)
+                && edge.process.birth >= parent.birth
+                && edge.process.pid != expected_root.pid
+            {
                 admitted.insert(edge.process.pid, edge.process);
             }
         }
