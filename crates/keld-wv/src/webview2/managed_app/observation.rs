@@ -18,6 +18,7 @@ use tao::window::WindowId;
 enum NativeFacts {
     None,
     Focus,
+    QueuedFocus,
     BoundsAndFullScreen { maximized: bool },
 }
 
@@ -30,7 +31,7 @@ fn native_facts(event: &WindowEvent<'_>, minimized: impl FnOnce() -> bool) -> Na
         | WindowEvent::Resized(_)
         | WindowEvent::ScaleFactorChanged { .. } => {
             if minimized() {
-                NativeFacts::None
+                NativeFacts::QueuedFocus
             } else {
                 NativeFacts::BoundsAndFullScreen {
                     maximized: matches!(event, WindowEvent::Resized(_)),
@@ -143,6 +144,19 @@ impl ManagedWindows {
                     focused: view.is_active(),
                 },
             ),
+            NativeFacts::QueuedFocus => {
+                // Minimize can change activation without another Tao Focused
+                // event after keyboard focus moved into the WebView child.
+                // Reuse the controller notification: its consumer re-finds the
+                // live view and samples the Host UI queue's actual activation.
+                self.proxy
+                    .send_event(WindowsLoopEvent::ControllerFocus(id))
+                    .map_err(|_| {
+                        WvError::EventLoop(String::from(
+                            "failed to queue managed activation observation",
+                        ))
+                    })
+            }
             NativeFacts::BoundsAndFullScreen { maximized } => {
                 let observed = snapshot(view)?;
                 send(
