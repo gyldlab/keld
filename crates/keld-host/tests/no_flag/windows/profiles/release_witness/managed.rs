@@ -13,7 +13,7 @@ use crate::support::installed::fixture_env;
 use crate::support::process::{
     assert_process_signaled, open_process_for_wait, terminate_test_process, wait_for_process_signal,
 };
-use crate::support::window::post_close;
+use crate::support::window::{NativeWindowSnapshot, post_close};
 use serde_json::Value;
 use std::os::windows::io::OwnedHandle;
 use std::time::{Duration, Instant};
@@ -29,6 +29,15 @@ fn windows_installed_veto_keeps_the_live_profile_running() {
     let window = create(&mut run);
     let browser = run.browser(None, false);
     run.retain_descendants();
+
+    println!(
+        "KELD_GH1188_VETO_PRE_STIMULUS hwnd={} native={:?}",
+        window.native.hwnd,
+        NativeWindowSnapshot::capture(
+            u64::try_from(window.native.hwnd).expect("retained owned HWND"),
+            run.pid(),
+        ),
+    );
 
     post_close(u64::try_from(window.native.hwnd).expect("retained owned HWND"));
     let requested = run.read("CLOSE_EVENT");

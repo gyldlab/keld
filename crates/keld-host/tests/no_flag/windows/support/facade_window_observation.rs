@@ -316,6 +316,44 @@ pub(super) fn restored(
         pages.cursor <= before_restore_cursor
     );
     restore_page_trace(pipe, "visible", view, before_restore_cursor);
+    // Keep Restore's frame/visibility oracles ahead of any new activation.
+    // The same-thread comparator received the checked caption input; only that
+    // retained owner may supply the existing ordinary foreground stimulus.
+    let foreground_input = native_control::read(hwnd, pid);
+    assert!(
+        !foreground_input.minimized,
+        "INVALID restore input: target minimized again before foreground transfer"
+    );
+    assert_eq!(
+        foreground_input.window.outer_rect, expected_rect,
+        "restore did not recover its prior native frame before foreground input"
+    );
+    if foreground_input.foreground != hwnd {
+        assert_eq!(
+            foreground_input.foreground,
+            helper.hwnd(),
+            "INVALID restore input: the owned caption comparator lost foreground"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "INVALID restore input: original deadline expired before foreground transfer"
+        );
+        observe_activation_input(
+            "restore-foreground-request",
+            &foreground_input,
+            hwnd,
+            pid,
+            helper,
+        );
+        println!(
+            "KELD_GH1188_AC26_RESTORE_FOREGROUND_REQUEST view={view} restore_only_focus_at_risk=0"
+        );
+        native_control::foreground(hwnd, pid);
+        assert!(
+            Instant::now() < deadline,
+            "INVALID restore input: foreground request exceeded the original deadline"
+        );
+    }
     let foreground = native_until_observed(
         hwnd,
         pid,
@@ -335,7 +373,7 @@ pub(super) fn restored(
         foreground.window.outer_rect, expected_rect,
         "restore did not recover its prior native frame"
     );
-    println!("KELD_GH1188_AC26_RESTORE_FOCUS at_risk=1 view={view}");
+    println!("KELD_GH1188_AC26_RESTORE_FOCUS at_risk=1 view={view} restore_only_focus_at_risk=0");
     pages.wait(pipe, view, deadline, |page| page["hasFocus"] == true);
     let native = native_control::read(hwnd, pid);
     assert!(
