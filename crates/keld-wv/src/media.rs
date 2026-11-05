@@ -493,9 +493,9 @@ mod tests {
             installer.contains("webview.add_NewWindowRequested("),
             "KEL-65 direct COM must deny popups before GuardInstalled: otherwise a new WebView2 escapes the guard and lifecycle registry"
         );
-        // The parent engine must reconcile saved permissions and register both
-        // live guards before first navigation can consume the witness.
-        let engine = include_str!("webview2/mod.rs");
+        // The shared native builder must reconcile saved permissions and register
+        // both live guards before first navigation can consume the witness.
+        let engine = include_str!("webview2/view_build.rs");
         let saved = engine
             .find("reconcile_saved_media_permissions(&view.webview, deadline)?")
             .expect("saved media permission reconciliation exists");
