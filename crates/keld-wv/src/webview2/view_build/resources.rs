@@ -1,7 +1,7 @@
 //! Construction custodians preserve Close-before-HWND-drop on every failure.
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use super::super::{ICoreWebView2Controller, View};
+use super::super::{ICoreWebView2Controller, ProfileReleaseWait, View, controller_custody};
 use crate::engine::{BuildStage, WindowSnapshot};
 use crate::{WebviewId, WvError};
 use tao::window::Window;
@@ -13,6 +13,7 @@ pub(in crate::webview2) enum BuildResources {
     Controller {
         window: Window,
         controller: ICoreWebView2Controller,
+        release: Option<std::rc::Weak<ProfileReleaseWait>>,
     },
     View(View),
 }
@@ -28,10 +29,14 @@ impl BuildResources {
 
 impl Drop for BuildResources {
     fn drop(&mut self) {
-        if let Self::Controller { controller, .. } = self {
-            // SAFETY: this controller was constructed and retained on this
-            // UI thread. Close precedes dropping the standalone Tao Window.
-            let _ = unsafe { controller.Close() };
+        if let Self::Controller {
+            controller,
+            release,
+            ..
+        } = self
+        {
+            // This shared Close precedes dropping the standalone Tao Window.
+            controller_custody::close_adopted(controller, release.as_ref());
         }
         // A View closes its own controller; Window has no controller.
     }

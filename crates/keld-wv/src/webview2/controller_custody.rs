@@ -10,7 +10,9 @@ use std::sync::mpsc::Receiver;
 
 use windows::Win32::Foundation::E_POINTER;
 
-use super::{ICoreWebView2Controller, ProfileReleaseWait, profile_failure_with};
+use super::{
+    ICoreWebView2Controller, ProfileReleaseFault, ProfileReleaseWait, profile_failure_with,
+};
 use crate::WvError;
 use crate::profile::ProfileErrorKind;
 
@@ -50,6 +52,40 @@ impl NativeController {
         #[cfg(all(feature = "media-acceptance", test))]
         super::media_acceptance::observe_controller_close_result(&result);
         let _ = result;
+    }
+}
+
+/// Both adopted-resource custodians use this one Close call before HWND drop.
+/// Legacy views pass None and retain their existing Close-result behavior.
+pub(super) fn close_adopted(
+    controller: &ICoreWebView2Controller,
+    release: Option<&Weak<ProfileReleaseWait>>,
+) {
+    #[cfg(all(feature = "media-acceptance", test))]
+    let observed =
+        super::media_acceptance::adopted_close_control::before(controller, release.is_some());
+    // SAFETY: callers own the adopted controller on its creating UI/STA thread.
+    // This runs exactly once from View or standalone failed-build custody.
+    // https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2controller#close
+    let result = unsafe { controller.Close() };
+    #[cfg(all(feature = "media-acceptance", test))]
+    let result = super::media_acceptance::adopted_close_control::after(result, observed);
+    record_adopted_close_result(result, release);
+}
+
+/// A failed Close invalidates even previously credited normal exit. It neither
+/// retries Close nor replaces an earlier fault in the existing release owner.
+pub(super) fn record_adopted_close_result(
+    result: windows::core::Result<()>,
+    release: Option<&Weak<ProfileReleaseWait>>,
+) {
+    if let Err(error) = result
+        && let Some(release) = release
+    {
+        if let Some(release) = release.upgrade() {
+            release.latch_fault(ProfileReleaseFault::ControllerCloseFailed);
+        }
+        eprintln!("KELD_WV_CONTROLLER_CLOSE_FAILED {error}");
     }
 }
 

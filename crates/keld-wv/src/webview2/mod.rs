@@ -1547,6 +1547,8 @@ enum ProfileReleaseFault {
     RebindUnproven,
     ReleasingExpired,
     ActivationObservationFailed,
+    /// An identified managed controller returned an error from explicit Close.
+    ControllerCloseFailed,
 }
 
 impl ProfileReleaseFault {
@@ -1600,6 +1602,12 @@ impl ProfileReleaseFault {
             }
             (Self::ReleasingExpired, ReleaseSite::Probe) => {
                 "the exclusive-UDF probe has no releasing window, so this fault is never latched there"
+            }
+            (Self::ControllerCloseFailed, ReleaseSite::Host) => {
+                "an identified host WebView2 controller returned an error from Close"
+            }
+            (Self::ControllerCloseFailed, ReleaseSite::Probe) => {
+                "the exclusive-UDF probe has no managed controller close owner"
             }
             (Self::ActivationObservationFailed, ReleaseSite::Host) => {
                 "the host activation observer could not read its live owner or forward native focus"
@@ -2477,6 +2485,8 @@ struct View {
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
     hidden_for_minimize: Cell<bool>,
+    /// A weak link preserves checked sole-owner release-wait retirement.
+    managed_release: Option<std::rc::Weak<ProfileReleaseWait>>,
 }
 
 impl View {
@@ -3155,10 +3165,8 @@ fn standalone_window_event(
 
 impl Drop for View {
     fn drop(&mut self) {
-        // SAFETY: dropped on the engine thread (module note). `Close` releases
-        // the browser-side resources deterministically instead of waiting for
-        // COM refcounts.
-        let _ = unsafe { self.controller.Close() };
+        // The shared custodian closes on this UI thread before Window drops.
+        controller_custody::close_adopted(&self.controller, self.managed_release.as_ref());
     }
 }
 
@@ -4284,6 +4292,7 @@ mod tests {
         WebProfileSelection,
     };
 
+    mod adopted_controller_close;
     mod app_wake_bridge;
     mod exit_wait_pump;
     mod exit_wake_retirement;
@@ -5075,6 +5084,7 @@ mod tests {
             ProfileReleaseFault::RebindUnproven,
             ProfileReleaseFault::ReleasingExpired,
             ProfileReleaseFault::ActivationObservationFailed,
+            ProfileReleaseFault::ControllerCloseFailed,
         ];
         let mut contexts = std::collections::BTreeSet::new();
         for site in [ReleaseSite::Host, ReleaseSite::Probe] {

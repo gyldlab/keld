@@ -118,14 +118,10 @@ impl NativeBuild {
         {
             return Err(BuildFailure::held(error, BuildResources::Window(window)));
         }
-        let controller_result = if let Some(build) = managed {
-            create_controller_for_build(
-                &self.environment,
-                hwnd,
-                deadline,
-                Some(Rc::downgrade(build.release)),
-            )
-            .and_then(PendingController::adopt)
+        let managed_release = managed.map(|build| Rc::downgrade(build.release));
+        let controller_result = if managed.is_some() {
+            create_controller_for_build(&self.environment, hwnd, deadline, managed_release.clone())
+                .and_then(PendingController::adopt)
         } else {
             create_controller(&self.environment, hwnd, deadline)
         };
@@ -147,7 +143,11 @@ impl NativeBuild {
             let error = build.release.latch_unidentified_controller();
             return Err(BuildFailure::held(
                 error,
-                BuildResources::Controller { window, controller },
+                BuildResources::Controller {
+                    window,
+                    controller,
+                    release: managed_release,
+                },
             ));
         }
         // SAFETY: the controller was just created on this UI thread.
@@ -160,7 +160,11 @@ impl NativeBuild {
                 );
                 return Err(BuildFailure::held(
                     error,
-                    BuildResources::Controller { window, controller },
+                    BuildResources::Controller {
+                        window,
+                        controller,
+                        release: managed_release,
+                    },
                 ));
             }
         };
@@ -178,7 +182,11 @@ impl NativeBuild {
             if let Err(error) = bound {
                 return Err(BuildFailure::held(
                     error,
-                    BuildResources::Controller { window, controller },
+                    BuildResources::Controller {
+                        window,
+                        controller,
+                        release: managed_release,
+                    },
                 ));
             }
         }
@@ -187,6 +195,7 @@ impl NativeBuild {
             controller,
             webview,
             hidden_for_minimize: std::cell::Cell::new(false),
+            managed_release,
         };
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         if let (Some(control), Some(attempt)) =
