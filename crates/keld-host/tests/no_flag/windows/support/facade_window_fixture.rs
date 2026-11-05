@@ -102,6 +102,14 @@ impl FacadeRun {
         self.control_capture = Some(read_pipe_on_thread(reader));
     }
 
+    /// Read-only access to the existing single continuous capture. Callers own
+    /// byte cursors, never another socket reader, and cannot reconnect afterward.
+    pub(crate) fn captured_control(&self) -> &PipeText {
+        self.control_capture
+            .as_ref()
+            .expect("continuous capture owns control reads")
+    }
+
     pub(crate) fn pid(&self) -> u32 {
         self.host.host_pid()
     }
@@ -274,6 +282,12 @@ impl FacadeRun {
         self.retain_descendants();
         self.send("QUIT");
         self.read("QUIT_ACCEPTED");
+        self.finish_quit()
+    }
+
+    /// Complete the same ordinary Quit after its actual acceptance was consumed
+    /// by the sole continuous reader. All release/process assertions stay here.
+    pub(crate) fn finish_quit(self) -> String {
         let (status, stderr) = self.finish(Instant::now() + ui_end_kill_switch());
         assert!(status.success(), "facade Quit failed: {status}\n{stderr}");
         assert!(

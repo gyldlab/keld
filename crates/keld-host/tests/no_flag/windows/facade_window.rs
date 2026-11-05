@@ -24,6 +24,8 @@ mod initial;
 mod legacy;
 #[path = "facade_window_lifecycle.rs"]
 mod lifecycle;
+#[path = "facade_window_minimized_focus.rs"]
+mod minimized_focus;
 #[path = "facade_window_pump.rs"]
 mod pump;
 
