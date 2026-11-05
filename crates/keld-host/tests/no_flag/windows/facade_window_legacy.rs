@@ -56,7 +56,7 @@ fn windows_legacy_window_keeps_the_host_window_obligations() {
     host.observe_bun(bun_pid);
     let pid = host.host_pid();
     let native = capture(census(pid, 1)[0], pid);
-    let retained = retained_descendants(pid);
+    let retained = retained_descendants(host.child_mut());
     assert!(retained.iter().any(|(pid, _)| *pid == bun_pid));
     let profile = ephemeral_profile_dir(root.path());
     let mut pages = Pages::default();
@@ -133,7 +133,7 @@ fn windows_hello_window_keeps_the_host_window_obligations() {
         !native.children.is_empty(),
         "hello has no actual controller hosting windows"
     );
-    let retained = retained_descendants(pid);
+    let retained = retained_descendants(host.child_mut());
     assert!(!retained.is_empty(), "hello has no browser process at risk");
     let profile = ephemeral_profile_dir(root.path());
     let moved = host_observation::moved(&stderr, &mut pages, 1, native.hwnd, pid);

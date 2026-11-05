@@ -2,11 +2,13 @@
 //! Reuses the reviewed window observer and existing process handle primitives.
 
 use crate::PRODUCT_DEADLINE;
-use crate::support::process::{open_process_for_wait, process_tree_report};
+use crate::support::process::lineage::retain_native_descendants;
+use crate::support::process::process_times;
 use crate::support::window::{NativeWindowSnapshot, app_top_level_windows};
 use std::fs;
-use std::os::windows::io::OwnedHandle;
+use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,20 +73,13 @@ pub(crate) fn ephemeral_profile_dir(profile_root: &Path) -> PathBuf {
     entries[0].clone()
 }
 
-pub(crate) fn retained_descendants(pid: u32) -> Vec<(u32, OwnedHandle)> {
-    let census = process_tree_report(pid);
-    let descendants = census
-        .split_once(" descendants=")
-        .expect("native process census")
-        .1;
+pub(crate) fn retained_descendants(root: &mut Child) -> Vec<(u32, OwnedHandle)> {
+    // The guard has retained this original Child since spawn; its kernel handle,
+    // not a fresh PID lookup, supplies the expected root generation.
+    let birth = process_times(root.as_raw_handle().cast()).creation;
+    let (_, descendants) = retain_native_descendants(root, birth);
     descendants
-        .split(',')
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            let (_, rest) = entry.rsplit_once(':').expect("native descendant name");
-            let (pid, _) = rest.split_once('<').expect("native descendant parent");
-            let pid = pid.parse::<u32>().expect("native descendant PID");
-            (pid, open_process_for_wait(pid, false))
-        })
+        .into_iter()
+        .map(|child| (child.pid, child.handle))
         .collect()
 }

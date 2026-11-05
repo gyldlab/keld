@@ -1,5 +1,7 @@
 //! Independent process identities and native receipt parsing for installed facade rows.
 
+pub(super) use crate::support::process::lineage::{descendants, retain_native_descendants};
+
 use crate::PRODUCT_DEADLINE;
 use crate::support::process::{
     open_process_for_wait, process_times, process_tree_report, wait_for_process_signal,
@@ -95,22 +97,4 @@ pub(super) fn field(line: &str, name: &str) -> u32 {
 
 pub(super) fn browser_count(tree: &str) -> u32 {
     field(tree, "browser_processes")
-}
-
-pub(super) fn descendants(tree: &str) -> Vec<(String, u32, u32)> {
-    tree.split_once(" descendants=")
-        .expect("native census descendants")
-        .1
-        .split(',')
-        .filter(|value| !value.is_empty())
-        .map(|entry| {
-            let (name, rest) = entry.rsplit_once(':').expect("descendant image and PID");
-            let (pid, parent) = rest.split_once('<').expect("descendant parent PID");
-            (
-                name.to_owned(),
-                pid.parse().expect("descendant PID"),
-                parent.parse().expect("parent PID"),
-            )
-        })
-        .collect()
 }

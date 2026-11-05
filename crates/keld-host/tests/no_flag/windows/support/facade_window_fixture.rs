@@ -223,7 +223,8 @@ impl FacadeRun {
     /// Keep exact kernel process identities before the terminal. The normal exit
     /// assertions run before the guard's emergency cleanup can terminate anything.
     pub(crate) fn retain_descendants(&mut self) {
-        self.retained.extend(retained_descendants(self.pid()));
+        self.retained
+            .extend(retained_descendants(self.host.child_mut()));
         assert!(
             self.retained.iter().any(|(pid, _)| *pid == self.bun_pid),
             "live Bun missing from independent native census"

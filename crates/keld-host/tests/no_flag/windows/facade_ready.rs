@@ -480,7 +480,7 @@ mod admitted {
                 !native.children.is_empty(),
                 "public facade has no controller hosting windows"
             );
-            let descendants = retained_descendants(host_pid);
+            let descendants = retained_descendants(host.child_mut());
             assert!(
                 !descendants.is_empty(),
                 "late-package process census is empty"
@@ -581,7 +581,7 @@ mod admitted {
                 )
                 .expect("capture-order controller observation");
                 assert_ne!(native.children, Vec::<usize>::new());
-                let descendants = retained_descendants(host_pid);
+                let descendants = retained_descendants(host.child_mut());
                 command_line(&mut writer, "DESTROY");
                 assert_eq!(
                     read_control_line_or_host_failure(
@@ -601,7 +601,7 @@ mod admitted {
                 let window =
                     wait_for_host_window(host.host_pid(), Instant::now() + PRODUCT_DEADLINE);
                 assert_ne!(window["handle"].as_u64(), Some(0), "{window}");
-                retained_descendants(host_pid)
+                retained_descendants(host.child_mut())
             };
             assert!(
                 !descendants.is_empty(),

@@ -1,7 +1,9 @@
 //! Installed facade resources and independent process observations for GH1188.
 //! The existing launch gate and `WindowsProcessJob` own this fixture's family.
 
-use super::facade_browser_observation::{BrowserObservation, descendants, observe_browser};
+use super::facade_browser_observation::{
+    BrowserObservation, descendants, observe_browser, retain_native_descendants,
+};
 pub(super) use super::facade_browser_observation::{browser_count, field, number};
 use super::sessions::{LifecycleObservation, SeamedHost, read_lifecycle_record};
 use crate::facade_window::fixture::FacadeFixture;
@@ -254,24 +256,33 @@ impl InstalledRun<'_> {
     }
 
     pub(super) fn retain_descendants(&mut self) -> String {
-        let tree = process_tree_report(self.pid());
-        for (image, pid, parent) in descendants(&tree) {
-            if self.retained.iter().all(|(old, _)| *old != pid) {
-                let handle = open_process_for_wait(pid, false);
-                let times = process_times(handle.as_raw_handle().cast());
+        let (tree, observations) = retain_native_descendants(&mut self.host.host, self.host.birth);
+        for observation in observations {
+            let already_retained = self.retained.iter().any(|(pid, handle)| {
+                *pid == observation.pid
+                    && process_times(handle.as_raw_handle().cast()).creation == observation.birth
+            });
+            if !already_retained {
                 println!(
-                    "KELD_GH1188_INSTALLED_RETAIN host={} host_birth={} pid={pid} parent={parent} image={image} birth={} exit={}",
+                    "KELD_GH1188_INSTALLED_RETAIN host={} host_birth={} pid={} parent={} image={} birth={} exit={}",
                     self.pid(),
                     self.host.birth,
-                    times.creation,
-                    times.exit,
+                    observation.pid,
+                    observation.parent,
+                    observation.image,
+                    observation.birth,
+                    process_times(observation.handle.as_raw_handle().cast()).exit,
                 );
-                self.retained.push((pid, handle));
+                self.retained.push((observation.pid, observation.handle));
             }
         }
+        let bun_birth = process_times(self.bun.as_raw_handle().cast()).creation;
         assert!(
-            self.retained.iter().any(|(pid, _)| *pid == self.bun_pid),
-            "live Bun absent from native family: {tree}"
+            self.retained.iter().any(|(pid, handle)| {
+                *pid == self.bun_pid
+                    && process_times(handle.as_raw_handle().cast()).creation == bun_birth
+            }),
+            "live original Bun generation absent from native family: {tree}"
         );
         tree
     }
