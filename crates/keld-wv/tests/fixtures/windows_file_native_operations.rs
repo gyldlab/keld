@@ -42,7 +42,7 @@ impl Session {
         let returned = posted.is_ok()
             && pump_until(Instant::now() + Duration::from_secs(1), || {
                 polls += 1;
-                polls >= 2
+                polls >= 3
             });
         let mut remaining = 0;
         for _ in 0..=QUEUED {
@@ -58,8 +58,8 @@ impl Session {
         posted?;
         Ok(
             json!({"queued":QUEUED,"remaining_at_readiness":remaining,"readiness_polls":polls,"returned_on_readiness":returned,
-            "ready_before_queue_drained":returned && remaining > 0 && remaining <= QUEUED,
-            "scope":"real private thread queue; readiness revisitation, not preemption or a late WebView2 callback"}),
+            "ready_before_queue_drained":returned && remaining == QUEUED - 1 && polls == 3,
+            "scope":"real private thread queue; readiness revisitation after one dispatch, not preemption or a late WebView2 callback"}),
         )
     }
 
