@@ -17,8 +17,8 @@ use super::{
     LifecycleEvent, MAX_BOOT_BYTES, ManifestError, Mutex, Ordering, PERMISSIONS_FILE,
     PendingFsCall, PlatformPrimaryOwnerHandle, PrimaryLinkIdentity, PrimaryRouter,
     PrimaryRouterHandle, Receiver, SESSION_CLI_LEASE_LOST, SESSION_LIFECYCLE_QUIT, SESSION_RUNNING,
-    SessionShutdownState, admit_kipc_transport_sidecar, app_detail, io, load_verified_manifest,
-    mpsc, parse_boot_bytes, thread, validate_from_root, write_frame,
+    SessionShutdownState, app_detail, io, load_verified_manifest, mpsc, parse_boot_bytes, thread,
+    validate_from_root, write_frame,
 };
 
 #[cfg(any(target_os = "macos", windows))]
@@ -57,7 +57,7 @@ fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn facade_and_renderer_ready_milestones_cannot_cross_or_repeat() {
     use super::{AppReadyTrigger, accept_boot_ready_trigger};
@@ -83,7 +83,7 @@ fn facade_and_renderer_ready_milestones_cannot_cross_or_repeat() {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn facade_init_deadline_arms_only_on_loop_entry_and_ends_at_first_init() {
     use super::{AppReadyTrigger, initial_milestone_poll};
@@ -140,7 +140,7 @@ fn facade_init_deadline_arms_only_on_loop_entry_and_ends_at_first_init() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn queued_late_first_init_cannot_bypass_absolute_deadline() {
     use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
@@ -170,7 +170,7 @@ fn queued_late_first_init_cannot_bypass_absolute_deadline() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline() {
     use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
@@ -203,7 +203,7 @@ fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline()
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn busy_non_init_queue_and_empty_deadline_both_expire_without_ready() {
     use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
@@ -229,7 +229,7 @@ fn busy_non_init_queue_and_empty_deadline_both_expire_without_ready() {
     );
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn unarmed_first_init_timestamp_cannot_mint_ready() {
     use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
