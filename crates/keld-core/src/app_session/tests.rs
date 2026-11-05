@@ -329,6 +329,10 @@ include!("tests/guarded_router_and_quit.rs");
 #[cfg(target_os = "linux")]
 #[path = "tests/accepted_primary_identity.rs"]
 mod accepted_primary_identity_linux;
+// Windows reuses the authenticated primary fixture; app-bound stays Unix-only.
+#[cfg(windows)]
+#[path = "tests/accepted_primary_identity.rs"]
+mod accepted_primary_identity_windows;
 include!("tests/linux_strict_test_flags.rs");
 include!("tests/role_shutdown_and_worker.rs");
 include!("tests/successor_single_flight.rs");
