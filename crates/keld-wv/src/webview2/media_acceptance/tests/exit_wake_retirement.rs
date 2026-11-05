@@ -17,6 +17,26 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, GetWindowThreadProcessId, IsWindow, PostMessageW, WM_CLOSE,
 };
 
+fn cleanup_live_parent(hwnd: HWND, owner_thread: u32) -> Result<(), WvError> {
+    // Cleanup the retained native parent before asserting the frozen
+    // result. Only the original UI thread can destroy this fixture.
+    // SAFETY: both identity queries are read-only.
+    let (current_owner, current_thread) =
+        unsafe { (GetWindowThreadProcessId(hwnd, None), GetCurrentThreadId()) };
+    if current_owner != owner_thread || current_owner != current_thread {
+        return Err(failure("terminal HWND cleanup ownership is unproved"));
+    }
+    // SAFETY: original same-thread fixture parent, after its Rust owner
+    // was consumed; no pointer payload or external window is touched.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-destroywindow
+    unsafe { DestroyWindow(hwnd) }.map_err(failure)?;
+    // SAFETY: independent post-cleanup query, not the semantic sample.
+    if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        return Err(failure("terminal HWND cleanup did not finish"));
+    }
+    Ok(())
+}
+
 fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
     let root = profile_fixture_root("exit-wake-retirement");
     std::fs::create_dir_all(&root).map_err(failure)?;
@@ -68,22 +88,7 @@ fn case(hello: bool, inject_error: bool) -> Result<(), WvError> {
             hwnd.0 as usize
         );
         if hwnd_live_at_return {
-            // Cleanup the retained native parent before asserting the frozen
-            // result. Only the original UI thread can destroy this fixture.
-            // SAFETY: both identity queries are read-only.
-            let (current_owner, current_thread) =
-                unsafe { (GetWindowThreadProcessId(hwnd, None), GetCurrentThreadId()) };
-            if current_owner != owner_thread || current_owner != current_thread {
-                return Err(failure("terminal HWND cleanup ownership is unproved"));
-            }
-            // SAFETY: original same-thread fixture parent, after its Rust owner
-            // was consumed; no pointer payload or external window is touched.
-            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-destroywindow
-            unsafe { DestroyWindow(hwnd) }.map_err(failure)?;
-            // SAFETY: independent post-cleanup query, not the semantic sample.
-            if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
-                return Err(failure("terminal HWND cleanup did not finish"));
-            }
+            cleanup_live_parent(hwnd, owner_thread)?;
         }
         let phase = raw_phase(&plan)?;
         let facts = exit_wake_control::Scope::observations()?;
