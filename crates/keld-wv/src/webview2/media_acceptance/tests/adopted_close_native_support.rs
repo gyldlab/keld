@@ -19,11 +19,16 @@ fn is_window(hwnd: HWND) -> bool {
 
 pub(super) struct ExitWitness {
     observation: Option<backend::BrowserExitObservation>,
+    // A copied identity only. Production retains its registration until it ends.
+    primary_token: Option<i64>,
     normal: u32,
 }
 
 impl ExitWitness {
     pub(super) fn new(engine: &backend::WebView2Engine) -> Result<Self, WvError> {
+        let primary_token = engine
+            .browser_exit_token
+            .ok_or_else(|| failure("managed fixture primary exit observer is missing"))?;
         Ok(Self {
             // Read-only native observation using the current engine binding.
             // This is not another release policy or profile lease owner.
@@ -33,8 +38,34 @@ impl ExitWitness {
                 None,
                 backend::ReleaseSite::Host,
             )?),
+            primary_token: Some(primary_token),
             normal: 0,
         })
+    }
+
+    pub(super) fn retire_fault_orphan(
+        &mut self,
+        actual_close_fault: bool,
+        witness_calls: u32,
+    ) -> Result<(), WvError> {
+        let token = self
+            .primary_token
+            .take()
+            .expect("primary registration identity is considered once");
+        if actual_close_fault && witness_calls == 0 {
+            // The consumed engine has returned its actual Close fault before
+            // finish_profile_release_with. That method removes the primary
+            // token only after the synchronous Host witness has been called.
+            // Our extra observer alone now retains the same native environment.
+            // Checked fixture cleanup avoids a callback to its dropped receiver;
+            // this gives no production observer-retirement or release credit.
+            let observation = self.observation.as_ref().expect("live fixture observer");
+            backend::remove_browser_exit_observer(&observation.environment, token)?;
+            println!(
+                "KELD_ADOPTED_CLOSE_ORPHAN_OBSERVER_REMOVED cleanup_owner=fixture product_retirement_credit=false"
+            );
+        }
+        Ok(())
     }
 
     fn drain(&mut self, pid: u32) -> Result<(), WvError> {

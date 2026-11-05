@@ -178,6 +178,13 @@ fn require_native_eligibility(
     Ok(())
 }
 
+fn expected_close_fault(outcome: &Result<(), WvError>) -> bool {
+    outcome.as_ref().err().is_some_and(|error| {
+        let message = error.to_string();
+        message.contains("KELD-WV-009") && message.contains("returned an error from Close")
+    })
+}
+
 fn require_product_verdict(
     withhold: bool,
     final_phase: &str,
@@ -185,16 +192,7 @@ fn require_product_verdict(
     outcome: &Result<(), WvError>,
 ) -> Result<(), WvError> {
     if withhold {
-        let message = outcome
-            .as_ref()
-            .err()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        if final_phase == "stopping"
-            && witness_calls == 0
-            && message.contains("KELD-WV-009")
-            && message.contains("returned an error from Close")
-        {
+        if final_phase == "stopping" && witness_calls == 0 && expected_close_fault(outcome) {
             Ok(())
         } else {
             Err(failure(
@@ -246,6 +244,11 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
             facts.capture_error
         ))
     })?;
+    // Freeze the actual product result first. The test-retained environment
+    // can otherwise keep its fault-returned primary callback alive after the
+    // engine's receiver is gone. Healthy and omitted-latch paths never take
+    // this cleanup branch because their Host witness has already run.
+    let retired_orphan = witness.retire_fault_orphan(expected_close_fault(&outcome), witness_calls);
     eprintln!(
         "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-enter pid={}",
         capture.browser_pid
@@ -257,6 +260,7 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
     drop(control);
     let already_retired = cleanup?;
     retired_observer?;
+    retired_orphan?;
     let trace = trace?;
     let final_phase = final_phase?;
     println!(
