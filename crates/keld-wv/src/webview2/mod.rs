@@ -3802,7 +3802,11 @@ impl WebView2Engine {
                     managed.deferred_wake(target, &release_in_loop, ending)
                 }
                 Event::UserEvent(WindowsLoopEvent::ControllerFocus(id)) => {
-                    managed.controller_focus(id)
+                    managed.queue_controller_focus(id);
+                    Ok(())
+                }
+                Event::MainEventsCleared if facade && !ending => {
+                    managed.flush_controller_focus()
                 }
                 Event::WindowEvent { window_id, event: ref native_event, .. } if facade => {
                     managed.window_event(window_id, native_event)

@@ -194,7 +194,28 @@ impl ManagedWindows {
         }
     }
 
-    pub(in crate::webview2) fn controller_focus(&self, id: WebviewId) -> Result<(), WvError> {
+    /// A controller callback can run inside a native activation transition.
+    /// Retain observation work until Tao has drained the current event batch.
+    pub(in crate::webview2) fn queue_controller_focus(&mut self, id: WebviewId) {
+        if self.views.contains_key(&id.0) && !self.pending_focus.contains(&id.0) {
+            debug_assert!(self.pending_focus.len() < self.pending_focus.capacity());
+            self.pending_focus.push(id.0);
+        }
+    }
+
+    pub(in crate::webview2) fn flush_controller_focus(&mut self) -> Result<(), WvError> {
+        // Keep the capacity reserved during construction. Focus dispatch does
+        // not allocate, and Core remains the sole state/deduplication owner.
+        let mut pending = std::mem::take(&mut self.pending_focus);
+        let result = pending
+            .iter()
+            .try_for_each(|id| self.controller_focus(WebviewId(*id)));
+        pending.clear();
+        self.pending_focus = pending;
+        result
+    }
+
+    fn controller_focus(&self, id: WebviewId) -> Result<(), WvError> {
         let Some(view) = self.views.get(&id.0) else {
             return Ok(());
         };

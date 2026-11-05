@@ -31,6 +31,7 @@ mod stop_order_tests;
 
 pub(super) struct ManagedWindows {
     views: BTreeMap<u32, View>,
+    pending_focus: Vec<u32>,
     custody: ManagedCustody,
     builder: NativeBuild,
     events: Sender<AppWindowEvent>,
@@ -52,6 +53,7 @@ impl ManagedWindows {
     ) -> Self {
         Self {
             views: BTreeMap::new(),
+            pending_focus: Vec::new(),
             custody: ManagedCustody::default(),
             builder,
             events,
@@ -107,6 +109,7 @@ impl ManagedWindows {
     /// Stopping. Deferred refusals then observe that committed state.
     /// Parked answers remain owned until independent native retirement.
     pub(super) fn stop(&mut self, after_views_closed: impl FnOnce()) -> Result<(), WvError> {
+        self.pending_focus.clear();
         let events = &self.events;
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let test_control = self.test_control.as_ref();
@@ -190,6 +193,7 @@ impl ManagedWindows {
                 )?;
                 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
                 observe::releasing(self.custody.len());
+                self.pending_focus.retain(|pending| *pending != view.0);
                 self.views.remove(&view.0);
                 Ok(())
             }
