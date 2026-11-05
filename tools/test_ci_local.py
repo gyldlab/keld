@@ -545,12 +545,16 @@ class ExecutorTests(SelectionTests):
                        "packages/@keld/api/src/fs.generated.ts",
                        "packages/@keld/api/src/auth.generated.ts",
                        "packages/@keld/api/src/dialog.generated.ts",
+                       "packages/@keld/api/src/window-codec.ts",
                        "packages/@keld/kipc/src/transport.ts"]
             for relative in outputs + ["justfile", "bunfig.toml", "tools/fmt_included.sh",
                     "packages/@keld/kipc/scripts/echo-codegen.ts",
+                    "packages/@keld/kipc/scripts/menu-codegen.ts",
                     "crates/keld-ipc/src/echo.rs", "crates/keld-ipc/src/channel_table.rs",
+                    "crates/keld-ipc/src/compat_control.rs", "crates/keld-ipc/src/window.rs",
+                    "crates/keld-ipc/src/lifecycle.rs",
                     "crates/keld-native/src/fs.rs", "crates/keld-native/src/auth/mod.rs",
-                    "crates/keld-native/src/dialog.rs"]:
+                    "crates/keld-native/src/dialog.rs", "crates/keld-native/src/menu.rs"]:
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source / relative, destination)

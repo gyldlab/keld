@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,7 +34,6 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::Window;
 use wry::WebViewExtMacOS;
 
-use crate::WebviewId;
 pub use crate::engine::AppReadyTrigger;
 pub use crate::engine::MacDialogUiOutcome;
 pub use crate::engine::{AppWindowCommand, AppWindowEvent};
@@ -44,17 +43,241 @@ use crate::profile::{
     EphemeralProfile, ProfileError, ProfileErrorKind, ProfileIdentity, WebProfileSelection,
 };
 use crate::startup::{PageLoad, StartupPhase, StartupTrace, trace_enabled};
+use crate::{ApplicationNameForUserAgent, WebviewId};
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod application_name_fixture;
 mod macos_bridge;
+mod macos_document;
+mod macos_navigation_owner;
 mod macos_profile;
+mod macos_resource_intake;
+mod macos_resource_native;
+mod macos_resource_source;
 mod managed_windows;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub use application_name_fixture::run_application_name_fixture_child;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod preload_native_fixture;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod s1_resource_fixture;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod s1_resource_lifecycle;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+mod s1_resource_lifecycle_observer;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub use s1_resource_fixture::{admit_s1_fixture_source, run_s1_resource_fixture_child};
 
+pub use macos_bridge::{
+    AppPreloadBudget, AppPreloadImage, AppPreloadReservation, MAX_APP_PRELOAD_BYTES,
+    ORIGINAL_DRAWIO_PRELOAD_SHA256, RendererBridgeEndpoint, RendererBridgeOperation,
+    RendererBridgeOutcome, RendererBridgeRequest, RendererRoleWitness,
+};
 use macos_bridge::{BridgeNavigationHandle, MacRendererBridge};
-pub use macos_bridge::{RendererBridgeEndpoint, RendererBridgeOutcome, RendererBridgeRequest};
+use macos_document::{NativeAttempt, NativeCommittedStamp};
+use macos_navigation_owner::KeldNavigationOwner;
+use macos_resource_native::{KeldAppSchemeHandler, ReaderTerminated, ResourceCompleted};
+pub use macos_resource_source::{
+    AdmittedWebAppSource, MacNavigationUrl, VerifiedResourceResponsePolicy, VerifiedWebAsset,
+};
+
+/// Immutable **observation** of the one real GH542 `WKNavigation` commit. The
+/// inner native witness/identity is opaque to Core and the page. Storing or
+/// comparing this snapshot does NOT prove that it remains current. Each
+/// privilege-bearing native operation must recheck it against the living
+/// `NativeDocumentOwner` on the UI owner in the same admission turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacNativeDocumentStamp(NativeCommittedStamp);
+
+impl MacNativeDocumentStamp {
+    /// Actual native view that produced this immutable observation.
+    #[must_use]
+    pub fn view(self) -> WebviewId {
+        self.0.view
+    }
+
+    /// Observed native committed generation; not future-operation authority.
+    #[must_use]
+    pub fn observed_generation(self) -> u32 {
+        self.0.generation.get()
+    }
+
+    /// Actual native attempt retained by this committed observation.
+    /// This accessor cannot mint or authorize a document.
+    #[must_use]
+    pub const fn attempt(self) -> MacNativeAttempt {
+        MacNativeAttempt(self.0.attempt)
+    }
+}
+
+/// A host-started native navigation attempt, without a committed document.
+/// No IPC or page authority can derive from this value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacNativeAttempt(NativeAttempt);
+
+impl MacNativeAttempt {
+    /// Actual native view to which this opaque attempt belongs.
+    #[must_use]
+    pub fn view(self) -> WebviewId {
+        self.0.view()
+    }
+}
 
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
 use macos_profile::MacMediaPromptProbe;
 use macos_profile::MacProfileOwner;
+
+/// Revocable current-document witness for the final Host IPC admission cut.
+/// Only the native document owner can mint/revoke it. A snapshot or true result
+/// does not replace rechecking the UI owner for a later native side effect.
+#[derive(Clone, Debug)]
+pub struct MacNativeDocumentLease(macos_document::NativeDocumentLease);
+impl PartialEq for MacNativeDocumentLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_binding(other)
+    }
+}
+impl Eq for MacNativeDocumentLease {}
+impl MacNativeDocumentLease {
+    /// Acquire the native owner's synchronous revocation state now.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        self.0.is_current()
+    }
+    /// Read the exact immutable native commit this witness belongs to.
+    #[must_use]
+    pub fn stamp(&self) -> MacNativeDocumentStamp {
+        MacNativeDocumentStamp(self.0.stamp())
+    }
+    /// Match the same actual admitted source allocation, including policy aliases.
+    #[must_use]
+    pub fn belongs_to_source(&self, source: &Arc<AdmittedWebAppSource>) -> bool {
+        self.0.belongs_to_source(source)
+    }
+    /// Match the exact original irreversible native lease, not numeric coincidence.
+    #[must_use]
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.0.same_binding(&other.0)
+    }
+}
+
+/// Terminal choice at the native conditional document-destroy admission cut.
+/// Acceptance means irreversible retirement, never physical window release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OriginalDocumentDestroyDecision {
+    /// Neither native admission nor Core retirement has won yet.
+    Pending = 0,
+    /// Native accepted the exact current document and retired it on its UI turn.
+    Accepted = 1,
+    /// Native refused before changing document, bridge, resources or window.
+    Refused = 2,
+    /// Core retirement won before native admission; no conditional effect may run.
+    Cancelled = 3,
+}
+
+/// One bounded in-flight conditional native effect shared with the Core Entry.
+/// Arc allocation identity associates the command and receipt; this is neither
+/// a document identity nor a principal. Only the living native owner may accept.
+pub struct OriginalDocumentDestroyAdmission {
+    decision: AtomicU8,
+}
+
+impl OriginalDocumentDestroyAdmission {
+    /// Create one pending admission before dispatching the immutable command.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            decision: AtomicU8::new(OriginalDocumentDestroyDecision::Pending as u8),
+        }
+    }
+
+    /// Observe the same cancellation/admission winner before successor adoption.
+    #[must_use]
+    pub fn decision(&self) -> OriginalDocumentDestroyDecision {
+        // Only the constructors and terminal CAS below write these four values.
+        // Any unrecognized representation refuses effect/adoption as cancelled.
+        match self.decision.load(Ordering::Acquire) {
+            0 => OriginalDocumentDestroyDecision::Pending,
+            1 => OriginalDocumentDestroyDecision::Accepted,
+            2 => OriginalDocumentDestroyDecision::Refused,
+            _ => OriginalDocumentDestroyDecision::Cancelled,
+        }
+    }
+
+    /// Cancel only before the native effect is admitted. False requires reading
+    /// `decision()`: Accepted must synchronously become nonadoptable in Core.
+    #[must_use]
+    pub fn cancel_before_admission(&self) -> bool {
+        self.finish_pending(OriginalDocumentDestroyDecision::Cancelled)
+    }
+
+    fn try_accept_on_ui(&self) -> bool {
+        self.finish_pending(OriginalDocumentDestroyDecision::Accepted)
+    }
+
+    fn refuse_on_ui(&self) -> bool {
+        self.finish_pending(OriginalDocumentDestroyDecision::Refused)
+    }
+
+    fn finish_pending(&self, terminal: OriginalDocumentDestroyDecision) -> bool {
+        self.decision
+            .compare_exchange(
+                OriginalDocumentDestroyDecision::Pending as u8,
+                terminal as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Construct Accepted for Core state-only reconciliation tests. This mints
+    /// no native lease, view, document or authority and is absent in production.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    #[must_use]
+    pub const fn fixture_accepted() -> Self {
+        Self {
+            decision: AtomicU8::new(OriginalDocumentDestroyDecision::Accepted as u8),
+        }
+    }
+
+    /// Compete with Core cancellation in state-only retirement-order tests.
+    /// This supplies no native lease or effect and is absent in production.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    #[must_use]
+    pub fn fixture_try_accept(&self) -> bool {
+        self.try_accept_on_ui()
+    }
+
+    /// Construct Refused for Core state-only reconciliation tests, never native
+    /// evidence. This fixture is absent from production builds.
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    #[must_use]
+    pub const fn fixture_refused() -> Self {
+        Self {
+            decision: AtomicU8::new(OriginalDocumentDestroyDecision::Refused as u8),
+        }
+    }
+}
+
+impl Default for OriginalDocumentDestroyAdmission {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::fmt::Debug for OriginalDocumentDestroyAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OriginalDocumentDestroyAdmission")
+            .field("decision", &self.decision())
+            .finish()
+    }
+}
+impl PartialEq for OriginalDocumentDestroyAdmission {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl Eq for OriginalDocumentDestroyAdmission {}
 
 /// One live webview and the host window it fills (v0: one per window).
 #[repr(C)]
@@ -64,11 +287,39 @@ struct View {
     // Build provenance only: legacy initial renderers remain outside the Core
     // registry, and must retain their existing LastWindowClosed close path.
     registry_managed: bool,
+    _preload_image: Option<Arc<AppPreloadImage>>,
+    /// One view/document/source owner. Existing renderer-declared KEL142
+    /// windows retain their narrower independent pre-GH542 behavior.
+    resource: Option<MacResourceView>,
+}
+
+struct MacResourceView {
+    handler: Retained<KeldAppSchemeHandler>,
+    navigation: Retained<KeldNavigationOwner>,
 }
 
 enum WkUserEvent {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    ApplicationNameFixtureWake,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    ResourceLifecycle(s1_resource_lifecycle::LifecycleEvent),
     App(AppWindowCommand),
     Renderer(RendererBridgeOutcome),
+    RendererCustody,
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    PreloadFixtureSnapshot {
+        view: WebviewId,
+        document: MacNativeDocumentLease,
+        raw: String,
+    },
+    Resource(ResourceCompleted),
+    ReaderTerminated(ReaderTerminated),
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    S1FixtureSnapshot {
+        view: WebviewId,
+        stamp: NativeCommittedStamp,
+        raw: String,
+    },
 }
 
 /// The macOS [`WebEngine`] backend.
@@ -77,11 +328,18 @@ enum WkUserEvent {
 /// consumes it. Uses tao `run_return` so the host can reap supervised children
 /// after the last window closes (KEL-30 concurrent hello app-link).
 pub struct WkWebViewEngine {
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    resource_lifecycle_probe:
+        Option<std::rc::Rc<std::cell::RefCell<s1_resource_lifecycle::LifecycleProbe>>>,
     /// Present until the run loop starts; consumed by `run_until_closed`.
     event_loop: Option<EventLoop<WkUserEvent>>,
     views: BTreeMap<u32, View>,
     renderer_bridges: BTreeMap<u32, MacRendererBridge>,
     renderer_outcomes: Option<Receiver<RendererBridgeOutcome>>,
+    renderer_requests: Option<(std::sync::mpsc::SyncSender<RendererBridgeRequest>, u16)>,
+    /// Set exactly once by Core after GH499 graph and GH552 policy admission.
+    /// A JS call cannot choose this source or supply a second webapp root.
+    original_resource: Option<Arc<AdmittedWebAppSource>>,
     next_id: u32,
     profile: MacProfileOwner,
     profile_test_media_seed_allow: bool,
@@ -112,7 +370,23 @@ impl WkWebViewEngine {
     /// Returns [`WvError::ProfileSelection`] when identity, UUID binding,
     /// lifecycle, ownership, or the macOS persistent-store version gate fails.
     pub fn new(selection: WebProfileSelection) -> Result<Self, WvError> {
-        Self::new_with_profile_test_media(selection, false)
+        Self::new_with_application_name_for_user_agent(selection, None)
+    }
+
+    /// Creates the engine with immutable, validated user-agent application metadata.
+    ///
+    /// This macOS-only cold constructor preserves the native engine user agent
+    /// and existing application-name prefix. Metadata conveys no authority.
+    /// Call on the process main thread before any view is created.
+    ///
+    /// # Errors
+    /// Returns the same profile errors as [`Self::new`]. Native metadata
+    /// assignment errors surface when a view configuration is created.
+    pub fn new_with_application_name_for_user_agent(
+        selection: WebProfileSelection,
+        application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
+    ) -> Result<Self, WvError> {
+        Self::new_with_profile_test_media(selection, false, application_name_for_user_agent)
     }
 
     /// Creates the private real-OS profile fixture with one explicit test-only
@@ -127,7 +401,7 @@ impl WkWebViewEngine {
         selection: WebProfileSelection,
         seed_media_allow: bool,
     ) -> Result<Self, WvError> {
-        let mut engine = Self::new_with_profile_test_media(selection, seed_media_allow)?;
+        let mut engine = Self::new_with_profile_test_media(selection, seed_media_allow, None)?;
         engine.media_prompt_probe = Some(MacMediaPromptProbe::new()?);
         Ok(engine)
     }
@@ -135,16 +409,22 @@ impl WkWebViewEngine {
     fn new_with_profile_test_media(
         selection: WebProfileSelection,
         profile_test_media_seed_allow: bool,
+        application_name_for_user_agent: Option<ApplicationNameForUserAgent>,
     ) -> Result<Self, WvError> {
         let startup = Arc::new(Mutex::new(StartupTrace::new()));
         let mut event_loop = EventLoopBuilder::with_user_event().build();
-        let profile = MacProfileOwner::new(selection, &mut event_loop)?;
+        let profile =
+            MacProfileOwner::new(selection, &mut event_loop, application_name_for_user_agent)?;
         mark_startup(&startup, StartupPhase::EventLoop);
         Ok(Self {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            resource_lifecycle_probe: None,
             event_loop: Some(event_loop),
             views: BTreeMap::new(),
             renderer_bridges: BTreeMap::new(),
             renderer_outcomes: None,
+            renderer_requests: None,
+            original_resource: None,
             next_id: 1,
             profile,
             profile_test_media_seed_allow,
@@ -169,6 +449,25 @@ impl WkWebViewEngine {
         })?;
         let ephemeral = EphemeralProfile::from_host_random(launch_nonce)?;
         Self::new(WebProfileSelection::ephemeral_dev(ephemeral))
+    }
+
+    /// Core calls on the native UI owner after exact retained graph and
+    /// profile/policy preflight. The first facade window consumes this source.
+    /// No content is loaded or authority minted merely by storing the source.
+    ///
+    /// # Errors
+    /// Rejects a second selection or a selection after native creation.
+    pub fn admit_initial_legacy_webapp(
+        &mut self,
+        source: Arc<AdmittedWebAppSource>,
+    ) -> Result<(), WvError> {
+        if self.original_resource.is_some() || self.event_loop.is_none() || !self.views.is_empty() {
+            return Err(WvError::Webview(String::from(
+                "GH473 original source must be selected once before facade WK construction",
+            )));
+        }
+        self.original_resource = Some(source);
+        Ok(())
     }
 
     /// Removes only the persistent store for one Core-verified app identity.
@@ -271,6 +570,28 @@ impl WkWebViewEngine {
         self.create_internal(spec, Some(events), None)
     }
 
+    /// Retain the existing single Core renderer endpoint for later registry windows.
+    /// No channel, dispatcher or document authority is created by this binding.
+    ///
+    /// # Errors
+    /// Refuses duplicate setup or setup after UI loop entry.
+    pub fn install_renderer_endpoint(
+        &mut self,
+        mut endpoint: RendererBridgeEndpoint,
+    ) -> Result<(), WvError> {
+        if self.event_loop.is_none()
+            || self.renderer_outcomes.is_some()
+            || self.renderer_requests.is_some()
+        {
+            return Err(WvError::RendererBridge {
+                detail: String::from("renderer endpoint already selected or UI loop running"),
+            });
+        }
+        self.renderer_requests = Some((endpoint.requests.clone(), endpoint.admitted_channel));
+        self.renderer_outcomes = endpoint.outcomes.take();
+        Ok(())
+    }
+
     /// Creates the initial app window with the approved KEL-142 renderer bridge.
     ///
     /// # Errors
@@ -315,7 +636,7 @@ impl WkWebViewEngine {
             events,
             None,
             AppReadyTrigger::NavigationReady,
-            &mut |_, _, _, _| Ok((true, None)),
+            &mut |_, _, _, _, _| Ok((true, None)),
             (&mut unproved, || {}),
         )
     }
@@ -326,7 +647,10 @@ impl WkWebViewEngine {
     /// The resolver returns its actual `AppKit` window through wry's safe accessor.
     /// `service` receives the main-thread marker, the legacy Auth anchor,
     /// an explicit `WebviewId` resolver for Host-validated dialog parents,
-    /// and stop intent. Both resolvers return only the current live Wry-owned
+    /// a close-request callback for the exact focused native window, and stop
+    /// intent. The callback emits the existing registry close request and never
+    /// physically closes a window or decides its veto. Both resolvers return
+    /// only the current live Wry-owned
     /// `NSWindow`; neither accepts a native pointer or creates a window. It
     /// returns (actual owner drained, next original absolute deadline), or an
     /// owned-custody failure. `retains_main_custody` is set on that failed cut,
@@ -359,6 +683,7 @@ impl WkWebViewEngine {
             MainThreadMarker,
             &mut dyn FnMut() -> Option<Retained<NSWindow>>,
             &mut dyn FnMut(WebviewId) -> Option<Retained<NSWindow>>,
+            &mut dyn FnMut(&NSWindow) -> Result<(), WvError>,
             bool,
         ) -> Result<(bool, Option<Instant>), WvError>,
     {
@@ -375,6 +700,7 @@ impl WkWebViewEngine {
             )));
         };
         let proxy = event_loop.create_proxy();
+        let resource_wake = proxy.clone();
         let stop_bridge = Arc::new(AtomicBool::new(false));
         let stop_for_bridge = Arc::clone(&stop_bridge);
         let terminal_intent = Arc::new(AtomicBool::new(false));
@@ -392,7 +718,7 @@ impl WkWebViewEngine {
             .renderer_outcomes
             .take()
             .map(|outcomes| {
-                spawn_renderer_outcome_bridge(outcomes, proxy, Arc::clone(&stop_bridge))
+                spawn_renderer_outcome_bridge(outcomes, proxy.clone(), Arc::clone(&stop_bridge))
             })
             .transpose()?;
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
@@ -406,10 +732,13 @@ impl WkWebViewEngine {
         let mut terminal_requested = false;
         let mut closing = Vec::new();
         let mut main_owner_failure = None;
+        let mut resource_unproved = false;
         let mut host_init_emitted = false;
         let profile = &self.profile;
+        let selected_resource = self.original_resource.as_ref();
         let next_id = &mut self.next_id;
         let media_seed_allow = self.profile_test_media_seed_allow;
+        let renderer_endpoint = self.renderer_requests.clone();
         // Arm the host's external Init watchdog only after loop setup has succeeded.
         // The watchdog is independent of Tao's pre-Init proxy/waker availability.
         on_loop_entry();
@@ -421,7 +750,30 @@ impl WkWebViewEngine {
             // this process: the main thread cannot service a proxy or unwind.
             std::thread::park();
         }
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let lifecycle_probe = self.resource_lifecycle_probe.clone();
         let code = event_loop.run_return(|event, target, control_flow| {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Some(probe)=lifecycle_probe.as_ref()
+                && let Err(error)=probe.borrow_mut().before_event(&event, &views) {
+                    main_owner_failure.get_or_insert(error);
+                    resource_unproved = true;
+                    *control_flow = ControlFlow::Exit;
+                    return;
+            }
+            // Completion must remain consumable after Quit closes app dispatch.
+            // The view routes the nudge; only its exact custody cell can accept it.
+            let reader_completion_turn = if let Event::UserEvent(
+                WkUserEvent::ReaderTerminated(completion),
+            ) = &event {
+                if let Some(resource) = views.get(&completion.view.0)
+                    .and_then(|view| view.resource.as_ref()) {
+                    resource.handler.observe_reader_termination(completion);
+                }
+                true
+            } else {
+                false
+            };
             // The existing bridge accepts terminal intent before its proxy event.
             // One terminal state closes renderer dispatch and Native main admission.
             if terminal_intent_in_loop.load(Ordering::Acquire) {
@@ -527,6 +879,10 @@ impl WkWebViewEngine {
                             profile,
                             startup: &startup_in_loop,
                             media_seed_allow,
+                            renderer_endpoint: renderer_endpoint.as_ref(),
+                            resource_source: selected_resource,
+                            resource_wake: resource_wake.clone(),
+                            resource_events: Some(events.clone()),
                         };
                         if !test_external_close
                             && let Err(error) = managed_windows::command(
@@ -543,8 +899,27 @@ impl WkWebViewEngine {
                             terminal_requested = true;
                         }
                     }
+                    Event::UserEvent(WkUserEvent::RendererCustody | WkUserEvent::Renderer(RendererBridgeOutcome::ControlCapacity)) => {
+                        let mut failure = None;
+                        for (id, bridge) in &renderer_bridges {
+                            if let Some(view) = views.get(id) {
+                                if let Err(error) = bridge.service_original_calls(&view.webview.webview()) {
+                                    failure = Some(error);
+                                    break;
+                                }
+                            } else {
+                                bridge.flush_controls();
+                            }
+                        }
+                        if let Some(error) = failure {
+                            main_owner_failure.get_or_insert(error);
+                            fatal_in_loop.store(true, Ordering::Release);
+                            terminal_requested = true;
+                            destroy_renderer_bridges(&mut renderer_bridges);
+                        }
+                    }
                     Event::UserEvent(WkUserEvent::Renderer(outcome)) => {
-                        let id = outcome.webview().0;
+                        let Some(id)=outcome.webview().map(|view|view.0) else{return;};
                         let delivered =
                             renderer_bridges
                                 .get(&id)
@@ -558,6 +933,17 @@ impl WkWebViewEngine {
                             terminal_requested = true;
                             destroy_renderer_bridges(&mut renderer_bridges);
                         }
+                    }
+                    Event::UserEvent(WkUserEvent::Resource(completion)) => {
+                        if let Some(resource) = views
+                            .get(&completion.view.0)
+                            .and_then(|view| view.resource.as_ref())
+                        {
+                            resource.handler.deliver(completion);
+                        }
+                        // A missing/destroyed view drops the owned charged
+                        // result; its RAII token releases only after payload
+                        // and worker completion actually leave the queue.
                     }
                     Event::WindowEvent {
                         window_id,
@@ -656,6 +1042,39 @@ impl WkWebViewEngine {
                     _ => {}
                 }
             }
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Some(probe)=lifecycle_probe.as_ref()
+                && let Err(error)=probe.borrow_mut().after_turn(&views) {
+                    main_owner_failure.get_or_insert(error);
+                    resource_unproved = true;
+                    *control_flow = ControlFlow::Exit;
+                    return;
+            }
+            // Real completion drives release; the original absolute deadline
+            // supplies only a failure turn when the nudge/outcome is missing.
+            let reader_deadline_reached = managed_windows::resource_shutdown_deadline(&views)
+                .is_some_and(|deadline| Instant::now() >= deadline);
+            if !terminal_requested && (reader_completion_turn || reader_deadline_reached)
+                && let Err(error) = managed_windows::finish_pending_releases(
+                    &mut views,
+                    &mut renderer_bridges,
+                    &events,
+                )
+            {
+                main_owner_failure.get_or_insert(error);
+                resource_unproved = true;
+                fatal_in_loop.store(true, Ordering::Release);
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let Some(probe)=lifecycle_probe.as_ref()
+                && let Err(error)=probe.borrow_mut().after_turn(&views) {
+                    main_owner_failure.get_or_insert(error);
+                    resource_unproved = true;
+                    *control_flow = ControlFlow::Exit;
+                    return;
+            }
             let stopping = terminal_requested || anchor.is_some_and(|id| closing.contains(&id.0));
             let (drained, owner_deadline) = {
                 let mut resolve = || {
@@ -669,7 +1088,10 @@ impl WkWebViewEngine {
                         .and_then(|view| view.registry_managed.then_some(view))
                         .and_then(|view| view.webview.webview().window())
                 };
-                match service(main_thread, &mut resolve, &mut resolve_view, stopping) {
+                let mut request_close = |window: &NSWindow| {
+                    managed_windows::request_native_close(&views, &events, window, stopping)
+                };
+                match service(main_thread, &mut resolve, &mut resolve_view, &mut request_close, stopping) {
                     Ok(progress) => progress,
                     Err(error) => {
                         main_owner_failure.get_or_insert(error);
@@ -689,14 +1111,29 @@ impl WkWebViewEngine {
             }
             if terminal_requested && drained {
                 destroy_renderer_bridges(&mut renderer_bridges);
-                if let Err(error) =
-                    managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
-                {
-                    main_owner_failure.get_or_insert(error);
-                    fatal_in_loop.store(true, Ordering::Release);
+                match managed_windows::release_all(&mut views, &mut renderer_bridges, &events) {
+                    Ok(true) => {
+                        views.clear();
+                        *control_flow = ControlFlow::Exit;
+                    }
+                    Ok(false) => {
+                        *control_flow = managed_windows::resource_shutdown_deadline(&views)
+                            .map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+                    }
+                    Err(error) => {
+                        main_owner_failure.get_or_insert(error);
+                        resource_unproved = true;
+                        fatal_in_loop.store(true, Ordering::Release);
+                        *control_flow = ControlFlow::Exit;
+                    }
                 }
-                views.clear();
-                *control_flow = ControlFlow::Exit;
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if let Some(probe)=lifecycle_probe.as_ref()
+                    && let Err(error)=probe.borrow_mut().after_turn(&views) {
+                        main_owner_failure.get_or_insert(error);
+                        resource_unproved = true;
+                        *control_flow = ControlFlow::Exit;
+                }
                 return;
             }
             let navigation_wake = (!terminal
@@ -708,17 +1145,14 @@ impl WkWebViewEngine {
                     )
                 }))
             .then_some(navigation_deadline);
-            let wake = match (navigation_wake, owner_deadline) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            let wake=[navigation_wake,owner_deadline,managed_windows::resource_shutdown_deadline(&views),renderer_bridges.values().filter_map(MacRendererBridge::retirement_deadline).min()].into_iter().flatten().min();
             *control_flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         });
         // Tao drops its stored callback on every return, including external
         // NSApp.run termination. The callback only borrowed these real owners.
         let mut tail_failure = main_owner_failure;
-        let mut drained;
-        loop {
+        let mut drained = !resource_unproved;
+        while drained {
             let progress = {
                 let mut resolve = || {
                     anchor
@@ -731,7 +1165,16 @@ impl WkWebViewEngine {
                         .and_then(|view| view.registry_managed.then_some(view))
                         .and_then(|view| view.webview.webview().window())
                 };
-                service(main_thread, &mut resolve, &mut resolve_view, true)
+                let mut request_close = |window: &NSWindow| {
+                    managed_windows::request_native_close(&views, &events, window, true)
+                };
+                service(
+                    main_thread,
+                    &mut resolve,
+                    &mut resolve_view,
+                    &mut request_close,
+                    true,
+                )
             };
             let progress = match progress {
                 Ok(progress) => progress,
@@ -741,8 +1184,7 @@ impl WkWebViewEngine {
                     break;
                 }
             };
-            drained = progress.0;
-            if drained {
+            if progress.0 {
                 break;
             }
             let Some(original_deadline) = progress.1 else {
@@ -760,13 +1202,26 @@ impl WkWebViewEngine {
         }
         if drained {
             destroy_renderer_bridges(&mut renderer_bridges);
-            if let Err(error) =
-                managed_windows::release_all(&mut views, &mut renderer_bridges, &events)
-            {
-                tail_failure.get_or_insert(error);
+            match managed_windows::release_all(&mut views, &mut renderer_bridges, &events) {
+                Ok(true) => views.clear(),
+                Ok(false) => {
+                    // Tao has exited unexpectedly before the resource worker
+                    // had finished. No physical release or stage cleanup is
+                    // permitted without a native turn to confirm quiescence.
+                    drained = false;
+                    tail_failure.get_or_insert_with(|| {
+                        WvError::EventLoop(String::from(
+                            "native resource shutdown pending after UI exit; retained custody",
+                        ))
+                    });
+                }
+                Err(error) => {
+                    drained = false;
+                    tail_failure.get_or_insert(error);
+                }
             }
-            views.clear();
-        } else {
+        }
+        if !drained {
             *retains_main_custody = true;
             self.views = views;
             self.renderer_bridges = renderer_bridges;
@@ -849,11 +1304,18 @@ impl WkWebViewEngine {
             profile: &self.profile,
             startup: &self.startup,
             media_seed_allow: self.profile_test_media_seed_allow,
+            renderer_endpoint: self.renderer_requests.as_ref(),
+            resource_source: None,
+            resource_wake: event_loop.create_proxy(),
+            resource_events: None,
         }
-        .build(webview_id, spec, app_events, renderer_endpoint)
+        .build(webview_id, spec, app_events, renderer_endpoint, false)
         .map_err(|failure| failure.source)?;
         if let Some(installed) = installed {
-            self.renderer_outcomes = Some(installed.outcomes);
+            if let Some(outcomes) = installed.outcomes {
+                self.renderer_outcomes = Some(outcomes);
+            }
+            self.renderer_requests = Some(installed.bridge.request_sender());
             self.renderer_bridges.insert(webview_id.0, installed.bridge);
         }
         self.views.insert(webview_id.0, view);
@@ -873,6 +1335,14 @@ impl WebEngine for WkWebViewEngine {
     }
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
+        // The first disposable Legacy app must use the correlated native
+        // loadRequest returning its actual WKNavigation object; this legacy
+        // convenience path cannot mint a GH542 attempt/document stamp.
+        if self.view(id)?.resource.is_some() {
+            return Err(WvError::Navigate(String::from(
+                "GH473 original resource view requires the authenticated GH459 native load attempt",
+            )));
+        }
         if let Some(bridge) = self.renderer_bridges.get(&id.0) {
             bridge.navigation_handle().navigation_started();
         }
@@ -979,8 +1449,8 @@ fn run_app_wake_bridge(
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(command) => {
-                terminal_forwarded |= mark_terminal_intent(terminal_intent, command);
-                if command == AppWindowCommand::Fatal {
+                terminal_forwarded |= mark_terminal_intent(terminal_intent, &command);
+                if matches!(&command, AppWindowCommand::Fatal) {
                     fatal_outcome.store(true, Ordering::Release);
                 }
                 forward(command);
@@ -992,7 +1462,7 @@ fn run_app_wake_bridge(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) if terminal_forwarded => return,
             Err(RecvTimeoutError::Disconnected) => {
-                mark_terminal_intent(terminal_intent, AppWindowCommand::Fatal);
+                mark_terminal_intent(terminal_intent, &AppWindowCommand::Fatal);
                 fatal_outcome.store(true, Ordering::Release);
                 forward(AppWindowCommand::Fatal);
                 return;
@@ -1073,7 +1543,7 @@ fn first_host_init_turn(event: &Event<'_, WkUserEvent>, emitted: &mut bool) -> b
     true
 }
 
-fn mark_terminal_intent(intent: &AtomicBool, command: AppWindowCommand) -> bool {
+fn mark_terminal_intent(intent: &AtomicBool, command: &AppWindowCommand) -> bool {
     let terminal = matches!(command, AppWindowCommand::Quit | AppWindowCommand::Fatal);
     if terminal {
         intent.store(true, Ordering::Release);
@@ -1253,7 +1723,7 @@ mod startup_tests {
         let terminal_intent = std::sync::atomic::AtomicBool::new(false);
         assert!(super::mark_terminal_intent(
             &terminal_intent,
-            super::AppWindowCommand::Quit
+            &super::AppWindowCommand::Quit
         ));
         assert!(
             !crate::navigation_deadline_expired(
@@ -1311,7 +1781,7 @@ mod startup_tests {
                 forwarded.push(command);
             },
         );
-        assert_eq!(forwarded, [AppWindowCommand::Quit]);
+        assert!(matches!(forwarded.as_slice(), [AppWindowCommand::Quit]));
         assert!(terminal_intent.load(std::sync::atomic::Ordering::Acquire));
         assert!(!fatal_outcome.load(std::sync::atomic::Ordering::Acquire));
     }
@@ -1333,7 +1803,7 @@ mod startup_tests {
                 forwarded.push(command);
             },
         );
-        assert_eq!(forwarded, [AppWindowCommand::Fatal]);
+        assert!(matches!(forwarded.as_slice(), [AppWindowCommand::Fatal]));
         assert!(terminal_intent.load(std::sync::atomic::Ordering::Acquire));
         assert!(fatal_outcome.load(std::sync::atomic::Ordering::Acquire));
     }
@@ -1361,5 +1831,108 @@ mod view_drop_order_tests {
     #[test]
     fn view_declares_webview_before_window() {
         assert_wry_view_field_order!(View);
+    }
+}
+
+#[cfg(test)]
+mod original_document_destroy_admission_tests {
+    use super::{OriginalDocumentDestroyAdmission, OriginalDocumentDestroyDecision};
+    use std::sync::{Arc, Barrier};
+
+    // Private claim exercises only the shared state machine. No native lease,
+    // view or source is forged, and these tests do not prove UI admission.
+    #[test]
+    fn original_document_destroy_pending_cancel_winner_cannot_be_admitted() {
+        let admission = OriginalDocumentDestroyAdmission::new();
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Pending
+        );
+        assert!(admission.cancel_before_admission());
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Cancelled
+        );
+        assert!(!admission.try_accept_on_ui());
+        assert!(!admission.refuse_on_ui());
+        assert!(!admission.cancel_before_admission());
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Cancelled
+        );
+    }
+
+    #[test]
+    fn original_document_destroy_accepted_winner_cannot_be_cancelled_or_readmitted() {
+        let admission = OriginalDocumentDestroyAdmission::new();
+        assert!(admission.try_accept_on_ui());
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Accepted
+        );
+        assert!(!admission.cancel_before_admission());
+        assert!(!admission.refuse_on_ui());
+        assert!(!admission.try_accept_on_ui());
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Accepted
+        );
+    }
+
+    #[test]
+    fn original_document_destroy_refusal_is_terminal() {
+        let admission = OriginalDocumentDestroyAdmission::new();
+        assert!(admission.refuse_on_ui());
+        assert_eq!(
+            admission.decision(),
+            OriginalDocumentDestroyDecision::Refused
+        );
+        assert!(!admission.try_accept_on_ui());
+        assert!(!admission.cancel_before_admission());
+        assert!(!admission.refuse_on_ui());
+    }
+
+    #[test]
+    fn original_document_destroy_concurrent_claim_and_cancel_have_exactly_one_winner() {
+        let admission = Arc::new(OriginalDocumentDestroyAdmission::new());
+        let start = Arc::new(Barrier::new(3));
+        let (accepted, cancelled) = std::thread::scope(|scope| {
+            let accept_ticket = Arc::clone(&admission);
+            let accept_start = Arc::clone(&start);
+            let accepted = scope.spawn(move || {
+                accept_start.wait();
+                accept_ticket.try_accept_on_ui()
+            });
+            let cancel_ticket = Arc::clone(&admission);
+            let cancel_start = Arc::clone(&start);
+            let cancelled = scope.spawn(move || {
+                cancel_start.wait();
+                cancel_ticket.cancel_before_admission()
+            });
+            start.wait();
+            (
+                accepted.join().expect("state-only claimant"),
+                cancelled.join().expect("state-only canceller"),
+            )
+        });
+        assert_ne!(accepted, cancelled, "one shared atomic transition must win");
+        assert_eq!(
+            admission.decision(),
+            if accepted {
+                OriginalDocumentDestroyDecision::Accepted
+            } else {
+                OriginalDocumentDestroyDecision::Cancelled
+            }
+        );
+        assert!(!admission.try_accept_on_ui());
+        assert!(!admission.cancel_before_admission());
+    }
+}
+
+#[cfg(test)]
+mod app_command_layout_tests {
+    #[test]
+    fn gui_events_do_not_inline_the_cold_query_payload() {
+        assert!(std::mem::size_of::<super::WkUserEvent>() <= 256);
     }
 }

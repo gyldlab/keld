@@ -177,6 +177,44 @@ export function checkInstalledDeclarations(
     writeFileSync(entry, original);
   }
   run(command, consumer, "restored-emitted-node-reference");
+  // Test this exported declaration independently so its reference cannot mask
+  // the public entry's Node dependency negative (or vice versa).
+  const configPath = join(consumer, "tsconfig.json");
+  const publicConfig = readFileSync(configPath, "utf8");
+  const privateEntry = join(
+    consumer,
+    "node_modules/electron/dist/original-ipc.d.ts",
+  );
+  const privateOriginal = readFileSync(privateEntry, "utf8");
+  copyFileSync(
+    join(import.meta.dir, "installed-alias/original-ipc-consumer.mts"),
+    join(consumer, "original-ipc-consumer.mts"),
+  );
+  try {
+    const config = JSON.parse(publicConfig);
+    config.files = ["original-ipc-consumer.mts"];
+    writeFileSync(configPath, JSON.stringify(config));
+    assert(
+      privateOriginal.startsWith(reference),
+      "Packed internal helper types must declare Node dependency",
+    );
+    run(command, consumer, "strict-installed-original-ipc");
+    try {
+      writeFileSync(privateEntry, privateOriginal.slice(reference.length));
+      const rejected = run(
+        command,
+        consumer,
+        "missing-internal-emitted-node-reference",
+        false,
+      );
+      assert.match(rejected.stdout + rejected.stderr, /node:events/);
+    } finally {
+      writeFileSync(privateEntry, privateOriginal);
+    }
+    run(command, consumer, "restored-internal-emitted-node-reference");
+  } finally {
+    writeFileSync(configPath, publicConfig);
+  }
   return {
     compiler: command[0],
     compilerVersion: compilerManifest.version,

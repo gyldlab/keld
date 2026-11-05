@@ -183,8 +183,16 @@ describe("session facts (red until GH-452 T2 delivers the Host payload)", () => 
 });
 
 describe("single-instance verdict (red until GH-453)", () => {
-  test("app.request-single-instance-lock.primary-verdict today: the facade has no requestSingleInstanceLock, so the call throws a TypeError", () => {
-    expectNoMethod("requestSingleInstanceLock");
+  test("app.request-single-instance-lock.primary-verdict today: no qualified Host lock fact throws KELD-COMPAT-040 naming GH-453 instead of a boolean", () => {
+    try {
+      app.requestSingleInstanceLock();
+      throw new Error("missing Host resource must not become a boolean");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect(Reflect.get(error as object, "code")).toBe("KELD-COMPAT-040");
+      expect(Reflect.get(error as object, "reason")).toBe("unavailable");
+      expect(String(error)).toContain("GH-453");
+    }
   });
 
   test("app.has-single-instance-lock.holder today: the facade has no hasSingleInstanceLock, so the call throws a TypeError", () => {

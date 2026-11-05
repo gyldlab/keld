@@ -16,6 +16,8 @@ import {
   stateByteLength,
   decodeU64Varint,
   decodeVarint,
+  encodePostcardString,
+  decodePostcardStringAt,
   encodeU64Varint,
   encodeVarint,
   kipcError,
@@ -79,7 +81,8 @@ export type WindowEvent =
       variant: "DesktopSnapshot";
       epoch: bigint;
       snapshot: DesktopFacts | null;
-    };
+    }
+  | WindowEventExtension;
 /** App-to-host calls; optional positions use explicit null, matching postcard. */
 export type WindowRequest =
   | {
@@ -98,7 +101,8 @@ export type WindowRequest =
       close_seq: bigint;
       verdict: CloseVerdict;
     }
-  | { variant: "Destroy"; window: WindowRef };
+  | { variant: "Destroy"; window: WindowRef }
+  | WindowRequestExtension;
 /** Host replies; failures use the existing CallError payload instead. */
 export type WindowResponse =
   | { variant: "Created"; window: WindowRef }
@@ -109,7 +113,8 @@ export type WindowResponse =
   | { variant: "ReplyApplied" }
   | { variant: "ReplyStale" }
   | { variant: "Destroyed" }
-  | { variant: "Adopted"; window: WindowRef };
+  | { variant: "Adopted"; window: WindowRef }
+  | WindowResponseExtension;
 
 type Decoder<T> = (bytes: Uint8Array, offset: number) => [T, number];
 function invalid(detail: string): Error {
@@ -492,14 +497,14 @@ export function encodeWindowEvent(value: WindowEvent): Uint8Array {
       return bytes;
     }
     default:
-      throw invalid("unknown WindowEvent variant");
+      return encodeWindowEventExtension(value);
   }
 }
 function eventAt(bytes: Uint8Array, offset: number): [WindowEvent, number] {
   const decoded14 = decodeVarint(bytes, offset);
   const variant = decoded14[0];
   const afterVariant = decoded14[1];
-  if (variant > 7) throw invalid("unknown WindowEvent discriminant");
+  if (variant >= 8) return windowEventExtensionAt(bytes, offset);
   if (variant === 7) {
     if (stateByteLength(bytes) > MAX_DESKTOP_EVENT_BYTES)
       throw invalid("desktop WindowEvent exceeds the 32 KiB budget");
@@ -570,7 +575,7 @@ export function decodeWindowEvent(payload: Uint8Array): WindowEvent {
   return exact(payload, eventAt);
 }
 /** Encode a request; host authorization and native state remain host-owned. */
-export function encodeWindowRequest(value: WindowRequest): Uint8Array {
+function encodeWindowRequestUnchecked(value: WindowRequest): Uint8Array {
   requireObject(value);
   switch (value.variant) {
     case "Create":
@@ -605,7 +610,7 @@ export function encodeWindowRequest(value: WindowRequest): Uint8Array {
     case "Destroy":
       return join([encodeVarint(5), encodeWindowRef(value.window)]);
     default:
-      throw invalid("unknown WindowRequest variant");
+      return encodeWindowRequestExtension(value);
   }
 }
 function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
@@ -617,7 +622,7 @@ function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
     const [y, end] = decodeOption(bytes, afterX, decodeI32);
     return [{ variant: "Create", width, height, x, y }, end];
   }
-  if (variant > 5) throw invalid("unknown WindowRequest discriminant");
+  if (variant >= 6) return windowRequestExtensionAt(bytes, offset);
   const [window, afterWindow] = windowRefAt(bytes, afterVariant);
   switch (variant) {
     case 1: {
@@ -643,6 +648,10 @@ function requestAt(bytes: Uint8Array, offset: number): [WindowRequest, number] {
 }
 /** Decode exactly one request without accepting trailing payload data. */
 export function decodeWindowRequest(payload: Uint8Array): WindowRequest {
+  if (!stateIsUint8Array(payload))
+    throw invalid("window payload must be a Uint8Array");
+  if (payload.byteLength > 8192)
+    throw invalid("window call exceeds its encoded body bound");
   return exact(payload, requestAt);
 }
 /** Encode the native result payload; ERR frames retain the CallError codec. */
@@ -668,7 +677,7 @@ export function encodeWindowResponse(value: WindowResponse): Uint8Array {
     case "Adopted":
       return join([encodeVarint(8), encodeWindowRef(value.window)]);
     default:
-      throw invalid("unknown WindowResponse variant");
+      return encodeWindowResponseExtension(value);
   }
 }
 function responseAt(
@@ -704,10 +713,317 @@ function responseAt(
       return [{ variant: "Adopted", window }, end];
     }
     default:
-      throw invalid("unknown WindowResponse discriminant");
+      return windowResponseExtensionAt(bytes, offset);
   }
 }
 /** Decode exactly one reply, retaining all close sequence bits. */
 export function decodeWindowResponse(payload: Uint8Array): WindowResponse {
   return exact(payload, responseAt);
 }
+
+// Use canonical postcard string codecs; these checks do not authenticate a path.
+function encodePreloadString(
+  value: string,
+  maximum: number,
+  nonempty: boolean,
+): Uint8Array {
+  // For valid Unicode, UTF-8 byte length is at least UTF-16 code-unit length.
+  // Reject this necessary bound before canonical validation/UTF-8 allocation.
+  if (
+    typeof value !== "string" ||
+    value.length > maximum ||
+    (nonempty && value.length === 0)
+  )
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  const bytes = encodePostcardString(value, "preload metadata");
+  const length = decodeVarint(bytes, 0)[0];
+  if (length > maximum || (nonempty && length === 0))
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  return bytes;
+}
+function preloadStringAt(
+  bytes: Uint8Array,
+  offset: number,
+  maximum: number,
+  nonempty: boolean,
+): [string, number] {
+  const length = decodeVarint(bytes, offset)[0];
+  if (length > maximum || (nonempty && length === 0))
+    throw invalid("preload metadata exceeds its UTF-8 byte bound");
+  return decodePostcardStringAt(bytes, offset);
+}
+
+/** Full existing Window CALL budget, including tag, reference and metadata. */
+export function encodeWindowRequest(value: WindowRequest): Uint8Array {
+  const bytes = encodeWindowRequestUnchecked(value);
+  if (bytes.byteLength > 8192)
+    throw invalid("window call exceeds its encoded body bound");
+  return bytes;
+}
+function encodePreloadArguments(args: readonly string[]): Uint8Array {
+  if (!stateIsArray(args) || args.length > 16)
+    throw invalid("too many preload arguments");
+  const parts = [encodeVarint(args.length)];
+  let total = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const bytes = encodePreloadString(args[index], 256, false);
+    total += decodeVarint(bytes, 0)[0];
+    if (total > 2048)
+      throw invalid("preload arguments exceed their byte bound");
+    parts.push(bytes);
+  }
+  return join(parts);
+}
+function preloadArgumentsAt(
+  bytes: Uint8Array,
+  offset: number,
+): [string[], number] {
+  const [count, afterCount] = decodeVarint(bytes, offset);
+  if (count > 16) throw invalid("too many preload arguments");
+  const args: string[] = [];
+  let at = afterCount,
+    total = 0;
+  for (let index = 0; index < count; index += 1) {
+    total += decodeVarint(bytes, at)[0];
+    if (total > 2048)
+      throw invalid("preload arguments exceed their byte bound");
+    const [value, next] = preloadStringAt(bytes, at, 256, false);
+    stateDefineProperty(args, index, {
+      __proto__: null,
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    } as PropertyDescriptor);
+    at = next;
+  }
+  return [args, at];
+}
+function encodeNativeDocumentGeneration(value: number): Uint8Array {
+  if (!Number.isInteger(value) || value <= 0 || value > 0xffffffff)
+    throw invalid("native document generation must be a nonzero u32");
+  return encodeVarint(value);
+}
+function nativeDocumentGenerationAt(
+  bytes: Uint8Array,
+  offset: number,
+): [number, number] {
+  const decoded = decodeVarint(bytes, offset);
+  if (decoded[0] === 0)
+    throw invalid("native document generation must be nonzero");
+  return decoded;
+}
+// @keld/window-n1-generated-begin
+// @generated by echo-codegen.ts from keld-ipc/src/window.rs; do not edit.
+type WindowRequestExtension =
+  | {
+      variant: "CreateWithPreload";
+      width: number;
+      height: number;
+      x: number | null;
+      y: number | null;
+      preload_absolute: string;
+      additional_arguments: readonly string[];
+    }
+  | { variant: "LoadUrl"; window: WindowRef; uri: string }
+  | {
+      variant: "DestroyOriginalDocument";
+      window: WindowRef;
+      document_generation: number;
+    };
+function encodeWindowRequestExtension(
+  value: WindowRequestExtension,
+): Uint8Array {
+  switch (value.variant) {
+    case "CreateWithPreload":
+      return join([
+        encodeVarint(6),
+        encodeVarint(value.width),
+        encodeVarint(value.height),
+        encodeOption(value.x, encodeI32),
+        encodeOption(value.y, encodeI32),
+        encodePreloadString(value.preload_absolute, 2048, true),
+        encodePreloadArguments(value.additional_arguments),
+      ]);
+    case "LoadUrl":
+      return join([
+        encodeVarint(7),
+        encodeWindowRef(value.window),
+        encodePreloadString(value.uri, 8192, true),
+      ]);
+    case "DestroyOriginalDocument":
+      return join([
+        encodeVarint(8),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+      ]);
+    default:
+      throw invalid("unknown WindowRequest extension");
+  }
+}
+function windowRequestExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowRequestExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 6: {
+      let at = afterTag;
+      const [width, next_width] = decodeVarint(wireBytes, at);
+      at = next_width;
+      const [height, next_height] = decodeVarint(wireBytes, at);
+      at = next_height;
+      const [x, next_x] = decodeOption(wireBytes, at, decodeI32);
+      at = next_x;
+      const [y, next_y] = decodeOption(wireBytes, at, decodeI32);
+      at = next_y;
+      const [preload_absolute, next_preload_absolute] = preloadStringAt(
+        wireBytes,
+        at,
+        2048,
+        true,
+      );
+      at = next_preload_absolute;
+      const [additional_arguments, next_additional_arguments] =
+        preloadArgumentsAt(wireBytes, at);
+      at = next_additional_arguments;
+      return [
+        {
+          variant: "CreateWithPreload",
+          width,
+          height,
+          x,
+          y,
+          preload_absolute,
+          additional_arguments,
+        },
+        at,
+      ];
+    }
+    case 7: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [uri, next_uri] = preloadStringAt(wireBytes, at, 8192, true);
+      at = next_uri;
+      return [{ variant: "LoadUrl", window, uri }, at];
+    }
+    case 8: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      return [
+        { variant: "DestroyOriginalDocument", window, document_generation },
+        at,
+      ];
+    }
+    default:
+      throw invalid("unknown WindowRequest extension tag");
+  }
+}
+type WindowResponseExtension = { variant: "Loaded" };
+function encodeWindowResponseExtension(
+  value: WindowResponseExtension,
+): Uint8Array {
+  switch (value.variant) {
+    case "Loaded":
+      return join([encodeVarint(9)]);
+    default:
+      throw invalid("unknown WindowResponse extension");
+  }
+}
+function windowResponseExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowResponseExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 9: {
+      let at = afterTag;
+      return [{ variant: "Loaded" }, at];
+    }
+    default:
+      throw invalid("unknown WindowResponse extension tag");
+  }
+}
+type WindowEventExtension =
+  | {
+      variant: "NavigationCommitted";
+      window: WindowRef;
+      document_generation: number;
+      native_url: string;
+    }
+  | {
+      variant: "NavigationFinished";
+      window: WindowRef;
+      document_generation: number;
+    };
+function encodeWindowEventExtension(value: WindowEventExtension): Uint8Array {
+  switch (value.variant) {
+    case "NavigationCommitted":
+      return join([
+        encodeVarint(8),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+        encodePreloadString(value.native_url, 8192, true),
+      ]);
+    case "NavigationFinished":
+      return join([
+        encodeVarint(9),
+        encodeWindowRef(value.window),
+        encodeNativeDocumentGeneration(value.document_generation),
+      ]);
+    default:
+      throw invalid("unknown WindowEvent extension");
+  }
+}
+function windowEventExtensionAt(
+  wireBytes: Uint8Array,
+  offset: number,
+): [WindowEventExtension, number] {
+  const [tag, afterTag] = decodeVarint(wireBytes, offset);
+  switch (tag) {
+    case 8: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      const [native_url, next_native_url] = preloadStringAt(
+        wireBytes,
+        at,
+        8192,
+        true,
+      );
+      at = next_native_url;
+      return [
+        {
+          variant: "NavigationCommitted",
+          window,
+          document_generation,
+          native_url,
+        },
+        at,
+      ];
+    }
+    case 9: {
+      let at = afterTag;
+      const [window, next_window] = windowRefAt(wireBytes, at);
+      at = next_window;
+      const [document_generation, next_document_generation] =
+        nativeDocumentGenerationAt(wireBytes, at);
+      at = next_document_generation;
+      return [
+        { variant: "NavigationFinished", window, document_generation },
+        at,
+      ];
+    }
+    default:
+      throw invalid("unknown WindowEvent extension tag");
+  }
+}
+// @keld/window-n1-generated-end

@@ -89,7 +89,10 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
     session
         .reserve(first, options(), WebviewId(3))
         .expect("one reservation");
-    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::MacDialogWake));
+    assert!(matches!(
+        wake.try_recv(),
+        Ok(AppWindowCommand::MacDialogWake)
+    ));
     assert_eq!(
         session.pending_original_for(first.identity, first.attempt),
         Some(CorrelationId(7))
@@ -107,7 +110,10 @@ fn dialog_cancel_at_capacity_keeps_distinct_original_and_cancel_correlations() {
         session.cancel(first.identity, 1, 9, CorrelationId(8)),
         Ok(CancelDisposition::Requested),
     );
-    assert_eq!(wake.try_recv(), Ok(AppWindowCommand::MacDialogWake));
+    assert!(matches!(
+        wake.try_recv(),
+        Ok(AppWindowCommand::MacDialogWake)
+    ));
     assert!(session.take_work().expect("bounded pending work").is_some());
     assert!(!session.may_present(first).expect("tombstone"));
     session

@@ -13,7 +13,8 @@
     "./main": "./src/index.ts",
     "./renderer": "./src/index.ts",
     "./common": "./src/index.ts",
-    "./utility": "./src/index.ts"
+    "./utility": "./src/index.ts",
+    "./internal/original-ipc": "./src/original-ipc.ts"
   },
   "files": [
     "src"

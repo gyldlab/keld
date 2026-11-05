@@ -42,7 +42,7 @@ fn factory_command(
         root,
         entry,
         (identity.dev(), identity.ino()),
-        (true, None, None),
+        (true.into(), None, None),
         environment,
         "/tmp/startup-qualification#fixture-only",
     )
@@ -242,7 +242,7 @@ fn guardian_refuses_staged_force_install_before_constructing_bun() {
             temp.path(),
             entry,
             (identity.dev(), identity.ino()),
-            (true, None, None),
+            (true.into(), None, None),
             &environment,
             "/tmp/startup-qualification#fixture-only",
         )

@@ -911,3 +911,8 @@ review is merge evidence, not a fifth implementation gate.
 
 Neither gate authorizes product implementation, marks KEL-96 Done, or implies
 that T1a completes later KEL-96 T2–T5 work.
+
+
+## GH453 original-Host cooperative single-instance amendment
+
+Approved under the user's explicit technical-owner delegation on 2026-11-01; exact bounded contract: `gh453-original-host-single-instance.md`. The existing captured root config may contain one literal `singleInstance: { id }`. Its shared Core parser admits 1..128 ASCII-byte dotted lowercase/digit components with internal hyphens and refuses dynamic/ambiguous forms. The CLI preserves it in the selected closed boot schema 1/2/3/4/5 without changing renderer, profile or graph selection. Missing fields retain prior behavior; present null, positional arrays, duplicate/unknown fields or invalid ids fail closed with KELD-CORE-035. A matching compiler/Host pair is required. NonmacOS presence is refused, never discarded. Only an already admitted explicit macOS Legacy development session may acquire the cooperative lease; there is no profile fallback or new grant. Original-Host lifetime and the data-only private schema4 extension are owned by GH453/GH452, with actual native acceptance still required.

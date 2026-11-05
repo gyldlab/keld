@@ -8,13 +8,45 @@ import { app as internalApi } from "@keld/api/internal/app";
 import * as link from "@keld/api/internal/link";
 import * as kipc from "@keld/kipc";
 
+import * as originalIpc from "electron/internal/original-ipc";
+import { createRequire } from "node:module";
+const internalRequired = createRequire(import.meta.url)(
+  "electron/internal/original-ipc",
+);
+const internalNames = [
+  "awaitOriginalIpcCloseVeto",
+  "destroyOriginalIpcDocument",
+  "isCurrentOriginalIpcDocument",
+];
+assert.deepEqual(Object.keys(originalIpc).sort(), internalNames);
+for (const name of internalNames)
+  assert.equal(
+    originalIpc[name],
+    internalRequired[name],
+    "same internal ESM/CJS helper",
+  );
+assert.equal(
+  originalIpc.isCurrentOriginalIpcDocument({}),
+  false,
+  "forged event cannot acquire facade capability",
+);
+await assert.rejects(
+  originalIpc.destroyOriginalIpcDocument({}),
+  (error) => error.code === "KELD-CORE-054",
+);
+await assert.rejects(
+  originalIpc.awaitOriginalIpcCloseVeto({}),
+  (error) => error.code === "KELD-CORE-054",
+);
 const expected = [
   "BrowserWindow",
   "ClipboardItem",
   "Menu",
+  "MenuItem",
   "app",
   "clipboard",
   "dialog",
+  "ipcMain",
   "nativeImage",
   "nativeTheme",
   "screen",

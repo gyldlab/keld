@@ -1,16 +1,12 @@
 /**
- * GH-477 Electron v44.4.5 native first-proof conformance baselines.
+ * GH477 source-side partial contracts for Electron v44.4.5 native cells.
  *
- * The canonical GH-566 owner registers these exact Bun test names in the
- * electron-native-v1 corpus. Since GH-565 the `Menu`, `screen` and `nativeTheme`
- * bindings link, and every listed member refuses with the typed `KELD-COMPAT-013`
- * error naming its implementing ticket, so these tests pass while the manifest
- * keeps expected_verdict: fail and that ticket. `MenuItem` is still absent. They
- * are NOT live menu, monitor or OS tests.
- *
- * Once a consumer is implemented, its owner must invert its exact mapped
- * case in the same PR as the native conformance acceptance and update the
- * corpus verdict. No stub, Promise or inferred OS theme proves parity.
+ * GH480 now constructs real Menu/MenuItem source objects and queues guarded
+ * installation. These Bun checks cover that source behavior and the generic
+ * Quit refusal; they do not activate a native menu, key equivalent or window.
+ * The mapped native-corpus cells keep expected_verdict:fail and their owning
+ * tickets until independent real-OS acceptance. GH563's actual held-menu Quit
+ * diagnostic/no-termination proof remains required; no mock supplies it here.
  */
 import { expect, test } from "bun:test";
 
@@ -26,12 +22,6 @@ function member(target: unknown, key: string): unknown {
     return undefined;
   }
   return Reflect.get(target, key);
-}
-
-/** Check both Electron's ESM named binding and default binding independently. */
-function expectMissingExport(key: string): void {
-  expect(member(electron, key)).toBeUndefined();
-  expect(member(electron.default, key)).toBeUndefined();
 }
 
 /** The typed refusal contract for today's linked, unimplemented member. */
@@ -68,57 +58,114 @@ function expectRefusingMethod(
   }
 }
 
-// Pinned menu.md: buildFromTemplate synchronously returns a Menu. Today the
-// binding links (GH-565) and the member refuses naming GH-480; the future test
-// must construct a real menu; returning a Promise/undefined is not parity.
-test("menu.build-from-template today: Menu.buildFromTemplate refuses with KELD-COMPAT-013 naming GH-480", () => {
-  expectRefusingMethod("Menu", "buildFromTemplate", "GH-480");
-});
-
-// Pinned menu.md: setApplicationMenu sets the actual macOS application menu.
-test("menu.set-application-menu today: Menu.setApplicationMenu refuses with KELD-COMPAT-013 naming GH-480", () => {
-  expectRefusingMethod("Menu", "setApplicationMenu", "GH-480");
-});
-
-// Pinned menu-item.md: a recognized role suppresses the item click callback.
-// A fallback without a focused window is source-only (not scored as parity).
-test("menu-item.role-overrides-click today: no MenuItem constructor is exported", () => {
-  expectMissingExport("MenuItem");
-});
-
-// Pinned tutorial/menus.md: role close closes the current window. Later
-// GH-480 must prove it uses GH-450's vetoable close path, not raw destroy.
-// This baseline shares absent MenuItem with the role/click and role/quit
-// cases; it does NOT independently prove veto or destruction ordering.
-test("menu.role-close.vetoable today: role close cannot be constructed without MenuItem", () => {
-  expectMissingExport("MenuItem");
-});
-
-// Pinned tutorial/menus.md: Electron role quit enters the app quit path.
-// The pending GH-563 cell has THREE mandatory phases, not one shared menu
-// import test (review #5638444771):
-//   0. Before GH-480, MenuItem is absent and this expected-fail baseline passes.
-//   1. GH-480 adds MenuItem but HOLDS role quit: GH-480 MUST replace this test's
-//      body in the same implementation PR with an actual KELD-COMPAT diagnostic
-//      naming GH-563, a real no-OS-termination/no-window-close witness, and
-//      no fabricated before-quit. Keep verdict=fail and ticket=GH-563.
-//   2. Only GH-563's own implementation flips verdict=pass after real native
-//      Cmd+Q/role quit reaches before-quit and honors the dirty-window veto.
-// This explicit intermediate tripwire prevents GH-480 from shipping MenuItem
-// while silently leaving an obsolete "missing MenuItem" GH-563 oracle behind.
-test("menu.role-quit.before-quit pending GH-563: three-stage no-native-quit contract", () => {
-  const named = member(electron, "MenuItem");
-  const defaultExport = member(electron.default, "MenuItem");
-  if (named !== undefined || defaultExport !== undefined) {
-    throw new Error(
-      "GH-480 transition gate: MenuItem now exists. In the SAME GH-480 PR, re-record this " +
-        "GH-563 pending-fail test as an actual typed KELD-COMPAT GH-563 role-quit diagnostic " +
-        "with zero OS termination/windows closed, preserving expected_verdict=fail and " +
-        "implementing_ticket=GH-563. Only GH-563 later proves before-quit/dirty veto and flips pass.",
-    );
+// Construction and projection are source contracts. Native menu acceptance is separate.
+test("menu.build-from-template source: synchronous branded tree; native acceptance remains pending GH-480", () => {
+  for (const root of [electron, electron.default]) {
+    const item = new root.MenuItem({ role: "copy" });
+    const menu = root.Menu.buildFromTemplate([
+      { label: "Edit", submenu: [item, { type: "separator" }] },
+    ]);
+    expect(menu).toBeInstanceOf(root.Menu);
+    expect(menu).not.toBeInstanceOf(Promise);
+    expect(menu.items[0]!.submenu!.items[0]).toBe(item);
+    expect(item.label).toBe("Copy");
+    expect(item.accelerator).toBe("Command+C");
+    expect(Object.isFrozen(menu.items)).toBe(true);
   }
-  expect(named).toBeUndefined();
-  expect(defaultExport).toBeUndefined();
+});
+
+test("menu.set-application-menu source: void call reports actual missing-link failure; native acceptance remains pending GH-480", () => {
+  const env = { ...process.env };
+  delete env.KELD_APP_LINK;
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      "-e",
+      `import {Menu} from ${JSON.stringify(new URL("./index.ts", import.meta.url).pathname)};
+       process.on('unhandledRejection',()=>{console.log('UNHANDLED');process.exitCode=4;});
+       console.log('RETURN='+String(Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Explicit'}]))));
+       await new Promise(resolve=>setImmediate(resolve));`,
+    ],
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode).toBe(0);
+  expect(child.stdout.toString()).toBe("RETURN=undefined\n");
+  const diagnostics = child.stderr
+    .toString()
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(diagnostics).toHaveLength(1);
+  expect(diagnostics[0]).toMatchObject({
+    code: "KELD-IPC-007",
+    phase: "menu-install",
+    result: "not-sent",
+  });
+});
+
+test("menu-item.role-overrides-click source: recognized role constructs without invoking click; native activation remains pending GH-480", () => {
+  let clicked = 0;
+  for (const root of [electron, electron.default]) {
+    const item = new root.MenuItem({
+      role: "COPY",
+      click: () => {
+        clicked++;
+      },
+    });
+    const menu = root.Menu.buildFromTemplate([item]);
+    expect(item).toBeInstanceOf(root.MenuItem);
+    expect(menu.items[0]).toBe(item);
+    expect(item.role).toBe("copy");
+    expect(item.label).toBe("Copy");
+  }
+  expect(clicked).toBe(0);
+});
+
+test("menu.role-close.vetoable source: close role projects its default command; native veto acceptance remains pending GH-480", () => {
+  for (const root of [electron, electron.default]) {
+    const item = new root.MenuItem({ role: "close" });
+    const menu = root.Menu.buildFromTemplate([item]);
+    expect(menu.items[0]).toBe(item);
+    expect(item.role).toBe("close");
+    expect(item.label).toBe("Close Window");
+    expect(item.accelerator).toBe("Command+W");
+  }
+});
+
+// Reuse the real API/WindowSource/close-receipt role, whose only controlled seam
+// is Host CALL. It independently asserts COMPAT012 and zero forceful Quit calls
+// both before authenticated Ready and with a live vetoed window. This source
+// observation is not GH563's required actual menu/Cmd+Q diagnostic or OS proof.
+test("menu.role-quit.before-quit pending GH-563: generic live-window Quit stays refused; native menu qualification remains pending", () => {
+  const item = new electron.MenuItem({
+    role: "quit",
+    label: "Quit source fixture",
+  });
+  expect(item.role).toBe("quit");
+  expect(item.accelerator).toBe("Command+Q");
+  const child = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--no-install",
+      "--no-env-file",
+      "--preload",
+      new URL("../../kipc/src/transport.ts", import.meta.url).pathname,
+      new URL("./browser-window-boot.test-role.ts", import.meta.url).pathname,
+      "native-delete-before-import",
+    ],
+    env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 4000,
+  });
+  expect(child.exitCode).toBe(0);
+  expect(child.stdout.toString()).toBe("PASS native-delete-before-import\n");
+  expect(child.stderr.toString()).toBe("");
 });
 
 // Pinned screen.md: getPrimaryDisplay returns one synchronous Display.

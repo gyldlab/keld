@@ -53,7 +53,7 @@
 //! ```
 
 use keld_guard::capability::{
-    AUTH_BEGIN, AUTH_TOKEN, DIALOG as DIALOG_CAPABILITY, FS_READ, FS_WRITE,
+    AUTH_BEGIN, AUTH_TOKEN, DIALOG as DIALOG_CAPABILITY, FS_READ, FS_WRITE, MENU as MENU_CAPABILITY,
 };
 
 use crate::frame::ChannelId;
@@ -76,6 +76,9 @@ pub enum ReceiveClass {
     /// App-to-host `CALL` routed through `guard_dispatch`, whose `ERR` is a
     /// `CallError` (row: privileged receiver).
     GuardedCall,
+    /// Guard-routed `CALL` with typed `CallError` replies and host-to-app
+    /// `EVENT`s. Renderer control still requires the final per-window query.
+    GuardedCallWithEvents,
 }
 
 impl ReceiveClass {
@@ -83,7 +86,7 @@ impl ReceiveClass {
     /// so an app-side event receiver may name it (GH-527 §4.7).
     #[must_use]
     pub const fn carries_host_events(self) -> bool {
-        matches!(self, Self::HostCallWithEvents)
+        matches!(self, Self::HostCallWithEvents | Self::GuardedCallWithEvents)
     }
 }
 
@@ -101,6 +104,10 @@ pub enum Authority {
     /// capability names. They are `keld_guard::capability` constants, never
     /// string literals here.
     Guarded(&'static [&'static str]),
+    /// Every renderer-control delivery requires the shared final exact
+    /// per-window `RendererChannelQuery` in `guard_dispatch`; the channel id,
+    /// subscription and authenticated app link grant no renderer authority.
+    RendererChannelGuardQuery,
 }
 
 /// One allocated kipc channel.
@@ -216,8 +223,35 @@ pub const DIALOG: ChannelEntry = ChannelEntry::new(
     Authority::Guarded(&[DIALOG_CAPABILITY]),
 );
 
+/// Existing GH-540 bounded renderer control, adopted with its exact final
+/// per-window Guard query. No second wire/credit/consumer owner is introduced.
+pub const COMPAT_CONTROL: ChannelEntry = ChannelEntry::new(
+    "compat-control",
+    7,
+    ReceiveClass::GuardedCallWithEvents,
+    Authority::RendererChannelGuardQuery,
+);
+
+/// Host-owned guarded native application-menu installation (GH-480).
+/// Native activation stays on the Host main thread; GH-556 EVENTs are deferred.
+pub const MENU: ChannelEntry = ChannelEntry::new(
+    "menu",
+    8,
+    ReceiveClass::GuardedCall,
+    Authority::Guarded(&[MENU_CAPABILITY]),
+);
+
 /// Every allocated channel, in strictly increasing id order.
-pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];
+pub const CHANNEL_TABLE: &[ChannelEntry] = &[
+    ECHO,
+    FS,
+    LIFECYCLE,
+    AUTH,
+    WINDOW,
+    DIALOG,
+    COMPAT_CONTROL,
+    MENU,
+];
 
 // An invalid table does not build (spec §3 criteria 2-5).
 const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());
@@ -386,8 +420,9 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        AUTH, AUTH_BEGIN, AUTH_TOKEN, Authority, CHANNEL_TABLE, ChannelEntry, DIALOG, ECHO, FS,
-        HANDSHAKE_CHANNEL, LIFECYCLE, ReceiveClass, TableDefect, entry, validate_table,
+        AUTH, AUTH_BEGIN, AUTH_TOKEN, Authority, CHANNEL_TABLE, COMPAT_CONTROL, ChannelEntry,
+        DIALOG, ECHO, FS, HANDSHAKE_CHANNEL, LIFECYCLE, MENU, MENU_CAPABILITY, ReceiveClass,
+        TableDefect, entry, validate_table,
     };
     use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
     use crate::link::read_validated_frame;
@@ -514,6 +549,18 @@ mod tests {
                     ReceiveClass::GuardedCall,
                     Authority::Guarded(&["system.dialog"]),
                 ),
+                (
+                    "compat-control",
+                    7,
+                    ReceiveClass::GuardedCallWithEvents,
+                    Authority::RendererChannelGuardQuery
+                ),
+                (
+                    "menu",
+                    8,
+                    ReceiveClass::GuardedCall,
+                    Authority::Guarded(&["system.menu"])
+                ),
             ]
         );
         assert_eq!(validate_table(CHANNEL_TABLE), Ok(()));
@@ -626,7 +673,7 @@ mod tests {
     fn real_table_matches_the_committed_allocation_baseline() {
         assert_eq!(
             BASELINE,
-            "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\ndialog 6\n"
+            "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\ndialog 6\ncompat-control 7\nmenu 8\n"
         );
         assert_eq!(check_allocations(CHANNEL_TABLE, BASELINE), Ok(()));
     }
@@ -710,6 +757,16 @@ mod tests {
             AUTH.authority(),
             Authority::Guarded(&[AUTH_BEGIN, AUTH_TOKEN])
         );
+        assert_eq!(COMPAT_CONTROL.wire_id(), 7);
+        assert_eq!(COMPAT_CONTROL.class(), ReceiveClass::GuardedCallWithEvents);
+        assert_eq!(
+            COMPAT_CONTROL.authority(),
+            Authority::RendererChannelGuardQuery
+        );
+        assert_eq!(MENU.wire_id(), 8);
+        assert_eq!(MENU.class(), ReceiveClass::GuardedCall);
+        assert_eq!(MENU.authority(), Authority::Guarded(&[MENU_CAPABILITY]));
+        assert!(!MENU.class().carries_host_events());
         assert_eq!(PROTOCOL_VERSION, 2);
     }
 
@@ -719,7 +776,7 @@ mod tests {
         for allocated in CHANNEL_TABLE {
             assert_eq!(entry(allocated.id()), Some(allocated));
         }
-        for unallocated in [0, 7, 9, u16::MAX] {
+        for unallocated in [0, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
     }
@@ -727,7 +784,7 @@ mod tests {
     /// Criterion 10: only a `GuardedCall` entry admits the privileged policy.
     #[test]
     fn privileged_policy_requires_a_guarded_call_entry() {
-        for guarded in [&FS, &AUTH, &DIALOG] {
+        for guarded in [&FS, &AUTH, &DIALOG, &COMPAT_CONTROL, &MENU] {
             let policy =
                 ReceivePolicy::privileged_call_receiver(guarded).expect("guarded CALL channel");
             assert_eq!(policy.channel(), guarded.id());
@@ -761,9 +818,52 @@ mod tests {
         assert_eq!(*detail, "wrong channel for the session policy", "{label}");
     }
 
+    type PolicyCase = (&'static str, ReceivePolicy, FrameKind, u32, u32);
+
+    /// Native compatibility services retain their exact CALL/reply/EVENT shapes.
+    fn compat_and_menu_policies(corr: CorrelationId) -> [PolicyCase; 5] {
+        [
+            (
+                "privileged-control",
+                ReceivePolicy::privileged_call_receiver(&COMPAT_CONTROL).expect("control"),
+                FrameKind::Call,
+                7,
+                4,
+            ),
+            (
+                "reply-waiter:control",
+                ReceivePolicy::reply_waiter(&COMPAT_CONTROL, corr).expect("control reply"),
+                FrameKind::Err,
+                7,
+                4,
+            ),
+            (
+                "event-receiver:control",
+                ReceivePolicy::event_receiver(&COMPAT_CONTROL).expect("control event"),
+                FrameKind::Event,
+                0,
+                4,
+            ),
+            (
+                "privileged-menu",
+                ReceivePolicy::privileged_call_receiver(&MENU).expect("menu"),
+                FrameKind::Call,
+                7,
+                4,
+            ),
+            (
+                "reply-waiter:menu",
+                ReceivePolicy::reply_waiter(&MENU, corr).expect("menu reply"),
+                FrameKind::Err,
+                7,
+                4,
+            ),
+        ]
+    }
+
     /// Every live receive policy, with a header kind, correlation and length
     /// that the policy admits on its own channel.
-    fn live_policies() -> Vec<(&'static str, ReceivePolicy, FrameKind, u32, u32)> {
+    fn live_policies() -> Vec<PolicyCase> {
         let corr = CorrelationId(7);
         let fs = ReceivePolicy::privileged_call_receiver(&FS).expect("fs policy");
         let fs_waiter = ReceivePolicy::reply_waiter(&FS, corr).expect("fs waiter");
@@ -771,7 +871,7 @@ mod tests {
         let auth_waiter = ReceivePolicy::reply_waiter(&AUTH, corr).expect("auth waiter");
         let lifecycle_waiter = ReceivePolicy::reply_waiter(&LIFECYCLE, corr).expect("waiter");
         let events = ReceivePolicy::event_receiver(&LIFECYCLE).expect("lifecycle events");
-        vec![
+        let mut cases = vec![
             (
                 "server-pre-auth-hello",
                 ReceivePolicy::server_pre_auth_hello(),
@@ -847,7 +947,9 @@ mod tests {
                 4,
             ),
             ("event-receiver:lifecycle", events, FrameKind::Event, 0, 4),
-        ]
+        ];
+        cases.extend(compat_and_menu_policies(corr));
+        cases
     }
 
     /// Criterion 10: a frame on the next unallocated id, otherwise exactly what each
@@ -911,11 +1013,19 @@ mod tests {
         }
         assert_eq!(
             waiters,
-            ["fs", "lifecycle", "auth", "window", "dialog"],
+            [
+                "fs",
+                "lifecycle",
+                "auth",
+                "window",
+                "dialog",
+                "compat-control",
+                "menu"
+            ],
             "echo keeps its REPLY-only waiter"
         );
-        assert_eq!(receivers, ["lifecycle", "window"]);
-        for unallocated in [0, 7, 9, u16::MAX] {
+        assert_eq!(receivers, ["lifecycle", "window", "compat-control"]);
+        for unallocated in [0, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
         assert!(ReceiveClass::HostCallWithEvents.carries_host_events());

@@ -1,3 +1,4 @@
+import { renderMenuBinding } from "./menu-codegen.ts";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -20,6 +21,14 @@ const generatedPaths = [
 const channelTableSourcePath = resolve(
   repositoryRoot,
   "crates/keld-ipc/src/channel_table.rs",
+);
+const menuSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-native/src/menu.rs",
+);
+const menuGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/api/src/menu.generated.ts",
 );
 const dialogSourcePath = resolve(
   repositoryRoot,
@@ -45,6 +54,31 @@ const authSourcePath = resolve(
 const authGeneratedPath = resolve(
   repositoryRoot,
   "packages/@keld/api/src/auth.generated.ts",
+);
+const compatSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/compat_control.rs",
+);
+const compatGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/compat-control.generated.ts",
+);
+const windowSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/window.rs",
+);
+const windowCodecPath = resolve(
+  repositoryRoot,
+  "packages/@keld/api/src/window-codec.ts",
+);
+
+const runtimeSourcePath = resolve(
+  repositoryRoot,
+  "crates/keld-ipc/src/lifecycle.rs",
+);
+const runtimeGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/runtime-process.generated.ts",
 );
 
 type StructName = (typeof STRUCT_NAMES)[number];
@@ -165,14 +199,46 @@ export function assertEchoArtifactFresh(
 
 // Native enum declaration grammar is shared; each target admits its own closed schema.
 type NativeEnumName =
-  "FsRequest" | "FsResponse" | "AuthRequest" | "AuthResponse";
+  | "FsRequest"
+  | "FsResponse"
+  | "AuthRequest"
+  | "AuthResponse"
+  | "CompatControlRequest"
+  | "CompatControlEvent"
+  | "CompatControlResponse"
+  | "ConsumerDisposition"
+  | "TerminalDisposition"
+  | "DispatchCertainty"
+  | "WindowRequest"
+  | "WindowResponse"
+  | "WindowEvent"
+  | "LifecycleEvent"
+  | "LifecycleRequest"
+  | "LifecycleResponse"
+  | "SubscribeRefusal";
 type NativeFieldType =
   | "String"
   | "Vec<u8>"
   | "Vec<String>"
   | "Option<String>"
   | "Option<Vec<String>>"
-  | "u64";
+  | "u64"
+  | "u32"
+  | "CallError"
+  | "ConsumerDisposition"
+  | "TerminalDisposition"
+  | "DispatchCertainty"
+  | "WindowRef"
+  | "WindowState"
+  | "Rect"
+  | "bool"
+  | "Option<i32>"
+  | "CloseVerdict"
+  | "Option<u64>"
+  | "Option<DesktopFacts>"
+  | "u16"
+  | "RuntimeProcessFacts"
+  | "SubscribeRefusal";
 interface NativeField {
   name: string;
   rustType: NativeFieldType;
@@ -186,6 +252,81 @@ type NativeSchema = Readonly<
 >;
 
 const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
+  LifecycleEvent: { Ready: {}, LastWindowClosed: {}, QuitRequested: {} },
+  LifecycleRequest: {
+    Quit: {},
+    Subscribe: { channel: "u16" },
+    Init: { runtime_process_facts: "RuntimeProcessFacts" },
+  },
+  LifecycleResponse: {
+    Quit: {},
+    Subscribed: {},
+    SubscribeRefused: { reason: "SubscribeRefusal" },
+    Initialized: {},
+  },
+  SubscribeRefusal: {
+    UnknownChannel: {},
+    NotSubscribable: {},
+    GuardedNotSupported: {},
+    RoleNotAdmitted: {},
+  },
+  WindowRequest: {
+    Create: { width: "u32", height: "u32", x: "Option<i32>", y: "Option<i32>" },
+    SetMaximized: { window: "WindowRef", maximized: "bool" },
+    SetFullScreen: { window: "WindowRef", full_screen: "bool" },
+    RequestClose: { window: "WindowRef" },
+    CloseReply: {
+      window: "WindowRef",
+      close_seq: "u64",
+      verdict: "CloseVerdict",
+    },
+    Destroy: { window: "WindowRef" },
+    CreateWithPreload: {
+      width: "u32",
+      height: "u32",
+      x: "Option<i32>",
+      y: "Option<i32>",
+      preload_absolute: "String",
+      additional_arguments: "Vec<String>",
+    },
+    LoadUrl: { window: "WindowRef", uri: "String" },
+    DestroyOriginalDocument: {
+      window: "WindowRef",
+      document_generation: "u32",
+    },
+  },
+  WindowResponse: {
+    Created: { window: "WindowRef" },
+    Accepted: {},
+    CloseRequested: { close_seq: "u64" },
+    Merged: { close_seq: "u64" },
+    AlreadyClosing: {},
+    ReplyApplied: {},
+    ReplyStale: {},
+    Destroyed: {},
+    Adopted: { window: "WindowRef" },
+    Loaded: {},
+  },
+  WindowEvent: {
+    Created: {
+      window: "WindowRef",
+      state: "WindowState",
+      pending_close: "Option<u64>",
+    },
+    Bounds: { window: "WindowRef", bounds: "Rect" },
+    Focus: { window: "WindowRef", focused: "bool" },
+    Maximized: { window: "WindowRef", maximized: "bool" },
+    FullScreen: { window: "WindowRef", full_screen: "bool" },
+    CloseRequested: { window: "WindowRef", close_seq: "u64" },
+    Destroyed: { window: "WindowRef" },
+    DesktopSnapshot: { epoch: "u64", snapshot: "Option<DesktopFacts>" },
+    NavigationCommitted: {
+      window: "WindowRef",
+      document_generation: "u32",
+      native_url: "String",
+    },
+    NavigationFinished: { window: "WindowRef", document_generation: "u32" },
+  },
   FsRequest: {
     Read: { path: "String" },
     Write: { path: "String", bytes: "Vec<u8>" },
@@ -203,6 +344,62 @@ const NATIVE_SCHEMAS: Readonly<Record<NativeEnumName, NativeSchema>> = {
     Begin: { account_id: "String", granted_scopes: "Vec<String>" },
     Token: { access_token: "String", expires_at: "u64", token_type: "String" },
   },
+  CompatControlRequest: {
+    DeliverToCurrentMain: {
+      webview: "u32",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    DeliverToOriginalDocument: {
+      webview: "u32",
+      navigation: "u32",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    ReleaseConsumed: {
+      webview: "u32",
+      navigation: "u32",
+      message: "u32",
+      disposition: "ConsumerDisposition",
+    },
+  },
+  CompatControlEvent: {
+    RendererMessage: {
+      webview: "u32",
+      navigation: "u32",
+      message: "u32",
+      window_id: "u32",
+      window_incarnation: "u64",
+      url: "String",
+      origin: "String",
+      topic: "String",
+      payload: "Vec<u8>",
+    },
+    DocumentRetired: { webview: "u32", navigation: "u32" },
+    DocumentBound: {
+      webview: "u32",
+      navigation: "u32",
+      window_id: "u32",
+      window_incarnation: "u64",
+    },
+  },
+  CompatControlResponse: {
+    Deliver: { disposition: "TerminalDisposition" },
+    Released: {},
+  },
+  ConsumerDisposition: {
+    Consumed: {},
+    NoListener: {},
+    Refused: { error: "CallError" },
+  },
+  TerminalDisposition: {
+    Consumed: {},
+    NoListener: {},
+    Stale: {},
+    Refused: { error: "CallError" },
+    RouteRetired: { certainty: "DispatchCertainty" },
+  },
+  DispatchCertainty: { NotDispatched: {}, OutcomeUnknown: {} },
 };
 
 function parseNativeEnum(
@@ -225,10 +422,25 @@ function parseNativeEnum(
     const line = lines[index];
     if (line.length === 0 || /^\/\/\/(?: |$)/.test(line)) continue;
     if (line.startsWith("#[")) {
+      const compatEnum =
+        name.startsWith("CompatControl") ||
+        name === "ConsumerDisposition" ||
+        name === "TerminalDisposition" ||
+        name === "DispatchCertainty" ||
+        name.startsWith("Lifecycle") ||
+        name === "SubscribeRefusal";
       if (
-        !/^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/.test(
-          line,
-        )
+        !(name.startsWith("Window")
+          ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq(?:, Eq)?, Serialize, Deserialize\)\]$/.test(
+              line,
+            )
+          : compatEnum
+            ? /^#\[derive\(Debug, Clone(?:, Copy)?, PartialEq, Eq, Serialize, Deserialize\)\]$/.test(
+                line,
+              )
+            : /^#\[derive\((?:(?:Debug|Clone), )?Serialize, Deserialize\)\]$/.test(
+                line,
+              ))
       ) {
         fail(
           "native " +
@@ -276,6 +488,24 @@ function parseNativeEnum(
           );
         }
       }
+      if (
+        name.startsWith("Window") ||
+        name.startsWith("Lifecycle") ||
+        name === "SubscribeRefusal"
+      ) {
+        const expectedVariants = Object.keys(schema);
+        for (let index = 0; index < variants.length; index += 1) {
+          const variant = variants[index];
+          if (
+            variant.name !== expectedVariants[index] ||
+            variant.fields.some(
+              (field, fieldIndex) =>
+                field.name !== Object.keys(schema[variant.name])[fieldIndex],
+            )
+          )
+            fail("window append-only variant/field order changed");
+        }
+      }
       return variants;
     }
     if (line.length === 0 || /^    \/\/\/(?: |$)/.test(line)) continue;
@@ -302,8 +532,17 @@ function parseNativeEnum(
         }
         if (fieldLine.length === 0 || /^        \/\/\/(?: |$)/.test(fieldLine))
           continue;
+        if (
+          name === "WindowRequest" &&
+          [
+            '        #[serde(deserialize_with = "preload_path")]',
+            '        #[serde(deserialize_with = "preload_arguments")]',
+            '        #[serde(deserialize_with = "original_load_uri")]',
+          ].includes(fieldLine)
+        )
+          continue;
         const field =
-          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64),$/.exec(
+          /^        ([A-Za-z_][A-Za-z0-9_]*): (String|Vec<u8>|Vec<String>|Option<String>|Option<Vec<String>>|u64|u32|CallError|ConsumerDisposition|TerminalDisposition|DispatchCertainty|WindowRef|WindowState|Rect|bool|Option<i32>|CloseVerdict|Option<u64>|Option<DesktopFacts>|u16|RuntimeProcessFacts|SubscribeRefusal),$/.exec(
             fieldLine,
           );
         if (!field)
@@ -671,6 +910,365 @@ export function assertAuthArtifactFresh(
 }
 
 // ---------------------------------------------------------------------------
+// GH540 canonical one-compat-control target. Reuses the existing schema parser
+// and one echo-codegen writer; Rust enum order/field types are the sole source.
+// ---------------------------------------------------------------------------
+
+const COMPAT_ENUMS = [
+  "ConsumerDisposition",
+  "DispatchCertainty",
+  "TerminalDisposition",
+  "CompatControlRequest",
+  "CompatControlEvent",
+  "CompatControlResponse",
+] as const;
+
+type CompatEnumName = (typeof COMPAT_ENUMS)[number];
+
+function compatTsFieldType(field: NativeField): string {
+  switch (field.rustType) {
+    case "u32":
+      return "number";
+    case "u64":
+      return "bigint";
+    case "String":
+      return "string";
+    case "Vec<u8>":
+      return "Uint8Array";
+    case "CallError":
+      return "CompatDiagnostic";
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return field.rustType;
+    default:
+      return fail("unsupported compat field type: " + field.rustType);
+  }
+}
+
+function compatFieldLimit(field: NativeField): number {
+  if (field.name === "topic") return 256;
+  if (field.name === "url") return 4096;
+  if (field.name === "origin") return 1024;
+  return fail("unsupported compat String field: " + field.name);
+}
+
+function compatEncodeField(field: NativeField): string {
+  const name = "value." + field.name;
+  switch (field.rustType) {
+    case "u32":
+      return (
+        "checkedIdentity(" + name + ", " + JSON.stringify(field.name) + ")"
+      );
+    case "u64":
+      return "checkedIncarnation(" + name + ")";
+    case "String":
+      return "checkedText(" + name + ", " + compatFieldLimit(field) + ")";
+    case "Vec<u8>":
+      return "checkedBytes(" + name + ")";
+    case "CallError":
+      return "encodeDiagnostic(" + name + ")";
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return "encode" + field.rustType + "(" + name + ")";
+    default:
+      return fail("unsupported compat encode field type: " + field.rustType);
+  }
+}
+
+function compatDecodeField(field: NativeField): string {
+  const index = "wireBytes, at";
+  switch (field.rustType) {
+    case "u32":
+      return "readIdentity(" + index + ")";
+    case "u64":
+      return "readIncarnation(" + index + ")";
+    case "String":
+      return "readText(" + index + ", " + compatFieldLimit(field) + ")";
+    case "Vec<u8>":
+      return "readBytes(" + index + ")";
+    case "CallError":
+      return "readDiagnostic(" + index + ")";
+    case "ConsumerDisposition":
+    case "TerminalDisposition":
+    case "DispatchCertainty":
+      return "decode" + field.rustType + "At(" + index + ")";
+    default:
+      return fail("unsupported compat decode field type: " + field.rustType);
+  }
+}
+
+const COMPAT_RUNTIME = `
+import {
+  decodePostcardStringAt, decodeVarint, decodeU64Varint, encodeCallError,
+  encodePostcardString, encodeVarint, encodeU64Varint, kipcError,
+} from "@keld/kipc";
+
+/** Owned diagnostic value inside this one canonical KIPC postcard DTO. */
+export type CompatDiagnostic = { readonly code: string; readonly message: string };
+
+const DATA_MAX = 16384;
+const CONTROL_MAX = 4096;
+const VALUE_MAX = 4096;
+
+function invalid(detail: string): never {
+  throw kipcError("KELD-IPC-003", detail);
+}
+
+function concat(parts: readonly Uint8Array[], max: number): Uint8Array {
+  let count = 0;
+  for (const part of parts) {
+    count += part.byteLength;
+    if (count > max) return invalid("compat control exceeds its frame budget");
+  }
+  const result = new Uint8Array(count);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.byteLength;
+  }
+  return result;
+}
+
+function checkedIdentity(value: number, field: string): Uint8Array {
+  if (!Number.isInteger(value) || value < 1 || value > 0xffffffff)
+    return invalid("invalid compat " + field + " identity");
+  return encodeVarint(value);
+}
+
+function checkedIncarnation(value: bigint): Uint8Array {
+  if (typeof value !== "bigint" || value < 1n ||
+      value > 18_446_744_073_709_551_615n)
+    return invalid("invalid compat window incarnation");
+  return encodeU64Varint(value);
+}
+
+function readIncarnation(bytes: Uint8Array, at: number): [bigint, number] {
+  const [value, next] = decodeU64Varint(bytes, at);
+  if (value === 0n) return invalid("zero window incarnation");
+  return [value, next];
+}
+
+function checkedText(value: string, max: number): Uint8Array {
+  const bytes = encodePostcardString(value, "compat text");
+  if (bytes.byteLength > max + 3) return invalid("compat text exceeds field limit");
+  const raw = new TextEncoder().encode(value);
+  if (raw.byteLength > max) return invalid("compat text exceeds field limit");
+  return bytes;
+}
+
+function checkedBytes(value: Uint8Array): Uint8Array {
+  if (!(value instanceof Uint8Array) || value.byteLength > VALUE_MAX)
+    return invalid("invalid compat endpoint value bytes");
+  return concat([encodeVarint(value.byteLength), new Uint8Array(value)], VALUE_MAX + 5);
+}
+
+function validCode(value: string): boolean {
+  return value.length <= 64 && /^KELD-[A-Z0-9-]+$/.test(value);
+}
+
+function encodeDiagnostic(value: CompatDiagnostic): Uint8Array {
+  if (!value || typeof value !== "object" ||
+      typeof value.code !== "string" || !validCode(value.code) ||
+      typeof value.message !== "string" ||
+      new TextEncoder().encode(value.message).byteLength > 512)
+    return invalid("compat diagnostic exceeds declared domain");
+  return encodeCallError(value.code, value.message);
+}
+
+function readIdentity(bytes: Uint8Array, at: number): [number, number] {
+  const [value, next] = decodeVarint(bytes, at);
+  if (value === 0) return invalid("zero compat native identity");
+  return [value, next];
+}
+
+function readText(bytes: Uint8Array, at: number, max: number): [string, number] {
+  const [value, next] = decodePostcardStringAt(bytes, at);
+  if (new TextEncoder().encode(value).byteLength > max)
+    return invalid("compat string exceeds declared bound");
+  return [value, next];
+}
+
+function readBytes(bytes: Uint8Array, at: number): [Uint8Array, number] {
+  const [count, start] = decodeVarint(bytes, at);
+  if (count > VALUE_MAX || count > bytes.byteLength - start)
+    return invalid("compat endpoint bytes exceed declared bound");
+  return [bytes.slice(start, start + count), start + count];
+}
+
+function readDiagnostic(bytes: Uint8Array, at: number): [CompatDiagnostic, number] {
+  const [code, afterCode] = readText(bytes, at, 64);
+  const [message, afterMessage] = readText(bytes, afterCode, 512);
+  if (!validCode(code)) return invalid("invalid compat diagnostic code");
+  return [{ code, message }, afterMessage];
+}
+`;
+
+/** One source-defined set of closed unions and postcard codecs. */
+export function renderCompatControlBinding(rustSource: string): string {
+  const lines = rustSource.replaceAll("\r\n", "\n").split("\n");
+  const enums = new Map<CompatEnumName, NativeVariant[]>();
+  for (const name of COMPAT_ENUMS) {
+    enums.set(name, parseNativeEnum(lines, name));
+  }
+  const output = [
+    "// @generated by packages/@keld/kipc/scripts/echo-codegen.ts.",
+    "// Source: crates/keld-ipc/src/compat_control.rs. Do not edit by hand.",
+    COMPAT_RUNTIME,
+  ];
+  for (const name of COMPAT_ENUMS) {
+    const variants = enums.get(name)!;
+    output.push("export type " + name + " =");
+    for (const [index, variant] of variants.entries()) {
+      const fields = variant.fields
+        .map((field) => "; " + field.name + ": " + compatTsFieldType(field))
+        .join("");
+      output.push(
+        "  | { variant: " +
+          JSON.stringify(variant.name) +
+          fields +
+          " }" +
+          (index === variants.length - 1 ? ";" : ""),
+      );
+    }
+    output.push("");
+  }
+  // Forward references are legal for function declarations, including the
+  // nested disposition and terminal certainty codecs.
+  for (const name of COMPAT_ENUMS) {
+    const variants = enums.get(name)!;
+    output.push(
+      "function encode" + name + "(value: " + name + "): Uint8Array {",
+      "  if (!value || typeof value !== 'object') return invalid('compat variant is not an object');",
+      "  switch (value.variant) {",
+    );
+    for (const [index, variant] of variants.entries()) {
+      const fields = variant.fields.map(compatEncodeField);
+      output.push(
+        "    case " +
+          JSON.stringify(variant.name) +
+          ": return concat([" +
+          ["encodeVarint(" + index + ")", ...fields].join(", ") +
+          "], " +
+          (name === "CompatControlRequest" || name === "CompatControlEvent"
+            ? "DATA_MAX"
+            : "CONTROL_MAX") +
+          ");",
+      );
+    }
+    output.push(
+      "    default: return invalid('unknown " + name + " variant');",
+      "  }",
+      "}",
+      "",
+      "function decode" +
+        name +
+        "At(wireBytes: Uint8Array, start: number): [" +
+        name +
+        ", number] {",
+      "  const [tag, afterTag] = decodeVarint(wireBytes, start);",
+      "  switch (tag) {",
+    );
+    for (const [index, variant] of variants.entries()) {
+      output.push("    case " + index + ": {", "      let at = afterTag;");
+      for (const field of variant.fields) {
+        output.push(
+          "      const [" +
+            field.name +
+            ", next_" +
+            field.name +
+            "] = " +
+            compatDecodeField(field) +
+            ";",
+          "      at = next_" + field.name + ";",
+        );
+      }
+      output.push(
+        "      return [{ variant: " +
+          JSON.stringify(variant.name) +
+          variant.fields.map((field) => ", " + field.name).join("") +
+          " }, at];",
+        "    }",
+      );
+    }
+    output.push(
+      "    default: return invalid('unknown " + name + " tag');",
+      "  }",
+      "}",
+      "",
+    );
+  }
+  for (const name of [
+    "CompatControlRequest",
+    "CompatControlEvent",
+    "CompatControlResponse",
+  ] as const) {
+    const max = name === "CompatControlResponse" ? "CONTROL_MAX" : "DATA_MAX";
+    output.push(
+      "export function encode" + name + "(value: " + name + "): Uint8Array {",
+      "  const bytes = encode" + name + "(value);",
+      "  if (bytes.byteLength > " +
+        max +
+        ") return invalid('compat frame exceeds limit');",
+      name === "CompatControlRequest"
+        ? "  if (value.variant === 'ReleaseConsumed' && bytes.byteLength > CONTROL_MAX) return invalid('release exceeds control limit');"
+        : "",
+      "  return bytes;",
+      "}",
+      "",
+      "export function decode" + name + "(payload: Uint8Array): " + name + " {",
+      "  if (!(payload instanceof Uint8Array) || payload.byteLength > " +
+        max +
+        ")",
+      "    return invalid('invalid compat frame envelope');",
+      "  const [value, after] = decode" + name + "At(payload, 0);",
+      "  if (after !== payload.byteLength) return invalid('trailing bytes after compat frame');",
+      name === "CompatControlRequest"
+        ? "  if (value.variant === 'ReleaseConsumed' && payload.byteLength > CONTROL_MAX) return invalid('release exceeds control limit');"
+        : "",
+      "  return value;",
+      "}",
+      "",
+    );
+  }
+  // Exposed wrapper names differ from the private helper names; replacing only
+  // these declarations keeps nested helpers recursive without duplicate names.
+  let result = output.join("\n");
+  for (const name of [
+    "CompatControlRequest",
+    "CompatControlEvent",
+    "CompatControlResponse",
+  ]) {
+    result = result.replace(
+      "function encode" + name + "(",
+      "function encode" + name + "Variant(",
+    );
+    result = result.replace(
+      "  const bytes = encode" + name + "(value);",
+      "  const bytes = encode" + name + "Variant(value);",
+    );
+  }
+  return formatGenerated(result, compatGeneratedPath);
+}
+
+/** One byte-exact freshness gate for the checked-in Rust-owned binding. */
+export function assertCompatControlArtifactFresh(
+  rustSource: string,
+  artifact: Uint8Array,
+): void {
+  if (
+    !Buffer.from(artifact).equals(
+      Buffer.from(renderCompatControlBinding(rustSource)),
+    )
+  ) {
+    fail(
+      "committed compat-control.generated.ts is stale; run bun run echo:generate",
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Channel-table target (GH-508 spec docs/specs/gh508-kipc-channel-table.md §4.3).
 //
 // Reads the Rust channel table and rewrites one delimited region of the single
@@ -690,7 +1288,7 @@ const ENTRY_ID = /^(?:0|[1-9][0-9]{0,4})$/;
 const ENTRY_CLASS = /^ReceiveClass::[A-Z][A-Za-z0-9]*$/;
 const CAPABILITY_PATH = "[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*";
 const ENTRY_AUTHORITY = new RegExp(
-  `^Authority::(?:HostInternal|Guarded\\(&\\[\\s*${CAPABILITY_PATH}(?:\\s*,\\s*${CAPABILITY_PATH})*\\s*,?\\s*\\]\\))$`,
+  `^Authority::(?:HostInternal|RendererChannelGuardQuery|Guarded\\(&\\[\\s*${CAPABILITY_PATH}(?:\\s*,\\s*${CAPABILITY_PATH})*\\s*,?\\s*\\]\\))$`,
 );
 const MAX_ENTRY_LINES = 32;
 
@@ -848,7 +1446,7 @@ function parseEntry(
   if (!ENTRY_AUTHORITY.test(authorityArg.text)) {
     channelFail(
       authorityArg.line,
-      `authority must be Authority::HostInternal or Authority::Guarded(&[<keld_guard constant>, ...]), found ${authorityArg.text}`,
+      `authority must be Authority::HostInternal, Authority::RendererChannelGuardQuery or Authority::Guarded(&[<keld_guard constant>, ...]), found ${authorityArg.text}`,
     );
   }
   const receiveClass = classArg.text.slice("ReceiveClass::".length);
@@ -875,13 +1473,15 @@ function parseTableList(
     raw = [];
     let index = start + 1;
     for (; index < lines.length && lines[index] !== "];"; index += 1) {
-      const item = /^    ([A-Z][A-Z0-9_]*),$/.exec(lines[index]);
+      const item = /^    ([A-Z][A-Z0-9_]*(?:,\s*[A-Z][A-Z0-9_]*)*),$/.exec(
+        lines[index],
+      );
       if (!item)
         channelFail(
           index + 1,
           `unsupported CHANNEL_TABLE item: ${lines[index].trim()}`,
         );
-      raw.push(item[1]);
+      raw.push(...item[1].split(/,\s*/));
     }
     if (index >= lines.length)
       channelFail(start + 1, "unterminated CHANNEL_TABLE");
@@ -973,22 +1573,27 @@ export function parseChannelTable(rustSource: string): ChannelTable {
       line === "    pub const fn carries_host_events(self) -> bool {"
     ) {
       // The Rust table owns which classes carry host EVENTs; read, never mirror.
+      let end = index + 1;
+      while (end < lines.length && end - index <= 10 && lines[end] !== "    }")
+        end += 1;
       const body =
-        /^        matches!\(self, (Self::[A-Z][A-Za-z0-9]*(?: \| Self::[A-Z][A-Za-z0-9]*)*)\)$/.exec(
-          lines[index + 1] ?? "",
+        /^matches!\(\s*self,\s*(Self::[A-Z][A-Za-z0-9]*(?:\s*\|\s*Self::[A-Z][A-Za-z0-9]*)*)\s*,?\s*\)$/.exec(
+          lines
+            .slice(index + 1, end)
+            .map((part) => part.trim())
+            .join(" "),
         );
-      if (!body || lines[index + 2] !== "    }") {
+      if (!body || end - index > 10 || lines[end] !== "    }")
         channelFail(
           index + 2,
-          "carries_host_events must be one `matches!(self, Self::A | Self::B)` line",
+          "carries_host_events must be one closed matches!(self, Self::A | Self::B) expression",
         );
-      }
       if (hostEventClasses !== undefined)
         channelFail(index + 1, "duplicate carries_host_events");
       hostEventClasses = body[1]
-        .split(" | ")
+        .split(/\s*\|\s*/)
         .map((variant) => variant.slice("Self::".length));
-      index += 2;
+      index = end;
     } else if (line.startsWith("pub const CHANNEL_TABLE")) {
       if (listed !== undefined)
         channelFail(index + 1, "duplicate CHANNEL_TABLE");
@@ -1219,7 +1824,310 @@ export function renderDialogBinding(rustSource: string): string {
   return formatGenerated(DIALOG_RUNTIME, dialogGeneratedPath);
 }
 
+/** Generate only the append-only N1 extension inside the existing window adapter. */
+export function renderWindowCodecBinding(
+  rustSource: string,
+  adapter: string,
+): string {
+  const lines = rustSource.replaceAll("\r\n", "\n").split("\n");
+  const targets = [
+    ["WindowRequest", 6],
+    ["WindowResponse", 9],
+    ["WindowEvent", 8],
+  ] as const;
+  const output: string[] = [
+    "// @generated by echo-codegen.ts from keld-ipc/src/window.rs; do not edit.",
+  ];
+  const tsType = (field: NativeField): string => {
+    switch (field.rustType) {
+      case "u32":
+        return "number";
+      case "String":
+        return "string";
+      case "Vec<String>":
+        return "readonly string[]";
+      case "Option<i32>":
+        return "number | null";
+      case "WindowRef":
+        return "WindowRef";
+      default:
+        return fail("unsupported window extension field " + field.rustType);
+    }
+  };
+  const encodeField = (field: NativeField): string => {
+    const value = "value." + field.name;
+    switch (field.rustType) {
+      case "u32":
+        return (
+          (field.name === "document_generation"
+            ? "encodeNativeDocumentGeneration"
+            : "encodeVarint") +
+          "(" +
+          value +
+          ")"
+        );
+      case "WindowRef":
+        return "encodeWindowRef(" + value + ")";
+      case "Option<i32>":
+        return "encodeOption(" + value + ", encodeI32)";
+      case "Vec<String>":
+        return "encodePreloadArguments(" + value + ")";
+      case "String":
+        return (
+          "encodePreloadString(" +
+          value +
+          ", " +
+          (field.name === "preload_absolute" ? 2048 : 8192) +
+          ", true)"
+        );
+      default:
+        return fail("unsupported window extension encoder");
+    }
+  };
+  const decodeField = (field: NativeField): string => {
+    switch (field.rustType) {
+      case "u32":
+        return (
+          (field.name === "document_generation"
+            ? "nativeDocumentGenerationAt"
+            : "decodeVarint") + "(wireBytes, at)"
+        );
+      case "WindowRef":
+        return "windowRefAt(wireBytes, at)";
+      case "Option<i32>":
+        return "decodeOption(wireBytes, at, decodeI32)";
+      case "Vec<String>":
+        return "preloadArgumentsAt(wireBytes, at)";
+      case "String":
+        return (
+          "preloadStringAt(wireBytes, at, " +
+          (field.name === "preload_absolute" ? 2048 : 8192) +
+          ", true)"
+        );
+      default:
+        return fail("unsupported window extension decoder");
+    }
+  };
+  for (const [name, first] of targets) {
+    const variants = parseNativeEnum(lines, name);
+    const suffix = variants.slice(first);
+    output.push("type " + name + "Extension =");
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "  | { variant: " +
+          JSON.stringify(variant.name) +
+          variant.fields
+            .map((field) => "; " + field.name + ": " + tsType(field))
+            .join("") +
+          " }" +
+          (index === suffix.length - 1 ? ";" : ""),
+      );
+    }
+    output.push(
+      "function encode" +
+        name +
+        "Extension(value: " +
+        name +
+        "Extension): Uint8Array {",
+      "  switch (value.variant) {",
+    );
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "    case " +
+          JSON.stringify(variant.name) +
+          ": return join([" +
+          [
+            "encodeVarint(" + (first + index) + ")",
+            ...variant.fields.map(encodeField),
+          ].join(", ") +
+          "]);",
+      );
+    }
+    output.push(
+      "    default: throw invalid('unknown " + name + " extension');",
+      "  }",
+      "}",
+    );
+    output.push(
+      "function " +
+        name[0].toLowerCase() +
+        name.slice(1) +
+        "ExtensionAt(wireBytes: Uint8Array, offset: number): [" +
+        name +
+        "Extension, number] {",
+      "  const [tag, afterTag] = decodeVarint(wireBytes, offset);",
+      "  switch (tag) {",
+    );
+    for (const [index, variant] of suffix.entries()) {
+      output.push(
+        "    case " + (first + index) + ": {",
+        "      let at = afterTag;",
+      );
+      for (const field of variant.fields) {
+        output.push(
+          "      const [" +
+            field.name +
+            ", next_" +
+            field.name +
+            "] = " +
+            decodeField(field) +
+            ";",
+          "      at = next_" + field.name + ";",
+        );
+      }
+      output.push(
+        "      return [{ variant: " +
+          JSON.stringify(variant.name) +
+          variant.fields.map((field) => ", " + field.name).join("") +
+          " }, at];",
+        "    }",
+      );
+    }
+    output.push(
+      "    default: throw invalid('unknown " + name + " extension tag');",
+      "  }",
+      "}",
+    );
+  }
+  const begin = "// @keld/window-n1-generated-begin";
+  const end = "// @keld/window-n1-generated-end";
+  const startAt = adapter.indexOf(begin),
+    endAt = adapter.indexOf(end);
+  if (
+    startAt < 0 ||
+    endAt <= startAt ||
+    adapter.indexOf(begin, startAt + begin.length) !== -1 ||
+    adapter.indexOf(end, endAt + end.length) !== -1
+  )
+    return fail("window adapter requires one generated N1 region");
+  return formatGenerated(
+    adapter.slice(0, startAt + begin.length) +
+      "\n" +
+      output.join("\n") +
+      "\n" +
+      adapter.slice(endAt),
+    windowCodecPath,
+  );
+}
+
+/** Generate the private cold Init codec from the owning lifecycle declarations. */
+export function renderRuntimeProcessBinding(rustSource: string): string {
+  const lines = rustSource.split(/\r?\n/);
+  const events = parseNativeEnum(lines, "LifecycleEvent");
+  const eventNames: Readonly<Record<string, string>> = {
+    Ready: "ready",
+    LastWindowClosed: "last-window-closed",
+    QuitRequested: "quit-requested",
+  };
+  const eventCases = events
+    .map(
+      (event, index) =>
+        `case ${index}: return ${JSON.stringify(eventNames[event.name])};`,
+    )
+    .join("\n");
+  const requests = parseNativeEnum(lines, "LifecycleRequest");
+  const responses = parseNativeEnum(lines, "LifecycleResponse");
+  parseNativeEnum(lines, "SubscribeRefusal");
+  const declaration =
+    /pub struct RuntimeProcessFacts \{\s*\/\/\/[^\n]*\n\s*#\[serde\(deserialize_with = "deserialize_runtime_versions"\)\]\s*pub versions: BTreeMap<String, String>,\s*\}/g;
+  if ([...rustSource.matchAll(declaration)].length !== 1)
+    fail("RuntimeProcessFacts must retain its bounded owning versions map");
+  const limits = [
+    "MAX_RUNTIME_PROCESS_FACTS_PAYLOAD",
+    "MAX_RUNTIME_VERSION_ENTRIES",
+    "MAX_RUNTIME_VERSION_BYTES",
+  ].map((name) => {
+    const matches = [
+      ...rustSource.matchAll(
+        new RegExp("(?:pub )?const " + name + ": usize = ([0-9_]+);", "g"),
+      ),
+    ];
+    if (matches.length !== 1)
+      return fail("runtime facts require one owning bound " + name);
+    return Number(matches[0][1].replaceAll("_", ""));
+  });
+  if (limits.join() !== "8448,32,8192")
+    fail("runtime facts bounds differ from the approved owning contract");
+  const init = requests.findIndex((v) => v.name === "Init"),
+    ack = responses.findIndex((v) => v.name === "Initialized");
+  return formatGenerated(
+    `// @generated by echo-codegen.ts from keld-ipc/src/lifecycle.rs; do not edit.
+import { decodeVarint, decodePostcardStringAt, encodeVarint, encodePostcardString, kipcError, stateByteLength } from "@keld/kipc";
+import { isProxy } from "node:util/types";
+export type LifecycleEventName = "ready" | "last-window-closed" | "quit-requested";
+/** Strict owning unit enum; source order alone owns postcard discriminants. */
+export function decodeLifecycleEvent(payload:Uint8Array):LifecycleEventName {
+ if(stateByteLength(payload)!==1) throw kipcError("KELD-IPC-003","lifecycle enum must be a single postcard varint byte");
+ switch(payload[0]) { ${eventCases} }
+ throw kipcError("KELD-IPC-003",\`unknown LifecycleEvent discriminant \${payload[0]}\`);
+}
+export const MAX_RUNTIME_PROCESS_FACTS_PAYLOAD = ${limits[0]};
+const MAX_ENTRIES = ${limits[1]};
+const MAX_TEXT_BYTES = ${limits[2]};
+const INIT = ${init};
+const INITIALIZED = ${ack};
+export interface RuntimeProcessFacts { readonly versions: Readonly<Record<string,string>> }
+function invalid():never { throw kipcError("KELD-IPC-003","Runtime facts require 1..32 own nonempty string entries within 8192 UTF-8 bytes. Correct the trusted preload capture."); }
+/** Copy actual role-main metadata before application entry; no getters or authority. */
+export function snapshotRuntimeProcessFacts(value:unknown):RuntimeProcessFacts {
+ if(value===null || typeof value!=="object" || isProxy(value)) return invalid();
+ const keys=Reflect.ownKeys(value);
+ if(keys.length===0 || keys.length>MAX_ENTRIES) return invalid();
+ const versions:Record<string,string>=Object.create(null);
+ let bytes=0;
+ for(const key of keys){
+  if(typeof key!=="string" || key.length===0 || key.includes("\\0")) return invalid();
+  const descriptor=Object.getOwnPropertyDescriptor(value,key);
+  if(!descriptor || !("value" in descriptor) || typeof descriptor.value!=="string" || descriptor.value.length===0 || descriptor.value.includes("\\0")) return invalid();
+  bytes+=Buffer.byteLength(key,"utf8")+Buffer.byteLength(descriptor.value,"utf8");
+  if(bytes>MAX_TEXT_BYTES) return invalid();
+  versions[key]=descriptor.value;
+ }
+ return Object.freeze({versions:Object.freeze(versions)});
+}
+/** Synchronous private payload snapshot in the same BTreeMap order as Rust. */
+export function encodeRuntimeProcessInit(facts:RuntimeProcessFacts):Uint8Array {
+ const snapshot=snapshotRuntimeProcessFacts(facts.versions);
+ const keys=Object.keys(snapshot.versions).sort((a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b)));
+ const parts:Uint8Array[]=[encodeVarint(INIT),encodeVarint(keys.length)];
+ for(const key of keys) parts.push(encodePostcardString(key),encodePostcardString(snapshot.versions[key]));
+ const bytes=Buffer.concat(parts);
+ if(bytes.byteLength>MAX_RUNTIME_PROCESS_FACTS_PAYLOAD) return invalid();
+ return bytes;
+}
+/** Strict semantic decoder shared by contract fixtures; no link admission authority. */
+export function decodeRuntimeProcessInit(payload:Uint8Array):RuntimeProcessFacts {
+ if(!(payload instanceof Uint8Array) || payload.byteLength>MAX_RUNTIME_PROCESS_FACTS_PAYLOAD) return invalid();
+ const [tag,at]=decodeVarint(payload,0);
+ if(tag!==INIT) return invalid();
+ const [count,begin]=decodeVarint(payload,at);
+ if(count===0 || count>MAX_ENTRIES) return invalid();
+ let offset=begin,bytes=0;
+ const versions:Record<string,string>=Object.create(null);
+ for(let i=0;i<count;i++){
+  const [key,next]=decodePostcardStringAt(payload,offset);
+  const [value,end]=decodePostcardStringAt(payload,next);
+  bytes+=Buffer.byteLength(key,"utf8")+Buffer.byteLength(value,"utf8");
+  if(!key || !value || key.includes("\\0") || value.includes("\\0") || bytes>MAX_TEXT_BYTES || Object.hasOwn(versions,key)) return invalid();
+  versions[key]=value;offset=end;
+ }
+ if(offset!==payload.byteLength) return invalid();
+ return Object.freeze({versions:Object.freeze(versions)});
+}
+/** Only this acknowledgement opens qualified application entry. */
+export function decodeRuntimeInitialized(payload:Uint8Array):void {
+ if(payload.byteLength!==1 || payload[0]!==INITIALIZED) invalid();
+}
+`,
+    runtimeGeneratedPath,
+  );
+}
+
 function generate(): void {
+  const menuGenerated = formatGenerated(
+    renderMenuBinding(readFileSync(menuSourcePath, "utf8")),
+    menuGeneratedPath,
+  );
   const fsGenerated = renderFsBinding(readFileSync(fsSourcePath, "utf8"));
   const authGenerated = renderAuthBinding(readFileSync(authSourcePath, "utf8"));
   const dialogGenerated = renderDialogBinding(
@@ -1230,15 +2138,33 @@ function generate(): void {
     path,
     source: renderEchoDeclarations(rustSource, path),
   }));
+  const compatGenerated = renderCompatControlBinding(
+    readFileSync(compatSourcePath, "utf8"),
+  );
   const regenerated = regenerateTransport(
     readFileSync(channelTableSourcePath, "utf8"),
     readFileSync(transportPath, "utf8"),
   );
   verifyTransportStamp(Buffer.from(regenerated), transportPath);
   outputs.push(
+    { path: menuGeneratedPath, source: menuGenerated },
+    {
+      path: runtimeGeneratedPath,
+      source: renderRuntimeProcessBinding(
+        readFileSync(runtimeSourcePath, "utf8"),
+      ),
+    },
+    {
+      path: windowCodecPath,
+      source: renderWindowCodecBinding(
+        readFileSync(windowSourcePath, "utf8"),
+        readFileSync(windowCodecPath, "utf8"),
+      ),
+    },
     { path: fsGeneratedPath, source: fsGenerated },
     { path: authGeneratedPath, source: authGenerated },
     { path: dialogGeneratedPath, source: dialogGenerated },
+    { path: compatGeneratedPath, source: compatGenerated },
     { path: transportPath, source: regenerated },
   );
   // All parsing, formatting and stamping must succeed before the first write.
@@ -1247,6 +2173,32 @@ function generate(): void {
 }
 
 function check(): void {
+  if (
+    readFileSync(runtimeGeneratedPath, "utf8") !==
+    renderRuntimeProcessBinding(readFileSync(runtimeSourcePath, "utf8"))
+  )
+    fail("runtime facts binding is stale; run bun run echo:generate");
+  const windowAdapter = readFileSync(windowCodecPath, "utf8");
+  if (
+    windowAdapter !==
+    renderWindowCodecBinding(
+      readFileSync(windowSourcePath, "utf8"),
+      windowAdapter,
+    )
+  )
+    fail("window N1 binding is stale; run bun run echo:generate");
+  assertCompatControlArtifactFresh(
+    readFileSync(compatSourcePath, "utf8"),
+    readFileSync(compatGeneratedPath),
+  );
+  if (
+    readFileSync(menuGeneratedPath, "utf8") !==
+    formatGenerated(
+      renderMenuBinding(readFileSync(menuSourcePath, "utf8")),
+      menuGeneratedPath,
+    )
+  )
+    fail("committed menu.generated.ts is stale; run bun run echo:generate");
   if (
     !Buffer.from(readFileSync(dialogGeneratedPath)).equals(
       Buffer.from(renderDialogBinding(readFileSync(dialogSourcePath, "utf8"))),

@@ -1,3 +1,4 @@
+import type { MenuRequestV1, MenuInstallReceipt } from "./menu.generated.ts";
 /**
  * Backend-independent application lifecycle over the canonical app-link.
  *
@@ -17,6 +18,7 @@ import {
   hostLaunchFacts,
   linkError,
   nativeFacadeBootSelected,
+  runtimeProcessFactsSelected,
   stateMap,
   stateMapDelete,
   stateMapSet,
@@ -31,6 +33,93 @@ import type {
 import type { DesktopSnapshot, WindowSnapshot } from "./window-source.ts";
 export type { DesktopSnapshot } from "./window-source.ts";
 import { WindowCloseReceipts } from "./window-close-receipts.ts";
+import {
+  encodeCompatControlRequest,
+  type CompatControlRequest,
+} from "@keld/kipc/compat-control";
+import type { CompatConsumer } from "./compat-source.ts";
+
+import {
+  encodeRuntimeProcessInit,
+  snapshotRuntimeProcessFacts,
+} from "@keld/kipc/runtime-process-facts";
+let runtimeInitPayload: Uint8Array | undefined;
+/** Internal cold preload entry: captures before any link attempt or user entry. */
+export function preloadRuntimeProcessFacts(versions: unknown): Promise<void> {
+  if (!runtimeProcessFactsSelected)
+    return Promise.reject(
+      linkError(
+        "KELD-IPC-005",
+        "Runtime facts require trusted Host launch selection.",
+      ),
+    );
+  if (linkPromise !== undefined || runtimeInitPayload !== undefined)
+    return Promise.reject(
+      linkError(
+        "KELD-IPC-005",
+        "Runtime facts must precede the role's one link attempt.",
+      ),
+    );
+  runtimeInitPayload = encodeRuntimeProcessInit(
+    snapshotRuntimeProcessFacts(versions),
+  );
+  return ensureLink().then(() => undefined);
+}
+
+let compatConsumer: CompatConsumer | undefined;
+/** Internal facade registration; no connection, sender or permission is created. */
+export function registerCompatMainConsumer(consumer: CompatConsumer): void {
+  if (compatConsumer !== undefined)
+    throw linkError(
+      "KELD-IPC-005",
+      "compat main consumer is already registered",
+    );
+  compatConsumer = consumer;
+}
+/** Recheck the captured original target after the existing link's async readiness. */
+export function sendCompatRequest(
+  request: CompatControlRequest,
+  current: () => boolean,
+): Promise<void> {
+  // Synchronous snapshot/refusal is preserved before any async link readiness.
+  const payload = encodeCompatControlRequest(request);
+  if (!current()) return Promise.resolve();
+  const send = (link: LifecycleLink): Promise<void> =>
+    current()
+      ? link.callCompat(request, current, payload).then(() => undefined)
+      : Promise.resolve();
+  return connectedLink ? send(connectedLink) : ensureLink().then(send);
+}
+
+/** @internal Main-to-renderer send using only a native-observed current view.
+ * This is the same link and final Host Guard as original IPC replies; unlike
+ * event.reply, it selects the *current* window document at call admission.
+ */
+export function sendCurrentWindowEvent(
+  window: Readonly<WindowRef>,
+  topic: string,
+  payload: Uint8Array,
+): Promise<void> {
+  const session = connectedLink;
+  if (
+    !nativeFacadeBootSelected ||
+    !runtimeProcessFactsSelected ||
+    !hostReady ||
+    linkDead !== undefined ||
+    !session?.windowAdmissionOpen
+  ) {
+    throw linkError(
+      "KELD-CORE-043",
+      "authenticated main-to-renderer window route unavailable",
+    );
+  }
+  const current = (): boolean =>
+    connectedLink === session &&
+    hostReady &&
+    linkDead === undefined &&
+    session.windowAdmissionOpen;
+  return session.sendToCurrentWindow(window, topic, payload, current);
+}
 
 /**
  * GH481 S1 is currently the qualified macOS *development* facade slice.
@@ -83,7 +172,11 @@ let linkPromise: Promise<LifecycleLink> | undefined;
 let connectedLink: LifecycleLink | undefined;
 
 let nextListenerId = 1;
-const lastWindowClosedListeners = stateMap<number, () => void>();
+type ObservedLifecycleEvent = "last-window-closed" | "quit-requested";
+const lifecycleListeners = stateMap<
+  number,
+  { event: ObservedLifecycleEvent; listener: () => void }
+>();
 const windowFactListeners = new Set<(fact: WindowEvent) => void>();
 const deliveredWindowCloses = new WindowCloseReceipts();
 const readyWindowCatchUps = new Set<() => void>();
@@ -176,16 +269,49 @@ function safelyCatchUpWindow(catchUp: () => void): void {
   }
 }
 
-function onLastWindowClosed(): void {
-  const snapshot = stateMapValues(lastWindowClosedListeners);
+function dispatchObservedLifecycle(
+  event: ObservedLifecycleEvent,
+  current?: () => boolean,
+): void {
+  const snapshot = stateMapValues(lifecycleListeners);
   for (let index = 0; index < snapshot.length; index += 1) {
-    const listener = snapshot[index]!;
+    const observed = snapshot[index]!;
+    if (observed.event !== event) continue;
+    if (current && !current()) return;
     try {
-      listener();
+      observed.listener();
     } catch {
       // Host events share the app-link read loop; isolate user callbacks.
     }
   }
+}
+function onLastWindowClosed(): void {
+  dispatchObservedLifecycle("last-window-closed");
+}
+function onHostQuitRequested(session: LifecycleLink): void {
+  dispatchObservedLifecycle(
+    "quit-requested",
+    () =>
+      connectedLink === session && currentOriginalWindowSession() === session,
+  );
+}
+function observeLifecycle(
+  event: ObservedLifecycleEvent,
+  listener: () => void,
+): Unsubscribe {
+  const id = nextListenerId;
+  nextListenerId += 1;
+  stateMapSet(lifecycleListeners, id, { event, listener });
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    stateMapDelete(lifecycleListeners, id);
+  };
+}
+/** @internal Framework observer on the existing lifecycle owner; not menu authority. */
+export function onNativeQuitRequested(listener: () => void): Unsubscribe {
+  return observeLifecycle("quit-requested", listener);
 }
 function failReadyWaiters(err: Error): void {
   linkDead = err;
@@ -209,21 +335,36 @@ function ensureLink(): Promise<LifecycleLink> {
   const envLink = process.env.KELD_APP_LINK;
   if (!envLink) {
     return Promise.reject(
-      new Error(
-        "KELD-IPC-007: KELD_APP_LINK is unset. Run under a Keld host so the host mints <endpoint>#<64 hex chars>.",
+      linkError(
+        "KELD-IPC-007",
+        "KELD_APP_LINK is unset. Run under a Keld host so the host mints <endpoint>#<64 hex chars>.",
       ),
     );
   }
-  linkPromise = LifecycleLink.connect(envLink, {
-    onReady: onHostReady,
-    onLastWindowClosed,
-    onConnected: (session) => {
-      connectedLink = session;
+  linkPromise = LifecycleLink.connect(
+    envLink,
+    {
+      onReady: onHostReady,
+      onLastWindowClosed,
+      onQuitRequested: onHostQuitRequested,
+      onConnected: (session) => {
+        connectedLink = session;
+      },
+      onWindowFact,
+      onApplicationCall: dispatchApplicationCall,
+      onCompatEvent: (event, current) =>
+        compatConsumer?.(event, current) ?? { variant: "NoListener" },
+      onCompatError: (error) => {
+        try {
+          console.error("KELD compat link failed:", error);
+        } catch {
+          /* diagnostic only */
+        }
+      },
+      onLinkDead: failReadyWaiters,
     },
-    onWindowFact,
-    onApplicationCall: dispatchApplicationCall,
-    onLinkDead: failReadyWaiters,
-  }).catch((err: unknown) => {
+    runtimeInitPayload,
+  ).catch((err: unknown) => {
     // The first connect failure is sticky: its typed error answers every
     // later `whenReady` and `quit`.
     if (err instanceof Error) linkDead ??= err;
@@ -289,15 +430,7 @@ export const app: AppLifecycle = {
   },
 
   onLastWindowClosed(listener: () => void): Unsubscribe {
-    const id = nextListenerId;
-    nextListenerId += 1;
-    stateMapSet(lastWindowClosedListeners, id, listener);
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      stateMapDelete(lastWindowClosedListeners, id);
-    };
+    return observeLifecycle("last-window-closed", listener);
   },
 
   quit(): Promise<void> {
@@ -315,6 +448,106 @@ export function getWindowSnapshot(ref: WindowRef): WindowSnapshot | undefined {
 export function getWindowSnapshots(): readonly WindowSnapshot[] {
   if (!hostReady) return [];
   return connectedLink?.windowSource?.all() ?? [];
+}
+
+/** Package-private, read-only scope for the root-approved original single-window handoff. */
+export interface OriginalWindowQuitScope {
+  readonly window: Readonly<WindowRef>;
+  isCurrentPending(window: WindowRef, closeSeq: bigint): boolean;
+  dispatchedPendingClose(): bigint | null;
+  requestClose(): Promise<WindowResponse>;
+  failAfterHandoff(error: Error): void;
+}
+
+/** Select existing original-runtime metadata plus the actual current native Source. */
+function currentOriginalWindowSession(): LifecycleLink | undefined {
+  const session = connectedLink;
+  if (
+    !nativeFacadeBootSelected ||
+    !runtimeProcessFactsSelected ||
+    hostLaunchFacts?.schema !== 5 ||
+    hostLaunchFacts.originalResourcePolicy === undefined ||
+    !hostReady ||
+    linkDead !== undefined ||
+    !session?.windowAdmissionOpen
+  )
+    return undefined;
+  if (!session.windowSource) return undefined;
+  return session;
+}
+
+/** Read-only scope for the same admitted original session and current window. */
+export function captureOriginalWindowQuitScope(
+  window: WindowRef,
+): OriginalWindowQuitScope | undefined {
+  const session = currentOriginalWindowSession();
+  if (!session) return undefined;
+  const source = session.windowSource;
+  if (!source) return undefined;
+  const ref = Object.freeze({ id: window.id, incarnation: window.incarnation });
+  const current = (): WindowSnapshot | undefined => {
+    if (
+      connectedLink !== session ||
+      linkDead !== undefined ||
+      !session.windowAdmissionOpen
+    )
+      return undefined;
+    try {
+      const snapshot = source.get(ref);
+      return snapshot &&
+        !snapshot.host_destroyed &&
+        snapshot.document?.current &&
+        snapshot.document.finished
+        ? snapshot
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  if (!current()) return undefined;
+  const isCurrentPending = (candidate: WindowRef, closeSeq: bigint): boolean =>
+    candidate.id === ref.id &&
+    candidate.incarnation === ref.incarnation &&
+    current()?.pending_close === closeSeq;
+  return {
+    window: ref,
+    isCurrentPending,
+    dispatchedPendingClose(): bigint | null {
+      // Mirror application alone is insufficient: this existing owner records
+      // only genuine already-dispatched Host facts and their acknowledged sequence.
+      const receipts = deliveredWindowCloses.pending();
+      for (let index = 0; index < receipts.length; index++) {
+        const receipt = receipts[index]!;
+        if (isCurrentPending(receipt.window, receipt.closeSeq))
+          return receipt.closeSeq;
+      }
+      return null;
+    },
+    requestClose(): Promise<WindowResponse> {
+      if (!current())
+        return Promise.reject(
+          linkError(
+            "KELD-CORE-043",
+            "original Quit window scope retired before close admission",
+          ),
+        );
+      return invokeWindow({ variant: "RequestClose", window: ref });
+    },
+    failAfterHandoff(error: Error): void {
+      // First completion cannot be undone. Preserve its actual later cause and
+      // fence the same original role/link instead of pretending that it succeeded.
+      if (connectedLink === session) failReadyWaiters(error);
+      session.retireWindowHandoffFailure(error);
+      try {
+        console.error(
+          "KELD original Quit RequestClose failed after witnessed handoff; effect unknown; original role link retired:",
+          error,
+        );
+      } catch {
+        /* The actual link retirement above is independent of logging. */
+      }
+    },
+  };
 }
 
 /** Current admitted desktop facts. Reads are local and issue zero app-link frames. */
@@ -468,4 +701,13 @@ export async function invokeFileDialog(
   await app.whenReady();
   const link = await ensureLink();
   return link.callFileDialog(variant, parent, options);
+}
+
+/** One native application-menu installation over this role's existing link. */
+export async function invokeMenuInstall(
+  request: MenuRequestV1,
+): Promise<MenuInstallReceipt> {
+  await app.whenReady();
+  const link = await ensureLink();
+  return link.callMenu(request);
 }

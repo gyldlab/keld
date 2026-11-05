@@ -123,8 +123,9 @@ These are the spec's contract for X05-T4. Each names its negative control.
      baseline fails it too.
 4. **Authority field.** Given a fixture entry with `Authority::Guarded(&[])` (an empty
    list), when `validate_table` runs, then it returns `EmptyCapabilityList`. Every
-   `Authority` value is either `HostInternal` or a non-empty list of `keld-guard`-owned
-   capability constants. *Negative control:* removing the `authority` field from
+   `Authority` value names `HostInternal`, a non-empty list of `keld-guard`-owned
+   capability constants, or the explicit final `RendererChannelGuardQuery` owner
+   adopted in §12; the latter never grants HostInternal authority. *Negative control:* removing the `authority` field from
    `ChannelEntry` fails to compile, because both the table and the tests name it.
 5. **Name rule.** Given a fixture entry named `el-ipc`, `electron`, `ipcMain` or `a:b`,
    when `validate_table` runs, then it returns `InvalidName`. Names match
@@ -229,8 +230,9 @@ These are the spec's contract for X05-T4. Each names its negative control.
     version-2 peer admits (`lifecycle_event_receiver`). **Decided for this slice:**
     `Subscribe` is admitted only for an entry with `Authority::HostInternal` and an
     event-bearing class. A `Guarded` entry is refused with `GuardedNotSupported`;
-    guarded event subscription is future work that needs its own spec and a
-    `keld-guard` API. A host-internal subscription binds to the authenticated principal
+    general guarded event subscription is future work that needs its own spec and a
+    `keld-guard` API. The explicitly adopted GH540 `RendererChannelGuardQuery` control
+    subscription is owned separately under §12 and does not widen this generic path. A host-internal subscription binds to the authenticated principal
     of the link it arrived on (the payload names no principal), and is admitted only if
     that role's KEL-75 role declaration (host configuration, never child-supplied)
     admits the channel. `window-state` is host-internal and admitted for the `primary`
@@ -356,6 +358,8 @@ pub enum ReceiveClass {
     /// App-to-host `CALL` routed through `guard_dispatch`; `ERR` is `CallError`
     /// (row: privileged receiver).
     GuardedCall,
+    /// Guard-routed CALL with canonical CallError replies and declared host EVENTs.
+    GuardedCallWithEvents,
 }
 
 /// What authorizes a call on the channel.
@@ -366,6 +370,8 @@ pub enum Authority {
     /// Every call is evaluated by `keld-guard` against one of these manifest
     /// capability names. The names are `keld-guard` constants, never literals here.
     Guarded(&'static [&'static str]),
+    /// Mandatory final per-window RendererChannelQuery through guard_dispatch (§12).
+    RendererChannelGuardQuery,
 }
 
 /// One allocated kipc channel.
@@ -895,3 +901,45 @@ rule reported exactly the seven production hits listed there (eight after #628, 
   privileged receive policy and the privileged primary-link reader take
   `&'static ChannelEntry`, never a `ChannelId`. *Falsifier:* a production caller that
   needs a raw id from a received `ChannelId` (not from an entry).
+
+
+## 12. Approved owner adoption: bounded renderer control and native menu
+
+The repository-owner delegation recorded in the 2026-11-01 root execution session
+adopts the retained GH540 bounded DTO/credit/release owner rather than creating a
+second transport. Under §4.4, the table appends `compat-control 7` followed by
+`menu 8`; existing allocations 1 through 6 and frame/HELLO/PROTOCOL_VERSION2 stay
+unchanged. Both entries derive their numeric values only in the owning table and
+committed append-only allocation ledger; TypeScript consumers regenerate them.
+
+The renderer control entry has `ReceiveClass::GuardedCallWithEvents` and
+`Authority::RendererChannelGuardQuery`. The class permits authenticated CALLs,
+canonical correlated CallError ERR/REPLY waiters, and declared uncorrelated host
+EVENT receivers. The new authority variant explicitly requires the existing final
+per-window `RendererChannelQuery` through `guard_dispatch` for each guarded
+renderer delivery. The id, authenticated app link and subscription are never that
+authority. The retained GH540 owner still supplies bounded body/credit/consumer
+and independent native release contracts, per-link subscription, exact native
+currentness and retirement. A class declaration alone proves none of these.
+The existing HostInternal window subscription path remains unchanged; admitting
+this explicit control subscription belongs only to the GH540 router owner.
+
+The native menu entry remains `ReceiveClass::GuardedCall`, with
+`Authority::Guarded(&[keld_guard::capability::MENU])`. The single Guard capability
+is `system.menu`, selecting the exact `app.system` literal `menu` via the same
+resource-less evaluator as `system.dialog`. It has canonical correlated
+CallError ERR/REPLY waiters and no host EVENT receiver/subscription. Native role
+activation is main-thread-local; GH556 custom-click EVENT delivery is deferred.
+Core reuses its one current primary link/reader identity, immutable verified Guard
+snapshot, ordered writer and existing WV main service. Core checks the current
+installing role plus native generation and runs final Guard immediately around
+native dispatch. Close delegates to the existing current-registry
+WindowCloseRequested/veto route; native Quit remains diagnosed/unsupported in D2.
+
+Decision-bearing atoms and their independent falsifiers are recorded in the
+execution evidence `control-routing/ATOMIC-CONTRACT.md`: allocation, receive
+class, authentication/lifecycle, Guard callback, actual native custody and one
+terminal diagnostic. The concrete unit/socket tests are implementation evidence
+only after execution; actual native keyboard, focus/responder, close-veto,
+retention and workspace gates remain required. No new frame version or native
+principal/handle owner is introduced by this adoption.

@@ -520,11 +520,18 @@ fn bridge_admitted_id_is_never_a_positional_literal() {
     );
     let session = "crates/keld-core/src/app_session.rs";
     let bridge = "crates/keld-wv/src/wkwebview/macos_bridge.rs";
+    // Mutate the initial-window and deferred-facade endpoints independently.
+    // Each constructor must remain covered by the positional-literal scan.
     for (file, from, to) in [
         (
             session,
-            "renderer_outcomes_rx,\n            keld_ipc::channel_table::ECHO.wire_id(),",
-            "renderer_outcomes_rx,\n            1,",
+            "keld_ipc::channel_table::ECHO.wire_id(),\n        );\n        match engine.create_app_with_renderer_bridge(",
+            "1,\n        );\n        match engine.create_app_with_renderer_bridge(",
+        ),
+        (
+            session,
+            "keld_ipc::channel_table::ECHO.wire_id(),\n        );\n        if let Err(source) = engine.install_renderer_endpoint(renderer_endpoint) {",
+            "1,\n        );\n        if let Err(source) = engine.install_renderer_endpoint(renderer_endpoint) {",
         ),
         (
             bridge,

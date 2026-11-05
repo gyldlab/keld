@@ -122,6 +122,9 @@ pub(super) enum TestGroupSignalPoint {
     /// group signal the Guardian product sends passes here, whichever call
     /// site (attested arm, own-child decision or a direct call) reached it.
     BeforeSignal,
+    /// After the real group SIGKILL succeeds, before any absence observation.
+    /// A test parent can reap its retained Child at this exact boundary.
+    AfterDelivery,
     /// After that one signal was denied (zombie-only EPERM), before the next
     /// read-only probe.
     AfterDeniedSignal,
@@ -556,6 +559,10 @@ pub(super) fn terminate_registered_group(group: u32) -> Result<(), RuntimeError>
     #[cfg(test)]
     run_test_group_signal_hook(group, TestGroupSignalPoint::BeforeSignal);
     let result = killpg(Pid::from_raw(raw), Signal::SIGKILL);
+    #[cfg(test)]
+    if result.is_ok() {
+        run_test_group_signal_hook(group, TestGroupSignalPoint::AfterDelivery);
+    }
     finish_group_termination(result, || kill(Pid::from_raw(-raw), None))
 }
 

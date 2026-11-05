@@ -70,3 +70,13 @@ No performance claim. Architecture 01 §5 Source and memory budgets require qual
 ## 10. Open questions
 
 None for the admitted design. Installed-graph Source qualification (criterion 6) is an acceptance hold, not a design decision. Pinning Node in hosted CI (§3 follow-up) belongs to the GH1301 CI owner.
+
+
+### GH480 private generated menu codec export amendment (2026-11-01)
+
+The owner-delegated GH480 native-menu slice adds only the private
+`./internal/menu-codec` export naming `src/menu.generated.ts`. The existing
+SDK producer derives it into emitted JS/declarations and includes its actual
+payload; it remains private and introduces no root API runtime key. The
+existing allowlisted producer and installed-consumer probes own verification;
+no second bundler, transport or package authority is introduced.

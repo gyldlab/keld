@@ -20,21 +20,50 @@ import "./entry-identity.ts";
 import { app } from "./app.ts";
 import { BrowserWindow } from "./browser-window.ts";
 import { dialog } from "./dialog.ts";
+import { Menu, MenuItem } from "./menu.ts";
 import { nativeTheme } from "./native-theme.ts";
 import { screen } from "./screen.ts";
+import { session } from "./session.ts";
+import { ipcMain, installIpcMainDelivery } from "./ipc-main.ts";
+import {
+  findIpcSenderContents,
+  awaitOriginalIpcWindowCloseVeto,
+  destroyOriginalIpcWindowDocument,
+} from "./browser-window.ts";
+import {
+  registerCompatMainConsumer,
+  sendCompatRequest,
+} from "@keld/api/internal/app";
+import { hostLaunchFacts } from "@keld/kipc";
+
+installIpcMainDelivery({
+  register: registerCompatMainConsumer,
+  findSender: findIpcSenderContents,
+  send: sendCompatRequest,
+  awaitCloseVeto: awaitOriginalIpcWindowCloseVeto,
+  destroyOriginalDocument: destroyOriginalIpcWindowDocument,
+  report(error) {
+    try {
+      console.error("KELD main IPC delivery failed:", error);
+    } catch {
+      /* diagnostic only */
+    }
+  },
+});
 import {
   ClipboardItem,
-  Menu,
   clipboard,
   nativeImage,
-  session,
   shell,
 } from "./unsupported-bindings.ts";
 
 /** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
 const ELECTRON_VERSION_SHIM = "0.0.1";
 
-const proc = process as typeof process & { type?: string };
+const proc = process as typeof process & {
+  type?: string;
+  defaultApp?: boolean;
+};
 
 (process.versions as { electron?: string }).electron = ELECTRON_VERSION_SHIM;
 Object.defineProperty(proc, "type", {
@@ -43,12 +72,24 @@ Object.defineProperty(proc, "type", {
   enumerable: true,
   writable: false,
 });
+// Only the qualified, immutable Host development launch has an explicit script
+// entry. Electron's generic executable sets defaultApp=true for this argv shape.
+// An absent/invalid Host record cannot be replaced by Bun argv or environment.
+if (hostLaunchFacts?.kind === "development") {
+  Object.defineProperty(proc, "defaultApp", {
+    value: true,
+    configurable: false,
+    enumerable: true,
+    writable: false,
+  });
+}
 
 export {
   app,
   BrowserWindow,
   ClipboardItem,
   Menu,
+  MenuItem,
   clipboard,
   dialog,
   nativeImage,
@@ -56,7 +97,14 @@ export {
   screen,
   session,
   shell,
+  ipcMain,
 };
+export type {
+  IpcMainEvent,
+  IpcMainListener,
+  IpcMain,
+  WebFrameMain,
+} from "./ipc-main.ts";
 export type {
   MessageBoxOptions,
   MessageBoxResult,
@@ -77,10 +125,12 @@ export type { KeldCallError } from "./link.ts";
 export type { TrackingIssue, UnsupportedKind } from "./unsupported.ts";
 
 const electron = {
+  ipcMain,
   app,
   BrowserWindow,
   ClipboardItem,
   Menu,
+  MenuItem,
   clipboard,
   dialog,
   nativeImage,
@@ -90,3 +140,15 @@ const electron = {
   shell,
 };
 export default electron;
+
+export type {
+  MenuItemConstructorOptions,
+  MenuItemClick,
+  MenuItemType,
+} from "./menu.ts";
+
+export type {
+  DefaultSession,
+  WebRequestFilter,
+  WebRequestListener,
+} from "./session.ts";

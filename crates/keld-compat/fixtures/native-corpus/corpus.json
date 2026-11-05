@@ -104,8 +104,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
-      "test_name": "menu.build-from-template today: Menu.buildFromTemplate refuses with KELD-COMPAT-013 naming GH-480",
-      "negative_control": "While pending: a Menu.buildFromTemplate that returns a value or undefined instead of throwing the typed KELD-COMPAT-013 refusal naming GH-480 fails this mapped case. After GH-480 inversion: generating no native menu tree for a typed valid template fails."
+      "test_name": "menu.build-from-template source: synchronous branded tree; native acceptance remains pending GH-480",
+      "negative_control": "Source partial only: no-op/non-Menu/Promise, lost item identity or wrong default Copy command fails the Bun case. expected_verdict remains fail until actual native menu-tree acceptance; no source green result flips native parity."
     },
     {
       "operation_id": "menu.set-application-menu",
@@ -121,8 +121,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
-      "test_name": "menu.set-application-menu today: Menu.setApplicationMenu refuses with KELD-COMPAT-013 naming GH-480",
-      "negative_control": "While pending: a Menu.setApplicationMenu that returns instead of throwing the typed KELD-COMPAT-013 refusal naming GH-480 fails this mapped case. After GH-480 inversion: not installing actual macOS menu with the host owner fails."
+      "test_name": "menu.set-application-menu source: void call reports actual missing-link failure; native acceptance remains pending GH-480",
+      "negative_control": "Source partial only: Promise return, absent/duplicate actual missing-link diagnostic, unknown sent effect or escaped unhandled rejection fails. expected_verdict remains fail until actual guarded native installation acceptance."
     },
     {
       "operation_id": "menu-item.role-overrides-click",
@@ -138,8 +138,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
-      "test_name": "menu-item.role-overrides-click today: no MenuItem constructor is exported",
-      "negative_control": "Adding a MenuItem constructor makes this red absence case fail. After GH-480 inversion: invoking click for a recognized executable role fails; role-fallback with no focused window has a separate source-only oracle."
+      "test_name": "menu-item.role-overrides-click source: recognized role constructs without invoking click; native activation remains pending GH-480",
+      "negative_control": "Source partial only: missing branded MenuItem, wrong normalized role or construction invoking click fails. Native role activation/click suppression is unproven here; expected_verdict remains fail until real mouse/key activation acceptance."
     },
     {
       "operation_id": "menu.role-close.vetoable",
@@ -155,8 +155,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
-      "test_name": "menu.role-close.vetoable today: role close cannot be constructed without MenuItem",
-      "negative_control": "Current baseline shares the missing MenuItem constructor prerequisite with the role-overrides-click and role-quit tests. After GH-480 inversion: role close must enter GH450 vetoable native CloseRequested path; direct native destroy fails."
+      "test_name": "menu.role-close.vetoable source: close role projects its default command; native veto acceptance remains pending GH-480",
+      "negative_control": "Source partial only: wrong close role/default label/Command+W or lost branded item identity fails. This does not activate a native close or prove a veto; expected_verdict remains fail until actual Host CloseRequested/Veto/native retention acceptance."
     },
     {
       "operation_id": "menu.role-quit.before-quit",
@@ -172,8 +172,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/native-surface.test.ts",
-      "test_name": "menu.role-quit.before-quit pending GH-563: three-stage no-native-quit contract",
-      "negative_control": "THREE STAGES (GH-1156 review #5638444771): (0) Before GH-480, MenuItem is absent and this red baseline passes. (1) GH-480 implementing PR MUST in the same diff re-record THIS mapped GH-563 pending-fail test to witness actual native role quit refusal, a typed KELD-COMPAT diagnostic naming GH-563, zero process/window termination and no fabricated before-quit; keep expected_verdict=fail and implementing_ticket=GH-563. Injecting a MenuItem constructor alone MUST fail this intermediate transition gate with the exact GH-480 same-PR fix message. (2) GH-563 implementing PR alone flips this cell to pass after actual role quit/Cmd+Q emits before-quit through the Host cancelable quit state machine and honors dirty-window veto; raw OS terminate/skip before-quit fails. This remains separate from GH-480 role-close parity."
+      "test_name": "menu.role-quit.before-quit pending GH-563: generic live-window Quit stays refused; native menu qualification remains pending",
+      "negative_control": "GH563 remains expected-fail: source construction is available and the existing actual API/WindowSource controlled-CALL fixture must preserve generic COMPAT012 before Ready/live vetoed windows with zero forceful Quit calls. Removing that guard fails this mapped source test. Actual menu/Cmd+Q typed GH563 refusal, no OS/window termination and no fabricated before-quit still require root native evidence; none is simulated or claimed here. Only GH563 can invert the native cell after its actual cancelable OS-quit acceptance."
     },
     {
       "operation_id": "screen.get-primary-display",

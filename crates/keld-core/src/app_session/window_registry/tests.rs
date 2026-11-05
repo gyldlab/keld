@@ -790,3 +790,8 @@ fn late_initialization_cannot_reopen_a_terminated_registry() {
         Err(WindowError::NotReady)
     );
 }
+
+mod original_load_context;
+
+#[cfg(all(target_os = "macos", debug_assertions))]
+mod original_document_destroy;

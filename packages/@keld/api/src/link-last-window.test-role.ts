@@ -13,6 +13,18 @@ const worker = {
   onEvent(channel: number, handler: (payload: Uint8Array) => void) {
     listeners.set(channel, handler);
   },
+  onEventAfterRingRelease(
+    channel: number,
+    dispatch: (payload: Uint8Array) => () => void,
+  ) {
+    // This lifecycle fixture never emits compat messages. The real ring-release
+    // ordering is verified separately against the actual WorkerLink.
+    assert.equal(channel, transport.COMPAT_CONTROL_CHANNEL);
+    listeners.set(channel, (payload) => dispatch(payload)());
+    return () => {
+      listeners.delete(channel);
+    };
+  },
   setCallHandler() {},
   onEnd() {},
   async call(_channel: number, payload: Uint8Array) {

@@ -147,10 +147,26 @@ pub enum WindowEvent {
         /// Complete current observation or explicit invalidation.
         snapshot: Option<DesktopFacts>,
     },
+    /// Actual qualified native cross-document commit for one admitted load.
+    NavigationCommitted {
+        /// Existing host-minted window identity.
+        window: WindowRef,
+        /// Generation observed from the sole native document owner.
+        document_generation: u32,
+        /// Actual qualified native URL, never reconstructed from the request.
+        native_url: String,
+    },
+    /// Actual native finish for the same admitted committed document.
+    NavigationFinished {
+        /// Existing host-minted window identity.
+        window: WindowRef,
+        /// Same native-observed generation as the matching commit.
+        document_generation: u32,
+    },
 }
 
 /// App-to-host window calls; discriminants are append-only, starting at zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowRequest {
     /// Create a native window, or adopt an eligible recovered survivor.
     Create {
@@ -196,6 +212,37 @@ pub enum WindowRequest {
         /// Window to destroy.
         window: WindowRef,
     },
+    /// Create with bounded preload metadata; Host admission authenticates source.
+    CreateWithPreload {
+        /// Requested outer-frame width in logical points.
+        width: u32,
+        /// Requested outer-frame height in logical points.
+        height: u32,
+        /// Requested horizontal position, or the platform default.
+        x: Option<i32>,
+        /// Requested vertical position, or the platform default.
+        y: Option<i32>,
+        /// App-selected absolute selector; this is not a source authority.
+        #[serde(deserialize_with = "preload_path")]
+        preload_absolute: String,
+        /// Ordered app arguments, retained only after Host source admission.
+        #[serde(deserialize_with = "preload_arguments")]
+        additional_arguments: Vec<String>,
+    },
+    /// Load the one original editor entry admitted by the Host source owner.
+    LoadUrl {
+        /// Existing host-minted window identity.
+        window: WindowRef,
+        /// Exact original file URI; it supplies no source or policy authority.
+        uri: String,
+    },
+    /// Destroy only if the retained original native document still owns this window.
+    DestroyOriginalDocument {
+        /// Existing Host-minted pair, authenticated against the current caller.
+        window: WindowRef,
+        /// Existing native-observed generation, a selector rather than authority.
+        document_generation: u32,
+    },
 }
 
 /// Application verdict for a pending cancelable close; `Allow = 0`, `Veto = 1`.
@@ -240,7 +287,105 @@ pub enum WindowResponse {
         /// Existing host identity retained by the adopted window.
         window: WindowRef,
     },
+    /// The actual matching native finish was emitted before this reply.
+    Loaded,
 }
+
+/// Maximum complete original-load request body before owned decoding.
+pub const MAX_ORIGINAL_LOAD_REQUEST_BYTES: usize = 8192;
+
+/// Fixed output storage for the bounded native navigation observation body.
+pub const NAVIGATION_EVENT_STORAGE_BYTES: usize = 32 * 1024;
 
 #[cfg(test)]
 mod tests;
+
+// Bounds are schema admission only. Exact retained-root/path/digest checks remain
+// Host-owned. The shared postcard decoder remains the only wire parser.
+fn preload_path<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
+    let value = <&str>::deserialize(decoder)?;
+    if value.is_empty() || value.len() > 2048 {
+        return Err(serde::de::Error::custom(
+            "preload selector must contain 1..=2048 UTF-8 bytes",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn preload_arguments<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Vec<String>, D::Error> {
+    struct Arguments;
+    impl<'de> serde::de::Visitor<'de> for Arguments {
+        type Value = Vec<String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("at most 16 bounded preload arguments")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            if seq.size_hint().is_some_and(|count| count > 16) {
+                return Err(serde::de::Error::custom("too many preload arguments"));
+            }
+            let mut values = Vec::new();
+            let mut total = 0;
+            while let Some(value) = seq.next_element::<&str>()? {
+                if values.len() == 16 || value.len() > 256 {
+                    return Err(serde::de::Error::custom(
+                        "preload argument count or size exceeded",
+                    ));
+                }
+                total += value.len();
+                if total > 2048 {
+                    return Err(serde::de::Error::custom(
+                        "preload arguments exceed 2048 UTF-8 bytes",
+                    ));
+                }
+                values.push(value.to_owned());
+            }
+            Ok(values)
+        }
+    }
+    decoder.deserialize_seq(Arguments)
+}
+
+/// Encode a charged native URL by borrow, without detaching or cloning its bytes.
+///
+/// This is the borrowed encoder view of `WindowEvent::NavigationCommitted`, at
+/// the same append-only ledger position. The owned event remains the app decoder
+/// schema; shared literal vectors qualify their byte equality.
+///
+/// # Errors
+/// Returns the owning postcard codec error when output storage is insufficient.
+pub fn encode_navigation_committed_into<'buffer>(
+    window: WindowRef,
+    document_generation: u32,
+    native_url: &str,
+    buffer: &'buffer mut [u8],
+) -> Result<&'buffer [u8], crate::IpcError> {
+    struct BorrowedCommit<'url> {
+        window: WindowRef,
+        document_generation: u32,
+        native_url: &'url str,
+    }
+    impl Serialize for BorrowedCommit<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStructVariant as _;
+            let mut value =
+                serializer.serialize_struct_variant("WindowEvent", 8, "NavigationCommitted", 3)?;
+            value.serialize_field("window", &self.window)?;
+            value.serialize_field("document_generation", &self.document_generation)?;
+            value.serialize_field("native_url", self.native_url)?;
+            value.end()
+        }
+    }
+    crate::codec::encode_into(
+        &BorrowedCommit {
+            window,
+            document_generation,
+            native_url,
+        },
+        buffer,
+    )
+}

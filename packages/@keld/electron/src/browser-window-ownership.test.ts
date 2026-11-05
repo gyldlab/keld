@@ -24,6 +24,8 @@ for (const scenario of [
   "unknown-create-outcome",
   "published-listener-throws",
   "adopted-setup-failure",
+  "web-contents-send-snapshot",
+  "web-contents-send-async-error",
 ]) {
   test(`GH531 constructor ownership ${scenario}`, async () => {
     const child = Bun.spawn(

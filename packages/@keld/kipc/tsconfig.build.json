@@ -4,9 +4,14 @@
     "noEmit": false,
     "noEmitOnError": true,
     "declaration": true,
-    "emitDeclarationOnly": true,
-    "rootDir": "src"
+    "rootDir": "src",
+    "rewriteRelativeImportExtensions": true
   },
-  "files": ["src/transport.ts"],
+  "files": [
+    "src/transport.ts",
+    "src/compat-control.generated.ts",
+    "src/endpoint-value-codec.ts",
+    "src/runtime-process.generated.ts"
+  ],
   "include": []
 }

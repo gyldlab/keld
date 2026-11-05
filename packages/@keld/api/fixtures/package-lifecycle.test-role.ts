@@ -8,6 +8,7 @@ import { LifecycleLink } from "@keld/api/internal/link";
 import { encodeWindowEvent } from "@keld/api/internal/window-codec";
 import {
   DrainSignal,
+  COMPAT_CONTROL_CHANNEL,
   ECHO_CHANNEL,
   FrameKind,
   FrameReader,
@@ -105,6 +106,7 @@ try {
   const subscribe = await withIoDeadline(reader.readFrame(), 1500);
   assert.equal(subscribe.header.kind, FrameKind.Call);
   assert.equal(subscribe.header.channel, LIFECYCLE_CHANNEL);
+  assert.deepEqual(subscribe.payload, Uint8Array.of(1, WINDOW_CHANNEL));
   // Replay precedes the subscription reply on this generation's own link.
   await writer.writeFrame(
     FrameKind.Event,
@@ -128,6 +130,23 @@ try {
     0,
     LIFECYCLE_CHANNEL,
     subscribe.header.corr,
+    Uint8Array.of(1),
+  );
+  // The same current link now installs the named compat reader as a separate
+  // subscription. A window-only ACK must not complete connect or publish Ready.
+  const compatSubscribe = await withIoDeadline(reader.readFrame(), 1500);
+  assert.equal(compatSubscribe.header.kind, FrameKind.Call);
+  assert.equal(compatSubscribe.header.channel, LIFECYCLE_CHANNEL);
+  assert.notEqual(compatSubscribe.header.corr, subscribe.header.corr);
+  assert.deepEqual(
+    compatSubscribe.payload,
+    Uint8Array.of(1, COMPAT_CONTROL_CHANNEL),
+  );
+  await writer.writeFrame(
+    FrameKind.Reply,
+    0,
+    LIFECYCLE_CHANNEL,
+    compatSubscribe.header.corr,
     Uint8Array.of(1),
   );
   const connected = await withIoDeadline(connect, 1500);

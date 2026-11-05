@@ -372,8 +372,19 @@ test("every state fact changes only its own host-confirmed field", () => {
   expect(source.get(WINDOW)).not.toBe(initial);
 });
 
-test("all eight Rust-owned event vectors are accepted in their specified order", () => {
-  expect(literals.size).toBe(8);
+test("all ten Rust-owned event vectors are accepted in their specified order", () => {
+  expect([...literals.keys()]).toEqual([
+    "event-created",
+    "event-created-pending-close",
+    "event-bounds",
+    "event-focus",
+    "event-maximized",
+    "event-full-screen",
+    "event-close-requested",
+    "event-destroyed",
+    "event-navigation-committed",
+    "event-navigation-finished",
+  ]);
   for (const created of ["event-created", "event-created-pending-close"]) {
     const source = new WindowSource(() => {});
     accept(source, literal(created));
@@ -392,12 +403,27 @@ test("all eight Rust-owned event vectors are accepted in their specified order",
     }
     expect(source.get(WINDOW)?.pending_close).toBe(300n);
     expect(source.get(WINDOW)?.state).toEqual(STATE);
+    const document = {
+      generation: 5,
+      native_url:
+        "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      finished: false,
+      current: true,
+    };
+    accept(source, literal("event-navigation-committed"));
+    expect(source.get(WINDOW)?.document).toEqual(document);
+    accept(source, literal("event-navigation-finished"));
+    expect(source.get(WINDOW)?.document).toEqual({
+      ...document,
+      finished: true,
+    });
     accept(source, literal("event-destroyed"));
     expect(source.get(WINDOW)).toEqual({
       window: WINDOW,
       state: STATE,
       pending_close: null,
       host_destroyed: true,
+      document: { ...document, finished: true },
     });
     expect(source.all()).toHaveLength(1);
   }
@@ -801,6 +827,50 @@ test(
   },
   APP_LINK_IO_DEADLINE_MS * 2,
 );
+
+for (const mode of ["document-baseline", "document-caller"] as const) {
+  test(
+    `document snapshot replacement, native retirement and terminal release (${mode})`,
+    async () => {
+      const caller = mode === "document-caller";
+      const live = (old: number, current: number, callback: boolean) => ({
+        old,
+        current,
+        sourceAlive: true,
+        callback,
+        witness: callback,
+        externalAlive: true,
+      });
+      expect(
+        await sourceRole("window-source-semantic-release.test-role.ts", [
+          Buffer.from(literal("event-created")).toString("hex"),
+          mode,
+        ]),
+      ).toEqual({
+        runtime: {
+          version: Bun.version,
+          revision: Bun.revision,
+          platform: process.platform,
+          arch: process.arch,
+        },
+        mode,
+        immediateSemantic: true,
+        terminalSemantic: true,
+        oldComponents: 160,
+        prototypeGraphNodes: expect.any(Number),
+        documentRetirement: {
+          retiredCurrent: false,
+          duplicateCurrent: false,
+          nextGeneration: 34,
+        },
+        replacement: live(caller ? 5 : 0, 5, true),
+        end: live(caller ? 5 : 0, 0, false),
+        afterCallerDrop: caller ? live(0, 0, false) : null,
+      });
+    },
+    APP_LINK_IO_DEADLINE_MS * 2,
+  );
+}
 
 test(
   "source releases original fault and supplied terminal Errors with live source and external Error controls",

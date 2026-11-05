@@ -118,7 +118,7 @@ use keld_ipc::{
 
 use crate::role::{
     BoundRoleGeneration, DEFAULT_ADMISSION_TIMEOUT, RoleEvent, RoleGenerationLease,
-    RoleGenerationOwner, RoleOwner,
+    RoleGenerationOwner, RoleOwner, RolePrincipal, RoleProcessDrained,
 };
 use crate::{
     CapturedOutput, ChildPreparer, CrashLedger, GenerationLease, PreparedChild, RestartPolicy,

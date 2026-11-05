@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:fe3c93b6c5c6e45a6892a9230a9227e141d8411911b5e4b3fc98e087338ff5d2
+// @keld/kipc-transport sha256:7d35ecbded1d106e8987c6e7b05b5f690d2fe773a4392630260d9ea8f5fb38de
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -32,13 +32,28 @@ import { isProxy } from "node:util/types";
 export const nativeFacadeBootSelected =
   process.env.KELD_NATIVE_WINDOW_FACADE === "1";
 
+/** @internal Trusted Host selection; metadata never grants a principal or Ready. */
+declare const __KELD_RUNTIME_PROCESS_FACTS__: boolean;
+export const runtimeProcessFactsSelected =
+  typeof __KELD_RUNTIME_PROCESS_FACTS__ !== "undefined" &&
+  __KELD_RUNTIME_PROCESS_FACTS__ === true;
+
 // A parse-time constant on the qualified Host path, not an environment carrier.
 declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
 
 /** @internal Non-authority data from a validated macOS development launch. */
 export interface HostLaunchFacts {
-  readonly schema: 1 | 2 | 3;
+  readonly schema: 1 | 2 | 3 | 4 | 5;
   readonly kind: "development";
+  readonly singleInstance?: Readonly<{ verdict: "acquired" | "contended" }>;
+  /** Prepared-source observation only; every actual native load still authorizes itself. */
+  readonly originalResourcePolicy?: Readonly<{
+    contract: "gh473-original-editor-offline/v1";
+    graphSha256: string;
+    policySha256: string;
+    windowKey: string;
+    selector: "original-editor-offline";
+  }>;
   readonly name: string;
   readonly root: string;
   readonly version?: string;
@@ -68,7 +83,14 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     return invalid();
   const keys = Reflect.ownKeys(value);
   const required = ["schema", "kind", "name", "root"];
-  const allowed = [...required, "version", "paths", "locale"];
+  const allowed = [
+    ...required,
+    "version",
+    "paths",
+    "locale",
+    "singleInstance",
+    "originalResourcePolicy",
+  ];
   if (
     required.some((key) => !keys.includes(key)) ||
     keys.some((key) => typeof key !== "string" || !allowed.includes(key))
@@ -86,7 +108,11 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     !text.includes("\0") &&
     encoder.encode(text).byteLength <= 4096;
   if (
-    (record.schema !== 1 && record.schema !== 2 && record.schema !== 3) ||
+    (record.schema !== 1 &&
+      record.schema !== 2 &&
+      record.schema !== 3 &&
+      record.schema !== 4 &&
+      record.schema !== 5) ||
     record.kind !== "development" ||
     !validText(record.name) ||
     !validText(record.root) ||
@@ -98,10 +124,19 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
   let locale: string | undefined;
   let paths: HostLaunchFacts["paths"];
   if (keys.includes("locale")) {
-    if (record.schema !== 3 || !validText(record.locale)) return invalid();
+    if (
+      (record.schema !== 3 && record.schema !== 4 && record.schema !== 5) ||
+      !validText(record.locale)
+    )
+      return invalid();
     locale = record.locale;
   }
-  if (record.schema === 2 || record.schema === 3) {
+  if (
+    record.schema === 2 ||
+    record.schema === 3 ||
+    record.schema === 4 ||
+    record.schema === 5
+  ) {
     if (!keys.includes("paths")) return invalid();
     if (keys.includes("version")) {
       if (!validText(record.version)) return invalid();
@@ -129,6 +164,80 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     }
     paths = Object.freeze(copied);
   }
+  let singleInstance: HostLaunchFacts["singleInstance"];
+  if (keys.includes("singleInstance")) {
+    const value = record.singleInstance;
+    if (
+      (record.schema !== 4 && record.schema !== 5) ||
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      isProxy(value)
+    )
+      return invalid();
+    const fields = Reflect.ownKeys(value);
+    const descriptor = Object.getOwnPropertyDescriptor(value, "verdict");
+    if (
+      fields.length !== 1 ||
+      fields[0] !== "verdict" ||
+      !descriptor?.hasOwnProperty("value") ||
+      (descriptor.value !== "acquired" && descriptor.value !== "contended")
+    )
+      return invalid();
+    const copy = Object.create(null) as { verdict: "acquired" | "contended" };
+    copy.verdict = descriptor.value;
+    singleInstance = Object.freeze(copy);
+  }
+  let originalResourcePolicy: HostLaunchFacts["originalResourcePolicy"];
+  if ((record.schema === 5) !== keys.includes("originalResourcePolicy"))
+    return invalid();
+  if (keys.includes("originalResourcePolicy")) {
+    const value = record.originalResourcePolicy;
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      isProxy(value) ||
+      Array.isArray(value)
+    )
+      return invalid();
+    const fields = [
+      "contract",
+      "graphSha256",
+      "policySha256",
+      "windowKey",
+      "selector",
+    ] as const;
+    const own = Reflect.ownKeys(value);
+    if (
+      own.length !== fields.length ||
+      own.some(
+        (key) =>
+          typeof key !== "string" ||
+          !fields.includes(key as (typeof fields)[number]),
+      )
+    )
+      return invalid();
+    const copied = Object.create(null) as Record<
+      (typeof fields)[number],
+      string
+    >;
+    for (const key of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.hasOwnProperty("value") || !validText(descriptor.value))
+        return invalid();
+      copied[key] = descriptor.value;
+    }
+    if (
+      copied.contract !== "gh473-original-editor-offline/v1" ||
+      copied.selector !== "original-editor-offline" ||
+      !/^sha256:[0-9a-f]{64}$/.test(copied.graphSha256) ||
+      !/^sha256:[0-9a-f]{64}$/.test(copied.policySha256)
+    )
+      return invalid();
+    originalResourcePolicy = Object.freeze(
+      copied,
+    ) as HostLaunchFacts["originalResourcePolicy"];
+  }
   const captured: HostLaunchFacts = {
     schema: record.schema,
     kind: "development",
@@ -137,6 +246,8 @@ function captureHostLaunchFacts(value: unknown): HostLaunchFacts | undefined {
     ...(version === undefined ? {} : { version }),
     ...(locale === undefined ? {} : { locale }),
     ...(paths === undefined ? {} : { paths }),
+    ...(singleInstance === undefined ? {} : { singleInstance }),
+    ...(originalResourcePolicy === undefined ? {} : { originalResourcePolicy }),
   };
   if (encoder.encode(JSON.stringify(captured)).byteLength > 16 * 1024)
     return invalid();
@@ -370,6 +481,10 @@ export const AUTH_CHANNEL = 4;
 export const WINDOW_CHANNEL = 5;
 /** Channel `dialog` (`keld_ipc::channel_table::DIALOG`). */
 export const DIALOG_CHANNEL = 6;
+/** Channel `compat-control` (`keld_ipc::channel_table::COMPAT_CONTROL`). */
+export const COMPAT_CONTROL_CHANNEL = 7;
+/** Channel `menu` (`keld_ipc::channel_table::MENU`). */
+export const MENU_CHANNEL = 8;
 /** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
@@ -377,7 +492,9 @@ export type AllocatedChannel =
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
   | typeof WINDOW_CHANNEL
-  | typeof DIALOG_CHANNEL;
+  | typeof DIALOG_CHANNEL
+  | typeof COMPAT_CONTROL_CHANNEL
+  | typeof MENU_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -386,11 +503,14 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
   DIALOG_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
+  MENU_CHANNEL,
 ]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
@@ -466,12 +586,17 @@ export interface ReceivePolicy {
     { rule: "zero" } | { rule: "non-zero" } | { rule: "exactly"; id: number };
   /** Exact declared payload length, if the policy pins one. */
   exactLen?: number;
+  /** Canonical per-kind bound checked before any body allocation/read. */
+  maxLen?: number;
   /** Whether the payload must be empty. */
   emptyPayload?: boolean;
   /** Whether the live v0 `PING` probe is admissible. */
   allowPing?: boolean;
 }
 
+// The source generator imports stamping primitives before it regenerates new
+// table exports. Defer this one factory until first use; retain one stable policy.
+let lifecycleEventPolicy: ReceivePolicy | undefined;
 export const RECEIVE_POLICIES = {
   serverPreAuthHello: {
     channel: HANDSHAKE_CHANNEL,
@@ -497,7 +622,9 @@ export const RECEIVE_POLICIES = {
     corr: { rule: "non-zero" },
     allowPing: true,
   } as ReceivePolicy,
-  lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
+  get lifecycleEventReceiver(): ReceivePolicy {
+    return (lifecycleEventPolicy ??= eventReceiverOn(LIFECYCLE_CHANNEL));
+  },
 } as const;
 
 /**
@@ -555,6 +682,7 @@ export function replyWaiter(
     channel,
     kinds: [FrameKind.Reply, FrameKind.Err],
     corr: { rule: "exactly", id: corr },
+    maxLen: channel === COMPAT_CONTROL_CHANNEL ? 4_096 : undefined,
   };
 }
 
@@ -563,6 +691,7 @@ function eventReceiverOn(channel: number): ReceivePolicy {
     channel,
     kinds: [FrameKind.Event],
     corr: { rule: "zero" },
+    maxLen: channel === COMPAT_CONTROL_CHANNEL ? 16_384 : undefined,
     allowPing: true,
   };
 }
@@ -818,6 +947,10 @@ export function validateReceivedHeader(
   if (policy.emptyPayload === true && header.len !== 0) {
     throw kipcError("KELD-IPC-005", "payload must be empty for this frame");
   }
+  if (policy.maxLen !== undefined && header.len > policy.maxLen)
+    throw payloadTooLarge(
+      "compat-control header exceeds its admitted per-kind bound",
+    );
   return header;
 }
 
@@ -1606,7 +1739,11 @@ export function decodePostcardStringAt(
  * A rejected privileged `Call`: the `Error` carries the registered `KELD-*`
  * code as a field, so callers branch on `code` instead of parsing `message`.
  */
-export type KeldCallError = Error & { code: string };
+export type KeldCallError = Error & {
+  code: string;
+  /** Decoder-marked peer ERR diagnostic; never authentication or effect certainty. */
+  readonly origin?: "peer";
+};
 
 /** True when `e` is a rejected `Call` carrying a registered `KELD-*` code. */
 export function isCallError(e: unknown): e is KeldCallError {
@@ -1698,7 +1835,19 @@ export function errorFromErrFrame(payload: Uint8Array): Error {
       "peer sent an Err payload that is not a CallError",
     );
   }
-  return codedError(call.code, call.message);
+  const error = codedError(call.code, call.message);
+  // The normal caller has validated the matching authenticated reply waiter.
+  // Calling this public decoder alone does not authenticate supplied bytes.
+  // Provenance is distinct from whether the Host committed, canceled or even
+  // dispatched the operation; the original typed outcome/fix keeps that meaning.
+  intrinsicDefineProperty(error, "origin", {
+    __proto__: null,
+    value: "peer",
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  } as PropertyDescriptor);
+  return error;
 }
 
 // ---------------------------------------------------------------------------
@@ -2564,6 +2713,10 @@ export class WorkerLink {
   readonly #pending = new Map<number, PendingAsyncCall>();
   readonly #appliers = stateMap<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
+  /** One framework consumer whose receipt follows this ring's physical release. */
+  #releasedEventHandler:
+    | { channel: number; dispatch: (payload: Uint8Array) => () => void }
+    | undefined;
   readonly #callHandlers = new Map<
     number,
     (payload: Uint8Array) => Promise<WorkerCallReply>
@@ -2773,6 +2926,15 @@ export class WorkerLink {
     }
   }
 
+  /** @internal Read-only admission observation; never a Host/native authority. */
+  get callAdmissionOpen(): boolean {
+    return (
+      atomicLoad(this.#ctrl, STATE) === 0 &&
+      !this.#finalized &&
+      !this.#terminated
+    );
+  }
+
   /** Same correlation and ring path, Promise-shaped, for non-blocking callers. */
   call(
     channel: number,
@@ -2861,6 +3023,9 @@ export class WorkerLink {
     listener: (payload: Uint8Array) => void,
   ): () => void {
     this.#requireEventChannel(channel);
+    if (this.#releasedEventHandler?.channel === channel) {
+      throw linkError("KELD-IPC-005", "EVENT already has a post-ring consumer");
+    }
     let set = this.#listeners.get(channel);
     if (set === undefined) {
       set = new Set();
@@ -2869,6 +3034,26 @@ export class WorkerLink {
     set.add(listener);
     return () => {
       set.delete(listener);
+    };
+  }
+
+  /** One framework consumer; its returned receipt runs after R_BYTES/R_RECS advance. */
+  onEventAfterRingRelease(
+    channel: number,
+    dispatch: (payload: Uint8Array) => () => void,
+  ): () => void {
+    this.#requireEventChannel(channel);
+    if (
+      this.#releasedEventHandler !== undefined ||
+      (this.#listeners.get(channel)?.size ?? 0) > 0
+    ) {
+      throw linkError("KELD-IPC-005", "EVENT already has a consumer");
+    }
+    const owner = { channel, dispatch };
+    this.#releasedEventHandler = owner;
+    return () => {
+      if (this.#releasedEventHandler === owner)
+        this.#releasedEventHandler = undefined;
     };
   }
 
@@ -3255,7 +3440,27 @@ export class WorkerLink {
         continue;
       }
       switch (header.kind) {
-        case FrameKind.Event:
+        case FrameKind.Event: {
+          const dispatch =
+            this.#releasedEventHandler?.channel === header.channel
+              ? this.#releasedEventHandler.dispatch
+              : undefined;
+          let afterRelease: (() => void) | undefined;
+          if (dispatch !== undefined) {
+            try {
+              afterRelease = dispatch(payload);
+              if (typeof afterRelease !== "function")
+                throw linkError(
+                  "KELD-IPC-005",
+                  "EVENT consumer returned no release callback",
+                );
+            } catch (err) {
+              if (!failed) {
+                failed = true;
+                firstError = err;
+              }
+            }
+          }
           for (const listener of this.#listeners.get(header.channel) ?? []) {
             try {
               listener(payload);
@@ -3267,7 +3472,18 @@ export class WorkerLink {
             }
           }
           release();
+          if (afterRelease)
+            intrinsicSetImmediate(() => {
+              try {
+                afterRelease();
+              } catch (err) {
+                intrinsicSetImmediate(() => {
+                  throw err;
+                });
+              }
+            });
           break;
+        }
         case FrameKind.Reply:
         case FrameKind.Err: {
           release();

@@ -9,12 +9,16 @@
  */
 import {
   app as apiApp,
+  captureOriginalWindowQuitScope,
+  type OriginalWindowQuitScope,
   getWindowSnapshots,
   hasObservedHostReady,
+  onNativeQuitRequested,
 } from "@keld/api/internal/app";
 
 import {
   nativeFacadeBootSelected,
+  linkError,
   stateMap,
   stateMapDelete,
   stateMapGet,
@@ -23,9 +27,13 @@ import {
 
 import {
   defineSessionFactAccessors,
+  readSingleInstanceVerdict,
   readSessionFact,
   readSessionPath,
 } from "./app-session-facts.ts";
+
+import { UnsupportedMemberError } from "./unsupported.ts";
+import type { WindowRef } from "@keld/api/internal/window-codec";
 
 type AppListener = (...args: never[]) => void;
 
@@ -36,16 +44,19 @@ const listeners = stateMap<string, AppListener[]>();
 let readyEventEmitted = false;
 let readyObservation: Promise<void> | undefined;
 
-function emit(event: string, ...args: unknown[]): void {
+function emit(event: string, ...args: unknown[]): boolean {
   const snapshot = stateMapGet(listeners, event);
-  if (!snapshot) return;
+  if (!snapshot) return false;
+  let listenerFailed = false;
   for (const listener of snapshot.slice()) {
     try {
       Reflect.apply(listener, undefined, args);
     } catch {
+      listenerFailed = true;
       // A user callback must not break lifecycle delivery.
     }
   }
+  return listenerFailed;
 }
 
 /** Electron event names and application listeners have this single owner. */
@@ -134,20 +145,89 @@ function onLastWindowClosed(): void {
   ignoreIfUnawaited(quitting);
 }
 
-apiApp.onLastWindowClosed(onLastWindowClosed);
-// `name` and `isPackaged` are defined below as non-enumerable accessors, as
-// Electron defines them; literal getters would be enumerable and make a spread
-// or JSON.stringify of `app` throw.
-export const app = defineSessionFactAccessors({
-  whenReady(): Promise<void> {
-    return observeReady();
-  },
+// One facade attempt owns both D2 coalescing and the bounded original handoff.
+interface QuitAttempt {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  settled: boolean;
+  handoff?: OriginalWindowQuitScope;
+}
+let activeQuitAttempt: QuitAttempt | undefined;
 
-  isReady(): boolean {
-    return apiApp.isReady();
-  },
+function fulfillQuitAttempt(attempt: QuitAttempt): void {
+  if (attempt.settled) return;
+  attempt.settled = true;
+  attempt.resolve();
+  if (activeQuitAttempt === attempt) activeQuitAttempt = undefined;
+}
 
-  quit(): Promise<void> {
+/** @internal Called only in the existing authenticated native-close path, before user listeners. */
+export function joinOriginalQuitBeforeClose(
+  window: WindowRef,
+  closeSeq: bigint,
+): boolean {
+  const attempt = activeQuitAttempt;
+  if (!attempt?.handoff?.isCurrentPending(window, closeSeq)) return false;
+  fulfillQuitAttempt(attempt);
+  return true;
+}
+
+function requestQuitAfterBeforeEvent(
+  terminal: (attempt: QuitAttempt) => Promise<void>,
+): Promise<void> {
+  if (activeQuitAttempt) return activeQuitAttempt.promise;
+  let resolveAttempt!: () => void;
+  let rejectAttempt!: (error: unknown) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveAttempt = resolve;
+    rejectAttempt = reject;
+  });
+  const attempt: QuitAttempt = {
+    promise,
+    resolve: resolveAttempt,
+    reject: rejectAttempt,
+    settled: false,
+  };
+  activeQuitAttempt = attempt;
+  let prevented = false;
+  const event = {
+    get defaultPrevented(): boolean {
+      return prevented;
+    },
+    preventDefault(): void {
+      prevented = true;
+    },
+  };
+  const listenerFailed = emit("before-quit", event);
+  if (prevented || listenerFailed) {
+    fulfillQuitAttempt(attempt);
+    return promise;
+  }
+  const failed = (error: unknown): void => {
+    if (attempt.settled) {
+      // This request may fail after its genuine close fact already completed
+      // the nonterminal handoff. A fresh active attempt must not be cleared.
+      attempt.handoff?.failAfterHandoff(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      return;
+    }
+    attempt.settled = true;
+    attempt.reject(error);
+    if (activeQuitAttempt === attempt) activeQuitAttempt = undefined;
+  };
+  try {
+    // Same-turn terminal admission remains essential for the zero-window path.
+    void terminal(attempt).then(() => fulfillQuitAttempt(attempt), failed);
+  } catch (error) {
+    failed(error);
+  }
+  return promise;
+}
+
+function quit(): Promise<void> {
+  return requestQuitAfterBeforeEvent((attempt) => {
     // GH451's full cancelable before-quit/window-close/will-quit choreography
     // has not passed its independent spec gate. Never translate Electron
     // app.quit() into the Host's *forceful* teardown while a native document
@@ -165,7 +245,33 @@ export const app = defineSessionFactAccessors({
       );
     }
     try {
-      if (getWindowSnapshots().some((window) => !window.host_destroyed)) {
+      const live = getWindowSnapshots().filter(
+        (window) => !window.host_destroyed,
+      );
+      if (live.length === 1) {
+        const scope = captureOriginalWindowQuitScope(live[0]!.window);
+        if (scope) {
+          attempt.handoff = scope;
+          const pending = scope.dispatchedPendingClose();
+          if (
+            pending !== null &&
+            joinOriginalQuitBeforeClose(scope.window, pending)
+          )
+            return Promise.resolve();
+          return scope.requestClose().then((reply) => {
+            if (
+              reply.variant !== "CloseRequested" &&
+              reply.variant !== "Merged" &&
+              reply.variant !== "AlreadyClosing"
+            )
+              throw linkError(
+                "KELD-IPC-003",
+                "original single-window Quit handoff received an invalid close response",
+              );
+          });
+        }
+      }
+      if (live.length !== 0) {
         return Promise.reject(
           new Error(
             "KELD-COMPAT-012: app.quit() with live native windows is not yet a cancelable Electron Quit. Close each window with its veto policy before retrying; GH451 owns the full quit choreography.",
@@ -177,7 +283,49 @@ export const app = defineSessionFactAccessors({
     }
     ignoreIfUnawaited(observeReady());
     return apiApp.quit();
+  });
+}
+
+apiApp.onLastWindowClosed(onLastWindowClosed);
+onNativeQuitRequested(() => {
+  // Same framework Quit owner/D2 preflight, never a caller MenuItem click or
+  // a forceful Host terminal request while the original document is live.
+  void quit().catch((error: unknown) => {
+    try {
+      console.error(
+        "KELD native menu Quit failed; inspect the current original role/link:",
+        error,
+      );
+    } catch {
+      /* Diagnostic replacement cannot retry, force Quit or change the actual cause. */
+    }
+  });
+});
+// `name` and `isPackaged` are defined below as non-enumerable accessors, as
+// Electron defines them; literal getters would be enumerable and make a spread
+// or JSON.stringify of `app` throw.
+export const app = defineSessionFactAccessors({
+  /** GH453 no-argument subset; the Host acquired before this role ran. */
+  requestSingleInstanceLock(...args: readonly unknown[]): boolean {
+    if (args.length > 1 || args[0] !== undefined) {
+      throw new UnsupportedMemberError(
+        "method",
+        "app.requestSingleInstanceLock(additionalData)",
+        "GH-453",
+      );
+    }
+    return readSingleInstanceVerdict();
   },
+
+  whenReady(): Promise<void> {
+    return observeReady();
+  },
+
+  isReady(): boolean {
+    return apiApp.isReady();
+  },
+
+  quit,
 
   on(event: string, listener: AppListener): void {
     // A late registration must not join a queued facade Ready notification

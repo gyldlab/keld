@@ -2,7 +2,7 @@
   "schema": "keld.compat.denominator/v1",
   "panel": "showcase",
   "corpus_id": "electron-app-v1",
-  "corpus_sha256": "sha256:a0902e6cf75a7fa944d7e9fa82067755ff1156422c03e214fb2301d70a6f4a6a",
+  "corpus_sha256": "sha256:a731ffa127eb0546c6f5cf5a6b88aa3a053c2be84619a548e8b0ccf10b38cb39",
   "kind": "primary_workflow",
   "cells": [
     {

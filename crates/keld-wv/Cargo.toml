@@ -12,12 +12,16 @@ authors.workspace = true
 name = "linux_media_guard"
 test = true
 
+[[example]]
+name = "s1_resource_smoke"
+required-features = ["profile-test-hooks"]
+
 [features]
 # Explicit development fixture; absent from the shipping default build.
 media-acceptance = []
 # Internal deterministic fault fixtures for downstream KEL-135 test binaries.
 # Release packages never enable this feature.
-profile-test-hooks = ["dep:block2", "objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
+profile-test-hooks = ["objc2-foundation/NSNotification", "objc2-foundation/NSOperation", "objc2-foundation/block2"]
 # A separate test-only root override for signed KEL-135 acceptance hosts.
 # Release builds that enable it are rejected by the crate root.
 profile-test-root = ["profile-test-hooks"]
@@ -31,27 +35,34 @@ keld-guard = { workspace = true }
 # added. SHA-256 is the approved identity primitive, while serde's strict
 # private documents keep marker/registry parsing under one policy owner.
 serde = { workspace = true }
-serde_json = { workspace = true }
+# The app-world local JSON crossing must recover the exact IEEE-754 binary64
+# value. Serde's default approximate decimal parser can shift a legitimate
+# file mtimeMs by one ULP and invent an external-change conflict in draw.io.
+# This changes no JSON grammar, channel, grant, or native effect admission.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = { workspace = true }
 
 [lints]
 workspace = true
 
 [target.'cfg(target_os="macos")'.dependencies]
+dispatch2 = { workspace = true }
 tao = "0.35.3"
 # KEL-135/T3 reuses Wry's `WKWebView` construction while the host owns one
 # selected WKWebsiteDataStore and reads back its identifier/persistence before
 # the first view. These are the exact objc2 versions already pinned by Wry.
 objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
-objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID", "NSValue"] }
+objc2-foundation = { workspace = true, features = ["std", "objc2-core-foundation", "NSArray", "NSString", "NSPathUtilities", "NSProcessInfo", "NSUUID", "NSValue", "NSData", "NSDictionary", "NSError", "NSURLResponse", "NSURL", "NSURLRequest", "NSStream", "NSEnumerator"] }
 # GH481: NSScreen.deviceDescription requires NSGraphics; NSApplication's
 # effectiveAppearance requires NSResponder + NSAppearance. These enable safe
 # typed calls in the already pinned objc2-app-kit 0.3.2, no new crate or unsafe.
 objc2-app-kit = { workspace = true, features = ["NSView", "NSWindow", "NSScreen", "NSGraphics", "NSApplication", "NSAppearance", "NSResponder"] }
-block2 = { workspace = true, optional = true }
+# GH542's WKNavigationDelegate policy forwarding uses the same pinned block2
+# type already resolved through objc2-web-kit; no new package or version.
+block2 = { workspace = true }
 objc2-core-foundation = { workspace = true, features = ["CFRunLoop", "CFDate"] }
-objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore"] }
-nix = { workspace = true, features = ["user"] }
+objc2-web-kit = { workspace = true, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKURLSchemeHandler", "WKURLSchemeTask", "WKNavigation", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKDownload", "WKSecurityOrigin"] }
+nix = { workspace = true, features = ["user", "fs"] }
 getrandom = { workspace = true }
 # `devtools` keeps `open_devtools`/`close_devtools` compiled in release builds
 # so `WebEngine::devtools` is not debug-only (wry gates them behind

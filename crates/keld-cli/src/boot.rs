@@ -361,18 +361,22 @@ pub fn stage_dev_boot(
 
 /// A reviewed GH499/GH589 caller's explicit first-proof graph input.
 /// This is a private Rust integration helper; no public CLI verb or
-/// project-owned config/environment can request graph schema 5.
+/// project-owned config/environment can request graph schema 5. Selected window
+/// CSP additionally requires the independently qualified Host digest paired with
+/// the supplied three package providers. `None` permits only a graph with no CSP.
 #[cfg(target_os = "macos")]
 #[doc(hidden)]
 pub fn stage_dev_boot_with_approved_graph(
     project_root: &Path,
     developer_host: &Path,
     approved: &keld_core::app_session::graph_contract::ApprovedGraphCaptureInput,
+    expected_qualified_host_sha256: Option<[u8; 32]>,
 ) -> Result<DevBootStage, BootCompileError> {
     stage_dev_boot_platform_with_owner_check_and_graph(
         project_root,
         developer_host,
         Some(approved),
+        expected_qualified_host_sha256,
         ensure_current_principal_owns,
     )
 }
@@ -405,6 +409,7 @@ where
             project_root,
             developer_host,
             None,
+            None,
             owner_check,
         )
     }
@@ -428,6 +433,7 @@ fn stage_dev_boot_platform_with_owner_check_and_graph<F>(
     #[cfg(target_os = "macos")] approved_graph: Option<
         &keld_core::app_session::graph_contract::ApprovedGraphCaptureInput,
     >,
+    #[cfg(target_os = "macos")] expected_qualified_host_sha256: Option<[u8; 32]>,
     mut owner_check: F,
 ) -> Result<DevBootStage, BootCompileError>
 where
@@ -459,8 +465,28 @@ where
             "initialWindow: \"none\" requires macOS facade boot support; remove initialWindow for renderer boots",
         ));
     }
+    let single_instance = keld_core::single_instance_from_config_ts(&config)
+        .map_err(|source| BootCompileError::new("project singleInstance", source.to_string()))?;
+    #[cfg(not(target_os = "macos"))]
+    if single_instance.is_some() {
+        return Err(BootCompileError::new(
+            "project singleInstance",
+            "singleInstance requires qualified macOS development; preserve the request.",
+        ));
+    }
     let version = keld_core::version_from_config_ts(&config)
         .map_err(|source| BootCompileError::new("project version", source.to_string()))?;
+    let application_name_for_user_agent =
+        keld_core::application_name_for_user_agent_from_config_ts(&config).map_err(|source| {
+            BootCompileError::new("project applicationNameForUserAgent", source.to_string())
+        })?;
+    #[cfg(not(target_os = "macos"))]
+    if application_name_for_user_agent.is_some() {
+        return Err(BootCompileError::new(
+            "project applicationNameForUserAgent",
+            "applicationNameForUserAgent requires macOS WebKit support; preserve the request.",
+        ));
+    }
     let renderer = (!facade).then(|| {
         keld_core::renderer_from_config_ts(&config)
             .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())
@@ -481,7 +507,7 @@ where
     #[cfg(target_os = "macos")]
     let permissions_bytes = permissions_snapshot.as_slice();
     #[cfg(target_os = "macos")]
-    let declared_profile = {
+    let project_manifest = {
         let source = std::str::from_utf8(permissions_bytes).map_err(|source| {
             BootCompileError::new(
                 "permissions profile",
@@ -490,17 +516,32 @@ where
         })?;
         keld_guard::parse_manifest(source)
             .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?
-            .declared_profile()
     };
+    #[cfg(target_os = "macos")]
+    let declared_profile = project_manifest.declared_profile();
+    #[cfg(target_os = "macos")]
+    if project_manifest.declares_window_csp()
+        && (!facade
+            || declared_profile != Some(keld_guard::DeclaredProfile::Legacy)
+            || approved_graph.is_none()
+            || expected_qualified_host_sha256.is_none())
+    {
+        return Err(BootCompileError::new(
+            "qualified Host/package pair",
+            "window CSP requires an explicit Legacy facade, the three approved graph providers and an independently qualified Host digest; ordinary staging cannot qualify this content lane",
+        ));
+    }
     #[cfg(not(target_os = "macos"))]
     let declared_profile = {
         // The historical fixed policy remains the output on these platforms,
         // but it must never silently erase an explicit project request.
         match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
-            Ok(manifest) if manifest.declared_profile().is_some() => {
+            Ok(manifest)
+                if manifest.declared_profile().is_some() || manifest.declares_window_csp() =>
+            {
                 return Err(BootCompileError::new(
                     "permissions profile",
-                    "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
+                    "explicit profiles and selected window CSP require their qualified macOS producer; preserve the request and use a supporting target",
                 ));
             }
             Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => None,
@@ -606,12 +647,21 @@ where
         "host",
     )?;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    stage_developer_executable(
+    let source_digest = stage_developer_executable(
         &mut host_source,
         &host_source_metadata,
         &staged_host,
         "host",
     )?;
+    #[cfg(target_os = "linux")]
+    let _ = source_digest;
+    #[cfg(target_os = "macos")]
+    if expected_qualified_host_sha256.is_some_and(|expected| expected != source_digest) {
+        return Err(BootCompileError::new(
+            "qualified Host/package pair",
+            "copied Host bytes differ from the independently qualified Host digest; use the exact qualified Host and the matching three approved package providers",
+        ));
+    }
     #[cfg(target_os = "linux")]
     stage_developer_executable(
         &mut launcher_source,
@@ -721,6 +771,25 @@ where
                     "file": keld_core::app_session::graph_contract::GRAPH_FILE,
                     "content_sha256": graph_sha,
                 }),
+            );
+    }
+    if let Some(declaration) = single_instance {
+        descriptor
+            .as_object_mut()
+            .ok_or_else(|| BootCompileError::new("boot descriptor", "expected generated object"))?
+            .insert(
+                String::from("singleInstance"),
+                serde_json::to_value(declaration)
+                    .map_err(|e| BootCompileError::new("singleInstance encoding", e.to_string()))?,
+            );
+    }
+    if let Some(application_name) = application_name_for_user_agent {
+        descriptor
+            .as_object_mut()
+            .ok_or_else(|| BootCompileError::new("boot descriptor", "expected generated object"))?
+            .insert(
+                String::from("applicationNameForUserAgent"),
+                serde_json::Value::String(application_name.as_str().to_owned()),
             );
     }
     if let Some(version) = version {
@@ -1220,6 +1289,7 @@ mod error_tests {
 #[cfg(all(test, unix))]
 #[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
 mod tests {
+    mod application_name_for_user_agent;
     #[test]
     fn explicit_profile_staging_never_discards_the_project_request() {
         for profile in ["strict", "legacy"] {
@@ -1461,7 +1531,7 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    fn graph_fixture(
+    pub(super) fn graph_fixture(
         project: &Path,
     ) -> keld_core::app_session::graph_contract::ApprovedGraphCaptureInput {
         use keld_core::app_session::graph_contract::ApprovedGraphCaptureInput;
@@ -1576,8 +1646,9 @@ mod tests {
             fs::create_dir_all(file.parent().expect("parent")).expect("source parent");
             fs::write(file, bytes).expect("original source bytes");
         }
-        let graph_stage = stage_dev_boot_with_approved_graph(&project, &developer_host, &approved)
-            .expect("approved graph capture stage");
+        let graph_stage =
+            stage_dev_boot_with_approved_graph(&project, &developer_host, &approved, None)
+                .expect("approved graph capture stage");
         let descriptor: serde_json::Value = serde_json::from_slice(
             &fs::read(graph_stage.root().join("keld.boot.json")).expect("graph descriptor"),
         )
@@ -1612,7 +1683,7 @@ mod tests {
         let outside = owned.path().join("foreign.js");
         fs::write(&outside, b"FOREIGN_CODE_NOT_EVALUATED\n").expect("source marker bytes");
         symlink(&outside, project.join("src/main/foreign.js")).expect("unapproved link");
-        let error = stage_dev_boot_with_approved_graph(&project, &developer_host, &approval)
+        let error = stage_dev_boot_with_approved_graph(&project, &developer_host, &approval, None)
             .expect_err("GH1037 entire selected source rejects a symlink");
         assert!(error.to_string().contains("symlink"), "{error}");
         let normal = stage_dev_boot(&project, &developer_host)
@@ -1636,7 +1707,7 @@ mod tests {
                 b"{\"name\":\"counterfeit\",\"version\":\"0.0.1\"}\n",
             )
             .expect("mutated physical provider data");
-            let error = stage_dev_boot_with_approved_graph(&project, &host, &approved)
+            let error = stage_dev_boot_with_approved_graph(&project, &host, &approved, None)
                 .expect_err("external provider identity must be checked before capture");
             assert!(
                 error.to_string().contains("approved package artifact"),
@@ -2432,3 +2503,6 @@ mod tests {
 #[allow(clippy::expect_used, clippy::panic)]
 // test fixture failures are assertion oracles, as in the sibling unit-test module
 mod permissions_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+mod qualified_pair_tests;

@@ -81,6 +81,10 @@ pub(in crate::app_session) fn initial_ready_router_with_window_loop() -> (
         auth_commands: None,
         #[cfg(target_os = "macos")]
         dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: PlatformPrimaryOwnerHandle { command_tx },
         window_commands: window_tx,
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -496,9 +500,8 @@ fn failed_owner_shutdown_after_accepted_quit_wakes_ui_on_every_os() {
             "cause {cause}: {error}"
         );
         if wakes_ui {
-            assert_eq!(
-                window_rx.try_recv(),
-                Ok(AppWindowCommand::Fatal),
+            assert!(
+                matches!(window_rx.try_recv(), Ok(AppWindowCommand::Fatal)),
                 "a failed owner shutdown after an accepted Quit must wake the UI"
             );
         }

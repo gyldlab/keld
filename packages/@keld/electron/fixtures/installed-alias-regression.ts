@@ -63,12 +63,14 @@ try {
     "electron/common",
     "electron/utility",
   ];
-  // Independent current binding oracle. Add ipcMain only with its separately reviewed integration.
+  // Explicit adopted public inventory; internal original IPC helpers stay separate.
   const members = [
     "app",
     "BrowserWindow",
     "ClipboardItem",
     "Menu",
+    "MenuItem",
+    "ipcMain",
     "clipboard",
     "dialog",
     "nativeImage",
@@ -371,7 +373,9 @@ try {
       if (mode === "split-subpath")
         altered.exports["./utility"] = "./dist/gh502-alternate.js";
       else
-        for (const key of Object.keys(altered.exports))
+        for (const key of specifiers.map((value) =>
+          value === "electron" ? "." : "./" + value.slice("electron/".length),
+        ))
           altered.exports[key] = {
             import: "./dist/index.js",
             require: "./dist/gh502-alternate.js",
@@ -544,6 +548,27 @@ try {
   assert.match(missingTypeResult.stdout + missingTypeResult.stderr, /TS2688/);
 
   // Explicit retained runs preserve evidence; ordinary test success cleans only this owned fixture.
+  copyFileSync(
+    join(import.meta.dir, "installed-alias/original-ipc.mjs"),
+    join(consumer, "original-ipc.mjs"),
+  );
+  const originalIpc = run(
+    [bun, join(consumer, "original-ipc.mjs")],
+    consumer,
+    "installed-original-ipc-shared-capability",
+  );
+  assert.match(originalIpc.stdout, /INSTALLED_ORIGINAL_IPC_SHARED_CAPABILITY/);
+  const replyOnly = run(
+    [bun, join(consumer, "original-ipc.mjs"), "missing-destroyed"],
+    consumer,
+    "original-ipc-reply-without-destroyed-fact",
+    false,
+  );
+  assert.match(
+    replyOnly.stderr,
+    /original teardown lacks its physical Destroyed fact and response/,
+  );
+
   writeJson(join(receipts, "installed-receipt.json"), {
     scope:
       "GH502 bounded installed package fixture; not R07/R08 app admission or product acceptance",

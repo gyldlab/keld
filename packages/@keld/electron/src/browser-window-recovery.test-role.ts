@@ -71,6 +71,9 @@ mock.module("../../api/src/app.ts", () => ({
   // This role controls Host window facts, not lifecycle LastWindowClosed.
   // Native E1 `closed -> all-closed -> Destroy return` is tested separately
   // through the real shipping macOS Host and actual lifecycle applier.
+  sendCurrentWindowEvent: (): Promise<void> => {
+    throw linkError("KELD-CORE-043", "fixture has no admitted renderer route");
+  },
   flushAppliedLastWindowClosedAfterDestroy: () => {},
   app: { whenReady: () => readyPromise, isReady: () => ready },
   getWindowSnapshot: (window: WindowRef) =>
@@ -114,6 +117,8 @@ mock.module("../../api/src/app.ts", () => ({
 }));
 const creationEvents: { name: string; value: unknown }[] = [];
 mock.module("./app.ts", () => ({
+  // This controlled window-fact role owns no original Quit handoff attempt.
+  joinOriginalQuitBeforeClose: () => false,
   emitNativeAppEvent: (name: string, _event: unknown, value: unknown) => {
     creationEvents.push({ name, value });
   },

@@ -52,7 +52,7 @@ Non-goals: implementing the CLI or analyzer scanner (X02-T7/X02-T8); building, i
 | `keld.config.ts` root `name` | existing `keld-core::hello` reader | M04 + GH-499 A09, hello config tests | Existing root syntax; use actual compiler |
 | `keld.config.ts` root `entry` | existing hello-config / CLI boot compiler | M04 + GH-499 A09, boot-stage entry test | Existing relative path; no `defineConfig({app:{...}})` sketch |
 | `keld.config.ts` root `initialWindow: "none"` for Electron facade boots | #446/F01-T2, schema-2 CLI compiler and Core/Host facade admission | M04 + GH-446 facade no-renderer boot test; GH-499 A09 | Current macOS path supports schema 2 and HostInitialized; this source check is not a draw.io/native acceptance rerun |
-| `keld.config.ts` single-instance **declaration** | #453/F01-T5, Host lock owner | M04 + GH-499 A09, native lock verdict | **BLOCKED until #453 approves/implements key** |
+| `keld.config.ts` single-instance **declaration** | #453/F01-T5, Host lock owner | M04 + GH-499 A09, native lock verdict | Bounded `singleInstance: { id }` contract approved under the user's 2026-11-01 delegation (`gh453-original-host-single-instance.md`); compiler/Host source and native qualification must pass before automatic migration emission is claimed |
 | `keld.config.ts` role environment, exactly `DRAWIO_DISABLE_UPDATE=true` | #452/F01-T4 under KEL-75 amendment | M06 + GH-499 A08, rejected loader/env test | **BLOCKED until #452 approves/implements key**; no `KELD_*` |
 | Proposed `windows.<w>.preload` (Electron window's `webPreferences.preload` source path; **not** a Keld config key) | Pinned `jgraph/drawio-desktop@2edf9fb` `src/main/electron.js` references unchanged `src/main/electron-preload.js` (GH-499 A01/A02); **no approved `keld.config.ts` `windows.<w>.preload` grammar or live reader**. #484 owns macOS app-world preload injection/containment, #467 owns `contextBridge`/`ipcRenderer`, and existing CLI boot/package owner handles delivery | M04/M17 + GH-499 A01/A02/A09/A13; #484 document-start/contained-path and #467 round-trip tests | **NOT WRITTEN** by #497; required preload bytes and pre-page execution **BLOCKED** at #484/#467 and M17 until real Host/WebView proof; never generate a guessed window/preload key |
 | Proposed `web` (the original webapp resource tree; **not** a Keld config key) | Pinned `jgraph/drawio-desktop@2edf9fb` `drawio` gitlink `24b76c2cbd55d88e354042e8d329a2e4708972bc` and `src/main/electron.js` webapp-path references (GH-499 A01/A02/A13); **no approved root `keld.config.ts` `web` grammar or live asset-path reader**. #499 owns the pinned tree, #473/#471 own real resource-entry semantics, and the existing CLI boot/package owner stages the files | M04/M17 + GH-499 A01/A02/A13 and #473 real resource-entry/asset tests; a missing or wrong webapp gitlink fails A01 | **NOT WRITTEN** by #497; actual entry-relative webapp assets and authenticated resource delivery **BLOCKED** at #499/#473 and M17 until real Host/OS proof; never invent a `web` config reader |
@@ -89,6 +89,22 @@ M01 remains unchanged: default migration analysis executes no app/config code, c
 **B10 computed channels (M07).** For each computed caller channel or main-side registration, report **UNENUMERABLE** with both the caller and registration **file:line** locations (or explicitly say that no registration was statically found). Emit **zero** `el:` proposals from those expressions, including a wildcard or global union. A future exact literal mapping must be independently reviewed, intersect a supported *main-bound* caller method with an active method-compatible literal registration (`send` to `on`/`once`; `invoke` to `handle`/`handleOnce` only where supported), then pass the existing #541/#552 and #542 Host window/document admission. Neither a synthetic trace nor a function-produced string can create authority. The approved M07 mapping itself is unchanged.
 
 **Effective configuration.** Qualification covers the actual lookup from every relevant importer for all five reserved names. Relevant tsconfig and jsconfig discovery, inherited `extends`, exact and wildcard mappings (including `electron/*` and any broader pattern that redirects a reserved name) are inputs even when no literal root `paths.electron` remains. Upstream resolution and approved artifact conditions remain the mechanism; do not add another resolver or execute config to emulate it. Report/refuse an effective mapping that bypasses the admitted package/exports. Other application mappings do not become migration-owned or forbidden merely because a tsconfig/jsconfig exists.
+
+**Bounded local snapshot correction (2026-11-01, GH499 comment6563753048).**
+The shared guard inspects config conflict data instead of rejecting mere presence
+of `extends` or unrelated `paths`. Protect the entire `electron`, `@keld/api` and
+`@keld/kipc` families, including the approved private original-IPC export. Only
+captured explicit relative-JSON inheritance is inspectable, with depth/fanout64,
+cycle/escape/type/unique-key checks. Unsupported sources and `baseUrl` remain
+unqualified. A missing relative input requires nofollow physical ENOENT; an alias
+outside its exact captured spelling or any other I/O error refuses. Preserve all
+config bytes, graph/source identities and subsequent-generation rechecks.
+This is conservative conflict validation, not module selection/config merging or
+generic M16 completion. Current-source Bun1.4.4 lookup and authored inert import
+controls qualify only their measured snapshot/conditions; official generic semantics
+remain unknown. Actual staged/runtime/first-proof resolution and independent final
+evidence remain separate requirements. No vendor exception, file removal, new
+resolver, permission, provider or graph-schema field is authorized.
 
 **Actual delivery and canonical transport.** Current `stage_dev_boot` places a nonce stage under the project at `.keld/dev/<nonce>` and stages the configured entry, optional renderer and optional `src/kipc-transport.ts`. The nested location can still resolve packages upward; absence of a copied `node_modules` directory is not proof of failed resolution. Conversely, copying only the entry does not deliver its relative siblings or assets. The pinned draw.io `src/main/electron.js` imports siblings such as `args.js` and `window-bounds.js` and derives `electron-preload.js` and webapp paths from its own location. The existing CLI boot/package owner and #499 consumer must qualify that actual layout and admitted upward graph, preserving entry/resource semantics rather than adding arbitrary absolute-import rewrites or a second launcher.
 
@@ -150,3 +166,27 @@ None measured or claimed by this documentation-only change. Future analyzer and 
 No open contract decision remains in this approved scope; exact984 approval and its historical baseline are recorded above. The implementation blockers below remain separate and unchanged.
 
 **Implementation blockers rather than discretionary new keys:** #452 role-env grammar/session admission, #453 single-instance schema, #491 updater adapter, #502 single package entry, #499 installed graph/effective-configuration qualification, #593 launch enforcement/no-runtime-auto-install, actual CLI/package delivery and canonical transport/Source qualification, #541/#552 grants and #542 real document generation, #588 effective Legacy admission, and #589's authentic original-app Mac receipt. Current #446/#449 facade source is available; complete app/OS acceptance still needs its own evidence. The spec can be approved without fabricating these implementations, but T2/T3 must fail closed until the respective owners produce and verify them.
+
+
+## 11. Bounded developer-demo source-copy adjustment (2026-11-01)
+
+Approved under the user's standing repository-owner delegation; recorded on
+GH497 comment6564586832 before adoption. This is a manual GH589 demo-copy
+adjustment, not automatic migrator behavior or an added SDK API.
+
+The real original main's first-window `did-finish-load` listener called absent
+`webContents.setVisualZoomLevelLimits(1, appZoom)` before `loadFinished()` and
+threw. In a fresh owned copy, guard only that exact call with `typeof ... ===
+'function'`. Preserve its receiver/arguments and propagate a real method's
+exception. When absent, emit a static unsupported-visual-zoom warning and reach
+the existing continuation. Visual zoom limits are not implemented or claimed.
+The immutable original, preserved prior copy, other two call sites, preload,
+webapp, URL/query, sender/close safety, CSP and permissions remain unchanged.
+
+No boundary change. Bounded fragment tests establish missing-method TypeError
+before the adjustment, then missing/present/throwing cases afterward. Node
+`--check` is syntax-only; no whole-module evaluation supplies this evidence.
+Actual editor, file workflow and Quit acceptance remain separate and unproved.
+The demo also supplies its actual existing package version31.7.0 through the
+already-approved literal `keld.config.ts.version` and Host fact carrier; no
+ambient JS fallback, Host schema extension or dependency bump is introduced.

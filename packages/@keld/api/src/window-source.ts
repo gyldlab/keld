@@ -28,6 +28,12 @@ import {
 
 /** Source-owned immutable host facts; Electron-facing tombstones are separate. */
 export interface WindowSnapshot {
+  readonly document?: Readonly<{
+    generation: number;
+    native_url: string;
+    finished: boolean;
+    current: boolean;
+  }>;
   readonly window: Readonly<WindowRef>;
   readonly state: Readonly<Omit<WindowState, "bounds">> & {
     readonly bounds: Readonly<Rect>;
@@ -128,6 +134,7 @@ function snapshot(
   state: WindowState,
   pending_close: bigint | null,
   host_destroyed: boolean,
+  document?: WindowSnapshot["document"],
 ): WindowSnapshot {
   // Copy every object: neither retained dispatch facts nor caller snapshots own
   // aliases into mutable map state, or into the transport's payload storage.
@@ -146,6 +153,9 @@ function snapshot(
     }),
     pending_close,
     host_destroyed,
+    ...(document === undefined
+      ? {}
+      : { document: stateFreeze({ ...document }) }),
   });
 }
 
@@ -281,7 +291,38 @@ export class WindowSource implements MirrorSource<WindowEvent> {
       let state: WindowState = previous.state;
       let pending_close = previous.pending_close;
       let host_destroyed = false;
+      let document = previous.document;
       switch (fact.variant) {
+        case "NavigationCommitted":
+          if (
+            !Number.isInteger(fact.document_generation) ||
+            fact.document_generation <= 0 ||
+            fact.document_generation > 0xffffffff
+          )
+            throw this.#reject();
+          if (document && fact.document_generation < document.generation)
+            return;
+          if (document?.generation === fact.document_generation) {
+            if (document.native_url !== fact.native_url) throw this.#reject();
+            return; // Duplicate commit cannot revive a retired native document.
+          }
+          document = {
+            generation: fact.document_generation,
+            native_url: fact.native_url,
+            finished: false,
+            current: true,
+          };
+          break;
+        case "NavigationFinished":
+          if (!document || fact.document_generation > document.generation)
+            throw this.#reject();
+          if (
+            !document.current ||
+            fact.document_generation !== document.generation
+          )
+            return;
+          document = { ...document, finished: true };
+          break;
         case "Bounds":
           state = { ...state, bounds: fact.bounds };
           break;
@@ -307,7 +348,7 @@ export class WindowSource implements MirrorSource<WindowEvent> {
       stateMapSet(
         this.#windows,
         fact.window.id,
-        snapshot(fact.window, state, pending_close, host_destroyed),
+        snapshot(fact.window, state, pending_close, host_destroyed, document),
       );
     } catch {
       throw this.#reject();
@@ -318,6 +359,26 @@ export class WindowSource implements MirrorSource<WindowEvent> {
   desktop(): DesktopSnapshot | undefined {
     this.#requireLive();
     return this.#desktop;
+  }
+
+  /** A native retirement may invalidate only its exact already-observed document. */
+  retireNativeDocument(window: WindowRef, generation: number): void {
+    const previous = this.get(window);
+    if (
+      !previous ||
+      previous.host_destroyed ||
+      previous.document?.generation !== generation ||
+      !previous.document.current
+    )
+      return;
+    stateMapSet(
+      this.#windows,
+      window.id,
+      snapshot(window, previous.state, previous.pending_close, false, {
+        ...previous.document,
+        current: false,
+      }),
+    );
   }
 
   /** Existing dispatch owns ordering and isolates listener exceptions. */
@@ -360,7 +421,7 @@ export class WindowSource implements MirrorSource<WindowEvent> {
       stateMapSet(
         this.#windows,
         window.id,
-        snapshot(window, previous.state, null, false),
+        snapshot(window, previous.state, null, false, previous.document),
       );
     // An older ack still advances the dispatched receipt watermark; only the
     // exact pending sequence above may clear current Source state.

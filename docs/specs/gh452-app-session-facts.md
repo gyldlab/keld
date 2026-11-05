@@ -565,3 +565,10 @@ whole-app/all-facts conformance verdicts must not be promoted from this partial 
   to Chromium's application UI locale, not proof of identical locale negotiation.
 - Fallback/blocker: no external-semantic blocker; exact source and actual native
   execution are required before reporting this implementation verified.
+
+
+## 14. GH453 original-Host no-argument single-instance fact
+
+Approved under the user's explicit technical-owner delegation on 2026-11-01. The exact bounded lease/config/public subset is owned by `gh453-original-host-single-instance.md`; this does not reinterpret the prior GH452 approvals as single-instance approval. The existing private record advances to schema4 with required `schema/kind/name/root/paths`, optional version/locale, and optional `singleInstance: { verdict: "acquired" | "contended" }`. The new member is closed data only and is never an id, fd, path, grant or principal. The 16 KiB/field bounds and closed JSON object/duplicate rejection remain. Schemas 1/2/3 retain their original fields, stay readable and reject this member. Schema4 without it retains honest absence.
+
+Core captures the result of the original admitted Legacy Host's real nonblocking lease attempt; Guardian retains/replays that one data record. The canonical transport validates own data fields and freezes copied null-prototype outer/nested objects before entry. Own accessors, proxies, inherited-only verdicts, null, sequences, unknown keys or values refuse with KELD-IPC-029. Later source/prototype changes cannot forge a result. The facade's no-argument request returns true only for acquired and false only for contended. Missing/old carriers throw the shared AppSessionFactError/code040 with fact singleInstance and reason unavailable; schema4 absence throws reason undeclared. Unsupported additionalData/excess arguments retain code013. Broader GH453, whole-app and native qualification remain independently unmet until their actual acceptance evidence passes.

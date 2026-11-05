@@ -8,9 +8,11 @@ use objc2_foundation::{
 use serde::{Deserialize, Serialize};
 
 use super::HostAppError;
+use super::original_webapp::PreparedOriginalSource;
 
 const MAX_RECORD_BYTES: usize = 16 * 1024;
 const MAX_FIELD_BYTES: usize = 4096;
+const ORIGINAL_RESOURCE_POLICY_CONTRACT: &str = "gh473-original-editor-offline/v1";
 
 /// Closed development-launch facts. This record never carries a grant or identity.
 #[derive(Debug, Deserialize, Serialize)]
@@ -38,6 +40,83 @@ pub struct DevelopmentLaunchFacts {
         deserialize_with = "deserialize_present_object"
     )]
     paths: Option<LaunchDirectories>,
+    #[serde(
+        default,
+        rename = "singleInstance",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_object"
+    )]
+    single_instance: Option<SingleInstanceFact>,
+    #[serde(
+        default,
+        rename = "originalResourcePolicy",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_object"
+    )]
+    original_resource_policy: Option<OriginalResourcePolicyDescriptor>,
+}
+
+// A source-owner observation, not a native grant or a physical-test receipt.
+// Private fields and constructor: only successful opaque source preparation mints it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct OriginalResourcePolicyDescriptor {
+    contract: String,
+    graph_sha256: String,
+    policy_sha256: String,
+    window_key: String,
+    selector: String,
+}
+
+impl OriginalResourcePolicyDescriptor {
+    fn from_prepared_source(prepared: &PreparedOriginalSource) -> Self {
+        fn digest_text(digest: [u8; 32]) -> String {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut text = String::from("sha256:");
+            for byte in digest {
+                text.push(char::from(HEX[usize::from(byte >> 4)]));
+                text.push(char::from(HEX[usize::from(byte & 15)]));
+            }
+            text
+        }
+        Self {
+            contract: String::from(ORIGINAL_RESOURCE_POLICY_CONTRACT),
+            graph_sha256: digest_text(prepared.graph_sha256()),
+            policy_sha256: digest_text(prepared.policy_sha256()),
+            window_key: prepared.window_key().to_owned(),
+            selector: keld_guard::WindowCspProfile::OriginalEditorOffline
+                .as_str()
+                .to_owned(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), HostAppError> {
+        let digest = |value: &str| {
+            value.strip_prefix("sha256:").is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        };
+        if self.contract != ORIGINAL_RESOURCE_POLICY_CONTRACT
+            || self.selector != keld_guard::WindowCspProfile::OriginalEditorOffline.as_str()
+            || !digest(&self.graph_sha256)
+            || !digest(&self.policy_sha256)
+            || !valid_text(&self.window_key)
+        {
+            return Err(invalid(
+                "invalid prepared original-resource policy descriptor; use the same verified source/key and qualified composition",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SingleInstanceFact {
+    verdict: super::single_instance::SingleInstanceVerdict,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -182,6 +261,41 @@ impl LaunchDirectories {
 }
 
 impl DevelopmentLaunchFacts {
+    /// Bind data eligibility only from the same successful cold source owner.
+    /// This neither grants native authority nor qualifies physical effects.
+    pub(super) fn set_original_resource_policy(
+        &mut self,
+        prepared: &PreparedOriginalSource,
+    ) -> Result<(), HostAppError> {
+        if self.original_resource_policy.is_some() {
+            return Err(invalid(
+                "original-resource policy descriptor is already bound",
+            ));
+        }
+        if Path::new(&self.root) != prepared.selected_stage() {
+            return Err(invalid(
+                "prepared original-resource source belongs to another selected stage",
+            ));
+        }
+        let descriptor = OriginalResourcePolicyDescriptor::from_prepared_source(prepared);
+        descriptor.validate()?;
+        self.original_resource_policy = Some(descriptor);
+        self.schema = 5;
+        self.private_argument()?;
+        Ok(())
+    }
+    pub(super) fn application_support(&self) -> Option<&str> {
+        self.paths.as_ref()?.app_data.as_deref()
+    }
+    pub(super) fn set_single_instance(
+        &mut self,
+        verdict: super::single_instance::SingleInstanceVerdict,
+    ) -> Result<(), HostAppError> {
+        self.single_instance = Some(SingleInstanceFact { verdict });
+        self.private_argument()?;
+        Ok(())
+    }
+
     pub(super) fn from_validated_development(
         name: &str,
         root: &Path,
@@ -201,13 +315,15 @@ impl DevelopmentLaunchFacts {
             .firstObject()
             .map(|language| language.to_string());
         let facts = Self {
-            schema: 3,
+            schema: 4,
             kind: String::from("development"),
             name: name.to_owned(),
             root: root_text.to_owned(),
             version: version.map(str::to_owned),
             locale,
             paths: Some(LaunchDirectories::capture(name)?),
+            single_instance: None,
+            original_resource_policy: None,
         };
         facts.validate(root)?;
         facts.private_argument()?;
@@ -257,7 +373,7 @@ impl DevelopmentLaunchFacts {
     }
 
     fn validate(&self, expected_root: &Path) -> Result<(), HostAppError> {
-        if !matches!(self.schema, 1..=3)
+        if !matches!(self.schema, 1..=5)
             || self.kind != "development"
             || !valid_text(&self.name)
             || !valid_path(&self.root)
@@ -268,8 +384,10 @@ impl DevelopmentLaunchFacts {
             ));
         }
         if (self.schema == 1 && (self.version.is_some() || self.paths.is_some()))
-            || (matches!(self.schema, 2 | 3) && self.paths.is_none())
-            || (self.schema != 3 && self.locale.is_some())
+            || (matches!(self.schema, 2..=5) && self.paths.is_none())
+            || (!matches!(self.schema, 3..=5) && self.locale.is_some())
+            || (!matches!(self.schema, 4 | 5) && self.single_instance.is_some())
+            || ((self.schema == 5) != self.original_resource_policy.is_some())
         {
             return Err(invalid(
                 "launch facts fields do not match their closed schema",
@@ -290,6 +408,9 @@ impl DevelopmentLaunchFacts {
         }
         if let Some(paths) = &self.paths {
             paths.validate(&self.name)?;
+        }
+        if let Some(policy) = &self.original_resource_policy {
+            policy.validate()?;
         }
         Ok(())
     }
@@ -513,5 +634,157 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn private_schema_four_roundtrips_both_data_verdicts_and_preserves_absence() {
+        let root = Path::new("/stage");
+        for verdict in ["acquired", "contended"] {
+            let payload = format!(
+                r#"{{"schema":4,"kind":"development","name":"n","root":"/stage","paths":{{}},"singleInstance":{{"verdict":"{verdict}"}}}}"#
+            );
+            let parsed = DevelopmentLaunchFacts::from_private_argument(&payload, root)
+                .expect("one schema-four data verdict");
+            assert_eq!(
+                parsed.private_argument().expect("same private bytes"),
+                payload
+            );
+        }
+        let absent = r#"{"schema":4,"kind":"development","name":"n","root":"/stage","paths":{}}"#;
+        let parsed =
+            DevelopmentLaunchFacts::from_private_argument(absent, root).expect("undeclared");
+        assert_eq!(
+            parsed.private_argument().expect("absence preserved"),
+            absent
+        );
+        for schema in 1..=3 {
+            let paths = if schema == 1 { "" } else { r#","paths":{}"# };
+            let payload = format!(
+                r#"{{"schema":{schema},"kind":"development","name":"n","root":"/stage"{paths},"singleInstance":{{"verdict":"acquired"}}}}"#
+            );
+            let error = DevelopmentLaunchFacts::from_private_argument(&payload, root)
+                .expect_err("old records cannot forge a new service fact");
+            assert_eq!(error.code(), "KELD-CORE-037");
+        }
+    }
+
+    #[test]
+    fn private_single_instance_record_rejects_malformed_duplicate_and_authority_fields() {
+        let root = Path::new("/stage");
+        for field in [
+            r"null",
+            r"[]",
+            r#"["acquired"]"#,
+            r"{}",
+            r#"{"verdict":null}"#,
+            r#"{"verdict":true}"#,
+            r#"{"verdict":"ACQUIRED"}"#,
+            r#"{"verdict":"other"}"#,
+            r#"{"verdict":"acquired","id":"org.keld.app"}"#,
+            r#"{"verdict":"acquired","fd":3}"#,
+            r#"{"verdict":"acquired","verdict":"contended"}"#,
+        ] {
+            let payload = format!(
+                r#"{{"schema":4,"kind":"development","name":"n","root":"/stage","paths":{{}},"singleInstance":{field}}}"#
+            );
+            let error = DevelopmentLaunchFacts::from_private_argument(&payload, root)
+                .expect_err("closed data-only result");
+            assert_eq!(error.code(), "KELD-CORE-037", "{field}");
+        }
+        for payload in [
+            r#"{"schema":4,"kind":"development","name":"n","root":"/stage","singleInstance":{"verdict":"acquired"}}"#,
+            r#"{"schema":4,"kind":"development","name":"n","root":"/stage","paths":{},"singleInstance":{"verdict":"acquired"},"singleInstance":{"verdict":"contended"}}"#,
+        ] {
+            let error = DevelopmentLaunchFacts::from_private_argument(payload, root)
+                .expect_err("missing paths or duplicate result");
+            assert_eq!(error.code(), "KELD-CORE-037");
+        }
+    }
+    fn policy_descriptor_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "contract": ORIGINAL_RESOURCE_POLICY_CONTRACT,
+            "graphSha256": format!("sha256:{}", "1".repeat(64)),
+            "policySha256": format!("sha256:{}", "2".repeat(64)),
+            "windowKey": "editor",
+            "selector": keld_guard::WindowCspProfile::OriginalEditorOffline.as_str(),
+        })
+    }
+
+    #[test]
+    fn schema_five_roundtrips_only_closed_policy_data_and_rejects_older_schema_insertion() {
+        let descriptor = policy_descriptor_fixture();
+        let payload = serde_json::json!({
+            "schema":5,"kind":"development","name":"n","root":"/stage","paths":{},
+            "singleInstance":{"verdict":"acquired"},"originalResourcePolicy":descriptor,
+        });
+        let parsed = DevelopmentLaunchFacts::from_private_argument(
+            &payload.to_string(),
+            Path::new("/stage"),
+        )
+        .expect("closed private data fixture, not native proof");
+        let observed: serde_json::Value =
+            serde_json::from_str(&parsed.private_argument().expect("encode")).expect("JSON");
+        assert_eq!(observed, payload);
+        for schema in 1..=4 {
+            let mut old = payload.clone();
+            old["schema"] = serde_json::json!(schema);
+            assert!(
+                DevelopmentLaunchFacts::from_private_argument(
+                    &old.to_string(),
+                    Path::new("/stage")
+                )
+                .is_err(),
+                "schema{schema} cannot carry eligibility data"
+            );
+        }
+        assert!(
+            DevelopmentLaunchFacts::from_private_argument(
+                &payload.to_string(),
+                Path::new("/foreign")
+            )
+            .is_err(),
+            "private record root must bind the actual admitted stage"
+        );
+    }
+
+    #[test]
+    fn schema_five_refuses_missing_malformed_or_forged_descriptor_fields() {
+        let base = serde_json::json!({"schema":5,"kind":"development","name":"n","root":"/stage","paths":{}});
+        assert!(
+            DevelopmentLaunchFacts::from_private_argument(&base.to_string(), Path::new("/stage"))
+                .is_err(),
+            "schema5 requires the source descriptor"
+        );
+        let mut variants = vec![
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!(true),
+        ];
+        for (key, value) in [
+            ("contract", serde_json::json!("forged")),
+            ("selector", serde_json::json!("default")),
+            ("graphSha256", serde_json::json!("sha256:0")),
+            (
+                "policySha256",
+                serde_json::json!(format!("sha256:{}", "A".repeat(64))),
+            ),
+            ("windowKey", serde_json::json!("")),
+            ("grant", serde_json::json!("all")),
+        ] {
+            let mut descriptor = policy_descriptor_fixture();
+            descriptor[key] = value;
+            variants.push(descriptor);
+        }
+        for descriptor in variants {
+            let mut payload = base.clone();
+            payload["originalResourcePolicy"] = descriptor;
+            let error = DevelopmentLaunchFacts::from_private_argument(
+                &payload.to_string(),
+                Path::new("/stage"),
+            )
+            .expect_err("invalid private claim");
+            assert_eq!(error.code(), "KELD-CORE-037");
+        }
     }
 }

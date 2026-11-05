@@ -26,6 +26,9 @@ request-close	request	0307ac02
 request-close-allow	request	0407ac02ac0200
 request-close-veto	request	0407ac02ac0201
 request-destroy	request	0507ac02
+# GH484 A2: append tag 6; old Create tag 0 and every old vector stay byte-exact.
+request-create-preload-empty	request	068005e00301050108092f6170702f702e6a7300
+request-create-preload-adaptive	request	0601020000072f612f702e6a73011e2d2d696e697469616c2d61646170746976652d636f6c6f72733d6175746f
 response-created	response	0007ac02
 response-accepted	response	01
 response-close-requested	response	02ac02
@@ -38,3 +41,9 @@ response-adopted	response	0807ac02
 response-close-sequence-maximum	response	02ffffffffffffffffff01
 verdict-allow	verdict	00
 verdict-veto	verdict	01
+# N1 appended payloads; original values and prepared CreateWithPreload6 stay exact.
+request-load-url	request	0707ac022f66696c653a2f2f2f732f64726177696f2f7372632f6d61696e2f7765626170702f696e6465782e68746d6c3f713d31
+response-loaded	response	09
+event-navigation-committed	event	0807ac02053f6b656c642d7265736f757263653a2f2f30313233343536373839616263646566303132333435363738396162636465662f696e6465782e68746d6c3f713d31
+event-navigation-finished	event	0907ac0205
+request-destroy-original-document	request	0807ac0205

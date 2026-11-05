@@ -41,7 +41,8 @@ fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
             command
                 .arg("entry-inode")
                 .env(NATIVE_WINDOW_FACADE_ENV, ambient);
-            configure_guardian_boot_mode(&mut command, trigger);
+            configure_guardian_boot_mode(&mut command, trigger, false)
+                .expect("validated guardian boot mode");
             assert_eq!(
                 command.get_args().collect::<Vec<_>>(),
                 ["entry-inode", expected]
@@ -159,12 +160,12 @@ fn queued_late_first_init_cannot_bypass_absolute_deadline() {
     })
     .expect("queue one late UI first turn");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Expired,
         "queued late Init must not publish Ready or disarm the terminal"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Expired,
         "a non-terminal successful receive must not consume an invalid Init"
     );
@@ -184,21 +185,22 @@ fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline()
     let on_time = deadline
         .checked_sub(Duration::from_millis(1))
         .expect("monotonic clock supports preceding native event");
-    let first = AppWindowEvent::HostInitialized {
-        observed_at: on_time,
-    };
     let (send, events) = mpsc::channel();
-    send.send(first.clone())
-        .expect("queue genuine timely UI event");
+    send.send(AppWindowEvent::HostInitialized {
+        observed_at: on_time,
+    })
+    .expect("queue genuine timely UI event");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
-        InitialMilestoneReceive::Event(first),
+        receive_initial_milestone(&events, Some(&clock), true, true),
+        InitialMilestoneReceive::Event(AppWindowEvent::HostInitialized {
+            observed_at: on_time,
+        }),
         "coordinator descheduling must not transform timely native Init into timeout"
     );
     send.send(AppWindowEvent::LastWindowClosed)
         .expect("healthy windowless session may continue");
     assert_eq!(
-        receive_initial_milestone(&events, None, true),
+        receive_initial_milestone(&events, None, true, true),
         InitialMilestoneReceive::Event(AppWindowEvent::LastWindowClosed),
         "once Init is accepted the expired clock is no longer armed"
     );
@@ -232,12 +234,12 @@ fn desktop_sample_before_timestamp_preserves_on_time_init_under_delayed_receive(
         })
         .expect("queue genuine on-time Init after desktop");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
         "desktop event is allowed through for subsequent native timestamp review"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), false),
+        receive_initial_milestone(&events, Some(&clock), false, true),
         InitialMilestoneReceive::Event(AppWindowEvent::HostInitialized {
             observed_at: on_time
         }),
@@ -254,11 +256,11 @@ fn desktop_sample_before_timestamp_preserves_on_time_init_under_delayed_receive(
         })
         .expect("queue late Init");
     assert!(matches!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { .. })
     ));
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), false),
+        receive_initial_milestone(&events, Some(&clock), false, true),
         InitialMilestoneReceive::Expired,
         "desktop bypass cannot make a late native Init valid"
     );
@@ -281,12 +283,12 @@ fn repeated_desktop_samples_cannot_starve_or_replace_the_one_first_init_watchdog
             .expect("queue deliberately repeated native samples");
     }
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
         "the sole native sample is allowed to precede the timestamped Init"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), false),
+        receive_initial_milestone(&events, Some(&clock), false, true),
         InitialMilestoneReceive::UnexpectedDesktop,
         "the second sample must fail immediately even with time remaining"
     );
@@ -307,11 +309,11 @@ fn repeated_desktop_samples_cannot_starve_or_replace_the_one_first_init_watchdog
         .send(AppWindowEvent::DesktopObserved { facts: None })
         .expect("queue one pre-Init desktop observation");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&expired_clock), true),
+        receive_initial_milestone(&events, Some(&expired_clock), true, true),
         InitialMilestoneReceive::Event(AppWindowEvent::DesktopObserved { facts: None }),
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&expired_clock), false),
+        receive_initial_milestone(&events, Some(&expired_clock), false, true),
         InitialMilestoneReceive::Expired,
         "a missing HostInitialized may not retain the desktop exception"
     );
@@ -332,12 +334,12 @@ fn busy_non_init_queue_and_empty_deadline_both_expire_without_ready() {
     send.send(AppWindowEvent::LastWindowClosed)
         .expect("queue non-Init event after absolute expiry");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Expired,
         "busy queue cannot perpetually avoid a timeout"
     );
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Expired,
         "empty deadline expiry still takes bounded terminal path"
     );
@@ -358,10 +360,295 @@ fn unarmed_first_init_timestamp_cannot_mint_ready() {
     })
     .expect("queue a milestone with no loop-entry clock");
     assert_eq!(
-        receive_initial_milestone(&events, Some(&clock), true),
+        receive_initial_milestone(&events, Some(&clock), true, true),
         InitialMilestoneReceive::Expired,
         "unarmed native clock must not authorize Ready"
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_facade_waits_for_event_then_disconnect_without_idle_returns() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    let (send, events) = mpsc::channel();
+    let (armed_send, armed) = mpsc::sync_channel(0);
+    let (result_send, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        armed_send.send(()).expect("announce receiver");
+        for _ in 0..2 {
+            let observed = receive_initial_milestone(&events, None, false, false);
+            if result_send.send(observed).is_err() {
+                return;
+            }
+        }
+    });
+    armed.recv().expect("receiver started");
+    let early = result.recv_timeout(Duration::from_millis(500));
+    let stayed_waiting = matches!(&early, Err(mpsc::RecvTimeoutError::Timeout));
+    let delivered = send.send(AppWindowEvent::LastWindowClosed);
+    drop(send);
+    let first = early.or_else(|_| result.recv_timeout(Duration::from_secs(2)));
+    let second = result.recv_timeout(Duration::from_secs(2));
+    let joined = worker.join();
+    // Assertions follow shutdown/join, so the negative control leaves no worker.
+    assert!(
+        stayed_waiting,
+        "an established facade must not return Again while no native event exists"
+    );
+    assert!(delivered.is_ok(), "real event must be accepted after idle");
+    assert_eq!(
+        first.expect("first event"),
+        InitialMilestoneReceive::Event(AppWindowEvent::LastWindowClosed)
+    );
+    assert_eq!(
+        second.expect("channel close"),
+        InitialMilestoneReceive::Disconnected
+    );
+    assert!(
+        joined.is_ok(),
+        "receiver joins after its real sender closes"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_legacy_retains_stop_poll() {
+    use super::{InitialMilestoneReceive, receive_initial_milestone};
+    let (send, events) = mpsc::channel();
+    let (result_send, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let value = receive_initial_milestone(&events, None, false, true);
+        let _ = result_send.send(value);
+    });
+    let observed = result.recv_timeout(Duration::from_secs(2));
+    drop(send);
+    let joined = worker.join();
+    assert_eq!(
+        observed.expect("bounded legacy polling"),
+        InitialMilestoneReceive::Again
+    );
+    assert!(joined.is_ok());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_facade_keeps_armed_empty_init_deadline() {
+    use super::{InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+    let (send, events) = mpsc::channel();
+    let (result_send, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let clock = OnceLock::new();
+        clock
+            .set(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .expect("monotonic clock has one-second history"),
+            )
+            .expect("expired absolute clock");
+        let value = receive_initial_milestone(&events, Some(&clock), true, false);
+        let _ = result_send.send(value);
+    });
+    let observed = result.recv_timeout(Duration::from_secs(2));
+    drop(send);
+    let joined = worker.join();
+    assert_eq!(
+        observed.expect("armed Init still has deadline"),
+        InitialMilestoneReceive::Expired
+    );
+    assert!(joined.is_ok());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_facade_keeps_unarmed_init_poll_and_refusal() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    use std::sync::OnceLock;
+    let (send, events) = mpsc::channel();
+    let (result_send, result) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let clock = OnceLock::new();
+        for _ in 0..2 {
+            let value = receive_initial_milestone(&events, Some(&clock), true, false);
+            if result_send.send(value).is_err() {
+                return;
+            }
+        }
+    });
+    let first = result.recv_timeout(Duration::from_secs(2));
+    let queued = send.send(AppWindowEvent::HostInitialized {
+        observed_at: Instant::now(),
+    });
+    drop(send);
+    let second = result.recv_timeout(Duration::from_secs(2));
+    let joined = worker.join();
+    assert_eq!(
+        first.expect("unarmed clock still polls"),
+        InitialMilestoneReceive::Again
+    );
+    assert!(queued.is_ok());
+    assert_eq!(
+        second.expect("unarmed Init refused"),
+        InitialMilestoneReceive::Expired
+    );
+    assert!(joined.is_ok());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_facade_preserves_fifo_before_sender_close() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    let (send, events) = mpsc::channel();
+    send.send(AppWindowEvent::NavigationReady)
+        .expect("first queued event");
+    send.send(AppWindowEvent::LastWindowClosed)
+        .expect("second queued event");
+    drop(send);
+    assert_eq!(
+        receive_initial_milestone(&events, None, false, false),
+        InitialMilestoneReceive::Event(AppWindowEvent::NavigationReady)
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, None, false, false),
+        InitialMilestoneReceive::Event(AppWindowEvent::LastWindowClosed)
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, None, false, false),
+        InitialMilestoneReceive::Disconnected
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_receive_facade_retains_post_init_duplicate_desktop_refusal() {
+    use super::{AppWindowEvent, InitialMilestoneReceive, receive_initial_milestone};
+    let (send, events) = mpsc::channel();
+    send.send(AppWindowEvent::DesktopObserved { facts: None })
+        .expect("duplicate native sample");
+    drop(send);
+    assert_eq!(
+        receive_initial_milestone(&events, None, false, false),
+        InitialMilestoneReceive::UnexpectedDesktop
+    );
+    assert_eq!(
+        receive_initial_milestone(&events, None, false, false),
+        InitialMilestoneReceive::Disconnected
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_caller_facade_waits_for_last_sender_despite_reader_stop() {
+    use super::{AppWindowEvent, next_native_window_event, window_router};
+    use keld_wv::wkwebview::MacDialogUiOutcome;
+
+    let (mut router, _peer, _owner_commands, _window_commands) =
+        initial_ready_router_with_window_loop();
+    router.windows = Some(Arc::new(Mutex::new(window_router::WindowSession::new(
+        true,
+    ))));
+    router.shutdown.reader_stop.store(true, Ordering::Release);
+    let (send, events) = mpsc::channel();
+    let last_sender = send.clone();
+    let (armed_send, armed) = mpsc::sync_channel(0);
+    let (result_send, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        armed_send.send(()).expect("announce caller");
+        for _ in 0..2 {
+            let observed =
+                next_native_window_event(&events, &router, &router.window_commands, None, false);
+            if result_send.send(observed).is_err() {
+                return;
+            }
+        }
+    });
+    armed.recv().expect("caller started");
+    let early = result.recv_timeout(Duration::from_millis(500));
+    let waited_for_event = matches!(&early, Err(mpsc::RecvTimeoutError::Timeout));
+    let delivery = send.send(AppWindowEvent::MacDialogFinished {
+        attempt: 1,
+        nonce: 1,
+        outcome: MacDialogUiOutcome::Dismissed,
+    });
+    drop(send);
+    let first = early.or_else(|_| result.recv_timeout(Duration::from_secs(2)));
+    let before_last_drop = result.recv_timeout(Duration::from_millis(500));
+    let waited_for_last_sender = matches!(&before_last_drop, Err(mpsc::RecvTimeoutError::Timeout));
+    drop(last_sender);
+    let final_result = before_last_drop.or_else(|_| result.recv_timeout(Duration::from_secs(2)));
+    let joined = worker.join();
+
+    // Even a broken caller must release owned senders and join before asserting.
+    assert!(
+        waited_for_event,
+        "facade reader_stop cannot end native event custody"
+    );
+    assert!(delivery.is_ok(), "late native event remains accepted");
+    assert_eq!(
+        first
+            .expect("native event response")
+            .expect("valid native event"),
+        Some(AppWindowEvent::MacDialogFinished {
+            attempt: 1,
+            nonce: 1,
+            outcome: MacDialogUiOutcome::Dismissed,
+        })
+    );
+    assert!(
+        waited_for_last_sender,
+        "one retained native producer keeps the established facade alive"
+    );
+    assert_eq!(
+        final_result
+            .expect("final sender close")
+            .expect("clean channel close"),
+        None
+    );
+    assert!(joined.is_ok());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_event_caller_legacy_observes_reader_stop_with_live_sender() {
+    use super::next_native_window_event;
+
+    let (router, _peer, _owner_commands, _window_commands) =
+        initial_ready_router_with_window_loop();
+    assert!(
+        router.windows.is_none(),
+        "fixture selects legacy caller policy"
+    );
+    let stop = Arc::clone(&router.shutdown.reader_stop);
+    let (send, events) = mpsc::channel();
+    let (armed_send, armed) = mpsc::sync_channel(0);
+    let (result_send, result) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        armed_send.send(()).expect("announce caller");
+        let observed =
+            next_native_window_event(&events, &router, &router.window_commands, None, false);
+        let _ = result_send.send(observed);
+    });
+    armed.recv().expect("caller started");
+    let early = result.recv_timeout(Duration::from_millis(500));
+    let waiting_before_stop = matches!(&early, Err(mpsc::RecvTimeoutError::Timeout));
+    stop.store(true, Ordering::Release);
+    let stopped = early.or_else(|_| result.recv_timeout(Duration::from_secs(2)));
+    // Keep the producer live until after the bounded stop observation. Dropping
+    // it earlier would let a broken blocking legacy receive pass by disconnection.
+    drop(send);
+    let joined = worker.join();
+
+    assert!(
+        waiting_before_stop,
+        "legacy source stays live before its stop"
+    );
+    assert_eq!(
+        stopped
+            .expect("reader stop remains bounded")
+            .expect("clean legacy stop"),
+        None
+    );
+    assert!(joined.is_ok());
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -436,6 +723,7 @@ include!("tests/session_handover.rs");
 include!("tests/windows_profile_and_boot.rs");
 include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
+mod application_name_for_user_agent;
 #[cfg(target_os = "macos")]
 include!("tests/gh499_stage_graph_admission.rs");
 include!("tests/profile_admission.rs");

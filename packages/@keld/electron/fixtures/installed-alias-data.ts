@@ -46,12 +46,25 @@ export function checkInstalledData(
   assert.equal(manifest.name, "@keld/electron");
   assert.deepEqual(
     Object.keys(manifest.exports).sort(),
-    [".", "./main", "./renderer", "./common", "./utility"].sort(),
+    [
+      ".",
+      "./main",
+      "./renderer",
+      "./common",
+      "./utility",
+      "./internal/original-ipc",
+    ].sort(),
   );
   assert.deepEqual(
-    Object.values(manifest.exports),
+    Object.entries(manifest.exports)
+      .filter(([key]) => key !== "./internal/original-ipc")
+      .map(([, value]) => value),
     Array(5).fill("./dist/index.js"),
     "GH502_ONE_ENTRY",
+  );
+  assert.equal(
+    manifest.exports["./internal/original-ipc"],
+    "./dist/original-ipc.js",
   );
   assert.equal(manifest.dependencies["@keld/api"], versions.api);
   assert.equal(manifest.dependencies["@keld/kipc"], versions.kipc);

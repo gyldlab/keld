@@ -2,7 +2,9 @@ use crate::support::DARK_BG;
 use crate::support::EVENT_DEADLINE;
 use crate::support::FORWARDED_LOG;
 use crate::support::MARKER;
+use crate::support::PROCESS_DEADLINE;
 use crate::support::TITLE;
+use crate::support::control::LiveChildOutput;
 use crate::support::control::accept_before;
 use crate::support::control::parse_pid;
 use crate::support::control::read_control_line;
@@ -12,10 +14,13 @@ use crate::support::native_window::NativeWindowExpectation;
 use crate::support::native_window::NativeWindowScope;
 use crate::support::native_window::native_windows;
 use crate::support::native_window::query_native_windows;
+use crate::support::process::ProcessExitObserver;
 use crate::support::process::await_process_gone;
+use crate::support::process::await_process_gone_before;
 use crate::support::process::parent_process;
 use crate::support::process::process_exists;
 use crate::support::process::process_group;
+use crate::support::process::process_ids;
 use crate::support::process::signal_process_group;
 use crate::support::product::ProductFixture;
 use crate::support::recovery_cycle::RecoveryGeneration;
@@ -57,6 +62,8 @@ pub(crate) fn prepare_keld_dev_helper(fixture: &ProductFixture) -> PathBuf {
     helper
 }
 
+const MAX_OBSERVED_PROCESSES: usize = 128;
+
 pub(crate) struct ShippingDevCycle {
     pub(crate) cli: Option<Child>,
     pub(crate) cli_pid: u32,
@@ -79,6 +86,10 @@ pub(crate) struct ShippingLaunchCleanup {
     pub(crate) cli: Option<Child>,
     pub(crate) host_group: Option<u32>,
     pub(crate) bun_group: Option<u32>,
+    owned_stage: Option<(PathBuf, Vec<u32>)>,
+    observed_groups: Vec<u32>,
+    observed_processes: Vec<(u32, ProcessExitObserver)>,
+    live_output: Option<LiveChildOutput>,
 }
 
 impl ShippingLaunchCleanup {
@@ -87,6 +98,10 @@ impl ShippingLaunchCleanup {
             cli: Some(cli),
             host_group: None,
             bun_group: None,
+            owned_stage: None,
+            observed_groups: Vec::new(),
+            observed_processes: Vec::new(),
+            live_output: None,
         }
     }
 
@@ -96,23 +111,344 @@ impl ShippingLaunchCleanup {
         self.bun_group = (bun_group != 0 && bun_group != test_group).then_some(bun_group);
     }
 
+    /// Observe a bounded current family snapshot before operator input and
+    /// refresh it afterward. A stable snapshot is not a no-future-fork proof.
+    pub(crate) fn observe_family_before(&mut self, deadline: Instant) -> Vec<u32> {
+        self.observe_family_before_observing(deadline, |_| {})
+    }
+
+    /// The fault observer runs only after actual Bun-group custody is enrolled.
+    /// It lets real-process tests fail at that cut before any complete census.
+    pub(crate) fn observe_family_before_observing(
+        &mut self,
+        deadline: Instant,
+        mut on_group: impl FnMut(u32),
+    ) -> Vec<u32> {
+        let host = self.prepare_family_observation();
+        let mut previous = Vec::new();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "Host {host} family snapshot deadline; stage retained as incomplete"
+            );
+            assert!(
+                self.cli
+                    .as_mut()
+                    .expect("retained Host child")
+                    .try_wait()
+                    .expect("Host state")
+                    .is_none(),
+                "Host {host} exited before family custody completed; stage retained as incomplete"
+            );
+            let guardians = process_ids("ppid", host);
+            if guardians.is_empty() {
+                std::thread::yield_now();
+                continue;
+            }
+            assert_eq!(
+                guardians.len(),
+                1,
+                "Host {host} has ambiguous children; stage retained as incomplete"
+            );
+            let guardian = guardians[0];
+            if !self
+                .observed_processes
+                .iter()
+                .any(|(pid, _)| *pid == guardian)
+            {
+                assert!(
+                    self.observed_processes.len() < MAX_OBSERVED_PROCESSES,
+                    "family observer capacity; unrecorded PID {guardian}; stage retained as incomplete"
+                );
+                self.observed_processes
+                    .push((guardian, ProcessExitObserver::arm(guardian)));
+            }
+            let buns = process_ids("ppid", guardian);
+            if buns.is_empty() {
+                std::thread::yield_now();
+                continue;
+            }
+            assert_eq!(
+                buns.len(),
+                1,
+                "Guardian {guardian} has ambiguous children; stage retained as incomplete"
+            );
+            let bun = buns[0];
+            let group = process_group(bun);
+            // A physical child relation does not authorize a foreign shared group.
+            // Only its own observed leader group or the already-owned Host group
+            // is enrollable; escaped/ambiguous groups retain incomplete proof.
+            assert!(
+                group == bun || group == host,
+                "Bun {bun} has unowned observed group {group}; not enrolled; stage retained as incomplete"
+            );
+            assert_eq!(parent_process(guardian), host);
+            assert_eq!(parent_process(bun), guardian);
+            // Enroll the actual observed group before callbacks, assertions or
+            // kernel observer registration can fail. Never substitute bun as PGID.
+            self.record_authenticated_groups(host, group);
+            if let Some(group) = self.bun_group
+                && !self.observed_groups.contains(&group)
+            {
+                self.observed_groups.push(group);
+            }
+            on_group(group);
+            assert!(
+                self.bun_group == Some(group),
+                "Bun {bun} is in an unowned group {group}; stage retained as incomplete"
+            );
+            if !self.observed_processes.iter().any(|(pid, _)| *pid == bun) {
+                assert!(
+                    self.observed_processes.len() < MAX_OBSERVED_PROCESSES,
+                    "family observer capacity; unrecorded PID {bun}; stage retained as incomplete"
+                );
+                self.observed_processes
+                    .push((bun, ProcessExitObserver::arm(bun)));
+            }
+            // Before exec/setpgid the child may still share the owned Host group.
+            if group == host {
+                std::thread::yield_now();
+                continue;
+            }
+            let mut snapshot = vec![(host, std::process::id(), process_group(host))];
+            let mut pending = vec![host];
+            self.observe_descendants_before(host, deadline, &mut snapshot, &mut pending);
+            snapshot.sort_unstable();
+            if snapshot == previous && pending.contains(&guardian) && pending.contains(&bun) {
+                let pids = self
+                    .observed_processes
+                    .iter()
+                    .map(|(pid, _)| *pid)
+                    .collect::<Vec<_>>();
+                self.record_stage_processes(&pids);
+                return pids;
+            }
+            previous = snapshot;
+            std::thread::yield_now();
+        }
+    }
+
+    /// Refresh the same retained stage record and enroll the original own
+    /// Child's kernel exit witness before the first process-family observation.
+    fn prepare_family_observation(&mut self) -> u32 {
+        self.owned_stage
+            .as_mut()
+            .expect("retained exact stage")
+            .1
+            .clear();
+        let host = self.cli.as_ref().expect("retained Host child").id();
+        // Keep every observer in this owner through its Drop, including failures.
+        if !self.observed_processes.iter().any(|(pid, _)| *pid == host) {
+            let observer =
+                ProcessExitObserver::arm_own_child(self.cli.as_ref().expect("retained Host child"));
+            self.observed_processes.push((host, observer));
+        }
+        host
+    }
+
+    /// Extend the same snapshot while enrolling every actual kernel witness
+    /// in this owner before any later assertion or callback can fail.
+    fn observe_descendants_before(
+        &mut self,
+        host: u32,
+        deadline: Instant,
+        snapshot: &mut Vec<(u32, u32, u32)>,
+        pending: &mut Vec<u32>,
+    ) {
+        let mut cursor = 0;
+        while cursor < pending.len() {
+            assert!(
+                Instant::now() < deadline,
+                "family walk deadline; stage retained as incomplete"
+            );
+            let parent = pending[cursor];
+            cursor += 1;
+            for child in process_ids("ppid", parent) {
+                if pending.contains(&child) {
+                    continue;
+                }
+                assert!(
+                    pending.len() < MAX_OBSERVED_PROCESSES,
+                    "family census capacity; unrecorded PID {child}; stage retained as incomplete"
+                );
+                if !self.observed_processes.iter().any(|(pid, _)| *pid == child) {
+                    assert!(
+                        self.observed_processes.len() < MAX_OBSERVED_PROCESSES,
+                        "family observer capacity; unrecorded PID {child}; stage retained as incomplete"
+                    );
+                    self.observed_processes
+                        .push((child, ProcessExitObserver::arm(child)));
+                }
+                let child_group = process_group(child);
+                assert!(
+                    child_group == host || self.observed_groups.contains(&child_group),
+                    "PID {child} escaped observed groups into {child_group}; stage retained as incomplete"
+                );
+                assert_eq!(
+                    parent_process(child),
+                    parent,
+                    "family relation changed; stage retained as incomplete"
+                );
+                snapshot.push((child, parent, child_group));
+                pending.push(child);
+            }
+        }
+    }
+
+    /// Transfer kernel exit witnesses only after the actual own Child was reaped.
+    pub(crate) fn take_observed_exits(&mut self) -> Vec<(u32, ProcessExitObserver)> {
+        assert!(
+            self.cli.is_none(),
+            "retain exit witnesses until child wait completes"
+        );
+        std::mem::take(&mut self.observed_processes)
+    }
+
+    pub(crate) fn observed_group_ids(&self) -> Vec<u32> {
+        let mut groups = self.observed_groups.clone();
+        for group in [self.host_group, self.bun_group].into_iter().flatten() {
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        groups
+    }
+
+    /// Drain captured pipes immediately while this owner retains the sole
+    /// Child/group/stage custody. The caller supplies its original total bound.
+    pub(crate) fn capture_output_before(&mut self, deadline: Instant) {
+        assert!(self.live_output.is_none(), "one live pipe owner per Child");
+        self.live_output = Some(LiveChildOutput::start(
+            self.cli
+                .as_mut()
+                .expect("retained Child before live capture"),
+            deadline,
+        ));
+    }
+
     pub(crate) fn release(mut self) -> Child {
+        assert!(
+            self.live_output.is_none(),
+            "live capture requires the owning wait"
+        );
         self.host_group = None;
         self.bun_group = None;
+        self.owned_stage = None;
+        self.observed_groups.clear();
+        self.observed_processes.clear();
         self.cli.take().expect("shipping CLI cleanup owner")
+    }
+
+    /// Wait under the existing bounded child/pipe owner while retaining this
+    /// guard's group and stage custody through caller assertions and unwind.
+    pub(crate) fn wait(&mut self, timeout: std::time::Duration) -> std::process::Output {
+        let output = wait_child_output(self.cli.take().expect("retained shipping child"), timeout);
+        if let Some(capture) = self.live_output.take() {
+            let (stdout, stderr) = capture.finish();
+            assert!(
+                output.stdout.is_empty() && output.stderr.is_empty(),
+                "exactly one pipe owner"
+            );
+            std::process::Output {
+                status: output.status,
+                stdout,
+                stderr,
+            }
+        } else {
+            output
+        }
+    }
+
+    /// Retain only this fixture's exact producer-owned stage; an incomplete
+    /// process census deliberately cannot authorize fallback deletion.
+    pub(crate) fn retain_owned_stage(&mut self, stage: &Path) {
+        assert!(self.owned_stage.is_none(), "one stage owner per launch");
+        assert!(
+            stage.is_absolute()
+                && fs::symlink_metadata(stage)
+                    .expect("owned stage metadata")
+                    .file_type()
+                    .is_dir()
+        );
+        self.owned_stage = Some((stage.to_path_buf(), Vec::new()));
+    }
+
+    pub(crate) fn record_stage_processes(&mut self, pids: &[u32]) {
+        assert!(
+            !pids.is_empty()
+                && pids
+                    .iter()
+                    .all(|pid| *pid > 1 && *pid != std::process::id())
+        );
+        assert!(self.host_group.is_some_and(|group| pids.contains(&group)));
+        assert!(self.bun_group.is_some_and(|group| pids.contains(&group)));
+        self.owned_stage.as_mut().expect("retained exact stage").1 = pids.to_vec();
+    }
+
+    /// Caller must first assert actual product exit, family/window/session
+    /// cleanup and stage absence. This never performs cleanup itself.
+    pub(crate) fn disarm_after_verified_cleanup(&mut self) {
+        assert!(self.cli.is_none(), "child status must already be reaped");
+        assert!(
+            self.live_output.is_none(),
+            "captured output must already be joined"
+        );
+        self.host_group = None;
+        self.bun_group = None;
+        self.owned_stage = None;
+        self.observed_groups.clear();
+        self.observed_processes.clear();
     }
 }
 
 impl Drop for ShippingLaunchCleanup {
     fn drop(&mut self) {
+        // Reader custody ends synchronously even when Child/family cleanup follows
+        // an assertion failure. This never treats cancelled output as evidence.
+        drop(self.live_output.take());
         if let Some(cli) = self.cli.as_mut()
             && cli.try_wait().ok().flatten().is_none()
         {
             let _ = cli.kill();
             let _ = cli.wait();
         }
-        for group in [self.host_group, self.bun_group].into_iter().flatten() {
-            let _ = signal_process_group("-TERM", group);
+        let observed_groups = self.observed_group_ids();
+        for group in &observed_groups {
+            let _ = signal_process_group("-TERM", *group);
+        }
+        if let Some((stage, pids)) = &self.owned_stage {
+            // This is emergency harness cleanup after a failed test, never
+            // evidence that the product cleaned its stage. Missing proof or
+            // timeout retains the exact stage for the root operator.
+            let proven = !pids.is_empty()
+                && std::panic::catch_unwind(|| {
+                    let deadline = Instant::now() + PROCESS_DEADLINE;
+                    for pid in pids {
+                        await_process_gone_before(*pid, deadline);
+                    }
+                    for group in &observed_groups {
+                        assert!(
+                            process_ids("pgid", *group).is_empty(),
+                            "owned group {group} still has a process"
+                        );
+                    }
+                })
+                .is_ok();
+            if proven {
+                match fs::remove_dir_all(stage) {
+                    Ok(()) => eprintln!("KELD_HARNESS_FALLBACK_STAGE_REMOVED {}", stage.display()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => eprintln!(
+                        "KELD_HARNESS_STAGE_RETAINED {} removal_failed={error}",
+                        stage.display()
+                    ),
+                }
+            } else {
+                eprintln!(
+                    "KELD_HARNESS_STAGE_RETAINED {} process_family_quiescence_unproved",
+                    stage.display()
+                );
+            }
         }
     }
 }

@@ -11,8 +11,10 @@
     "src/index.ts",
     "src/app.ts",
     "src/dialog.generated.ts",
+    "src/menu.generated.ts",
     "src/link.ts",
-    "src/window-codec.ts"
+    "src/window-codec.ts",
+    "src/runtime-preload.ts"
   ],
   "include": []
 }

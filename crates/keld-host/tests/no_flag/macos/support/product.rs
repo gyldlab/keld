@@ -77,6 +77,7 @@ pub(crate) struct ProductFixture {
     pub(crate) project: PathBuf,
     pub(crate) entry_source: String,
     pub(crate) version: Option<&'static str>,
+    pub(crate) single_instance: Option<String>,
     pub(crate) native_census: OnceLock<PathBuf>,
 }
 
@@ -102,6 +103,7 @@ impl ProductFixture {
             project,
             entry_source,
             version: None,
+            single_instance: None,
             native_census: OnceLock::new(),
         }
     }
@@ -131,10 +133,19 @@ impl ProductFixture {
                 serde_json::to_string(version).expect("literal fixture version")
             )
         });
+        let single_instance = self
+            .single_instance
+            .as_ref()
+            .map_or_else(String::new, |id| {
+                format!(
+                    "  singleInstance: {{ id: {} }},\n",
+                    serde_json::to_string(id).expect("fixture id JSON")
+                )
+            });
         fs::write(
             self.project.join("keld.config.ts"),
             format!(
-                "export default {{\n  name: \"{TITLE}\",\n{version}  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
+                "export default {{\n  name: \"{TITLE}\",\n{version}{single_instance}  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n}} as const;\n"
             ),
         )
         .expect("fixture config");
@@ -287,6 +298,7 @@ fn retaining_fixture_source_root_still_retires_its_external_stage_namespace() {
             root,
             entry_source: String::new(),
             version: None,
+            single_instance: None,
             native_census: OnceLock::new(),
         };
         // These are the exact field-move semantics used by the media fixtures.
@@ -321,6 +333,7 @@ fn fixture_unwind_retires_stage_and_source_owners_without_neighbor_removal() {
         root,
         entry_source: String::new(),
         version: None,
+        single_instance: None,
         native_census: OnceLock::new(),
     };
     let observed = std::panic::catch_unwind(move || {

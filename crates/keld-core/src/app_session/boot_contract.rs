@@ -18,6 +18,19 @@ struct BootDocument {
         deserialize_with = "crate::hello::deserialize_optional_app_version"
     )]
     version: Option<String>,
+    #[serde(
+        default,
+        rename = "applicationNameForUserAgent",
+        deserialize_with = "crate::hello::deserialize_optional_application_name_for_user_agent"
+    )]
+    application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+
+    #[serde(
+        default,
+        rename = "singleInstance",
+        deserialize_with = "deserialize_single_instance_declaration"
+    )]
+    single_instance: Option<crate::hello::SingleInstanceDeclaration>,
     entry: String,
     renderer: String,
     #[serde(deserialize_with = "deserialize_object")]
@@ -48,6 +61,19 @@ struct FacadeBootDocument {
         deserialize_with = "crate::hello::deserialize_optional_app_version"
     )]
     version: Option<String>,
+    #[serde(
+        default,
+        rename = "applicationNameForUserAgent",
+        deserialize_with = "crate::hello::deserialize_optional_application_name_for_user_agent"
+    )]
+    application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+
+    #[serde(
+        default,
+        rename = "singleInstance",
+        deserialize_with = "deserialize_single_instance_declaration"
+    )]
+    single_instance: Option<crate::hello::SingleInstanceDeclaration>,
     entry: String,
     #[serde(deserialize_with = "deserialize_object")]
     permissions: PermissionsDocument,
@@ -66,6 +92,19 @@ struct GraphFacadeBootDocument {
         deserialize_with = "crate::hello::deserialize_optional_app_version"
     )]
     version: Option<String>,
+    #[serde(
+        default,
+        rename = "applicationNameForUserAgent",
+        deserialize_with = "crate::hello::deserialize_optional_application_name_for_user_agent"
+    )]
+    application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+
+    #[serde(
+        default,
+        rename = "singleInstance",
+        deserialize_with = "deserialize_single_instance_declaration"
+    )]
+    single_instance: Option<crate::hello::SingleInstanceDeclaration>,
     entry: String,
     #[serde(deserialize_with = "deserialize_object")]
     permissions: PermissionsDocument,
@@ -94,6 +133,10 @@ pub(super) struct ParsedBoot {
     pub(super) schema: u8,
     pub(super) name: String,
     pub(super) version: Option<String>,
+    #[cfg(target_os = "macos")]
+    pub(super) application_name_for_user_agent: Option<keld_wv::ApplicationNameForUserAgent>,
+    #[cfg(target_os = "macos")]
+    pub(super) single_instance: Option<crate::hello::SingleInstanceDeclaration>,
     pub(super) entry: PathBuf,
     pub(super) initial: InitialWindow,
     pub(super) permissions_digest: [u8; 32],
@@ -161,6 +204,15 @@ fn parse_graph_document(text: &str) -> Result<GraphFacadeBootDocument, HostAppEr
     Ok(document)
 }
 
+fn deserialize_single_instance_declaration<'de, D>(
+    d: D,
+) -> Result<Option<crate::hello::SingleInstanceDeclaration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_object(d).map(Some)
+}
+
 /// Bound and probe the boot input before selecting its existing closed DTO.
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 fn bounded_boot_schema(bytes: &[u8]) -> Result<(&str, SchemaProbe), HostAppError> {
@@ -195,11 +247,76 @@ fn bounded_boot_schema(bytes: &[u8]) -> Result<(&str, SchemaProbe), HostAppError
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+fn boot_permissions_digest(permissions: &PermissionsDocument) -> Result<[u8; 32], HostAppError> {
+    if permissions.file != PERMISSIONS_FILE {
+        return Err(boot_error(
+            format!(
+                "permissions.file must be the literal {PERMISSIONS_FILE}, found {}",
+                permissions.file
+            ),
+            "Regenerate the descriptor with the fixed permissions filename.",
+        ));
+    }
+    decode_digest(&permissions.content_sha256)
+}
+
+/// Refuse unsupported cold metadata before admitting any boot target.
+#[cfg(all(not(target_os = "macos"), any(target_os = "linux", windows, test)))]
+fn validate_boot_platform(
+    single_instance: Option<&crate::hello::SingleInstanceDeclaration>,
+    application_name_for_user_agent: Option<&keld_wv::ApplicationNameForUserAgent>,
+) -> Result<(), HostAppError> {
+    if single_instance.is_some() {
+        return Err(boot_error(
+            "singleInstance is qualified only for macOS development",
+            "Use a qualified macOS Host; do not discard the declaration.",
+        ));
+    }
+    if application_name_for_user_agent.is_some() {
+        return Err(boot_error(
+            "applicationNameForUserAgent is supported only on macOS",
+            "Use a qualified macOS Host; do not discard the requested metadata.",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the existing name, entry and optional renderer in that exact order.
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+fn validate_boot_targets(
+    name: &str,
+    entry: &str,
+    renderer: Option<String>,
+) -> Result<(PathBuf, InitialWindow), HostAppError> {
+    if name.is_empty() {
+        return Err(boot_error(
+            "name must be a non-empty string",
+            "Set the reviewed project name before compiling the boot descriptor.",
+        ));
+    }
+    let entry = validate_relative_path("entry", entry)?;
+    let initial = match renderer {
+        Some(renderer) => InitialWindow::Renderer(validate_relative_path("renderer", &renderer)?),
+        None => InitialWindow::None,
+    };
+    Ok((entry, initial))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError> {
     let (text, probe) = bounded_boot_schema(bytes)?;
     #[cfg(target_os = "macos")]
     let mut graph_digest = None;
-    let (name, version, entry, renderer, permissions, auth_configuration) = match probe.schema {
+    let (
+        name,
+        version,
+        entry,
+        renderer,
+        permissions,
+        auth_configuration,
+        single_instance,
+        application_name_for_user_agent,
+    ) = match probe.schema {
         1 | 3 => {
             let document: BootDocument = serde_json::from_str(text).map_err(|source| {
                 boot_error(
@@ -215,6 +332,8 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
                 Some(document.renderer),
                 document.permissions,
                 document.auth,
+                document.single_instance,
+                document.application_name_for_user_agent,
             )
         }
         2 | 4 => {
@@ -232,6 +351,8 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
                 None,
                 document.permissions,
                 AuthConfiguration::default(),
+                document.single_instance,
+                document.application_name_for_user_agent,
             )
         }
         #[cfg(target_os = "macos")]
@@ -249,6 +370,8 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
                 None,
                 document.permissions,
                 AuthConfiguration::default(),
+                document.single_instance,
+                document.application_name_for_user_agent,
             )
         }
         version => {
@@ -258,31 +381,21 @@ pub(super) fn parse_boot_bytes(bytes: &[u8]) -> Result<ParsedBoot, HostAppError>
             ));
         }
     };
-    if name.is_empty() {
-        return Err(boot_error(
-            "name must be a non-empty string",
-            "Set the reviewed project name before compiling the boot descriptor.",
-        ));
-    }
-    let entry = validate_relative_path("entry", &entry)?;
-    let initial = match renderer {
-        Some(renderer) => InitialWindow::Renderer(validate_relative_path("renderer", &renderer)?),
-        None => InitialWindow::None,
-    };
-    if permissions.file != PERMISSIONS_FILE {
-        return Err(boot_error(
-            format!(
-                "permissions.file must be the literal {PERMISSIONS_FILE}, found {}",
-                permissions.file
-            ),
-            "Regenerate the descriptor with the fixed permissions filename.",
-        ));
-    }
-    let permissions_digest = decode_digest(&permissions.content_sha256)?;
+    #[cfg(not(target_os = "macos"))]
+    validate_boot_platform(
+        single_instance.as_ref(),
+        application_name_for_user_agent.as_ref(),
+    )?;
+    let (entry, initial) = validate_boot_targets(&name, &entry, renderer)?;
+    let permissions_digest = boot_permissions_digest(&permissions)?;
     Ok(ParsedBoot {
         schema: probe.schema,
         name,
         version,
+        #[cfg(target_os = "macos")]
+        application_name_for_user_agent,
+        #[cfg(target_os = "macos")]
+        single_instance,
         entry,
         initial,
         permissions_digest,

@@ -1696,6 +1696,7 @@ name = "keld-wv"
 version = "0.0.1"
 dependencies = [
  "block2",
+ "dispatch2",
  "getrandom 0.4.3",
  "keld-guard",
  "nix",

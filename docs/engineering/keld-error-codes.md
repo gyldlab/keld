@@ -275,6 +275,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
 - fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
 
+## KELD-WV-014
+
+- crate: keld-wv
+- message: The original preload source was refused.
+- fix: Restore the independently pinned package image and create the window again. Do not replace the expected digest with the digest of an unverified image.
+
+## KELD-GH473
+
+- crate: keld-wv
+- message: A native resource task was denied. This is the scanned prefix of the Cocoa error domain `KELD-GH473-resource-denied`, whose native error number is 403.
+- fix: Inspect the resource admission and lifecycle failure, restore the qualified resource source, and use the current document's admitted resource path. Do not bypass source validation, capacity bounds, or document retirement to serve a refused request.
+
 ## KELD-CLI-010
 
 - crate: keld-cli
@@ -938,8 +950,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-COMPAT-040
 
 - crate: @keld/electron
-- message: An `app` session fact (`getPath`, `getVersion`, `getName`/`name`, `getAppPath`, `getLocale`, `isPackaged`) was read, but the Host delivered no session facts to this role; the facade does not derive these values from HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, Intl or package.json
-- fix: No Keld host delivers session facts yet (GH-452 T2, `docs/specs/gh452-app-session-facts.md`): code that can continue without the named fact should catch this error; otherwise wait for T2. Do not derive the value in the role.
+- message: An `app` session fact or the no-argument single-instance verdict was unavailable from qualified Host startup data; the verdict also refuses a missing explicit singleInstance declaration. The typed single-instance reason distinguishes unavailable from undeclared. The facade does not derive values or authority from HOME, APPDATA, XDG_*, LANG/LC_*, argv, cwd, Intl or package.json
+- fix: Use the qualified GH452 Host startup path for the requested fact. For the GH453 no-argument verdict, declare the reviewed singleInstance id and use its supporting compiler/Host; no automatic keld migrate emission is claimed. Catch an unavailable fact only if the caller can continue without it; do not invent it in the role.
 
 ## KELD-COMPAT-041
 
@@ -964,6 +976,42 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: @keld/electron
 - message: A second distinct Electron compatibility entry was evaluated in the same role; the diagnostic records the first and second canonical module URLs
 - fix: Use one installed @keld/electron package for all electron imports. This realm-local diagnostic does not establish package provenance or replace installed-graph admission.
+
+## KELD-COMPAT-098
+
+- crate: @keld/electron
+- message: The `ipcMain.handle(channel, handler)` channel already has an invoke handler. This duplicate check precedes handler type checking, matching the pinned Electron order.
+- fix: Call `ipcMain.removeHandler(channel)` before registering another handler for that channel.
+
+## KELD-COMPAT-099
+
+- crate: @keld/electron
+- message: New `ipcMain.handle(channel, handler)` registration received a non-function handler.
+- fix: Pass a callable function as the second argument to `ipcMain.handle`.
+
+## KELD-COMPAT-100
+
+- crate: @keld/kipc endpoint-value-codec
+- message: The endpoint supplied a value type that the GH544 supported clone subset does not encode, such as a function, Promise, Map, typed array or symbol.
+- fix: Send only bounded supported data values. Keep renderer callback proxy functions in their local GH467 owner.
+
+## KELD-COMPAT-101
+
+- crate: @keld/kipc endpoint-value-codec
+- message: The endpoint value is malformed or noncanonical: cyclic/shared references, invalid Unicode, forbidden property descriptors or keys, invalid numeric/Date value, or invalid tagged bytes.
+- fix: Remove aliases, accessors and forbidden keys; encode one canonical supported value from the shared endpoint module.
+
+## KELD-COMPAT-102
+
+- crate: @keld/kipc endpoint-value-codec
+- message: The endpoint value exceeds the 4096-byte encoded payload, depth16 (root at1), 256 value-node or aggregate value/property-visit budget, or sixteen IPC arguments.
+- fix: Reduce the value to the supported bounded domain and at most sixteen arguments. Larger application documents need the separately authorized GH545 bulk path; never silently split or truncate a request.
+
+## KELD-COMPAT-103
+
+- crate: @keld/electron original preload runtime
+- message: The original preload's local crossing, callback, or renderer-route operation was refused or failed. The detail identifies the unsupported value, bound, registration, document state, or handler failure.
+- fix: Correct the named value or bound, use the approved methods after publication of the current authenticated document route, and inspect any handler failure before retrying. Do not replay a stale request or infer that an operation had no effect from this code alone.
 
 ## KELD-CORE-030
 
@@ -1085,6 +1133,41 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The native desktop snapshot is unavailable
 - fix: Use a live session whose admitted Ready barrier completed. After an Init or native capture failure, correct the Host display/appearance error and relaunch. Do not fabricate a monitor or theme.
 - scope: GH481 macOS S1 current-primary desktop Subscribe and post-Ready local desktop getters; a 5-second caller timeout keeps its existing transport error instead of being relabeled 049.
+
+## KELD-CORE-050
+
+- crate: keld-core
+- message: This window already has an original editor load awaiting actual native finish or failure
+- fix: Wait for its existing load result before explicitly loading again; do not retry or replace the pending operation.
+- scope: N1 delegated Core error-owner allocation, 2026-11-01. The earlier pending call and native operation retain custody.
+
+## KELD-CORE-051
+
+- crate: keld-core
+- message: The original editor load failed preflight before a native navigation attempt was admitted
+- fix: Use the exact selected original entry URI and a Host prepared from the verified source and resolved window response policy; correct the reported native preflight failure before another explicit load.
+- scope: Correlated nonfatal N1 refusal; never a synthetic navigation failure or completion.
+
+## KELD-CORE-052
+
+- crate: keld-core
+- message: The admitted original editor native navigation failed
+- fix: Inspect the exact native navigation diagnostic, correct the resource or native failure, then issue another explicit load; do not treat commit as finish.
+- scope: Only the immutable matching operation/native attempt can receive this failure.
+
+## KELD-CORE-053
+
+- crate: keld-core
+- message: The admitted original editor load was interrupted by window destruction
+- fix: Retain no result from the interrupted load; use a current subscribed live window in an active session for a new explicit load.
+- scope: Logical reply association retires independently of physical native resource drain; a successor never receives the old reply. Session termination uses its existing link-close result instead of manufacturing053 on a retired writer.
+
+## KELD-CORE-054
+
+- crate: keld-core
+- message: The original-document close was refused before native admission
+- fix: Ignore the old result, preserve the current window and document, and wait for a new explicit current-document action. Do not retry automatically or replace the original selector with the latest document.
+- scope: Scoped DestroyOriginalDocument only: stale, unavailable, busy or cancelled before native admission. An accepted operation without a physical Released receipt keeps existing unknown-effect/link-loss semantics; it must never be relabeled known-no-effect054.
 
 ## KELD-UPDATE-001
 
@@ -1426,3 +1509,27 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The resolved provider profile has no clientId, or its present asRedirect is invalid for the selected client/profile; both are refused only after Guard Allow.
 - fix: Add the missing clientId or correct the invalid asRedirect registration under the named profile in the keld.config.ts auth section, then rebuild the boot descriptor. Name only the profile/configuration location, without account or session detail.
 - status: Implemented T3 missing-client and T4 invalid-present-AS-binding refusal sources on macOS. Qualification is limited to recorded admission, denial-equality and registration predicates. Other OS-broker paths remain targets.
+
+## KELD-COMPAT-052
+
+- crate: keld-native
+- message: A menu template exceeded the approved bounded grammar or referenced an unowned local Menu/MenuItem
+- fix: Use plain data template options, the approved types/roles and limits; construct through this facade before requesting native installation.
+
+## KELD-COMPAT-053
+
+- crate: keld-native
+- message: A native application menu custom click or checkbox activation is unsupported until GH556
+- fix: Keep the initial checkbox state and app data unchanged; use a supported role or wait for GH556's approved callback protocol.
+
+## KELD-COMPAT-054
+
+- crate: keld-native
+- message: Native application-menu Quit/Cmd+Q is held until GH563's cancelable OS-quit integration
+- fix: Close windows through their vetoable close policy; do not bypass the hold with native terminate or infer before-quit parity.
+
+## KELD-NATIVE-017
+
+- crate: keld-native
+- message: Native application-menu materialization failed without a confirmed installation receipt
+- fix: Inspect Host/AppKit diagnostics and correct the cause before a fresh deliberate install; never replay an unknown effect automatically.

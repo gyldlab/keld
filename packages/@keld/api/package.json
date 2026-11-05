@@ -12,8 +12,10 @@
     ".": "./src/index.ts",
     "./internal/app": "./src/app.ts",
     "./internal/dialog-codec": "./src/dialog.generated.ts",
+      "./internal/menu-codec": "./src/menu.generated.ts",
     "./internal/link": "./src/link.ts",
-    "./internal/window-codec": "./src/window-codec.ts"
+    "./internal/window-codec": "./src/window-codec.ts",
+    "./runtime-preload": "./src/runtime-preload.ts"
   },
   "files": [
     "src"

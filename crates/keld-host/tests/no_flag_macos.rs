@@ -4,6 +4,8 @@
 #![allow(clippy::zombie_processes)] // cleanup owns host plus the enrolled Bun process group
 #![allow(unsafe_code)] // test-only macOS kill(2) group cleanup; local SAFETY proof is at the call
 
+#[path = "no_flag/macos/approved_graph_launch.rs"]
+mod approved_graph_launch;
 #[path = "no_flag/macos/boot_admission.rs"]
 mod boot_admission;
 #[path = "no_flag/macos/descriptor_attribution.rs"]
@@ -46,6 +48,8 @@ mod public_fs;
 mod recovery;
 #[path = "no_flag/macos/renderer_bridge.rs"]
 mod renderer_bridge;
+#[path = "no_flag/macos/single_instance.rs"]
+mod single_instance;
 #[path = "no_flag/macos/startup_rollback.rs"]
 mod startup_rollback;
 #[path = "no_flag/macos/support/mod.rs"]

@@ -120,14 +120,21 @@ async function pack(
       ".": "./src/index.ts",
       "./internal/app": "./src/app.ts",
       "./internal/dialog-codec": "./src/dialog.generated.ts",
+      "./internal/menu-codec": "./src/menu.generated.ts",
       "./internal/link": "./src/link.ts",
       "./internal/window-codec": "./src/window-codec.ts",
+      "./runtime-preload": "./src/runtime-preload.ts",
     };
     if (
       JSON.stringify(apiManifest.exports) !== JSON.stringify(apiExports) ||
       apiManifest.dependencies?.["@keld/kipc"] !== "link:../kipc" ||
       JSON.stringify(kipcManifest.exports) !==
-        JSON.stringify({ ".": "./src/transport.ts" })
+        JSON.stringify({
+          ".": "./src/transport.ts",
+          "./endpoint-value-codec": "./src/endpoint-value-codec.ts",
+          "./compat-control": "./src/compat-control.generated.ts",
+          "./runtime-process-facts": "./src/runtime-process.generated.ts",
+        })
     ) {
       throw new Error("Unexpected source package exports or KIPC dependency");
     }
@@ -154,6 +161,8 @@ async function pack(
     const transport = stampTransport(await buildReleaseTransport());
     verifyTransportStamp(new TextEncoder().encode(transport), "transport.js");
     writeFileSync(join(kipcOut, "transport.js"), transport);
+    // The existing TypeScript emission above also emits companion codecs.
+    // Only transport.js is replaced by its canonical stripped, stamped build.
     function distExports(
       entries: Record<string, string>,
     ): Record<string, { types: string; default: string }> {
@@ -215,6 +224,7 @@ async function pack(
         "./renderer": "./src/index.ts",
         "./common": "./src/index.ts",
         "./utility": "./src/index.ts",
+        "./internal/original-ipc": "./src/original-ipc.ts",
       };
       if (
         JSON.stringify(electronManifest.exports) !==
@@ -244,18 +254,25 @@ async function pack(
       // Consumers need Node declarations for the public EventEmitter base. Add
       // that dependency at the packed declaration boundary: a source directive
       // would pull this package's development Node types into sibling tests.
-      const declarationEntry = join(electronDist, "index.d.ts");
-      writeFileSync(
-        declarationEntry,
-        '/// <reference types="node" />\n' +
-          readFileSync(declarationEntry, "utf8"),
-      );
+      for (const name of ["index.d.ts", "original-ipc.d.ts"]) {
+        const declarationEntry = join(electronDist, name);
+        writeFileSync(
+          declarationEntry,
+          '/// <reference types="node" />\n' +
+            readFileSync(declarationEntry, "utf8"),
+        );
+      }
       const callerCwd = process.cwd();
       let built: Awaited<ReturnType<typeof Bun.build>>;
       try {
         process.chdir(electron);
         built = await Bun.build({
-          entrypoints: [join(electron, "src/index.ts")],
+          entrypoints: [
+            join(electron, "src/index.ts"),
+            join(electron, "src/original-ipc.ts"),
+          ],
+          outdir: electronDist,
+          splitting: true,
           target: "node",
           format: "esm",
           packages: "external",
@@ -263,12 +280,19 @@ async function pack(
       } finally {
         process.chdir(callerCwd);
       }
-      if (built.outputs.length !== 1)
-        throw new Error("Electron release build must emit one canonical entry");
-      writeFileSync(
-        join(electronDist, "index.js"),
-        await built.outputs[0].text(),
-      );
+      // Both entries share ipc-main's private capability/registry chunk. A
+      // separately bundled helper would silently create a second facade state.
+      if (
+        !built.success ||
+        !["index.js", "original-ipc.js"].every((name) =>
+          built.outputs.some(
+            (output) => output.path === join(electronDist, name),
+          ),
+        )
+      )
+        throw new Error(
+          "Electron release build must emit the canonical facade and shared original IPC wrapper",
+        );
       artifacts.push([
         electronOut,
         {
@@ -278,7 +302,10 @@ async function pack(
             "@types/node": nodeTypesVersion,
           }),
           exports: Object.fromEntries(
-            Object.keys(electronExports).map((key) => [key, "./dist/index.js"]),
+            Object.entries(electronExports).map(([key, path]) => [
+              key,
+              path.replace("./src/", "./dist/").replace(/\.ts$/, ".js"),
+            ]),
           ),
           types: "./dist/index.d.ts",
           files: ["dist"],

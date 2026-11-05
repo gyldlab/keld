@@ -7,9 +7,9 @@
  * child that evaluates a one-line module importing that binding by name from `./index.ts`
  * (an isolated temp file, `file://` specifier), so the oracle is Bun's own ESM linker: a
  * missing export is `SyntaxError: Export named '<name>' not found in module '…'.`, exit 1
- * (Bun 1.4.4, measured 2026-10-31); the deliberately unexported `MenuItem` proves it live.
- * `ipcMain`, the twelfth name of that statement, is the GH-466 registration slice's export
- * (PR #1365, spec D5) and has no case here.
+ * (Bun 1.4.4, measured 2026-10-31); a deliberately absent sentinel proves it live.
+ * The approved GH-466/GH-480 composition also exports ipcMain and MenuItem. These
+ * interface checks do not qualify native menu installation or interaction.
  *
  * The remaining cases hold the spec's other criteria
  * (`docs/specs/gh565-link-time-electron-bindings.md` §3): default-export parity, zero
@@ -17,6 +17,9 @@
  * typed `KELD-COMPAT-013` refusal of unimplemented members with their documented return
  * kind. GH-478's three implemented async dialogs reject invalid arity before Host traffic;
  * their option, parent and native behavior remain covered by their owning tests.
+ * GH-480's two implemented Menu statics reject missing bounded input with the
+ * registry-owned KELD-COMPAT-052 before Host traffic. Its items getter adds one
+ * independently named prototype reach to the no-link census.
  * `ORACLE` below is this file's own copy of the spec §4.3 table, transcribed from the
  * pinned pages' member headings and `Returns Promise<…>` lines and from the owning
  * tickets' `Electron members covered` lines; it is independent of the implementation's
@@ -59,12 +62,10 @@ const DRAWIO_IMPORT = [
   "BrowserWindow",
 ] as const;
 
-/**
- * The eleven names of that statement this facade exports. `ipcMain` is the GH-466
- * registration slice's (PR #1365; decision recorded on gyldlab/keld#466, 2026-10-31); the
- * PR that lands second restores the full twelve-name case.
- */
-const LINKED_HERE = DRAWIO_IMPORT.filter((name) => name !== "ipcMain");
+/** Both approved source slices are composed: the original twelve-name statement links. */
+const LINKED_HERE = DRAWIO_IMPORT;
+/** The existing installed-alias ABI also includes GH-480's MenuItem binding. */
+const ROOT_BINDINGS = [...DRAWIO_IMPORT, "MenuItem"] as const;
 
 /** These GH-478 methods now validate arguments and enter the real broker path. */
 const IMPLEMENTED_DIALOG_MEMBERS = new Set([
@@ -88,6 +89,10 @@ interface BindingOracle {
   readonly members: Readonly<
     Record<string, readonly [MemberKind, `GH-${number}`]>
   >;
+  /** Additional instance members when the main table lists a class's statics. */
+  readonly prototypeMembers?: Readonly<
+    Record<string, readonly [MemberKind, `GH-${number}`]>
+  >;
 }
 
 const ORACLE: readonly BindingOracle[] = [
@@ -106,6 +111,8 @@ const ORACLE: readonly BindingOracle[] = [
       getApplicationMenu: ["method", "GH-556"],
       sendActionToFirstResponder: ["method", "GH-476"],
     },
+    // GH480 M1: a locally constructed Menu exposes its authoritative item graph.
+    prototypeMembers: { items: ["property", "GH-480"] },
   },
   {
     // shell.md l.24-111: openPath, openExternal and trashItem return Promise. GH-479 covers
@@ -392,7 +399,7 @@ describe("link (electron-main-bindings-v1 cells)", () => {
     });
   }
 
-  test("the eleven names of draw.io's import statement (electron.js:5-6) that this facade exports link in one module graph; ipcMain is PR #1365's", () => {
+  test("draw.io's full twelve-name import statement (electron.js:5-6), including ipcMain, links in one module graph", () => {
     const result = linkProbe(LINKED_HERE);
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
@@ -407,21 +414,34 @@ describe("link (electron-main-bindings-v1 cells)", () => {
       "object",
       "object",
       "object",
+      "object",
       "function",
     ]);
   });
 
-  test("negative control: an unexported name fails the link with Bun's SyntaxError, and MenuItem stays unexported for the GH-480 transition gate", () => {
+  test("GH480 MenuItem links as a function with named/default identity, without claiming native menu acceptance", () => {
     const result = linkProbe(["MenuItem"]);
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toMatch(exportNotFound("MenuItem"));
-    expect(member(electron, "MenuItem")).toBeUndefined();
-    expect(member(electron.default, "MenuItem")).toBeUndefined();
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual(["function"]);
+    expect(typeof member(electron, "MenuItem")).toBe("function");
+    expect(member(electron.default, "MenuItem")).toBe(
+      member(electron, "MenuItem"),
+    );
   });
 
-  test("the default export carries every binding draw.io imports that this facade exports, including app and BrowserWindow", () => {
-    for (const name of LINKED_HERE) {
+  test("negative control: a genuinely absent binding fails Bun linking with SyntaxError", () => {
+    const absent = "__gh565_missing_binding__";
+    const result = linkProbe([absent]);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(exportNotFound(absent));
+    expect(member(electron, absent)).toBeUndefined();
+    expect(member(electron.default, absent)).toBeUndefined();
+  });
+
+  test("the default export carries all thirteen approved root ABI bindings, including ipcMain and MenuItem", () => {
+    for (const name of ROOT_BINDINGS) {
       const named = member(electron, name);
       expect(named).toBeDefined();
       expect(member(electron.default, name)).toBe(named);
@@ -435,7 +455,10 @@ describe("module evaluation and refusals open no app link", () => {
     let threw = 0;
     let rejected = 0;
     for (const oracle of ORACLE) {
-      for (const [name, [kind]] of Object.entries(oracle.members)) {
+      for (const [name, [kind]] of [
+        ...Object.entries(oracle.members),
+        ...Object.entries(oracle.prototypeMembers ?? {}),
+      ]) {
         touched += 1;
         if (
           kind === "promise" &&
@@ -481,6 +504,33 @@ describe("unimplemented members refuse and implemented dialogs validate arity", 
             );
             expect(caught).toBeInstanceOf(TypeError);
             expect((caught as Error).message).toContain("KELD-COMPAT-010");
+            expect(isUnsupportedMemberError(caught)).toBe(false);
+          }
+        });
+        continue;
+      }
+      if (
+        oracle.name === "Menu" &&
+        (name === "buildFromTemplate" || name === "setApplicationMenu")
+      ) {
+        test(`${path}() rejects missing bounded input before native installation`, () => {
+          for (const root of [electron, electron.default]) {
+            const self = member(root, "Menu");
+            const fn = member(self, name);
+            expect(typeof fn).toBe("function");
+            expect((fn as { name: string }).name).toBe(name);
+            const caught = thrownBy(() =>
+              Reflect.apply(fn as (...args: unknown[]) => unknown, self, []),
+            );
+            expect(caught).toBeInstanceOf(TypeError);
+            expect((caught as Error).name).toBe("MenuTemplateError");
+            expect((caught as { code: unknown }).code).toBe("KELD-COMPAT-052");
+            expect((caught as Error).message).toContain(
+              name === "buildFromTemplate"
+                ? "menu template must be a plain array"
+                : "Menu is not owned by this facade",
+            );
+            expect((caught as Error).message).toContain("Fix:");
             expect(isUnsupportedMemberError(caught)).toBe(false);
           }
         });
@@ -566,6 +616,22 @@ describe("census: each binding exposes exactly the pinned page's members (spec �
         expect(Object.isFrozen(binding)).toBe(true);
       }
     });
+    if (oracle.prototypeMembers) {
+      test(`${oracle.name} prototype members match the additional GH480 instance contract`, () => {
+        const binding = member(electron, oracle.name) as object;
+        const prototype = Reflect.get(binding, "prototype") as object;
+        expect(
+          Object.getOwnPropertyNames(prototype)
+            .filter((name) => name !== "constructor")
+            .sort(),
+        ).toEqual(Object.keys(oracle.prototypeMembers ?? {}).sort());
+        for (const name of Object.keys(oracle.prototypeMembers ?? {})) {
+          const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+          expect(typeof descriptor?.get).toBe("function");
+          expect(descriptor?.set).toBeUndefined();
+        }
+      });
+    }
   }
 });
 

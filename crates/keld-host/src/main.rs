@@ -57,23 +57,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--hello") {
-        if let Err(error) = keld_core::prepare_webview_process() {
-            eprintln!("{error}");
-            process::exit(1);
-        }
-        if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
-            eprintln!(
-                "KELD-CLI-044: unknown hello flag `{flag}`. \
-                 Use `--hello` and optional `--title <name>`."
-            );
-            process::exit(2);
-        }
-        let cwd = env::current_dir().ok();
-        let title = keld_core::resolve_hello_title(&args, cwd.as_deref());
-        if let Err(err) = keld_core::run_hello_window_titled(&title) {
-            eprintln!("{err}");
-            process::exit(1);
-        }
+        run_hello_diagnostic(&args);
         return;
     }
     if args.len() != 1 {
@@ -109,6 +93,11 @@ fn main() {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
     let result = run_validated_no_flag();
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+    eprintln!(
+        "KELD_SHUTDOWN_PHASE host-session-returned result_ok={}",
+        result.is_ok()
+    );
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let retains_main_custody = result
         .as_ref()
@@ -122,6 +111,8 @@ fn main() {
         let _ = output.flush();
         failed = true;
     }
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+    eprintln!("KELD_SHUTDOWN_PHASE host-stage-cleanup-check");
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if !retains_main_custody
         && let Some(root) = dev_stage_cleanup
@@ -134,9 +125,31 @@ fn main() {
         );
         failed = true;
     }
+    #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
+    eprintln!("KELD_SHUTDOWN_PHASE host-cleanup-returned run_failed={failed}");
     if failed {
         // The result and any !Send unproved-custody payload are still owned.
         // This existing fatal exit is failure, never a physical-drain receipt.
+        process::exit(1);
+    }
+}
+
+fn run_hello_diagnostic(args: &[String]) {
+    if let Err(error) = keld_core::prepare_webview_process() {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+    if let Some(flag) = keld_core::host_hello_unknown_arg(args) {
+        eprintln!(
+            "KELD-CLI-044: unknown hello flag `{flag}`. \
+             Use `--hello` and optional `--title <name>`."
+        );
+        process::exit(2);
+    }
+    let cwd = env::current_dir().ok();
+    let title = keld_core::resolve_hello_title(args, cwd.as_deref());
+    if let Err(err) = keld_core::run_hello_window_titled(&title) {
+        eprintln!("{err}");
         process::exit(1);
     }
 }
@@ -490,10 +503,41 @@ fn checked_guardian_graph_entry<'a>(root: &Path, entry: &'a Path) -> Result<&'a 
     Ok(entry)
 }
 
+/// Closed non-authority mode selected by the validated parent Host.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardianBootMode {
+    Renderer,
+    Facade,
+    FacadeWithRuntimeFacts,
+}
+
+#[cfg(target_os = "macos")]
+impl GuardianBootMode {
+    const fn native_facade(self) -> bool {
+        matches!(self, Self::Facade | Self::FacadeWithRuntimeFacts)
+    }
+
+    const fn requires_runtime_process_facts(self) -> bool {
+        matches!(self, Self::FacadeWithRuntimeFacts)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<bool> for GuardianBootMode {
+    fn from(native_facade: bool) -> Self {
+        if native_facade {
+            Self::Facade
+        } else {
+            Self::Renderer
+        }
+    }
+}
+
 /// Parsed private invocation: existing mode/facts plus optional v2 graph binding.
 #[cfg(target_os = "macos")]
 type GuardianStartup = (
-    bool,
+    GuardianBootMode,
     Option<keld_core::app_session::DevelopmentLaunchFacts>,
     Option<[u8; 32]>,
 );
@@ -552,11 +596,12 @@ fn parse_private_graph_digest(encoded: &str) -> Result<[u8; 32], String> {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
+fn parse_guardian_boot_mode(args: &[String]) -> Result<GuardianBootMode, String> {
     if args.len() == 7 {
         match args[6].as_str() {
-            "0" => return Ok(false),
-            "1" => return Ok(true),
+            "0" => return Ok(GuardianBootMode::Renderer),
+            "1" => return Ok(GuardianBootMode::Facade),
+            "2" => return Ok(GuardianBootMode::FacadeWithRuntimeFacts),
             _ => {}
         }
     }
@@ -602,14 +647,15 @@ fn guardian_bun_command(
     entry: &Path,
     expected_identity: (u64, u64),
     startup: (
-        bool,
+        GuardianBootMode,
         Option<&keld_core::app_session::DevelopmentLaunchFacts>,
         Option<&keld_core::app_session::graph_contract::AdmittedStageGraph>,
     ),
     environment: &[(std::ffi::OsString, std::ffi::OsString)],
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
-    let (native_facade, launch_facts, graph) = startup;
+    let (mode, launch_facts, graph) = startup;
+    let native_facade = mode.native_facade();
     cleanup_validation
         .as_ref()
         .map_err(|error| guardian_entry_error(error.clone()))?;
@@ -652,7 +698,17 @@ fn guardian_bun_command(
         // not satisfy the reserved constant through an application global.
         command.arg("--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
     }
-    configure_guardian_preload(&mut command, root, graph)?;
+    command.arg(if mode.requires_runtime_process_facts() {
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true"
+    } else {
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:false"
+    });
+    configure_guardian_preload(
+        &mut command,
+        root,
+        graph,
+        mode.requires_runtime_process_facts(),
+    )?;
     command
         .args(["--no-env-file", "--no-install", "run"])
         .arg(root.join(entry))
@@ -673,7 +729,19 @@ fn configure_guardian_preload(
     command: &mut Command,
     root: &Path,
     graph: Option<&keld_core::app_session::graph_contract::AdmittedStageGraph>,
+    require_runtime_process_facts: bool,
 ) -> Result<(), keld_runtime::RuntimeError> {
+    if require_runtime_process_facts {
+        let graph = graph.ok_or_else(|| guardian_entry_error(
+            "KELD-CORE-037: runtime-facts boot requires its retained admitted API preload graph"))?;
+        let selected = graph
+            .installed_runtime_preload()
+            .map_err(|source| guardian_entry_error(source.to_string()))?;
+        // This one wrapper imports the same canonical stamped transport and
+        // awaits Init acknowledgment before evaluating application dependencies.
+        command.arg(format!("--preload={}", selected.display()));
+        return Ok(());
+    }
     if let Some(graph) = graph {
         let selected = graph
             .installed_transport_preload()
@@ -808,7 +876,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None, None),
+            (true.into(), None, None),
             &[],
             "/tmp/link#token",
         )
@@ -827,7 +895,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None, None),
+            (true.into(), None, None),
             &[],
             "/tmp/link#token",
         )
@@ -838,6 +906,7 @@ mod tests {
             [
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
                 "--define=__KELD_HOST_LAUNCH_FACTS__:undefined".as_ref(),
+                "--define=__KELD_RUNTIME_PROCESS_FACTS__:false".as_ref(),
                 "--no-env-file".as_ref(),
                 "--no-install".as_ref(),
                 "run".as_ref(),
@@ -853,7 +922,7 @@ mod tests {
             temp.path(),
             relative,
             (identity.dev(), identity.ino()),
-            (true, None, None),
+            (true.into(), None, None),
             &[],
             "/tmp/link#token",
         )
@@ -864,12 +933,13 @@ mod tests {
             "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
         );
         assert_eq!(args[1], "--define=__KELD_HOST_LAUNCH_FACTS__:undefined");
-        assert_eq!(args[2], format!("--preload={}", sidecar.display()).as_str());
-        assert_eq!(args[3], "--no-env-file");
-        assert_eq!(args[4], "--no-install");
-        assert_eq!(args[5], "run");
-        assert_eq!(args[6], entry.as_os_str());
-        assert_eq!(args.len(), 7);
+        assert_eq!(args[2], "--define=__KELD_RUNTIME_PROCESS_FACTS__:false");
+        assert_eq!(args[3], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[4], "--no-env-file");
+        assert_eq!(args[5], "--no-install");
+        assert_eq!(args[6], "run");
+        assert_eq!(args[7], entry.as_os_str());
+        assert_eq!(args.len(), 8);
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         // Bun config can replace a CLI preload. Qualify every generation,
         // including recovery after a previously absent config appears.
@@ -881,7 +951,7 @@ mod tests {
                 temp.path(),
                 relative,
                 (identity.dev(), identity.ino()),
-                (true, None, None),
+                (true.into(), None, None),
                 &[],
                 "/tmp/link#token",
             )
@@ -910,7 +980,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    (native_facade, None, None),
+                    (native_facade.into(), None, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -921,6 +991,7 @@ mod tests {
                     "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
                 })];
                 expected.push("--define=__KELD_HOST_LAUNCH_FACTS__:undefined".into());
+                expected.push("--define=__KELD_RUNTIME_PROCESS_FACTS__:false".into());
                 if with_sidecar {
                     expected.push(format!("--preload={}", sidecar.display()).into());
                 }
@@ -945,7 +1016,7 @@ mod tests {
                 .expect_err("missing mode")
                 .starts_with("KELD-CORE-037:")
         );
-        for mode in ["", "true", "false", "01", "2", "-1", " 1", "1 "] {
+        for mode in ["", "true", "false", "01", "3", "-1", " 1", "1 "] {
             args.push(mode.into());
             assert!(
                 parse_guardian_boot_mode(&args)
@@ -954,7 +1025,11 @@ mod tests {
             );
             args.pop();
         }
-        for (mode, expected) in [("0", false), ("1", true)] {
+        for (mode, expected) in [
+            ("0", false.into()),
+            ("1", true.into()),
+            ("2", super::GuardianBootMode::FacadeWithRuntimeFacts),
+        ] {
             args.push(mode.into());
             assert_eq!(parse_guardian_boot_mode(&args), Ok(expected));
             args.push("extra".into());
@@ -963,6 +1038,66 @@ mod tests {
                 "extra arguments cannot be ignored"
             );
             args.truncate(6);
+        }
+    }
+
+    #[test]
+    fn runtime_facts_closed_mode_selects_one_parse_time_define_before_preload() {
+        let temp = tempfile::tempdir().expect("mode fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(&entry, "export {};\n").expect("entry");
+        fs::create_dir(temp.path().join("src")).expect("sidecar directory");
+        let sidecar = temp.path().join("src/kipc-transport.ts");
+        fs::write(&sidecar, "export {};\n").expect("sidecar");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        for (literal, expected) in [("0", false), ("1", false), ("2", true)] {
+            let args: Vec<String> = ["host", "guardian", "root", "entry", "1", "2", literal]
+                .into_iter()
+                .map(String::from)
+                .collect();
+            let mode = parse_guardian_boot_mode(&args).expect("closed mode");
+            assert_eq!(mode.requires_runtime_process_facts(), expected);
+            let command = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                Path::new("entry.ts"),
+                (identity.dev(), identity.ino()),
+                (mode, None, None),
+                &[],
+                "/tmp/mode#fixture",
+            );
+            if expected {
+                let error =
+                    command.expect_err("mode2 must not use an ambient or absent wrapper graph");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("retained admitted API preload graph")
+                );
+                continue;
+            }
+            let command = command.expect("ordinary data-only selection");
+            let command_args: Vec<_> = command.get_args().collect();
+            let define = if expected {
+                "--define=__KELD_RUNTIME_PROCESS_FACTS__:true"
+            } else {
+                "--define=__KELD_RUNTIME_PROCESS_FACTS__:false"
+            };
+            assert_eq!(command_args.iter().filter(|arg| **arg == define).count(), 1);
+            let define_at = command_args
+                .iter()
+                .position(|arg| *arg == define)
+                .expect("define");
+            let preload_at = command_args
+                .iter()
+                .position(|arg| arg.to_string_lossy().starts_with("--preload="))
+                .expect("canonical preload");
+            assert!(define_at < preload_at);
+            assert!(
+                command
+                    .get_envs()
+                    .all(|(key, _)| key != "KELD_RUNTIME_PROCESS_FACTS")
+            );
         }
     }
 
@@ -1019,11 +1154,12 @@ mod tests {
                 record,
                 "all facts survive initial and recovered command construction"
             );
-            assert_eq!(observed[2], "--no-env-file");
-            assert_eq!(observed[3], "--no-install");
-            assert_eq!(observed[4], "run");
-            assert_eq!(observed[5], temp.path().join("entry.ts"));
-            assert_eq!(observed.len(), 6);
+            assert_eq!(observed[2], "--define=__KELD_RUNTIME_PROCESS_FACTS__:false");
+            assert_eq!(observed[3], "--no-env-file");
+            assert_eq!(observed[4], "--no-install");
+            assert_eq!(observed[5], "run");
+            assert_eq!(observed[6], temp.path().join("entry.ts"));
+            assert_eq!(observed.len(), 7);
             let inherited: std::collections::BTreeMap<_, _> = command.get_envs().collect();
             assert_eq!(
                 inherited.get(OsStr::new("GH452_FROZEN")),
@@ -1073,7 +1209,7 @@ mod tests {
         .collect();
         args.push("ab".repeat(32));
         let (mode, facts, graph) = parse_guardian_startup(&args).expect("v2 graph digest");
-        assert!(mode);
+        assert!(mode.native_facade());
         assert!(facts.is_none());
         assert_eq!(graph, Some([0xab; 32]));
 
@@ -1169,7 +1305,7 @@ mod tests {
                     temp.path(),
                     std::path::Path::new("entry.ts"),
                     (identity.dev(), identity.ino()),
-                    (native_facade, None, None),
+                    (native_facade.into(), None, None),
                     &[],
                     "/tmp/link#token",
                 )
@@ -1223,7 +1359,7 @@ mod tests {
             temp.path(),
             std::path::Path::new("entry.ts"),
             (identity.dev(), identity.ino()),
-            (true, None, None),
+            (true.into(), None, None),
             &frozen,
             "/tmp/link#token",
         )
@@ -1384,7 +1520,7 @@ mod tests {
                 &stage,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None, None),
+                (true.into(), None, None),
                 &frozen,
                 "/tmp/link#counterweight",
             )
@@ -1456,7 +1592,7 @@ mod tests {
                 temp.path(),
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None, None),
+                (true.into(), None, None),
                 &frozen,
                 app_link,
             )
@@ -1557,7 +1693,7 @@ mod tests {
                 &root,
                 std::path::Path::new("entry.ts"),
                 (identity.dev(), identity.ino()),
-                (true, None, None),
+                (true.into(), None, None),
                 &environment,
                 "/tmp/link#token",
             )

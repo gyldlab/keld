@@ -532,3 +532,100 @@ fn escaped_root_auth_still_uses_the_original_literal_value_parser() {
             .starts_with("KELD-CORE-035:")
     );
 }
+
+#[test]
+fn single_instance_declaration_is_one_literal_closed_id() {
+    let extract = super::single_instance_from_config_ts;
+    assert!(
+        extract("export default { name: 'none' }")
+            .expect("absent")
+            .is_none()
+    );
+    assert_eq!(
+        extract(
+            "export default { singleInstance: { id: 'org.keld.firstproof.drawio', } } as const;"
+        )
+        .expect("literal")
+        .expect("declaration")
+        .id(),
+        "org.keld.firstproof.drawio"
+    );
+    for source in [
+        "export default { singleInstance: null }",
+        "export default { singleInstance: { id: 'org.app', extra: 'x' } }",
+        "export default { singleInstance: { id: 'org.app', id: 'org.other' } }",
+        "export default { ['singleInstance']: { id: 'org.app' } }",
+        "export default { get singleInstance() { return { id: 'org.app' } } }",
+        "export default { singleInstance: { id: makeId() } }",
+        "export default { singleInstance: { id: '../escape' } }",
+        "export default { singleInstance: { id: 'UPPER.case' } }",
+        "export default { ...other, singleInstance: { id: 'org.app' } }",
+    ] {
+        assert!(extract(source).is_err(), "{source}");
+    }
+    let oversized = format!(
+        "export default {{ singleInstance: {{ id: '{}' }} }}",
+        "a".repeat(129)
+    );
+    assert!(extract(&oversized).is_err());
+}
+
+#[test]
+fn single_instance_id_bounds_and_root_selection_are_independent_of_display_name() {
+    let extract = super::single_instance_from_config_ts;
+    for id in ["a".to_owned(), "a".repeat(128), "org.keld.app-1".to_owned()] {
+        let source = format!(
+            "export default {{ name: 'unrelated display name', singleInstance: {{ id: '{id}' }} }};"
+        );
+        assert_eq!(
+            extract(&source)
+                .expect("bounded literal")
+                .expect("present")
+                .id(),
+            id
+        );
+    }
+    assert!(extract("export default { name: 'singleInstance: decoy', other: { singleInstance: { id: 'org.decoy' } } }").expect("nested decoy ignored").is_none());
+    for id in [
+        "",
+        ".",
+        "..",
+        "org..app",
+        ".org",
+        "org.",
+        "org.-app",
+        "org.app-",
+        "org/app",
+        "org.app_1",
+        "é",
+    ] {
+        let source = format!("export default {{ singleInstance: {{ id: '{id}' }} }};");
+        assert!(extract(&source).is_err(), "{id}");
+    }
+}
+
+#[test]
+fn application_name_for_user_agent_reader_retains_only_the_literal_root_value() {
+    use super::application_name_for_user_agent_from_config_ts as read;
+    let selected = read(r#"export default ({ name: "metadata", applicationNameForUserAgent: "FirstPartyA/1 FrameworkMetadata", nested: { applicationNameForUserAgent: "decoy" } } as const);"#).expect("single literal root").expect("present metadata");
+    assert_eq!(selected.as_str(), "FirstPartyA/1 FrameworkMetadata");
+    assert_eq!(read(r#"// applicationNameForUserAgent: "comment"
+        export default { name: "applicationNameForUserAgent: string", nested: {applicationNameForUserAgent:"decoy"} };"#).expect("absent metadata"), None);
+    assert_eq!(
+        read("export default { applicationNameForUserAgent: 'FirstParty\\u0042/2' };")
+            .expect("decoded literal")
+            .expect("metadata")
+            .as_str(),
+        "FirstPartyB/2"
+    );
+    for source in [
+        "export default { applicationNameForUserAgent: 'A', 'applicationNameForUser\\u0041gent': 'B' };",
+        "export default { ['applicationNameForUserAgent']: 'A' };",
+        "export default { get applicationNameForUserAgent() { return 'A'; } };",
+        "export default { async applicationNameForUserAgent() { return 'A'; } };",
+        "export default { ...other, applicationNameForUserAgent: 'A' };",
+        "export default { applicationNameForUserAgent: 'A' } || other;",
+    ] {
+        assert!(read(source).is_err(), "{source}");
+    }
+}

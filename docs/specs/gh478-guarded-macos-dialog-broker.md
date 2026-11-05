@@ -104,10 +104,12 @@ preflight after startup to manufacture one. The already opened policy handle
 is an input, not a newly permitted app resource.
 
 **A1b — exact grant on a valid live CALL.** Given a well-formed digest-verified
-manifest, an authenticated current app role and a valid dialog CALL, exactly
-`{"app":{"system":["dialog"]}}` reaches native admission once. Missing/empty
-system list, wrong node type, duplicate array literals, unknown literals and
-wildcard-like strings fail the proposed guard-owned evaluator with canonical
+manifest, an authenticated current app role and a valid dialog CALL,
+`{"app":{"system":["dialog"]}}` or a distinct closed list containing both
+`dialog` and `menu` in either order reaches native admission once. GH480's
+2026-11-01 owner-delegated amendment extends only this former singleton rule.
+Missing/empty system list, wrong node type, duplicate array literals, unknown
+literals and wildcard-like strings fail the shared guard-owned evaluator with canonical
 typed `KELD-GUARD` ERR on that CALL and fix pointer `/app/system`, with zero
 native panel creation. Duplicate JSON object keys belong to A1a, not this atom.
 No developer shortcut or automatic legacy enablement.
@@ -347,8 +349,10 @@ admission; the independent Host deadline and cleanup bounds remain distinct.
 
 The `keld-guard` owner adds one **system-literal** evaluator for
 `Principal::AppProcess` and the "/app/system" array. Exact `dialog` string
-only; duplicate/unrecognized/broad wildcard literals must not grant
-anything. This is **not** the old prefix/path matcher and not a separate
+membership is required for dialog, independently of a menu grant. The closed
+first-proof array accepts only distinct dialog/menu literals; duplicate,
+unrecognized, nonstring and broad wildcard values grant neither operation.
+Both operations stay in the one evaluate/json_pointer_for owner. This is **not** the old prefix/path matcher and not a separate
 broker-local permission test. Add one shared `keld-guard::capability::DIALOG`
 constant. `dispatch_privileged` borrows the host-selected verified manifest
 and evaluates the exact system grant once before allocating a panel.

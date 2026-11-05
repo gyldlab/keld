@@ -16,11 +16,18 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn prepare(root: &Path) -> (PathBuf, ApprovedGraphCaptureInput) {
+    let role = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/graph_stage_role.mjs");
+    prepare_with_role(root, &role)
+}
+
+/// Reuses the canonical packed-provider fixture for a different authored role.
+/// This helper never selects or evaluates the original application.
+pub(super) fn prepare_with_role(root: &Path, role: &Path) -> (PathBuf, ApprovedGraphCaptureInput) {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let process = Command::new("bun")
         .arg(fixtures.join("graph_stage_prepare.ts"))
         .arg(root)
-        .arg(fixtures.join("graph_stage_role.mjs"))
+        .arg(role)
         .arg(fixtures.join("graph_stage_early.mjs"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -92,6 +99,7 @@ fn gh499_shipping_graph_rechecks_g2_and_preloads_the_one_installed_transport() {
         &project,
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
         &approved,
+        None,
     )
     .expect("actual packed graph source admission");
     let control_path = root.path().join("g.sock");
@@ -154,6 +162,7 @@ fn gh499_shipping_guardian_refuses_changed_asset_before_successor_entry() {
         &project,
         Path::new(env!("CARGO_BIN_EXE_keld-host")),
         &approved,
+        None,
     )
     .expect("approved real packed providers");
     let control_path = root.path().join("g.sock");

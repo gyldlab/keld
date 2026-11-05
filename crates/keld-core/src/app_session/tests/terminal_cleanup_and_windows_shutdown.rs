@@ -39,12 +39,12 @@ fn terminal_tail_failure_wakes_the_ui_fatal_path() {
     .expect("primary router");
 
     assert!(shutdown.claim_cli_lease_lost());
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("terminal tail Fatal wake"),
         AppWindowCommand::Fatal
-    );
+    ));
     let error = router
         .shutdown()
         .expect_err("terminal attribution failure must remain visible");

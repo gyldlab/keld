@@ -37,7 +37,18 @@ assert.deepEqual(process.argv.slice(7, 11), [
   runtime.arch,
 ]);
 const mode = process.argv[3];
-assert(mode === "baseline" || mode === "caller", "unrecognized witness mode");
+assert(
+  mode === "baseline" ||
+    mode === "caller" ||
+    mode === "document-baseline" ||
+    mode === "document-caller",
+  "unrecognized witness mode",
+);
+const documentMode = mode.startsWith("document-");
+const callerHeld = mode === "caller" || mode === "document-caller";
+const components = documentMode ? 5 : 4;
+const documentUrl = (generation: number) =>
+  `keld-app://root/document-${generation}?`.padEnd(8192, "x");
 const source = realpathSync(resolve(import.meta.dir, "./window-source.ts"));
 const compiler = process.argv[4]!;
 const sourceDir = dirname(source);
@@ -54,16 +65,16 @@ assert.equal(
 );
 const expected = js
   ? [
-      "67a25166cc1a5a22ea409790fdfb6f435e772f15f23699df901f84d68458dfd6",
-      "d2fe657ed2ce16574db9edb52fa30deaa94d332440ad3f857fbd941ac0e409c5",
-      "24ac3fb3b3ad69dcce45fd74f20cf42daac0da4f114915c1e0c4be3bcc1f1265",
-      "4437fea472a5bc92bd8ff91a6fb69937a94636c8050bdb95639fd39f9d6e2d45",
+      "4d128274e721b67c8359a5ee673631d11e3da20bca2b454ac2a2740a77ef5b4a",
+      "e7cde1a1c9348e39ca5decc6ae8247b0ea4b35e860a658398722c651e1d880d4",
+      "8429237e7d0f75eef35b0bc5f9739a6b5543ae11f6b02b7f8821d28574d5e454",
+      "99d9d64abadedf24c17608bd80c9d5960358f3edd59d7916dd6f67870b546f32",
     ]
   : [
-      "21c14c4ba0011be0bf565ee9597fb373a4d34055d561f77ad238f88767dd60f1",
-      "61a239b69828896e23a7b2c28de6047e14eb851833bc261ffab6553de8072b18",
-      "3e11e55bedb30a3644e7d280c118ca5712b468d532dc9c214f7cd72f1e618c9f",
-      "5cd5de54c14c0939cef66f9b0688a702a9d922aa4c606236218c3dcfc698de1b",
+      "e75839dab3fb0cf21c5d44067115889734d513c4a9a53a137c46b0332aa836a7",
+      "6ce5f4e32df63a47b56d92c1d49faa6961696d6c3ced0c35f8ca64de6deb6ae8",
+      "992363db1bbb935201f469915469385aaf6d38875754dac3c8307cf621e37526",
+      "62b4ea3d17394e815a50542c8c69e82da2d7e529b063f92244be1fb3b6ca99b3",
     ];
 const sha = (v: string) => createHash("sha256").update(v).digest("hex");
 const values = [source, codecPath, mirror, transportPath].map((path) =>
@@ -332,6 +343,7 @@ function captureEnvironment() {
       "decode",
       "apply",
       "desktop",
+      "retireNativeDocument",
       "dispatch",
       "acceptHostCloseReply",
       "get",
@@ -447,12 +459,32 @@ function checkedSnapshot(value: any, path: string) {
     for (const name of names) assert(native.desc(out, name), path + ":missing");
     return out;
   }
+  const hasDocument = native.desc(value, "document") !== undefined;
   const snapshot = record(value, [
     "window",
     "state",
     "pending_close",
     "host_destroyed",
+    ...(hasDocument ? ["document"] : []),
   ]);
+  const document = hasDocument
+    ? record(snapshot.document, [
+        "generation",
+        "native_url",
+        "finished",
+        "current",
+      ])
+    : undefined;
+  if (document)
+    assert(
+      Number.isInteger(document.generation) &&
+        document.generation > 0 &&
+        document.generation <= 0xffffffff &&
+        typeof document.native_url === "string" &&
+        typeof document.finished === "boolean" &&
+        typeof document.current === "boolean",
+      path + ":document-scalars",
+    );
   const window = record(snapshot.window, ["id", "incarnation"]);
   const state = record(snapshot.state, [
     "bounds",
@@ -485,7 +517,14 @@ function checkedSnapshot(value: any, path: string) {
     path + ":snapshot-scalars",
   );
   return {
-    graph: [value, snapshot.window, snapshot.state, state.bounds],
+    graph: [
+      value,
+      snapshot.window,
+      snapshot.state,
+      state.bounds,
+      ...(hasDocument ? [snapshot.document] : []),
+    ],
+    document,
     snapshot,
     window,
     state,
@@ -552,6 +591,27 @@ function stage() {
   );
   source.apply(created);
   source.dispatch(created);
+  function commit(generation: number) {
+    const fact = source.decode(
+      codec.encodeWindowEvent({
+        variant: "NavigationCommitted",
+        window: ref,
+        document_generation: generation,
+        native_url: documentUrl(generation),
+      }),
+    );
+    source.apply(fact);
+    source.apply(
+      source.decode(
+        codec.encodeWindowEvent({
+          variant: "NavigationFinished",
+          window: ref,
+          document_generation: generation,
+        }),
+      ),
+    );
+  }
+  if (documentMode) commit(1);
   const old = source.get(ref);
   assert(old);
   const oldSnapshots = [checkedSnapshot(old, "old-before").graph];
@@ -565,6 +625,7 @@ function stage() {
         }),
       ),
     );
+    if (documentMode) commit(i + 2);
     if (i < 31)
       oldSnapshots.push(
         checkedSnapshot(source.get(ref), "old-iteration").graph,
@@ -584,7 +645,63 @@ function stage() {
   assert(external);
   checkedSnapshot(external, "external-before");
   oldGraph = oldSnapshots.flat();
-  assert.equal(oldGraph.length, 128);
+  assert.equal(oldGraph.length, 32 * components);
+  let documentRetirement;
+  if (documentMode) {
+    const live = source.get(ref);
+    source.retireNativeDocument({ id: 7, incarnation: 301n }, 33);
+    source.retireNativeDocument(ref, 32);
+    assert.equal(
+      source.get(ref),
+      live,
+      "foreign/stale native retirement must be a no-op",
+    );
+    source.retireNativeDocument(ref, 33);
+    const retired = checkedSnapshot(source.get(ref), "retired-document");
+    assert.equal(retired.document.current, false);
+    assert.equal(retired.document.finished, true);
+    source.apply(
+      source.decode(
+        codec.encodeWindowEvent({
+          variant: "NavigationCommitted",
+          window: ref,
+          document_generation: 33,
+          native_url: documentUrl(33),
+        }),
+      ),
+    );
+    source.apply(
+      source.decode(
+        codec.encodeWindowEvent({
+          variant: "NavigationFinished",
+          window: ref,
+          document_generation: 33,
+        }),
+      ),
+    );
+    const duplicate = checkedSnapshot(
+      source.get(ref),
+      "duplicate-retired-document",
+    );
+    assert.equal(
+      duplicate.document.current,
+      false,
+      "old native document must never revive",
+    );
+    assert.equal(source.get(ref), retired.graph[0]);
+    commit(34);
+    const successor = checkedSnapshot(source.get(ref), "successor-document");
+    assert.equal(successor.document.generation, 34);
+    assert.equal(successor.document.current, true);
+    assert.equal(successor.document.finished, true);
+    assert.equal(successor.document.native_url, documentUrl(34));
+    assert.notEqual(successor.graph[4], retired.graph[4]);
+    documentRetirement = {
+      retiredCurrent: retired.document.current,
+      duplicateCurrent: duplicate.document.current,
+      nextGeneration: successor.document.generation,
+    };
+  }
   const oldWeak = oldGraph.map((x) => new WeakRef(x));
   const initial = Object.fromEntries(read(source)),
     actualMap = initial["#windows"];
@@ -601,10 +718,10 @@ function stage() {
   assert.equal(
     [...oldWeak, ...currentWeak].filter((ref) => ref.deref() !== undefined)
       .length,
-    132,
+    33 * components,
     "same-job WeakRef pre-collection control failed",
   );
-  const callerRoot = mode === "caller" ? [old] : [];
+  const callerRoot = callerHeld ? [old] : [];
   const candidateSource = source,
     probeMap = actualMap;
   function addError(message: string) {
@@ -797,6 +914,26 @@ function stage() {
       es.pending_close === null &&
       es.host_destroyed === false;
     if (!currentOK) addError("Source:current");
+    if (documentMode) {
+      const d = currentParts.document;
+      if (
+        !d ||
+        d.generation !== 34 ||
+        d.native_url !== documentUrl(34) ||
+        d.finished !== true ||
+        d.current !== true
+      )
+        addError("Source:current-document");
+      assert.equal(currentParts.graph.length, 5);
+    } else {
+      assert.equal(currentParts.document, undefined);
+      assert.equal(currentParts.graph.length, 4);
+    }
+    assert.equal(
+      externalParts.document,
+      undefined,
+      "unrelated window acquired a document",
+    );
   }
   const immediateAdmission =
     observerIntegrity && currentOK && errors.length === 0;
@@ -818,6 +955,7 @@ function stage() {
     witnessWeak: captured.witnessWeak,
     callerRoot,
     prototypeGraphNodes: protoSnapshots.length,
+    documentRetirement,
   };
 }
 function readsDenied(source: any, code: string, message: string): boolean {
@@ -990,16 +1128,16 @@ for (let i = 0; i < 8; i++) {
   };
   replacement.push(row);
   if (
-    row.old === (mode === "caller" ? 4 : 0) &&
-    row.current === 4 &&
+    row.old === (callerHeld ? components : 0) &&
+    row.current === components &&
     row.callback &&
     row.witness
   )
     break;
 }
 const repl = replacement.at(-1)!;
-assert.equal(repl.old, mode === "caller" ? 4 : 0);
-assert.equal(repl.current, 4);
+assert.equal(repl.old, callerHeld ? components : 0);
+assert.equal(repl.current, components);
 assert(repl.callback && repl.witness && repl.sourceAlive && repl.externalAlive);
 const terminal = await nextJob(() => endStage(result));
 const ended = [];
@@ -1017,7 +1155,7 @@ for (let i = 0; i < 8; i++) {
   };
   ended.push(row);
   if (
-    row.old === (mode === "caller" ? 4 : 0) &&
+    row.old === (callerHeld ? components : 0) &&
     row.current === 0 &&
     !row.callback &&
     !row.witness
@@ -1025,7 +1163,7 @@ for (let i = 0; i < 8; i++) {
     break;
 }
 const last = ended.at(-1)!;
-assert.equal(last.old, mode === "caller" ? 4 : 0);
+assert.equal(last.old, callerHeld ? components : 0);
 assert.equal(last.current, 0);
 assert.equal(last.callback, false);
 assert.equal(last.witness, false);
@@ -1035,7 +1173,7 @@ assert(
   "terminal Source reads must remain denied after collection",
 );
 const afterCallerDrop = [];
-if (mode === "caller") {
+if (callerHeld) {
   result.callerRoot.length = 0;
   for (let i = 0; i < 8; i++) {
     await next();
@@ -1062,6 +1200,7 @@ console.log(
     immediateSemantic: true,
     terminalSemantic: true,
     oldComponents: result.oldWeak.length,
+    documentRetirement: result.documentRetirement,
     prototypeGraphNodes: result.prototypeGraphNodes,
     replacement: repl,
     end: last,

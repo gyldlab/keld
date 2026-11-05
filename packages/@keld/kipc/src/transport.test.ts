@@ -14,6 +14,8 @@ import {
   APP_LINK_IO_DEADLINE_MS,
   DrainSignal,
   DIALOG_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
+  MENU_CHANNEL,
   ECHO_CHANNEL,
   FLAG_RAW,
   FS_CHANNEL,
@@ -267,6 +269,8 @@ describe("GH-527 receive policy mirrors", () => {
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
       DIALOG_CHANNEL,
+      COMPAT_CONTROL_CHANNEL,
+      MENU_CHANNEL,
     ]);
     for (const channel of [
       ECHO_CHANNEL,
@@ -275,16 +279,18 @@ describe("GH-527 receive policy mirrors", () => {
       AUTH_CHANNEL,
       WINDOW_CHANNEL,
       DIALOG_CHANNEL,
+      COMPAT_CONTROL_CHANNEL,
+      MENU_CHANNEL,
     ]) {
       expect(isAllocatedChannel(channel)).toBe(true);
     }
-    for (const unallocated of [HANDSHAKE_CHANNEL, 7, 9, 0xffff, 2.5, -1]) {
+    for (const unallocated of [HANDSHAKE_CHANNEL, 9, 0xffff, 2.5, -1]) {
       expect(isAllocatedChannel(unallocated)).toBe(false);
     }
     // Type-level negative control: if `replyWaiter` widened its parameter to
     // `number`, this directive would be unused and `bun run typecheck` fails.
-    // @ts-expect-error 7 is not an allocated channel
-    expect(() => replyWaiter(7, 7)).toThrow(
+    // @ts-expect-error 9 is not an allocated channel
+    expect(() => replyWaiter(9, 7)).toThrow(
       "KELD-IPC-005: channel is not allocated by the channel table",
     );
     for (const unallocated of [9, 0xffff]) {
@@ -932,4 +938,28 @@ describe("deadline leftover I/O", () => {
       Bun.connect = originalConnect;
     }
   });
+});
+
+// Limits are selected from the canonical generated channel, before any body read.
+test("compat EVENT headers cap16KiB and terminal headers cap4KiB", () => {
+  const event = eventReceiver(COMPAT_CONTROL_CHANNEL);
+  const reply = replyWaiter(COMPAT_CONTROL_CHANNEL, 73);
+  for (const [policy, kind, corr, limit] of [
+    [event, FrameKind.Event, 0, 16384],
+    [reply, FrameKind.Reply, 73, 4096],
+    [reply, FrameKind.Err, 73, 4096],
+  ] as const) {
+    const header = {
+      kind,
+      flags: 0,
+      channel: COMPAT_CONTROL_CHANNEL,
+      corr,
+      len: limit,
+    };
+    expect(validateReceivedHeader(policy, header)).toEqual(header);
+    expect(() =>
+      validateReceivedHeader(policy, { ...header, len: limit + 1 }),
+    ).toThrow("KELD-IPC-004");
+  }
+  expect(() => eventReceiver(MENU_CHANNEL)).toThrow("KELD-IPC-005");
 });

@@ -444,6 +444,8 @@ fn recognized_root_key(name: &str) -> Option<&'static str> {
         "auth" => Some("auth"),
         "profile" => Some("profile"),
         "initialWindow" => Some("initialWindow"),
+        "singleInstance" => Some("singleInstance"),
+        "applicationNameForUserAgent" => Some("applicationNameForUserAgent"),
         _ => None,
     }
 }
@@ -833,7 +835,7 @@ fn harmless_computed_root_key(source_after_open: &str) -> bool {
     let mut preview = SourceScan::new(source_after_open);
     preview.next().is_some_and(|token| {
         !token.undecodable_string
-            && matches!(&token.kind, ConfigToken::Text(key) if !matches!(key.as_str(), "initialWindow" | "renderer" | "auth" | "version" | "profile"))
+            && matches!(&token.kind, ConfigToken::Text(key) if !matches!(key.as_str(), "initialWindow" | "renderer" | "auth" | "version" | "profile" | "singleInstance" | "applicationNameForUserAgent"))
     }) && preview
         .next()
         .is_some_and(|token| token.kind == ConfigToken::Symbol(']'))
@@ -884,7 +886,7 @@ fn validate_facade_root_member_token(
         && matches!(
             &token.kind,
             ConfigToken::Word(key) | ConfigToken::Text(key)
-                if matches!(key.as_str(), "initialWindow" | "renderer" | "auth" | "version" | "profile")
+                if matches!(key.as_str(), "initialWindow" | "renderer" | "auth" | "version" | "profile" | "singleInstance" | "applicationNameForUserAgent")
         )
     {
         return Err(auth_config_error(

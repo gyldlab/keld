@@ -18,6 +18,9 @@ use std::time::Instant;
 #[path = "dialog_file_selection.rs"]
 mod selection;
 
+#[path = "dialog_file_drawio.rs"]
+mod drawio;
+
 #[cfg(debug_assertions)]
 #[path = "dialog_startup.rs"]
 mod startup;
@@ -208,6 +211,14 @@ control.end();
 "#;
 
 fn stage(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
+    stage_role(fixture, FILE_ROLE, r#"{"app":{"system":["dialog"]}}"#)
+}
+
+fn stage_role(
+    fixture: &ProductFixture,
+    role: &str,
+    permissions: &str,
+) -> keld_cli::boot::DevBootStage {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -218,7 +229,7 @@ fn stage(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
             .to_string_lossy(),
     )
     .expect("canonical Electron source path");
-    let source = format!("import {{ app, BrowserWindow, dialog }} from {electron};\n{FILE_ROLE}");
+    let source = format!("import {{ app, BrowserWindow, dialog }} from {electron};\n{role}");
     crate::renderer_bridge::bundle_public_api_entry(
         &fixture.project,
         repo,
@@ -228,11 +239,8 @@ fn stage(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
     fs::write(fixture.project.join("keld.config.ts"),
         "export default { name: \"GH478 file\", entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
     ).expect("real Host file fixture configuration");
-    fs::write(
-        fixture.project.join("keld.permissions.jsonc"),
-        r#"{"app":{"system":["dialog"]}}"#,
-    )
-    .expect("verified exact permission to present native UI only");
+    fs::write(fixture.project.join("keld.permissions.jsonc"), permissions)
+        .expect("verified exact permission to present native UI only");
     keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
         .expect("real no-flag Host file dialog stage")
 }
@@ -488,6 +496,7 @@ enum FileScenario {
     FilterSwitching,
     MixedSelection,
     PhysicalSvgDenial,
+    DrawioExact,
 }
 
 fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
@@ -495,7 +504,7 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
         scenario,
         FileScenario::Positive {
             directory_hint: true
-        }
+        } | FileScenario::DrawioExact
     );
     assert!(
         cancel_cycles >= 2,
@@ -503,7 +512,11 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
     );
     let fixture = ProductFixture::new("gh478-real-open-save");
     let paths = FilePaths::new(&fixture, directory_hint);
-    let staged = stage(&fixture);
+    let staged = if matches!(scenario, FileScenario::DrawioExact) {
+        drawio::stage(&fixture, &paths)
+    } else {
+        stage(&fixture)
+    };
     let socket = fixture.root.path().join("native-file.sock");
     let listener = UnixListener::bind(&socket).expect("owned single control listener");
     listener.set_nonblocking(true).expect("bounded accept");
@@ -569,6 +582,7 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
         FileScenario::PhysicalSvgDenial => {
             selection::verify_physical_svg_denial(&mut dialog, &fixture, &paths.svg);
         }
+        FileScenario::DrawioExact => drawio::exercise(&mut dialog, &fixture, &paths),
     }
     if !matches!(scenario, FileScenario::CancelOnly) {
         dialog.press("MESSAGE_NEXT", "MESSAGE_RESULT 0", "Save");
@@ -584,6 +598,9 @@ fn run_real_host_files(scenario: FileScenario, cancel_cycles: usize) {
         output.status.success(),
         "file dialogs failed Host cleanup: {output:?}"
     );
+    if matches!(scenario, FileScenario::DrawioExact) {
+        drawio::assert_legacy_disclosure(&output);
+    }
     await_process_gone(bun_pid);
 }
 

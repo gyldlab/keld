@@ -43,6 +43,8 @@ pub(super) enum WindowCounter {
     Id,
     Incarnation,
     CloseSequence,
+    #[cfg(any(target_os = "macos", test))]
+    OriginalLoadCorrelation,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WindowError {
@@ -52,6 +54,12 @@ pub(super) enum WindowError {
     WrongOwner,
     PendingDestroyCapacity,
     SessionWindowCapacity,
+    #[cfg(target_os = "macos")]
+    OriginalLoadBusy,
+    #[cfg(target_os = "macos")]
+    OriginalSourceUnavailable,
+    #[cfg(target_os = "macos")]
+    OriginalDocumentCloseRefused,
 }
 impl WindowError {
     pub(super) const fn code(self) -> &'static str {
@@ -62,6 +70,12 @@ impl WindowError {
             Self::WrongOwner => "KELD-CORE-043",
             Self::PendingDestroyCapacity => "KELD-CORE-046",
             Self::SessionWindowCapacity => "KELD-CORE-047",
+            #[cfg(target_os = "macos")]
+            Self::OriginalLoadBusy => "KELD-CORE-050",
+            #[cfg(target_os = "macos")]
+            Self::OriginalSourceUnavailable => "KELD-CORE-051",
+            #[cfg(target_os = "macos")]
+            Self::OriginalDocumentCloseRefused => "KELD-CORE-054",
         }
     }
 }
@@ -77,6 +91,22 @@ impl fmt::Display for WindowError {
             }
             Self::Exhausted(WindowCounter::CloseSequence) => {
                 "close_seq exhausted; destroy the window or start a new app session"
+            }
+            #[cfg(any(target_os = "macos", test))]
+            Self::Exhausted(WindowCounter::OriginalLoadCorrelation) => {
+                "original-load operation correlation exhausted; start a new app session"
+            }
+            #[cfg(target_os = "macos")]
+            Self::OriginalDocumentCloseRefused => {
+                "original-document close was not admitted; ignore the old result, preserve the current window/document and wait for a new explicit current-document action"
+            }
+            #[cfg(target_os = "macos")]
+            Self::OriginalSourceUnavailable => {
+                "the window has no matching admitted original source/preload configuration; create it through the verified original preload selection"
+            }
+            #[cfg(target_os = "macos")]
+            Self::OriginalLoadBusy => {
+                "an original load is still pending for this window; wait for its real finish or failure"
             }
             Self::NotReady => {
                 "window registry is not serviceable; wait for Ready on a live app session"
@@ -196,6 +226,61 @@ pub(super) enum SessionEffect {
     /// The Create was admitted: its effect is unknown, never proof for024/replay.
     CreateInterrupted(PendingWindowCall),
     CloseAbandoned(AbandonedClose),
+    #[cfg(any(target_os = "macos", test))]
+    OriginalLoadInterrupted(PendingWindowCall),
+}
+
+/// Immutable association captured before the UI command can be observed.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OriginalLoadContext {
+    pub(super) operation: u64,
+    pub(super) call: PendingWindowCall,
+    pub(super) window: WindowRef,
+    pub(super) view: WebviewId,
+}
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OriginalLoadAdmission {
+    Dispatch {
+        operation: u64,
+        window: WindowRef,
+        view: WebviewId,
+    },
+    Busy,
+}
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy)]
+struct PendingOriginalLoad {
+    context: OriginalLoadContext,
+    #[cfg(target_os = "macos")]
+    attempt: Option<keld_wv::wkwebview::MacNativeAttempt>,
+    #[cfg(target_os = "macos")]
+    committed: Option<keld_wv::wkwebview::MacNativeDocumentStamp>,
+}
+#[cfg(target_os = "macos")]
+pub(super) struct CommittedOriginalLoad {
+    pub(super) owner: WindowOwner,
+    pub(super) window: WindowRef,
+    pub(super) document_generation: u32,
+}
+#[cfg(target_os = "macos")]
+pub(super) struct FinishedOriginalLoad {
+    pub(super) fact: OwnedWindowEvent,
+    pub(super) reply: WindowReply,
+}
+
+#[cfg(target_os = "macos")]
+struct PendingOriginalDocumentDestroy {
+    call: Option<PendingWindowCall>,
+    admission: std::sync::Arc<keld_wv::wkwebview::OriginalDocumentDestroyAdmission>,
+}
+#[cfg(target_os = "macos")]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct OriginalDocumentDestroyResolution {
+    pub(super) refused: Option<PendingWindowCall>,
+    pub(super) abandoned: Option<AbandonedClose>,
+    pub(super) interrupted: Option<PendingWindowCall>,
 }
 
 #[derive(Clone, Copy)]
@@ -211,6 +296,32 @@ enum Phase {
     Closing(Option<NativeWindow>),
     Destroyed(Option<WebviewId>),
 }
+/// A bounded snapshot of the existing authenticated Entry and native lease.
+/// Native revocation is rechecked by each receiver; no snapshot grants a later
+/// native side effect without that UI owner's final same-turn admission.
+#[cfg(target_os = "macos")]
+pub(super) struct RendererRoute {
+    pub(super) window: WindowRef,
+    pub(super) document: keld_wv::wkwebview::MacNativeDocumentLease,
+    selection: std::sync::Arc<super::original_webapp::OriginalLoadSelection>,
+}
+#[cfg(target_os = "macos")]
+impl RendererRoute {
+    pub(super) fn window_key(&self) -> &str {
+        self.selection.window_key()
+    }
+}
+#[cfg(target_os = "macos")]
+struct OriginalWindowSelection {
+    selection: std::sync::Arc<super::original_webapp::OriginalLoadSelection>,
+    preload_image: std::sync::Arc<keld_wv::wkwebview::AppPreloadImage>,
+}
+#[cfg(target_os = "macos")]
+struct RendererDocumentState {
+    committed: Option<keld_wv::wkwebview::MacNativeDocumentStamp>,
+    document: Option<keld_wv::wkwebview::MacNativeDocumentLease>,
+    registered: bool,
+}
 struct Entry {
     window: WindowRef,
     owner: WindowOwner,
@@ -224,6 +335,14 @@ struct Entry {
     // Only admitted cold Destroy calls allocate this metadata. It carries no
     // stream or handle, and native Released is the sole completion input.
     destroy_calls: Vec<PendingWindowCall>,
+    #[cfg(target_os = "macos")]
+    original_destroy: Option<PendingOriginalDocumentDestroy>,
+    #[cfg(any(target_os = "macos", test))]
+    original_load: Option<PendingOriginalLoad>,
+    #[cfg(target_os = "macos")]
+    original_selection: Option<OriginalWindowSelection>,
+    #[cfg(target_os = "macos")]
+    renderer: RendererDocumentState,
     phase: Phase,
 }
 
@@ -240,6 +359,76 @@ pub(super) const MAX_PENDING_DESTROYS_PER_WINDOW: usize = 64;
 /// Never turn the functional proposal into merge approval without GH1149 AC5.
 pub(super) const PROPOSED_MAX_CUMULATIVE_WINDOW_IDS: usize = 1024;
 impl Entry {
+    fn pending_destroy_count(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        let scoped = usize::from(
+            self.original_destroy
+                .as_ref()
+                .is_some_and(|pending| pending.call.is_some()),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let scoped = 0;
+        self.destroy_calls.len() + scoped
+    }
+    #[cfg(target_os = "macos")]
+    fn reconcile_original_destroy(&mut self, receipt: bool) -> OriginalDocumentDestroyResolution {
+        use keld_wv::wkwebview::OriginalDocumentDestroyDecision;
+        let Some(pending) = self.original_destroy.as_mut() else {
+            return OriginalDocumentDestroyResolution::default();
+        };
+        let decision = pending.admission.decision();
+        if decision == OriginalDocumentDestroyDecision::Pending {
+            return OriginalDocumentDestroyResolution::default();
+        }
+        let call = pending.call.take();
+        let mut outcome = OriginalDocumentDestroyResolution::default();
+        match decision {
+            OriginalDocumentDestroyDecision::Accepted => {
+                match self.phase {
+                    Phase::Open(native) => self.phase = Phase::Closing(Some(native)),
+                    Phase::ClosePending(native, close_seq) => {
+                        self.phase = Phase::Closing(Some(native));
+                        outcome.abandoned = Some(AbandonedClose {
+                            window: self.window,
+                            close_seq,
+                        });
+                    }
+                    _ => {}
+                }
+                if matches!(self.phase, Phase::Closing(_)) {
+                    self.adoptable = false;
+                    self.retire_renderer_document();
+                    outcome.interrupted = self.original_load.take().map(|load| load.context.call);
+                    if let Some(call) =
+                        call.filter(|call| self.owner_live && call.owner == self.owner)
+                    {
+                        self.destroy_calls.push(call);
+                    }
+                }
+            }
+            OriginalDocumentDestroyDecision::Refused
+            | OriginalDocumentDestroyDecision::Cancelled => {
+                outcome.refused = call.filter(|call| self.owner_live && call.owner == self.owner);
+            }
+            OriginalDocumentDestroyDecision::Pending => {}
+        }
+        if receipt {
+            self.original_destroy = None;
+        }
+        outcome
+    }
+    #[cfg(target_os = "macos")]
+    fn retire_renderer_document(&mut self) {
+        self.renderer.committed = None;
+        self.renderer.document = None;
+        self.renderer.registered = false;
+    }
+    fn adoptable_for(&self, owner: WindowOwner) -> bool {
+        self.owner_live
+            && self.owner == owner
+            && self.adoptable
+            && matches!(self.phase, Phase::Open(_) | Phase::ClosePending(_, _))
+    }
     fn view(&self) -> Option<WebviewId> {
         match self.phase {
             Phase::Open(native) | Phase::ClosePending(native, _) | Phase::Closing(Some(native)) => {
@@ -256,6 +445,8 @@ pub(super) struct WindowRegistry {
     ending: bool,
     last_id: u32,
     last_incarnation: u64,
+    #[cfg(any(target_os = "macos", test))]
+    last_original_load_operation: u64,
     entries: BTreeMap<u32, Entry>,
     deferred_last_window: bool,
     destroyed_fact_drops: u64,
@@ -267,6 +458,8 @@ impl WindowRegistry {
             ending: false,
             last_id: 0,
             last_incarnation: 0,
+            #[cfg(any(target_os = "macos", test))]
+            last_original_load_operation: 0,
             entries: BTreeMap::new(),
             deferred_last_window: false,
             destroyed_fact_drops: 0,
@@ -291,12 +484,11 @@ impl WindowRegistry {
         y: Option<i32>,
     ) -> Result<CreateOutcome, WindowError> {
         self.require_ready()?;
-        if let Some(entry) = self.entries.values_mut().find(|entry| {
-            entry.owner_live
-                && entry.owner == owner
-                && entry.adoptable
-                && matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
-        }) {
+        if let Some(entry) = self
+            .entries
+            .values_mut()
+            .find(|entry| entry.adoptable_for(owner))
+        {
             entry.adoptable = false;
             return Ok(CreateOutcome::Adopted(entry.window));
         }
@@ -334,6 +526,18 @@ impl WindowRegistry {
                 dropped: 0,
                 last_close_seq: 0,
                 destroy_calls: Vec::new(),
+                #[cfg(target_os = "macos")]
+                original_destroy: None,
+                #[cfg(any(target_os = "macos", test))]
+                original_load: None,
+                #[cfg(target_os = "macos")]
+                original_selection: None,
+                #[cfg(target_os = "macos")]
+                renderer: RendererDocumentState {
+                    committed: None,
+                    document: None,
+                    registered: false,
+                },
                 phase: Phase::Opening(PendingWindowCall { owner, correlation }),
             },
         );
@@ -347,6 +551,67 @@ impl WindowRegistry {
             x,
             y,
         })
+    }
+    /// Exact image/source association for the same entry the existing Create
+    /// owner admitted. The caller prepared immutable bytes before this method.
+    #[cfg(target_os = "macos")]
+    pub(super) fn create_with_original_preload(
+        &mut self,
+        call: PendingWindowCall,
+        size: (u32, u32),
+        position: (Option<i32>, Option<i32>),
+        selection: std::sync::Arc<super::original_webapp::OriginalLoadSelection>,
+        preload_image: std::sync::Arc<keld_wv::wkwebview::AppPreloadImage>,
+    ) -> Result<CreateOutcome, WindowError> {
+        self.require_ready()?;
+        let PendingWindowCall { owner, correlation } = call;
+        let (width, height) = size;
+        let (x, y) = position;
+        // Match the existing Create owner's first-adoptable rule before it can
+        // consume a mark. Never relabel an unrelated surviving native window.
+        if let Some(entry) = self
+            .entries
+            .values()
+            .find(|entry| entry.adoptable_for(owner))
+        {
+            let Some(existing) = entry.original_selection.as_ref() else {
+                return Err(WindowError::OriginalSourceUnavailable);
+            };
+            if !std::sync::Arc::ptr_eq(&existing.selection, &selection)
+                || existing.selection.window_key() != selection.window_key()
+                || !existing.preload_image.same_configuration(&preload_image)
+            {
+                return Err(WindowError::OriginalSourceUnavailable);
+            }
+        }
+        let outcome = self.create(owner, correlation, width, height, x, y)?;
+        if let CreateOutcome::Build { window, .. } = outcome {
+            let entry = self
+                .entries
+                .get_mut(&window.id.0)
+                .ok_or(WindowError::StaleWindow)?;
+            entry.original_selection = Some(OriginalWindowSelection {
+                selection,
+                preload_image,
+            });
+        }
+        Ok(outcome)
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_window_source(
+        &self,
+        owner: WindowOwner,
+        window: WindowRef,
+    ) -> Result<&std::sync::Arc<super::original_webapp::OriginalLoadSelection>, WindowError> {
+        let entry = self.checked_entry(owner, window)?;
+        if !matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _)) {
+            return Err(WindowError::StaleWindow);
+        }
+        entry
+            .original_selection
+            .as_ref()
+            .map(|original| &original.selection)
+            .ok_or(WindowError::OriginalSourceUnavailable)
     }
     /// The parent supplies only the UI thread's actual native snapshot here.
     /// Create geometry is not stored and cannot fabricate Created.state.
@@ -426,6 +691,11 @@ impl WindowRegistry {
                 };
             }
         };
+        #[cfg(target_os = "macos")]
+        {
+            entry.retire_renderer_document();
+            entry.original_selection = None;
+        }
         entry.phase = Phase::Destroyed(None);
         let live_call = call.filter(|_| entry.owner_live && !self.ending);
         let last_window =
@@ -446,6 +716,18 @@ impl WindowRegistry {
         self.entries.values().any(|entry| {
             matches!(entry.phase, Phase::Opening(call) if call.owner == owner && call.correlation == correlation)
                 || entry.destroy_calls.iter().any(|call| call.owner == owner && call.correlation == correlation)
+                || {
+                    #[cfg(target_os = "macos")]
+                    { entry.original_destroy.as_ref().and_then(|pending| pending.call).is_some_and(|call| call.owner == owner && call.correlation == correlation) }
+                    #[cfg(not(target_os = "macos"))]
+                    { false }
+                }
+                || {
+                    #[cfg(any(target_os = "macos", test))]
+                    { entry.original_load.is_some_and(|load| load.context.call.owner == owner && load.context.call.correlation == correlation) }
+                    #[cfg(not(any(target_os = "macos", test)))]
+                    { false }
+                }
         })
     }
     fn require_ready(&self) -> Result<(), WindowError> {
@@ -502,6 +784,386 @@ impl WindowRegistry {
         match self.checked_entry(owner, window)?.phase {
             Phase::Open(native) | Phase::ClosePending(native, _) => Ok(native.view),
             _ => Err(WindowError::StaleWindow),
+        }
+    }
+    /// Resolve the authentic current native view to the existing Host pair.
+    /// Inspecting an IPC sender never consumes the recovery adoption mark.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn admitted_renderer_window(
+        &self,
+        owner: WindowOwner,
+        view: WebviewId,
+    ) -> Result<WindowRef, WindowError> {
+        self.require_ready()?;
+        let entry = self.entries.values().find(|entry| {
+            matches!(entry.phase, Phase::Open(native) | Phase::ClosePending(native, _) if native.view == view)
+        }).ok_or(WindowError::StaleWindow)?;
+        self.checked_entry(owner, entry.window)?;
+        Ok(entry.window)
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn admit_renderer_route(
+        &mut self,
+        owner: WindowOwner,
+        view: WebviewId,
+        document: keld_wv::wkwebview::MacNativeDocumentLease,
+    ) -> Result<RendererRoute, WindowError> {
+        let window = self.admitted_renderer_window(owner, view)?;
+        let entry = self
+            .entries
+            .get_mut(&window.id.0)
+            .ok_or(WindowError::StaleWindow)?;
+        let binding = entry
+            .original_selection
+            .as_ref()
+            .ok_or(WindowError::OriginalSourceUnavailable)?;
+        if document.stamp().view() != view
+            || !entry.renderer.registered
+            || entry
+                .renderer
+                .document
+                .as_ref()
+                .is_none_or(|registered| !registered.same_binding(&document))
+            || entry.renderer.committed != Some(document.stamp())
+            || !document.belongs_to_source(binding.selection.source())
+            || !document.is_current()
+        {
+            return Err(WindowError::StaleWindow);
+        }
+        entry.renderer.document = Some(document.clone());
+        Ok(RendererRoute {
+            window,
+            document,
+            selection: std::sync::Arc::clone(&binding.selection),
+        })
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn renderer_route(
+        &self,
+        owner: WindowOwner,
+        view: WebviewId,
+        navigation: Option<u32>,
+    ) -> Result<RendererRoute, WindowError> {
+        let window = self.admitted_renderer_window(owner, view)?;
+        let entry = self.checked_entry(owner, window)?;
+        let binding = entry
+            .original_selection
+            .as_ref()
+            .ok_or(WindowError::OriginalSourceUnavailable)?;
+        let document = entry
+            .renderer
+            .document
+            .as_ref()
+            .ok_or(WindowError::StaleWindow)?;
+        if document.stamp().view() != view
+            || !entry.renderer.registered
+            || entry
+                .renderer
+                .document
+                .as_ref()
+                .is_none_or(|registered| !registered.same_binding(document))
+            || entry.renderer.committed != Some(document.stamp())
+            || navigation.is_some_and(|expected| expected != document.stamp().observed_generation())
+            || !document.belongs_to_source(binding.selection.source())
+            || !document.is_current()
+        {
+            return Err(WindowError::StaleWindow);
+        }
+        Ok(RendererRoute {
+            window,
+            document: document.clone(),
+            selection: std::sync::Arc::clone(&binding.selection),
+        })
+    }
+    /// An actual native Registered control is metadata, not caller authority.
+    /// A bounded mark may precede the observer; routing still requires the real
+    /// matching accepted Core commit and the current authenticated owner.
+    #[cfg(target_os = "macos")]
+    pub(super) fn note_renderer_registered(
+        &mut self,
+        view: WebviewId,
+        document: keld_wv::wkwebview::MacNativeDocumentLease,
+    ) -> Result<(), WindowError> {
+        self.require_ready()?;
+        let entry = self.entries.values_mut().find(|entry| {
+            matches!(entry.phase, Phase::Open(native) | Phase::ClosePending(native, _) if native.view == view)
+        }).ok_or(WindowError::StaleWindow)?;
+        let binding = entry
+            .original_selection
+            .as_ref()
+            .ok_or(WindowError::OriginalSourceUnavailable)?;
+        let accepted_load = entry
+            .original_load
+            .is_some_and(|load| load.context.call.owner == entry.owner);
+        if !entry.owner_live
+            || (!accepted_load && entry.renderer.committed != Some(document.stamp()))
+            || document.stamp().view() != view
+            || !document.belongs_to_source(binding.selection.source())
+            || !document.is_current()
+        {
+            return Err(WindowError::StaleWindow);
+        }
+        entry.renderer.document = Some(document);
+        entry.renderer.registered = true;
+        Ok(())
+    }
+    /// Iterate the existing Entry owner only. Ready publication separately
+    /// requires COMPAT subscription and native liveness in its current fence;
+    /// a false retirement may still name a just-revoked registered document.
+    #[cfg(target_os = "macos")]
+    pub(super) fn for_each_registered_renderer_route(
+        &self,
+        owner: WindowOwner,
+        mut callback: impl FnMut(RendererRoute) -> Result<(), super::HostAppError>,
+    ) -> Result<(), super::HostAppError> {
+        for entry in self
+            .entries
+            .values()
+            .filter(|entry| entry.owner_live && entry.owner == owner && entry.renderer.registered)
+        {
+            let Some(document) = entry.renderer.document.as_ref() else {
+                continue;
+            };
+            let Some(binding) = entry.original_selection.as_ref() else {
+                continue;
+            };
+            if !matches!(entry.phase, Phase::Open(_) | Phase::ClosePending(_, _))
+                || entry.renderer.committed != Some(document.stamp())
+                || !document.belongs_to_source(binding.selection.source())
+            {
+                continue;
+            }
+            callback(RendererRoute {
+                window: entry.window,
+                document: document.clone(),
+                selection: std::sync::Arc::clone(&binding.selection),
+            })?;
+        }
+        Ok(())
+    }
+    /// Actual native failure/revocation may arrive after its `LoadUrl` settled.
+    /// Retire only that same stamp/attempt, never a later B on the same view.
+    #[cfg(target_os = "macos")]
+    pub(super) fn renderer_document_revoked(
+        &mut self,
+        view: WebviewId,
+        previous: keld_wv::wkwebview::MacNativeDocumentStamp,
+    ) {
+        if let Some(entry) = self
+            .entries
+            .values_mut()
+            .find(|entry| entry.view() == Some(view))
+            && entry.renderer.committed == Some(previous)
+        {
+            entry.retire_renderer_document();
+        }
+    }
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn admit_original_load(
+        &mut self,
+        owner: WindowOwner,
+        correlation: CorrelationId,
+        window: WindowRef,
+    ) -> Result<OriginalLoadAdmission, WindowError> {
+        let entry = self.checked_entry(owner, window)?;
+        let view = match entry.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _) => native.view,
+            _ => return Err(WindowError::StaleWindow),
+        };
+        if entry.original_load.is_some() {
+            return Ok(OriginalLoadAdmission::Busy);
+        }
+        let operation =
+            self.last_original_load_operation
+                .checked_add(1)
+                .ok_or(WindowError::Exhausted(
+                    WindowCounter::OriginalLoadCorrelation,
+                ))?;
+        let entry = self.admitted_entry(owner, window)?;
+        entry.original_load = Some(PendingOriginalLoad {
+            context: OriginalLoadContext {
+                operation,
+                call: PendingWindowCall { owner, correlation },
+                window,
+                view,
+            },
+            #[cfg(target_os = "macos")]
+            attempt: None,
+            #[cfg(target_os = "macos")]
+            committed: None,
+        });
+        self.last_original_load_operation = operation;
+        Ok(OriginalLoadAdmission::Dispatch {
+            operation,
+            window,
+            view,
+        })
+    }
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn original_load_context(&self, operation: u64) -> Option<OriginalLoadContext> {
+        self.entries.values().find_map(|entry| {
+            let pending = entry.original_load?;
+            (entry.owner_live && !self.ending
+                && entry.owner == pending.context.call.owner
+                && entry.window == pending.context.window
+                && matches!(entry.phase, Phase::Open(native) | Phase::ClosePending(native, _) if native.view == pending.context.view)
+                && pending.context.operation == operation).then_some(pending.context)
+        })
+    }
+    #[cfg(target_os = "macos")]
+    fn original_load_mut(
+        &mut self,
+        context: keld_wv::NativeNavigationContext,
+    ) -> Option<(&mut Entry, PendingOriginalLoad)> {
+        let captured = self.original_load_context(context.operation().get())?;
+        if captured.view != context.view() {
+            return None;
+        }
+        let entry = self.entries.get_mut(&captured.window.id.0)?;
+        let pending = entry.original_load?;
+        Some((entry, pending))
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_load_started(
+        &mut self,
+        context: keld_wv::NativeNavigationContext,
+        attempt: keld_wv::wkwebview::MacNativeAttempt,
+    ) -> bool {
+        if attempt.view() != context.view() {
+            return false;
+        }
+        let Some((entry, mut pending)) = self.original_load_mut(context) else {
+            return false;
+        };
+        if pending.attempt.is_some() {
+            return false;
+        }
+        if entry
+            .renderer
+            .document
+            .as_ref()
+            .is_none_or(|document| document.stamp().attempt() != attempt)
+        {
+            entry.retire_renderer_document();
+        }
+        pending.attempt = Some(attempt);
+        entry.original_load = Some(pending);
+        true
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_load_committed(
+        &mut self,
+        context: keld_wv::NativeNavigationContext,
+        stamp: keld_wv::wkwebview::MacNativeDocumentStamp,
+        document: keld_wv::wkwebview::MacNativeDocumentLease,
+    ) -> Option<CommittedOriginalLoad> {
+        if stamp.view() != context.view() {
+            return None;
+        }
+        let (entry, mut pending) = self.original_load_mut(context)?;
+        if pending.attempt != Some(stamp.attempt()) || pending.committed.is_some() {
+            return None;
+        }
+        let binding = entry.original_selection.as_ref()?;
+        if document.stamp() != stamp
+            || !document.belongs_to_source(binding.selection.source())
+            || !document.is_current()
+        {
+            return None;
+        }
+        let registered = entry.renderer.registered
+            && entry
+                .renderer
+                .document
+                .as_ref()
+                .is_some_and(|registered| registered.same_binding(&document));
+        pending.committed = Some(stamp);
+        entry.renderer.committed = Some(stamp);
+        entry.renderer.document = Some(document);
+        entry.renderer.registered = registered;
+        entry.original_load = Some(pending);
+        Some(CommittedOriginalLoad {
+            owner: pending.context.call.owner,
+            window: pending.context.window,
+            document_generation: stamp.observed_generation(),
+        })
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_load_finished(
+        &mut self,
+        context: keld_wv::NativeNavigationContext,
+        stamp: keld_wv::wkwebview::MacNativeDocumentStamp,
+    ) -> Option<FinishedOriginalLoad> {
+        let (entry, pending) = self.original_load_mut(context)?;
+        if pending.committed != Some(stamp) || pending.attempt != Some(stamp.attempt()) {
+            return None;
+        }
+        entry.original_load = None;
+        Some(FinishedOriginalLoad {
+            fact: OwnedWindowEvent {
+                owner: pending.context.call.owner,
+                event: WindowEvent::NavigationFinished {
+                    window: pending.context.window,
+                    document_generation: stamp.observed_generation(),
+                },
+            },
+            reply: WindowReply {
+                owner: pending.context.call.owner,
+                correlation: pending.context.call.correlation,
+                response: WindowResponse::Loaded,
+            },
+        })
+    }
+    /// A pre-attempt refusal can consume only an unstarted captured call.
+    /// Actual failures carry their own native attempt, including loadRequest
+    /// failures that precede Started. Neither path can consume another context.
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_load_failed(
+        &mut self,
+        context: keld_wv::NativeNavigationContext,
+        attempt: Option<keld_wv::wkwebview::MacNativeAttempt>,
+    ) -> Option<PendingWindowCall> {
+        let (entry, pending) = self.original_load_mut(context)?;
+        match (pending.attempt, attempt) {
+            (None, None) => {}
+            (None, Some(actual)) if actual.view() == context.view() => {}
+            (Some(expected), Some(actual)) if expected == actual => {}
+            _ => return None,
+        }
+        entry.original_load = None;
+        // Refused before native admission leaves the old real document intact.
+        // Once an actual attempt exists, the native owner has superseded it.
+        if attempt.is_some() {
+            entry.retire_renderer_document();
+        }
+        Some(pending.context.call)
+    }
+    /// Consume the closing entry's original-call interruption, under the same
+    /// registry lock as the admitted close/destroy transition. No callback can
+    /// use the retained metadata once the entry stopped being serviceable.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn take_interrupted_original_load(
+        &mut self,
+        window: WindowRef,
+    ) -> Option<PendingWindowCall> {
+        let entry = self.entries.get_mut(&window.id.0)?;
+        if entry.window != window || !matches!(entry.phase, Phase::Closing(_)) {
+            return None;
+        }
+        entry
+            .original_load
+            .take()
+            .map(|pending| pending.context.call)
+    }
+    /// Sending failed before native admission; remove only this exact context.
+    #[cfg(any(target_os = "macos", test))]
+    pub(super) fn abandon_original_dispatch(&mut self, operation: u64) {
+        if let Some(entry) = self.entries.values_mut().find(|entry| {
+            entry
+                .original_load
+                .is_some_and(|pending| pending.context.operation == operation)
+        }) {
+            entry.original_load = None;
         }
     }
     pub(super) fn set_maximized(
@@ -656,12 +1318,25 @@ impl WindowRegistry {
             outcome => Ok(outcome),
         }
     }
+    // Existing state-table fixtures need no endpoint. Production always supplies
+    // the owning router's before-clear retirement callback below.
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
     pub(super) fn close_reply(
         &mut self,
         owner: WindowOwner,
         window: WindowRef,
         close_seq: u64,
         verdict: CloseVerdict,
+    ) -> Result<CloseOutcome, WindowError> {
+        self.close_reply_with_retirement(owner, window, close_seq, verdict, |_| {})
+    }
+    pub(super) fn close_reply_with_retirement(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+        close_seq: u64,
+        verdict: CloseVerdict,
+        before_clear: impl FnOnce(&Self),
     ) -> Result<CloseOutcome, WindowError> {
         let entry = self.admitted_entry(owner, window)?;
         let Phase::ClosePending(native, pending) = entry.phase else {
@@ -676,6 +1351,15 @@ impl WindowRegistry {
                 Ok(CloseOutcome::Vetoed)
             }
             CloseVerdict::Allow => {
+                // All admission predicates passed. The synchronous callback can
+                // still resolve this exact registered Entry before its clear.
+                before_clear(self);
+                let entry = self
+                    .entries
+                    .get_mut(&window.id.0)
+                    .ok_or(WindowError::StaleWindow)?;
+                #[cfg(target_os = "macos")]
+                entry.retire_renderer_document();
                 entry.phase = Phase::Closing(Some(native));
                 Ok(CloseOutcome::Teardown(Teardown {
                     window,
@@ -684,19 +1368,121 @@ impl WindowRegistry {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    pub(super) fn reserve_original_document_destroy(
+        &mut self,
+        owner: WindowOwner,
+        correlation: CorrelationId,
+        window: WindowRef,
+        admission: std::sync::Arc<keld_wv::wkwebview::OriginalDocumentDestroyAdmission>,
+    ) -> Result<WebviewId, WindowError> {
+        use keld_wv::wkwebview::OriginalDocumentDestroyDecision;
+        let entry = self.checked_entry(owner, window)?;
+        let view = match entry.phase {
+            Phase::Open(native) | Phase::ClosePending(native, _) => native.view,
+            _ => return Err(WindowError::OriginalDocumentCloseRefused),
+        };
+        if entry.original_destroy.is_some()
+            || entry.pending_destroy_count() >= MAX_PENDING_DESTROYS_PER_WINDOW
+            || admission.decision() != OriginalDocumentDestroyDecision::Pending
+        {
+            return Err(WindowError::OriginalDocumentCloseRefused);
+        }
+        let entry = self
+            .entries
+            .get_mut(&window.id.0)
+            .ok_or(WindowError::StaleWindow)?;
+        entry.original_destroy = Some(PendingOriginalDocumentDestroy {
+            call: Some(PendingWindowCall { owner, correlation }),
+            admission,
+        });
+        Ok(view)
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn original_document_destroy_decision(
+        &mut self,
+        view: WebviewId,
+        admission: &std::sync::Arc<keld_wv::wkwebview::OriginalDocumentDestroyAdmission>,
+    ) -> OriginalDocumentDestroyResolution {
+        let Some(entry) = self.entries.values_mut().find(|entry| {
+            entry.view() == Some(view)
+                && entry
+                    .original_destroy
+                    .as_ref()
+                    .is_some_and(|pending| std::sync::Arc::ptr_eq(&pending.admission, admission))
+        }) else {
+            return OriginalDocumentDestroyResolution::default();
+        };
+        entry.reconcile_original_destroy(true)
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn cancel_original_document_destroy(
+        &mut self,
+        window: WindowRef,
+    ) -> OriginalDocumentDestroyResolution {
+        let Some(entry) = self
+            .entries
+            .get_mut(&window.id.0)
+            .filter(|entry| entry.window == window)
+        else {
+            return OriginalDocumentDestroyResolution::default();
+        };
+        if let Some(pending) = &entry.original_destroy {
+            // Cancellation may lose to native acceptance; immediately reconcile
+            // the actual decision below instead of treating the bool as success.
+            let _ = pending.admission.cancel_before_admission();
+        }
+        entry.reconcile_original_destroy(false)
+    }
+    /// Caller holds transition/current. Cancel the SAME UI admission before
+    /// removing the role; Accepted synchronously becomes nonadoptable Closing.
+    #[cfg(target_os = "macos")]
+    pub(super) fn cancel_native_admissions(
+        &mut self,
+        owner: WindowOwner,
+        mut abandoned: impl FnMut(AbandonedClose),
+    ) {
+        for entry in self
+            .entries
+            .values_mut()
+            .filter(|entry| entry.owner == owner)
+        {
+            if let Some(pending) = &entry.original_destroy {
+                // Native may already have accepted. The immediate reconciliation
+                // below, rather than cancellation's bool, decides Closing.
+                let _ = pending.admission.cancel_before_admission();
+            }
+            let outcome = entry.reconcile_original_destroy(false);
+            if let Some(close) = outcome.abandoned {
+                abandoned(close);
+            }
+            // Role retirement owns link loss, not a new reply to a successor.
+        }
+    }
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
     pub(super) fn destroy(
         &mut self,
         owner: WindowOwner,
         window: WindowRef,
         correlation: CorrelationId,
+        abandoned: impl FnMut(AbandonedClose),
+    ) -> Result<CloseOutcome, WindowError> {
+        self.destroy_with_retirement(owner, window, correlation, abandoned, |_| {})
+    }
+    pub(super) fn destroy_with_retirement(
+        &mut self,
+        owner: WindowOwner,
+        window: WindowRef,
+        correlation: CorrelationId,
         mut abandoned: impl FnMut(AbandonedClose),
+        before_clear: impl FnOnce(&Self),
     ) -> Result<CloseOutcome, WindowError> {
         let entry = self.admitted_entry(owner, window)?;
         // Refuse before abandoning an existing close, enqueuing a correlation,
         // or sending an additional UI command. Prior admitted calls retain
         // their eventual correlated replies; this fresh call receives a typed
         // nonterminal ERR over the same authenticated writer.
-        if entry.destroy_calls.len() >= MAX_PENDING_DESTROYS_PER_WINDOW {
+        if entry.pending_destroy_count() >= MAX_PENDING_DESTROYS_PER_WINDOW {
             return Err(WindowError::PendingDestroyCapacity);
         }
         let native = match entry.phase {
@@ -708,10 +1494,21 @@ impl WindowRegistry {
             Phase::Closing(_) => None,
             Phase::Opening(_) | Phase::Destroyed(_) => return Err(WindowError::StaleWindow),
         };
+        if native.is_some() {
+            // Refused and already-closing requests cannot retire a route. Keep
+            // the old Entry available until its owning producer publishes false.
+            before_clear(self);
+        }
+        let entry = self
+            .entries
+            .get_mut(&window.id.0)
+            .ok_or(WindowError::StaleWindow)?;
         entry
             .destroy_calls
             .push(PendingWindowCall { owner, correlation });
         if let Some(native) = native {
+            #[cfg(target_os = "macos")]
+            entry.retire_renderer_document();
             entry.phase = Phase::Closing(Some(native));
             Ok(CloseOutcome::Teardown(Teardown {
                 window,
@@ -743,6 +1540,19 @@ impl WindowRegistry {
                 diagnostic: true,
                 destroy_calls: Vec::new(),
             };
+        }
+        #[cfg(any(target_os = "macos", test))]
+        {
+            entry.original_load = None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            entry.retire_renderer_document();
+            entry.original_selection = None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            entry.original_destroy = None;
         }
         entry.phase = Phase::Destroyed(Some(view));
         entry.adoptable = false;
@@ -803,6 +1613,8 @@ impl WindowRegistry {
         owner: WindowOwner,
         mut abandoned: impl FnMut(AbandonedClose),
     ) {
+        #[cfg(target_os = "macos")]
+        self.cancel_native_admissions(owner, &mut abandoned);
         let mut affected = false;
         for entry in self
             .entries
@@ -813,6 +1625,12 @@ impl WindowRegistry {
             entry.owner_live = false;
             entry.adoptable = false;
             entry.destroy_calls.clear();
+            #[cfg(target_os = "macos")]
+            entry.retire_renderer_document();
+            #[cfg(any(target_os = "macos", test))]
+            {
+                entry.original_load = None;
+            }
             match entry.phase {
                 Phase::Opening(_) => entry.phase = Phase::Closing(None),
                 Phase::ClosePending(native, close_seq) => {
@@ -871,7 +1689,25 @@ impl WindowRegistry {
         self.ready = false;
         self.deferred_last_window = false;
         for entry in self.entries.values_mut() {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(pending) = &entry.original_destroy {
+                    // Preserve an already-accepted native close by immediately
+                    // reconciling its decision even when cancellation loses.
+                    let _ = pending.admission.cancel_before_admission();
+                }
+                let outcome = entry.reconcile_original_destroy(false);
+                if let Some(close) = outcome.abandoned {
+                    emit(SessionEffect::CloseAbandoned(close));
+                }
+            }
             entry.adoptable = false;
+            #[cfg(target_os = "macos")]
+            entry.retire_renderer_document();
+            #[cfg(any(target_os = "macos", test))]
+            if let Some(pending) = entry.original_load.take() {
+                emit(SessionEffect::OriginalLoadInterrupted(pending.context.call));
+            }
             match entry.phase {
                 Phase::Opening(call) => {
                     entry.phase = Phase::Closing(None);

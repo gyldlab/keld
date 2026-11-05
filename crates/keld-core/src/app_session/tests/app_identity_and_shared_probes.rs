@@ -1,7 +1,43 @@
 const DIGEST: &str = "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-struct ReapedRouterProbe(std::process::Child);
+/// Existing test child cleanup owner, shared within app-session probes.
+pub(in crate::app_session) struct ReapedRouterProbe(std::process::Child);
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl ReapedRouterProbe {
+    /// Arm the existing owner immediately after a successful spawn.
+    pub(in crate::app_session) fn new(child: std::process::Child) -> Self {
+        Self(child)
+    }
+
+    /// The same existing cleanup owner reaps on every caller error/unwind.
+    /// Files avoid pipe deadlock; metadata checks reject a flooding probe.
+    pub(in crate::app_session) fn wait_bounded_stderr(
+        &mut self,
+        stderr: &std::fs::File,
+        max_bytes: u64,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let started = Instant::now();
+        loop {
+            if stderr.metadata()?.len() > max_bytes {
+                return Err(std::io::Error::other(
+                    "router probe stderr exceeded capture bound",
+                ));
+            }
+            if let Some(status) = self.0.try_wait()? {
+                return Ok(status);
+            }
+            if started.elapsed() >= Duration::from_secs(10) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "router probe exceeded ten-second cleanup bound",
+                ));
+            }
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ReapedRouterProbe {

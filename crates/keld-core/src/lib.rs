@@ -18,12 +18,14 @@ pub use argv::{NonUnicodeArgument, unicode_args};
 pub use echo_link::EchoEndpoint;
 pub use echo_link::{EchoServer, echo_roundtrip};
 pub use hello::{
-    AppVersionConfigError, AuthConfigError, DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER,
-    InitialWindowConfigError, auth_configuration_from_config_ts, entry_from_config_ts,
-    hello_title_from_args, host_hello_unknown_arg, initial_window_from_config_ts,
-    prepare_webview_process, read_config_entry, read_config_renderer, read_config_title,
-    renderer_from_config_ts, resolve_hello_title, run_hello_window, run_hello_window_html,
-    run_hello_window_titled, title_from_config_ts, version_from_config_ts,
+    AppVersionConfigError, ApplicationNameForUserAgentConfigError, AuthConfigError, DEFAULT_ENTRY,
+    DEFAULT_HELLO_TITLE, DEFAULT_RENDERER, InitialWindowConfigError, SingleInstanceConfigError,
+    SingleInstanceDeclaration, application_name_for_user_agent_from_config_ts,
+    auth_configuration_from_config_ts, entry_from_config_ts, hello_title_from_args,
+    host_hello_unknown_arg, initial_window_from_config_ts, prepare_webview_process,
+    read_config_entry, read_config_renderer, read_config_title, renderer_from_config_ts,
+    resolve_hello_title, run_hello_window, run_hello_window_html, run_hello_window_titled,
+    single_instance_from_config_ts, title_from_config_ts, version_from_config_ts,
 };
 pub use hello_session::{HelloSessionError, HostOwnedHelloSession};
 pub use lifecycle::LifecycleSession;

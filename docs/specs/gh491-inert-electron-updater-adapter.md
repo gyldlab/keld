@@ -1,7 +1,26 @@
 # Spec: inert `electron-updater` adapter for migrated apps (F09-T1, GH-491)
 
-Status: draft
-Linear: GH-491 (#517 tracker of record; KEL-127 reference) · Owner: @0monish · Updated: 2026-10-31
+Status: approved (scoped local MVP integration; no merge or release)
+
+Scoped developer-source selector correction under the existing owner delegation:
+`electron-updater` may select the exact local archive basename
+`keld-electron-updater-<canonical installed version>.tgz` through the existing
+bounded Electron file-selector grammar. Root dependency and locked-root specifier,
+installed canonical `@keld/electron-updater` identity/version, exact lock `resolved`
+spelling and strict SHA512 receipt must agree. The selector opens no archive path
+or authority. Root/lock receipts and exactly three Electron/API/KIPC provider
+fingerprints stay unchanged. Every selected updater file remains captured and
+postselection mutation refuses. Its separately selected archive digest records
+preparation provenance, with no fourth provider, graph field or permission.
+Linear: GH-491 (#517 tracker of record; KEL-127 reference) · Owner: @0monish · Updated: 2026-11-01
+
+Approval provenance: the repository owner supplied the P1-3 installed-package review
+findings and then explicitly delegated the remaining in-scope owner decisions to the
+root agent. The bounded adoption is recorded on
+[GH491](https://github.com/gyldlab/keld/issues/491#issuecomment-6561767767).
+It admits the inert adapter and the one-facade dependency/type correction below for
+local MVP composition. It does not approve an updater engine, extra graph provider,
+network authority, merge, release, or an unexecuted acceptance check.
 
 Source basis: `origin/main b72e4c19`. Upstream oracle: electron-updater **6.8.9**, the npm
 artifact drawio-desktop's lockfile pins by integrity
@@ -9,8 +28,8 @@ artifact drawio-desktop's lockfile pins by integrity
 at the #589 pin). On 2026-10-31 the registry tarball hashed to exactly that integrity and the
 ten files cited below byte-matched the restored `node_modules/electron-updater` copy. Line
 numbers are into that artifact's `out/*.js`. Consumer facts are from the pinned draw.io main
-process, `src/main/electron.js` at the #589 pin. This draft authorizes no merge; the
-implementation on its branch is review material until the exact text is approved.
+process, `src/main/electron.js` at the #589 pin. Source approval is separate from
+installed-graph and original-application acceptance; both still require actual evidence.
 
 ## 1. Goal & non-goals
 
@@ -158,10 +177,13 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
     package in every consumer's manifest, and the single-resolver rule (X02-A1) makes a
     dependency replacement the one mechanism; a sub-path would be a second resolver. Rejected.
 - Reuse: `node:events` for the emitter (as `@keld/electron/src/browser-window.ts` does);
-  `@keld/kipc`'s `KeldCallError` shape (`Error & { code }`) and `isCallError` predicate for the
-  typed refusal, with the registry's `"<code>: <detail>"` message form (`linkError`); sibling
-  packages reached by relative source path exactly as `@keld/electron` reaches `@keld/api`;
-  the `docs/engineering/keld-error-codes.md` registry held by `crates/keld-cli/tests/error_registry.rs`.
+  `@keld/kipc`'s `KeldCallError` shape (`Error & { code: string }`) and `isCallError`
+  predicate for the typed refusal, with the registry's `"<code>: <detail>"` message form
+  (`linkError`). The existing `Object.assign(new Error(...), { code })` factory infers
+  that same shape without a sibling source import or a copied type alias; strict installed
+  consumer checking compares it with the canonical KIPC export. The facade is reached through
+  its declared `electron` peer. The error registry remains
+  `docs/engineering/keld-error-codes.md`, held by `crates/keld-cli/tests/error_registry.rs`.
 - Compatibility fallback: `getFeedURL()` keeps upstream's deprecated literal; `setFeedURL`
   keeps upstream's `void` no-throw contract; both match cells of criterion 9 keep upstream's
   exact message text (a `KELD-*` code there would itself be a divergence).
@@ -174,17 +196,21 @@ Upstream citations are electron-updater 6.8.9 `out/AppUpdater.js` unless named o
   Alternative `@keld/updater-compat` rejected: it does not name the replaced package, which
   the X02-T3 manifest reviewer must recognise. Falsifier: the migrated manifest's
   `electron-updater` entry cannot name the package.
-- D2 **Reaching the facade.** `src/electron-app.ts` imports `app` from
-  `../../electron/src/index.ts` statically, as upstream's `ElectronAppAdapter` does
-  `require("electron").app` when the updater is constructed. Alternatives: (a) a lazy dynamic
-  import, rejected because upstream's gate is synchronous and laziness would only hide a facade
-  import-time regression that the app's own `import "electron"` hits first; (b) `import "electron"`
-  through the app's resolver, rejected because the repository's sibling convention is relative
-  source paths and a symlinked checkout cannot resolve `electron` from inside the repository.
-  Edge: this makes the facade's import-time purity part of criterion 2; today the transport
-  connects only inside functions (`packages/@keld/kipc/src/transport.ts:1287`, `:2600`) and its
-  Worker self-entry is guarded by `!isMainThread` (`:3760`). Falsifier: the import probe records
-  a socket or Worker.
+- D2 **Reaching the one installed facade.** `src/electron-app.ts` statically
+  imports `app` from `electron`, preserving upstream's synchronous fact-read failure.
+  The source package declares its exact Keld Electron peer and a development-only
+  `electron: link:../electron` for repository tests. The current Bun-only developer
+  artifact may retain `exports: ./src/index.ts` and be packed with scripts disabled;
+  its actual consumer must resolve the same installed Electron app as the main role.
+  No facade or transport is bundled or copied. The former sibling source import
+  targets a file absent from the canonical packed facade and is superseded by this
+  installed-package correction. No lazy import, false fact fallback or new update
+  I/O is introduced. Existing probe/self-check and synchronous missing-fact tests
+  remain. An owned bare consumer must fail before this correction, then pass with
+  canonical app identity and zero I/O. An actual local-archive package-manager
+  install must also satisfy the declared peer and strict installed-consumer typechecking
+  without sibling source files. These bounded checks do not establish Node execution,
+  original-app success or a new graph trust input.
 - D3 **Injectable application facts.** `AppUpdater`'s constructor takes `(options, app:
   AppAdapter)` with `AppAdapter = { readonly isPackaged: boolean; quit(): void | Promise<void> }`,
   the two upstream `AppAdapter` members this slice can observe (upstream's constructor is
@@ -255,7 +281,7 @@ export class AppUpdater extends EventEmitter<AppUpdaterEventMap> {
 
 // packages/@keld/electron-updater/src/error.ts
 export const UPDATE_CHECK_REFUSED = "KELD-COMPAT-050";
-export function updateCheckRefused(detail: string): KeldCallError; // Error & { code }
+export function updateCheckRefused(detail: string): Error & { code: string }; // inferred from the existing factory
 
 // packages/@keld/electron-updater/src/index.ts
 export { AppUpdater, NoOpLogger }; export const autoUpdater: AppUpdater;
@@ -329,14 +355,27 @@ uses the public `AppAdapter` seam and a test-only typed error; it proves propaga
 probe-visible purity, not Host fact delivery or installed-package resolution. Those composed
 acceptance checks remain with #452 and X02-T4.
 
+The installed-package regression additionally uses an actual offline package-manager
+installation of the independently selected SDK/updater archives, retaining the generated
+lock and every installed-file digest. A strict consumer (`skipLibCheck: false`) imports
+through the advertised package export; its internal factory type is compared with installed
+`@keld/kipc`'s canonical `KeldCallError`. The former source-relative type import must fail
+with `TS2307` before the correction. Deleting the factory's code field must fail both the
+type comparison and installed canonical `isCallError`; an incompatible Electron peer must
+make the actual installer reject. Frozen installation, one physical facade and runtime
+probe checks remain separate observables. This first-party developer fixture does not
+prove the original app's installed dependency graph or Host/native acceptance.
+
 ## 8. Review gates triggered
 
 - unsafe: none.
 - public API: **yes** (new package `@keld/electron-updater`: `autoUpdater`, `AppUpdater`,
   `NoOpLogger`, the types above, and one new registry code).
 - permission model: none (no grant, no host call).
-- dependency addition: none (Keld-owned package; its two devDependencies, `@types/bun 1.4.0`
-  and `typescript 7.0.2`, are the siblings' exact pins; no runtime dependency).
+- dependency addition: **yes** for owned Electron peer/source-development metadata;
+  no third-party version change. Generate and verify the source Bun lock using the
+  pinned package manager; no handwritten lock changes. All graph trust stays with
+  the existing approved three-provider developer/source contract.
 - wire protocol: none.
 
 ## 9. Perf impact

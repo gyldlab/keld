@@ -222,15 +222,21 @@ fn check_census_directory(
     Ok(())
 }
 
+fn sorted_census_children(directory: &Path) -> Result<Vec<fs::DirEntry>, HostAppError> {
+    let mut children = fs::read_dir(directory)
+        .map_err(|source| graph_error("directory census", source))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| graph_error("directory census", source))?;
+    children.sort_by_key(fs::DirEntry::file_name);
+    Ok(children)
+}
+
 fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppError> {
-    let root_meta = File::from(
-        retained
-            .as_fd()
-            .try_clone_to_owned()
-            .map_err(|source| graph_error("directory census", source))?,
-    )
-    .metadata()
-    .map_err(|source| graph_error("directory census", source))?;
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    let profile_started = validation_work_profile::start();
+    let root_meta = census_directory(retained, "")?
+        .metadata()
+        .map_err(|source| graph_error("directory census", source))?;
     let mut pending = vec![(root.to_owned(), String::new(), root_meta)];
     let mut files = Vec::new();
     let mut directories = Vec::new();
@@ -238,11 +244,7 @@ fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppE
     while let Some((directory, prefix, expected_dir)) = pending.pop() {
         let held = census_directory(retained, &prefix)?;
         check_census_directory(&directory, &held, &expected_dir)?;
-        let mut children = fs::read_dir(&directory)
-            .map_err(|source| graph_error("directory census", source))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| graph_error("directory census", source))?;
-        children.sort_by_key(fs::DirEntry::file_name);
+        let children = sorted_census_children(&directory)?;
         for child in children {
             entries = entries
                 .checked_add(1)
@@ -316,6 +318,18 @@ fn census(root: &Path, retained: &OwnedFd) -> Result<Vec<ObservedFile>, HostAppE
         .find(|path| !implied.contains(path.as_str()))
     {
         return Err(graph_error("unlisted directory", extra));
+    }
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    if profile_started.is_some() {
+        validation_work_profile::finish(
+            "graph.census",
+            profile_started,
+            Some(files.len()),
+            files
+                .iter()
+                .try_fold(0_u64, |sum, file| sum.checked_add(file.metadata.len())),
+            Some(directories.len()),
+        );
     }
     Ok(files)
 }
@@ -400,6 +414,10 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
             format!("missing={missing:?}; unlisted={unlisted:?}"),
         ));
     }
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    let profile_hash_started = validation_work_profile::start();
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    let mut profile_bytes = Some(0_u64);
     for (row, observed) in doc.files.iter().zip(&actual) {
         let file = open_relative_file(dir, &relative_path(&row.path)?, "graph file")?;
         let metadata = file
@@ -419,6 +437,10 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
             .try_clone()
             .map_err(|source| graph_error("file retained identity", source))?;
         let (actual_sha, count) = read_hash(file)?;
+        #[cfg(all(test, not(keld_core_native_renderer_main)))]
+        {
+            profile_bytes = profile_bytes.and_then(|bytes| bytes.checked_add(count));
+        }
         if count != row.size || actual_sha != parse_sha(&row.sha256)? {
             return Err(graph_error("file digest", &row.path));
         }
@@ -433,6 +455,14 @@ fn check_files(root: &Path, dir: &OwnedFd, doc: &GraphDocument) -> Result<(), Ho
             return Err(graph_error("file census identity", &row.path));
         }
     }
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    validation_work_profile::finish(
+        "graph.check_files.hash_and_identity",
+        profile_hash_started,
+        Some(doc.files.len()),
+        profile_bytes,
+        None,
+    );
     // The second physical census detects source/stage members inserted or
     // replaced after their first enumeration but before the final file hash.
     let final_census = census(root, dir)?;
@@ -471,13 +501,12 @@ fn installed_package_root(path: &str) -> Option<String> {
     None
 }
 
-/// Only the GH502 first-party packed Electron artifact is admissible as a
-/// local file dependency. Real npm offline installs record an absolute
-/// `file:/.../keld-electron-VERSION.tgz` value; no filesystem target is opened
-/// or trusted here. Its externally pinned package and lock source bytes,
-/// installed @keld/electron manifest and all three independently approved
-/// packed-provider tree digests still govern admission.
-fn first_party_file_electron_archive(alias: &str, version: &str) -> bool {
+/// Apply the existing bounded local-file spelling to only the fixed archive
+/// stem selected by the Electron or updater package owner. No filesystem target
+/// is opened or trusted here. Independently selected package/lock source bytes,
+/// canonical installed identities and the same three approved packed-provider
+/// fingerprints continue to govern this developer-owned source admission.
+fn first_party_file_archive(alias: &str, version: &str, archive_stem: &str) -> bool {
     const MAX_FILE_SPEC_BYTES: usize = 4096;
     let Some(raw) = alias.strip_prefix("file:") else {
         return false;
@@ -499,7 +528,7 @@ fn first_party_file_electron_archive(alias: &str, version: &str) -> bool {
     {
         return false;
     }
-    segments.rsplit('/').next() == Some(format!("keld-electron-{version}.tgz").as_str())
+    segments.rsplit('/').next() == Some(format!("{archive_stem}-{version}.tgz").as_str())
 }
 
 fn first_party_sha512_integrity(value: &str) -> bool {
@@ -513,6 +542,38 @@ fn first_party_sha512_integrity(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'+' | b'/'))
 }
 
+// This is the existing local-archive lock receipt rule, shared by the two
+// fixed first-party package selectors. It never opens the archive or mints a
+// provider identity; independently selected root/lock and graph inputs govern.
+fn validate_local_archive_receipt(
+    alias: &str,
+    installed: &serde_json::Value,
+    resolved_phase: &'static str,
+    integrity_phase: &'static str,
+) -> Result<(), HostAppError> {
+    if installed
+        .get("resolved")
+        .and_then(serde_json::Value::as_str)
+        != Some(alias)
+    {
+        return Err(graph_error(
+            resolved_phase,
+            "installed lock resolution differs from selected root archive",
+        ));
+    }
+    if !installed
+        .get("integrity")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(first_party_sha512_integrity)
+    {
+        return Err(graph_error(
+            integrity_phase,
+            "missing strict SHA-512 archive receipt",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_electron_archive(
     alias: &str,
     packages: &serde_json::Map<String, serde_json::Value>,
@@ -524,7 +585,7 @@ fn validate_electron_archive(
         .get("version")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| graph_error("lock", "installed Electron version missing"))?;
-    let local_first_party = first_party_file_electron_archive(alias, version);
+    let local_first_party = first_party_file_archive(alias, version, "keld-electron");
     if !alias.starts_with("npm:@keld/electron@") && !local_first_party {
         return Err(graph_error(
             "electron alias",
@@ -532,27 +593,177 @@ fn validate_electron_archive(
         ));
     }
     if local_first_party {
-        if installed_electron
-            .get("resolved")
-            .and_then(serde_json::Value::as_str)
-            != Some(alias)
-        {
-            return Err(graph_error(
-                "electron resolved archive",
-                "installed Electron lock resolution differs from approved root archive",
-            ));
+        validate_local_archive_receipt(
+            alias,
+            installed_electron,
+            "electron resolved archive",
+            "electron archive integrity",
+        )?;
+    }
+    Ok(())
+}
+
+// This is a conflict-language check, never a module resolver. A wildcard
+// pattern overlaps an entire protected family whenever its literal prefix can
+// start that family's root or one of its subpaths; suffixes cannot make an
+// unbounded subpath family safe. Protect private Electron and SDK subpaths too.
+fn reserved_configuration_mapping(pattern: &str) -> bool {
+    ["electron", "@keld/api", "@keld/kipc"]
+        .into_iter()
+        .any(|root| {
+            if let Some((prefix, _)) = pattern.split_once('*') {
+                root.starts_with(prefix)
+                    || prefix
+                        .strip_prefix(root)
+                        .is_some_and(|tail| tail.starts_with('/'))
+            } else {
+                pattern == root
+                    || pattern
+                        .strip_prefix(root)
+                        .is_some_and(|tail| tail.starts_with('/'))
+            }
+        })
+}
+
+// Only explicit captured relative JSON inputs are inspectable in this bounded
+// first-proof contract. Package lookup, config merging and module selection stay
+// with upstream Bun; unknown/escaping config sources remain unqualified.
+fn configuration_reference(file: &str, reference: &str) -> Result<String, HostAppError> {
+    if reference.len() > MAX_PATH_BYTES
+        || !(reference.starts_with("./") || reference.starts_with("../"))
+        || reference
+            .rsplit_once('.')
+            .is_none_or(|(_, extension)| extension != "json")
+    {
+        return Err(graph_error(
+            "configuration inheritance",
+            format!("{file}: unsupported {reference}"),
+        ));
+    }
+    let mut components = file
+        .rsplit_once('/')
+        .map_or_else(Vec::new, |(parent, _)| parent.split('/').collect());
+    for component in reference.split('/') {
+        match component {
+            "." => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return Err(graph_error(
+                        "configuration inheritance",
+                        format!("{file}: reference escapes the captured graph"),
+                    ));
+                }
+            }
+            other => components.push(other),
         }
-        if !installed_electron
-            .get("integrity")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(first_party_sha512_integrity)
+    }
+    let relative = components.join("/");
+    relative_path(&relative)?;
+    Ok(relative)
+}
+
+// Exact census spelling is not proof of physical absence on a filesystem
+// with case/normalization aliases. Reuse the nofollow directory owner and
+// accept only the kernel's typed missing-leaf result, never an I/O fault.
+fn missing_configuration_reference(dir: &OwnedFd, selected: &str) -> Result<(), HostAppError> {
+    let path = Path::new(selected);
+    let parent = path
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| graph_error("configuration inheritance", "missing relative parent"))?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| graph_error("configuration inheritance", "missing relative filename"))?;
+    let retained_parent = census_directory(dir, parent)?;
+    match nix::sys::stat::fstatat(
+        &retained_parent,
+        leaf,
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    ) {
+        Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Err(source) => Err(graph_error("configuration inheritance metadata", source)),
+        Ok(_) => Err(graph_error(
+            "configuration inheritance",
+            format!("{selected}: physical input exists without its exact captured spelling"),
+        )),
+    }
+}
+
+fn validate_configuration(
+    dir: &OwnedFd,
+    doc: &GraphDocument,
+    file: &str,
+    active: &mut BTreeSet<String>,
+    checked: &mut BTreeSet<String>,
+) -> Result<(), HostAppError> {
+    if checked.contains(file) {
+        return Ok(());
+    }
+    if active.len() >= MAX_COMPONENTS || !active.insert(file.to_owned()) {
+        return Err(graph_error(
+            "configuration inheritance",
+            format!("{file}: cycle or depth exceeds 64"),
+        ));
+    }
+    let config = read_json(dir, file)?;
+    if !config.is_object() || config.pointer("/compilerOptions/baseUrl").is_some() {
+        return Err(graph_error(
+            "unqualified configuration",
+            format!("{file}: non-object or unsupported baseUrl lookup"),
+        ));
+    }
+    if let Some(paths) = config.pointer("/compilerOptions/paths") {
+        let paths = paths
+            .as_object()
+            .ok_or_else(|| graph_error("unqualified configuration paths", file))?;
+        if let Some(pattern) = paths
+            .keys()
+            .find(|pattern| reserved_configuration_mapping(pattern))
         {
             return Err(graph_error(
-                "electron archive integrity",
-                "missing strict SHA-512 archive receipt",
+                "unapproved reserved tsconfig remapping",
+                format!("{file}: {pattern}"),
             ));
         }
     }
+    if let Some(inherited) = config.get("extends") {
+        let references = match inherited {
+            serde_json::Value::String(_) => std::slice::from_ref(inherited),
+            serde_json::Value::Array(references) if references.len() <= MAX_COMPONENTS => {
+                references.as_slice()
+            }
+            _ => {
+                return Err(graph_error(
+                    "configuration inheritance",
+                    format!("{file}: require at most 64 explicit relative JSON references"),
+                ));
+            }
+        };
+        for reference in references {
+            let reference = reference.as_str().ok_or_else(|| {
+                graph_error(
+                    "configuration inheritance",
+                    format!("{file}: non-string reference"),
+                )
+            })?;
+            let selected = configuration_reference(file, reference)?;
+            if doc
+                .files
+                .binary_search_by(|row| row.path.as_str().cmp(selected.as_str()))
+                .is_ok()
+            {
+                validate_configuration(dir, doc, &selected, active, checked)?;
+            } else {
+                missing_configuration_reference(dir, &selected)?;
+            }
+            // Missing in-graph relative build parents are preserved as data.
+            // The pinned local Bun/current-snapshot resolve-only and inert
+            // import proofs own acceptance of that observed case; no external
+            // source or arbitrary config package is opened to fill the gap.
+        }
+    }
+    active.remove(file);
+    checked.insert(file.to_owned());
     Ok(())
 }
 
@@ -563,6 +774,7 @@ fn validate_package_scopes(
 ) -> Result<(), HostAppError> {
     // Any actual installed package manifest must have a matching lock entry.
     // Source-internal src/package.json is not a second installed package.
+    let mut checked_configs = BTreeSet::new();
     for row in &doc.files {
         if let Some(root) = installed_package_root(&row.path) {
             let manifest = read_json(dir, &row.path)?;
@@ -610,11 +822,13 @@ fn validate_package_scopes(
             || row.path.ends_with("/jsconfig.json")
             || row.path == "jsconfig.json"
         {
-            let config = read_json(dir, &row.path)?;
-            if config.get("extends").is_some() || config.pointer("/compilerOptions/paths").is_some()
-            {
-                return Err(graph_error("unapproved tsconfig remapping", &row.path));
-            }
+            validate_configuration(
+                dir,
+                doc,
+                &row.path,
+                &mut BTreeSet::new(),
+                &mut checked_configs,
+            )?;
         }
         if row.path.ends_with("/bunfig.toml")
             || row.path.ends_with("/.bunfig.toml")
@@ -631,17 +845,12 @@ fn validate_updater_package(
     dir: &OwnedFd,
     root_dependencies: &serde_json::Map<String, serde_json::Value>,
     locked_root: &serde_json::Map<String, serde_json::Value>,
+    packages: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), HostAppError> {
     if let Some(updater) = root_dependencies
         .get("electron-updater")
         .and_then(serde_json::Value::as_str)
     {
-        if !updater.starts_with("npm:@keld/electron-updater@") {
-            return Err(graph_error(
-                "updater",
-                "foreign electron-updater is not approved",
-            ));
-        }
         if locked_root
             .get("electron-updater")
             .and_then(serde_json::Value::as_str)
@@ -660,6 +869,30 @@ fn validate_updater_package(
                 "updater",
                 "installed updater is not the inert adapter",
             ));
+        }
+        let version = installed
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| graph_error("updater", "installed updater version missing"))?;
+        // validate_package_scopes already binds this canonical manifest's
+        // version to the installed npm lock row; reuse that owner, not a parser.
+        let local = first_party_file_archive(updater, version, "keld-electron-updater");
+        if !updater.starts_with("npm:@keld/electron-updater@") && !local {
+            return Err(graph_error(
+                "updater",
+                "foreign electron-updater is not approved",
+            ));
+        }
+        if local {
+            let locked = packages
+                .get("node_modules/electron-updater")
+                .ok_or_else(|| graph_error("updater", "installed updater lock row missing"))?;
+            validate_local_archive_receipt(
+                updater,
+                locked,
+                "updater resolved archive",
+                "updater archive integrity",
+            )?;
         }
     }
     Ok(())
@@ -759,7 +992,7 @@ fn validate_package_data(dir: &OwnedFd, doc: &GraphDocument) -> Result<(), HostA
     if package.get("imports").is_some() {
         return Err(graph_error("unapproved root package imports", "imports"));
     }
-    validate_updater_package(dir, root_dependencies, locked_root)?;
+    validate_updater_package(dir, root_dependencies, locked_root, packages)?;
     Ok(())
 }
 
@@ -787,7 +1020,17 @@ fn validate_document(
     document: &GraphDocument,
 ) -> Result<(), HostAppError> {
     check_files(root, opened, document)?;
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    let profile_started = validation_work_profile::start();
     validate_package_data(opened, document)?;
+    #[cfg(all(test, not(keld_core_native_renderer_main)))]
+    validation_work_profile::finish(
+        "graph.package_config_json",
+        profile_started,
+        None,
+        None,
+        None,
+    );
     Ok(())
 }
 
@@ -1058,10 +1301,97 @@ pub struct VerifiedResourceAsset {
     pub sha256: [u8; 32],
 }
 
+enum InstalledPreloadMember {
+    Transport,
+    Runtime,
+}
+
+/// One canonical graph recheck supplies this source's descriptor, asset facts
+/// and selected stage provenance. Only the owning graph can construct it.
+#[derive(Debug)]
+pub(super) struct VerifiedWebAppSource {
+    code_root: OwnedFd,
+    assets: Vec<VerifiedResourceAsset>,
+    selected_stage_root: PathBuf,
+}
+
+impl VerifiedWebAppSource {
+    /// Transfer independent code-root custody and its captured asset facts.
+    /// The stage path records selection provenance for URI qualification; it
+    /// grants no resource authority and must not replace descriptor-relative I/O.
+    pub(super) fn into_parts(self) -> (OwnedFd, Vec<VerifiedResourceAsset>, PathBuf) {
+        (self.code_root, self.assets, self.selected_stage_root)
+    }
+}
+
 impl AdmittedStageGraph {
     #[must_use]
     pub fn graph_sha256(&self) -> [u8; 32] {
         self.graph_sha256
+    }
+
+    /// Prepare only the independently pinned original draw.io preload image.
+    /// The absolute main-role value selects a single retained stage member;
+    /// it grants no filesystem access and cannot choose another source.
+    /// Runs on the existing Core intake thread, before native construction.
+    ///
+    /// # Errors
+    /// Refuses aliases, root replacement, symlinks, nonregular or changed bytes,
+    /// source capacity exhaustion and missing canonical process facts.
+    pub fn prepare_original_preload(
+        &self,
+        absolute_selector: &Path,
+        additional_arguments: Vec<String>,
+        versions: std::collections::BTreeMap<String, String>,
+        budget: &keld_wv::wkwebview::AppPreloadBudget,
+    ) -> Result<keld_wv::wkwebview::AppPreloadImage, HostAppError> {
+        const MEMBER: &str = "src/main/electron-preload.js";
+        let selected = absolute_selector
+            .to_str()
+            .ok_or_else(|| graph_error("preload selector", "non UTF-8 selector"))?;
+        if selected.len() > 2_048
+            || !absolute_selector.is_absolute()
+            || selected.contains('\\')
+            || selected.contains('\0')
+            || selected
+                .split('/')
+                .skip(1)
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || absolute_selector != self.root.join(MEMBER)
+        {
+            return Err(graph_error(
+                "preload selector",
+                "not the exact independently pinned stage member",
+            ));
+        }
+        if root_identity(&self.root, &self.retained_root)? != self.root_identity {
+            return Err(graph_error(
+                "preload root",
+                "retained root identity changed",
+            ));
+        }
+        let reservation = budget
+            .reserve_window()
+            .map_err(|source| graph_error("preload capacity", source))?;
+        // The shared nofollow opener rejects every symlink component and opens
+        // NONBLOCK so FIFO/device refusal cannot stall intake before fstat.
+        let file = open_relative_file(&self.retained_root, Path::new(MEMBER), "original preload")?;
+        if file
+            .metadata()
+            .map_err(|source| graph_error("preload metadata", source))?
+            .len()
+            > keld_wv::wkwebview::MAX_APP_PRELOAD_BYTES as u64
+        {
+            return Err(graph_error("preload size", "512 KiB per-window limit"));
+        }
+        let bytes = read_bounded(
+            file,
+            keld_wv::wkwebview::MAX_APP_PRELOAD_BYTES,
+            "original preload",
+        )?;
+        reservation
+            .original_drawio(bytes, additional_arguments, versions)
+            .map_err(|source| graph_error("preload source", source))
     }
 
     /// Select the canonical installed transport from this admitted graph.
@@ -1072,37 +1402,80 @@ impl AdmittedStageGraph {
     /// # Errors
     /// Refuses a missing, replaced or changed canonical transport member.
     pub fn installed_transport_preload(&self) -> Result<PathBuf, HostAppError> {
-        const MEMBER: &str = "node_modules/@keld/kipc/transport.js";
+        self.installed_preload_member(&InstalledPreloadMember::Transport)
+    }
+
+    /// Select the fixed SDK runtime-facts wrapper from this admitted graph.
+    /// The produced API wrapper awaits its own initialization exchange through
+    /// the same installed KIPC transport; no application alias selects it.
+    /// Guardian still owns the complete graph recheck before each generation.
+    ///
+    /// # Errors
+    /// Refuses an absent, replaced or changed canonical SDK preload member.
+    pub fn installed_runtime_preload(&self) -> Result<PathBuf, HostAppError> {
+        self.installed_preload_member(&InstalledPreloadMember::Runtime)
+    }
+
+    fn installed_preload_member(
+        &self,
+        selected: &InstalledPreloadMember,
+    ) -> Result<PathBuf, HostAppError> {
+        let (member, phase, description) = match selected {
+            InstalledPreloadMember::Transport => (
+                "node_modules/@keld/kipc/transport.js",
+                "transport preload",
+                "canonical installed transport",
+            ),
+            InstalledPreloadMember::Runtime => (
+                "node_modules/@keld/api/runtime-preload.js",
+                "runtime preload",
+                "canonical installed runtime preload",
+            ),
+        };
         let row = self
             .graph
             .files
             .iter()
-            .find(|row| row.path == MEMBER)
-            .ok_or_else(|| {
-                graph_error(
-                    "transport preload",
-                    "canonical installed transport is absent",
-                )
-            })?;
+            .find(|row| row.path == member)
+            .ok_or_else(|| graph_error(phase, format!("{description} is absent")))?;
         root_identity(&self.root, &self.retained_root)?;
-        let file = open_relative_file(&self.retained_root, Path::new(MEMBER), "transport preload")?;
+        let file = open_relative_file(&self.retained_root, Path::new(member), phase)?;
         let (digest, size) = read_hash(file)?;
         if size != row.size || digest != parse_sha(&row.sha256)? {
-            return Err(graph_error(
-                "transport preload",
-                "canonical installed transport changed",
-            ));
+            return Err(graph_error(phase, format!("{description} changed")));
         }
-        Ok(self.root.join(MEMBER))
+        Ok(self.root.join(member))
+    }
+
+    /// Select native original-webapp custody and facts after one complete
+    /// canonical recheck, with no caller-selected path or alternate validator.
+    /// Native resource intake must still verify each file against these facts.
+    ///
+    /// # Errors
+    /// Refuses a changed stage, graph, captured member, missing webapp directory
+    /// or absent captured index.html before returning any source custody.
+    pub(super) fn verified_webapp_source(&self) -> Result<VerifiedWebAppSource, HostAppError> {
+        self.recheck()?;
+        let code_root = self.clone_code_root()?;
+        let assets = self.resource_assets()?;
+        Ok(VerifiedWebAppSource {
+            code_root,
+            assets,
+            selected_stage_root: self.root.clone(),
+        })
     }
 
     /// Retain an *independent* no-follow code-root directory handle for the
     /// GH542/GH473 native resource owner; the graph and Stage still own theirs.
     /// No descriptor is sent through an `AppWindowCommand` or page-facing field.
     pub fn clone_verified_code_root(&self) -> Result<OwnedFd, HostAppError> {
+        self.recheck()?;
+        self.clone_code_root()
+    }
+
+    fn clone_code_root(&self) -> Result<OwnedFd, HostAppError> {
         use nix::fcntl::{OFlag, openat};
         use nix::sys::stat::Mode;
-        self.recheck()?;
         let mut parent: Option<OwnedFd> = None;
         for component in ["drawio", "src", "main", "webapp"] {
             let anchor = parent
@@ -1125,6 +1498,10 @@ impl AdmittedStageGraph {
     /// native resource owner. There is no second scan or parser, and no grant.
     pub fn verified_resource_assets(&self) -> Result<Vec<VerifiedResourceAsset>, HostAppError> {
         self.recheck()?;
+        self.resource_assets()
+    }
+
+    fn resource_assets(&self) -> Result<Vec<VerifiedResourceAsset>, HostAppError> {
         let prefix = "drawio/src/main/webapp/";
         let mut assets = Vec::new();
         for entry in &self.graph.files {
@@ -1189,3 +1566,6 @@ fn package_tree_fingerprint(doc: &GraphDocument, prefix: &str) -> Result<[u8; 32
     }
     Ok(hasher.finalize().into())
 }
+
+#[cfg(all(test, not(keld_core_native_renderer_main)))]
+mod validation_work_profile;

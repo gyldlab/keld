@@ -111,9 +111,13 @@ pub mod wv_link;
 #[cfg(target_os = "macos")]
 pub use engine::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 pub use engine::{
-    AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
-    WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,
-    WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, ApplicationNameForUserAgent, BuildStage, DevtoolsAction,
+    LogicalSize, NavTarget, Rect, WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec,
+    WindowSnapshot, WkWebViewEngineExt,
+};
+#[cfg(target_os = "macos")]
+pub use engine::{
+    MacOriginalNavigationFact, NativeNavigationContext, NativeNavigationRefusal, OriginalEntryQuery,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};

@@ -195,7 +195,7 @@ fn a_reader_that_saw_the_handover_quit_reads_the_handover_fact() {
     });
     assert!(handle.request_handover().expect("a running session"));
     let (command, observed) = ui_loop.join().expect("UI loop stand-in");
-    assert_eq!(command, Ok(AppWindowCommand::Quit));
+    assert!(matches!(command, Ok(AppWindowCommand::Quit)));
     assert!(
         observed,
         "a reader that saw the handover's Quit must see the handover fact"

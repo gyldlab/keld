@@ -24,6 +24,9 @@ repository = "https://github.com/gyldlab/keld"
 authors = ["GYLDLAB"]
 
 [workspace.dependencies]
+# GH473 proposed reader-custody amendment: safe shutdown-only OS queue join.
+# Already locked through Tao; direct macOS use needs its own reviewed edge.
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
 keld-core = { path = "crates/keld-core" }
 keld-wv = { path = "crates/keld-wv" }
 keld-ipc = { path = "crates/keld-ipc" }
@@ -253,6 +256,12 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+# The original-app graph's debug SHA-256 work otherwise exceeds registration
+# clocks. Measured on the same bound graph; keep every digest/identity pass and
+# the existing software backend/version. Optimize only this concrete dependency.
+[profile.dev.package."sha2:0.10.9"]
+opt-level = 3
 
 # KEL-201: keep the Linux GTK3 graph with accepted gtk-rs-core corrections.
 # This immutable copy preserves the published glib 0.18.5 manifest and licenses.

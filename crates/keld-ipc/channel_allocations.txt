@@ -4,3 +4,5 @@ lifecycle 3
 auth 4
 window 5
 dialog 6
+compat-control 7
+menu 8

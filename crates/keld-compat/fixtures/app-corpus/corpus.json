@@ -199,8 +199,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/app-surface.test.ts",
-      "test_name": "app.request-single-instance-lock.primary-verdict today: the facade has no requestSingleInstanceLock, so the call throws a TypeError",
-      "negative_control": "Today: adding app.requestSingleInstanceLock to the facade without inverting this case fails it. After GH-453 inverts it: returning a constant true fails it for the second instance of the same declared app."
+      "test_name": "app.request-single-instance-lock.primary-verdict today: no qualified Host lock fact throws KELD-COMPAT-040 naming GH-453 instead of a boolean",
+      "negative_control": "Today: absent qualified Host capture must be typed KELD-COMPAT-040 with unavailable reason, never a boolean. This fail-closed subset does not qualify a Host lock or original app. After native GH453 no-argument qualification, a constant true must fail the paired same-id Host test; has/additionalData/events remain independently unqualified."
     },
     {
       "operation_id": "app.has-single-instance-lock.holder",

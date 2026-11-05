@@ -1696,3 +1696,164 @@ there (gh527 §10 Q1).
 
 None. The questions raised in the first draft were decided under the orchestrator's
 delegation, and D6 by the owner; all are recorded, with falsifiers, in §4.i.
+
+## Delegated owner amendment — N1 original-load transport (2026-11-01)
+
+The user delegated the existing protocol/Core/native owner choices for the corrected
+native→Core→App slice. This decision adopts the already prepared GH484 tag6 exactly,
+then appends N1 on the existing window channel. It does not activate Strict original
+content, add a grant or select an unqualified CSP/source. Source selection remains the
+existing typed graph/manifest owner's responsibility; missing source refuses.
+
+Exact append ledger (postcard field order is the order shown): existing request0–5,
+reply0–8 and event0–7 remain byte-identical. Request6 is the previously prepared
+`CreateWithPreload { width:u32,height:u32,x:Option<i32>,y:Option<i32>,preload_absolute:String,additional_arguments:Vec<String> }`.
+Request7 is `LoadUrl { window:WindowRef, uri:String }`. Reply9 is unit `Loaded`.
+Event8 is `NavigationCommitted { window:WindowRef,document_generation:u32,native_url:String }`.
+Event9 is `NavigationFinished { window:WindowRef,document_generation:u32 }`.
+The fields describe actual native observations, never a page epoch or principal.
+The main method returns `Promise<void>`; only an actual matching Finished callback
+can settle it. Core sends NavigationFinished before Loaded on its existing ordered
+writer. Committed only updates observed native URL and emits did-navigate.
+
+Before dispatch, WindowRegistry alone captures the immutable authenticated owner,
+original call correlation, exact WindowRef and mapped native WebviewId in its existing
+Entry and mints a checked nonzero nonwrapping u64 operation correlation. WV receives
+only `NativeNavigationContext { operation:NonZeroU64,view:WebviewId }` as data. Every
+Started/Committed/Finished/Failed/Refused event echoes the captured context; no late
+callback is matched to whichever call is latest. Busy refuses without replacement.
+Retirement/Destroy/Quit remove logical association; native physical custody continues
+under its existing owner. Queued stamps are history, so later privileged operations
+must recheck the living native document in their same UI turn. MacNativeDocumentStamp's
+read-only attempt accessor enables Core's exact Started→Committed check and mints none.
+
+The complete LoadUrl body is bounded to8192 bytes before decode; existing exact URI
+qualification bounds physical path to4096 bytes and query to2048 bytes. Unsupported,
+missing-source, busy and native preflight outcomes use correlated nonfatal CallError;
+they enqueue no unauthorized native work and never manufacture Finished. Existing
+pending-correlation replay, subscription and current-primary fences remain mandatory.
+The closed native pre-attempt Refused outcome is independent of NativeAttempt minting.
+
+Contract atoms and negative controls are recorded in the session's core-transport
+atomic-contract.md before implementation. Root owns final Rust/Bun codec vectors,
+real native proof, final privileged-operation checks, format, warning-denied clippy,
+workspace tests and publicAPI/wire/security independent gates. Component metadata/socket
+proof is not app/native success. No performance improvement is claimed.
+
+The Core error owner inspected the complete current registered CORE list (through049)
+and appends050 Busy,051 pre-attempt original-load refusal,052 admitted native-load
+failure,053 interrupted original load. These exact semantics and fixes are registered
+in docs/engineering/keld-error-codes.md under delegated owner authority. Counter
+exhaustion continues to use039 and wrong owner/window/readiness retain043/038/040.
+
+Internal Create6 ownership amendment: the existing CreateWindow command now carries
+optional immutable `preload_image:Option<Arc<AppPreloadImage>>` and
+`original_source:Option<Arc<AdmittedWebAppSource>>`; its Copy derive is removed.
+Create0 supplies neither. No second build map, pointer registry or queue is added.
+For Create6 the existing WindowRegistry Entry binds the exact selected manifest key,
+same source Arc and same image Arc before dispatch; the native view consumes that
+exact command pair and retains it through its real lifetime. Window identity is
+still the existing Host-minted pair/build, and the native view comes only from Built.
+Survivor adoption requires the same selection and image configuration; a mismatch
+refuses before consuming the existing adoption mark. Physical Released/failed-build
+cleanup releases the Entry image reference; role retirement preserves a live survivor.
+One Host-owned AppPreloadBudget accounts immutable images; source preparation retains
+the same admitted graph through Arc and uses trusted canonical Host versions, never
+values from WindowRequest. This is internal ownership data, not another app channel.
+
+Native navigation events use the existing bounded fixed-output codec approach with
+32KiB owned window-schema output storage. It carries the native source's unchanged
+2048-UTF16-unit admission bound and up-to8192-byte conservative UTF8 reservation
+without truncation. The URL credit stays with its move-only native wrapper until
+the synchronous writer finishes; Core stores no URL copy. Owning literal vectors
+qualify the borrowed encoder's exact tag/field order against the owned app decoder.
+
+Named-route internal supplement: the existing RegistryEntry may retain one native
+revocable document lease, authenticated against that Entry's actual nativeview,
+immutable sourceArc and Core-observed matching nativecommit. RendererRoute exposes
+the same HostWindowRef, nativelease and borrowed verified manifestwindowkey; no
+second URL/documentmap or JS epoch is minted. Current/original reply lookup checks
+exact optional nativegeneration and current native revocation every time. Roleloss,
+Started, closing, failure/revoke, Destroy and Released retire logical routing.
+Native URL/origin come only from the nativelease; a stored historical stamp cannot
+prove currentness. Final privileged native effects retain same-turn livingowner
+checks. Native Committed must publish before matching namedMessage; a racing unseen
+lease refuses rather than synthesizing a commit. Root owns actual producer-order,
+firstoutgoing and retirement proofs, independently of component mapping tests.
+
+The actual native Committed event also carries the already minted revocable native
+lease, read from the sole living owner in that same actual commit branch. Core
+adopts it only after exact context/attempt/stamp/current/sourceArc checks, making
+current-target main sends available before the first incoming message. No snapshot
+can construct this lease. Per-message URL/origin still come from actual frame facts.
+The source stores opaque ResolvedWindowCsp directly; Core neither renders a raw
+header wrapper nor duplicates the selected windowkey. Successor installation checks
+its captured runtime versions against the immutable original selection. Main-owner
+stopping retires the actual compat caller under transition/current before readerstop,
+and always attempts existing Ending/cleanup while preserving retirement errors.
+
+### Scoped original-document teardown amendment — 2026-11-01
+
+Approved for local MVP implementation under the user's explicit owner delegation;
+record: GH531 issuecomment-6562572408. Runtime acceptance and exact final independent
+review remain required. This supplements the existing window/native owners and does
+not narrow generic Destroy or qualify full dirty-window Quit.
+
+Append request8 `DestroyOriginalDocument { window:WindowRef,
+document_generation:u32 }` to the existing window payload. Preserve request0–7 and
+all existing reply/event vectors. The selector is the existing native generation
+captured by the original IPC event, not a JS epoch or grant. Core resolves it through
+the authenticated current caller, exact Entry/native view and source-bound live
+native lease. Invalid/stale/unavailable inputs refuse without native release. Reuse
+the existing correlated CallError and, after real physical release, Destroyed reply.
+CORE054 is reserved for refusal before admission; effect-unknown failures after
+admission retain the existing terminal/link-loss behavior.
+
+The existing Entry, command and native decision may share one bounded admission
+object with private Pending -> Accepted or Refused/Cancelled terminal transitions.
+Native checks actual view/source/current document, claims admission and irreversibly
+retires that document in the same non-reentrant UI turn, then uses the existing
+release/drain owner. Role retirement cancels Pending on that same object before
+removing the current role or installing a successor. If native acceptance already
+won, Core reconciles Closing/nonadoptability before handover even when the native
+decision is still queued. Match the exact retained object, not a new counter or map.
+Refusal changes only its own pending correlation, never B's phase, Ready, lease or
+close sequence. Existing generic Destroy and session end reconcile the same object.
+
+The private close attempt must consume the genuine same-role/correlation
+CloseReply -> ReplyApplied(Veto) response before becoming retryable. This response
+accepts the verdict and is not physical release. Successful source bookkeeping
+requires actual WindowReleased, its preceding Host Destroyed fact and the exact
+correlated Destroyed response. A stale completion cannot clear another document's
+attempt or successor state. Legacy direct filesystem unlink is a separate boundary;
+this amendment adds no broker, file authority or cancellation guarantee for it.
+
+Required independent observables: same-view/same-URL A queued before B begins;
+both native-admission/role-retirement race winners; stale role and correlation;
+held Veto acknowledgment; held physical drain; and a control removing the native
+current-document check. Preserve blocking generic destroy's closed/last-window
+ordering. Component tests, inert native fixtures and an original-app workflow are
+separate evidence; none substitutes for the others. No performance claim is made.
+
+The disclosed migrated source consumes exactly one internal installed alias,
+`electron/internal/original-ipc`, approved in GH531 issuecomment-6562620826.
+Its tiny module re-exports only isCurrentOriginalIpcDocument,
+awaitOriginalIpcCloseVeto and destroyOriginalIpcDocument from the same ipc-main
+module and retained-event weak capability. Package production must preserve that
+one module instance across the public and internal entries; installed alias identity
+is an independent test. Forged/retired events refuse. Sender checks use truthful
+native frame/URL/origin plus the live capability, never a fixture authority or forged
+file URL. Existing physical Destroyed fact application and closed/all-closed order
+remain unchanged; only migrated-source wins/Ready/success bookkeeping awaits the
+conditional operation's physical fact and exact response.
+
+The same delegated record approves a local Quit handoff only for qualified
+original-source/schema5, actual Ready and exactly one current window. Other apps,
+unknown/pre-Ready and multiple windows retain COMPAT012; zero-window and IPC007
+behavior remain. D2 synchronous cancelable before-quit and Promise coalescing stay
+intact. Join any genuine authenticated pending close for that exact window/role;
+settle the active Promise at its actual close fact before user listeners, then clear
+it. Do not detach early or synthesize/defer historical all-closed. A later RequestClose
+error is effect-unknown: preserve its exact cause and retire the original link,
+without silent logging-only success, retry/reconnect or successor force-Quit. Full
+will-quit, multiwindow sweep, OS/Dock/menu Quit and physical acceptance are separate.

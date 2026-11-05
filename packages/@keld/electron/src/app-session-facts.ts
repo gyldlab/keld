@@ -90,11 +90,11 @@ const FORBIDDEN_SOURCES =
 export class AppSessionFactError extends Error {
   override readonly name: string = "AppSessionFactError";
   readonly code: AppSessionFactCode;
-  readonly fact: AppSessionFact | undefined;
+  readonly fact: AppSessionFact | "singleInstance" | undefined;
 
   constructor(
     code: AppSessionFactCode,
-    fact: AppSessionFact | undefined,
+    fact: AppSessionFact | "singleInstance" | undefined,
     detail: string,
   ) {
     super(`${code}: ${detail}`);
@@ -238,4 +238,28 @@ export function defineSessionFactAccessors<T extends object>(
     },
   });
   return target as T & AppSessionFactAccessors;
+}
+
+/** GH453 no-argument subset; reads only qualified immutable Host data. */
+export function readSingleInstanceVerdict(): boolean {
+  const captured = hostLaunchFacts;
+  if (
+    captured === undefined ||
+    (captured.schema !== 4 && captured.schema !== 5) ||
+    captured.singleInstance === undefined
+  ) {
+    const unavailable =
+      captured === undefined ||
+      (captured.schema !== 4 && captured.schema !== 5);
+    // Use the existing session-fact error owner for this approved bounded subset.
+    throw Object.assign(
+      new AppSessionFactError(
+        SESSION_FACT_NOT_DELIVERED,
+        "singleInstance",
+        `app.requestSingleInstanceLock() ${unavailable ? "has no qualified Host single-instance verdict" : "requires a missing singleInstance declaration"}. GH-453 owns this contract. Fix: use the reviewed singleInstance: { id: "org.keld.firstproof.drawio" } config and qualified compiler/Host; keld migrate declaration emission remains GH497-owned until implemented.`,
+      ),
+      { reason: unavailable ? "unavailable" : "undeclared" },
+    );
+  }
+  return captured.singleInstance.verdict === "acquired";
 }

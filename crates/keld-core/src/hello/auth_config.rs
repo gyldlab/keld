@@ -117,6 +117,71 @@ where
     Ok(Some(value))
 }
 
+/// Invalid literal user-agent application metadata; no config code was executed.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ApplicationNameForUserAgentConfigError {
+    detail: String,
+}
+
+impl std::fmt::Display for ApplicationNameForUserAgentConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid applicationNameForUserAgent: {}. Declare one literal root string with 1..=256 visible ASCII bytes and internal spaces only; remove expressions, duplicates, computed keys, accessors and spreads.",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for ApplicationNameForUserAgentConfigError {}
+
+/// Reads optional cold application metadata through the shared literal scanner.
+/// No package, environment, runtime fact or permission supplies a fallback.
+///
+/// # Errors
+/// Rejects ambiguous/nonliteral syntax and values refused by the WV value owner.
+pub fn application_name_for_user_agent_from_config_ts(
+    source: &str,
+) -> Result<Option<keld_wv::ApplicationNameForUserAgent>, ApplicationNameForUserAgentConfigError> {
+    let invalid = |_| ApplicationNameForUserAgentConfigError {
+        detail: String::from("the exported root property must be unique and literal"),
+    };
+    let Some(value) =
+        root_facade_property_slice(source, "applicationNameForUserAgent").map_err(invalid)?
+    else {
+        return Ok(None);
+    };
+    if value.len() > 64 * 1024 {
+        return Err(ApplicationNameForUserAgentConfigError {
+            detail: String::from("the literal source exceeds 64 KiB"),
+        });
+    }
+    let tokens = config_tokens(value).map_err(invalid)?;
+    let [ConfigToken::Text(text)] = tokens.as_slice() else {
+        return Err(ApplicationNameForUserAgentConfigError {
+            detail: String::from("only a literal string is supported"),
+        });
+    };
+    keld_wv::ApplicationNameForUserAgent::new(text.clone())
+        .map(Some)
+        .map_err(|error| ApplicationNameForUserAgentConfigError {
+            detail: error.to_string(),
+        })
+}
+
+pub(crate) fn deserialize_optional_application_name_for_user_agent<'de, D>(
+    deserializer: D,
+) -> Result<Option<keld_wv::ApplicationNameForUserAgent>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Only omission selects default; a present null must not erase the request.
+    let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+    keld_wv::ApplicationNameForUserAgent::new(value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
+
 /// Whether the exported root selects an app-owned first window.
 ///
 /// Missing config retains the renderer-declared schema-1 boot. A present root
@@ -158,7 +223,7 @@ fn auth_config_error(detail: &'static str) -> AuthConfigError {
     AuthConfigError { detail }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ConfigToken {
     Word(String),
     Text(String),
@@ -399,4 +464,101 @@ impl ConfigReader<'_> {
         serde_json::from_value(serde_json::Value::Object(fields))
             .map_err(|_| auth_config_error("invalid auth configuration fields"))
     }
+}
+
+/// Literal cooperative app-id declaration; not an application principal or path.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SingleInstanceDeclaration {
+    #[serde(deserialize_with = "deserialize_single_instance_id")]
+    id: String,
+}
+
+impl SingleInstanceDeclaration {
+    /// Returns the admitted local coordination id, never a grant or principal.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// The single-instance declaration was not one bounded literal config object.
+#[derive(Debug, Clone, Copy)]
+pub struct SingleInstanceConfigError;
+impl std::fmt::Display for SingleInstanceConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid singleInstance declaration. Use one literal singleInstance: {{ id: \"org.keld.firstproof.drawio\" }} object with a 1..128-byte lowercase dotted id; remove expressions, accessors, computed keys, extra fields and spreads."
+        )
+    }
+}
+impl std::error::Error for SingleInstanceConfigError {}
+
+fn validate_single_instance_id(id: &str) -> Result<(), SingleInstanceConfigError> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id.split('.').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('-')
+                && !part.ends_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+    {
+        return Err(SingleInstanceConfigError);
+    }
+    Ok(())
+}
+fn deserialize_single_instance_id<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = <String as serde::Deserialize>::deserialize(d)?;
+    validate_single_instance_id(&id).map_err(serde::de::Error::custom)?;
+    Ok(id)
+}
+/// Extracts the literal-only single-instance field using the one root scanner.
+/// # Errors
+/// Refuses unsupported dynamic or ambiguous values without evaluating config code.
+pub fn single_instance_from_config_ts(
+    source: &str,
+) -> Result<Option<SingleInstanceDeclaration>, SingleInstanceConfigError> {
+    let Some(value) = root_facade_property_slice(source, "singleInstance")
+        .map_err(|_| SingleInstanceConfigError)?
+    else {
+        return Ok(None);
+    };
+    if value.len() > 1024 {
+        return Err(SingleInstanceConfigError);
+    }
+    let tokens = config_tokens(value).map_err(|_| SingleInstanceConfigError)?;
+    let trimmed = match tokens.as_slice() {
+        [
+            head @ ..,
+            ConfigToken::Symbol(','),
+            ConfigToken::Symbol('}'),
+        ] => {
+            let mut copy = head.to_vec();
+            copy.push(ConfigToken::Symbol('}'));
+            copy
+        }
+        _ => tokens,
+    };
+    let [
+        ConfigToken::Symbol('{'),
+        key,
+        ConfigToken::Symbol(':'),
+        ConfigToken::Text(id),
+        ConfigToken::Symbol('}'),
+    ] = trimmed.as_slice()
+    else {
+        return Err(SingleInstanceConfigError);
+    };
+    if !matches!(key, ConfigToken::Word(key) | ConfigToken::Text(key) if key == "id") {
+        return Err(SingleInstanceConfigError);
+    }
+    validate_single_instance_id(id)?;
+    Ok(Some(SingleInstanceDeclaration { id: id.clone() }))
 }

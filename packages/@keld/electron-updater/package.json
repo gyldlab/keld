@@ -16,6 +16,10 @@
   ],
   "devDependencies": {
     "@types/bun": "1.4.0",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "electron": "link:../electron"
+  },
+  "peerDependencies": {
+    "electron": "0.0.1"
   }
 }

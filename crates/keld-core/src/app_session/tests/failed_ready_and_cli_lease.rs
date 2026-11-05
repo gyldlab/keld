@@ -45,6 +45,10 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
         auth_commands: None,
         #[cfg(target_os = "macos")]
         dialog: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
+        #[cfg(target_os = "macos")]
+        compat: None,
         guardian: PlatformPrimaryOwnerHandle {
             command_tx: guardian_tx,
         },
@@ -98,12 +102,12 @@ fn failed_link_recovery_signal_wakes_ui_fatal() {
     .expect("link failure router");
     router.handle().signal_ready().expect("link failure Ready");
     drop(client);
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("link failure UI wake"),
         AppWindowCommand::Fatal
-    );
+    ));
     assert!(
         router.shutdown().is_err(),
         "link failure vanished at shutdown"
@@ -257,12 +261,12 @@ fn cli_lease_loss_closes_link_before_reap_and_sends_no_quit_reply() {
         "lease loss must not write a fabricated lifecycle reply"
     );
     eof_tx.send(()).expect("record lease-loss EOF");
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("lease-loss UI Quit wake"),
         AppWindowCommand::Quit
-    );
+    ));
     let terminal = pending
         .reply
         .recv_timeout(Duration::from_secs(2))
@@ -374,12 +378,12 @@ fn cli_lease_loss_during_generation_gap_runs_the_shutdown_tail() {
         "acknowledged tail must publish the reserved cause"
     );
     assert!(shutdown.tail_started.load(Ordering::Acquire));
-    assert_eq!(
+    assert!(matches!(
         window_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("gap UI Quit"),
         AppWindowCommand::Quit
-    );
+    ));
     router.shutdown().expect("gap router shutdown");
     guardian_thread.join().expect("gap guardian thread joins");
 }

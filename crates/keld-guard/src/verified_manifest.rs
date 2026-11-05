@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-use crate::{ManifestError, PermissionsManifest, parse_manifest_at, read_manifest_bytes};
+use crate::{
+    ManifestError, PermissionsManifest, ResolvedWindowCsp, WindowCspProfile, parse_manifest_at,
+    read_manifest_bytes,
+};
 
 /// Parsed permissions paired with the SHA-256 verified over its exact source bytes.
 ///
@@ -38,6 +41,63 @@ impl VerifiedManifest {
     pub const fn verified_sha256(&self) -> [u8; 32] {
         self.verified_sha256
     }
+
+    /// Resolves one Host-selected key through the sole immutable policy catalog.
+    ///
+    /// Directly parsed data cannot mint this verified result:
+    ///
+    /// ```compile_fail
+    /// if let Ok(data) = keld_guard::parse_manifest("{}") {
+    ///     let _policy = data.resolve_window_csp("main");
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns `KELD-GUARD005` when the key has no selected CSP. This never
+    /// synthesizes a default policy or derives a response from `/app/net`.
+    pub fn resolve_window_csp(&self, key: &str) -> Result<ResolvedWindowCsp, ManifestError> {
+        let profile = self.manifest.windows.get(key).and_then(|window| window.web.csp)
+            .ok_or_else(|| ManifestError::Parse {
+                path: None,
+                detail: format!("window {key:?} has no verified CSP selector; set windows.<key>.web.csp to the qualified named policy before loading content"),
+            })?;
+        Ok(ResolvedWindowCsp::new(key, self.verified_sha256, profile))
+    }
+
+    /// Resolves the sole key for a Host-selected resource policy class.
+    ///
+    /// The caller supplies a closed profile, never an application-selected key.
+    /// Every relevant native view must still bind this key through its current
+    /// Core registry association before loading content.
+    ///
+    /// # Errors
+    /// Returns `KELD-GUARD005` for zero or multiple matching keys. A missing or
+    /// ambiguous mapping never guesses `main`, picks the first key or defaults.
+    pub fn resolve_unique_window_csp(
+        &self,
+        profile: WindowCspProfile,
+    ) -> Result<ResolvedWindowCsp, ManifestError> {
+        let mut keys = self
+            .manifest
+            .windows
+            .iter()
+            .filter(|(_, window)| window.web.csp == Some(profile))
+            .map(|(key, _)| key);
+        let key = keys.next().ok_or_else(|| ManifestError::Parse {
+            path: None,
+            detail: format!("no window selects {}; declare exactly one trusted window key before loading original resources", profile.as_str()),
+        })?;
+        if keys.next().is_some() {
+            return Err(ManifestError::Parse {
+                path: None,
+                detail: format!(
+                    "multiple windows select {}; declare exactly one trusted window key for this resource class",
+                    profile.as_str()
+                ),
+            });
+        }
+        self.resolve_window_csp(key)
+    }
 }
 
 /// Reads, verifies, UTF-8 decodes, and parses one already-validated file handle.
@@ -52,7 +112,7 @@ impl VerifiedManifest {
 /// [`ManifestError::TooLarge`] when it exceeds the shared 64 KiB ceiling,
 /// [`ManifestError::IntegrityMismatch`] when its exact bytes do not match
 /// `expected_sha256`, [`ManifestError::InvalidUtf8`] for non-UTF-8 bytes, or
-/// [`ManifestError::Parse`] for malformed JSONC, or
+/// [`ManifestError::Parse`] for malformed JSONC or reserved window CSP metadata, or
 /// [`ManifestError::InvalidAuthScope`] for a malformed auth issuer grant.
 pub fn load_verified_manifest(
     file: File,

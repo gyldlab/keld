@@ -28,8 +28,10 @@ mod admit;
 mod jsonc;
 mod manifest_profile;
 mod probe;
+mod renderer_channels;
 mod unique_json;
 pub mod verified_manifest;
+mod window_csp;
 #[cfg(windows)]
 mod windows_authenticode;
 #[cfg(windows)]
@@ -55,6 +57,8 @@ pub mod capability {
     pub const AUTH_TOKEN: &str = "auth.token";
     /// Exact native dialog admission (`app.system` literal list).
     pub const DIALOG: &str = "system.dialog";
+    /// Exact native menu admission (`app.system` literal list).
+    pub const MENU: &str = "system.menu";
 }
 
 #[cfg(windows)]
@@ -85,6 +89,7 @@ pub use windows_owner_private::{
     windows_owner_private_directory_security, windows_owner_private_file_security,
 };
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -116,6 +121,11 @@ pub use admit::{
 };
 pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
+pub use renderer_channels::{
+    BorrowedHostWindowGrants, GuardQuery, NativeCapabilityQuery, RendererChannelPermit,
+    RendererChannelQuery, evaluate_query,
+};
+pub use window_csp::{ResolvedWindowCsp, WindowCspProfile};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
 ///
@@ -179,9 +189,9 @@ impl Principal {
 
 /// The outcome of a guard check.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// Operation may proceed under the first matching manifest grant.
-    Allow(ScopePermit),
+pub enum Decision<Permit = ScopePermit> {
+    /// Operation may proceed with the selected query kind's opaque permit.
+    Allow(Permit),
     /// Operation is denied; the reason is safe to surface to developers.
     Deny(DenyReason),
 }
@@ -635,7 +645,8 @@ impl std::error::Error for ManifestError {}
 /// Parsed `keld.permissions.jsonc`.
 ///
 /// The optional root `profile` declares strict or legacy; it grants no capability.
-/// Unrelated unknown keys stay ignored. v0 evaluate reads
+/// Unrelated unknown keys stay ignored. Reserved window `web` metadata accepts
+/// only the closed CSP selector; unknown web capabilities are refused. v0 evaluate reads
 /// `app.<group>.<action>` string arrays as path/host scopes.
 ///
 /// Direct Serde deserialization constructs data only; it is not the validated
@@ -649,6 +660,8 @@ pub struct PermissionsManifest {
     app: Map<String, Value>,
     #[serde(default, deserialize_with = "manifest_profile::deserialize_present")]
     profile: Option<DeclaredProfile>,
+    #[serde(default)]
+    windows: BTreeMap<String, window_csp::WindowPolicy>,
 }
 
 impl fmt::Debug for PermissionsManifest {
@@ -659,6 +672,9 @@ impl fmt::Debug for PermissionsManifest {
         output.field("app", &self.app);
         if let Some(profile) = self.profile {
             output.field("profile", &profile);
+        }
+        if !self.windows.is_empty() {
+            output.field("windows", &self.windows);
         }
         output.finish()
     }
@@ -674,12 +690,21 @@ impl PermissionsManifest {
     pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
         self.profile
     }
+
+    /// Whether authoring data declares any window CSP selector.
+    ///
+    /// This is not qualification or authority. Cold tooling uses it only to
+    /// require the independent Host/package pair before staging selected policy.
+    #[must_use]
+    pub fn declares_window_csp(&self) -> bool {
+        self.windows.values().any(|window| window.web.csp.is_some())
+    }
 }
 
 /// JSON pointer under `app` for a dotted capability (`fs.read` → `/app/fs/read`).
 #[must_use]
 pub fn json_pointer_for(capability: &str) -> String {
-    if capability == capability::DIALOG {
+    if matches!(capability, capability::DIALOG | capability::MENU) {
         return "/app/system".to_owned();
     }
     if capability.is_empty() {
@@ -700,7 +725,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
 /// malformed, not a JSON object, or contains an invalid/misplaced explicit
-/// security-profile declaration. Returns [`ManifestError::InvalidAuthScope`]
+/// security-profile, exact window-channel or reserved window-web CSP declaration. Returns
+/// [`ManifestError::InvalidAuthScope`]
 /// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
@@ -787,11 +813,19 @@ fn parse_manifest_at(
         path: path.map(Path::to_path_buf),
         detail: detail.to_owned(),
     })?;
+    window_csp::validate_structure(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
+    })?;
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {
             path: path.map(Path::to_path_buf),
             detail: e.to_string(),
         })?;
+    window_csp::validate_keys(&manifest.windows).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail,
+    })?;
     for capability in [capability::AUTH_BEGIN, capability::AUTH_TOKEN] {
         let Some(scopes) = grant_node(&manifest, capability).and_then(Value::as_array) else {
             continue;
@@ -847,17 +881,40 @@ pub fn evaluate(
     if principal != Principal::AppProcess {
         return Decision::Deny(DenyReason::NotAppProcess { principal });
     }
-    if operation == capability::DIALOG {
-        let exact = manifest
-            .app
-            .get("system")
-            .and_then(Value::as_array)
-            .is_some_and(|items| items.len() == 1 && items[0].as_str() == Some("dialog"));
-        return if exact && path == "dialog" {
-            Decision::Allow(ScopePermit { grant_index: 0 })
+    if matches!(operation, capability::DIALOG | capability::MENU) {
+        let literal = if operation == capability::DIALOG {
+            "dialog"
         } else {
-            deny_not_granted(operation, path)
+            "menu"
         };
+        let Some(items) = manifest.app.get("system").and_then(Value::as_array) else {
+            return deny_not_granted(operation, path);
+        };
+        // One closed, deduplicated resource-less grammar owns both operations.
+        // The count bound rejects oversized/duplicate/unknown mixtures before
+        // searching; Allow remains allocation-free on the privileged hot path.
+        if items.is_empty() || items.len() > 2 || path != literal {
+            return deny_not_granted(operation, path);
+        }
+        for (index, item) in items.iter().enumerate() {
+            let Some(value) = item.as_str() else {
+                return deny_not_granted(operation, path);
+            };
+            if !matches!(value, "dialog" | "menu")
+                || items[..index]
+                    .iter()
+                    .any(|prior| prior.as_str() == Some(value))
+            {
+                return deny_not_granted(operation, path);
+            }
+        }
+        return items
+            .iter()
+            .position(|item| item.as_str() == Some(literal))
+            .map_or_else(
+                || deny_not_granted(operation, path),
+                |grant_index| Decision::Allow(ScopePermit { grant_index }),
+            );
     }
     let Some(node) = grant_node(manifest, operation) else {
         return deny_not_granted(operation, path);

@@ -11,6 +11,8 @@ export interface MirrorSource<Fact> {
   apply(fact: Fact): void;
   /** Application callbacks, invoked only by the existing event dispatcher. */
   dispatch(fact: Fact): void;
+  /** Optional physical-ring completion; does not assert native quiescence. */
+  released?(fact: Fact): void;
 }
 
 /**
@@ -28,6 +30,7 @@ export function attachMirror<Fact>(
   const decode = source.decode;
   const apply = source.apply;
   const dispatch = source.dispatch;
+  const released = source.released;
   // Existing ring admission bounds pending + currently dispatched facts. These
   // private own slots never append/shift or expose storage to application code.
   const capacity = link.stateFactCapacity;
@@ -54,7 +57,7 @@ export function attachMirror<Fact>(
       );
     }
   });
-  link.onEvent(channel, () => {
+  const takeAndDispatch = (): Fact => {
     if (count === 0) {
       throw linkError(
         "KELD-IPC-005",
@@ -68,5 +71,14 @@ export function attachMirror<Fact>(
     head = (head + 1) % capacity;
     count -= 1;
     stateApply(dispatch, source, [fact]);
-  });
+    return fact;
+  };
+  if (released === undefined) {
+    link.onEvent(channel, takeAndDispatch);
+  } else {
+    link.onEventAfterRingRelease(channel, () => {
+      const fact = takeAndDispatch();
+      return () => stateApply(released, source, [fact]);
+    });
+  }
 }

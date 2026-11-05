@@ -295,14 +295,35 @@ fn redacted_stderr_markers(stderr: &[u8]) -> Vec<String> {
         .map(|line| {
             line.split_whitespace()
                 .next()
+                .map(|word| word.trim_end_matches(':'))
                 .filter(|word| {
-                    matches!(
-                        *word,
-                        "KELD_KEL142_BIND"
-                            | "KELD_KEL140_PUBLIC_APP_COMPONENT"
-                            | "KELD_KEL140_PUBLIC_QUIT_REQUEST"
-                            | "KELD_KEL140_PUBLIC_FS_RETIRED"
-                    )
+                    // Keep only a known marker or an existing typed code shape,
+                    // never its following path, bootstrap data or error body.
+                    let typed_code = [
+                        "KELD-CORE-",
+                        "KELD-WV-",
+                        "KELD-RUNTIME-",
+                        "KELD-IPC-",
+                        "KELD-GUARD",
+                        "KELD-COMPAT-",
+                        "KELD-NATIVE-",
+                        "KELD-CLI-",
+                        "KELD-UPDATE-",
+                    ]
+                    .into_iter()
+                    .any(|prefix| {
+                        word.strip_prefix(prefix).is_some_and(|digits| {
+                            digits.len() == 3 && digits.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                    });
+                    typed_code
+                        || matches!(
+                            *word,
+                            "KELD_KEL142_BIND"
+                                | "KELD_KEL140_PUBLIC_APP_COMPONENT"
+                                | "KELD_KEL140_PUBLIC_QUIT_REQUEST"
+                                | "KELD_KEL140_PUBLIC_FS_RETIRED"
+                        )
                 })
                 .unwrap_or("[redacted]")
                 .to_owned()
@@ -313,7 +334,7 @@ fn redacted_stderr_markers(stderr: &[u8]) -> Vec<String> {
 #[test]
 fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
     let markers = redacted_stderr_markers(
-        b"KELD_KEL140_PUBLIC_QUIT_REQUEST calls=0 secret=value\nuntrusted /tmp/secret-material\nKELD_KEL142_BIND nonce=private\nKELD_KEL_BROKEN/path should-not-print\nKELD_KELSECRET_ABC123PRIVATE\n",
+        b"KELD_KEL140_PUBLIC_QUIT_REQUEST calls=0 secret=value\nuntrusted /tmp/secret-material\nKELD_KEL142_BIND nonce=private\nKELD_KEL_BROKEN/path should-not-print\nKELD_KELSECRET_ABC123PRIVATE\nKELD-CORE-037: /private/secret bootstrap=hidden\nKELD-GUARD005: secret parser input\nKELD-CORE-037PRIVATE must-not-print\nKELD-SECRET-123 must-not-print\n",
     );
     assert_eq!(
         markers,
@@ -321,6 +342,10 @@ fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
             "KELD_KEL140_PUBLIC_QUIT_REQUEST",
             "[redacted]",
             "KELD_KEL142_BIND",
+            "[redacted]",
+            "[redacted]",
+            "KELD-CORE-037",
+            "KELD-GUARD005",
             "[redacted]",
             "[redacted]"
         ]
@@ -342,6 +367,7 @@ impl Drop for ReapOnDrop {
 struct PipeCapture<P> {
     pipe: Option<P>,
     bytes: Vec<u8>,
+    limit: Option<usize>,
 }
 
 unsafe extern "C" {
@@ -370,7 +396,14 @@ impl<P: Read + AsRawFd> PipeCapture<P> {
         Self {
             pipe,
             bytes: Vec::new(),
+            limit: None,
         }
+    }
+
+    fn with_limit(pipe: Option<P>, limit: usize) -> Self {
+        let mut capture = Self::new(pipe);
+        capture.limit = Some(limit);
+        capture
     }
 
     fn read_once(&mut self) {
@@ -380,7 +413,14 @@ impl<P: Read + AsRawFd> PipeCapture<P> {
             Ok(0) => {
                 self.pipe.take();
             }
-            Ok(count) => self.bytes.extend_from_slice(&buffer[..count]),
+            Ok(count) => {
+                assert!(
+                    self.limit
+                        .is_none_or(|limit| count <= limit.saturating_sub(self.bytes.len())),
+                    "live child output exceeded capture byte limit"
+                );
+                self.bytes.extend_from_slice(&buffer[..count]);
+            }
             Err(error)
                 if matches!(
                     error.kind(),
@@ -391,9 +431,451 @@ impl<P: Read + AsRawFd> PipeCapture<P> {
     }
 }
 
+/// Immediate live draining mode of the existing `PipeCapture` owner. It owns
+/// only stdout/stderr, never a Child, process identity, waiter or cleanup grant.
+type LiveOutputResult = Result<(Vec<u8>, Vec<u8>), &'static str>;
+
+pub(crate) struct LiveChildOutput {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<LiveOutputResult>>,
+}
+
+impl LiveChildOutput {
+    pub(crate) fn start(child: &mut Child, deadline: Instant) -> Self {
+        const MAX_STREAM_BYTES: usize = 1024 * 1024;
+        let mut stdout = PipeCapture::with_limit(child.stdout.take(), MAX_STREAM_BYTES);
+        let mut stderr = PipeCapture::with_limit(child.stderr.take(), MAX_STREAM_BYTES);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = std::sync::Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                loop {
+                    if reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        // One final nonblocking pass retains an already-buffered
+                        // startup code when fixture unwind beats this reader's next
+                        // turn. Cancellation remains failure even if EOF is seen.
+                        stderr.read_once();
+                        stdout.read_once();
+                        return Err("live output capture cancelled before EOF");
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("live child output deadline exceeded");
+                    }
+                    stdout.read_once();
+                    stderr.read_once();
+                    if stdout.pipe.is_none() && stderr.pipe.is_none() {
+                        return Ok(());
+                    }
+                    std::thread::yield_now();
+                }
+            }));
+            match outcome {
+                Ok(Ok(())) => Ok((stdout.bytes, stderr.bytes)),
+                Ok(Err(reason)) => {
+                    report_incomplete_live_output(reason, stdout.bytes.len(), &stderr.bytes);
+                    Err(reason)
+                }
+                Err(panic) => {
+                    report_incomplete_live_output(
+                        "reader-failed",
+                        stdout.bytes.len(),
+                        &stderr.bytes,
+                    );
+                    std::panic::resume_unwind(panic)
+                }
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> (Vec<u8>, Vec<u8>) {
+        self.worker
+            .take()
+            .expect("live output reader owner")
+            .join()
+            .expect("live child output reader failed (read or byte limit)")
+            .expect("live child output did not complete before its deadline")
+    }
+}
+
+impl Drop for LiveChildOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            match worker.join() {
+                Ok(Ok((stdout, stderr))) => {
+                    // EOF without the owning finish/Child status is still an
+                    // unconsumed fixture failure, never product-success proof.
+                    report_incomplete_live_output("unconsumed-eof", stdout.len(), &stderr);
+                }
+                Ok(Err(_)) => {} // Reader retained its bounded failure summary.
+                Err(_) => eprintln!("KELD_HARNESS_CAPTURE_INCOMPLETE reason=reader-panicked"),
+            }
+        }
+    }
+}
+
+fn report_incomplete_live_output(reason: &'static str, stdout_bytes: usize, stderr: &[u8]) {
+    // Source bytes are untrusted diagnostics, not authenticated cause or native
+    // evidence. At most24 known markers/codes and two counts reach the log.
+    eprintln!(
+        "KELD_HARNESS_CAPTURE_INCOMPLETE reason={reason} stdout_bytes={stdout_bytes} stderr_bytes={} stderr_markers={:?}",
+        stderr.len(),
+        redacted_stderr_markers(stderr),
+    );
+}
+
 pub(crate) fn parse_pid(field: Option<&str>, line: &str) -> u32 {
     field
         .unwrap_or_else(|| panic!("missing pid: {line}"))
         .parse()
         .unwrap_or_else(|error| panic!("invalid pid ({error}): {line}"))
+}
+
+// Real subprocess fixtures exercise the same ShippingLaunchCleanup owner used
+// by FirstProofLaunch. No app Ready/log marker is an output-capture oracle.
+fn live_output_fixture(
+    marker: &std::path::Path,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
+) -> (
+    crate::support::dev_cycle::ShippingLaunchCleanup,
+    std::process::ChildStdin,
+) {
+    const WRITER: &str = r"
+import os, pathlib, sys
+for fd, count, byte in [(1, int(sys.argv[2]), b'o'), (2, int(sys.argv[3]), b'e')]:
+    remaining = byte * count
+    while remaining:
+        remaining = remaining[os.write(fd, remaining):]
+marker = pathlib.Path(sys.argv[1])
+pending = marker.with_name(marker.name + '.pending')
+pending.write_bytes(b'after-both-writes')
+pending.replace(marker)
+sys.stdin.buffer.read(1)
+sys.exit(23)
+";
+    let child = std::process::Command::new("/usr/bin/python3")
+        .args(["-u", "-c", WRITER])
+        .arg(marker)
+        .arg(stdout_bytes.to_string())
+        .arg(stderr_bytes.to_string())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("actual live output writer");
+    let mut owner = crate::support::dev_cycle::ShippingLaunchCleanup::new(child);
+    let lease = owner
+        .cli
+        .as_mut()
+        .expect("sole Child owner")
+        .stdin
+        .take()
+        .expect("fixture release lease");
+    (owner, lease)
+}
+
+#[test]
+fn live_output_drains_both_pipe_buffers_before_wait_and_preserves_exact_cap_and_status() {
+    let root = tempfile::tempdir().expect("owned live output fixture");
+    let marker = root.path().join("both-writes-finished");
+    // Literal approved value: a mutation of the implementation's ceiling must
+    // not silently change fixture volume or this independent oracle.
+    let (mut owner, lease) = live_output_fixture(&marker, 1_048_576, 1_048_576);
+    let deadline = Instant::now() + crate::support::EVENT_DEADLINE;
+    owner.capture_output_before(deadline);
+    // More than a kernel pipe buffer must drain while the caller still owns
+    // the lease and has not invoked any Child/output wait.
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "writer blocked before independent file handoff"
+        );
+        assert!(
+            owner
+                .cli
+                .as_mut()
+                .expect("retained Child")
+                .try_wait()
+                .expect("writer state")
+                .is_none(),
+            "writer exited before the handoff"
+        );
+        thread::yield_now();
+    }
+    assert_eq!(
+        std::fs::read(&marker).expect("actual writer file"),
+        b"after-both-writes"
+    );
+    assert!(
+        owner
+            .cli
+            .as_mut()
+            .expect("retained Child")
+            .try_wait()
+            .expect("writer held by lease")
+            .is_none()
+    );
+    drop(lease);
+    let output = owner.wait(deadline.saturating_duration_since(Instant::now()));
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "preserve the actual Child status"
+    );
+    assert_eq!(output.stdout.len(), 1_048_576);
+    assert!(
+        output.stdout.iter().all(|byte| *byte == b'o'),
+        "stdout bytes changed"
+    );
+    assert_eq!(output.stderr.len(), 1_048_576);
+    assert!(
+        output.stderr.iter().all(|byte| *byte == b'e'),
+        "stderr bytes changed"
+    );
+}
+
+#[test]
+fn live_output_refuses_literal_limit_plus_one_on_each_stream() {
+    for (stdout_bytes, stderr_bytes) in [(1_048_577, 0), (0, 1_048_577)] {
+        let root = tempfile::tempdir().expect("owned live overflow fixture");
+        let (mut owner, lease) = live_output_fixture(
+            &root.path().join("writer-finished"),
+            stdout_bytes,
+            stderr_bytes,
+        );
+        let deadline = Instant::now() + crate::support::EVENT_DEADLINE;
+        owner.capture_output_before(deadline);
+        drop(lease);
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            owner.wait(deadline.saturating_duration_since(Instant::now()))
+        }));
+        let Err(panic) = failure else {
+            panic!("1 MiB + 1 must never be successful or silently truncated");
+        };
+        let text = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .expect("named capture failure");
+        assert!(
+            text.contains("live child output reader failed"),
+            "unexpected failure: {text}"
+        );
+        drop(owner); // sole cleanup owner reaps on every failure path
+    }
+}
+
+#[test]
+fn live_output_drop_stops_and_joins_reader_while_original_child_remains_live() {
+    let child = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("actual open-pipe child");
+    let mut owner = crate::support::dev_cycle::ShippingLaunchCleanup::new(child);
+    let started = Instant::now();
+    let capture = LiveChildOutput::start(
+        owner.cli.as_mut().expect("sole Child owner"),
+        started + crate::support::EVENT_DEADLINE,
+    );
+    let reader_lifetime = std::sync::Arc::clone(&capture.stop);
+    drop(capture);
+    assert!(
+        started.elapsed() < crate::support::PROCESS_DEADLINE,
+        "cancellation waited for the original child/reader deadline"
+    );
+    assert_eq!(
+        std::sync::Arc::strong_count(&reader_lifetime),
+        1,
+        "reader still owns a live stop token after synchronous Drop"
+    );
+    assert!(
+        owner
+            .cli
+            .as_mut()
+            .expect("Child was not transferred to the reader")
+            .try_wait()
+            .expect("actual Child state")
+            .is_none()
+    );
+    drop(owner); // the reader owns no process cleanup authority
+}
+
+#[test]
+fn live_output_uses_original_expired_deadline_without_waiting_for_child_eof() {
+    let child = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("actual non-EOF child");
+    let mut owner = crate::support::dev_cycle::ShippingLaunchCleanup::new(child);
+    let started = Instant::now();
+    let capture = LiveChildOutput::start(owner.cli.as_mut().expect("sole Child owner"), started);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| capture.finish()));
+    let panic = failure.expect_err("expired original deadline must not become a fresh timeout");
+    assert!(
+        started.elapsed() < crate::support::PROCESS_DEADLINE,
+        "capture replaced the already-expired original deadline"
+    );
+    let text = panic
+        .downcast_ref::<String>()
+        .expect("capture deadline failure");
+    assert!(
+        text.contains("live child output deadline exceeded"),
+        "{text}"
+    );
+    assert!(
+        owner
+            .cli
+            .as_mut()
+            .expect("retained Child")
+            .try_wait()
+            .expect("actual open-pipe Child state")
+            .is_none()
+    );
+    drop(owner);
+}
+
+#[test]
+fn live_capture_fixture_unwind_reports_bounded_typed_stderr_for_cancel_and_unconsumed_eof() {
+    for eof in [false, true] {
+        let root = tempfile::tempdir().expect("owned capture failure diagnostic fixture");
+        let child =
+            std::process::Command::new(std::env::current_exe().expect("same test executable"))
+                .args([
+                    "--exact",
+                    "support::control::live_capture_failure_fixture_process",
+                    "--nocapture",
+                ])
+                .env(
+                    "KELD_LIVE_CAPTURE_DIAGNOSTIC_FIXTURE",
+                    root.path().join("after-writes"),
+                )
+                .env(
+                    "KELD_LIVE_CAPTURE_DIAGNOSTIC_EOF",
+                    if eof { "1" } else { "0" },
+                )
+                .env("RUST_BACKTRACE", "0")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("isolated fixture-unwind diagnostic child");
+        let output = wait_child_output(child, crate::support::EVENT_DEADLINE);
+        assert!(
+            output.status.success(),
+            "isolated helper failed: {:?}",
+            output.status
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("after-writes")).expect("actual writer handoff"),
+            b"after-writes"
+        );
+        assert!(
+            output.stdout.len() < 4096 && output.stderr.len() < 4096,
+            "unwind printed a stream body instead of bounded diagnostics"
+        );
+        let stderr = String::from_utf8(output.stderr).expect("isolated diagnostic UTF-8");
+        assert!(stderr.contains("KELD_HARNESS_CAPTURE_INCOMPLETE reason="));
+        assert!(stderr.contains(if eof {
+            "reason=unconsumed-eof"
+        } else {
+            "reason=live output capture cancelled before EOF"
+        }));
+        assert!(stderr.contains("stdout_bytes=") && stderr.contains("stderr_bytes="));
+        assert!(
+            stderr.contains("KELD-CORE-037") && stderr.contains("KELD-GUARD005"),
+            "actual captured typed errors were discarded"
+        );
+        for secret in [
+            "SENSITIVE_STDOUT_PAYLOAD",
+            "SENSITIVE_STDERR_PAYLOAD",
+            "/private/hidden",
+            "bootstrap=hidden",
+        ] {
+            assert!(
+                !stderr.contains(secret),
+                "raw fixture output escaped its redacted summary"
+            );
+        }
+    }
+}
+
+/// Exact-selector child only. The outer real-process regression verifies its
+/// independent file handshake and stderr, so zero selected tests cannot pass.
+#[test]
+fn live_capture_failure_fixture_process() {
+    const WRITER: &str = r"
+import pathlib, sys
+sys.stdout.buffer.write(b'SENSITIVE_STDOUT_PAYLOAD' + b'x' * (1048576 - 24))
+sys.stdout.buffer.flush()
+sys.stderr.write('KELD-CORE-037: SENSITIVE_STDERR_PAYLOAD /private/hidden bootstrap=hidden\nKELD-GUARD005: SENSITIVE_STDERR_PAYLOAD\n')
+sys.stderr.flush()
+marker = pathlib.Path(sys.argv[1])
+pending = marker.with_name(marker.name + '.pending')
+pending.write_bytes(b'after-writes')
+pending.replace(marker)
+if sys.argv[2] == '0':
+    sys.stdin.buffer.read(1)
+";
+    let Some(marker) = std::env::var_os("KELD_LIVE_CAPTURE_DIAGNOSTIC_FIXTURE") else {
+        return;
+    };
+    let eof = std::env::var("KELD_LIVE_CAPTURE_DIAGNOSTIC_EOF").expect("fixture mode") == "1";
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let child = std::process::Command::new("/usr/bin/python3")
+            .args(["-u", "-c", WRITER])
+            .arg(&marker)
+            .arg(if eof { "1" } else { "0" })
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("actual diagnostic pipe writer");
+        let mut owner = crate::support::dev_cycle::ShippingLaunchCleanup::new(child);
+        let deadline = Instant::now() + crate::support::EVENT_DEADLINE;
+        let capture =
+            LiveChildOutput::start(owner.cli.as_mut().expect("sole Child owner"), deadline);
+        while !std::path::Path::new(&marker).exists() {
+            assert!(
+                Instant::now() < deadline,
+                "actual writer never completed its pipe handoff"
+            );
+            thread::yield_now();
+        }
+        if eof {
+            while !capture
+                .worker
+                .as_ref()
+                .expect("reader join owner")
+                .is_finished()
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "actual pipe reader never reached EOF"
+                );
+                thread::yield_now();
+            }
+        } else {
+            assert!(
+                owner
+                    .cli
+                    .as_mut()
+                    .expect("sole live Child owner")
+                    .try_wait()
+                    .expect("actual writer state")
+                    .is_none(),
+                "cancel fixture must retain open pipes"
+            );
+        }
+        panic!("injected fixture assertion after actual captured stderr");
+    }));
+    assert!(failed.is_err(), "fixture did not exercise unwind");
 }

@@ -75,13 +75,13 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
         },
         6,
     )?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::SetFullScreen {
             view: WebviewId(7),
             full_screen: true
         }
-    );
+    ));
     reply(&mut fixture, 6, WindowResponse::Accepted)?;
     fixture
         .handle
@@ -98,10 +98,10 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
     )?;
     verdict(&fixture, window, 2, CloseVerdict::Allow, 7)?;
     reply(&mut fixture, 7, WindowResponse::ReplyApplied)?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(fixture.commands.try_recv().is_err());
     Ok(())
 }
@@ -113,10 +113,10 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
     fixture.call(&WindowRequest::Destroy { window }, 2)?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     fixture.call(&WindowRequest::Destroy { window }, 3)?;
     assert!(
         fixture.commands.try_recv().is_err(),
@@ -162,10 +162,10 @@ fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_err
     for correlation in 2..=65 {
         fixture.call(&WindowRequest::Destroy { window }, correlation)?;
         if correlation == 2 {
-            assert_eq!(
+            assert!(matches!(
                 fixture.commands.recv_timeout(Duration::from_secs(3))?,
                 AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-            );
+            ));
         } else {
             assert!(fixture.commands.try_recv().is_err(), "one native teardown");
         }

@@ -1,3 +1,47 @@
+#[cfg(target_os = "macos")]
+use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
+#[cfg(target_os = "macos")]
+use std::{ffi::OsStr, process::Command};
+
+#[cfg(target_os = "macos")]
+#[test]
+fn guardian_boot_modes_preserve_boolean_facade_and_require_capture_only_in_mode_two() {
+    for (trigger, capture, expected_mode, expected_facade) in [
+        (AppReadyTrigger::NavigationReady, false, "0", "0"),
+        (AppReadyTrigger::HostInitialized, false, "1", "1"),
+        (AppReadyTrigger::HostInitialized, true, "2", "1"),
+    ] {
+        let mut command = Command::new("keld-host");
+        command.env(NATIVE_WINDOW_FACADE_ENV, "app-forged-selection");
+        configure_guardian_boot_mode(&mut command, trigger, capture)
+            .expect("closed admitted Guardian boot mode");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new(expected_mode)]
+        );
+        let actual_facade = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(NATIVE_WINDOW_FACADE_ENV))
+            .and_then(|(_, value)| value);
+        assert_eq!(actual_facade, Some(OsStr::new(expected_facade)));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn guardian_runtime_capture_refuses_renderer_boot_before_mutating_command() {
+    let mut command = Command::new("keld-host");
+    let error = configure_guardian_boot_mode(&mut command, AppReadyTrigger::NavigationReady, true)
+        .expect_err("runtime capture requires verified facade selection");
+    assert!(
+        error
+            .to_string()
+            .contains("canonical runtime facts require")
+    );
+    assert_eq!(command.get_args().count(), 0);
+    assert_eq!(command.get_envs().count(), 0);
+}
+
 #[test]
 fn strict_boot_schema_accepts_exact_v1() {
     let parsed = parse_boot_bytes(&valid_boot("src/main.ts", "index.html"))
@@ -555,4 +599,84 @@ fn guarded_preflight_preserves_read_error_before_resources() {
         source.to_string(),
         error.manifest_source.as_ref().unwrap().to_string()
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn single_instance_boot_field_survives_each_existing_closed_schema_without_profile_reselection() {
+    for schema in 1..=5 {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&valid_boot("src/main.ts", "index.html")).expect("fixture");
+        value["schema"] = schema.into();
+        value["singleInstance"] = serde_json::json!({ "id": "org.keld.app-1" });
+        if matches!(schema, 2 | 4 | 5) {
+            value.as_object_mut().expect("object").remove("renderer");
+        }
+        if schema == 5 {
+            value["graph"] = serde_json::json!({
+                "file": "keld.stage-graph.json",
+                "content_sha256": format!("sha256:{}", "ab".repeat(32))
+            });
+        }
+        let bytes = serde_json::to_vec(&value).expect("exact descriptor");
+        let parsed = parse_boot_bytes(&bytes).expect("declaration retained");
+        assert_eq!(parsed.schema, schema);
+        assert_eq!(
+            parsed
+                .single_instance
+                .as_ref()
+                .map(crate::hello::SingleInstanceDeclaration::id),
+            Some("org.keld.app-1")
+        );
+        assert_eq!(
+            matches!(parsed.initial, InitialWindow::None),
+            matches!(schema, 2 | 4 | 5)
+        );
+        assert_eq!(
+            parsed.graph_digest,
+            if schema == 5 { Some([0xab; 32]) } else { None }
+        );
+        assert!(
+            parsed.auth_configuration.is_empty(),
+            "declaration did not select auth"
+        );
+    }
+}
+
+#[test]
+fn single_instance_boot_field_rejects_null_sequences_unknown_duplicate_and_invalid_ids() {
+    let original = String::from_utf8(valid_boot("src/main.ts", "index.html")).expect("UTF-8");
+    for field in [
+        r#""singleInstance":null"#,
+        r#""singleInstance":[]"#,
+        r#""singleInstance":["org.keld.app"]"#,
+        r#""singleInstance":true"#,
+        r#""singleInstance":{}"#,
+        r#""singleInstance":{"id":null}"#,
+        r#""singleInstance":{"id":"org.keld.app","extra":1}"#,
+        r#""singleInstance":{"id":"org.keld.app","id":"org.other.app"}"#,
+        r#""singleInstance":{"id":"org.keld.app"},"singleInstance":{"id":"org.other.app"}"#,
+        r#""singleInstance":{"id":"../escape"}"#,
+        r#""singleInstance":{"id":"Org.keld.app"}"#,
+        r#""singleInstance":{"id":"org..app"}"#,
+        r#""singleInstance":{"id":"org.-app"}"#,
+        r#""singleInstance":{"id":"org.app-"}"#,
+    ] {
+        let bytes = original.replacen('{', &format!("{{{field},"), 1);
+        let error = must_err(
+            parse_boot_bytes(bytes.as_bytes()),
+            "closed single-instance declaration",
+        );
+        assert_eq!(error.code(), "KELD-CORE-035", "{field}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn single_instance_boot_presence_is_refused_on_unqualified_platforms_instead_of_dropped() {
+    let original = String::from_utf8(valid_boot("src/main.ts", "index.html")).expect("UTF-8");
+    let bytes = original.replacen('{', r#"{"singleInstance":{"id":"org.keld.app"},"#, 1);
+    let error = must_err(parse_boot_bytes(bytes.as_bytes()), "unqualified platform");
+    assert_eq!(error.code(), "KELD-CORE-035");
+    assert!(error.to_string().contains("macOS development"));
 }

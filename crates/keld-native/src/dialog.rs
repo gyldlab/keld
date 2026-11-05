@@ -78,7 +78,7 @@ pub struct MessageOptions {
     pub checkbox_checked: Option<bool>,
 }
 
-fn bounded_vec<'de, D, T, const N: usize>(deserializer: D) -> Result<Vec<T>, D::Error>
+pub(crate) fn bounded_vec<'de, D, T, const N: usize>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -87,19 +87,19 @@ where
     impl<'de, T: Deserialize<'de>, const N: usize> de::Visitor<'de> for Bounded<T, N> {
         type Value = Vec<T>;
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(formatter, "at most {N} file dialog entries")
+            write!(formatter, "at most {N} native entries")
         }
         fn visit_seq<A: de::SeqAccess<'de>>(
             self,
             mut sequence: A,
         ) -> Result<Self::Value, A::Error> {
             if sequence.size_hint().is_some_and(|size| size > N) {
-                return Err(de::Error::custom("too many native file dialog entries"));
+                return Err(de::Error::custom("too many native native entries"));
             }
             let mut entries = Vec::new();
             while let Some(value) = sequence.next_element()? {
                 if entries.len() == N {
-                    return Err(de::Error::custom("too many native file dialog entries"));
+                    return Err(de::Error::custom("too many native native entries"));
                 }
                 entries.push(value);
             }

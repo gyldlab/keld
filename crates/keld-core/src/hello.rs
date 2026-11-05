@@ -617,12 +617,16 @@ mod tests {
 }
 
 mod auth_config;
-pub(crate) use self::auth_config::deserialize_optional_app_version;
 #[cfg(target_os = "macos")]
 pub(crate) use self::auth_config::validate_app_version;
 pub use self::auth_config::{
-    AppVersionConfigError, AuthConfigError, InitialWindowConfigError,
-    auth_configuration_from_config_ts, initial_window_from_config_ts, version_from_config_ts,
+    AppVersionConfigError, ApplicationNameForUserAgentConfigError, AuthConfigError,
+    InitialWindowConfigError, SingleInstanceConfigError, SingleInstanceDeclaration,
+    application_name_for_user_agent_from_config_ts, auth_configuration_from_config_ts,
+    initial_window_from_config_ts, single_instance_from_config_ts, version_from_config_ts,
+};
+pub(crate) use self::auth_config::{
+    deserialize_optional_app_version, deserialize_optional_application_name_for_user_agent,
 };
 
 #[cfg(test)]

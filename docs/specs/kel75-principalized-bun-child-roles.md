@@ -559,3 +559,8 @@ P13 new-run evidence and `docs/research/campaigns/vscode/reports/48-p13-new-run-
 - KEL-101 must separately approve and prove the named-pipe/current-user-DACL
   transport before privileged Windows dispatch can replace T8's explicitly
   unprivileged loopback predecessor.
+
+
+## GH453 original-Host single-instance data amendment
+
+Approved under the user's explicit technical-owner delegation on 2026-11-01; `gh453-original-host-single-instance.md` owns the bounded contract. The original durable Host makes one cooperative lease attempt only after existing explicit Legacy development admission and retains any acquired descriptor through Bun recovery, ordinary teardown and retained fatal native custody. Guardian/Bun receive only the optional acquired/contended data member in the existing private schema4 launch record; no descriptor/id/path/credential is conveyed and no new environment variable/channel/restart owner is added. Schemas 1/2/3 remain readable with their original closed fields. Actual descriptor noninheritance and Host-death release require separate native proof; the source change grants no new ambient authority and does not qualify the wider single-instance API.
