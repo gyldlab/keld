@@ -1166,6 +1166,7 @@ mod tests {
     mod profile_release;
     mod release_receipts;
     mod saved_permission_deadline;
+    mod startup_retirement;
     mod view_focus;
     mod view_host;
     mod view_position;

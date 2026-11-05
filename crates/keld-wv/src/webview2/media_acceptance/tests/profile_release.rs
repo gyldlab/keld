@@ -49,7 +49,7 @@ fn windows_zero_controller_constructor_is_running() -> Result<(), WvError> {
     })
 }
 
-fn quit_without_controller(
+pub(super) fn quit_without_controller(
     engine: WebView2Engine,
     witness: impl FnOnce(Instant) -> Result<(), WvError>,
 ) -> Result<(), WvError> {

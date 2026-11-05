@@ -53,6 +53,7 @@ mod managed_windows;
 #[cfg(all(feature = "media-acceptance", test))]
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
+mod startup_retirement;
 mod view_build;
 mod view_host;
 #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
@@ -3199,6 +3200,8 @@ pub struct WebView2Engine {
     navigation_failed: Arc<AtomicBool>,
     navigation_diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     app_window_created: bool,
+    /// Any pre-loop native build attempt disables zero-controller startup retirement.
+    view_build_attempted: bool,
     saved_permissions_reconciled: bool,
     #[cfg(feature = "profile-test-hooks")]
     barrier_grace_expiry: bool,
@@ -3352,6 +3355,7 @@ impl WebView2Engine {
             navigation_failed: Arc::new(AtomicBool::new(false)),
             navigation_diagnostic: Arc::new(Mutex::new(FirstNavigationDiagnostic::new())),
             app_window_created: false,
+            view_build_attempted: false,
             saved_permissions_reconciled: false,
             #[cfg(feature = "profile-test-hooks")]
             barrier_grace_expiry: false,
@@ -3578,6 +3582,7 @@ impl WebView2Engine {
         spec: &WebviewSpec,
         events: Sender<AppWindowEvent>,
     ) -> Result<WebviewId, WvError> {
+        self.creation_event_loop()?;
         if !app_window_slot_available(
             self.app_window_created,
             self.pending_app_events.is_some(),
@@ -3948,13 +3953,7 @@ impl WebView2Engine {
         } else {
             finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
         };
-        self.finish_profile_release_with(release.observed.get(), || {
-            release_witness(release.release_witness_deadline()?).map_err(|error| {
-                eprintln!("KELD_WV_RELEASE_WITNESS_FAILED {error}");
-                profile_failure_with(ProfileErrorKind::LifecycleUnproven,
-                    "the host non-family process release witness failed; profile ownership is retained")
-            })
-        })?;
+        self.finish_app_profile_release(&release, release_witness)?;
         scavenge_after_release(scavenge_root)?;
         app_result
     }
@@ -4155,12 +4154,10 @@ fn stop_app_wake_bridge(stop: &AtomicBool, bridge: thread::JoinHandle<()>) {
 
 impl WebEngine for WebView2Engine {
     fn create(&mut self, spec: &WebviewSpec) -> Result<WebviewId, WvError> {
+        self.creation_event_loop()?;
+        self.view_build_attempted = true;
         self.mark_profile_running()?;
-        let event_loop = self.event_loop.as_ref().ok_or_else(|| {
-            WvError::EventLoop(String::from(
-                "run loop already started; create webviews before run_until_closed",
-            ))
-        })?;
+        let event_loop = self.creation_event_loop()?;
         let navigation =
             self.pending_app_events
                 .as_ref()

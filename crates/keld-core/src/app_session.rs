@@ -3631,17 +3631,6 @@ fn run_direct_app_session(
     #[cfg(target_os = "linux")] dev_lease: Option<DevHostLease>,
     #[cfg(all(debug_assertions, windows))] handover_at_ready: bool,
 ) -> Result<DirectSessionEnd, HostAppError> {
-    let prestart_lease_result = || {
-        #[cfg(windows)]
-        {
-            take_direct_prestart_lease_result(dev_lease.as_ref())
-                .map(|()| DirectSessionEnd::Ordinary)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Ok(DirectSessionEnd::Ordinary)
-        }
-    };
     #[cfg(target_os = "linux")]
     let direct_engine = WebKitGtkEngine::new()
         .map_err(|source| app_detail("Linux GPU safe mode", source.to_string()))?;
@@ -3664,26 +3653,75 @@ fn run_direct_app_session(
         dev_lease.as_ref(),
     )?
     .windows_primary_families(primary_families.clone());
-    LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-    let supervisor = run_direct_startup_if_session_running(shutdown, || {
-        PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
-            .map_err(|source| app_runtime("direct primary startup", &source))
-    });
-    let Some(supervisor) = supervisor else {
-        return prestart_lease_result();
+    // Subscribe is allowed immediately after the primary link connects. Native
+    // profile recovery must finish before that five-second call can exist: the
+    // existing startup transition remains held during native preparation.
+    #[cfg(windows)]
+    let mut prepared_engine = if ready_trigger == AppReadyTrigger::HostInitialized {
+        let Some(prepared) = run_direct_startup_if_session_running(shutdown, || {
+            build_windows_direct_engine(inputs.windows_profile_mode)
+        }) else {
+            return take_direct_prestart_lease_result(dev_lease.as_ref())
+                .map(|()| DirectSessionEnd::Ordinary);
+        };
+        Some(prepared?)
+    } else {
+        None
     };
-    let (supervisor, recovery) = supervisor?;
-    let initial = match await_direct_bound_generation(
-        &supervisor,
-        &recovery,
-        shutdown,
-        Instant::now() + APP_LINK_IO_DEADLINE,
-    ) {
-        Ok(bound) => bound,
-        Err(primary) => {
-            if !shutdown.is_running() {
-                let _ = recovery.deny();
+    // All returns and ? exits below first retire their existing router/primary
+    // locals. The outer owner then handles any facade engine not transferred
+    // into the ordinary native run. Renderer construction retains its old point.
+    let session_result = (|| {
+        let prestart_lease_result = || {
+            #[cfg(windows)]
+            {
+                take_direct_prestart_lease_result(dev_lease.as_ref())
+                    .map(|()| DirectSessionEnd::Ordinary)
+            }
+            #[cfg(target_os = "linux")]
+            {
+                Ok(DirectSessionEnd::Ordinary)
+            }
+        };
+        LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+        CHILD_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+        let supervisor = run_direct_startup_if_session_running(shutdown, || {
+            PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+                .map_err(|source| app_runtime("direct primary startup", &source))
+        });
+        let Some(supervisor) = supervisor else {
+            return prestart_lease_result();
+        };
+        let (supervisor, recovery) = supervisor?;
+        let initial = match await_direct_bound_generation(
+            &supervisor,
+            &recovery,
+            shutdown,
+            Instant::now() + APP_LINK_IO_DEADLINE,
+        ) {
+            Ok(bound) => bound,
+            Err(primary) => {
+                if !shutdown.is_running() {
+                    let _ = recovery.deny();
+                    supervisor.shutdown();
+                    let cleanup = match supervisor.wait_for_outcome() {
+                        keld_runtime::SupervisorOutcome::Stopped => Ok(()),
+                        keld_runtime::SupervisorOutcome::CrashLoop(error)
+                        | keld_runtime::SupervisorOutcome::Failed(error) => {
+                            Err(app_runtime("direct primary startup cleanup", &error))
+                        }
+                    };
+                    return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
+                        .map(|()| DirectSessionEnd::Ordinary);
+                }
+                let output = supervisor.output();
+                let primary = app_detail(
+                    "initial direct primary startup",
+                    format!(
+                        "{primary}; captured stdout: {}; captured stderr: {}",
+                        output.stdout, output.stderr
+                    ),
+                );
                 supervisor.shutdown();
                 let cleanup = match supervisor.wait_for_outcome() {
                     keld_runtime::SupervisorOutcome::Stopped => Ok(()),
@@ -3692,17 +3730,12 @@ fn run_direct_app_session(
                         Err(app_runtime("direct primary startup cleanup", &error))
                     }
                 };
-                return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
-                    .map(|()| DirectSessionEnd::Ordinary);
+                return Err(collapse_app_failures(&primary, [cleanup]));
             }
-            let output = supervisor.output();
-            let primary = app_detail(
-                "initial direct primary startup",
-                format!(
-                    "{primary}; captured stdout: {}; captured stderr: {}",
-                    output.stdout, output.stderr
-                ),
-            );
+        };
+
+        if !shutdown.is_running() {
+            let _ = recovery.deny();
             supervisor.shutdown();
             let cleanup = match supervisor.wait_for_outcome() {
                 keld_runtime::SupervisorOutcome::Stopped => Ok(()),
@@ -3711,127 +3744,105 @@ fn run_direct_app_session(
                     Err(app_runtime("direct primary startup cleanup", &error))
                 }
             };
-            return Err(collapse_app_failures(&primary, [cleanup]));
+            return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
+                .map(|()| DirectSessionEnd::Ordinary);
         }
-    };
 
-    if !shutdown.is_running() {
-        let _ = recovery.deny();
-        supervisor.shutdown();
-        let cleanup = match supervisor.wait_for_outcome() {
-            keld_runtime::SupervisorOutcome::Stopped => Ok(()),
-            keld_runtime::SupervisorOutcome::CrashLoop(error)
-            | keld_runtime::SupervisorOutcome::Failed(error) => {
-                Err(app_runtime("direct primary startup cleanup", &error))
+        let (window_commands_tx, window_commands_rx) = mpsc::channel();
+        let mut primary_owner = DirectPrimaryOwner::start(
+            supervisor,
+            recovery,
+            window_commands_tx.clone(),
+            shutdown.clone(),
+        )?;
+        let router = PrimaryRouter::start_bound(
+            initial,
+            window_commands_tx.clone(),
+            primary_owner.handle(),
+            shutdown.clone(),
+            inputs.guard_snapshot,
+            #[cfg(windows)]
+            windows_native_support(ready_trigger, Some(&release_witness)),
+        )?;
+        primary_owner.attach_router(router.handle())?;
+        let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
+        let (window_events_tx, window_events_rx) = mpsc::channel();
+        let router_handle = router.handle();
+        let commands_for_events = window_commands_tx.clone();
+        // The evidence seam's handover request, right after this session's `Ready` (the
+        // recovery arm acknowledged): the shape of the coordinator's production request.
+        #[cfg(all(debug_assertions, windows))]
+        let on_ready = move |router: &PrimaryRouterHandle| -> Result<(), HostAppError> {
+            if handover_at_ready {
+                router.request_handover().map(|_| ())
+            } else {
+                Ok(())
             }
         };
-        return collapse_app_results([prestart_lease_result().map(|_| ()), cleanup])
-            .map(|()| DirectSessionEnd::Ordinary);
-    }
-
-    let (window_commands_tx, window_commands_rx) = mpsc::channel();
-    let mut primary_owner = DirectPrimaryOwner::start(
-        supervisor,
-        recovery,
-        window_commands_tx.clone(),
-        shutdown.clone(),
-    )?;
-    let router = PrimaryRouter::start_bound(
-        initial,
-        window_commands_tx.clone(),
-        primary_owner.handle(),
-        shutdown.clone(),
-        inputs.guard_snapshot,
+        #[cfg(not(all(debug_assertions, windows)))]
+        let on_ready = |_: &PrimaryRouterHandle| -> Result<(), HostAppError> { Ok(()) };
         #[cfg(windows)]
-        windows_native_support(ready_trigger, Some(&release_witness)),
-    )?;
-    primary_owner.attach_router(router.handle())?;
-    let lease_errors = start_direct_dev_lease_tail(dev_lease, router.handle())?;
-    let (window_events_tx, window_events_rx) = mpsc::channel();
-    let router_handle = router.handle();
-    let commands_for_events = window_commands_tx.clone();
-    // The evidence seam's handover request, right after this session's `Ready` (the
-    // recovery arm acknowledged): the shape of the coordinator's production request.
-    #[cfg(all(debug_assertions, windows))]
-    let on_ready = move |router: &PrimaryRouterHandle| -> Result<(), HostAppError> {
-        if handover_at_ready {
-            router.request_handover().map(|_| ())
-        } else {
-            Ok(())
-        }
-    };
-    #[cfg(not(all(debug_assertions, windows)))]
-    let on_ready = |_: &PrimaryRouterHandle| -> Result<(), HostAppError> { Ok(()) };
-    #[cfg(windows)]
-    let init_deadline = Arc::new(OnceLock::new());
-    #[cfg(windows)]
-    let coordinator_deadline = Arc::clone(&init_deadline);
-    #[cfg(windows)]
-    let pre_init_terminal = inputs.pre_init_terminal;
-    let event_coordinator = thread::Builder::new()
-        .name("keld-core-direct-app-window-events".to_owned())
-        .spawn(move || {
-            coordinate_window_events(
-                &window_events_rx,
-                &router_handle,
-                &commands_for_events,
-                #[cfg(windows)]
-                ready_trigger,
-                on_ready,
-                #[cfg(windows)]
-                Some((&coordinator_deadline, pre_init_terminal)),
-            )
-        })
-        .map_err(|source| app_io("direct window event coordinator", &source))?;
-
-    let spec = inputs.html.map(|html| WebviewSpec {
-        title: inputs.name.to_owned(),
-        initial: NavTarget::Html(html.to_owned()),
-        ..WebviewSpec::default()
-    });
-    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
-    let mut _environment_descendant = None;
-    let engine = run_direct_startup_if_session_running(shutdown, || {
+        let init_deadline = Arc::new(OnceLock::new());
         #[cfg(windows)]
-        let mut direct_engine = match inputs.windows_profile_mode {
-            WindowsProfileMode::Persistent(selection) => WebView2Engine::new(selection),
-            WindowsProfileMode::EphemeralDev => WebView2Engine::new_dev_ephemeral(),
-        }
-        .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))?;
+        let coordinator_deadline = Arc::clone(&init_deadline);
+        #[cfg(windows)]
+        let pre_init_terminal = inputs.pre_init_terminal;
+        let event_coordinator = thread::Builder::new()
+            .name("keld-core-direct-app-window-events".to_owned())
+            .spawn(move || {
+                coordinate_window_events(
+                    &window_events_rx,
+                    &router_handle,
+                    &commands_for_events,
+                    #[cfg(windows)]
+                    ready_trigger,
+                    on_ready,
+                    #[cfg(windows)]
+                    Some((&coordinator_deadline, pre_init_terminal)),
+                )
+            })
+            .map_err(|source| app_io("direct window event coordinator", &source))?;
+
+        let spec = inputs.html.map(|html| WebviewSpec {
+            title: inputs.name.to_owned(),
+            initial: NavTarget::Html(html.to_owned()),
+            ..WebviewSpec::default()
+        });
         #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
-        {
-            _environment_descendant = spawn_windows_environment_descendant()?;
-        }
-        #[cfg(target_os = "linux")]
-        let mut direct_engine = direct_engine;
-        // A facade boot's first window belongs to the application's later
-        // authenticated Create; a zero-window Init is the observable.
-        if let Some(spec) = &spec {
-            WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-            direct_engine
-                .create_app(spec, window_events_tx.clone())
-                .map_err(|source| app_detail("initial direct window", source.to_string()))?;
-        }
-        Ok(direct_engine)
-    });
-    let Some(engine) = engine else {
-        drop(window_events_tx);
-        let event_result = event_coordinator
-            .join()
-            .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
-            .and_then(std::convert::identity);
-        let lease_result = take_direct_lease_error(lease_errors.as_ref());
-        let router_result = router.shutdown();
-        let owner_result = primary_owner.shutdown();
-        let _retained_digest = inputs
-            .guard_snapshot
-            .map(|snapshot| snapshot.verified.verified_sha256());
-        return collapse_app_results([lease_result, event_result, router_result, owner_result])
-            .map(|()| DirectSessionEnd::Ordinary);
-    };
-    let engine = match engine {
-        Ok(engine) => engine,
-        Err(primary) => {
+        let mut _environment_descendant = None;
+        let engine = run_direct_startup_if_session_running(shutdown, || {
+            #[cfg(windows)]
+            let mut direct_engine = match prepared_engine.take() {
+                Some(engine) => engine,
+                None => build_windows_direct_engine(inputs.windows_profile_mode)?,
+            };
+            #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+            {
+                match spawn_windows_environment_descendant() {
+                    Ok(child) => _environment_descendant = child,
+                    Err(error) => {
+                        // This facade engine still has no view and has not entered
+                        // the loop. Restore its sole custodian for checked retirement.
+                        if ready_trigger == AppReadyTrigger::HostInitialized {
+                            prepared_engine = Some(direct_engine);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            let mut direct_engine = direct_engine;
+            // A facade boot's first window belongs to the application's later
+            // authenticated Create; a zero-window Init is the observable.
+            if let Some(spec) = &spec {
+                WINDOW_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+                direct_engine
+                    .create_app(spec, window_events_tx.clone())
+                    .map_err(|source| app_detail("initial direct window", source.to_string()))?;
+            }
+            Ok(direct_engine)
+        });
+        let Some(engine) = engine else {
             drop(window_events_tx);
             let event_result = event_coordinator
                 .join()
@@ -3843,108 +3854,166 @@ fn run_direct_app_session(
             let _retained_digest = inputs
                 .guard_snapshot
                 .map(|snapshot| snapshot.verified.verified_sha256());
-            return Err(collapse_app_failures(
-                &primary,
-                [lease_result, event_result, router_result, owner_result],
-            ));
-        }
-    };
-    #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
-    let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
-        == Some(std::ffi::OsStr::new("1"));
-    #[cfg(windows)]
-    let window_result = engine.run_app_until_quit(
-        window_commands_rx,
-        window_events_tx,
-        ready_trigger,
-        || {
-            if ready_trigger == AppReadyTrigger::HostInitialized {
-                let _ = init_deadline.set(Instant::now() + keld_wv::INITIAL_MILESTONE_DEADLINE);
+            return collapse_app_results([lease_result, event_result, router_result, owner_result])
+                .map(|()| DirectSessionEnd::Ordinary);
+        };
+        let engine = match engine {
+            Ok(engine) => engine,
+            Err(primary) => {
+                drop(window_events_tx);
+                let event_result = event_coordinator
+                    .join()
+                    .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
+                    .and_then(std::convert::identity);
+                let lease_result = take_direct_lease_error(lease_errors.as_ref());
+                let router_result = router.shutdown();
+                let owner_result = primary_owner.shutdown();
+                let _retained_digest = inputs
+                    .guard_snapshot
+                    .map(|snapshot| snapshot.verified.verified_sha256());
+                return Err(collapse_app_failures(
+                    &primary,
+                    [lease_result, event_result, router_result, owner_result],
+                ));
             }
-        },
-        |deadline| {
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            if observe_t2_release {
-                eprintln!("KELD_T2_RELEASE_WITNESS entered");
-            }
-            let result = release_witness.observe(deadline);
-            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
-            if observe_t2_release {
-                eprintln!("KELD_T2_RELEASE_WITNESS completed={}", result.is_ok());
-            }
-            result
-        },
-    );
-    #[cfg(target_os = "linux")]
-    let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
-    drop(window_commands_tx);
-    // A handover ended the loop: the application session is still live and ends here
-    // (KEL-53 §4 "Profile handover", steps 3a to 3c). A loop that returned an error
-    // under a handover is a failed tail: no step follows, the session fails.
-    let ended_by_handover = shutdown.handover_requested_guarded();
-    let handover_result = match (&window_result, ended_by_handover) {
-        (Ok(()), true) => {
-            complete_profile_handover(&router.handle(), shutdown, HANDOVER_QUIT_DEADLINE)
-        }
-        _ => Ok(()),
-    };
-    #[cfg(all(debug_assertions, windows))]
-    if handover_at_ready && window_result.is_ok() && handover_result.is_ok() {
-        println!(
-            "KELD_TEST_WINDOWS_HANDOVER {}",
-            shutdown.handover_clock.evidence_json(shutdown.cause())
+        };
+        #[cfg(all(windows, feature = "profile-test-hooks", debug_assertions))]
+        let observe_t2_release = std::env::var_os(keld_wv::TEST_WINDOWS_T2_OBSERVE_ENV).as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        #[cfg(windows)]
+        let window_result = engine.run_app_until_quit(
+            window_commands_rx,
+            window_events_tx,
+            ready_trigger,
+            || {
+                if ready_trigger == AppReadyTrigger::HostInitialized {
+                    let _ = init_deadline.set(Instant::now() + keld_wv::INITIAL_MILESTONE_DEADLINE);
+                }
+            },
+            |deadline| {
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if observe_t2_release {
+                    eprintln!("KELD_T2_RELEASE_WITNESS entered");
+                }
+                let result = release_witness.observe(deadline);
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                if observe_t2_release {
+                    eprintln!("KELD_T2_RELEASE_WITNESS completed={}", result.is_ok());
+                }
+                result
+            },
         );
+        #[cfg(target_os = "linux")]
+        let window_result = engine.run_app_until_quit(window_commands_rx, window_events_tx);
+        drop(window_commands_tx);
+        // A handover ended the loop: the application session is still live and ends here
+        // (KEL-53 §4 "Profile handover", steps 3a to 3c). A loop that returned an error
+        // under a handover is a failed tail: no step follows, the session fails.
+        let ended_by_handover = shutdown.handover_requested_guarded();
+        let handover_result = match (&window_result, ended_by_handover) {
+            (Ok(()), true) => {
+                complete_profile_handover(&router.handle(), shutdown, HANDOVER_QUIT_DEADLINE)
+            }
+            _ => Ok(()),
+        };
+        #[cfg(all(debug_assertions, windows))]
+        if handover_at_ready && window_result.is_ok() && handover_result.is_ok() {
+            println!(
+                "KELD_TEST_WINDOWS_HANDOVER {}",
+                shutdown.handover_clock.evidence_json(shutdown.cause())
+            );
+        }
+        let session_end = if ended_by_handover {
+            DirectSessionEnd::Handover
+        } else {
+            DirectSessionEnd::Ordinary
+        };
+        let event_result = event_coordinator
+            .join()
+            .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
+            .and_then(std::convert::identity);
+        let lease_result = take_direct_lease_error(lease_errors.as_ref());
+        let router_result = router.shutdown();
+        let owner_result = primary_owner.shutdown();
+        let _retained_digest = inputs
+            .guard_snapshot
+            .map(|snapshot| snapshot.verified.verified_sha256());
+
+        let owner_result = match owner_result {
+            Err(primary) if owner_cause_outranks_window(&primary) => {
+                return Err(append_app_cleanup(
+                    primary,
+                    [
+                        lease_result,
+                        window_result
+                            .map_err(|source| app_detail("direct app window", source.to_string())),
+                        handover_result,
+                        event_result,
+                        router_result,
+                    ],
+                ));
+            }
+            result => result,
+        };
+
+        match window_result {
+            Err(source @ WvError::Navigate(_)) => {
+                let primary = app_detail("initial direct navigation", source.to_string());
+                Err(collapse_app_failures(
+                    &primary,
+                    [lease_result, owner_result, router_result, event_result],
+                ))
+            }
+            result => collapse_app_results([
+                lease_result,
+                result.map_err(|source| app_detail("direct app window", source.to_string())),
+                handover_result,
+                event_result,
+                router_result,
+                owner_result,
+            ])
+            .map(|()| session_end),
+        }
+    })();
+    #[cfg(windows)]
+    {
+        finish_pending_direct_engine(prepared_engine, session_result, |mut engine| {
+            engine
+                .retire_unstarted_app(|deadline| release_witness.observe(deadline))
+                .map_err(|source| {
+                    app_detail("Windows facade startup retirement", source.to_string())
+                })
+        })
     }
-    let session_end = if ended_by_handover {
-        DirectSessionEnd::Handover
-    } else {
-        DirectSessionEnd::Ordinary
-    };
-    let event_result = event_coordinator
-        .join()
-        .map_err(|_| app_detail("direct window event coordinator", "thread panicked"))
-        .and_then(std::convert::identity);
-    let lease_result = take_direct_lease_error(lease_errors.as_ref());
-    let router_result = router.shutdown();
-    let owner_result = primary_owner.shutdown();
-    let _retained_digest = inputs
-        .guard_snapshot
-        .map(|snapshot| snapshot.verified.verified_sha256());
+    #[cfg(target_os = "linux")]
+    {
+        session_result
+    }
+}
 
-    let owner_result = match owner_result {
-        Err(primary) if owner_cause_outranks_window(&primary) => {
-            return Err(append_app_cleanup(
-                primary,
-                [
-                    lease_result,
-                    window_result
-                        .map_err(|source| app_detail("direct app window", source.to_string())),
-                    handover_result,
-                    event_result,
-                    router_result,
-                ],
-            ));
-        }
-        result => result,
-    };
+/// The same native factory serves early facade preparation and legacy renderer startup.
+#[cfg(windows)]
+fn build_windows_direct_engine(mode: WindowsProfileMode) -> Result<WebView2Engine, HostAppError> {
+    match mode {
+        WindowsProfileMode::Persistent(selection) => WebView2Engine::new(selection),
+        WindowsProfileMode::EphemeralDev => WebView2Engine::new_dev_ephemeral(),
+    }
+    .map_err(|source| app_detail("Windows WebView2 initialization", source.to_string()))
+}
 
-    match window_result {
-        Err(source @ WvError::Navigate(_)) => {
-            let primary = app_detail("initial direct navigation", source.to_string());
-            Err(collapse_app_failures(
-                &primary,
-                [lease_result, owner_result, router_result, event_result],
-            ))
-        }
-        result => collapse_app_results([
-            lease_result,
-            result.map_err(|source| app_detail("direct app window", source.to_string())),
-            handover_result,
-            event_result,
-            router_result,
-            owner_result,
-        ])
-        .map(|()| session_end),
+/// A retained preparation has not transferred to the native loop. Retire it after
+/// the session body's existing router/primary cleanup, and preserve both errors.
+#[cfg(windows)]
+fn finish_pending_direct_engine<T>(
+    prepared: Option<T>,
+    result: Result<DirectSessionEnd, HostAppError>,
+    retire: impl FnOnce(T) -> Result<(), HostAppError>,
+) -> Result<DirectSessionEnd, HostAppError> {
+    let cleanup = prepared.map_or(Ok(()), retire);
+    match (result, cleanup) {
+        (Ok(end), Ok(())) => Ok(end),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), cleanup) => Err(append_app_cleanup(primary, [cleanup])),
     }
 }
 
