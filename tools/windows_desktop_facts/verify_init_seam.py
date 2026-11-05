@@ -47,6 +47,7 @@ def main():
         case = args.out / name
         case.mkdir()
         checked(name + "-git-init", ["git", "init", "--quiet", "--initial-branch=proof-only"], case)
+        checked(name + "-git-maintenance-off", ["git", "config", "maintenance.auto", "false"], case)
         target = case / rel
         target.parent.mkdir(parents=True)
         target.write_bytes(source)

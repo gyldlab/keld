@@ -1,0 +1,10 @@
+{
+  "head": "48e3f168716ea8ba25ac6c1bfb35ab213c022b2e",
+  "owner_correction": "9a9fbbcfa1fb65c2cb922c680fcdcedc80af06de",
+  "before_bytes": 65764,
+  "after_bytes": 65279,
+  "cap_unchanged": 65280,
+  "removed_only_reused_fixture_note": "- 2026-11-03 [test] A standalone Cargo fixture below managed repository scratch must declare its own `[workspace]`; otherwise Cargo can adopt the ancestor workspace and fail before the behavior under test. A nested valid parent workspace plus an unchanged parent-source sentinel makes this regression independent of the operator's temporary-directory location. (evidence: tools/test_ci_local.py::ExecutorTests::test_fmt_repairs_rust_before_codegen_and_restamps_native_output, GH-1188)",
+  "learning_blob": "4cc79673476a4a0d01439855533efac4a2503b28",
+  "driver_sha256": "8eb6bdc30b7cb5709aaf93c6a176ccc0faba55576108a1a73ae9fe3bad5fb3d3"
+}
