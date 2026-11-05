@@ -30,11 +30,19 @@ pub(in crate::webview2) struct Facts {
     pub(in crate::webview2) capture_error: Option<String>,
 }
 
+/// One raw native Host event, independent of the product's release-credit state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::webview2) struct BrowserExitFacts {
+    pub(in crate::webview2) calls: u32,
+    pub(in crate::webview2) receipt: Option<(backend::BrowserInstance, u32, bool)>,
+}
+
 #[derive(Default)]
 struct State {
     active: bool,
     withhold: bool,
     facts: Facts,
+    browser_exit: BrowserExitFacts,
 }
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
@@ -58,11 +66,32 @@ impl Scope {
     pub(in crate::webview2) fn take_facts() -> Facts {
         STATE.with_borrow_mut(|state| std::mem::take(&mut state.facts))
     }
+
+    pub(in crate::webview2) fn browser_exit_facts() -> Option<BrowserExitFacts> {
+        STATE.with_borrow(|state| state.active.then_some(state.browser_exit))
+    }
 }
 impl Drop for Scope {
     fn drop(&mut self) {
         STATE.with_borrow_mut(|state| *state = State::default());
     }
+}
+
+pub(in crate::webview2) fn observe_browser_exit(
+    site: backend::ReleaseSite,
+    actual: u32,
+    current: backend::BrowserInstance,
+    normal: bool,
+) {
+    if site != backend::ReleaseSite::Host {
+        return;
+    }
+    STATE.with_borrow_mut(|state| {
+        if state.active {
+            state.browser_exit.calls += 1;
+            state.browser_exit.receipt = Some((current, actual, normal));
+        }
+    });
 }
 
 unsafe extern "system" fn child(hwnd: HWND, context: LPARAM) -> BOOL {

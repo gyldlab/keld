@@ -1658,7 +1658,7 @@ fn observe_profile_browser_exit(
         let current = binding.load();
         let normal = kind == COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL;
         #[cfg(all(feature = "media-acceptance", test))]
-        media_acceptance::observe_browser_exit(pid, current.pid, normal);
+        media_acceptance::observe_browser_exit(site, pid, current, normal);
         #[cfg(all(feature = "media-acceptance", test))]
         if media_acceptance::swallow_browser_exit(site) {
             return Ok(());

@@ -1,11 +1,13 @@
-//! Independent cleanup for the managed application Close-result fixture.
+//! Raw primary exit observation and independent cleanup for the Close-result fixture.
 
 use super::super::failure;
 use crate::WvError;
 use crate::webview2 as backend;
-use crate::webview2::media_acceptance::adopted_close_control::NativeCapture;
+use crate::webview2::media_acceptance::adopted_close_control::{
+    BrowserExitFacts, NativeCapture, Scope,
+};
 use std::os::windows::io::AsRawHandle as _;
-use std::sync::{Arc, mpsc::TryRecvError};
+use std::sync::Arc;
 use std::time::Instant;
 use windows::Win32::Foundation::{HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Threading::{GetCurrentThreadId, WaitForSingleObject};
@@ -18,49 +20,86 @@ fn is_window(hwnd: HWND) -> bool {
 }
 
 pub(super) struct ExitWitness {
-    observation: Option<backend::BrowserExitObservation>,
-    // A copied identity only. Production retains its registration until it ends.
+    environment: backend::ICoreWebView2Environment5,
     primary_token: Option<i64>,
+    binding: Arc<backend::BrowserBinding>,
+    expected: Option<backend::BrowserInstance>,
+    orphaned: bool,
     normal: u32,
 }
 
 impl ExitWitness {
     pub(super) fn new(engine: &backend::WebView2Engine) -> Result<Self, WvError> {
+        // Keep the original registration alive, without adding another handler.
+        // This clone contains no profile lease, View, receiver or release credit.
+        let environment = engine
+            .browser_exit_environment
+            .as_ref()
+            .ok_or_else(|| failure("managed fixture primary environment is missing"))?
+            .clone();
         let primary_token = engine
             .browser_exit_token
             .ok_or_else(|| failure("managed fixture primary exit observer is missing"))?;
         Ok(Self {
-            // Read-only native observation using the current engine binding.
-            // This is not another release policy or profile lease owner.
-            observation: Some(backend::observe_profile_browser_exit(
-                &engine.environment,
-                Arc::clone(&engine.browser_binding),
-                None,
-                backend::ReleaseSite::Host,
-            )?),
+            environment,
             primary_token: Some(primary_token),
+            binding: Arc::clone(&engine.browser_binding),
+            expected: None,
+            orphaned: false,
             normal: 0,
         })
     }
 
-    pub(super) fn retire_fault_orphan(
-        &mut self,
-        actual_close_fault: bool,
-        witness_calls: u32,
-    ) -> Result<(), WvError> {
-        let token = self
-            .primary_token
-            .take()
-            .expect("primary registration identity is considered once");
-        if actual_close_fault && witness_calls == 0 {
-            // The consumed engine has returned its actual Close fault before
-            // finish_profile_release_with. That method removes the primary
-            // token only after the synchronous Host witness has been called.
-            // Our extra observer alone now retains the same native environment.
-            // Checked fixture cleanup avoids a callback to its dropped receiver;
-            // this gives no production observer-retirement or release credit.
-            let observation = self.observation.as_ref().expect("live fixture observer");
-            backend::remove_browser_exit_observer(&observation.environment, token)?;
+    pub(super) fn prepare_after_app(&mut self, actual_close_fault: bool, witness_calls: u32) {
+        assert!(self.expected.is_none(), "freeze the original binding once");
+        self.expected = Some(self.binding.load());
+        // The sole primary removal occurs after the synchronous Host witness.
+        // Only this actual fault path transfers orphan cleanup to the fixture.
+        self.orphaned = actual_close_fault && witness_calls == 0;
+        if !self.orphaned {
+            self.primary_token = None;
+        }
+    }
+
+    fn drain(&mut self, pid: u32) -> Result<BrowserExitFacts, WvError> {
+        let expected = self
+            .expected
+            .expect("binding frozen after actual app return");
+        if !expected.is_bound() || expected.pid != pid {
+            return Err(failure(
+                "native capture disagrees with the frozen browser instance",
+            ));
+        }
+        let facts = Scope::browser_exit_facts()
+            .ok_or_else(|| failure("raw primary browser-exit observation is inactive"))?;
+        match facts {
+            BrowserExitFacts {
+                calls: 0,
+                receipt: None,
+            } => self.normal = 0,
+            BrowserExitFacts {
+                calls: 1,
+                receipt: Some((instance, actual, true)),
+            } if instance == expected && actual == pid => self.normal = 1,
+            _ => {
+                return Err(failure(format!(
+                    "unexpected raw primary browser exit {facts:?}; expected={expected:?} pid={pid}"
+                )));
+            }
+        }
+        Ok(facts)
+    }
+
+    fn remove_fault_orphan(&mut self) -> Result<(), WvError> {
+        if self.orphaned
+            && let Some(token) = self.primary_token.take()
+        {
+            eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=primary-observer-remove-enter token={token}");
+            let result = backend::remove_browser_exit_observer(&self.environment, token);
+            eprintln!(
+                "KELD_ADOPTED_CLOSE_DIAG phase=primary-observer-remove-return result={result:?}"
+            );
+            result?;
             println!(
                 "KELD_ADOPTED_CLOSE_ORPHAN_OBSERVER_REMOVED cleanup_owner=fixture product_retirement_credit=false"
             );
@@ -68,44 +107,30 @@ impl ExitWitness {
         Ok(())
     }
 
-    fn drain(&mut self, pid: u32) -> Result<(), WvError> {
-        let observation = self.observation.as_ref().expect("live fixture observer");
-        loop {
-            match observation.receiver.try_recv() {
-                Ok(backend::BrowserExitReceipt::Normal(instance)) if instance.pid == pid => {
-                    self.normal += 1;
-                }
-                Ok(receipt) => {
-                    return Err(failure(format!("unexpected cleanup receipt {receipt:?}")));
-                }
-                Err(TryRecvError::Empty) => return Ok(()),
-                Err(TryRecvError::Disconnected) => {
-                    return Err(failure("independent exit observer disconnected"));
-                }
-            }
+    pub(super) fn retire(mut self, pid: u32) -> Result<BrowserExitFacts, WvError> {
+        // Successful cleanup proves native retirement; an error still requires
+        // orphan cleanup. Sample the raw counter and never retry a taken token.
+        let removed = self.remove_fault_orphan();
+        let facts = self.drain(pid);
+        removed?;
+        let facts = facts?;
+        if self.normal != 1 {
+            return Err(failure(
+                "exactly one raw primary normal event was not established",
+            ));
         }
-    }
-
-    pub(super) fn retire(mut self) -> Result<(), WvError> {
-        if let Some(observation) = self.observation.take() {
-            eprintln!(
-                "KELD_ADOPTED_CLOSE_DIAG phase=observer-remove-enter token={}",
-                observation.token
-            );
-            let result =
-                backend::remove_browser_exit_observer(&observation.environment, observation.token);
-            eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=observer-remove-return result={result:?}");
-            result?;
-        }
-        Ok(())
+        Ok(facts)
     }
 }
 
 impl Drop for ExitWitness {
     fn drop(&mut self) {
-        if let Some(observation) = self.observation.take() {
-            let _ =
-                backend::remove_browser_exit_observer(&observation.environment, observation.token);
+        // Unwind cleanup only, after the actual fault proved primary custody.
+        // Healthy/app-in-progress owners are never removed by this fixture.
+        if self.orphaned
+            && let Some(token) = self.primary_token.take()
+        {
+            let _ = backend::remove_browser_exit_observer(&self.environment, token);
         }
     }
 }

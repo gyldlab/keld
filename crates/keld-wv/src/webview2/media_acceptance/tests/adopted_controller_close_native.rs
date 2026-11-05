@@ -237,6 +237,8 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
     } = run_managed(engine, deadline);
     // Capture the actual durable product result before any test cleanup.
     let final_phase = raw_phase(&plan);
+    // Metadata only: keep the original callback until raw native cleanup ends.
+    witness.prepare_after_app(expected_close_fault(&outcome), witness_calls);
     let facts = adopted_close_control::Scope::take_facts();
     let capture = facts.capture.as_ref().ok_or_else(|| {
         failure(format!(
@@ -244,23 +246,24 @@ fn case(withhold: bool) -> Result<Result<(), WvError>, WvError> {
             facts.capture_error
         ))
     })?;
-    // Freeze the actual product result first. The test-retained environment
-    // can otherwise keep its fault-returned primary callback alive after the
-    // engine's receiver is gone. Healthy and omitted-latch paths never take
-    // this cleanup branch because their Host witness has already run.
-    let retired_orphan = witness.retire_fault_orphan(expected_close_fault(&outcome), witness_calls);
     eprintln!(
         "KELD_ADOPTED_CLOSE_DIAG phase=cleanup-enter pid={}",
         capture.browser_pid
     );
     let cleanup = native_support::cleanup(capture, &mut witness, deadline);
     eprintln!("KELD_ADOPTED_CLOSE_DIAG phase=cleanup-return result={cleanup:?}");
-    let retired_observer = witness.retire();
+    let retired_observer = witness.retire(capture.browser_pid);
+    let final_browser_exit = adopted_close_control::Scope::browser_exit_facts();
     let late = adopted_close_control::Scope::take_facts();
     drop(control);
     let already_retired = cleanup?;
-    retired_observer?;
-    retired_orphan?;
+    let retired_browser_exit = retired_observer?;
+    if final_browser_exit != Some(retired_browser_exit) {
+        return Err(failure(
+            "raw native exit evidence changed during environment cleanup",
+        ));
+    }
+    println!("KELD_ADOPTED_CLOSE_NATIVE_EXIT {retired_browser_exit:?}");
     let trace = trace?;
     let final_phase = final_phase?;
     println!(

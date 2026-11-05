@@ -278,7 +278,15 @@ pub(super) fn observe_production_effect(
     });
 }
 
-pub(super) fn observe_browser_exit(actual: u32, expected: u32, normal: bool) {
+pub(super) fn observe_browser_exit(
+    site: super::ReleaseSite,
+    actual: u32,
+    current: super::BrowserInstance,
+    normal: bool,
+) {
+    // Raw SDK callback facts precede the production receipt filter and send.
+    adopted_close_control::observe_browser_exit(site, actual, current, normal);
+    let expected = current.pid;
     CONTROLLER_CUSTODY_EVIDENCE.with_borrow_mut(|facts| {
         if facts.active {
             facts.browser_exits.push((actual, normal));
