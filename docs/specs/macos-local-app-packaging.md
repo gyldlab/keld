@@ -85,6 +85,14 @@ exit 3. Its signature reports ad-hoc and no Team Identifier. The snapshot CLI
 `keld build` returned `KELD-CLI-045`, exit 2. These probes establish the current
 boundary, not installed launch, security acceptance or a generated artifact.
 
+The preserved Bun separately passes strict signature verification. It is already
+Developer ID signed, with Hardened Runtime and five existing runtime exceptions.
+The Host declares minimum macOS 11.0; Bun declares 13.0. These Mach-O declarations
+are compatibility floors, not acceptance on those versions. Preserve independently
+pinned, verified Bun bytes and their signature in this first slice; do not force
+re-signing and accidentally discard its runtime properties. Bun's publisher identity
+is not the application's publisher identity.
+
 ### Primary documentation receipt
 
 Retrieved 2026-11-05. Context7 discovery used Apple/Bun documentation and Microsoft
@@ -94,6 +102,7 @@ WebView2/WebKitGTK libraries; primary documents and local Apple manuals decide c
 | --- | --- |
 | Standard bundle/code/resource locations | [Apple bundle layout](https://developer.apple.com/documentation/bundleresources/placing-content-in-a-bundle) |
 | Inside-out signing; no deep signing | [Apple signing](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac) |
+| Nested signature identity is not an exact runtime-version pin | [Apple TN2206](https://developer.apple.com/library/archive/technotes/tn2206/) and [TN3126](https://developer.apple.com/documentation/technotes/tn3126-inside-code-signing-hashes) |
 | Ad-hoc has no publisher identity | [Apple ad-hoc semantics](https://developer.apple.com/documentation/security/seccodesignatureflags/adhoc) |
 | Dynamic identity versus full resource validation | [Dynamic validation](https://developer.apple.com/documentation/security/seccodecheckvalidity(_:_:_:)) and [static validation](https://developer.apple.com/documentation/security/secstaticcodecheckvaliditywitherrors(_:_:_:_:)) |
 | Static verification does not prevent later mutation | Same Apple static-validation contract; retained-input checks below are additional obligations |
@@ -120,7 +129,7 @@ All implementation criteria below are unrun at draft creation.
 | A6 | The exact existing Guard manifest is enforced. A denied authenticated capability/resource request has no prohibited side effect. Legacy's ambient OS authority is explicitly disclosed, never called Strict. |
 | A7 | Actual installed launch facts precede application imports: correct packaged state, app/resource roots and Bun executable/argv semantics; forged or missing facts fail. |
 | A8 | Bundled Bun is selected by validated absolute identity. Missing/replaced Bun and hostile PATH/preload inputs cannot launch a substitute. |
-| A9 | Each nested executable and the complete outer bundle verifies after inside-out ad-hoc signing. Independent executable/resource mutations fail verification. |
+| A9 | Each nested executable verifies before the containing bundle is signed; the final outer application has a verified ad-hoc signature. Pinned Bun retains its valid input signature and bytes. Independent executable-content/resource mutations fail signature verification; executable modes have separate package/admission checks. |
 | A10 | The DMG verifies, mounts read-only, contains the app and Applications shortcut, supports copying, and detaches using the observed device identity. |
 | A11 | Installed app works after renaming/relocation and from unrelated cwd. No source/resource/runtime access escapes to the checkout or developer cache. |
 | A12 | Original draw.io passes Launch → Open → Edit → Save → unsaved Close → Cancel → Save → Reopen → Discard → Quit, with native observations and saved-file readback. |
@@ -216,6 +225,35 @@ The build subset has `target: "macos-arm64"`, `signing: "adhoc-local"`,
 or chooses binaries through those original paths. Prebuilt download/install
 acquisition remains KEL-141's separate responsibility.
 
+For this first command, the project root is the canonical invocation directory,
+which must contain all three authoring files. There is no ancestor search or
+configuration-file import. All relative build paths use that same project root;
+installed paths are derived afresh from the verified bundle after relocation.
+
+| Build field | Literal type; presence/default | Resolution and validation |
+| --- | --- | --- |
+| `target` | String; required, no default | Exactly `macos-arm64`, matching the CLI target and qualified binaries. |
+| `signing` | String; required, no default | Exactly `adhoc-local`. |
+| `bundleVersion` | String; required, no default | Apple's `CFBundleVersion` representation; no silent normalization. |
+| `minimumSystemVersion` | String; required, no default | Apple's `LSMinimumSystemVersion` representation and the qualified binary floors. |
+| `icon` | String; optional, absence means no custom icon | Project-relative regular `.icns` file; copied to the fixed icon destination. |
+| `resources` | String array; required, may be empty | Normalized project-relative file/directory roots; no absolute or escaping roots. |
+| `host`, `bun` | Objects; required, no default | Each has exactly `path`, `sha256`, `version`; no extra fields. |
+| `host.path`, `bun.path` | Strings; required | Absolute or project-relative regular executable files; exact independent input qualification is required. |
+| `host.sha256`, `bun.sha256` | Strings; required | Exactly 64 lowercase hexadecimal characters, matched against captured input bytes and independent qualification. |
+| `host.version`, `bun.version` | Strings; required | Nonempty, at most 128 UTF-8 bytes, no control bytes; must exactly match the independently qualified input record. They do not select or download code. |
+| `outDir` | String; required, no default | Absolute or project-relative new directory. It must not overlap a captured input/resource tree; no overwrite or reuse. |
+
+A project-relative source `assets/icons/a.svg` is always installed as
+`Contents/Resources/app/assets/icons/a.svg`; selecting `assets` does not flatten
+its children. Reject duplicate or ancestor/descendant overlaps among explicit
+resource roots. An implicit entry/renderer already covered by a declared root is
+included once. The existing qualified producer owns provider and generated leaves;
+user resources cannot overwrite its boot, exact policy, graph or canonical preload
+destinations. Reject different sources mapping to one destination, including
+case-equivalent names on the output filesystem, before copying. The existing graph
+capture rules still govern path normalization, symlinks and special files.
+
 `name`, `id` and application `version` are not duplicated in the build config.
 Root `id` uses the existing pure canonical-ID predicate in `keld-wv`'s identity
 owner; expose that predicate if required, rather than fabricating a publisher scope
@@ -263,6 +301,16 @@ short version/build version, minimum system version and optional icon. Escape XM
 values and validate with `plutil`. Do not advertise document types, URL schemes,
 background modes or entitlements whose consumers are not implemented.
 
+The generated, sealed Info.plist also contains one closed `KELDLocalBundle`
+dictionary. Its exact fields are `schema` (integer `1`), `target` (string
+`macos-arm64`) and `bunSha256` (64 lowercase hexadecimal characters). Pack derives
+the Bun digest from the verified, independently pinned input bytes; it is not a
+free-form installed configuration or an external receipt. Missing, duplicate,
+unknown or wrongly typed dictionary fields refuse. This small platform-specific
+record supplies the local-origin discriminator and exact runtime pin; it is not a
+second boot, permission or application-metadata language. The fixed Bun path stays
+code-owned, not manifest-controlled. No final Host self-hash is stored in the bundle.
+
 The shipping Host is the native launcher and event-loop owner. Extend the existing
 opaque `ValidatedBootSelection` with a macOS-private origin, conceptually:
 
@@ -280,11 +328,21 @@ and local provenance. A boolean such as `skip_cleanup` or a user-provided bundle
 path is not an admission capability.
 
 Derive the origin from the running code object and its actual enclosing application.
+An enclosing local-app candidate must pass this entire path or refuse; missing or
+invalid local metadata must not fall through to development-stage selection. Require
+the outer/main code's ad-hoc signature flag for this local schema. A nested Bun
+signature or Team Identifier cannot establish the outer app's provenance. Existing
+development-stage and Apple publisher selection remain separate; this schema does
+not activate a new Developer ID application path.
+
 Use Apple's dynamic validation for the running executable and full static validation
 of the enclosing bundle, including nested code, resources, strict structure and every
 present architecture. Do not use resource/executable-skip flags. Validate the expected
-fixed Host/Bun relationship, canonical identifier equality and supported target/version
-before a listener, child or app window exists. A naked copied Host refuses.
+fixed Host/Bun relationship, `CFBundleExecutable`, canonical equality of the outer
+signing identifier and `CFBundleIdentifier`, and supported target/version. Compare
+the opened Bun bytes with sealed `bunSha256`, even when its signature validates.
+Apple's nested-code identity is not a substitute for that exact digest. Complete
+these checks before a listener, child or app window exists. A naked copied Host refuses.
 
 Then feed the existing closed boot parser, exact opened permission bytes and existing
 GuardSnapshot path. Do not define a second boot or permission language. A minimal
@@ -303,6 +361,15 @@ existing graph and permission contracts.
 The app bundle is immutable during operation. Runtime state uses existing approved
 state locations; no cache, lock, socket, temporary stage or user document is written
 inside the signed bundle.
+
+Executability is a separate package predicate, not a signature property. Pack
+requires regular executable Host/Bun inputs without set-user-ID or set-group-ID
+bits, and emits both code files with POSIX mode `0755`. Validate the final files'
+exact mode and regular-file kind before publication. Core also checks those facts
+for installed admission, and Runtime rechecks Bun for each generation; unusable
+execution (including an ACL denial) remains a typed launch failure. No signature
+or digest success can waive that check. A copied Host with all execute bits removed
+cannot run to reject itself: Launch Services refusal is its installed oracle.
 
 ### 4.5 Runtime and installed application facts
 
@@ -368,8 +435,11 @@ separate ownership. Preserve this arrangement and avoid a self-hash cycle:
 2. Capture the resource graph and compile existing boot/policy bytes.
 3. Assemble into a newly created, task-owned staging directory; retain exact input
    identity and detect changes during capture.
-4. Sign each nested executable explicitly, preserving only reviewed required flags
-   and entitlements. Verify each nested item.
+4. Preserve the qualified Bun input byte-for-byte, including its existing signature,
+   flags and entitlements, and verify it in its final nested location. Any additional
+   independently qualified framework code needing a signature is signed explicitly
+   inside out with its reviewed properties, then verified. Reject unsigned or invalid
+   Bun inputs rather than inventing a new Bun signing recipe in this slice.
 5. Sign the containing application last, using native `/usr/bin/codesign`.
 6. Verify the entire bundle recursively and inspect its resulting signature facts.
 7. Record post-sign Host/Bun/app identities in an external artifact receipt.
@@ -380,24 +450,27 @@ Do not separately sign the main executable just to sign it again as the app; the
 containing app operation signs its main code. Do not use `codesign --deep` for
 signing. Recursive `--deep --strict` verification is allowed.
 
-Local signing uses `--sign -` and `--timestamp=none`; no timestamp service or paid
-identity is required. Inspect pinned input entitlement/runtime flags before changes.
-Do not copy Bun's broad example exceptions or silently strip a required property.
-The first local slice does not claim Hardened Runtime. Any enabled runtime policy
-and Bun JIT exception require a demonstrated need and an independent negative
-control; public hardened/notarized distribution remains KEL-103/future scope.
+Local outer signing uses `--sign -` and `--timestamp=none`; no timestamp service or
+paid identity is required. Nested code must already have a valid signature before
+the containing bundle is signed. The first pinned Bun satisfies that requirement
+without re-signing. Record its existing flags and entitlements; do not copy its
+exceptions into the Host. The outer app is locally ad-hoc signed even though this
+nested runtime retains its vendor signature. Do not claim Hardened Runtime for the
+whole app from Bun's flag. Changing Bun signing properties is a separately qualified
+input change, not a build fallback; public hardened/notarized distribution remains
+KEL-103/future scope.
 
 Example command forms, not executed acceptance:
 
 ```bash
-/usr/bin/codesign --sign - --force --timestamp=none --identifier com.example.app.bun "$keld_app/Contents/Helpers/bun"
 /usr/bin/codesign --verify --strict --verbose=2 "$keld_app/Contents/Helpers/bun"
 /usr/bin/codesign --sign - --force --timestamp=none "$keld_app"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$keld_app"
 ```
 
-The real implementation derives identifiers from configuration and passes arguments
-as separate process arguments. Tool failure invalidates the candidate; never
+The real implementation also compares the pinned Bun digest before sealing the
+generated local record. It derives identifiers from configuration and passes
+arguments as separate process arguments. Tool failure invalidates the candidate; never
 publish success from a partial output. No global shell interpolation of metadata.
 
 ### 4.7 DMG, output identity and reproducibility
@@ -535,13 +608,13 @@ does not prove publisher identity; an API return does not prove installed behavi
 
 | Criteria | Single-fault control and oracle |
 | --- | --- |
-| A1–A2 | Build two differently configured apps. Delete/alter one required input, supply duplicate/unknown config, wrong target/arch, escaping path, symlink or output collision: typed refusal and no published output. |
-| A3–A4 | Copy Host outside bundle, remove/change boot/policy/resource/Bun, mismatch ID: failure before app resource acquisition. Execute through Launch Services from an independent copied location. |
+| A1–A2 | Build two differently configured apps. Delete/alter one required input, supply duplicate/unknown config, wrong target/arch, escaping path, symlink, overlapping roots or generated/output collision: typed refusal and no published output. Remove Host/Bun input execute bits: reject independently of unchanged content/signature. |
+| A3–A4 | Copy Host outside bundle, remove/change boot/policy/resource/Bun, mismatch ID, or supply absent/duplicate/unknown/wrongly typed local metadata: failure before app resource acquisition. No development fallback. Execute through Launch Services from an independent copied location. |
 | A5 | Validly re-sign a package requesting Strict/publisher persistence/update authority: still refuse those privileges. Whole-app replacement/re-signing is a documented same-user non-guarantee, never a passed authenticity test. |
 | A6 | Use an authenticated denied capability and verify typed denial plus absent external side effect. Separately disclose Legacy ambient authority. |
 | A7 | Inspect main facts before first app import. Wrong kind/schema/path/defaultApp/argv, public env forgery and missing facts cannot establish packaged state. |
-| A8 | Hostile PATH Bun writes a marker; missing installed Bun must fail without that marker. Preserve preload/ambient Bun option negative controls and generation revalidation. |
-| A9 | Independently mutate copied Host, Bun, boot, policy and app resources after signing; verification fails. Re-signing is a separate trust-control case. |
+| A8 | Hostile PATH Bun writes a marker; missing installed Bun must fail without that marker. Replace Bun with differently hashed validly signed code meeting the same designated requirement: sealed digest still refuses. Preserve preload/ambient Bun option negative controls and generation revalidation. |
+| A9 | Independently mutate copied Host, Bun, boot, policy and app resource bytes after signing; signature verification fails. Separately chmod copied Host/Bun to `0644`: record signature-still-valid as the control, then require Pack rejection, installed Bun admission/generation refusal before app effects, or Launch Services refusal for the non-executable Host. Re-signing is a separate trust-control case. |
 | A10 | Verify/mount/copy/detach exact DMG device; corrupted disposable image fails integrity; unrelated mounts and existing files remain untouched. |
 | A11 | Rename and move the copied app, clear development dependencies, use unrelated cwd, inspect actual Host/Bun/resource paths. No checkout-based rescue. |
 | A12 | Original pinned editor, native interaction, saved XML/content readback, veto/Cancel/Save/Discard/Quit ordering. A window or mock editor is insufficient. |
@@ -603,7 +676,7 @@ exact committed source/provider and applicable qualification handoff required by
 T1/T2. Current bounded test integration is real evidence but is not installed release
 approval. #589 records the resulting end-to-end consumer evidence.
 
-**Execution uncertainties:** minimum pinned-Bun signing requirements, resource
+**Execution uncertainties:** preserved pinned-Bun operation in the installed layout, resource
 replacement controls, original draw.io packaged-path behavior and required descendant
 cleanup are tests, not assumed passes. Preserve a named blocker and owner if a
 required predicate fails. Stronger same-user replacement protection would require
