@@ -6,6 +6,8 @@
 //! of every protected record before and after, the owner's own expected digest, and the
 //! BLAKE3 of the owner image computed from its bytes in memory.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::fs::OpenOptions;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
@@ -51,7 +53,7 @@ struct Candidate {
 
 impl Candidate {
     fn begin() -> (Self, WindowsActivationAttempt) {
-        let fixture = tempfile::tempdir().expect("connect-back claimant fixture");
+        let fixture = native_install_tempdir().expect("connect-back claimant fixture");
         let content = host_package_content();
         let trust = seed_per_user_baseline_with(fixture.path(), &content);
         commit_with(&trust, "2.0.0", &content);
@@ -165,7 +167,7 @@ fn the_claimant_refuses_a_signer_or_a_record_that_does_not_name_its_installation
 
     // A valid record of another installation, with the same expected identity and
     // signer, names roots that are not the located ones.
-    let other = tempfile::tempdir().expect("another installation");
+    let other = native_install_tempdir().expect("another installation");
     let other_trust = seed_per_user_baseline_with(other.path(), &host_package_content());
     std::fs::write(
         candidate

@@ -9,6 +9,8 @@
 //! description (the KEL-254 T3 Part B operator fixture's signed host). The cell writes
 //! only inside its own temporary per-user fixtures.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::installed_host_operator::{SIGNED_HOST_ENV, env_path};
 use super::support::{self, ATTEMPT_OWNER, INITIATING_LOGON};
 use super::transaction::{complete, retirement, verifier};
@@ -48,7 +50,7 @@ fn a_verified_signed_build_passes_each_public_entry_point() {
 
     // begin_activation journals the verified image's digest; recover then accepts the
     // same image for the attempt whose owner was lost after launch.
-    let fixture = tempfile::tempdir().expect("verified coordinator fixture");
+    let fixture = native_install_tempdir().expect("verified coordinator fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let (root, stage) = complete(&trust, "2.0.0");
     let minted = root
@@ -84,7 +86,7 @@ fn a_verified_signed_build_passes_each_public_entry_point() {
 
     // resume_unlaunched accepts a never-launched journal whose digest the oracle
     // computed from the signed build's bytes.
-    let fixture = tempfile::tempdir().expect("verified resume fixture");
+    let fixture = native_install_tempdir().expect("verified resume fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let (attempt_id, _) =
         seed_pending_activation_journal_with(&trust, ActivationPhase::PublishPending, expected);

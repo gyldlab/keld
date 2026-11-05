@@ -10,6 +10,8 @@
 //! through `anchor_located` over the same per-user state; the Machine-UAC positive is an
 //! operator cell.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::path::Path;
 
 use super::locate::{expected_for, helper_path, open_image, rewrite_provenance, state};
@@ -36,7 +38,7 @@ struct Install {
 
 /// A per-user installation whose tree holds `helper` as `keld-updater-helper.exe`.
 fn installed_with(helper: &[u8]) -> Install {
-    let fixture = tempfile::tempdir().expect("updater-helper self-anchor fixture");
+    let fixture = native_install_tempdir().expect("updater-helper self-anchor fixture");
     let content = package_content_with(b"keld-host fixture image", helper);
     let trust = seed_per_user_baseline_with(fixture.path(), &content);
     Install {

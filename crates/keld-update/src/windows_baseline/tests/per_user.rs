@@ -9,6 +9,7 @@ use windows_permissions::wrappers::{ConvertSidToStringSid, SetSecurityInfo};
 use windows_permissions::{LocalBox, SecurityDescriptor};
 
 use super::support::{self, CASE_ENV, CUT_ENV, GOLDEN, ROOT_ENV};
+use crate::tests::native_windows::{local_app_data, native_install_tempdir};
 use crate::windows_baseline::initialize::{
     BaselineBoundary, initialize_per_user_with_observer, initialize_per_user_with_token_check,
     initialize_windows_per_user_baseline,
@@ -20,14 +21,10 @@ const CRASH_HELPER: &str = "windows_baseline::tests::per_user::per_user_baseline
 const PER_USER_PROFILE: keld_guard::WindowsInstallProtectionProfile =
     keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
 
-fn local_app_data() -> PathBuf {
-    PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("current Windows LocalAppData"))
-}
-
 fn fixture() -> (tempfile::TempDir, WindowsBaselineTrust, PathBuf) {
     let local = local_app_data();
-    let temp = tempfile::tempdir_in(&local)
-        .expect("isolated fixture beneath the current user's LocalAppData");
+    let temp =
+        native_install_tempdir().expect("isolated fixture beneath the current user's LocalAppData");
     let source = temp.path().join("baseline.tar");
     fs::write(&source, GOLDEN).expect("write authenticated baseline bytes");
     let trust = support::provision_per_user(temp.path(), "KeldPerUserFixture");
@@ -151,8 +148,7 @@ fn assert_per_user_baseline_seed() {
 #[test]
 fn per_user_baseline_initializer_refuses_wrong_mode_before_path_admission() {
     support::assert_user_principal_token();
-    let temp = tempfile::tempdir_in(local_app_data())
-        .expect("isolated wrong-mode fixture beneath LocalAppData");
+    let temp = native_install_tempdir().expect("isolated wrong-mode fixture beneath LocalAppData");
     let install = temp.path().join("must-not-exist");
     let mut trust = support::trust_for(&install);
     trust.installation.install_mode = DirectInstallMode::MachineUacDirect;
@@ -241,8 +237,8 @@ fn per_user_baseline_initializer_refuses_token_query_failure_before_path_admissi
 #[test]
 fn per_user_baseline_initializer_refuses_managed_owner_before_path_admission() {
     support::assert_user_principal_token();
-    let temp = tempfile::tempdir_in(local_app_data())
-        .expect("isolated managed-owner fixture beneath LocalAppData");
+    let temp =
+        native_install_tempdir().expect("isolated managed-owner fixture beneath LocalAppData");
     let install = temp.path().join("must-not-exist");
     let mut trust = support::trust_for(&install);
     trust.installation.install_mode = DirectInstallMode::PerUserDirect;

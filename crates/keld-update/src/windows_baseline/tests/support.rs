@@ -28,6 +28,8 @@ use crate::tests::{
 use crate::windows_baseline::WindowsBaselineTrust;
 use crate::{BaselineVerifier, VerifiedBaseline};
 
+mod native_location;
+
 pub(super) const ROOT_ENV: &str = "KELD_KEL266_NATIVE_ROOT";
 pub(super) const MACHINE_UAC_ROOT_ENV: &str = "KELD_KEL270_MACHINE_UAC_ROOT";
 pub(super) const CASE_ENV: &str = "KELD_KEL266_NATIVE_CASE";
