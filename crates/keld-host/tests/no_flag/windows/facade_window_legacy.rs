@@ -61,7 +61,8 @@ fn windows_legacy_window_keeps_the_host_window_obligations() {
     let profile = ephemeral_profile_dir(root.path());
     let mut pages = Pages::default();
     let moved = host_observation::moved(&stderr, &mut pages, 1, native.hwnd, pid);
-    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid);
+    host_observation::prepare_minimize_input(native.hwnd, pid, moved.deadline);
+    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid, moved.deadline);
     let restore_input = host_observation::prepare_restore_input(native.hwnd, pid);
     host_observation::restored(
         &stderr,
@@ -138,7 +139,8 @@ fn windows_hello_window_keeps_the_host_window_obligations() {
     assert!(!retained.is_empty(), "hello has no browser process at risk");
     let profile = ephemeral_profile_dir(root.path());
     let moved = host_observation::moved(&stderr, &mut pages, 1, native.hwnd, pid);
-    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid);
+    host_observation::prepare_minimize_input(native.hwnd, pid, moved.deadline);
+    host_observation::minimized(&stderr, &mut pages, 1, native.hwnd, pid, moved.deadline);
     let restore_input = host_observation::prepare_restore_input(native.hwnd, pid);
     host_observation::restored(
         &stderr,

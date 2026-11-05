@@ -167,6 +167,64 @@ pub(super) fn moved(
     }
 }
 
+/// Establish the native starting regime within the caller's existing bound.
+/// Callers complete the independent move proof before this activation stimulus.
+pub(super) fn prepare_minimize_input(hwnd: usize, pid: u32, deadline: Instant) {
+    assert!(
+        Instant::now() < deadline,
+        "INVALID minimize preparation: existing observation deadline expired"
+    );
+    let before = native_control::read(hwnd, pid);
+    let host = crate::support::window::initial_focus::read(hwnd, pid);
+    assert!(
+        !before.minimized,
+        "INVALID minimize preparation: already minimized"
+    );
+    if before.foreground == hwnd && host.active == hwnd && host.focus_is_child {
+        assert_minimize_input(hwnd, pid, deadline);
+        return;
+    }
+
+    let helper = FocusComparator::for_caption_input();
+    helper.click_caption(deadline);
+    let input = native_until(hwnd, pid, deadline, |state| {
+        !state.minimized && state.foreground == helper.hwnd()
+    });
+    assert!(
+        Instant::now() < deadline,
+        "INVALID minimize preparation: caption input exceeded existing deadline"
+    );
+    observe_activation_input("minimize-input", &input, hwnd, pid, &helper);
+    native_control::foreground(hwnd, pid);
+    native_until(hwnd, pid, deadline, |state| {
+        let host = crate::support::window::initial_focus::read(hwnd, pid);
+        !state.minimized && state.foreground == hwnd && host.active == hwnd && host.focus_is_child
+    });
+    drop(helper);
+    assert_minimize_input(hwnd, pid, deadline);
+}
+
+/// Read-only admission after the public focused-id proof, immediately before
+/// literal minimize. A lost precondition invalidates this attempt; no retry.
+pub(super) fn assert_minimize_input(hwnd: usize, pid: u32, deadline: Instant) {
+    assert!(
+        Instant::now() < deadline,
+        "INVALID minimize input: existing preparation deadline expired"
+    );
+    // Sequential read-only queries, not an atomic Windows snapshot.
+    let native = native_control::read(hwnd, pid);
+    let host = crate::support::window::initial_focus::read(hwnd, pid);
+    assert!(
+        !native.minimized
+            && native.foreground == hwnd
+            && host.active == hwnd
+            && host.focus_is_child
+            && Instant::now() < deadline,
+        "INVALID minimize input: native={native:?} host_thread={host:?}"
+    );
+    println!("KELD_GH1188_MINIMIZE_PREPARED native={native:?} host_thread={host:?}");
+}
+
 /// Prepare ordinary restore input only after minimize's independent oracles.
 /// The caller keeps this guard through restore, then drops it before another minimize.
 pub(super) fn prepare_restore_input(hwnd: usize, pid: u32) -> FocusComparator {
@@ -213,8 +271,10 @@ pub(super) fn minimized(
     view: u64,
     hwnd: usize,
     pid: u32,
+    input_deadline: Instant,
 ) -> (NativeState, Instant) {
     let deadline = Instant::now() + OBSERVATION_BOUND;
+    assert_minimize_input(hwnd, pid, input_deadline);
     native_control::minimize(hwnd, pid, deadline);
     native_until(hwnd, pid, deadline, |state| state.minimized);
     println!("KELD_GH1188_AC26_MINIMIZE at_risk=1 view={view}");

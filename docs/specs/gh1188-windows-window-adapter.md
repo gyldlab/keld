@@ -850,6 +850,13 @@ Test names are PROPOSED (§7); none exists today. "Census" is the per-PID top-le
     its size is unchanged, a D16 `PARENT_MOVED <view>` line appears, and within 5 s the readback's
     origin moved by `(dx, dy)` at the window's scale, within one logical point, and `getPosition()`
     follows the witness. (b) *minimize:*
+    after that independent move proof, the fixture uses the existing observation deadline to
+    establish the target as foreground and active on its Host UI thread, with keyboard focus
+    in a child. If needed, it uses ordinary caption input on its owned helper, transfers
+    foreground to the target, and destroys the helper before minimizing. Facade cells then
+    observe the public focused id, and every cell rechecks the native starting conditions
+    immediately before minimize; a lost condition is void, with no retry or renewed deadline.
+    The minimized observation keeps its original five-second bound. Then
     the test calls `ShowWindow(SW_MINIMIZE)`: the readback reaches `hidden`, and `getPosition()`,
     `getSize()` and `isMaximized()` keep their last values, while `getFocusedWindow()` reads null,
     because focus facts are not suppressed (a run where the minimize left the window active is void

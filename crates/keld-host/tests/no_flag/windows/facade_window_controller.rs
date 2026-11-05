@@ -114,7 +114,12 @@ fn windows_host_window_obligations_reach_the_controller() {
     let before_minimize = state_until(&mut run, id, moved.deadline, |state| {
         geometry_matches(state, &moved.native)
     });
-    let (_, deadline) = host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid);
+    host_observation::prepare_minimize_input(hwnd, pid, moved.deadline);
+    state_until(&mut run, id, moved.deadline, |state| {
+        state["focusedId"] == id
+    });
+    let (_, deadline) =
+        host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid, moved.deadline);
     let minimized = state_until(&mut run, id, deadline, |state| {
         state["position"] == before_minimize["position"]
             && state["size"] == before_minimize["size"]
@@ -143,7 +148,8 @@ fn windows_host_window_obligations_reach_the_controller() {
 
     run.send(&format!("MAXIMIZE {id}"));
     run.read("MAXIMIZE_SENT");
-    let maximized = state_until(&mut run, id, Instant::now() + OBSERVATION_BOUND, |state| {
+    let maximize_deadline = Instant::now() + OBSERVATION_BOUND;
+    let maximized = state_until(&mut run, id, maximize_deadline, |state| {
         state["maximized"] == true
     });
     let maximized_native = native_control::read(hwnd, pid);
@@ -151,7 +157,12 @@ fn windows_host_window_obligations_reach_the_controller() {
         maximized_native.maximized,
         "public maximize did not affect the native window"
     );
-    let (_, deadline) = host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid);
+    host_observation::prepare_minimize_input(hwnd, pid, maximize_deadline);
+    state_until(&mut run, id, maximize_deadline, |state| {
+        state["focusedId"] == id
+    });
+    let (_, deadline) =
+        host_observation::minimized(run.stderr(), &mut pages, view, hwnd, pid, maximize_deadline);
     let minimized_max = state_until(&mut run, id, deadline, |state| {
         state["maximized"] == true
             && state["size"] == maximized["size"]

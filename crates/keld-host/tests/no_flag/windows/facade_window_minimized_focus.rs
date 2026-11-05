@@ -4,7 +4,7 @@
 use super::controller::state_until;
 use super::create;
 use super::fixture::{FacadeFixture, FacadeRun, assert_retired, capture, census, number};
-use super::host_observation::OBSERVATION_BOUND;
+use super::host_observation::{self, OBSERVATION_BOUND};
 use crate::PRODUCT_DEADLINE;
 use crate::support::process::pipe_line_after;
 use crate::support::window::{
@@ -167,21 +167,18 @@ fn windows_minimized_native_deactivation_reaches_public_focus_before_cleanup() {
 
     // The target must first be genuinely active. Already-unfocused input cannot
     // prove that minimizing propagates a new deactivation through the facade.
-    native_control::foreground(hwnd, pid);
-    state_until(&mut run, id, Instant::now() + OBSERVATION_BOUND, |state| {
+    let input_deadline = Instant::now() + OBSERVATION_BOUND;
+    host_observation::prepare_minimize_input(hwnd, pid, input_deadline);
+    state_until(&mut run, id, input_deadline, |state| {
         state["focusedId"] == id
     });
-    assert_eq!(
-        initial_focus::read(hwnd, pid).active,
-        hwnd,
-        "INVALID: initial Host UI thread did not activate the target"
-    );
     run.capture_control();
     let mut records = CapturedRecords::default();
     // No page-readback timer or other diagnostic Host wake runs in this cell.
     // The existing full controller row separately proves hidden-page visibility.
     // These read-only native queries do not post a product message.
     let deadline = Instant::now() + OBSERVATION_BOUND;
+    host_observation::assert_minimize_input(hwnd, pid, input_deadline);
     native_control::minimize(hwnd, pid, deadline);
     let native_input = loop {
         let native = native_control::read(hwnd, pid);
