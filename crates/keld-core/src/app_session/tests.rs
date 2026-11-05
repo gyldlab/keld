@@ -320,6 +320,9 @@ use super::{
 include!("tests/app_identity_and_shared_probes.rs");
 include!("tests/session_handover.rs");
 include!("tests/windows_profile_and_boot.rs");
+#[cfg(windows)]
+#[path = "tests/windows_renderer_selection.rs"]
+mod windows_renderer_selection;
 include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
 include!("tests/filesystem_guard_and_recovery.rs");
