@@ -14,11 +14,15 @@ pub(super) fn state_until(
     deadline: Instant,
     satisfies: impl Fn(&Value) -> bool,
 ) -> Value {
+    let mut last = None;
     loop {
         run.send(&format!("STATE {id}"));
-        let (kind, value) = run
-            .try_next_by(deadline)
-            .unwrap_or_else(|error| panic!("bounded public state observation: {error}"));
+        let (kind, value) = run.try_next_by(deadline).unwrap_or_else(|error| {
+            panic!(
+                "bounded public state observation: {error}; last={last:?}\nnative trace:\n{}",
+                run.trace()
+            )
+        });
         assert_eq!(kind, "STATE", "unexpected facade record: {kind} {value}");
         if satisfies(&value) {
             return value;
@@ -27,6 +31,7 @@ pub(super) fn state_until(
             Instant::now() < deadline,
             "public state disagrees with the native witness: {value}"
         );
+        last = Some(value);
         thread::park_timeout(Duration::from_millis(10));
     }
 }

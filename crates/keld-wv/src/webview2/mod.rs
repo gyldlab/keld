@@ -4241,6 +4241,7 @@ mod tests {
         WebProfileSelection,
     };
 
+    mod app_wake_bridge;
     mod exit_wait_pump;
     mod exit_wake_retirement;
     mod managed_fault_arming;
