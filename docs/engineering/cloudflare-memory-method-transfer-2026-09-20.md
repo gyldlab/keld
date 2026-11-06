@@ -23,6 +23,18 @@ They are not proofs of a product leak, reachable denial of service, measured reg
 or whole-application memory contribution. Refetch current source and active work before
 implementation. A higher-level bound or a shorter lifetime can change practical impact.
 
+## Execution follow-through — 2026-11-07
+
+Aggregate outbound-admission work is tracked in
+[issue #623](https://github.com/gyldlab/keld/issues/623), with its proposed contract in
+[PR #1413](https://github.com/gyldlab/keld/pull/1413). Use those existing owners for
+implementation and verification of the total queued-byte and operation-count limits.
+
+At this checkpoint, PR #1413 is a draft specification. Capacity/copy accounting,
+overload behavior and actual Bun-runtime qualification remain open. These execution
+links do not update the historical source-inspection pin above or establish that
+E1–E4 have run. Re-read the linked work and active claims before implementing.
+
 ## Primary-source ledger
 
 | Source | Scope and supported use |
