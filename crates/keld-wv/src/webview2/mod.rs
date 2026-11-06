@@ -44,6 +44,7 @@
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod abnormal_stop;
 mod activation_observer;
 mod browser_instance;
 mod managed_app;
@@ -87,7 +88,6 @@ use std::time::{Duration, Instant};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
-use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::platform::windows::EventLoopBuilderExtWindows;
 use tao::window::Window;
 
@@ -2713,6 +2713,7 @@ struct ProfileReleaseWait {
     observed: Cell<bool>,
     normal_exit_observed_at: Cell<Option<Instant>>,
     fault: Cell<Option<ProfileReleaseFault>>,
+    abnormal_stop: abnormal_stop::AbnormalStopBoundary,
     post_exit_deadline: Cell<Option<Instant>>,
     /// The KEL-53 §7 h9 fault fixture: a drained release event is lost instead
     /// of proving release, so the exited browser faults at the post-exit grace
@@ -2787,6 +2788,7 @@ impl ProfileReleaseWait {
             observed: Cell::new(false),
             normal_exit_observed_at: Cell::new(None),
             fault: Cell::new(None),
+            abnormal_stop: abnormal_stop::AbnormalStopBoundary::default(),
             post_exit_deadline: Cell::new(None),
             #[cfg(feature = "profile-test-hooks")]
             withhold_release_event: false,
@@ -2980,7 +2982,9 @@ impl ProfileReleaseWait {
         if self.fault().is_none() {
             return false;
         }
-        on_fault();
+        if !self.abnormal_stop.defer(self.fault()) {
+            on_fault();
+        }
         true
     }
 
@@ -3451,7 +3455,7 @@ impl WebView2Engine {
         let page_readback_error = Rc::new(std::cell::RefCell::new(None));
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
         let page_readback_error_in_loop = Rc::clone(&page_readback_error);
-        let code = event_loop.run_return(move |event, _, control_flow| {
+        let code = release.abnormal_stop.run(&mut event_loop, move |event, _, control_flow| {
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             *control_flow = ControlFlow::Wait;
@@ -3730,7 +3734,7 @@ impl WebView2Engine {
                 std::thread::park();
             }
         }
-        let code = event_loop.run_return(move |event, target, control_flow| {
+        let code = release.abnormal_stop.run(&mut event_loop, move |event, target, control_flow| {
             // The hook runs only between outer message dispatches. This is the
             // existing sole mutable owner for each backend callback.
             let mut managed = managed.borrow_mut();
@@ -3758,6 +3762,15 @@ impl WebView2Engine {
             {
                 exit_requested = true;
             }
+            if release_in_loop.abnormal_stop.returning() {
+                managed.fence_abnormal_event(
+                    Some(&event), &fatal_in_loop,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    &mut terminal_has_run,
+                );
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
             if let Err(error) = managed.publish_retired() {
                 eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
                 fatal_in_loop.store(true, Ordering::Release);
@@ -3774,6 +3787,15 @@ impl WebView2Engine {
                 &release_in_loop, &fatal_in_loop)
             {
                 exit_requested = true;
+            }
+            if release_in_loop.abnormal_stop.returning() {
+                managed.fence_abnormal_event(
+                    Some(&event), &fatal_in_loop,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    &mut terminal_has_run,
+                );
+                *control_flow = ControlFlow::Exit;
+                return;
             }
             if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
                 *control_flow = ControlFlow::Exit;
@@ -3883,6 +3905,16 @@ impl WebView2Engine {
                     &release_in_loop, &fatal_in_loop);
                 exit_requested = true;
             }
+            if release_in_loop.abnormal_stop.defer(release_in_loop.fault()) {
+                managed.fence_abnormal_event(
+                    None, &fatal_in_loop,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    &mut terminal_has_run,
+                );
+                exit_requested = true;
+                *control_flow = ControlFlow::Exit;
+                return;
+            }
             #[cfg(all(feature = "media-acceptance", test))]
             if !exit_requested {
                 media_acceptance::host_window_probe::after_dispatch(
@@ -3905,6 +3937,15 @@ impl WebView2Engine {
                 &release_in_loop, &fatal_in_loop)
             {
                 exit_requested = true;
+            }
+            if release_in_loop.abnormal_stop.returning() {
+                managed.fence_abnormal_event(
+                    None, &fatal_in_loop,
+                    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                    &mut terminal_has_run,
+                );
+                *control_flow = ControlFlow::Exit;
+                return;
             }
             if managed.exit_ready(exit_requested, release_in_loop.exit_ready()) {
                 *control_flow = ControlFlow::Exit;
@@ -4000,6 +4041,11 @@ fn stop_app_views(
     release: &ProfileReleaseWait,
     fatal: &AtomicBool,
 ) {
+    // Terminal and operation-error callers use this same owner. They must
+    // not bypass the abnormal receipt's native-stack boundary.
+    if release.abnormal_stop.defer(release.fault()) {
+        return;
+    }
     if let Err(error) = managed.stop(|| {
         commit_profile_stop(stop);
         views.clear();

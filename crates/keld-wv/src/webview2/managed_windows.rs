@@ -233,6 +233,22 @@ impl<K: Ord + Copy> ManagedCustody<K> {
         CreateAdmission::Queued
     }
 
+    /// Drain previously deferred requests even when retirement already emptied.
+    /// A currently delivered Create is owed a reply only if a parked/staged
+    /// release would have kept ordinary dispatch open. Older replies come first.
+    pub(super) fn refuse_abnormal_return<E>(
+        &mut self,
+        delivered: Option<DeferredCreate>,
+        send: impl FnMut(AppWindowEvent) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if !self.is_empty()
+            && let Some(create) = delivered
+        {
+            self.deferred.push_back(create);
+        }
+        self.refuse_deferred(send)
+    }
+
     /// Called only at the bottom of a loop callback. Some(deadline) means posting
     /// failed: keep the mark clear and schedule a recheck even with no releases.
     pub(super) fn post_deferred_wake(

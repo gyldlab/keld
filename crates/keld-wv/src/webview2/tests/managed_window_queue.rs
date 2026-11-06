@@ -219,3 +219,90 @@ fn terminal_drain_pops_every_request_in_order_and_preserves_the_first_send_failu
     );
     assert!(custody.exit_ready(true, true));
 }
+
+#[test]
+fn first_abnormal_callback_refuses_in_fifo_order_without_completing_native_custody() {
+    let mut custody = ManagedCustody::<u8>::default();
+    let now = Instant::now();
+    custody
+        .park(1, 101, Releasing::Destroy(WebviewId(1)), now)
+        .expect("pending destroy");
+    for build in [10, 11] {
+        assert_eq!(custody.admit(create(build), false), CreateAdmission::Queued);
+    }
+    let mut replies = Vec::new();
+    custody
+        .refuse_abnormal_return(Some(create(12)), |event| {
+            replies.push(event);
+            Ok::<(), Infallible>(())
+        })
+        .expect("first callback refuses before returning");
+    assert_eq!(
+        replies,
+        [
+            create(10).failure_event(),
+            create(11).failure_event(),
+            create(12).failure_event()
+        ]
+    );
+    assert!(!custody.exit_ready(true, true));
+    assert!(matches!(
+        custody.stage_destroyed(1, || true),
+        StageResult::Staged { .. }
+    ));
+    assert_eq!(
+        custody.publish_staged_with(
+            |_| true,
+            |_, _, _| -> Result<(), Infallible> { panic!("a live HWND cannot publish") }
+        ),
+        Ok(0)
+    );
+    assert_eq!(
+        custody.publish_staged_with(
+            |_| false,
+            |_, _, event| {
+                replies.push(event);
+                Ok::<(), Infallible>(())
+            }
+        ),
+        Ok(1)
+    );
+    assert_eq!(
+        replies.last(),
+        Some(&AppWindowEvent::WindowReleased { view: WebviewId(1) })
+    );
+    assert!(custody.exit_ready(true, true));
+    custody
+        .refuse_abnormal_return(Some(create(13)), |_| -> Result<(), Infallible> {
+            panic!("an empty-custody dispatch owes no new answer")
+        })
+        .expect("no replay or invented reply");
+}
+
+#[test]
+fn latch_refuses_existing_deferred_work_even_if_last_release_already_published() {
+    let now = Instant::now();
+    let mut custody = ManagedCustody::<u8>::default();
+    custody
+        .park(1, 101, Releasing::Destroy(WebviewId(1)), now)
+        .expect("pending destroy");
+    assert_eq!(custody.admit(create(31), false), CreateAdmission::Queued);
+    assert!(matches!(
+        custody.stage_destroyed(1, || true),
+        StageResult::Staged { .. }
+    ));
+    assert_eq!(
+        custody.publish_staged_with(|_| false, |_, _, _| Ok::<(), Infallible>(())),
+        Ok(1)
+    );
+    assert_eq!(custody.post_deferred_wake(false, now, || true), None);
+    let mut replies = Vec::new();
+    custody
+        .refuse_abnormal_return(Some(create(32)), |event| {
+            replies.push(event);
+            Ok::<(), Infallible>(())
+        })
+        .expect("only the previously deferred reply is owed");
+    assert_eq!(replies, [create(31).failure_event()]);
+    assert_eq!(custody.take_deferred_wake(true), None);
+}

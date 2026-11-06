@@ -230,6 +230,80 @@ impl ManagedWindows {
         }
     }
 
+    /// Refuse existing work within the callback that latched the fault. While
+    /// Tao unwinds, retain only obligations the ordinary exit gate would allow.
+    /// No controller, HWND or barrier action is performed here.
+    pub(super) fn fence_abnormal_event(
+        &mut self,
+        event: Option<&tao::event::Event<'_, WindowsLoopEvent>>,
+        fatal: &std::sync::atomic::AtomicBool,
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))] terminal_has_run: &mut bool,
+    ) {
+        use tao::event::{Event, WindowEvent};
+
+        let delivered = match event {
+            Some(Event::UserEvent(WindowsLoopEvent::App(AppWindowCommand::CreateWindow {
+                build,
+                width,
+                height,
+                x,
+                y,
+            }))) => Some(DeferredCreate {
+                build: *build,
+                width: *width,
+                height: *height,
+                x: *x,
+                y: *y,
+            }),
+            _ => None,
+        };
+        let events = &self.events;
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        let test_control = self.test_control.as_ref();
+        if let Err(error) = self.custody.refuse_abnormal_return(delivered, |event| {
+            #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+            if let AppWindowEvent::WindowBuildFailed { build, .. } = &event {
+                observe::build_refused(*build);
+            }
+            send_failure(
+                events,
+                event,
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                test_control,
+            )
+        }) {
+            eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+            fatal.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if self.custody.is_empty() {
+            return;
+        }
+        match event {
+            Some(Event::WindowEvent {
+                window_id, event, ..
+            }) if matches!(event, WindowEvent::Destroyed) => {
+                if let Err(error) = self.window_event(*window_id, event) {
+                    eprintln!("KELD_WV_NATIVE_OWNER_FAILED {error}");
+                    fatal.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Some(Event::UserEvent(WindowsLoopEvent::App(
+                command @ (AppWindowCommand::Quit | AppWindowCommand::Fatal),
+            ))) => {
+                let is_fatal = *command == AppWindowCommand::Fatal;
+                if is_fatal {
+                    fatal.store(true, std::sync::atomic::Ordering::Release);
+                }
+                #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+                {
+                    *terminal_has_run = true;
+                    observe::terminal(if is_fatal { "Fatal" } else { "Quit" });
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn deferred_wake(
         &mut self,
         target: &EventLoopWindowTarget<WindowsLoopEvent>,

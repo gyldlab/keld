@@ -142,16 +142,6 @@ pub(super) fn abnormal(
 pub(super) fn native_release_step(step: &'static str, result: Option<i32>) {
     let counts = COUNTS.get();
     if counts.observing {
-        if step == "adopted-close.enter" {
-            // Temporary opt-in diagnostic: record code frames at the existing
-            // Close boundary, without changing custody or release decisions.
-            let trace = std::backtrace::Backtrace::force_capture();
-            eprintln!(
-                "KELD_D16_ADOPTED_CLOSE_STACK_BEGIN status={:?} outer_dispatch_epoch={}\n{trace:#}\nKELD_D16_ADOPTED_CLOSE_STACK_END",
-                trace.status(),
-                counts.outer_dispatch_epoch,
-            );
-        }
         if matches!(
             step,
             "process-failed.body-return" | "adopted-close.enter" | "adopted-close.return"
