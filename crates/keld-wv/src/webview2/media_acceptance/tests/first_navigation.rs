@@ -194,37 +194,41 @@ fn first_navigation_after(invalid: Option<NavTarget>) -> Result<(), WvError> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot();
-        // A failed observer registration is reported distinctly (#958), not as an
-        // unobserved NavigationStarting callback.
-        if !evidence.contains("navigation_start_observer=registered") {
-            return Err(failure(format!(
-                "the NavigationStarting observer was not registered: {evidence}"
-            )));
-        }
-        if !evidence.contains("navigation_start_at_ms=Some(") {
-            return Err(failure(format!(
-                "real COM NavigationStarting was not observed: {evidence}"
-            )));
-        }
-        if !evidence.contains("first_loop_turn_at_ms=Some(") {
-            return Err(failure(format!(
-                "the real Tao event callback was never observed: {evidence}"
-            )));
-        }
-        if !evidence.contains("dom_content_loaded_at_ms=Some(") {
-            return Err(failure(format!(
-                "the actual WebView2 DOMContentLoaded callback for initial HTML was not observed: {evidence}"
-            )));
-        }
-        if !evidence.contains("navigation_ids_match=Some(true)") {
-            return Err(failure(format!(
-                "first NavigationStarting and NavigationCompleted IDs did not correlate: {evidence}"
-            )));
-        }
-        if evidence.contains(&canary) || evidence.contains("<title>") {
-            return Err(failure("navigation diagnostics exposed test HTML content"));
-        }
-        println!("KELD_FIRST_NAV_START {evidence}");
-        Ok(())
+        check_first_navigation_evidence(&evidence, &canary)
     })
+}
+
+fn check_first_navigation_evidence(evidence: &str, canary: &str) -> Result<(), WvError> {
+    // A failed observer registration is reported distinctly (#958), not as an
+    // unobserved NavigationStarting callback.
+    if !evidence.contains("navigation_start_observer=registered") {
+        return Err(failure(format!(
+            "the NavigationStarting observer was not registered: {evidence}"
+        )));
+    }
+    if !evidence.contains("navigation_start_at_ms=Some(") {
+        return Err(failure(format!(
+            "real COM NavigationStarting was not observed: {evidence}"
+        )));
+    }
+    if !evidence.contains("first_loop_turn_at_ms=Some(") {
+        return Err(failure(format!(
+            "the real Tao event callback was never observed: {evidence}"
+        )));
+    }
+    if !evidence.contains("dom_content_loaded_at_ms=Some(") {
+        return Err(failure(format!(
+            "the actual WebView2 DOMContentLoaded callback for initial HTML was not observed: {evidence}"
+        )));
+    }
+    if !evidence.contains("navigation_ids_match=Some(true)") {
+        return Err(failure(format!(
+            "first NavigationStarting and NavigationCompleted IDs did not correlate: {evidence}"
+        )));
+    }
+    if evidence.contains(canary) || evidence.contains("<title>") {
+        return Err(failure("navigation diagnostics exposed test HTML content"));
+    }
+    println!("KELD_FIRST_NAV_START {evidence}");
+    Ok(())
 }
