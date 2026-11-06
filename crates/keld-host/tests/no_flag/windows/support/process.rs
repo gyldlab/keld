@@ -1,5 +1,8 @@
 //! Native process wait, signal, identity and test-owned termination observers.
 
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) mod lineage;
+
 use std::io::Read;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -14,7 +17,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// Kernel creation and exit times of one process, in `FILETIME` units (100 ns since
-/// 1601). `exit` is zero while the process is still running.
+/// 1601). `exit` is undefined until termination; use a wait/status query for liveness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProcessTimes {
     pub(crate) creation: u64,
@@ -79,9 +82,9 @@ pub(crate) fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
     let access = PROCESS_SYNCHRONIZE
         | PROCESS_QUERY_LIMITED_INFORMATION
         | if terminate { PROCESS_TERMINATE } else { 0 };
-    // SAFETY: PID belongs to a live test-owned process. Access permits wait and
-    // exit-status observation plus optional host-only termination. The returned
-    // handle is converted once.
+    // SAFETY: read-only candidates use query/synchronize rights for native
+    // identity validation. Terminate access is only requested for an independently
+    // verified fixture-owned process. The returned handle is converted once.
     let raw = unsafe { OpenProcess(access, 0, pid) };
     assert!(
         !raw.is_null(),
@@ -93,11 +96,12 @@ pub(crate) fn open_process_for_wait(pid: u32, terminate: bool) -> OwnedHandle {
 }
 
 pub(crate) fn terminate_test_process(process: &OwnedHandle) {
-    // SAFETY: this is the live test-owned host handle opened with terminate access.
+    // SAFETY: this is the retained, independently validated fixture-owned process
+    // handle opened with terminate access; no name-wide or unretained PID kill.
     assert_ne!(
         unsafe { TerminateProcess(process.as_raw_handle().cast(), 1) },
         0,
-        "terminate only the no-flag host: {}",
+        "terminate only the retained fixture-owned process: {}",
         std::io::Error::last_os_error()
     );
 }
@@ -150,14 +154,19 @@ pub(crate) fn wait_child(child: &mut Child, deadline: Instant) -> ExitStatus {
 /// reused PID can add an unrelated process, which only widens the report.
 pub(crate) fn process_tree_report(root_pid: u32) -> String {
     let script = format!(
-        "$all=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name); \
+        "$all=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate); \
          $tree=@{{}}; $tree[[uint32]{root_pid}]=$true; $grew=$true; \
          while ($grew) {{ $grew=$false; foreach ($p in $all) {{ \
            if ($p.ProcessId -ne {root_pid} -and -not $tree.ContainsKey([uint32]$p.ProcessId) -and $tree.ContainsKey([uint32]$p.ParentProcessId)) {{ $tree[[uint32]$p.ProcessId]=$true; $grew=$true }} }} }}; \
          $desc=@($all | Where-Object {{ $_.ProcessId -ne {root_pid} -and $tree.ContainsKey([uint32]$_.ProcessId) }}); \
          $browser=@($desc | Where-Object {{ $_.Name -eq 'msedgewebview2.exe' }}); \
-         'host_alive=' + [bool]($all | Where-Object {{ $_.ProcessId -eq {root_pid} }}) + \
+         $created=@($desc | ForEach-Object {{ $ticks=''; \
+        if ($_.CreationDate -is [datetime] -and $_.CreationDate.Kind -ne [DateTimeKind]::Unspecified) {{ \
+        try {{ $ticks=$_.CreationDate.ToUniversalTime().ToFileTimeUtc() }} catch {{ $ticks='' }} }}; \
+        [string]$_.ProcessId + ':' + $ticks }}); \
+        'host_alive=' + [bool]($all | Where-Object {{ $_.ProcessId -eq {root_pid} }}) + \
          ' browser_processes=' + $browser.Count + \
+        ' creation_filetimes=' + ($created -join ',') + \
          ' descendants=' + (($desc | ForEach-Object {{ $_.Name + ':' + $_.ProcessId + '<' + $_.ParentProcessId }}) -join ',')"
     );
     match bounded_output(

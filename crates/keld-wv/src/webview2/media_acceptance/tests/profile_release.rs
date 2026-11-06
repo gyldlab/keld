@@ -8,7 +8,7 @@ use crate::WvError;
 use crate::profile::{ProfileIdentity, WebProfileSelection};
 use crate::webview2 as backend;
 use std::cell::{Cell, RefCell};
-use std::sync::{atomic::Ordering, mpsc};
+use std::sync::mpsc;
 use std::time::Instant;
 
 pub(super) fn raw_phase(plan: &backend::WindowsProfilePlan) -> Result<String, WvError> {
@@ -49,7 +49,7 @@ fn windows_zero_controller_constructor_is_running() -> Result<(), WvError> {
     })
 }
 
-fn quit_without_controller(
+pub(super) fn quit_without_controller(
     engine: WebView2Engine,
     witness: impl FnOnce(Instant) -> Result<(), WvError>,
 ) -> Result<(), WvError> {
@@ -187,7 +187,7 @@ fn windows_release_witness_does_not_replace_the_browser_receipt() -> Result<(), 
         let mut engine = profile_fixture_engine(&root, selection)?;
         // Owner-level rule control, not a claim of an actual browser process:
         // a nonzero binding requires its normal receipt before any witness call.
-        engine.expected_browser_pid.store(1, Ordering::Release);
+        engine.browser_binding.bind_once(1)?;
         let called = Cell::new(false);
         let result = engine.finish_profile_release_with(false, || {
             called.set(true);

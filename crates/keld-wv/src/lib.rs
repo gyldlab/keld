@@ -16,6 +16,8 @@ mod engine;
 mod error;
 mod hello;
 mod media;
+#[cfg(any(target_os = "macos", windows))]
+mod native_window;
 pub mod profile;
 #[cfg(target_os = "macos")]
 mod startup;
@@ -126,7 +128,11 @@ pub use webview2::TEST_WINDOWS_BARRIER_GRACE_EXPIRY_ENV;
     debug_assertions,
     target_os = "windows"
 ))]
-pub use webview2::{TEST_STALL_BEFORE_INIT_ENV, TEST_WINDOWS_T2_OBSERVE_ENV};
+pub use webview2::{
+    TEST_STALL_BEFORE_INIT_ENV, TEST_WINDOWS_FAIL_BUILD_ENV, TEST_WINDOWS_NATIVE_HOLD_ENV,
+    TEST_WINDOWS_PAGE_READBACK_ENV, TEST_WINDOWS_T2_OBSERVE_ENV,
+    TEST_WINDOWS_WITHHOLD_LATER_GENERATION_RECEIPT_ENV,
+};
 
 /// Identifies a webview instance owned by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

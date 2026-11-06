@@ -339,3 +339,7 @@ include!("tests/recovered_events_and_echo.rs");
 include!("tests/ready_recovery.rs");
 include!("tests/failed_ready_and_cli_lease.rs");
 include!("tests/terminal_cleanup_and_windows_shutdown.rs");
+
+#[cfg(windows)]
+#[path = "tests/windows_startup_preparation.rs"]
+mod windows_startup_preparation;

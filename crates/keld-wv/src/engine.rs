@@ -249,7 +249,7 @@ pub struct WindowSnapshot {
 
 /// Only the initial renderer owns the original startup navigation deadline.
 /// Registry-created pages can appear arbitrarily later and never rearm it.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub(crate) const fn initial_renderer_pending(registry_managed: bool, closing: bool) -> bool {
     !registry_managed && !closing
 }

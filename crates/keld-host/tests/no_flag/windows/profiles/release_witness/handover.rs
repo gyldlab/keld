@@ -55,7 +55,7 @@ fn renderer_handover_waits_for_non_family_release_before_the_second_engine() {
     held_renderer.release();
     let (mut reader, _, bun_pid, _) = accept_ready_generation(&control, &mut host.host);
     let bun = open_process_for_wait(bun_pid, false);
-    let (counts, cursor) = observe_loop_end(&mut host, cursor, 1);
+    let (counts, cursor) = observe_loop_end(&mut host, cursor, 1, "Quit");
     let held = hold_handover(&mut host, &mut reader, root.path(), &helper_handle, cursor);
     assert_eq!(read_control_line(&mut reader), "LAST_WINDOW_CLOSED");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");

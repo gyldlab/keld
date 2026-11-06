@@ -1,13 +1,18 @@
 //! Receipt ordering controls for the one production profile-release owner.
 
-use super::{ProfileReleaseFault, ProfileReleaseWait, ReleaseSite, release_channel};
-use crate::profile::ProfileErrorKind;
-use crate::webview2::{browser_exit_is_relevant, profile_failure};
+use super::{
+    ProfileReleaseFault, ProfileReleaseWait, ReleaseSite, abnormal_receipt, normal_receipt,
+    release_channel, test_binding,
+};
+use crate::webview2::browser_exit_is_relevant;
 use std::time::{Duration, Instant};
 
-fn waiter(receiver: std::sync::mpsc::Receiver<Result<(), crate::WvError>>) -> ProfileReleaseWait {
+fn waiter(
+    receiver: std::sync::mpsc::Receiver<crate::webview2::BrowserExitReceipt>,
+) -> ProfileReleaseWait {
     ProfileReleaseWait::with_bounds(
         Some(receiver),
+        test_binding(),
         None,
         ReleaseSite::Host,
         Duration::from_secs(30),
@@ -19,10 +24,10 @@ fn waiter(receiver: std::sync::mpsc::Receiver<Result<(), crate::WvError>>) -> Pr
 fn queued_failure_behind_normal_credit_wins_before_exit() {
     let (sender, receiver) = release_channel();
     sender
-        .send(Ok(()))
+        .send(normal_receipt())
         .expect("real owner input: normal credit");
     sender
-        .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+        .send(abnormal_receipt())
         .expect("real owner input: following failure");
     let release = waiter(receiver);
     release.poll();
@@ -41,13 +46,15 @@ fn queued_failure_behind_normal_credit_wins_before_exit() {
 fn later_poll_still_drains_failure_after_normal_credit() {
     let (sender, receiver) = release_channel();
     let release = waiter(receiver);
-    sender.send(Ok(())).expect("first delivered receipt");
+    sender
+        .send(normal_receipt())
+        .expect("first delivered receipt");
     release.poll();
     assert!(release.observed.get());
     assert_eq!(release.fault(), None);
     let first = release.normal_exit_observed_at.get();
     sender
-        .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+        .send(abnormal_receipt())
         .expect("new fault delivered before the next exit decision");
     release.poll();
     assert_eq!(
@@ -67,8 +74,8 @@ fn duplicate_normal_receipts_keep_the_original_timestamp() {
         .expect("test clock");
     release.observed.set(true);
     release.normal_exit_observed_at.set(Some(original));
-    sender.send(Ok(())).expect("duplicate one");
-    sender.send(Ok(())).expect("duplicate two");
+    sender.send(normal_receipt()).expect("duplicate one");
+    sender.send(normal_receipt()).expect("duplicate two");
     release.poll();
     assert_eq!(
         release.normal_exit_observed_at.get(),
@@ -92,7 +99,7 @@ fn the_first_fault_is_never_erased_by_a_later_normal_receipt() {
     let (sender, receiver) = release_channel();
     let release = waiter(receiver);
     release.fault.set(Some(ProfileReleaseFault::GraceExpired));
-    sender.send(Ok(())).expect("late normal");
+    sender.send(normal_receipt()).expect("late normal");
     release.poll();
     assert_eq!(release.fault(), Some(ProfileReleaseFault::GraceExpired));
     assert!(!release.observed.get());
@@ -104,7 +111,7 @@ fn observer_disconnect_before_credit_fails_but_does_not_erase_delivered_credit()
         let (sender, receiver) = release_channel();
         if normal {
             sender
-                .send(Ok(()))
+                .send(normal_receipt())
                 .expect("last valid event before sender drop");
         }
         drop(sender);
@@ -145,12 +152,15 @@ fn host_abnormal_events_are_faults_independent_of_normal_pid_attribution() {
 fn blocking_exit_wait_checks_fault_before_normal_credit() {
     for site in [ReleaseSite::Host, ReleaseSite::Probe] {
         let (sender, receiver) = release_channel();
-        sender.send(Ok(())).expect("queued normal receipt");
         sender
-            .send(Err(profile_failure(ProfileErrorKind::LifecycleUnproven)))
+            .send(normal_receipt())
+            .expect("queued normal receipt");
+        sender
+            .send(abnormal_receipt())
             .expect("queued fault after normal receipt");
         let release = ProfileReleaseWait::with_bounds(
             Some(receiver),
+            test_binding(),
             None,
             site,
             Duration::from_secs(30),

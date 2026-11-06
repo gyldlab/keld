@@ -29,7 +29,7 @@ fn precredit_native_exit(
         PROFILE_LAUNCH_DEADLINE, check_launch_deadline, milliseconds_until, pump_message_or_handle,
         remember_browser_process_id,
     };
-    let _browser = remember_browser_process_id(&engine.views, &engine.expected_browser_pid)?;
+    let _browser = remember_browser_process_id(&engine.views, &engine.browser_binding)?;
     engine.destroy(id)?;
     let deadline = std::time::Instant::now() + PROFILE_LAUNCH_DEADLINE;
     while Scope::observations().0 == 0 {
@@ -93,7 +93,7 @@ fn actual_profile_exit_with_injected_receipt(mode: Mode, path: ExitPath) -> Resu
             if faults_sent != 1
                 || phase != "stopping"
                 || !message.contains("KELD-WV-009")
-                || !message.contains("abnormal host browser exit")
+                || !message.contains("the host browser process failed or exited abnormally")
             {
                 return Err(failure(
                     "an injected queued failure after a real native normal receipt was hidden or committed Idle",

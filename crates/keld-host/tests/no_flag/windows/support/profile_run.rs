@@ -302,9 +302,33 @@ pub(crate) fn actual_webview_process(
     expected_udf: &Path,
     deadline: Instant,
 ) -> Value {
-    const PROCESS_QUERY: &str = r#"
+    actual_webview_process_selected(host_pid, expected_host, expected_udf, None, deadline)
+}
+
+/// Validates one independently selected, already-retained browser object when
+/// an older browser from the same environment may still be alive.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) fn actual_webview_process_for_pid(
+    host_pid: u32,
+    expected_host: &Path,
+    expected_udf: &Path,
+    browser_pid: u32,
+    deadline: Instant,
+) -> Value {
+    assert_ne!(browser_pid, 0, "selected browser identity");
+    actual_webview_process_selected(
+        host_pid,
+        expected_host,
+        expected_udf,
+        Some(browser_pid),
+        deadline,
+    )
+}
+
+const ACTUAL_WEBVIEW_PROCESS_QUERY: &str = r#"
 $ErrorActionPreference = 'Stop'
 $hostPid = [int]$env:KELD_PROFILE_HOST_PID
+$selectedBrowser = if ([string]::IsNullOrEmpty($env:KELD_PROFILE_BROWSER_PID)) { 0 } else { [int]$env:KELD_PROFILE_BROWSER_PID }
 $expected = [IO.Path]::GetFullPath($env:KELD_EXPECTED_UDF).TrimEnd('\')
 $all = @(Get-CimInstance Win32_Process)
 $observedHost = $all | Where-Object { [int]$_.ProcessId -eq $hostPid } | Select-Object -First 1
@@ -313,30 +337,54 @@ $candidates = @()
 foreach ($process in $all) {
   if ($process.Name -ne 'msedgewebview2.exe' -or [string]::IsNullOrEmpty($process.CommandLine)) { continue }
   if ([int]$process.ParentProcessId -ne $hostPid) { continue }
+  if ($selectedBrowser -ne 0 -and [int]$process.ProcessId -ne $selectedBrowser) { continue }
   $match = [regex]::Match($process.CommandLine, '--user-data-dir(?:=|\s+)(?:"([^"]+)"|(\S+))')
   $actual = if ($match.Groups[1].Success) { $match.Groups[1].Value } elseif ($match.Groups[2].Success) { $match.Groups[2].Value } else { '' }
   $candidates += @{ browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual }
   $folder = if ([string]::IsNullOrEmpty($actual)) { '' } else { [IO.Path]::GetFullPath($actual).TrimEnd('\') }
   $nested = [IO.Path]::GetFullPath((Join-Path $expected 'EBWebView')).TrimEnd('\')
   if ([string]::IsNullOrEmpty($folder) -or ($folder -ine $expected -and $folder -ine $nested)) { continue }
-  [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; user_data_folder = $actual; candidates = $candidates } | ConvertTo-Json -Compress))
+  $image = $process.ExecutablePath
+  if ([string]::IsNullOrEmpty($image)) { throw 'actual browser image path is unavailable' }
+  $imageFile = Get-Item -LiteralPath $image
+  $imageHash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+  [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; browser_pid = [int]$process.ProcessId; parent_pid = [int]$process.ParentProcessId; browser_created_utc = $process.CreationDate.ToUniversalTime().ToString('o'); browser_image = $image; browser_image_version = $imageFile.VersionInfo.FileVersion; browser_image_sha256 = $imageHash; browser_image_bytes = $imageFile.Length; user_data_folder = $actual; candidates = $candidates } | ConvertTo-Json -Compress))
   exit 0
 }
 [Console]::WriteLine((@{ host_image = $observedHost.ExecutablePath; candidates = $candidates } | ConvertTo-Json -Compress))
 "#;
+
+fn actual_webview_process_selected(
+    host_pid: u32,
+    expected_host: &Path,
+    expected_udf: &Path,
+    selected_browser: Option<u32>,
+    deadline: Instant,
+) -> Value {
     loop {
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", PROCESS_QUERY])
+        let mut command = Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                ACTUAL_WEBVIEW_PROCESS_QUERY,
+            ])
             .env("KELD_PROFILE_HOST_PID", host_pid.to_string())
-            .env("KELD_EXPECTED_UDF", expected_udf)
-            .output()
-            .expect("query actual WebView2 process and command line");
+            .env("KELD_EXPECTED_UDF", expected_udf);
+        if let Some(pid) = selected_browser {
+            command.env("KELD_PROFILE_BROWSER_PID", pid.to_string());
+        } else {
+            command.env_remove("KELD_PROFILE_BROWSER_PID");
+        }
+        let output = super::process::bounded_output(&mut command, deadline)
+            .expect("bounded actual WebView2 process and command-line query");
         assert!(
             output.status.success(),
             "WebView2 process query failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            output.stderr
         );
-        let stdout = String::from_utf8(output.stdout).expect("process query output UTF-8");
+        let stdout = output.stdout;
         let evidence: Value = serde_json::from_str(stdout.trim()).expect("process query JSON");
         if let (Some(host_image), Some(browser_pid), Some(parent_pid), Some(folder)) = (
             evidence["host_image"].as_str(),
@@ -359,6 +407,33 @@ foreach ($process in $all) {
                     || same_windows_path(Path::new(folder), &expected_udf.join("EBWebView")),
                 "observed WebView2 UDF differs from expected path: {evidence}"
             );
+            for field in [
+                "browser_image",
+                "browser_image_version",
+                "browser_created_utc",
+            ] {
+                assert!(
+                    evidence[field]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "actual browser artifact field {field} is unavailable: {evidence}"
+                );
+            }
+            assert!(
+                evidence["browser_image_sha256"]
+                    .as_str()
+                    .is_some_and(|value| {
+                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    }),
+                "actual browser image hash is invalid: {evidence}"
+            );
+            assert!(
+                evidence["browser_image_bytes"]
+                    .as_u64()
+                    .is_some_and(|bytes| bytes > 0),
+                "actual browser image is empty: {evidence}"
+            );
+            println!("KELD_GH1188_NATIVE_ARTIFACTS {evidence}");
             return evidence;
         }
         assert!(
