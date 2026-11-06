@@ -18,7 +18,7 @@ Scope is the main role and these two synchronous reads. Strict-profile support, 
 - [Owner #555](https://github.com/gyldlab/keld/issues/555) and [conformance owner #554](https://github.com/gyldlab/keld/issues/554). #554 owns the red-before-implementation record. [Session facts PR #1362](https://github.com/gyldlab/keld/pull/1362) and [display mirror PR #1164](https://github.com/gyldlab/keld/pull/1164) are related proposals with distinct scopes and approval boundaries.
 - Electron 44.4.5 [public contract][edoc], [JavaScript exports][ejs] and [native implementation][ecpp]. Zettlr [UpdateProvider.check at the application pin][zettlr]. Apple-authored macOS SDK [path status][path] and [monitor callback lifecycle][monitor] in a versioned SDK mirror.
 
-FACT: The current surface exports app and BrowserWindow. `packages/@keld/electron/src/index.ts:26`.
+FACT: The current surface exports app and BrowserWindow. `packages/@keld/electron/src/index.ts:29`.
 
 FACT: The pinned Electron wrapper binds both reads to the same function. Its exact source line is `exports.isOnline = isOnline;`. [Upstream wrapper][ejs]. Sources retrieved 2026-11-06.
 
