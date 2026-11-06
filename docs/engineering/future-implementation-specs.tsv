@@ -358,3 +358,10 @@ pr-1400	2aed1f944a072d2c84469924c107b3ca5df9bc13	no-changed-spec-markdown	-	http
 pr-1402	1bc17b98fbef2c5dd722a56e9517eea4395c5dff	no-changed-spec-markdown	-	https://github.com/gyldlab/keld/pull/1402
 pr-1417	644926c604cee03529155d5aaba049f309ec99b9	no-changed-spec-markdown	-	https://github.com/gyldlab/keld/pull/1417
 pr-1431	f5b87fc0f091393d0690a84d38817b1e16c8d5ac	no-changed-spec-markdown	-	https://github.com/gyldlab/keld/pull/1431
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh494-two-arm-oracle-harness.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh494-two-arm-oracle-harness.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh495-lifecycle-recorder-replay.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh495-lifecycle-recorder-replay.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh537-webcontents-conformance.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh537-webcontents-conformance.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh554-session-protocol-net-conformance.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh554-session-protocol-net-conformance.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh585-scheduled-oracle-drift.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh585-scheduled-oracle-drift.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh663-harness-run-receipts.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh663-harness-run-receipts.md
+pr-1444	ae38e1a5ed0e463b6427a05251fc79c773a1ce73	present-changed	docs/specs/gh1162-runner-evidence-provenance.md	https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh1162-runner-evidence-provenance.md

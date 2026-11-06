@@ -4,7 +4,7 @@ Publication and discovery index for [GH-1414](https://github.com/gyldlab/keld/is
 
 ## Verified publication set
 
-**70 feature specifications in 33 open draft PRs: 21 original packs plus 49 expansion specifications.** The planning-index PR is excluded. The files define **581 acceptance criteria and 270 ordered implementation tasks**.
+**77 feature specifications in 34 open draft PRs: 21 original packs plus 56 expansion specifications.** The planning-index PR is excluded. The files define **648 acceptance criteria and 304 ordered implementation tasks**.
 
 Counts come from complete files at the pinned publication revisions, not PR description totals. Each specification has all ten template sections and stays within 500 lines, 40 KiB and 400 characters per line. Published bytes are verified against their Git blob identities.
 
@@ -28,6 +28,7 @@ The earlier 21-pack and 63-total handoffs are historical snapshots. The 63 figur
 | [#1441](https://github.com/gyldlab/keld/pull/1441) | 3 | 29 | 12 | [source review](https://github.com/gyldlab/keld/pull/1441#issuecomment-6683595058) |
 | [#1442](https://github.com/gyldlab/keld/pull/1442) | 3 | 30 | 12 | Current-head independent review pending |
 | [#1443](https://github.com/gyldlab/keld/pull/1443) | 4 | 42 | 16 | [source review](https://github.com/gyldlab/keld/pull/1443#issuecomment-6683546084) |
+| [#1444](https://github.com/gyldlab/keld/pull/1444) | 7 | 67 | 34 | Independent final-head semantic review underway |
 
 ### Every published feature file
 
@@ -104,6 +105,14 @@ The earlier 21-pack and 63-total handoffs are historical snapshots. The 63 figur
 | [#582](https://github.com/gyldlab/keld/issues/582) | Electron-core autoUpdater with platform-specific source oracles | [#1443](https://github.com/gyldlab/keld/pull/1443) · [spec](https://github.com/gyldlab/keld/blob/e9622e0452e0c86a264897463f5912f89f5f68f8/docs/specs/gh582-core-autoupdater-facade.md) |
 | [#583](https://github.com/gyldlab/keld/issues/583) | source-qualified Electron-to-Keld bridge release recipe | [#1443](https://github.com/gyldlab/keld/pull/1443) · [spec](https://github.com/gyldlab/keld/blob/e9622e0452e0c86a264897463f5912f89f5f68f8/docs/specs/gh583-electron-to-keld-bridge-recipe.md) |
 
+| [#494](https://github.com/gyldlab/keld/issues/494) | Two-arm Electron differential oracle harness | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh494-two-arm-oracle-harness.md) |
+| [#495](https://github.com/gyldlab/keld/issues/495) | Lifecycle recorder and offline differential replay | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh495-lifecycle-recorder-replay.md) |
+| [#537](https://github.com/gyldlab/keld/issues/537) | WebContents navigation and popup conformance evidence | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh537-webcontents-conformance.md) |
+| [#554](https://github.com/gyldlab/keld/issues/554) | Session, protocol and online-state conformance evidence | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh554-session-protocol-net-conformance.md) |
+| [#585](https://github.com/gyldlab/keld/issues/585) | Parked Electron oracle drift lane | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh585-scheduled-oracle-drift.md) |
+| [#663](https://github.com/gyldlab/keld/issues/663) | Harness-run receipt and conformance record producer | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh663-harness-run-receipts.md) |
+| [#1162](https://github.com/gyldlab/keld/issues/1162) | Intended Bun case identity and runner provenance | [#1444](https://github.com/gyldlab/keld/pull/1444) · [spec](https://github.com/gyldlab/keld/blob/ae38e1a5ed0e463b6427a05251fc79c773a1ce73/docs/specs/gh1162-runner-evidence-provenance.md) |
+
 ## How to dispatch implementation
 
 1. Read the feature issue, its current trusted claim, the exact specification and later amendments. Related specifications share a PR but keep separate files and feature owners.
@@ -116,22 +125,24 @@ The earlier 21-pack and 63-total handoffs are historical snapshots. The 63 figur
 The fresh membership capture at **2026-11-06 11:37:03 UTC** contains **397 unique open issues and 208 unique open PR heads**. All four issue pages reported `incomplete_results=false`; the PR capture used three complete pages. Main is unchanged from the earlier capture.
 The issue table gives every captured issue an explicit discovery disposition and next action. Its entries are triage routes, not a statement that every issue needs a new specification or that every existing specification is complete. Later publication rows can update disposition without changing the captured membership.
 
+**Publication-only reconciliation after the census:** [draft #1444](https://github.com/gyldlab/keld/pull/1444) adds seven complete read-back conformance/evidence drafts at immutable source `ae38e1a5ed0e463b6427a05251fc79c773a1ce73`. These seven source-ledger rows are supplemental to, **not** members of, the 208-PR capture at 11:37 UTC. The 397 captured issue IDs are unchanged; this update is **not a fresh complete issue/PR census**. Independent exact-head semantic re-review is in progress; section 10 owner decisions and native acceptance remain open. The GH585 schedule remains parked and disabled.
+
 | Discovery disposition | Issues |
 |---|---:|
 | `catalog-or-implementation-task-review` | 5 |
-| `conformance-owner-evidence-review` | 13 |
+| `conformance-owner-evidence-review` | 11 |
 | `existing-named-spec-review-owner` | 36 |
 | `inventory-owner` | 1 |
 | `issue-cited-existing-contract` | 13 |
-| `maintenance-or-validation-review-existing-contract` | 185 |
+| `maintenance-or-validation-review-existing-contract` | 183 |
 | `parked-activation-gate` | 2 |
 | `parked-owner-decision` | 2 |
 | `parked-source-review` | 8 |
 | `program-route-to-children` | 21 |
-| `published-feature-draft` | 70 |
+| `published-feature-draft` | 77 |
 | `recorded-evidence-limit` | 1 |
 | `shared-owner-contract-route` | 13 |
-| `source-or-owner-review-needed` | 26 |
+| `source-or-owner-review-needed` | 23 |
 | `tracker-conflict` | 1 |
 
 ### Remaining decisions and evidence
