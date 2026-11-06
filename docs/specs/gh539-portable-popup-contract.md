@@ -26,6 +26,7 @@ remains the shared popup-policy owner.
 - [Shared Host window identity](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/gh531-window-registry-close-state-machine.md).
 - [Electron setWindowOpenHandler and did-create-window](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-contents.md).
 - [Electron child option inheritance](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/window-open.md).
+- [Electron created-child lifetime implementation](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/guest-window-manager.ts).
 
 Verified source baseline: Current Windows GuardInstalled construction installs a NewWindowRequested handler that sets
 Handled(true) without a NewWindow; Keld's source records this as deny-all. It does not invoke a Bun application handler.
@@ -107,6 +108,26 @@ stale-decision and cleanup cases are separately qualified; absent allow feasibil
 
 Independent negative control: Mark all popup cells PASS from the current deny-all engine hook.
 
+### AC10
+
+Given an already-created default-lifetime child and its native-bound opener, when the approved opener-retirement event
+occurs, then the child is actually retired through the reviewed Host destroy/cleanup route and the relationship registration
+is released. This is separate from a still-pending popup decision.
+
+Independent negative control: Disable only the created-child retirement hook while keeping pending-request stale checks
+intact; the independent native child/Host-registry census must detect the surviving orphan. Close the child first and require
+the opener registration to be removed without affecting another child.
+
+### AC11
+
+Given outlivesOpener:true, when that option is unsupported or not explicitly admitted, then refuse the option/allow path
+before child creation rather than silently ignoring it. Once separately approved, the child survives the qualified
+opener-retirement event and remains independently Host-owned until its own actual retirement.
+
+Independent negative control: Treat outlivesOpener as default false, silently accept it without an independent owner, or
+remove the child from accounting when the opener dies; option disposition, survival and eventual cleanup controls must fail
+independently.
+
 ## 4. Design
 
 ### 4.1 Policy and mechanism are different owners
@@ -161,6 +182,25 @@ relation/return semantics as unqualified until actual engine evidence. Do not ed
 any allowed child must enter its native document/resource contract through an explicit owner amendment. Migrate the actual
 handler, Host creation, facade events and per-engine conformance cells together. No shim-only supported result.
 
+### 4.8 Already-created child and opener lifetime
+
+The pinned Electron docs say children close with the opener by default and outlivesOpener:true opts out. The implementation
+is more specific: handleWindowLifecycleEvents registers embedder.once('current-render-view-deleted', closedByEmbedder) when
+the option is false; that callback calls guest.destroy(), and a guest destroyed first removes its opener listener. This
+governs an existing child, not only the in-flight decision in section4.6.
+
+Before any allow route is admitted, GH461/GH531 and the platform owner must approve the exact Host-bound relationship, native
+retirement event and destroy/release mapping. Do not equate every navigation with current-render-view-deleted, infer the
+mapping from a URL, or silently replace the source's destroy behavior with a vetoable close. If matching it requires an
+exception to shared close-veto behavior, the exception needs that owner's explicit approval; this draft grants no force-close
+bypass. Until the mapping is qualified, default-child allow remains unsupported.
+
+outlivesOpener defaults false. True remains explicitly unsupported until separately admitted with a stable independent Host
+owner and cleanup route. Its survival never copies opener grants or extends old document authority. Native
+references/listeners and relation records have bounded custody and are released only after actual destruction or the approved
+independence transfer. Test opener close, native view retirement/replacement and child-first destruction separately;
+source-only event semantics are not a per-engine native pass.
+
 ## 5. Boundaries
 
 Future changes are confined to shared-policy projection, the existing Windows/Linux native popup hooks and current
@@ -174,7 +214,7 @@ architecture, policy, generated contracts, implementations and other owners' doc
 
 ### T1
 
-- [ ] Freeze the shared GH461 policy revision, per-engine callback/deferral feasibility, bounded native lifetime and child linkage contract, with actual primary/native receipts and appropriate owner amendments.
+- [ ] Freeze the shared GH461 policy revision, per-engine callback/deferral feasibility, bounded native lifetime and child linkage and created-child/opener lifetime contract, with actual primary/native receipts and appropriate owner amendments.
 
 ### T2
 
@@ -182,7 +222,7 @@ architecture, policy, generated contracts, implementations and other owners' doc
 
 ### T3
 
-- [ ] Implement one qualified allow path as a complete Host-owned child vertical slice, including option inheritance, no copied grants, native linkage and partial-creation cleanup.
+- [ ] Implement one qualified allow path as a complete Host-owned child vertical slice, including option inheritance, no copied grants, native linkage and partial-creation cleanup. Qualify default opener retirement and explicitly admit or refuse outlivesOpener before enabling any allow route.
 
 ### T4
 
@@ -194,7 +234,10 @@ AC1 observes a harmless real guarded side effect from the original handler while
 native decision, native object counts, Host registry and events separately. AC4 uses literal expected option values and a
 real denied child channel call. AC5 faults every native creation handoff. AC6 forces old-response delivery after
 navigation/destruction. AC7 counts retained native objects beyond caller retirement. AC8 observes the actual page WindowProxy
-plus a linked child operation. AC9 separates model and engine results. All native execution is unrun in this session.
+plus a linked child operation. AC9 separates model and engine results. All native execution is unrun in this session. AC10/11
+use an already-created child, then separately retire the opener or child and observe native/registry objects plus
+relationship registrations. The pending-decision stale fixture cannot substitute for these lifetime tests; default and
+outlivesOpener arms remain separately gated.
 
 Each acceptance criterion has its own observable and negative control above. Documentation verification covers all ten
 sections, source-versus-proposal wording, file limits and exact GitHub readback. GitHub CI belongs to the exact published
@@ -231,6 +274,10 @@ documents.
 
 4. Freeze bounds/error shapes and collect real per-engine handler, WindowProxy, no-grant, stale and cleanup receipts before
 publishing support.
+
+5. GH461/GH531 and platform owners must approve the created-child relationship, exact native opener-retirement signal and
+source destroy-versus-close-veto behavior. outlivesOpener:true stays unsupported until independent child
+ownership/survival/cleanup are qualified.
 
 Independent review must cover the final published revision. Every remaining owner/native gate stays explicit; this document
 is not a completed feature.
