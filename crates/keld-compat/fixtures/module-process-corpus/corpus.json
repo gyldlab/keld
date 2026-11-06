@@ -1,0 +1,202 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-module-process-v1",
+  "scope": "Electron module and main-role process conformance on macOS; headless-role-conformance is an opaque harness identity, not WebView execution or product admission; nonempty user arguments and installed launch unrun (GH-570/KEL-141); not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "headless-role-conformance"
+  },
+  "doc_snapshots": {
+    "docs/api/process.md": "sha256:094c2298e15df7074c873015d8dd1e97be43152cc19f81fb2a6e42d25cd50813",
+    "docs/tutorial/process-model.md": "sha256:f4c00bac9e25afe87dad781eb9a6bdaee798ed533dd58cb138692fe9a30cb961"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "resolver.documented-aliases.identity",
+      "oracle_id": "electron-v44.4.5.resolver.documented-aliases.identity",
+      "expected_verdict": "fail",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/module_process_reference.rs",
+      "test_name": "copied_keld_package_resolution_observation",
+      "negative_control": "Add one missing alias in disposable manifest; exact observed result changes. Final positive identity still requires full matrix.",
+      "implementing_ticket": "GH-502",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/tutorial/process-model.md",
+        "quote": "These aliases have no impact on runtime, but can be used for typechecking\nand autocomplete.",
+        "quote_sha256": "sha256:ac2ed81659a935d447d2322fccfb6596559932092d14a6b5edb2ba2f16f52b4b"
+      }
+    },
+    {
+      "operation_id": "resolver.utility.identity",
+      "oracle_id": "electron-v44.4.5.resolver.utility.identity",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/module_process_reference.rs",
+      "test_name": "copied_keld_package_resolution_observation",
+      "negative_control": "Add utility mapping in disposable manifest and assert actual result changes. Source: source-only lib/common/init.ts; no admitted docs citation for utility. Ledger unknown; owner GH-502."
+    },
+    {
+      "operation_id": "resolver.esm-export-set",
+      "oracle_id": "electron-v44.4.5.resolver.esm-export-set",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/module_process_reference.rs",
+      "test_name": "direct_facade_observation_and_bounded_release_snapshot",
+      "negative_control": "Removing the real BrowserWindow named export in a disposable copy changes actual namespace while default object remains unchanged; baseline comparator rejects it. Source: source-only patches/node/fix_expose_the_built-in_electron_module_via_the_esm_loader.patch. Ledger unknown; owner GH-502."
+    },
+    {
+      "operation_id": "process.early.type",
+      "oracle_id": "electron-v44.4.5.process.early.type",
+      "expected_verdict": "fail",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "Importing the real Keld facade inside the early dependency before it captures process.type changes the observed verdict and fails the manifest status comparison.",
+      "implementing_ticket": "GH-570",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "* `browser` - The main process",
+        "quote_sha256": "sha256:dd2e0aa171db684c72bf823b8095552765aca21e16294c358ddfc32455d64bec"
+      }
+    },
+    {
+      "operation_id": "process.argv.default-app.empty-user-args",
+      "oracle_id": "electron-v44.4.5.process.argv.default-app.empty-user-args",
+      "expected_verdict": "fail",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "Changing only defaultApp to true changes the predicate and fails the baseline assertion; independent A/B cases pass.",
+      "implementing_ticket": "GH-570",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "This can be useful to determine how many arguments will need to be sliced off from `process.argv`.",
+        "quote_sha256": "sha256:95e94520a27beb31daa3398681e7576be542a4084accdee765e3302b39aa0586"
+      }
+    },
+    {
+      "operation_id": "process.default-app.domain",
+      "oracle_id": "electron-v44.4.5.process.default-app.domain",
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "One-field false mutation exercised in actual Host test and rejected at the exact field assertion; fixture restored and baseline reran.",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "property is `true` in the main process, otherwise it is `undefined`.",
+        "quote_sha256": "sha256:f0853e2c38d4ca1c9210b867800809cc6eef1259a5f88de5bde9f80980415ff4"
+      }
+    },
+    {
+      "operation_id": "process.mas.domain",
+      "oracle_id": "electron-v44.4.5.process.mas.domain",
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "Observed one-field mas=false mutation fails baseline assertion.",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "A `boolean`. For Mac App Store build, this property is `true`, for other builds it is\n`undefined`.",
+        "quote_sha256": "sha256:43cbc65bc0182291fa96cf622575d6c795800de8cb3a89c4a596b6525c7b26ee"
+      }
+    },
+    {
+      "operation_id": "process.windows-store.domain",
+      "oracle_id": "electron-v44.4.5.process.windows-store.domain",
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "One-field false mutation exercised in actual Host test and rejected at the exact field assertion; fixture restored and baseline reran.",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "this property is `true`, otherwise it is `undefined`.",
+        "quote_sha256": "sha256:1e2a3c2194e4b1530c357885110e99e05bf9e3f9b7b99cd7becc7c47fb03158c"
+      }
+    },
+    {
+      "operation_id": "process.sandboxed.domain",
+      "oracle_id": "electron-v44.4.5.process.sandboxed.domain",
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "One-field false mutation exercised in actual Host test and rejected at the exact field assertion; fixture restored and baseline reran.",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "A `boolean`. When the renderer process is sandboxed, this property is `true`,\notherwise it is `undefined`.",
+        "quote_sha256": "sha256:8b91a31509ab014d3d2c0d3dc39fe868c2c96b1e5752bbc6f010db1f91a8cc7e"
+      }
+    },
+    {
+      "operation_id": "process.context-isolated.main",
+      "oracle_id": "electron-v44.4.5.process.context-isolated.main",
+      "expected_verdict": "pass",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "One-field false mutation exercised in actual Host test and rejected at the exact field assertion; fixture restored and baseline reran.",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "It is `undefined` in the main process.",
+        "quote_sha256": "sha256:5d47cfff25ed59e4cb91bec0132da3021d9cb17d4e8dc1bfb9a5f1b550f5aa65"
+      }
+    },
+    {
+      "operation_id": "process.resources-path.string",
+      "oracle_id": "electron-v44.4.5.process.resources-path.string",
+      "expected_verdict": "fail",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-host/tests/no_flag_macos.rs",
+      "test_name": "module_process::shipping_role_early_dependency_reports_process_facts",
+      "negative_control": "Changing only resourcesPath to string causes reviewed baseline assertion to fail (unexpected pass).",
+      "implementing_ticket": "GH-570",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/process.md",
+        "quote": "A `string` representing the path to the resources directory.",
+        "quote_sha256": "sha256:a35dae11763cd401f9777e1f3bb5bce1b5db94bd27d3a0545cfbc2de6e091cab"
+      }
+    },
+    {
+      "operation_id": "process.versions.electron.honesty",
+      "oracle_id": "electron-v44.4.5.process.versions.electron.honesty",
+      "expected_verdict": "unknown",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/module_process_reference.rs",
+      "test_name": "direct_facade_observation_and_bounded_release_snapshot",
+      "negative_control": "44.4.5 is in the bounded snapshot and fails the bounded non-membership predicate. Source: Keld honesty rule, no admitted Electron doc citation. Ledger unknown; owner GH-570."
+    }
+  ]
+}

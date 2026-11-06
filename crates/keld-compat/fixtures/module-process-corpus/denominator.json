@@ -1,0 +1,57 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-module-process-v1",
+  "corpus_sha256": "sha256:a0c67d42203b496a0c4d377844cc2628769d9bfa5c2edbac89ec1a45da0cb6bf",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "resolver.documented-aliases.identity",
+      "oracle_id": "electron-v44.4.5.resolver.documented-aliases.identity"
+    },
+    {
+      "operation_id": "resolver.utility.identity",
+      "oracle_id": "electron-v44.4.5.resolver.utility.identity"
+    },
+    {
+      "operation_id": "resolver.esm-export-set",
+      "oracle_id": "electron-v44.4.5.resolver.esm-export-set"
+    },
+    {
+      "operation_id": "process.early.type",
+      "oracle_id": "electron-v44.4.5.process.early.type"
+    },
+    {
+      "operation_id": "process.argv.default-app.empty-user-args",
+      "oracle_id": "electron-v44.4.5.process.argv.default-app.empty-user-args"
+    },
+    {
+      "operation_id": "process.default-app.domain",
+      "oracle_id": "electron-v44.4.5.process.default-app.domain"
+    },
+    {
+      "operation_id": "process.mas.domain",
+      "oracle_id": "electron-v44.4.5.process.mas.domain"
+    },
+    {
+      "operation_id": "process.windows-store.domain",
+      "oracle_id": "electron-v44.4.5.process.windows-store.domain"
+    },
+    {
+      "operation_id": "process.sandboxed.domain",
+      "oracle_id": "electron-v44.4.5.process.sandboxed.domain"
+    },
+    {
+      "operation_id": "process.context-isolated.main",
+      "oracle_id": "electron-v44.4.5.process.context-isolated.main"
+    },
+    {
+      "operation_id": "process.resources-path.string",
+      "oracle_id": "electron-v44.4.5.process.resources-path.string"
+    },
+    {
+      "operation_id": "process.versions.electron.honesty",
+      "oracle_id": "electron-v44.4.5.process.versions.electron.honesty"
+    }
+  ]
+}

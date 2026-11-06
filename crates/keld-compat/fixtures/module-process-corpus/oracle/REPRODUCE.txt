@@ -1,0 +1,31 @@
+GH-569 Electron 44.4.5 macOS arm64 reference reproduction
+
+This fixture runs the official Electron binary as an upstream oracle only. It does not
+launch a Keld application or establish a product authority profile. The official ZIP
+has an ad-hoc/linker signature and strict codesign verification did not pass; the
+release SHA-256 verifies the exact downloaded bytes, not a publisher signature.
+
+From the repository root, choose an empty operator-owned scratch directory and set
+GH569_SCRATCH to its absolute path. The commands below write only inside that directory.
+They require macOS arm64, curl, ditto, Python 3, and network access for the release.
+
+mkdir -p "$GH569_SCRATCH/fixture/node_modules/early" "$GH569_SCRATCH/home/userdata" "$GH569_SCRATCH/tmp"
+curl -fL https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-darwin-arm64.zip -o "$GH569_SCRATCH/electron.zip"
+shasum -a 256 "$GH569_SCRATCH/electron.zip"
+
+The ZIP hash must be a212eee63ba2f45fd83bd28f77a3e3313a336ad17a4c25adf617942eef5e0e2c.
+Compare against the official v44.4.5 SHASUMS256.txt as a separate source check.
+
+ditto -x -k "$GH569_SCRATCH/electron.zip" "$GH569_SCRATCH/electron"
+cp crates/keld-compat/fixtures/module-process-corpus/oracle/main.cjs "$GH569_SCRATCH/fixture/main.cjs"
+cp crates/keld-compat/fixtures/module-process-corpus/oracle/package.json "$GH569_SCRATCH/fixture/package.json"
+cp crates/keld-compat/fixtures/module-process-corpus/oracle/early-index.js "$GH569_SCRATCH/fixture/node_modules/early/index.js"
+env -i HOME="$GH569_SCRATCH/home" TMPDIR="$GH569_SCRATCH/tmp" PATH=/usr/bin:/bin LC_ALL=C "$GH569_SCRATCH/electron/Electron.app/Contents/MacOS/Electron" "$GH569_SCRATCH/fixture" gh569-alpha gh569-beta > "$GH569_SCRATCH/raw.stdout" 2> "$GH569_SCRATCH/raw.stderr"
+python3 crates/keld-compat/fixtures/module-process-corpus/oracle/normalize.py "$GH569_SCRATCH/raw.stdout" "$GH569_SCRATCH/normalized.json"
+cmp "$GH569_SCRATCH/normalized.json" crates/keld-compat/fixtures/module-process-corpus/electron-reference.json
+
+A successful reproduction exits zero, has empty raw.stderr, and cmp reports equality.
+Raw stdout contains machine-specific absolute paths; retain it in private evidence.
+Its hash changes with those paths. For the original raw bytes, pass the receipt's raw
+SHA-256 with --expected-raw-sha256; the normalizer refuses a mismatched digest. The
+normalized bytes are path-independent and bind the actual non-path facts and sentinels.

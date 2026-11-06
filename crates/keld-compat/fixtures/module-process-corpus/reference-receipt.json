@@ -1,0 +1,28 @@
+{
+  "upstream": "Electron",
+  "version": "44.4.5",
+  "release_url": "https://github.com/electron/electron/releases/tag/v44.4.5",
+  "asset": "electron-v44.4.5-darwin-arm64.zip",
+  "asset_sha256": "a212eee63ba2f45fd83bd28f77a3e3313a336ad17a4c25adf617942eef5e0e2c",
+  "shasums_sha256": "a0379166a35f9d3e2e1b63a72b90ddfe54a9558c56a3bde82e98f63823591d72",
+  "platform": "macos-aarch64",
+  "retrieved": "2026-10-28",
+  "signature": "codesign strict verification failed; release is ad-hoc/linker-signed; no publisher-signature claim",
+  "extraction": "583 archive entries matched extracted bytes or symlink targets",
+  "fixture_main_sha256": "858ceb86eb6ea9cae3c0b3157bf17cf262bb7384887ec8f483472fded0e8f58d",
+  "fixture_package_sha256": "f8dfa9033e28294aca8c8fae69b8313529f2ce69b2634b7ca1643fb39599ff00",
+  "fixture_dependency_sha256": "a53c5ad791ca282c4cc76b8952e42eece58855a47fc1a12d530a9585b4eaa6f0",
+  "raw_stdout_sha256": "7bdc0abb4546f82c0b246b768385b7c78b1bf0ccad2c74fdb4f7f48f92c6227b",
+  "normalized_stdout_sha256": "c4a2bb0f48906511fa88f4e6655c05e5780f5aa9a8b10ff13cb74e0ce9dae277",
+  "normalization": "argv executable and fixture directory, resourcesPath value replaced with explicit placeholders; userData path removed; all process types and sentinel values preserved",
+  "arguments": [
+    "gh569-alpha",
+    "gh569-beta"
+  ],
+  "exit": 0,
+  "stderr": "empty",
+  "scope": "Upstream reference only; no Keld role or installed application claim",
+  "normalizer": "oracle/normalize.py",
+  "normalizer_sha256": "1dad38549e361e8b470c8f5bcfab38060f878a975cc5556c1dbb00a7313b9d19",
+  "raw_retention": "Original raw stdout contains machine-specific paths and is retained as private session evidence; oracle/REPRODUCE.txt gives public reproduction and normalization commands."
+}
