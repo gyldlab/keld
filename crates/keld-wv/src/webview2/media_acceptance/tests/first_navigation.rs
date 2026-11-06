@@ -144,8 +144,7 @@ fn prove_later_recovery(
     }));
     let mut token = 0_i64;
     // SAFETY: the live WebView2, handler and token stay on the owning STA.
-    unsafe { webview.add_DocumentTitleChanged(&callback, &raw mut token) }
-        .map_err(failure)?;
+    unsafe { webview.add_DocumentTitleChanged(&callback, &raw mut token) }.map_err(failure)?;
 
     let marker = match case {
         LaterNulCase::Html => "keld-later-html-recovered",
@@ -235,7 +234,9 @@ fn start_case(
         // mistaken for post-refusal recovery.
         let initial = super::super::wait_with_pump(events).map_err(failure)?;
         if !matches!(initial, crate::AppWindowEvent::NavigationReady) {
-            defect = Some(failure(format!("first native navigation was not ready: {initial:?}")));
+            defect = Some(failure(format!(
+                "first native navigation was not ready: {initial:?}"
+            )));
         }
         let late_defect = later_nul_defect(engine, live_id, case);
         if defect.is_none() {
@@ -244,7 +245,10 @@ fn start_case(
         if defect.is_none() {
             defect = prove_later_recovery(engine, live_id, case).err();
         }
-        (None, matches!(initial, crate::AppWindowEvent::NavigationReady))
+        (
+            None,
+            matches!(initial, crate::AppWindowEvent::NavigationReady),
+        )
     } else {
         (Some(events), false)
     };
