@@ -93,10 +93,10 @@ fn keld_codes(line: &str) -> Vec<&str> {
     out
 }
 
-fn emit_sites() -> Vec<(usize, &'static str, &'static str)> {
-    HOST_MAIN
+fn emit_sites() -> Result<Vec<(usize, &'static str, &'static str)>, &'static str> {
+    Ok(HOST_MAIN
         .split_once("\n#[cfg(all(test, target_os = \"macos\"))]")
-        .expect("explicit production/test boundary")
+        .ok_or("explicit production/test boundary is missing")?
         .0
         .lines()
         .enumerate()
@@ -105,12 +105,12 @@ fn emit_sites() -> Vec<(usize, &'static str, &'static str)> {
                 .into_iter()
                 .map(move |code| (index + 1, code, line))
         })
-        .collect()
+        .collect())
 }
 
 #[test]
-fn every_host_emit_site_carries_the_registry_code_for_its_condition() {
-    let sites = emit_sites();
+fn every_host_emit_site_carries_the_registry_code_for_its_condition() -> Result<(), &'static str> {
+    let sites = emit_sites()?;
     assert!(
         sites.len() >= 20,
         "the host source lost most of its emit sites; re-read src/main.rs: {sites:?}"
@@ -145,17 +145,19 @@ fn every_host_emit_site_carries_the_registry_code_for_its_condition() {
             "{expected} is classified but no longer emitted by src/main.rs"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn host_does_not_borrow_codes_owned_by_other_crates() {
-    for (line_number, code, line) in emit_sites() {
+fn host_does_not_borrow_codes_owned_by_other_crates() -> Result<(), &'static str> {
+    for (line_number, code, line) in emit_sites()? {
         assert!(
             !FOREIGN_OWNED.contains(&code),
             "src/main.rs:{line_number} borrows {code}, whose meaning is owned by another \
              crate's typed error: {line}"
         );
     }
+    Ok(())
 }
 
 #[test]
