@@ -24,16 +24,31 @@ pub(super) fn state_until(
             )
         });
         assert_eq!(kind, "STATE", "unexpected facade record: {kind} {value}");
-        if satisfies(&value) {
+        if state_matches_before_deadline(&value, Instant::now(), deadline, &satisfies) {
             return value;
         }
-        assert!(
-            Instant::now() < deadline,
-            "public state disagrees with the native witness: {value}"
-        );
         last = Some(value);
         thread::park_timeout(Duration::from_millis(10));
     }
+}
+
+
+// Keep the observation timestamp separate so the exact deadline boundary can be
+// tested without sleeps, a fabricated native window, or a renewed deadline.
+fn state_matches_before_deadline(
+    value: &Value,
+    observed_at: Instant,
+    deadline: Instant,
+    satisfies: impl FnOnce(&Value) -> bool,
+) -> bool {
+    if satisfies(value) {
+        return true;
+    }
+    assert!(
+        observed_at < deadline,
+        "public state observation reached its deadline: {value}"
+    );
+    false
 }
 
 fn geometry_matches(state: &Value, native: &NativeState) -> bool {
@@ -243,4 +258,58 @@ fn windows_host_window_obligations_reach_the_controller() {
     run.quit();
     assert!(!profile.exists());
     fixture.close();
+}
+
+
+#[cfg(test)]
+mod state_observation_tests {
+    use super::state_matches_before_deadline;
+    use serde_json::json;
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn completion_before_deadline_keeps_the_real_predicate() {
+        let observed_at = Instant::now();
+        let deadline = observed_at + Duration::from_secs(1);
+        let value = json!({"focusedId": null});
+        assert!(state_matches_before_deadline(
+            &value,
+            observed_at,
+            deadline,
+            |observed| observed["focusedId"].is_null(),
+        ));
+        assert!(!state_matches_before_deadline(
+            &value,
+            observed_at,
+            deadline,
+            |observed| observed["focusedId"].is_number(),
+        ));
+    }
+
+    fn assert_late_completion_rejected(observed_at: Instant, deadline: Instant) {
+        let invoked = Cell::new(false);
+        let value = json!({"focusedId": null});
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            state_matches_before_deadline(&value, observed_at, deadline, |_| {
+                invoked.set(true);
+                true
+            })
+        }));
+        assert!(result.is_err(), "late satisfying STATE must be rejected");
+        assert!(!invoked.get(), "late STATE must not reach the predicate");
+    }
+
+    #[test]
+    fn completion_at_deadline_cannot_receive_acceptance_credit() {
+        let deadline = Instant::now();
+        assert_late_completion_rejected(deadline, deadline);
+    }
+
+    #[test]
+    fn completion_after_deadline_cannot_receive_acceptance_credit() {
+        let deadline = Instant::now();
+        assert_late_completion_rejected(deadline + Duration::from_nanos(1), deadline);
+    }
 }
