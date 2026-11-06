@@ -208,8 +208,11 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
         frame_start["data"]["uri"] == receipt["uri"] && frame_end["data"]["success"] == true,
         "same-URI iframe lacks native start/success evidence",
     )?;
+    let frame_id = frame_start["data"]["navigation_id"]
+        .as_u64()
+        .ok_or("missing native iframe navigation identity")?;
     require(
-        frame_start["data"]["navigation_id"] == frame_end["data"]["navigation_id"],
+        frame_end["data"]["navigation_id"].as_u64() == Some(frame_id),
         "iframe native identities differ",
     )?;
     require(
@@ -230,7 +233,10 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
     require(
         frame_resources
             .iter()
-            .filter(|event| event["data"]["uri"] == receipt["uri"])
+            .filter(|event| {
+                event["data"]["uri"] == receipt["uri"]
+                    && event["data"]["resource_context"] == 1
+            })
             .count()
             == 1,
         "iframe cell lacks one exact-URI resource observation",
@@ -335,6 +341,15 @@ pub(super) fn assess(receipt: &Value) -> Result<Value, String> {
         receipt["helper"] == "windows_file_native_probe_child",
         "native helper did not execute",
     )?;
+    let events = receipt["events"]
+        .as_array()
+        .ok_or("native global event sequence is missing")?;
+    for (position, event) in events.iter().enumerate() {
+        require(
+            event["seq"].as_u64() == Some(position as u64 + 1),
+            "native global event sequence is missing, duplicated, or reordered",
+        )?;
+    }
     require(
         receipt["errors"].as_array().is_some_and(Vec::is_empty),
         "native run recorded errors or timed out",

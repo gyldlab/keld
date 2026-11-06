@@ -72,6 +72,10 @@ fn sample() -> Value {
         json!({"pid":1234,"normal":true}),
         20,
     ));
+    // Trace::record uses one global sequence, not a counter that resets per phase.
+    for (index, observed) in events.iter_mut().enumerate() {
+        observed["seq"] = json!(index + 1);
+    }
     let page = json!({"nonce":"probe","href":"file:///D:/owned/doc.html","frames":[]});
     json!({
         "schema":SCHEMA,"helper":"windows_file_native_probe_child","errors":[],"runtime_version":"fixture-observer-calibration","devtools_enabled_readback":false,
@@ -381,4 +385,58 @@ fn null_execute_promise_body_cannot_pass() {
         assess(&receipt).is_err(),
         "null replaced the observed Promise object"
     );
+}
+
+#[test]
+fn missing_or_mismatched_native_iframe_id_cannot_pass() {
+    let mut absent = sample();
+    for event in absent["events"].as_array_mut().expect("events").iter_mut() {
+        if event["phase"] == "iframe"
+            && (event["kind"] == "frame-navigation-starting"
+                || event["kind"] == "frame-navigation-completed")
+        {
+            event["data"]["navigation_id"] = Value::Null;
+        }
+    }
+    assert!(assess(&absent).is_err(), "two missing iframe IDs matched");
+
+    let mut mismatch = sample();
+    let completion = mismatch["events"]
+        .as_array_mut()
+        .expect("events")
+        .iter_mut()
+        .find(|event| {
+            event["phase"] == "iframe" && event["kind"] == "frame-navigation-completed"
+        })
+        .expect("iframe completion");
+    completion["data"]["navigation_id"] = json!(999);
+    assert!(assess(&mismatch).is_err(), "wrong iframe ID matched");
+    assert!(assess(&sample()).is_ok(), "numeric same-ID control failed");
+}
+
+#[test]
+fn non_document_iframe_resource_cannot_pass() {
+    let mut receipt = sample();
+    let resource = receipt["events"]
+        .as_array_mut()
+        .expect("events")
+        .iter_mut()
+        .find(|event| event["phase"] == "iframe" && event["kind"] == "resource-request")
+        .expect("iframe resource");
+    resource["data"]["resource_context"] = json!(6); // SCRIPT, not DOCUMENT (1)
+    assert!(assess(&receipt).is_err(), "non-DOCUMENT resource impersonated iframe");
+    assert!(assess(&sample()).is_ok(), "DOCUMENT control failed");
+}
+
+#[test]
+fn global_native_sequence_cannot_be_duplicated_or_reordered() {
+    let mut duplicated = sample();
+    let events = duplicated["events"].as_array_mut().expect("events");
+    events[6]["seq"] = events[5]["seq"].clone();
+    assert!(assess(&duplicated).is_err(), "duplicate global seq was accepted");
+
+    let mut swapped = sample();
+    swapped["events"].as_array_mut().expect("events").swap(5, 6);
+    assert!(assess(&swapped).is_err(), "reordered global events were accepted");
+    assert!(assess(&sample()).is_ok(), "ordered global sequence failed");
 }
