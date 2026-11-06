@@ -3699,7 +3699,9 @@ impl WebEngine for WebView2Engine {
         let view = self.view(id)?;
         let (NavTarget::Html(text) | NavTarget::Url(text)) = &target;
         let argument = guarded_navigation::pcwstr_argument(text).ok_or_else(|| {
-            WvError::Navigate("navigation contains a NUL character; remove it before loading".into())
+            WvError::Navigate(
+                "navigation contains a NUL character; remove it before loading".into(),
+            )
         })?;
         // Existing media and popup handlers remain installed for this view's lifetime.
         let loaded = match target {
