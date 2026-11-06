@@ -10,11 +10,11 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use super::super::WebEngine;
 use super::super::{FIXTURE_DEADLINE, blank_spec, failure};
 use super::{profile_fixture_engine, profile_fixture_root, run_renderer_until_quit};
 use crate::webview2::tests::run_with_watchdog;
 use crate::{NavTarget, WebviewId, WebviewSpec, WvError};
-use super::super::WebEngine;
 
 /// Native Windows COM proof: the actual `create_app`/`NavigateToString`
 /// subscription, not a direct call to the phase reducer, must observe
@@ -31,7 +31,9 @@ fn windows_first_navigation_start_is_observed_by_real_com_callback() -> Result<(
 #[ignore = "requires a claimed Windows WebView2 native slot"]
 fn initial_html_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
     first_navigation_after(
-        Some(NavTarget::Html("<!doctype html><title>prefix</title>\0<p>suffix</p>".to_owned())),
+        Some(NavTarget::Html(
+            "<!doctype html><title>prefix</title>\0<p>suffix</p>".to_owned(),
+        )),
         None,
     )
 }
@@ -63,7 +65,7 @@ fn later_url_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
     first_navigation_after(None, Some(LaterNulCase::Url))
 }
 
-/// ExecuteScript must refuse truncation before the native COM call.
+/// `ExecuteScript` must refuse truncation before the native COM call.
 #[test]
 #[ignore = "requires a claimed Windows WebView2 native slot"]
 fn later_eval_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
@@ -93,10 +95,12 @@ fn later_nul_defect(
         LaterNulCase::Eval => engine.eval(id, bad_script),
     };
     let correct = match (case, &rejected) {
-        (LaterNulCase::Html | LaterNulCase::Url, Err(WvError::Navigate(reason))) =>
-            reason == "navigation contains a NUL character; remove it before loading",
-        (LaterNulCase::Eval, Err(WvError::Script(reason))) =>
-            reason == "script contains a NUL character; remove it before evaluation",
+        (LaterNulCase::Html | LaterNulCase::Url, Err(WvError::Navigate(reason))) => {
+            reason == "navigation contains a NUL character; remove it before loading"
+        }
+        (LaterNulCase::Eval, Err(WvError::Script(reason))) => {
+            reason == "script contains a NUL character; remove it before evaluation"
+        }
         _ => false,
     };
 
