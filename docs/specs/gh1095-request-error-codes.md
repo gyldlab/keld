@@ -1,16 +1,29 @@
 # Spec: request error codes split by dispatch proof (KEL-142 §7 revision)
 
-Status: draft — **revision r2, pending fresh owner approval.** The owner approved
-the content at `d1801f97`. r2 changes only the two items in "Revision r2" below.
+Status: **revision r3 draft amendment (GH-1132), pending exact-content owner approval**.
+Revision r2 was approved at `60280baa` and merged in PR #1096
+(`f19c8847`); the r3 correction below is **not yet approved**.
 Linear: GH-1095 (#517; tracker of record; linked from KEL-143) · Revises: KEL-142 §7 ·
-Owner: repository owner · Updated: 2026-10-23
+Owner: repository owner · Updated: 2026-10-24
 
-Code citations are at `origin/main` `516644b0`. Evidence for the current
-behaviour comes from the never-merge experiment PR #1082 (issue #1081). This
-draft authorizes no production change. Implementation starts only after the
-exact content is approved.
+Historical code citations are at `origin/main` `516644b0`. Evidence for the
+current behaviour comes from the never-merge experiment PR #1082 (issue #1081).
+The new retry-safety correction changes only the **app guidance and test plan**.
+No production change is authorized by this draft.
 
-## Revision r2 (2026-10-23, docs only; needs a new owner approval)
+## Revision r3 (GH-1132; 2026-10-24; requires exact-content approval)
+
+Adversarial review after the r2 merge found that §4.4(b) made a **negative status
+snapshot** an independent reason to resend an Outcome Unknown operation. A
+handler can schedule a side effect, reject with `KELD-API-001`, and leave its
+work active. The app then sees "no effect yet", retries, and both operations
+commit. A status query is safe only if it also gives enforceable proof that the
+earlier operation **cannot commit later**. r3 removes status-only retry
+authority; the safe paths and their negative control are in §4.4 and AT-RS.
+The original error-code classifications, wire format, and r2 navigation/error
+shape rules are unchanged.
+
+## Revision r2 (2026-10-23, docs only; approved at `60280baa`)
 
 The implementation review of PR #1105 found two defects in the approved
 content. Owner decision 3 authorized drafting this revision.
@@ -59,7 +72,9 @@ app resend are in §4.4:
 - only WV-012 or API-002 permits one *automatic* resend of an action that is
   not idempotent;
 - WV-011 is never resent automatically, whatever its detail says;
-- WV-013 and API-001 may be resent only under §4.4 (a) or (b).
+- WV-013 and API-001 may be resent only with the §4.4 durable duplicate
+  suppression or authoritative no-future-commit proof. An absent status
+  snapshot alone is not proof.
 
 The app makes every resend; Keld makes none.
 
@@ -192,6 +207,16 @@ The design deviates from no architecture section.
     `window.keld.invoke` rejection is an `Error` with an own, enumerable,
     string `code` property. Its `message` always starts with
     `code + ": "` under the §4.9 prefix rule.
+14. **An Unknown outcome never becomes retryable through a negative status
+    snapshot alone (GH-1132).** For `KELD-WV-013` and `KELD-API-001`, a
+    status check that reports "not committed yet" does not authorize a
+    non-idempotent resend while the earlier effect could still commit. The app
+    must either ensure both attempts share atomic durable duplicate
+    suppression, or prove that the original attempt is permanently unable to
+    commit. AT-RS (§7) exercises the API-001 late-commit arm in portable Bun.
+    The WV-013 arm is **pending hosted macOS WebView acceptance**, owned by
+    GH-1095 T1 (native host harness) with T3 (keld-wv renderer bridge). No
+    portable Bun result is evidence of a page receiving WV-013.
 
 ## 4. Design
 
@@ -430,9 +455,9 @@ prove "not sent".
 |---|---|
 | WV-011 | **Never resend automatically**, whatever the detail. A new invoke made from a later user action is a new request, not a resend. The detail helps a developer diagnose the refusal; code MUST NOT branch on it. Until the §4.7 document-scoped result lands (T3), WV-011 proves "never sent" only for the document that issued the call (F10). |
 | WV-012 | **One resend** after the first (startup) or successor Bun generation is ready (see the rules below). |
-| WV-013 | **Never resend automatically**, unless it is made safe in one of the two ways below. |
+| WV-013 | **Never resend automatically**, unless the app enforces durable duplicate suppression or proves that the original attempt can never commit (§4.4). A negative status snapshot alone never permits resend. |
 | API-002 | **No app code ran.** Fix the registration order so the error cannot recur, then the page MAY resend once. |
-| API-001 | Same as WV-013: the call may have run. |
+| API-001 | Same as WV-013: the handler may have started effects that outlive its error; an absent status record is not proof of permanent non-execution. |
 
 WV-012 resend rules:
 
@@ -452,19 +477,39 @@ WV-012 resend rules:
   not resent again. The limit is at most one automatic resend per logical
   action.
 
-WV-013 can be made safe to resend in one of two ways:
+An Outcome Unknown request (`KELD-WV-013` or `KELD-API-001`) is safe to
+resend **only if the app establishes at least one of these conditions**:
 
-- **(a) An app-supplied idempotency key.** The page puts the key (for example
-  `crypto.randomUUID()` per user action) in its own payload and keeps it across
-  the resend. The Bun handler records `(key, result)` in the same durable
-  transaction as the effect, returns the stored result for a repeated key, and
-  passes the key on to external APIs.
-- **(b) An app-defined status check.** The app's own handler reads that durable
-  record and confirms the effect did not happen.
+- **(a) Atomic, durable duplicate suppression.** The page supplies a stable
+  idempotency key (for example `crypto.randomUUID()` per *logical action*) and
+  preserves it across attempts. The handler must atomically claim that key and
+  record its effect/result in the same durable transaction, or use a protocol
+  that provides an equivalent atomic guarantee. A second attempt with the same
+  key never performs the effect again; it waits for or returns the recorded
+  outcome. An external side effect also needs deduplication by the receiving
+  service using that key, or a separately proven transactional protocol.
+  Merely recording the key before/after a nontransactional external call is
+  **not** an at-most-once guarantee.
+- **(b) Authoritative no-future-commit proof.** Before resending, the app must
+  prove that the preceding attempt is permanently unable to commit, including
+  any spawned tasks, in-flight external calls, and predecessor generations.
+  An acknowledged cancellation with an enforceable execution fence is one
+  possible app-specific proof. A link closure, an error terminal, or an
+  app-defined status query that finds no durable effect **does not** establish
+  this condition on its own.
 
-An in-memory map dies with the crashed generation and makes neither safe. Keld
-ships no key store, dedup helper or status API (§4.1). Keld never reads, stores
-or forwards the key.
+**Unsafe former rule (GH-1132):** a status handler reads an empty record while
+the first handler's deferred effect is still running, reports "not executed",
+and authorizes a second attempt. Both can later commit. A status query is
+useful for diagnostics/reconciliation, but it cannot be a stand-alone resend
+permit without (a) or (b). If neither proof exists, the app must surface the
+Unknown outcome and avoid the resend; later user action does not make replay
+of that same logical operation safe.
+
+An in-memory map dies with a crashed generation, and an isolated status read
+can race a late commit. Keld ships no key store, dedup helper or status API
+(§4.1). It carries the app's opaque payload but does not interpret, store, or
+manage the app's idempotency key.
 
 API-002 guidance: register every `channels.handle` handler synchronously at
 module top level, **before** the first `app.whenReady()` and before any `fs` or
@@ -785,9 +830,9 @@ created by another worker; no number exists yet. It covers:
   - the follow-up fix to the `transport.ts:2571-2572` comment, matching Q3 and
     the AT-B3 verdict;
   - AT-API2a's decode-failure arm (S12), which no current test covers.
-- [ ] T5: developer guidance for §4.4: the idempotency pattern and registering
-  before `whenReady`. The X12-style example app comes only when a consumer
-  needs it.
+- [ ] T5: developer guidance for §4.4: the atomic idempotency pattern, the
+  GH-1132 ban on status-only retries, and registering before `whenReady`.
+  The X12-style example app comes only when a consumer needs it.
 
 T2–T4 are independent once T1 lands. WV-012 does not wait for the restart
 notification (Q1, [#1098](https://github.com/gyldlab/keld/issues/1098)).
@@ -818,6 +863,7 @@ Every hosted arm prints its raw census with `--success-output immediate`.
 | AT-API2a | 5 | S11–S14 | `bun test` in `@keld/api`, macOS + Linux + Windows CI | deterministic | missing → API-002, census 0; late (call, then register, then call) → API-002 then reply, census 1; unsubscribed → API-002; handler throws after effect → API-001, census 1; decode failure → API-001, census 0; oversize → API-001, census 1 | mutation: move the no-handler check after `handler(request)` → the census for the API-002 case becomes 1 and the test fails; a throwing handler never yields API-002 |
 | AT-API2b | 5, 8 | S11 across restart | hosted macOS | 10 × arms {inside `whenReady`, before `whenReady`} | inside: at least one post-restart API-002 with G2 census 0, then one resend → census 1; before: 0 API-002 across all N | the inside arm reproduces the window (round-1 E8 hit it 10/10 under API-001) |
 | AT-11 | 6 | S1, S2, S3b, S4–S7 (and S3a: no terminal) | macOS unit (keld-wv + keld-core) | deterministic | each reason → WV-011 and 0 write calls; each S3a reason → no terminal and no dispatch | mutation: emit WV-011 from S9 → fails |
+| AT-RS (GH-1132) | 14; §4.4 | Unknown outcome with an unfinished effect | portable Bun app-level fixture (real `resolveEchoCall`; **API-001 only**); **WV-013 pending hosted macOS** under GH-1095 T1 native host harness + T3 keld-wv; durable-store integration pending its own owner | portable: one API-001 failure plus controls; WV-013 and durability arms remain pending | (a) handler schedules a deferred effect then throws; Bun answers API-001, status query reads "not committed yet", attempted status-only resend is **refused** (or uses the same durable idempotency claim); when the first deferred effect is released, committed-effect count ≤ 1. (b) **PENDING hosted Mac, not run by Bun:** page receives WV-013 while first handler is held before commit; status is absent; a retry is likewise forbidden without proof. Positive: two attempts with the same durable claim result in one effect and one logical result, even if the first finishes late. A running-model reproduction of the old unsafe rule may observe 2 commits, which is evidence of the vulnerability, **not** a passing safe-retry test. | Mutation/negative control: replace the fence/atomic claim with a plain status=absent guard, then release the original after the second begins → 2 committed effects, so the at-most-once assertion fails. Control with no resend → 1 effect; a returned API-001 by itself never cancels spawned work. The portable test proves neither WV-013 page delivery nor persistence across process death. GH-1095 T1/T3 must implement and register the hosted WV-013 arm with its own real WebView/page/error receipt and first-handler-late-commit negative control; the durable-store owner must separately integrate a persisted-at-most-once test. |
 | AT-B1 | 9 | `#throwIfTerminal` | `@keld/kipc` unit, 3 OSes | deterministic | link already ended → `call()` rejects IPC-022; host fixture read 0 frames | remove `#throwIfTerminal` → frame posted (the check is the proof, but the code stays Unknown) |
 | AT-B2 | 9 | pending at close | `@keld/kipc` unit, 3 OSes | deterministic | pending, then host close → IPC-022; host read 1 frame; same code as AT-B1 | host writes the REPLY before closing → the call resolves with the reply, not IPC-022 (the close produces 022, not the harness) |
 | AT-B3 | 9 | written before Quit, pending at close | keld-core unit | deterministic | host census for that CALL recorded; only a census of 0 in every arm could reverse Q3's Unknown | written after Quit → IPC-024, census 0 (existing `guarded_router_and_quit.rs`) |
