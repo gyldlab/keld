@@ -97,26 +97,47 @@ fn shipping_windows_keld_dev_delegates_and_cleans_the_orderly_stage() {
     assert_eq!(dev_stage_count(&fixture.project), 0, "orderly stage leaked");
 }
 
-/// AC3/AC23: `keld dev` stages a schema-2 project and the host's own refusal answers
-/// it, in every build, with the stage cleaned by the same sentinel (GH-1188 D2, D15).
+/// AC19 product admission: real CLI delegation reaches zero-window Ready and
+/// the unchanged attempt-Job gate removes its stage only after ordered Quit.
 #[test]
-fn shipping_windows_keld_dev_reports_the_host_refusal_of_a_facade_stage() {
+fn shipping_windows_keld_dev_runs_a_facade_and_retires_the_stage() {
     let fixture = ProductFixture::schema_two();
+    let control = TcpListener::bind(("127.0.0.1", 0)).expect("facade control");
     let helper = prepare_keld_dev_helper(&fixture);
     let mut cli = Command::new(&helper)
-        .arg("keld_dev_windows_helper")
-        .arg("--exact")
-        .arg("--nocapture")
+        .args(["keld_dev_windows_helper", "--exact", "--nocapture"])
         .env("KELD_T4_HELPER_PROJECT", &fixture.project)
+        .env(
+            "KELD_T1B_CONTROL",
+            control
+                .local_addr()
+                .expect("control address")
+                .port()
+                .to_string(),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("launch facade keld dev helper");
-    let status = wait_child(&mut cli, Instant::now() + PRODUCT_DEADLINE);
+        .expect("facade keld dev");
+    let host_pid =
+        wait_for_child_process(&mut cli, "keld-host.exe", Instant::now() + PRODUCT_DEADLINE);
+    let host = open_process_for_wait(host_pid, false);
+    let (mut reader, mut writer, bun_pid, _) = accept_ready_generation(&control, &mut cli);
+    let bun = open_process_for_wait(bun_pid, false);
+    assert_eq!(crate::support::window::app_top_level_windows(host_pid), []);
+    assert_eq!(dev_stage_count(&fixture.project), 1);
+    writer.write_all(b"QUIT\n").expect("facade Quit");
+    writer.flush().expect("flush facade Quit");
+    assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
+    assert_eq!(read_control_line(&mut reader), "LINK_EOF");
+    let status = wait_child(&mut cli, Instant::now() + ui_end_kill_switch());
     let output = crate::support::process::exited_child_output(&mut cli);
-    assert!(!status.success(), "a refused boot became success: {output}");
-    assert!(output.contains("KELD-CORE-034"), "{output}");
-    assert!(!output.contains("KELD-CLI-047"), "{output}");
+    assert!(
+        status.success(),
+        "facade product release failed: {status}\n{output}"
+    );
+    assert_process_signaled(&host, "delegated facade Host");
+    assert_process_signaled(&bun, "delegated facade Bun");
     wait_for_dev_stage_count(&fixture.project, 0, Instant::now() + PRODUCT_DEADLINE);
 }
 
@@ -142,7 +163,6 @@ fn shipping_windows_keld_dev_cleans_a_facade_stage_after_the_attempt_job_empties
             .arg("--nocapture")
             .env("KELD_T4_HELPER_PROJECT", &fixture.project)
             .env("KELD_T1B_CONTROL", control_port.to_string())
-            .env("KELD_TEST_WINDOWS_ADMIT_FACADE_BOOT", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if stalled {
