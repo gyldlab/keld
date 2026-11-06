@@ -1,10 +1,5 @@
 /** Internal decode/apply/dispatch owner; not an application export (GH-531 §4.d). */
-import {
-  linkError,
-  stateApply,
-  stateSlots,
-  type WorkerLink,
-} from "../../kipc/src/transport.ts";
+import { linkError, stateApply, stateSlots, type WorkerLink } from "@keld/kipc";
 
 /** Framework-owned facts; each production source requires its own heap/alias review. */
 export interface MirrorSource<Fact> {

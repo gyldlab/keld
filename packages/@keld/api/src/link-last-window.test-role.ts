@@ -1,7 +1,7 @@
 /** Real LifecycleLink with a controlled socket Worker: authenticated applier vs dispatch. */
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
-import * as transport from "../../kipc/src/transport.ts";
+import * as transport from "@keld/kipc";
 
 const appliers = new Map<number, (payload: Uint8Array) => void>();
 const listeners = new Map<number, (payload: Uint8Array) => void>();
@@ -21,7 +21,7 @@ const worker = {
   },
   close() {},
 };
-mock.module("../../kipc/src/transport.ts", () => ({
+mock.module("@keld/kipc", () => ({
   ...transport,
   WorkerLink: { open: async () => worker },
 }));
