@@ -15,17 +15,11 @@ separate. GH563 owns the menu adapter.
 ## 2. Spec refs
 
 - [Owning issue GH-451](https://github.com/gyldlab/keld/issues/451) and its latest public owner decisions.
-- [Architecture
-05](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/05-webview-and-native.md):
-native ownership, engine boundary and capability separation.
-- [Current
-facade](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/packages/@keld/electron/src/app.ts).
-- [Close
-owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/gh531-window-registry-close-state-machine.md).
-- [Lifecycle
-owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/crates/keld-core/src/lifecycle.rs).
-- [Electron browser state
-machine](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/browser.cc).
+- [Architecture 05](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/05-webview-and-native.md): native ownership, engine boundary and capability separation.
+- [Current facade](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/packages/@keld/electron/src/app.ts).
+- [Close owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/gh531-window-registry-close-state-machine.md).
+- [Lifecycle owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/crates/keld-core/src/lifecycle.rs).
+- [Electron browser state machine](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/browser.cc).
 - [Observed quit/veto sequence](https://github.com/gyldlab/keld/issues/451#issuecomment-6381751800).
 - [Scoped D2 decision, preserved](https://github.com/gyldlab/keld/issues/451#issuecomment-6561125711).
 
@@ -89,6 +83,24 @@ attempt and the caller does not park waiting for native close/save work.
 
 Independent negative control: Await host shutdown on the calling JS stack or create a second overlapping sweep.
 
+### AC8
+
+Given a closed listener creates a replacement window or a create reservation is still Opening, when the original sweep has
+received all destruction receipts, then the app cannot enter WillQuit or Terminal until the current authoritative registry has no
+live or Opening entry.
+
+Independent negative control: Treat an exhausted sweep snapshot as an empty current registry; the replacement-window survival
+counter must fail.
+
+### AC9
+
+Given a zero-window app.quit immediately followed by BrowserWindow creation, when the existing host owner serializes admission,
+then an accepted Create prevents premature terminal quit, or a committed terminal fence rejects Create before a native window
+exists.
+
+Independent negative control: Use a stale zero-window snapshot and admit Create after terminal commitment; assert that no orphan
+native window can survive.
+
 ## 4. Design
 
 ### 4.1 One transaction owner
@@ -96,7 +108,9 @@ Independent negative control: Await host shutdown on the calling JS stack or cre
 Proposed phases are Idle, BeforeQuit, Closing, WillQuit and Terminal. GH531 remains the sole window-close owner. The app
 coordinator stores only the active attempt and outstanding registry identities; it does not invent another window registry or a
 second close timer. Veto cancels active quitting immediately, while already selected sweep entries still receive their close
-request.
+request. Exhausting that snapshot is never proof that the current registry is empty. Re-read the authoritative GH531 registry
+after callbacks and before WillQuit/terminal admission, counting Opening reservations and replacement windows. Reuse its current
+terminal fence so accepted Create and Quit have one ordered owner; do not add a parallel close/quit registry.
 
 ### 4.2 Source and ordering
 
@@ -147,7 +161,8 @@ scoped D2 behavior until the joint contract is approved.
 ### T2
 
 - [ ] Implement one facade-to-host quit transaction together with the GH531 per-window sweep and zero-window will-quit branch;
-include every veto negative control.
+include every veto negative control. Include closed-listener replacement, Opening and same-turn zero-window Quit/Create controls
+against the current registry.
 
 ### T3
 
@@ -194,6 +209,8 @@ No numerical product performance claim is made without a reproducible pinned wor
 1. Approve the full API return/exception migration against the scoped D2 decision.
 2. Select the qualified AppKit terminate strategy using GH443 and approve the KEL-96 active-quitting amendment.
 3. Approve the single lifecycle payload allocation and exact role-loss disposition before enabling full quit.
+4. Reconcile late-created windows and the existing terminal/Create fence with the pinned Electron oracle; no stale empty snapshot
+may authorize exit.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.

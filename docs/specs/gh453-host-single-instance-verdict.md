@@ -6,8 +6,9 @@ Publication: grouped future implementation pack; docs only, do not merge.
 
 ## 1. Goal & non-goals
 
-Provide synchronous requestSingleInstanceLock and hasSingleInstanceLock from a host-held cooperative lock and an immutable session
-fact, while still launching the losing Bun role for version/help/export paths.
+Provide synchronous requestSingleInstanceLock and hasSingleInstanceLock from a host-held cooperative lock and an immutable initial
+election fact, while still launching the losing Bun role for version/help/export paths. Current lease state after release is a
+separate host-owned fact.
 
 Non-goals: GH524 owns second-instance delivery, additionalData transport and releaseSingleInstanceLock. Protocol registration,
 profile leasing and Windows/Linux lock qualification are separate.
@@ -15,15 +16,10 @@ profile leasing and Windows/Linux lock qualification are separate.
 ## 2. Spec refs
 
 - [Owning issue GH-453](https://github.com/gyldlab/keld/issues/453) and its latest public owner decisions.
-- [Architecture
-05](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/05-webview-and-native.md):
-native ownership, engine boundary and capability separation.
-- [Current app
-facade](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/packages/@keld/electron/src/app.ts).
-- [Boot contract
-owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/crates/keld-core/src/app_session/boot_contract.rs).
-- [Session facts
-draft](https://github.com/gyldlab/keld/blob/c2dd2ff53767adf20dc0e91d276310095fe31acf/docs/specs/gh452-app-session-facts.md).
+- [Architecture 05](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/05-webview-and-native.md): native ownership, engine boundary and capability separation.
+- [Current app facade](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/packages/@keld/electron/src/app.ts).
+- [Boot contract owner](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/crates/keld-core/src/app_session/boot_contract.rs).
+- [Session facts draft](https://github.com/gyldlab/keld/blob/c2dd2ff53767adf20dc0e91d276310095fe31acf/docs/specs/gh452-app-session-facts.md).
 - [Private-lock owner correction](https://github.com/gyldlab/keld/issues/453#issuecomment-6564005869).
 - [Reported kernel-lock observations](https://github.com/gyldlab/keld/issues/453#issuecomment-6560426753).
 - [Electron lock contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/app.md).
@@ -104,9 +100,11 @@ election domain.
 
 ### 4.3 Verdict delivery
 
-Capture once before Bun spawn and deliver through GH452's existing session-facts contract. Request and query read that fact
-synchronously; no blocking RPC or local allocation. Contention is a normal false verdict, while permission/type/identity failures
-are typed startup errors, not false success. The losing host still starts the selected app.
+Capture the initial election verdict once before Bun spawn and deliver it through GH452. Before any release, request/query can
+synchronously read that initial state. GH524's future release requires an explicit joint extension for host-confirmed current
+lease state; hasSingleInstanceLock must never report the original true verdict after confirmed release. Reacquisition cannot be
+inferred from the captured initial verdict. Contention is false, while permission/type/identity failures are typed startup errors.
+The losing host still starts the selected app.
 
 ### 4.4 Trust limitation
 
@@ -190,6 +188,8 @@ No numerical product performance claim is made without a reproducible pinned wor
 1. Approve the compiled declaration and immutable session-facts representation with their owners.
 2. Confirm the current private-lock implementation matches the published correction and qualify its descriptor lifecycle.
 3. Keep Windows/Linux and hostile same-user replacement outside claimed acceptance until separately specified.
+4. Jointly approve GH524 release/current-state mirror semantics, synchronous API behavior and post-release reacquisition. Until
+that extension qualifies, release/reacquire stay typed unsupported; do not return stale initial success.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
 acceptance gap, not evidence of a completed feature.
