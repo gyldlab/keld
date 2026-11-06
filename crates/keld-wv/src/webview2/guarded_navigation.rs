@@ -178,6 +178,14 @@ fn dispatch_initial(
     navigate: impl FnOnce(&HSTRING) -> windows::core::Result<()>,
 ) -> Result<(), WvError> {
     let (NavTarget::Html(text) | NavTarget::Url(text)) = target;
+    // Both WebView2 methods take LPCWSTR: the binding passes a pointer, not
+    // HSTRING's length. An interior or trailing NUL cannot be submitted intact.
+    // https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2#navigatetostring
+    if text.as_bytes().contains(&0) {
+        return Err(WvError::Navigate(
+            "initial navigation contains a NUL character; remove it before loading".to_owned(),
+        ));
+    }
     let argument = HSTRING::from(text.as_str());
     let result = match target {
         NavTarget::Html(_) => navigate_to_string(&argument),
