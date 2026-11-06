@@ -11,8 +11,9 @@ Documented event promises, recorded event sequences and Keld authority decisions
 oracles. The result must preserve that distinction while exposing missing and divergent behavior.
 
 This slice owns cells and fixtures. It does not implement WebContents navigation, popup policy,
-evaluation, navigation-generation replies or render-process-gone. GH459/GH538 and their adopted
-policy own navigation; GH462 owns evaluation; GH542 and GH488 retain their separate cells.
+evaluation, navigation-generation replies or render-process-gone. GH459/GH538 own the facade and event vocabulary, while GH460 owns navigation policy and
+GH461 owns popup policy under KEL-79. GH462 owns evaluation; GH542 and GH488 retain
+separate cells.
 
 ## 2. Spec refs
 
@@ -23,7 +24,13 @@ policy own navigation; GH462 owns evaluation; GH542 and GH488 retain their separ
 - [KEL74](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/kel74-compat-evidence-schema.md) owns records and scoring.
 - [Architecture 03](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/03-security.md) and [05](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/05-webview-and-native.md) govern authority and native observations.
 - [GH494 packaging/comparison](gh494-two-arm-oracle-harness.md) and [GH495 recorder](gh495-lifecycle-recorder-replay.md) are draft prerequisites, not available execution evidence.
-- [GH538](https://github.com/gyldlab/keld/issues/538), [GH459](https://github.com/gyldlab/keld/issues/459), [GH462](https://github.com/gyldlab/keld/issues/462) and [GH546 policy decision](https://github.com/gyldlab/keld/issues/546) remain their owners.
+- [GH538](https://github.com/gyldlab/keld/issues/538) owns the event vocabulary;
+  [GH459](https://github.com/gyldlab/keld/issues/459) owns the WebContents facade;
+  [GH462](https://github.com/gyldlab/keld/issues/462) owns evaluation.
+- [GH460](https://github.com/gyldlab/keld/issues/460) owns guard-first navigation policy;
+  [GH461](https://github.com/gyldlab/keld/issues/461) owns popup handler policy under KEL-79.
+  [GH546](https://github.com/gyldlab/keld/issues/546) instead concerns concurrent IPC invoke
+  credits under KEL-80 and does not own a navigation or popup decision.
 
 No production boundary change. Current source/doc inspection supplies design inputs only; no
 golden, native execution, conformance record or compatibility percentage is created here.
@@ -130,9 +137,11 @@ The negative control changes a hook to allow a guard-denied attempt. Assert the 
 is absent using the owner-approved native witness, then prove an authorized follow-up succeeds.
 Do not satisfy the test merely by inspecting an error string or the guard function's source.
 
-GH546 may hold competing policy decisions. This spec consumes whichever exact version is
-adopted by its owner; it does not resolve that conflict or change reconsultation/order semantics.
-If the policy's approval is unresolved, the dependent cell remains blocked and cannot be green.
+GH460 navigation and GH461 popup decisions are owned under KEL-79; this spec consumes only
+their exact approved revisions and any governing KEL-102 permission-schema amendment. GH546's
+IPC credit-window ownership is unrelated and cannot settle either policy. If either policy or
+its manifest grant is not approved, the dependent cell remains blocked; no conformance green
+is inferred from a proposed guard decision.
 
 ### 4.5 Platforms, failures and lifecycle
 
