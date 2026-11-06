@@ -30,6 +30,9 @@ mod console;
 #[path = "no_flag/windows/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "no_flag/windows/facade_ready.rs"]
+mod facade_ready;
+
 #[path = "no_flag/windows/recovery.rs"]
 mod recovery;
 
@@ -110,6 +113,16 @@ fn ui_end_kill_switch() -> Duration {
 /// alone sum past it.
 fn startup_kill_switch() -> Duration {
     keld_wv::webview2::WEBVIEW2_STARTUP_BOUND + PRODUCT_DEADLINE
+}
+
+/// Kill switch over a host exit after a held initial navigation, measured from the
+/// renderer's first connection. That connection proves the launch phases of
+/// `WEBVIEW2_STARTUP_BOUND` are done, so what remains is the initial-navigation
+/// deadline (`keld_wv::INITIAL_MILESTONE_DEADLINE`) and then the UI end
+/// ([`ui_end_kill_switch`]); the latter's `PRODUCT_DEADLINE` also covers the
+/// untimed tail before that deadline is armed, as in [`startup_kill_switch`].
+fn stalled_navigation_end_kill_switch() -> Duration {
+    keld_wv::INITIAL_MILESTONE_DEADLINE + ui_end_kill_switch()
 }
 
 #[test]

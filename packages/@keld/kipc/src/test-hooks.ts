@@ -7,7 +7,11 @@
  * there is nothing here for an app to reach. The hooks only manipulate the
  * role's own transport and grant no authority.
  */
-import type { WorkerLink, WorkerLinkOptions, WorkerLinkTestHooks } from "./transport.ts";
+import type {
+  WorkerLink,
+  WorkerLinkOptions,
+  WorkerLinkTestHooks,
+} from "./transport.ts";
 // Evaluates the transport, whose static block registers the seam.
 import "./transport.ts";
 
@@ -34,7 +38,10 @@ export function openWorkerLinkForTest(
     const error = new Error(
       "KELD-IPC-005: this build of the kipc transport has no test hooks (a release build strips them)",
     );
-    Object.defineProperty(error, "code", { value: "KELD-IPC-005", enumerable: true });
+    Object.defineProperty(error, "code", {
+      value: "KELD-IPC-005",
+      enumerable: true,
+    });
     return Promise.reject(error);
   }
   return seam(options, hooks);

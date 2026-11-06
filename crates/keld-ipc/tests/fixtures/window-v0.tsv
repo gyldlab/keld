@@ -1,0 +1,40 @@
+# GH-531 section 4.a/b payload vectors. Literal postcard oracle replayed by Rust.
+# The Bun consumer must replay this same file before the complete T1 can land.
+# id	family	payload_hex
+reference-distinct-identities	reference	07ac02
+reference-integer-maxima	reference	ffffffff0fffffffffffffffffff01
+rect-signed-coordinates	rect	05088005e003
+rect-integer-boundaries	rect	ffffffff0ffeffffff0fffffffff0f00
+state-independent-flags	state	05088005e003010001
+state-focused-only	state	05088005e003010000
+state-maximized-only	state	05088005e003000100
+state-full-screen-only	state	05088005e003000001
+event-created	event	0007ac0205088005e00301000100
+event-created-pending-close	event	0007ac0205088005e00301000101ac02
+event-bounds	event	0107ac0205088005e003
+event-focus	event	0207ac0201
+event-maximized	event	0307ac0200
+event-full-screen	event	0407ac0201
+event-close-requested	event	0507ac02ac02
+event-destroyed	event	0607ac02
+request-create-positioned	request	008005e00301050108
+request-create-no-position	request	0000000000
+request-create-maxima	request	00ffffffff0fffffffff0f01ffffffff0f01feffffff0f
+request-maximized	request	0107ac0201
+request-full-screen	request	0207ac0200
+request-close	request	0307ac02
+request-close-allow	request	0407ac02ac0200
+request-close-veto	request	0407ac02ac0201
+request-destroy	request	0507ac02
+response-created	response	0007ac02
+response-accepted	response	01
+response-close-requested	response	02ac02
+response-merged	response	03ac02
+response-already-closing	response	04
+response-reply-applied	response	05
+response-reply-stale	response	06
+response-destroyed	response	07
+response-adopted	response	0807ac02
+response-close-sequence-maximum	response	02ffffffffffffffffff01
+verdict-allow	verdict	00
+verdict-veto	verdict	01

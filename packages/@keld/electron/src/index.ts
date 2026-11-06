@@ -11,6 +11,7 @@
  */
 
 import { app } from "./app";
+import { BrowserWindow } from "./browser-window";
 
 /** Reported `process.versions.electron`. Keld 0.0.1, not an Electron release. */
 export const ELECTRON_VERSION_SHIM = "0.0.1";
@@ -25,8 +26,16 @@ Object.defineProperty(proc, "type", {
   writable: false,
 });
 
-export { app };
+export { app, BrowserWindow };
+export type {
+  BrowserWindowEventMap,
+  BrowserWindowOptions,
+  CloseEvent,
+  WebContents,
+  WebContentsEventMap,
+  WebPreferences,
+} from "./browser-window";
 export { isCallError, type KeldCallError } from "./link";
 
-const electron = { app };
+const electron = { app, BrowserWindow };
 export default electron;

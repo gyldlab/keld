@@ -401,8 +401,15 @@ fn run_joint() {
     let (events, event_rx) = mpsc::channel();
     let event_handle = handle.clone();
     let event_commands = commands.clone();
-    let coordinator =
-        thread::spawn(move || coordinate_window_events(&event_rx, &event_handle, &event_commands));
+    let coordinator = thread::spawn(move || {
+        coordinate_window_events(
+            &event_rx,
+            &event_handle,
+            &event_commands,
+            super::AppReadyTrigger::NavigationReady,
+            |_| Ok(()),
+        )
+    });
     let (requests, observed_requests) = mpsc::sync_channel(1);
     let (forwarded, dispatch_requests) = mpsc::sync_channel(1);
     let (outcomes, renderer_outcomes) = mpsc::channel();

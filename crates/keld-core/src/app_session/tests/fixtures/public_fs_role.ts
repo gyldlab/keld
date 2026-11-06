@@ -1,7 +1,11 @@
 /** KEL-140 private test caller; framework imports expose only the public API. */
 // Fixed fd0/fd1 calls control this private fixture; target-path I/O uses public fs.
 import { readSync, writeSync } from "node:fs";
-import { app, fs, isCallError } from "../../../../../../packages/@keld/api/src/index.ts";
+import {
+  app,
+  fs,
+  isCallError,
+} from "../../../../../../packages/@keld/api/src/index.ts";
 
 function report(key: string, value: string | number | boolean): void {
   console.log(`KELD_WL ${key}=${value}`);
@@ -22,18 +26,31 @@ function readControlLine(): unknown {
 
 const ready = app.whenReady();
 const scenario = process.argv[2] ?? "retirement";
-if (scenario !== "retirement" && scenario !== "reply-wins" && scenario !== "healthy" &&
-    scenario !== "ring-fit" && scenario !== "ring-over" && scenario !== "ring-occupied") {
+if (
+  scenario !== "retirement" &&
+  scenario !== "reply-wins" &&
+  scenario !== "healthy" &&
+  scenario !== "ring-fit" &&
+  scenario !== "ring-over" &&
+  scenario !== "ring-occupied"
+) {
   throw new Error("invalid private public-FS fixture scenario");
 }
 const occupied = scenario === "ring-occupied";
 // A synchronous control read must not block Worker creation or HELLO. Root has
 // authenticated and supplied the line before it publishes this real Ready.
 if (occupied) await ready;
-const control: unknown = occupied ? readControlLine() : JSON.parse(await Bun.stdin.text());
-if (typeof control !== "object" || control === null ||
-    !("target" in control) || typeof control.target !== "string" ||
-    !("lateTarget" in control) || typeof control.lateTarget !== "string") {
+const control: unknown = occupied
+  ? readControlLine()
+  : JSON.parse(await Bun.stdin.text());
+if (
+  typeof control !== "object" ||
+  control === null ||
+  !("target" in control) ||
+  typeof control.target !== "string" ||
+  !("lateTarget" in control) ||
+  typeof control.lateTarget !== "string"
+) {
   throw new Error("invalid private public-FS fixture control");
 }
 await ready;
@@ -42,11 +59,14 @@ let settlements = 0;
 let retainedEvents = 0;
 let eventBeforeRelease = false;
 let parkReleased = false;
-const unsubscribe = occupied ? app.onLastWindowClosed(() => {
-  retainedEvents += 1;
-  eventBeforeRelease ||= !parkReleased;
-}) : undefined;
-const ringRead = scenario === "ring-fit" || scenario === "ring-over" || occupied;
+const unsubscribe = occupied
+  ? app.onLastWindowClosed(() => {
+      retainedEvents += 1;
+      eventBeforeRelease ||= !parkReleased;
+    })
+  : undefined;
+const ringRead =
+  scenario === "ring-fit" || scenario === "ring-over" || occupied;
 const pending = ringRead
   ? fs.read(control.target)
   : fs.write(control.target, new Uint8Array([116, 50]));
@@ -56,7 +76,9 @@ if (occupied) {
   await new Promise<void>((resolve) => setImmediate(resolve));
   const marker = "KELD_WL park-enter=true\n";
   if (writeSync(1, marker) !== marker.length) {
-    throw new Error("occupied fixture did not publish its complete park marker");
+    throw new Error(
+      "occupied fixture did not publish its complete park marker",
+    );
   }
   // No await separates the marker from this blocking control read. The main
   // realm cannot dispatch the retained event until Root supplies release byte1.
@@ -74,9 +96,13 @@ await pending.then(
   (bytes) => {
     settlements += 1;
     if (ringRead) {
-      if (!(bytes instanceof Uint8Array)) throw new Error("public ring read returned no bytes");
+      if (!(bytes instanceof Uint8Array))
+        throw new Error("public ring read returned no bytes");
       report("read-length", bytes.length);
-      report("read-sha256", new Bun.CryptoHasher("sha256").update(bytes).digest("hex"));
+      report(
+        "read-sha256",
+        new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+      );
     }
     report("call-returned", true);
   },
@@ -102,7 +128,10 @@ if (scenario === "retirement") {
   }
 } else if (scenario === "healthy") {
   const bytes = await fs.read(control.target);
-  report("read-hex", Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""));
+  report(
+    "read-hex",
+    Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  );
   report("read-returned", true);
 }
 report("settlements", settlements);

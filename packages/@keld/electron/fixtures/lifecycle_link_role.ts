@@ -2,7 +2,8 @@
  * Role half of the `LifecycleLink` contract tests in `src/link.test.ts`.
  *
  * A role opens one `WorkerLink` per realm (GH-527 §4.2), so each case runs
- * in its own process: the test binds a Unix host, spawns
+ * in its own process: the test binds a Unix-socket or Windows named-pipe
+ * host, spawns
  * `bun lifecycle_link_role.ts <scenario>` with `KELD_APP_LINK`, drives the
  * host half and asserts the `KELD_LL key=value` lines this file prints. Every
  * wait is on an observable (a frame, a handler, a settled promise); none is a
@@ -10,7 +11,11 @@
  */
 import { writeSync } from "node:fs";
 
-import { isCallError, LifecycleLink, type LifecycleHandler } from "../src/link.ts";
+import {
+  isCallError,
+  LifecycleLink,
+  type LifecycleHandler,
+} from "../src/link.ts";
 
 function report(key: string, value: string | number | boolean): void {
   writeSync(1, `KELD_LL ${key}=${value}\n`);
@@ -18,7 +23,9 @@ function report(key: string, value: string | number | boolean): void {
 
 function codeOf(err: unknown): string {
   if (isCallError(err)) return err.code;
-  return err instanceof Error ? `untyped:${err.message}` : `untyped:${String(err)}`;
+  return err instanceof Error
+    ? `untyped:${err.message}`
+    : `untyped:${String(err)}`;
 }
 
 function reportError(key: string, err: unknown): void {
@@ -30,7 +37,8 @@ function reportError(key: string, err: unknown): void {
 
 function requireLink(): string {
   const link = process.env.KELD_APP_LINK;
-  if (link === undefined || link.length === 0) throw new Error("KELD_APP_LINK is unset");
+  if (link === undefined || link.length === 0)
+    throw new Error("KELD_APP_LINK is unset");
   return link;
 }
 
@@ -62,8 +70,13 @@ function handlers(overrides: Partial<LifecycleHandler> = {}): LifecycleHandler {
   };
 }
 
-async function connect(overrides: Partial<LifecycleHandler> = {}): Promise<LifecycleLink> {
-  const session = await LifecycleLink.connect(requireLink(), handlers(overrides));
+async function connect(
+  overrides: Partial<LifecycleHandler> = {},
+): Promise<LifecycleLink> {
+  const session = await LifecycleLink.connect(
+    requireLink(),
+    handlers(overrides),
+  );
   report("connected", true);
   return session;
 }
@@ -271,6 +284,9 @@ try {
   report("done", true);
   process.exit(0);
 } catch (err) {
-  writeSync(2, `${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`);
+  writeSync(
+    2,
+    `${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+  );
   process.exit(1);
 }

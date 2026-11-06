@@ -1,6 +1,11 @@
 //! Observe the real renderer HTTP request before signaling readiness.
 
 use super::PRODUCT_DEADLINE;
+// The held request is used only by the debug-only supervisor-attempt tests.
+#[cfg(debug_assertions)]
+use super::project::{DARK_BG, PRODUCT_TITLE};
+#[cfg(debug_assertions)]
+use std::{fs, path::Path, process::Child};
 use std::{
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
@@ -275,6 +280,86 @@ fn renderer_beacon_remaining(deadline: Instant, now: Instant) -> Result<Duration
         .checked_duration_since(now)
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| "renderer beacon deadline elapsed before the exact request".to_owned())
+}
+
+/// One renderer subresource connection, accepted and never answered. While it
+/// is held the document's `load` cannot finish, so the initial navigation (which
+/// drives `Ready`) cannot complete and the window cannot become `Ready`. The
+/// listener lives until release, so a request on a later connection waits
+/// unanswered too. Only the debug-only supervisor-attempt tests use it.
+#[cfg(debug_assertions)]
+pub(crate) struct HeldRendererRequest {
+    pub(crate) port: u16,
+    connected: mpsc::Receiver<bool>,
+    release: mpsc::Sender<()>,
+    worker: JoinHandle<()>,
+}
+
+#[cfg(debug_assertions)]
+impl HeldRendererRequest {
+    pub(crate) fn bind() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind held renderer");
+        let port = listener.local_addr().expect("held renderer address").port();
+        let (connected_tx, connected) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let worker = thread::spawn(move || {
+            let accepted = listener.accept();
+            let _ = connected_tx.send(accepted.is_ok());
+            let _ = release_rx.recv();
+            drop((accepted, listener));
+        });
+        Self {
+            port,
+            connected,
+            release,
+            worker,
+        }
+    }
+
+    /// Writes the project's `index.html` with one image on this held port.
+    pub(crate) fn write_index(&self, project: &Path) {
+        fs::write(
+            project.join("index.html"),
+            format!(
+                "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><img src=\"http://127.0.0.1:{}/held.png\">\n",
+                self.port
+            ),
+        )
+        .expect("write held renderer");
+    }
+
+    /// Waits for the renderer's first connection under `PRODUCT_DEADLINE`, and
+    /// fails at once if the host exits first. The connection proves the window
+    /// exists and its first navigation is in flight.
+    pub(crate) fn await_connection(&self, host: &mut Child) {
+        let deadline = Instant::now() + PRODUCT_DEADLINE;
+        loop {
+            match self.connected.recv_timeout(RENDERER_IO_POLL) {
+                Ok(accepted) => {
+                    assert!(accepted, "held renderer accept failed");
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("held renderer worker ended"),
+            }
+            if let Some(status) = host
+                .try_wait()
+                .expect("observe host before held connection")
+            {
+                panic!("host exited before its renderer connected to the held resource: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "renderer did not connect to the held resource"
+            );
+        }
+    }
+
+    /// Answers nothing: closes the held connection and joins the worker.
+    pub(crate) fn release(self) {
+        self.release.send(()).expect("release held renderer");
+        self.worker.join().expect("held renderer worker joins");
+    }
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: Frame payload exceeds MAX_FRAME_LEN
-- fix: Shrink the payload or move large transfers to the bulk plane (shm / keld://).
+- fix: Shrink the payload to at most MAX_FRAME_LEN (16 MiB). The shared-memory and `keld://` bulk planes are future designs, not available transports in the current implementation.
 
 ## KELD-IPC-005
 
@@ -856,6 +856,24 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Two evidence records named the same denominator cell
 - fix: Keep one record per (operation_id, oracle_id).
 
+## KELD-COMPAT-010
+
+- crate: @keld/electron
+- message: BrowserWindow options would escalate renderer authority, or a native window reply did not meet the compatibility contract
+- fix: Keep contextIsolation and webSecurity enabled, Node integration and insecure content disabled, then correct the named native response before retrying.
+
+## KELD-COMPAT-011
+
+- crate: @keld/electron
+- message: An Electron window or its WebContents has already been destroyed
+- fix: Stop using the destroyed window; create a new BrowserWindow after Host Ready.
+
+## KELD-COMPAT-012
+
+- crate: @keld/electron
+- message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
+- fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
 ## KELD-CORE-030
 
 - crate: keld-core
@@ -910,23 +928,82 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The no-flag authenticated app session failed
 - fix: Fix the named dev lease, guardian, app-link, Bun, window, or ordered-cleanup failure and relaunch the staged host.
 
+## KELD-CORE-038
+
+- crate: keld-core
+- message: The window reference is stale, forged, or unavailable for this operation
+- fix: Drop the reference in the 'closed' listener and use a live host-minted window reference admitted by this host.
+
+## KELD-CORE-039
+
+- crate: keld-core
+- message: A host window identity counter is exhausted
+- fix: End this app session and start a new one; never wrap or reuse window identities.
+
+## KELD-CORE-040
+
+- crate: keld-core
+- message: The host window registry is not ready
+- fix: Wait for the admitted facade readiness barrier on a live app session before creating or addressing windows.
+
+## KELD-CORE-041
+
+- crate: keld-core
+- message: Native window or webview construction failed at the reported stage
+- fix: Inspect the host's native error log, correct the reported construction failure, and start a new creation request.
+
+## KELD-CORE-042
+
+- crate: keld-core
+- message: This platform has no admitted native window command implementation
+- fix: Use a host with the qualified window backend; do not emulate native success or widen permissions.
+
+## KELD-CORE-043
+
+- crate: keld-core
+- message: The window belongs to another or retired role instance
+- fix: Subscribe through the current authenticated primary link and use only its replayed host-owned references.
+
 ## KELD-CORE-044
+
+- crate: keld-core
+- message: The application Ready milestone came from the wrong boot kind or was delivered more than once
+- fix: Deliver only the selected boot kind's first Ready milestone; treat duplicate or foreign Ready as a terminal contract failure.
+
+## KELD-CORE-045
+
+- crate: keld-core
+- message: The calling link has not subscribed to host window facts
+- fix: Complete the admitted window subscription on this same live primary link before sending window calls.
+
+## KELD-CORE-046
+
+- crate: keld-core
+- message: One native window has reached its Host-owned limit of 64 outstanding Destroy correlations awaiting physical release
+- fix: Wait for that window's native Released event and its deferred replies, or retire the calling role; do not retry Destroy in a loop while release is outstanding.
+
+## KELD-CORE-047
+
+- crate: keld-core
+- message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
+- fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
+## KELD-CORE-050
 
 - crate: keld-host
 - message: A private keld-host role was invoked outside its contract: malformed arguments, or a role this build does not carry
 - fix: Never launch a private role by hand. `keld dev` launches the Windows cleanup sentinel, the validated no-flag host launches the macOS guardian, and the KEL-135 acceptance harness launches the profile fixtures and probe, each with its exact arguments; build the debug host with the feature a test role needs.
 
-## KELD-CORE-045
+## KELD-CORE-052
 
 - crate: keld-host
 - message: The macOS guardian refused to run outside its validated private dev stage
 - fix: Relaunch through `keld dev`. The guardian runs only from its own executable's owner-private `.keld/dev/<nonce>` stage and refuses a stage argument that names any other directory; do not copy or move the staged host.
 
-## KELD-CORE-046
+## KELD-CORE-053
 
-- crate: keld-host
-- message: The Windows dev-stage cleanup sentinel failed before it released the staged attempt's process family and stage
-- fix: Let the staged host exit, remove the named `.keld/dev/<nonce>` stage by hand if it remains, and relaunch through `keld dev`; the message names the failed step (Job admission, readiness, process-family reap, or release pipe) to report if it repeats.
+- crate: keld-host, keld-core
+- message: The Windows dev-stage cleanup sentinel failed a stage, process-family, or release-pipe step
+- fix: Let the staged host exit, remove the named `.keld/dev/<nonce>` stage by hand if it remains, and relaunch through `keld dev`; the message names the failed step (stage validation, process identity, Job admission, readiness, process-family reap, release pipe, or stage deletion) to report if it repeats.
 
 ## KELD-UPDATE-001
 
@@ -1040,7 +1117,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The verified executable image does not carry exactly one readable, canonical expected-identity container
-- fix: Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container.
+- fix: Reinstall the signed package if its executable image is damaged. For a new image, the packaging integration must embed one valid expected-identity container before signing; `keld build` is reserved (`KELD-CLI-045`) and cannot perform this repair today. The installed image refuses to run until it carries a valid container.
 
 ## KELD-UPDATE-020
 
@@ -1094,7 +1171,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The executable image carries no `.keldeai` expected-identity container
-- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity into `keld-host.exe` or `keld-updater-helper.exe` before signing.
+- fix: The packaging integration must use `keld-pack` to embed the expected identity into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing. `keld build` is reserved (`KELD-CLI-045`) and is not an available packaging command.
 
 ## KELD-PACK-008
 
@@ -1118,7 +1195,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The expected-identity container is not canonical
-- fix: The image's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
+- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image; `keld build` is reserved (`KELD-CLI-045`) and is not implemented.
 
 ## KELD-PACK-012
 

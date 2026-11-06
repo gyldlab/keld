@@ -208,7 +208,12 @@ fn primary_auth_selection_cannot_widen_canonical_header_rules() {
         (FrameKind::Call, 0, auth, 0),
         (FrameKind::Call, crate::frame::FLAG_RAW, auth, 7),
         (FrameKind::Call, 0x8000, auth, 7),
-        (FrameKind::Call, 0, auth + 1, 7),
+        (
+            FrameKind::Call,
+            0,
+            crate::channel_table::WINDOW.wire_id() + 1,
+            7,
+        ),
         (FrameKind::Call, 0, u16::MAX, 7),
         (FrameKind::Event, 0, auth, 0),
         (FrameKind::Reply, 0, auth, 7),

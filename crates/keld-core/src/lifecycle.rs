@@ -227,22 +227,28 @@ where
         match header.kind() {
             FrameKind::Call => {
                 let req: LifecycleRequest = decode(&payload)?;
-                match req {
-                    LifecycleRequest::Quit => {
-                        let bytes = encode(&LifecycleResponse::Quit)?;
-                        let mut guard = writer.lock().map_err(|_| IpcError::Protocol {
-                            detail: "lifecycle writer lock poisoned",
-                        })?;
-                        write_frame(
-                            &mut *guard,
-                            FrameKind::Reply,
-                            0,
-                            LIFECYCLE_CHANNEL,
-                            header.corr(),
-                            &bytes,
-                        )?;
-                        return Ok(());
-                    }
+                let response = match req {
+                    LifecycleRequest::Quit => LifecycleResponse::Quit,
+                    // This standalone service owns no event source or subscription
+                    // state; the registry-backed primary router is the owner.
+                    LifecycleRequest::Subscribe { .. } => LifecycleResponse::SubscribeRefused {
+                        reason: keld_ipc::SubscribeRefusal::NotSubscribable,
+                    },
+                };
+                let bytes = encode(&response)?;
+                let mut guard = writer.lock().map_err(|_| IpcError::Protocol {
+                    detail: "lifecycle writer lock poisoned",
+                })?;
+                write_frame(
+                    &mut *guard,
+                    FrameKind::Reply,
+                    0,
+                    LIFECYCLE_CHANNEL,
+                    header.corr(),
+                    &bytes,
+                )?;
+                if matches!(req, LifecycleRequest::Quit) {
+                    return Ok(());
                 }
             }
             FrameKind::Ping => {
@@ -396,6 +402,61 @@ mod tests {
 
         host.wait_for_quit()
             .expect("session must end after Quit reply");
+    }
+
+    #[test]
+    fn standalone_subscription_refuses_without_claiming_an_event_source_or_ending_link() {
+        let (mut client, server) = connected_pair();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bounded read");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("bounded write");
+        let host_thread = std::thread::spawn(move || begin_session(server));
+        handshake_client(&mut client, &test_token()).expect("client hello");
+        let _host = host_thread.join().expect("host thread");
+        for (index, channel) in [keld_ipc::channel_table::WINDOW.wire_id(), 1, u16::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            let corr = CorrelationId(u32::try_from(index).expect("bounded index") + 1);
+            let payload = encode(&LifecycleRequest::Subscribe { channel }).expect("encode request");
+            write_frame(
+                &mut client,
+                FrameKind::Call,
+                0,
+                LIFECYCLE_CHANNEL,
+                corr,
+                &payload,
+            )
+            .expect("send Subscribe");
+            let (header, payload) = read_frame(&mut client).expect("typed refusal");
+            assert_eq!(header.kind, FrameKind::Reply);
+            assert_eq!(header.corr, corr);
+            assert_eq!(
+                decode::<LifecycleResponse>(&payload).expect("decode refusal"),
+                LifecycleResponse::SubscribeRefused {
+                    reason: keld_ipc::SubscribeRefusal::NotSubscribable
+                }
+            );
+        }
+        let payload = encode(&LifecycleRequest::Quit).expect("encode Quit");
+        write_frame(
+            &mut client,
+            FrameKind::Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(4),
+            &payload,
+        )
+        .expect("send healthy Quit");
+        let (header, payload) = read_frame(&mut client).expect("healthy terminal reply");
+        assert_eq!(header.corr, CorrelationId(4));
+        assert_eq!(
+            decode::<LifecycleResponse>(&payload).expect("decode Quit"),
+            LifecycleResponse::Quit
+        );
     }
 
     #[test]

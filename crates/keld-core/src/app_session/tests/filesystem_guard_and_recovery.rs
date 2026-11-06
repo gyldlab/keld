@@ -161,8 +161,10 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(true)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
+        windows: None,
         recovery_armed: Arc::new(AtomicBool::new(true)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+        pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
         shutdown,
         fs: Some(snapshot.fs_weak()),
         fs_worker_commands: None,
@@ -174,7 +176,7 @@ fn fs_worker_reply_write_failure_retires_generation_and_notifies_owner() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
 
@@ -298,8 +300,10 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
         next_host_corr: Arc::new(AtomicU32::new(1)),
         window_ready: Arc::new(AtomicBool::new(false)),
         last_window_closed: Arc::new(AtomicBool::new(false)),
+        windows: None,
         recovery_armed: Arc::new(AtomicBool::new(true)),
         last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+        pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
         shutdown: SessionShutdownState::new(),
         fs: Some(snapshot.fs_weak()),
         fs_worker_commands: Some(commands.clone()),
@@ -311,7 +315,7 @@ fn successor_install_does_not_wait_for_retired_fs_recovery_ack() {
             command_tx: guardian_tx,
         },
         window_commands: window_tx,
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         quit_drain_hooks: Arc::default(),
     };
     let router = PrimaryRouter {

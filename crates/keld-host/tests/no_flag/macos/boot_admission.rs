@@ -32,6 +32,7 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
         .arg("entry.ts")
         .arg("1")
         .arg("1")
+        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
         .env(
             "KELD_APP_LINK",
             "/tmp/forged#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -82,6 +83,7 @@ fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_
         .arg("entry.ts")
         .arg("1")
         .arg("1")
+        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
         .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
         .env(
             "KELD_APP_LINK",
@@ -150,7 +152,7 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
     for invalid in InvalidBoot::ALL {
         let stage = fixture.stage();
         invalid.apply(stage.root(), fixture.root.path());
-        assert_invalid_stage_is_resource_free(
+        let output = assert_invalid_stage_is_resource_free(
             &stage,
             &watcher,
             &fixture
@@ -162,6 +164,13 @@ fn every_invalid_boot_class_fails_before_transient_window_listener_or_bun() {
             None,
             false,
         );
+        if let InvalidBoot::Version = invalid {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("unsupported schema 255"),
+                "the version negative control must reach version admission, not field validation: {stderr}"
+            );
+        }
     }
 }
 

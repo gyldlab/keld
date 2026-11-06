@@ -15,8 +15,9 @@ export interface AppChannel<Request, Response> {
   encodeResponse(value: Response): Uint8Array;
 }
 
-export type AppChannelHandler<Request, Response> =
-  (request: Request) => Response | Promise<Response>;
+export type AppChannelHandler<Request, Response> = (
+  request: Request,
+) => Response | Promise<Response>;
 
 export interface Channels {
   handle<Request, Response>(
@@ -47,11 +48,13 @@ function encodeEchoResponse(value: EchoResponse): Uint8Array {
   return out;
 }
 
-export const echoChannel: AppChannel<EchoRequest, EchoResponse> = Object.freeze({
-  id: ECHO_CHANNEL,
-  decodeRequest: decodeEchoRequest,
-  encodeResponse: encodeEchoResponse,
-});
+export const echoChannel: AppChannel<EchoRequest, EchoResponse> = Object.freeze(
+  {
+    id: ECHO_CHANNEL,
+    decodeRequest: decodeEchoRequest,
+    encodeResponse: encodeEchoResponse,
+  },
+);
 
 let echoHandler: AppChannelHandler<EchoRequest, EchoResponse> | undefined;
 
@@ -73,8 +76,10 @@ export const channels: Channels = {
       throw apiError("Echo channel already has a handler");
     }
 
-    const registered =
-      handler as unknown as AppChannelHandler<EchoRequest, EchoResponse>;
+    const registered = handler as unknown as AppChannelHandler<
+      EchoRequest,
+      EchoResponse
+    >;
     echoHandler = registered;
     let active = true;
     return () => {

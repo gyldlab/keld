@@ -41,34 +41,49 @@ if (scenario === "snapshot") {
   await fs.write("/p", new Uint8Array());
 } else if (scenario === "host-error") {
   const error = await rejected(fs.read("/outside"));
-  report("error", { code: isCallError(error) ? error.code : undefined, message: error.message });
+  report("error", {
+    code: isCallError(error) ? error.code : undefined,
+    message: error.message,
+  });
 } else if (scenario === "pending-quit") {
   await app.whenReady();
   const quit = app.quit();
   for (const call of [fs.read("/p"), fs.write("/p", new Uint8Array([1]))]) {
     const error = await rejected(call);
-    if (error.message !== "KELD-IPC-001: session is closed" || isCallError(error)) {
+    if (
+      error.message !== "KELD-IPC-001: session is closed" ||
+      isCallError(error)
+    ) {
       throw new Error(`unexpected closed-session error: ${error.message}`);
     }
   }
   report("rejected-before-quit-reply", true);
   await quit;
   const closed = await rejected(fs.read("/p"));
-  if (closed.message !== "KELD-IPC-001: session is closed" || isCallError(closed)) throw closed;
+  if (
+    closed.message !== "KELD-IPC-001: session is closed" ||
+    isCallError(closed)
+  )
+    throw closed;
   report("done", true);
   process.exit(0);
 } else if (scenario === "close") {
   let ready!: () => void;
-  const hostReady = new Promise<void>((resolve) => { ready = resolve; });
+  const hostReady = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
   const link = await LifecycleLink.connect(process.env.KELD_APP_LINK!, {
     onReady: ready,
     onLastWindowClosed() {},
-    onLinkDead(error) { throw error; },
+    onLinkDead(error) {
+      throw error;
+    },
   });
   await hostReady;
   link.close();
   const error = await rejected(link.callFs(new Uint8Array([0, 2, 47, 112])));
-  if (error.message !== "KELD-IPC-001: session is closed" || isCallError(error)) throw error;
+  if (error.message !== "KELD-IPC-001: session is closed" || isCallError(error))
+    throw error;
   report("closed", true);
   report("done", true);
   process.exit(0);
@@ -79,7 +94,8 @@ if (scenario === "snapshot") {
   await new Promise<void>((resolve) => setImmediate(resolve));
   const recorded = await rejected(fs.write("/p", new Uint8Array()));
   const later = await rejected(fs.read("/p"));
-  if (recorded !== later || !isCallError(recorded)) throw new Error("recorded dead cause was replaced");
+  if (recorded !== later || !isCallError(recorded))
+    throw new Error("recorded dead cause was replaced");
   report("dead", { code: recorded.code, message: recorded.message });
   report("done", true);
   process.exit(0);
@@ -97,7 +113,9 @@ if (scenario === "snapshot") {
     // The host releases this private fixture only after observing socket close.
     const release = new Uint8Array(1);
     if (readSync(0, release, 0, 1, null) !== 1 || release[0] !== 1) {
-      throw new Error("occupied-ring fixture did not receive its host release byte");
+      throw new Error(
+        "occupied-ring fixture did not receive its host release byte",
+      );
     }
   }
   const error = await rejected(pending);

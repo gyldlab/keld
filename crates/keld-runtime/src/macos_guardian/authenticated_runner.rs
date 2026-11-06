@@ -107,7 +107,8 @@ where
     run_live_group(child, verified_group, liveness, revoke_registered_resources)
 }
 
-fn reject_spawn(
+// pub(super) only so the per-caller D1 contract tests can drive it.
+pub(super) fn reject_spawn(
     primary: RuntimeError,
     admission_error: Option<RuntimeError>,
     group: Option<GroupIdentity>,
@@ -152,7 +153,8 @@ fn reject_spawn(
     collapse_failures(failures)
 }
 
-fn run_live_group<R: Read + AsFd>(
+// pub(super) only so the per-caller D1 contract tests can drive it.
+pub(super) fn run_live_group<R: Read + AsFd>(
     mut child: Child,
     group: GroupIdentity,
     mut liveness: R,

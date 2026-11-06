@@ -23,27 +23,27 @@ const EXPECTED: &[(&str, &str)] = &[
     ("dev-stage cleanup failed for", "KELD-CORE-037"),
     ("supervised Bun guardian failed", "KELD-CORE-037"),
     ("guardian stderr failed", "KELD-CORE-037"),
-    // KELD-CORE-044: a private host role invoked outside its argv/build contract.
-    ("fixture invocation", "KELD-CORE-044"),
-    ("profile test-root probe", "KELD-CORE-044"),
-    ("dev-stage cleanup invocation is malformed", "KELD-CORE-044"),
-    ("dev-stage cleanup PID is invalid", "KELD-CORE-044"),
-    ("guardian invocation is malformed", "KELD-CORE-044"),
-    ("invalid private entry device", "KELD-CORE-044"),
-    ("invalid private entry inode", "KELD-CORE-044"),
-    // KELD-CORE-045: the guardian refused to run outside its validated dev stage.
-    ("guardian stage identity failed", "KELD-CORE-045"),
+    // KELD-CORE-050: a private host role invoked outside its argv/build contract.
+    ("fixture invocation", "KELD-CORE-050"),
+    ("profile test-root probe", "KELD-CORE-050"),
+    ("dev-stage cleanup invocation is malformed", "KELD-CORE-050"),
+    ("dev-stage cleanup PID is invalid", "KELD-CORE-050"),
+    ("guardian invocation is malformed", "KELD-CORE-050"),
+    ("invalid private entry device", "KELD-CORE-050"),
+    ("invalid private entry inode", "KELD-CORE-050"),
+    // KELD-CORE-052: the guardian refused to run outside its validated dev stage.
+    ("guardian stage identity failed", "KELD-CORE-052"),
     (
         "not executing from a validated private dev stage",
-        "KELD-CORE-045",
+        "KELD-CORE-052",
     ),
-    ("guardian stage argument does not match", "KELD-CORE-045"),
-    // KELD-CORE-046: the Windows dev-stage cleanup sentinel failed a step.
-    ("cleanup Job admission failed", "KELD-CORE-046"),
-    ("dev-stage cleanup readiness failed", "KELD-CORE-046"),
-    ("attempt process-family cleanup failed", "KELD-CORE-046"),
-    ("malformed cleanup release was refused", "KELD-CORE-046"),
-    ("cleanup control pipe failed", "KELD-CORE-046"),
+    ("guardian stage argument does not match", "KELD-CORE-052"),
+    // KELD-CORE-053: the Windows dev-stage cleanup sentinel failed a step.
+    ("cleanup Job admission failed", "KELD-CORE-053"),
+    ("dev-stage cleanup readiness failed", "KELD-CORE-053"),
+    ("attempt process-family cleanup failed", "KELD-CORE-053"),
+    ("malformed cleanup release was refused", "KELD-CORE-053"),
+    ("cleanup control pipe failed", "KELD-CORE-053"),
 ];
 
 /// Codes whose owner is another crate's typed error; the host must not borrow them
@@ -95,6 +95,9 @@ fn keld_codes(line: &str) -> Vec<&str> {
 
 fn emit_sites() -> Vec<(usize, &'static str, &'static str)> {
     HOST_MAIN
+        .split_once("\n#[cfg(all(test, target_os = \"macos\"))]")
+        .expect("explicit production/test boundary")
+        .0
         .lines()
         .enumerate()
         .flat_map(|(index, line)| {
@@ -161,4 +164,32 @@ fn code_grammar_matches_the_registry_scanner() {
         keld_codes("KELD-CLI-044: x KELD-MCP001 y KEL-35 KELD-FOO KELD-X12"),
         vec!["KELD-CLI-044", "KELD-MCP001"]
     );
+}
+
+/// Compare public canonical window meanings and GH1118 meanings in one registry.
+#[test]
+fn private_role_codes_do_not_reallocate_window_contracts() {
+    let registry = include_str!("../../../docs/engineering/keld-error-codes.md");
+    for (code, meaning) in [
+        ("KELD-CORE-044", "Ready milestone"),
+        ("KELD-CORE-045", "has not subscribed"),
+        ("KELD-CORE-046", "64 outstanding Destroy"),
+        ("KELD-CORE-047", "distinct-window admission capacity"),
+        ("KELD-CORE-050", "private keld-host role"),
+        ("KELD-CORE-052", "guardian refused"),
+        ("KELD-CORE-053", "cleanup sentinel failed"),
+    ] {
+        let heading = format!("\n## {code}\n");
+        assert_eq!(
+            registry.matches(&heading).count(),
+            1,
+            "{code} must have one meaning"
+        );
+        let entry = registry.split_once(&heading).expect("registered code").1;
+        let entry = entry.split("\n## ").next().expect("registry entry");
+        assert!(
+            entry.contains(meaning),
+            "{code} lost its canonical meaning: {entry}"
+        );
+    }
 }

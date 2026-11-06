@@ -17,6 +17,9 @@ if (typeof app.whenReady !== "function") {
   process.exit(1);
 }
 
-const proc = process as typeof process & { type?: string; versions: { electron?: string } };
+const proc = process as typeof process & {
+  type?: string;
+  versions: { electron?: string };
+};
 marker(`KEL72_TYPE=${proc.type ?? ""}`);
 marker(`KEL72_ELECTRON=${proc.versions.electron ?? ""}`);

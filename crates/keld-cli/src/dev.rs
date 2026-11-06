@@ -32,7 +32,9 @@ use keld_runtime::windows_job::{
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
-use crate::doctor::{all_ok, renderer_load_message, renderer_path_problem, run_checks};
+use crate::doctor::{
+    all_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+};
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
 
@@ -210,6 +212,11 @@ pub fn hello_title_for_project(project_root: &Path) -> String {
 /// Returns [`DevError::Renderer`] (`KELD-CLI-035`) for a missing file or unsafe
 /// path, or [`DevError::Io`] when the file exists but cannot be read.
 pub fn load_dev_window_html(project_root: &Path) -> Result<String, DevError> {
+    if facade_mode_for_project(project_root).map_err(DevError::Doctor)? {
+        return Err(DevError::Doctor(String::from(
+            "KELD-CLI-047: initialWindow: 'none' has no initial renderer. Use `keld dev` with the staged Host; the retained hello-window loader cannot create a facade-owned first window.",
+        )));
+    }
     let renderer =
         read_config_renderer(project_root).unwrap_or_else(|| DEFAULT_RENDERER.to_owned());
     let rel = validate_renderer_relpath(&renderer)?;
@@ -235,7 +242,11 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 }
 
 fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
-    let checks = run_checks(Some(project_root));
+    report_checks(run_checks(Some(project_root)).into_iter())
+}
+
+fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
+    let checks: Vec<_> = checks.collect();
     if all_ok(&checks) {
         return Ok(());
     }
@@ -245,6 +256,24 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
+}
+
+/// The preflight of a launch whose stage goes to the no-flag host. On Windows the host
+/// owns a schema-2 boot's admission (GH-1188 D2), so its `KELD-CORE-034`, not a second
+/// CLI verdict, answers that project here; `keld doctor` keeps its own refusal until the
+/// host admits the boot in every build (D15), which removes this exception.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn staged_host_doctor_or_err(project_root: &Path) -> Result<(), DevError> {
+    #[cfg(windows)]
+    let facade = facade_mode_for_project(project_root).map_err(DevError::Doctor)?;
+    #[cfg(not(windows))]
+    let facade = false;
+    let checks = run_checks(Some(project_root));
+    report_checks(
+        checks
+            .into_iter()
+            .filter(|check| !(facade && check.label == "renderer")),
+    )
 }
 
 fn staged_host_launch_error(
@@ -329,7 +358,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    doctor_or_err(project_root)?;
+    staged_host_doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
@@ -739,6 +768,10 @@ where
     W: FnOnce(&str, &str) -> Result<(), DevError>,
 {
     doctor_or_err(project_root)?;
+    // Retained diagnostic/test seam can construct only a hello window. A
+    // facade app owns its first window after Host Ready; reject before Bun
+    // spawn instead of inventing one via the legacy hello window callback.
+    let html = load_dev_window_html(project_root)?;
     let ready = format!(
         "{}: main process ready (IPC echo ok)",
         hello_title_for_project(project_root)
@@ -768,7 +801,6 @@ where
 
     // Window phase while echo listener + Bun are still live.
     let title = hello_title_for_project(project_root);
-    let html = load_dev_window_html(project_root)?;
     let window_result = window(&title, &html);
     // Window returned (tao `run_return`) — reap Bun, stop the listener, and
     // read how supervision actually ended across the window phase (KEL-105).
@@ -1108,6 +1140,56 @@ mod tests {
         );
     }
 
+    /// GH-1188 D15 at T1: the staged-host preflight leaves only a valid Windows schema-2
+    /// project's renderer verdict to the host. A renderer project's missing renderer and
+    /// an invalid `initialWindow` still fail here, and `keld doctor` keeps its refusal.
+    #[cfg(windows)]
+    #[test]
+    fn staged_host_preflight_defers_only_a_valid_windows_facade_renderer_verdict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let config = dir.path().join("keld.config.ts");
+
+        fs::write(&config, "export default {}\n").expect("renderer config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("a missing renderer must fail before staging")
+            .to_string();
+        assert!(msg.contains("[FAIL] renderer"), "{msg}");
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { initialWindow: \"window\" } as const;\n",
+        )
+        .expect("invalid facade config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("an invalid initialWindow must fail before staging")
+            .to_string();
+        assert!(msg.contains("KELD-CLI-047"), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
+        )
+        .expect("facade config");
+        if let Err(error) = staged_host_doctor_or_err(dir.path()) {
+            let msg = error.to_string();
+            assert!(!msg.contains("renderer"), "{msg}");
+        }
+        let doctor = run_checks(Some(dir.path()));
+        let renderer = doctor
+            .iter()
+            .find(|check| check.label == "renderer")
+            .expect("doctor renderer check");
+        assert!(!renderer.ok, "keld doctor keeps its T1 refusal");
+        assert!(
+            renderer.detail.contains("KELD-CLI-047"),
+            "{}",
+            renderer.detail
+        );
+    }
+
     #[test]
     fn window_title_comes_from_config_name() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1178,6 +1260,22 @@ mod tests {
         .expect("html");
         let html = load_dev_window_html(dir.path()).expect("renderer");
         assert!(html.contains("default-index"), "{html}");
+    }
+
+    #[test]
+    fn legacy_window_loader_refuses_facade_instead_of_inventing_an_index_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("keld.config.ts"),
+            "export default { initialWindow: 'none' } as const;",
+        )
+        .expect("facade config");
+        fs::write(dir.path().join("index.html"), "<p>must not load</p>").expect("index");
+        let error = load_dev_window_html(dir.path())
+            .expect_err("facade has no initial renderer, even if index exists");
+        let text = error.to_string();
+        assert!(text.contains("KELD-CLI-047"), "{text}");
+        assert!(text.contains("no initial renderer"), "{text}");
     }
 
     #[test]

@@ -423,6 +423,8 @@ impl WebKitGtkEngine {
         )?;
         let fatal = Arc::new(AtomicBool::new(false));
         let fatal_in_loop = Arc::clone(&fatal);
+        let refused_registry_command = Arc::new(AtomicBool::new(false));
+        let refused_in_loop = Arc::clone(&refused_registry_command);
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
@@ -464,6 +466,18 @@ impl WebKitGtkEngine {
                     views.clear();
                     *control_flow = ControlFlow::Exit;
                 }
+                Event::UserEvent(
+                    AppWindowCommand::CreateWindow { .. }
+                    | AppWindowCommand::SetMaximized { .. }
+                    | AppWindowCommand::SetFullScreen { .. }
+                    | AppWindowCommand::DestroyWindow { .. },
+                ) => {
+                    // Core refuses these before enqueue under GH-531. This is
+                    // an invariant fault, not a Linux implementation or receipt.
+                    refused_in_loop.store(true, Ordering::Release);
+                    views.clear();
+                    *control_flow = ControlFlow::Exit;
+                }
                 Event::WindowEvent {
                     window_id,
                     event: WindowEvent::CloseRequested,
@@ -479,6 +493,7 @@ impl WebKitGtkEngine {
         });
         stop_bridge.store(true, Ordering::Release);
         let _ = bridge.join();
+        finish_registry_command_refusal(&refused_registry_command)?;
         if navigation_timed_out.load(Ordering::Acquire) {
             return Err(WvError::Navigate(String::from(
                 "initial renderer navigation did not finish before the startup deadline",
@@ -605,6 +620,15 @@ impl WebEngine for WebKitGtkEngine {
 }
 
 impl WebKitGtkEngineExt for WebKitGtkEngine {}
+
+fn finish_registry_command_refusal(refused: &AtomicBool) -> Result<(), WvError> {
+    if refused.load(Ordering::Acquire) {
+        return Err(WvError::EventLoop(String::from(
+            "Core queued an unsupported registry-window command on Linux; refuse it before the UI queue",
+        )));
+    }
+    Ok(())
+}
 
 fn spawn_app_wake_bridge(
     commands: Receiver<AppWindowCommand>,

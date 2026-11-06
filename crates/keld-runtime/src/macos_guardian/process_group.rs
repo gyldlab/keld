@@ -118,7 +118,9 @@ fn report_test_ambiguous_probe(group: u32) {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TestGroupSignalPoint {
-    /// After the kernel authorized the one signal, before `killpg`.
+    /// Inside [`terminate_registered_group`], just before its `killpg`: every
+    /// group signal the Guardian product sends passes here, whichever call
+    /// site (attested arm, own-child decision or a direct call) reached it.
     BeforeSignal,
     /// After that one signal was denied (zombie-only EPERM), before the next
     /// read-only probe.
@@ -383,8 +385,6 @@ fn signal_attested_group_once(
     group: GroupIdentity,
     reap_deadline: Instant,
 ) -> Result<(), RuntimeError> {
-    #[cfg(test)]
-    run_test_group_signal_hook(group.pid, TestGroupSignalPoint::BeforeSignal);
     terminate_registered_group(group.pid)
         .or_else(|denied| reconcile_denied_signal_after_reap(group, denied, reap_deadline))
 }
@@ -504,13 +504,9 @@ pub(super) fn retire_own_child_group(
             ),
         ])
     };
-    let signal_once = || {
-        #[cfg(test)]
-        run_test_group_signal_hook(group.pid, TestGroupSignalPoint::BeforeSignal);
-        match terminate_registered_group(group.pid) {
-            Err(denied) if is_denied_group_signal(&denied) => Decision::Denied(denied),
-            result => Decision::Done(result),
-        }
+    let signal_once = || match terminate_registered_group(group.pid) {
+        Err(denied) if is_denied_group_signal(&denied) => Decision::Denied(denied),
+        result => Decision::Done(result),
     };
     let decision = match observe_group_identity(group.pid) {
         Ok(current) if current == group => signal_once(),
@@ -556,9 +552,11 @@ pub(super) fn retire_own_child_group(
 const GROUP_SIGNAL_PHASE: &str = "macOS guardian process-group signal";
 
 pub(super) fn terminate_registered_group(group: u32) -> Result<(), RuntimeError> {
-    let group = validate_group_pid(group)?;
-    let result = killpg(Pid::from_raw(group), Signal::SIGKILL);
-    finish_group_termination(result, || kill(Pid::from_raw(-group), None))
+    let raw = validate_group_pid(group)?;
+    #[cfg(test)]
+    run_test_group_signal_hook(group, TestGroupSignalPoint::BeforeSignal);
+    let result = killpg(Pid::from_raw(raw), Signal::SIGKILL);
+    finish_group_termination(result, || kill(Pid::from_raw(-raw), None))
 }
 
 // A reaped process-group *leader* does not prove that its descendants left

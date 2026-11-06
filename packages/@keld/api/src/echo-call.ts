@@ -5,8 +5,10 @@ import {
   type WorkerCallReply,
 } from "../../kipc/src/transport.ts";
 
-export type EchoCallHandler =
-  (channel: number, payload: Uint8Array) => Promise<Uint8Array>;
+export type EchoCallHandler = (
+  channel: number,
+  payload: Uint8Array,
+) => Promise<Uint8Array>;
 
 /**
  * The answer rule for one host Echo CALL (KEL-142; GH-527 §4.6): the

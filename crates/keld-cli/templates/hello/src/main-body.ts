@@ -33,8 +33,13 @@ if (import.meta.main) {
     // Listen before the first call, so an early host EVENT is not missed.
     const windowsClosed = lastWindowClosed(session);
     const response = await session.echo({ message: "keld", count: 1 });
-    console.log(`ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`);
-    console.log("{{name}}: main process ready (IPC echo ok)");
+    console.log(
+      `ipc-echo ok: message=${JSON.stringify(response.message)} count=${response.count}`,
+    );
+    console.log(
+      // The substituted project name may be long; keep one complete ready message.
+      "{{name}}: main process ready (IPC echo ok)",
+    );
     await windowsClosed;
     // Resolves only on the host's `LifecycleResponse::Quit`, then the link closes.
     await session.quit();

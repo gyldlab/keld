@@ -55,14 +55,14 @@ fn unknown_argument_is_cli_044_before_boot_selection() {
     assert!(!stderr.contains("keld.boot.json"), "{stderr}");
 }
 
-/// GH-1118: a private host role invoked outside its argv contract is `KELD-CORE-044`,
+/// GH-1118: a private host role invoked outside its argv contract is `KELD-CORE-050`,
 /// never the no-flag session code `KELD-CORE-037` and never a code another crate owns.
 #[cfg(target_os = "macos")]
 mod private_roles_macos {
     use std::process::{Command, Stdio};
 
     #[test]
-    fn malformed_guardian_argv_is_core_044_before_any_guardian_work() {
+    fn malformed_guardian_argv_is_core_050_before_any_guardian_work() {
         let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
             .arg(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
             .arg("only-one-argument")
@@ -71,7 +71,7 @@ mod private_roles_macos {
             .expect("run host with a malformed private guardian argv");
         assert_eq!(output.status.code(), Some(1));
         let stderr = String::from_utf8(output.stderr).expect("host error is UTF-8");
-        assert!(stderr.contains("KELD-CORE-044"), "{stderr}");
+        assert!(stderr.contains("KELD-CORE-050"), "{stderr}");
         assert!(
             stderr.contains("guardian invocation is malformed"),
             "{stderr}"
@@ -91,6 +91,7 @@ mod private_roles_macos {
             .arg("entry.ts")
             .arg("1")
             .arg("1")
+            .arg("0")
             .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
             .stdin(Stdio::null())
             .output()
@@ -100,14 +101,14 @@ mod private_roles_macos {
             "shaped argv without a host became success"
         );
         let shaped_stderr = String::from_utf8(shaped.stderr).expect("host error is UTF-8");
-        assert!(!shaped_stderr.contains("KELD-CORE-044"), "{shaped_stderr}");
+        assert!(!shaped_stderr.contains("KELD-CORE-050"), "{shaped_stderr}");
         assert!(
             shaped_stderr.contains("KELD-CORE-037: supervised Bun guardian failed"),
             "{shaped_stderr}"
         );
         assert!(
             shaped_stderr.contains(
-                "KELD-CORE-045: guardian is not executing from a validated private dev stage"
+                "KELD-CORE-052: guardian is not executing from a validated private dev stage"
             ),
             "{shaped_stderr}"
         );
@@ -117,7 +118,7 @@ mod private_roles_macos {
     /// `profile-test-hooks`; a bare host refuses the same argv as an unknown argument.
     #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
     #[test]
-    fn malformed_profile_fixture_argv_is_core_044_not_wv_009() {
+    fn malformed_profile_fixture_argv_is_core_050_not_wv_009() {
         for role in [
             "--keld-profile-identity-fixture-v1",
             "--keld-profile-presence-fixture-v1",
@@ -132,7 +133,7 @@ mod private_roles_macos {
                 .expect("run host with a malformed fixture argv");
             assert_eq!(output.status.code(), Some(2), "{role}");
             let stderr = String::from_utf8(output.stderr).expect("host error is UTF-8");
-            assert!(stderr.contains("KELD-CORE-044"), "{role}: {stderr}");
+            assert!(stderr.contains("KELD-CORE-050"), "{role}: {stderr}");
             assert!(stderr.contains("fixture invocation"), "{role}: {stderr}");
             // Negative controls: the profile-selection owner's code and the no-flag
             // session code both stay out of an argv refusal.
@@ -142,14 +143,14 @@ mod private_roles_macos {
     }
 }
 
-/// GH-1118: the Windows private roles report argv misuse as `KELD-CORE-044`; the
-/// cleanup sentinel's own runtime failures are `KELD-CORE-046`, never `KELD-CORE-037`.
+/// GH-1118: the Windows private roles report argv misuse as `KELD-CORE-050`; the
+/// cleanup sentinel's own runtime failures are `KELD-CORE-053`, never `KELD-CORE-037`.
 #[cfg(windows)]
 mod private_roles_windows {
     use std::process::{Command, Stdio};
 
     #[test]
-    fn malformed_cleanup_sentinel_argv_is_core_044() {
+    fn malformed_cleanup_sentinel_argv_is_core_050() {
         let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
             .arg("--keld-windows-dev-stage-cleanup-v1")
             .arg("only-one-argument")
@@ -160,13 +161,13 @@ mod private_roles_windows {
         // The sentinel reports on stdout: its stderr is the inherited Job handle.
         let stdout = String::from_utf8(output.stdout).expect("sentinel report is UTF-8");
         // The sentinel's own report leads; nested causes may carry other crates' codes.
-        assert!(stdout.starts_with("KELD-CORE-044: "), "{stdout}");
+        assert!(stdout.starts_with("KELD-CORE-050: "), "{stdout}");
         assert!(
             stdout.contains("cleanup invocation is malformed"),
             "{stdout}"
         );
         assert!(!stdout.contains("KELD-CORE-037"), "{stdout}");
-        assert!(!stdout.contains("KELD-CORE-046"), "{stdout}");
+        assert!(!stdout.contains("KELD-CORE-053"), "{stdout}");
 
         // Negative control: a well-shaped argv is not misuse. With a pipe where the
         // inherited Job handle belongs, the sentinel fails its own Job admission,
@@ -181,23 +182,23 @@ mod private_roles_windows {
         assert_eq!(shaped.status.code(), Some(1));
         let shaped_stdout = String::from_utf8(shaped.stdout).expect("sentinel report is UTF-8");
         // One sentinel, one leading code: the keld-core stage validate/delete steps and the
-        // host's own Job/readiness/release steps all report KELD-CORE-046.
+        // host's own Job/readiness/release steps all report KELD-CORE-053.
         assert!(
-            shaped_stdout.starts_with("KELD-CORE-046: "),
+            shaped_stdout.starts_with("KELD-CORE-053: "),
             "{shaped_stdout}"
         );
         assert!(
             shaped_stdout.contains("cleanup Job admission failed"),
             "{shaped_stdout}"
         );
-        assert!(!shaped_stdout.contains("KELD-CORE-044"), "{shaped_stdout}");
+        assert!(!shaped_stdout.contains("KELD-CORE-050"), "{shaped_stdout}");
         assert!(!shaped_stdout.contains("KELD-CORE-037"), "{shaped_stdout}");
     }
 
     /// Without `kel135-profile-test-root` the probe role is unavailable; with it and no
     /// selected root the invocation is malformed. Both are misuse of a private role.
     #[test]
-    fn profile_test_root_probe_misuse_is_core_044() {
+    fn profile_test_root_probe_misuse_is_core_050() {
         let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
             .arg("--keld-profile-test-root-probe-v1")
             .env_remove("KELD_PROFILE_TEST_ROOT")
@@ -206,7 +207,7 @@ mod private_roles_windows {
             .expect("run host probe without a selected root");
         assert_eq!(output.status.code(), Some(2));
         let stderr = String::from_utf8(output.stderr).expect("host error is UTF-8");
-        assert!(stderr.contains("KELD-CORE-044"), "{stderr}");
+        assert!(stderr.contains("KELD-CORE-050"), "{stderr}");
         assert!(stderr.contains("profile test-root probe"), "{stderr}");
         assert!(!stderr.contains("KELD-CORE-037"), "{stderr}");
     }

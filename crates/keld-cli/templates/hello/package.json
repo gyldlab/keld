@@ -2,7 +2,10 @@
   "name": "{{name}}",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "scripts": {
-    "start": "bun run src/main.ts"
+    "start": "bun run src/main.ts",
+    "format": "bun fmt --no-script '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}'",
+    "format:check": "bun run format --check"
   }
 }

@@ -45,13 +45,21 @@ function corpusPayload(rowId: string): Uint8Array {
   if (!payloadHex || payloadHex === "-" || payloadHex.length % 2 !== 0) {
     throw new Error(`receiver corpus row ${rowId} has no complete payload`);
   }
-  return Uint8Array.from(payloadHex.match(/../g)!.map((hex) => Number.parseInt(hex, 16)));
+  return Uint8Array.from(
+    payloadHex.match(/../g)!.map((hex) => Number.parseInt(hex, 16)),
+  );
 }
 
 describe("frame header", () => {
   test("is 16 bytes and round-trips every kind", () => {
     for (const kind of Object.values(FrameKind)) {
-      const header = { kind, flags: 1, channel: 42, corr: 0xdead_beef, len: 1024 };
+      const header = {
+        kind,
+        flags: 1,
+        channel: 42,
+        corr: 0xdead_beef,
+        len: 1024,
+      };
       const encoded = encodeHeader(header);
       expect(encoded.length).toBe(16);
       expect(decodeHeader(encoded)).toEqual(header);
@@ -61,20 +69,38 @@ describe("frame header", () => {
   test("magic bytes are literal ASCII 'KI'", () => {
     // Pinned against `keld_ipc::MAGIC = u16::from_le_bytes(*b"KI")`: on the
     // wire that is just the two ASCII bytes, in order.
-    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    const encoded = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 0,
+    });
     expect(encoded[0]).toBe(0x4b); // 'K'
     expect(encoded[1]).toBe(0x49); // 'I'
     expect(encoded[2]).toBe(2); // PROTOCOL_VERSION
   });
 
   test("rejects bad magic", () => {
-    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    const encoded = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 0,
+    });
     encoded[0] = 0x58; // 'X'
     expect(() => decodeHeader(encoded)).toThrow("KELD-IPC-002");
   });
 
   test("rejects unsupported version", () => {
-    const encoded = encodeHeader({ kind: FrameKind.Hello, flags: 0, channel: 0, corr: 0, len: 0 });
+    const encoded = encodeHeader({
+      kind: FrameKind.Hello,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 0,
+    });
     encoded[2] = 99;
     const err = (() => {
       try {
@@ -89,12 +115,24 @@ describe("frame header", () => {
   });
 
   test("rejects a header shorter than 16 bytes", () => {
-    const full = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    const full = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 0,
+    });
     expect(() => decodeHeader(full.subarray(0, 8))).toThrow("KELD-IPC-002");
   });
 
   test("rejects an unknown frame kind (11 is one past the valid range)", () => {
-    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 0, corr: 0, len: 0 });
+    const encoded = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 0,
+    });
     encoded[3] = 11;
     expect(() => decodeHeader(encoded)).toThrow("KELD-IPC-002");
   });
@@ -123,7 +161,9 @@ describe("postcard varint (LEB128)", () => {
 
   test("truncated varint is a codec error", () => {
     // 0x80 alone has its continuation bit set with nothing following.
-    expect(() => decodeVarint(new Uint8Array([0x80]), 0)).toThrow("KELD-IPC-003");
+    expect(() => decodeVarint(new Uint8Array([0x80]), 0)).toThrow(
+      "KELD-IPC-003",
+    );
   });
 
   test("rejects a value above u32::MAX", () => {
@@ -134,7 +174,9 @@ describe("postcard varint (LEB128)", () => {
     expect(() => encodeVarint(0x1_0000_0000)).toThrow("KELD-IPC-003");
     expect(() => encodeVarint(Number.MAX_SAFE_INTEGER)).toThrow("KELD-IPC-003");
     // The boundary itself stays valid.
-    expect(Array.from(encodeVarint(0xffff_ffff))).toEqual([0xff, 0xff, 0xff, 0xff, 0x0f]);
+    expect(Array.from(encodeVarint(0xffff_ffff))).toEqual([
+      0xff, 0xff, 0xff, 0xff, 0x0f,
+    ]);
   });
 });
 
@@ -173,16 +215,27 @@ describe("EchoRequest / EchoResponse postcard framing", () => {
     //
     // A wrong-but-well-formed request is worse than a rejected one, because
     // nothing downstream can tell it happened.
-    expect(() => encodeEchoRequest({ message: "kipc", count: -1 })).toThrow("KELD-IPC-003");
-    expect(() => encodeEchoRequest({ message: "kipc", count: 0x1_0000_0000 })).toThrow("KELD-IPC-003");
-    expect(() => encodeEchoRequest({ message: "kipc", count: 1.5 })).toThrow("KELD-IPC-003");
+    expect(() => encodeEchoRequest({ message: "kipc", count: -1 })).toThrow(
+      "KELD-IPC-003",
+    );
+    expect(() =>
+      encodeEchoRequest({ message: "kipc", count: 0x1_0000_0000 }),
+    ).toThrow("KELD-IPC-003");
+    expect(() => encodeEchoRequest({ message: "kipc", count: 1.5 })).toThrow(
+      "KELD-IPC-003",
+    );
   });
 
   test("count boundary values still encode", () => {
-    expect(Array.from(encodeEchoRequest({ message: "", count: 0 }))).toEqual([0x00, 0x00]);
+    expect(Array.from(encodeEchoRequest({ message: "", count: 0 }))).toEqual([
+      0x00, 0x00,
+    ]);
     const max = encodeEchoRequest({ message: "", count: 0xffff_ffff });
     expect(Array.from(max)).toEqual([0x00, 0xff, 0xff, 0xff, 0xff, 0x0f]);
-    expect(decodeEchoResponse(max)).toEqual({ message: "", count: 0xffff_ffff });
+    expect(decodeEchoResponse(max)).toEqual({
+      message: "",
+      count: 0xffff_ffff,
+    });
   });
 
   test("rejects trailing bytes after a valid EchoResponse", () => {
@@ -213,7 +266,12 @@ describe("parseAppLink", () => {
   });
 
   test("rejects a token that is not exactly 64 hex characters", () => {
-    for (const bad of ["/e#", "/e#aa", `/e#${"a5".repeat(31)}`, `/e#${"zz".repeat(32)}`]) {
+    for (const bad of [
+      "/e#",
+      "/e#aa",
+      `/e#${"a5".repeat(31)}`,
+      `/e#${"zz".repeat(32)}`,
+    ]) {
       expect(() => parseAppLink(bad)).toThrow("KELD-IPC-007");
     }
   });
@@ -229,7 +287,9 @@ describe("Windows endpoint selection", () => {
   test("accepts the exact named-pipe shape", () => {
     const valid = String.raw`\\.\pipe\keld-${"3c".repeat(32)}`;
     expect(isWin32PipeEndpoint(valid)).toBe(true);
-    expect(isWin32PipeEndpoint(String.raw`\\.\pipe\keld-${"3C".repeat(32)}`)).toBe(false);
+    expect(
+      isWin32PipeEndpoint(String.raw`\\.\pipe\keld-${"3C".repeat(32)}`),
+    ).toBe(false);
     expect(isWin32PipeEndpoint("9000")).toBe(false);
   });
 
@@ -245,7 +305,13 @@ describe("Windows endpoint selection", () => {
 describe("FrameReader — untrusted peer bytes", () => {
   test("resolves once a complete frame has been pushed, even split across chunks", async () => {
     const reader = new FrameReader();
-    const encoded = encodeHeader({ kind: FrameKind.Ping, flags: 0, channel: 7, corr: 9, len: 3 });
+    const encoded = encodeHeader({
+      kind: FrameKind.Ping,
+      flags: 0,
+      channel: 7,
+      corr: 9,
+      len: 3,
+    });
     const framePromise = reader.readFrame();
     reader.push(encoded.subarray(0, 10)); // partial header
     reader.push(encoded.subarray(10)); // rest of header, no payload yet
@@ -292,7 +358,13 @@ const CLIENT_AWAIT_HELLO = RECEIVE_POLICIES.clientAwaitHello;
 
 describe("shared receiver rules (KEL-133)", () => {
   test("HELLO shape failures are KELD-IPC-005 and foreign length never 007", () => {
-    const good = { kind: FrameKind.Hello, flags: 0, channel: 0, corr: 0, len: 32 };
+    const good = {
+      kind: FrameKind.Hello,
+      flags: 0,
+      channel: 0,
+      corr: 0,
+      len: 32,
+    };
     expect(validateReceivedHeader(CLIENT_AWAIT_HELLO, good)).toEqual(good);
     for (const [bad, detail] of [
       [{ ...good, len: 31 }, "declared exact shape"],
@@ -302,57 +374,86 @@ describe("shared receiver rules (KEL-133)", () => {
       [{ ...good, corr: 1 }, "correlation must be 0"],
       [{ ...good, kind: FrameKind.Ping }, "not declared"],
     ] as const) {
-      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow(detail);
-      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow("KELD-IPC-005");
+      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow(
+        detail,
+      );
+      expect(() => validateReceivedHeader(CLIENT_AWAIT_HELLO, bad)).toThrow(
+        "KELD-IPC-005",
+      );
     }
   });
 
   test("only the awaited echo REPLY completes the waiter", () => {
     const waiter = echoReplyWaiter(7);
-    const good = { kind: FrameKind.Reply, flags: 0, channel: 1, corr: 7, len: 6 };
+    const good = {
+      kind: FrameKind.Reply,
+      flags: 0,
+      channel: 1,
+      corr: 7,
+      len: 6,
+    };
     expect(validateReceivedHeader(waiter, good)).toEqual(good);
-    expect(() => validateReceivedHeader(waiter, { ...good, corr: 8 })).toThrow("does not match the awaited call");
-    expect(() => validateReceivedHeader(waiter, { ...good, kind: FrameKind.Err })).toThrow("not declared");
-    expect(() => validateReceivedHeader(waiter, { ...good, channel: 3 })).toThrow("wrong channel");
-    expect(() => validateReceivedHeader(waiter, { ...good, flags: FLAG_RAW })).toThrow("FLAG_RAW");
+    expect(() => validateReceivedHeader(waiter, { ...good, corr: 8 })).toThrow(
+      "does not match the awaited call",
+    );
+    expect(() =>
+      validateReceivedHeader(waiter, { ...good, kind: FrameKind.Err }),
+    ).toThrow("not declared");
+    expect(() =>
+      validateReceivedHeader(waiter, { ...good, channel: 3 }),
+    ).toThrow("wrong channel");
+    expect(() =>
+      validateReceivedHeader(waiter, { ...good, flags: FLAG_RAW }),
+    ).toThrow("FLAG_RAW");
   });
 
   // In the Keld repository the canonical corpus is reachable relative to the
   // template; a generated app has no fixture and skips (its rules are pinned
   // above and by the @keld/electron corpus runner).
-  test.skipIf(!existsSync(corpusPath))("agrees with the canonical corpus for its two policies", () => {
-    const lines = readFileSync(corpusPath, "utf8").split("\n").filter((l) => l.length > 0);
-    expect(lines[0].startsWith("receiver-semantics-v0\tv1\t")).toBe(true);
-    let checked = 0;
-    for (const line of lines.slice(1)) {
-      const [id, policyName, headerHex, , expectedCode] = line.split("\t");
-      const base = policyName.split(":", 1)[0];
-      if (base !== "client-await-hello" && base !== "echo-reply-waiter") continue;
-      if (headerHex.length !== 32) continue; // truncated-header rows belong to the reader, not the validator
-      const bytes = Uint8Array.from(headerHex.match(/../g)!.map((h) => Number.parseInt(h, 16)));
-      const view = new DataView(bytes.buffer);
-      const header = {
-        kind: bytes[3] as never,
-        flags: view.getUint16(4, true),
-        channel: view.getUint16(6, true),
-        corr: view.getUint32(8, true),
-        len: view.getUint32(12, true),
-      };
-      const policy =
-        base === "client-await-hello" ? CLIENT_AWAIT_HELLO : echoReplyWaiter(Number(policyName.split(":")[1]));
-      let got: string;
-      try {
-        validateReceivedHeader(policy, header);
-        got = "ok";
-      } catch (err) {
-        got = (err as Error).message.slice(0, 12);
+  test.skipIf(!existsSync(corpusPath))(
+    "agrees with the canonical corpus for its two policies",
+    () => {
+      const lines = readFileSync(corpusPath, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0);
+      expect(lines[0].startsWith("receiver-semantics-v0\tv1\t")).toBe(true);
+      let checked = 0;
+      for (const line of lines.slice(1)) {
+        const [id, policyName, headerHex, , expectedCode] = line.split("\t");
+        const base = policyName.split(":", 1)[0];
+        if (base !== "client-await-hello" && base !== "echo-reply-waiter")
+          continue;
+        if (headerHex.length !== 32) continue; // truncated-header rows belong to the reader, not the validator
+        const bytes = Uint8Array.from(
+          headerHex.match(/../g)!.map((h) => Number.parseInt(h, 16)),
+        );
+        const view = new DataView(bytes.buffer);
+        const header = {
+          kind: bytes[3] as never,
+          flags: view.getUint16(4, true),
+          channel: view.getUint16(6, true),
+          corr: view.getUint32(8, true),
+          len: view.getUint32(12, true),
+        };
+        const policy =
+          base === "client-await-hello"
+            ? CLIENT_AWAIT_HELLO
+            : echoReplyWaiter(Number(policyName.split(":")[1]));
+        let got: string;
+        try {
+          validateReceivedHeader(policy, header);
+          got = "ok";
+        } catch (err) {
+          got = (err as Error).message.slice(0, 12);
+        }
+        // Rows that reject at the header stage must agree exactly; rows the
+        // header admits continue to token/codec stages this test does not run.
+        if (expectedCode === "KELD-IPC-005")
+          expect(`${id}: ${got}`).toBe(`${id}: KELD-IPC-005`);
+        else expect(`${id}: ${got}`).toBe(`${id}: ok`);
+        checked += 1;
       }
-      // Rows that reject at the header stage must agree exactly; rows the
-      // header admits continue to token/codec stages this test does not run.
-      if (expectedCode === "KELD-IPC-005") expect(`${id}: ${got}`).toBe(`${id}: KELD-IPC-005`);
-      else expect(`${id}: ${got}`).toBe(`${id}: ok`);
-      checked += 1;
-    }
-    expect(checked).toBeGreaterThanOrEqual(6);
-  });
+      expect(checked).toBeGreaterThanOrEqual(6);
+    },
+  );
 });

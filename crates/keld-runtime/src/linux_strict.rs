@@ -901,7 +901,7 @@ fn validate_bubblewrap(path: &Path) -> Result<PathBuf, LinuxStrictError> {
     Ok(path)
 }
 
-fn validate_trusted_ancestors(
+pub(crate) fn validate_trusted_ancestors(
     path: &Path,
     current_uid: u32,
     phase: &'static str,
@@ -979,7 +979,7 @@ fn validate_role_root(path: &Path) -> Result<PathBuf, LinuxStrictError> {
         .map_err(|source| LinuxStrictError::new("role root path", source.to_string()))
 }
 
-fn current_effective_uid() -> Result<u32, LinuxStrictError> {
+pub(crate) fn current_effective_uid() -> Result<u32, LinuxStrictError> {
     let status = fs::read_to_string("/proc/self/status")
         .map_err(|source| LinuxStrictError::new("current UID", source.to_string()))?;
     let uid = status

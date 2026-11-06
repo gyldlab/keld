@@ -134,7 +134,7 @@ impl HostGuardian {
 
     /// Records an accepted KEL-96 Quit before its correlated reply can let
     /// Bun exit cooperatively. This writes one non-authority control byte to
-    /// the host-exclusive liveness pipe; only [`run_supervised`] accepts it.
+    /// the host-exclusive liveness pipe; only [`super::run_supervised`] accepts it.
     /// Group termination still begins only when [`Self::shutdown`] closes the
     /// writer, so the Quit reply can be published first.
     ///

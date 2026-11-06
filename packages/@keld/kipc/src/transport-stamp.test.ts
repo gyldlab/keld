@@ -9,8 +9,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { TRANSPORT_STAMP_PREFIX, isCallError, stampTransport, verifyTransportStamp } from "./transport.ts";
-import { countedOpenAndReport, runLayout, transportPath } from "../test/bundle-layout.ts";
+import {
+  TRANSPORT_STAMP_PREFIX,
+  isCallError,
+  stampTransport,
+  verifyTransportStamp,
+} from "./transport.ts";
+import {
+  countedOpenAndReport,
+  runLayout,
+  transportPath,
+} from "../test/bundle-layout.ts";
 
 const canonicalPath = join(import.meta.dir, "transport.ts");
 const canonical = readFileSync(canonicalPath);
@@ -50,15 +59,25 @@ describe("the transport stamp", () => {
       "empty file": "",
     };
     const outcomes = Object.fromEntries(
-      Object.entries(cases).map(([name, source]) => [name, stampCode(new TextEncoder().encode(source))]),
+      Object.entries(cases).map(([name, source]) => [
+        name,
+        stampCode(new TextEncoder().encode(source)),
+      ]),
     );
-    expect(outcomes).toEqual(Object.fromEntries(Object.keys(cases).map((name) => [name, "KELD-IPC-005"])));
+    expect(outcomes).toEqual(
+      Object.fromEntries(
+        Object.keys(cases).map((name) => [name, "KELD-IPC-005"]),
+      ),
+    );
   });
 
   test("the refusal names the file and the fix", () => {
     let message = "";
     try {
-      verifyTransportStamp(new TextEncoder().encode(unstamped(canonical.toString("utf8"))), "transport.js");
+      verifyTransportStamp(
+        new TextEncoder().encode(unstamped(canonical.toString("utf8"))),
+        "transport.js",
+      );
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }
@@ -84,10 +103,17 @@ describe("a transpiled transport-only build", () => {
       closeOnOpen: true,
       ready: (out) => out.includes("main-open="),
       async write(dir: string): Promise<string> {
-        const built = await Bun.build({ entrypoints: [canonicalPath], target: "bun", format: "esm" });
+        const built = await Bun.build({
+          entrypoints: [canonicalPath],
+          target: "bun",
+          format: "esm",
+        });
         expect(built.success).toBe(true);
         const js = await built.outputs[0]!.text();
-        await Bun.write(join(dir, "kipc-transport.js"), restamp ? stampTransport(js) : js);
+        await Bun.write(
+          join(dir, "kipc-transport.js"),
+          restamp ? stampTransport(js) : js,
+        );
         await Bun.write(join(dir, "main.js"), opener("kipc-transport.js"));
         return "main.js";
       },
@@ -96,7 +122,10 @@ describe("a transpiled transport-only build", () => {
 
   test("is refused unstamped, before anything connects", async () => {
     const outcome = await run(false);
-    expect({ stdout: outcome.stdout.trim(), connections: outcome.connections }).toEqual({
+    expect({
+      stdout: outcome.stdout.trim(),
+      connections: outcome.connections,
+    }).toEqual({
       stdout: "main-open=KELD-IPC-005",
       connections: 0,
     });
@@ -121,9 +150,16 @@ test("a deliberately restamped app bundle cannot open a nested link from its tra
     async write(dir: string): Promise<string> {
       const entry = join(dir, "entry.ts");
       await Bun.write(entry, countedOpenAndReport);
-      const built = await Bun.build({ entrypoints: [entry], target: "bun", format: "esm" });
+      const built = await Bun.build({
+        entrypoints: [entry],
+        target: "bun",
+        format: "esm",
+      });
       expect(built.success).toBe(true);
-      await Bun.write(join(dir, "transport.js"), stampTransport(await built.outputs[0]!.text()));
+      await Bun.write(
+        join(dir, "transport.js"),
+        stampTransport(await built.outputs[0]!.text()),
+      );
       await Bun.write(join(dir, "main.js"), 'import "./transport.js";\n');
       return "main.js";
     },
@@ -140,13 +176,14 @@ test("a deliberately restamped app bundle cannot open a nested link from its tra
 // spawned fails only the Worker's own load (025, the Worker died before HELLO).
 describe("the stamp read and the Worker's self-entry are separate reads of the transport file", () => {
   const seamCall =
-    "const seam = globalThis[Symbol.for(\"keld.kipc.worker-link-test-seam/v1\")];\n" +
+    'const seam = globalThis[Symbol.for("keld.kipc.worker-link-test-seam/v1")];\n' +
     "const words = new Int32Array(new SharedArrayBuffer(4 * WORKER_LINK_TEST_WORDS.LENGTH));\n";
   const report =
     '  () => console.log("main-open=opened"),\n' +
     '  (err) => console.log(`main-open=${isCallError(err) ? err.code : "untyped"}`),\n' +
     ");\n";
-  const options = "{ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3], callReceivers: [] } }";
+  const options =
+    "{ link: process.env.KELD_APP_LINK, receive: { eventChannels: [3], callReceivers: [] } }";
 
   function stagedCopy(entry: string) {
     return {
@@ -176,7 +213,10 @@ describe("the stamp read and the Worker's self-entry are separate reads of the t
           report,
       ),
     );
-    expect({ stdout: outcome.stdout.trim(), connections: outcome.connections }).toEqual({
+    expect({
+      stdout: outcome.stdout.trim(),
+      connections: outcome.connections,
+    }).toEqual({
       stdout: "removed=after-stamp\nmain-open=KELD-IPC-025",
       connections: 0,
     });
@@ -184,9 +224,17 @@ describe("the stamp read and the Worker's self-entry are separate reads of the t
 
   test("a copy removed before open fails the stamp read (005) and no Worker is spawned", async () => {
     const outcome = await runLayout(
-      stagedCopy(prelude + "rmSync(copy);\n" + `WorkerLink.open(${options}).then(\n` + report),
+      stagedCopy(
+        prelude +
+          "rmSync(copy);\n" +
+          `WorkerLink.open(${options}).then(\n` +
+          report,
+      ),
     );
-    expect({ stdout: outcome.stdout.trim(), connections: outcome.connections }).toEqual({
+    expect({
+      stdout: outcome.stdout.trim(),
+      connections: outcome.connections,
+    }).toEqual({
       stdout: "main-open=KELD-IPC-005",
       connections: 0,
     });

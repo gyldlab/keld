@@ -33,6 +33,23 @@ pub fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
     to_allocvec(value).map_err(IpcError::Codec)
 }
 
+/// Encodes into caller-owned storage and returns only its used prefix.
+///
+/// Uses the same postcard schema as [`encode`], without allocating an output
+/// buffer. An error may leave a partial encoding in `buffer`; callers must not
+/// transmit that storage unless this function succeeds.
+///
+/// # Errors
+///
+/// Returns [`IpcError::Codec`] if serialization fails or `buffer` is too small.
+pub fn encode_into<'buffer, T: serde::Serialize + ?Sized>(
+    value: &T,
+    buffer: &'buffer mut [u8],
+) -> Result<&'buffer [u8], IpcError> {
+    let used = postcard::to_slice(value, buffer).map_err(IpcError::Codec)?;
+    Ok(used)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +75,42 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("KELD-IPC-003"), "{msg}");
         assert!(matches!(err, IpcError::Codec(_)));
+    }
+
+    #[test]
+    fn caller_storage_preserves_bytes_address_and_unwritten_tail() {
+        let request = EchoRequest {
+            message: "kipc".to_owned(),
+            count: 3,
+        };
+        let mut storage = [0xa5; 32];
+        let address = storage.as_ptr();
+        let used = encode_into(&request, &mut storage).expect("encode in caller storage");
+        assert_eq!(used, &[0x04, b'k', b'i', b'p', b'c', 0x03]);
+        assert_eq!(used.as_ptr(), address);
+        assert_eq!(used, encode(&request).expect("same owning codec"));
+        assert_eq!(&storage[6..], &[0xa5; 26]);
+    }
+
+    #[test]
+    fn caller_storage_exhaustion_is_typed_and_storage_can_be_reused() {
+        let mut storage = [0; 4];
+        assert!(matches!(
+            encode_into(&u32::MAX, &mut storage),
+            Err(IpcError::Codec(postcard::Error::SerializeBufferFull))
+        ));
+        assert_eq!(
+            encode_into(&0_u32, &mut storage).expect("reuse after error"),
+            &[0]
+        );
+        assert_eq!(
+            encode_into("ok", &mut storage).expect("unsized input"),
+            &[2, b'o', b'k']
+        );
+        assert!(matches!(
+            encode_into(&1_u8, &mut []),
+            Err(IpcError::Codec(postcard::Error::SerializeBufferFull))
+        ));
     }
 
     #[test]

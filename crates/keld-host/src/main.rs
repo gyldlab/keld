@@ -110,9 +110,7 @@ fn main() {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
-    let result = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
-        .map_err(keld_core::app_session::HostRunFailure::from)
-        .and_then(keld_core::app_session::run_guarded);
+    let result = run_validated_no_flag();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let retains_main_custody = result
         .as_ref()
@@ -145,6 +143,33 @@ fn main() {
     }
 }
 
+fn run_validated_no_flag() -> Result<(), keld_core::app_session::HostRunFailure> {
+    let boot = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
+        .map_err(keld_core::app_session::HostRunFailure::from)?;
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        keld_core::app_session::run_guarded(boot, pre_init_terminal)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        keld_core::app_session::run_guarded(boot)
+    }
+}
+
+/// A stalled native Init cannot be unwound: its blocked main stack retains
+/// native window/presentation/profile custody and the live dev stage through exit.
+#[cfg(any(target_os = "macos", windows))]
+fn pre_init_terminal(error: &keld_core::app_session::HostAppError) -> ! {
+    let mut stderr = std::io::stderr().lock();
+    #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+    if env::var_os("KELD_T1B_STALL_BEFORE_INIT").is_some() {
+        let _ = writeln!(stderr, "KELD_T1B_TERMINAL_ENTERED");
+    }
+    let _ = writeln!(stderr, "{error}");
+    let _ = stderr.flush();
+    process::exit(1)
+}
+
 #[cfg(windows)]
 fn handle_windows_private_role(args: &[std::ffi::OsString]) -> bool {
     if handle_profile_test_root_probe(args) {
@@ -170,7 +195,7 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         Some("--keld-profile-identity-fixture-v1") => {
             if args.len() != 2 {
                 eprintln!(
-                    "KELD-CORE-044: malformed private profile identity fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                    "KELD-CORE-050: malformed private profile identity fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
                 );
                 process::exit(2);
             }
@@ -186,7 +211,7 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         Some("--keld-profile-presence-fixture-v1") => {
             if args.len() != 2 {
                 eprintln!(
-                    "KELD-CORE-044: malformed private profile presence fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                    "KELD-CORE-050: malformed private profile presence fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
                 );
                 process::exit(2);
             }
@@ -202,7 +227,7 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         Some("--keld-profile-purge-fixture-v1") => {
             if args.len() != 2 {
                 eprintln!(
-                    "KELD-CORE-044: malformed private profile purge fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                    "KELD-CORE-050: malformed private profile purge fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
                 );
                 process::exit(2);
             }
@@ -218,7 +243,7 @@ fn run_macos_profile_fixture_role(args: &[String]) -> bool {
         Some("--keld-profile-webview-fixture-v1") => {
             if args.len() != 2 {
                 eprintln!(
-                    "KELD-CORE-044: malformed private profile WebView fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                    "KELD-CORE-050: malformed private profile WebView fixture invocation. Launch it only from the KEL-135 acceptance harness, with no further arguments."
                 );
                 process::exit(2);
             }
@@ -243,13 +268,13 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
     {
         if args.len() != 2 {
             eprintln!(
-                "KELD-CORE-044: profile test-root probe arguments are malformed. Launch it only from the KEL-135 acceptance harness, with no further arguments."
+                "KELD-CORE-050: profile test-root probe arguments are malformed. Launch it only from the KEL-135 acceptance harness, with no further arguments."
             );
             process::exit(2);
         }
         let Some(root) = env::var_os("KELD_PROFILE_TEST_ROOT") else {
             eprintln!(
-                "KELD-CORE-044: profile test-root probe has no selected root. Set KELD_PROFILE_TEST_ROOT before launching the probe."
+                "KELD-CORE-050: profile test-root probe has no selected root. Set KELD_PROFILE_TEST_ROOT before launching the probe."
             );
             process::exit(2);
         };
@@ -259,7 +284,7 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
     #[cfg(not(feature = "kel135-profile-test-root"))]
     {
         eprintln!(
-            "KELD-CORE-044: profile test-root probe is unavailable in this host. Build the debug host with `kel135-profile-test-root` to use it."
+            "KELD-CORE-050: profile test-root probe is unavailable in this host. Build the debug host with `kel135-profile-test-root` to use it."
         );
         process::exit(2);
     }
@@ -269,24 +294,24 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
 fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), String> {
     if args.len() != 4 {
         return Err(String::from(
-            "KELD-CORE-044: private Windows dev-stage cleanup invocation is malformed. Launch it only through `keld dev`.",
+            "KELD-CORE-050: private Windows dev-stage cleanup invocation is malformed. Launch it only through `keld dev`.",
         ));
     }
     let root = PathBuf::from(&args[2]);
     let host_pid = args[3].to_string_lossy().parse::<u32>().map_err(|source| {
         format!(
-            "KELD-CORE-044: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
+            "KELD-CORE-050: private Windows dev-stage cleanup PID is invalid: {source}. Relaunch through `keld dev`."
         )
     })?;
     let attempt_job =
         keld_runtime::windows_job::WindowsProcessJob::adopt_cleanup_observer_from_stderr(host_pid)
-            .map_err(|error| format!("KELD-CORE-046: cleanup Job admission failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`."))?;
+            .map_err(|error| format!("KELD-CORE-053: cleanup Job admission failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`."))?;
     let cleanup = keld_core::app_session::WindowsDevStageCleanup::prepare(&root, host_pid)
         .map_err(|error| error.to_string())?;
     println!("KELD_WINDOWS_DEV_STAGE_CLEANUP_READY");
     std::io::stdout().flush().map_err(|source| {
         format!(
-            "KELD-CORE-046: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
+            "KELD-CORE-053: private Windows dev-stage cleanup readiness failed: {source}. Relaunch through `keld dev`."
         )
     })?;
     let signal = keld_runtime::windows_job::WindowsProcessJob::await_cleanup_release_v1();
@@ -305,7 +330,7 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
         attempt_job.terminate_and_wait_attached(std::time::Duration::from_secs(30))
     };
     family_cleanup.map_err(|error| {
-        format!("KELD-CORE-046: attempt process-family cleanup failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`.")
+        format!("KELD-CORE-053: attempt process-family cleanup failed: {error}. Let the staged host exit, remove the stage by hand if it remains, and relaunch through `keld dev`.")
     })?;
     cleanup
         .wait_and_delete_after_family_exit(&attempt_job)
@@ -316,10 +341,10 @@ fn run_windows_dev_stage_cleanup(args: &[std::ffi::OsString]) -> Result<(), Stri
             | keld_runtime::windows_job::WindowsCleanupReleaseSignal::LauncherLost,
         ) => Ok(()),
         Ok(keld_runtime::windows_job::WindowsCleanupReleaseSignal::Malformed) => Err(String::from(
-            "KELD-CORE-046: malformed cleanup release was refused after safely reaping the exact attempt. Relaunch through `keld dev`; only its release pipe may end the sentinel.",
+            "KELD-CORE-053: malformed cleanup release was refused after safely reaping the exact attempt. Relaunch through `keld dev`; only its release pipe may end the sentinel.",
         )),
         Err(error) => Err(format!(
-            "KELD-CORE-046: cleanup control pipe failed; exact attempt was safely reaped: {error}. Relaunch through `keld dev`."
+            "KELD-CORE-053: cleanup control pipe failed; exact attempt was safely reaped: {error}. Relaunch through `keld dev`."
         )),
     }
 }
@@ -361,19 +386,15 @@ fn dev_stage_cleanup_root_for(
 
 #[cfg(target_os = "macos")]
 fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
-    if args.len() != 6 {
-        return Err(String::from(
-            "KELD-CORE-044: private guardian invocation is malformed. Launch it only through the validated no-flag host.",
-        ));
-    }
+    let native_facade = parse_guardian_boot_mode(args)?;
     let root = PathBuf::from(&args[2]);
     let entry = PathBuf::from(&args[3]);
     let expected_dev = args[4]
         .parse::<u64>()
-        .map_err(|source| format!("KELD-CORE-044: invalid private entry device — {source}. Relaunch the validated no-flag host."))?;
+        .map_err(|source| format!("KELD-CORE-050: invalid private entry device — {source}. Relaunch the validated no-flag host."))?;
     let expected_ino = args[5]
         .parse::<u64>()
-        .map_err(|source| format!("KELD-CORE-044: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
+        .map_err(|source| format!("KELD-CORE-050: invalid private entry inode — {source}. Relaunch the validated no-flag host."))?;
     // The guardian is the last process executing from the staged directory:
     // the host parent exits when its CLI lease closes. Re-derive the exact
     // nonce from this executable rather than trusting the role argument.
@@ -388,19 +409,30 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
                 &entry,
                 expected_dev,
                 expected_ino,
+                native_facade,
                 app_link,
             )
         },
         std::io::stdout(),
     );
-    let cleanup = cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(format!(
-            "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
-            cleanup_root.display()
-        )),
-    });
+    // Schema-two facade startup can exit directly from the coordinator while
+    // AppKit is still blocked before Init. Its parent Host alone can prove
+    // native release and delete the stage on ordinary return. This flag is
+    // overwritten by that Host on the authenticated Guardian spawn.
+    let cleanup = if env::var_os("KELD_HOST_OWNS_FACADE_STAGE_CLEANUP")
+        == Some(std::ffi::OsString::from("1"))
+    {
+        cleanup_root.map(|_| ())
+    } else {
+        cleanup_root.and_then(|cleanup_root| match fs::remove_dir_all(&cleanup_root) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(format!(
+                "KELD-CORE-037: dev-stage cleanup failed for `{}` — {source}. Remove that owner-private nonce directory before relaunching.",
+                cleanup_root.display()
+            )),
+        })
+    };
     let report = report.map_err(|error| {
         format!(
             "KELD-CORE-037: supervised Bun guardian failed — {error}. Fix the Bun app failure and relaunch the no-flag host."
@@ -421,12 +453,27 @@ fn run_supervised_guardian(args: &[String]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn parse_guardian_boot_mode(args: &[String]) -> Result<bool, String> {
+    if args.len() == 7 {
+        match args[6].as_str() {
+            "0" => return Ok(false),
+            "1" => return Ok(true),
+            _ => {}
+        }
+    }
+    Err(String::from(
+        "KELD-CORE-050: private guardian invocation is malformed. Launch it only through the validated no-flag host.",
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn guardian_bun_command(
     cleanup_validation: &Result<PathBuf, String>,
     root: &Path,
     entry: &Path,
     expected_dev: u64,
     expected_ino: u64,
+    native_facade: bool,
     app_link: &str,
 ) -> Result<Command, keld_runtime::RuntimeError> {
     cleanup_validation
@@ -442,12 +489,19 @@ fn guardian_bun_command(
     // No `pre_exec` hook here: the Guardian's SpawnAdmission gate must be
     // the only one, so a child refused before its exec permit is its whole
     // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
+    // Recheck the staged cwd on every generation: the one admission owner refuses
+    // runtime config, which can override both CLI define and preload, and any link.
     let mut command = Command::new("bun");
     command
+        .args(keld_runtime::primary::staged_bun_launch_args(
+            root,
+            native_facade,
+        )?)
         .arg("run")
         .arg(root.join(entry))
         .current_dir(root)
         .env("KELD_APP_LINK", app_link)
+        .env_remove(keld_runtime::primary::BUN_OPTIONS_ENV)
         .stdin(Stdio::null());
     Ok(command)
 }
@@ -471,19 +525,19 @@ fn reconcile_guardian_result<T>(
 fn guardian_stage_cleanup_root(argument: &Path) -> Result<PathBuf, String> {
     let executable = env::current_exe().map_err(|source| {
         format!(
-            "KELD-CORE-045: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+            "KELD-CORE-052: guardian stage identity failed — {source}. Relaunch through `keld dev`."
         )
     })?;
     let expected = dev_stage_cleanup_root_for(&executable, Some(std::ffi::OsStr::new("stdin-v1")))
-        .ok_or_else(|| String::from("KELD-CORE-045: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
+        .ok_or_else(|| String::from("KELD-CORE-052: guardian is not executing from a validated private dev stage. Relaunch through `keld dev`."))?;
     let argument = argument.canonicalize().map_err(|source| {
         format!(
-            "KELD-CORE-045: guardian stage identity failed — {source}. Relaunch through `keld dev`."
+            "KELD-CORE-052: guardian stage identity failed — {source}. Relaunch through `keld dev`."
         )
     })?;
     if argument != expected {
         return Err(String::from(
-            "KELD-CORE-045: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+            "KELD-CORE-052: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
         ));
     }
     Ok(expected)
@@ -524,8 +578,8 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use super::{
-        dev_stage_cleanup_root_for, guardian_bun_command, reconcile_guardian_result,
-        reopen_validated_entry,
+        dev_stage_cleanup_root_for, guardian_bun_command, parse_guardian_boot_mode,
+        reconcile_guardian_result, reopen_validated_entry,
     };
 
     #[test]
@@ -550,12 +604,13 @@ mod tests {
         // attributable to the stage result alone and not to the inode check.
         let error = guardian_bun_command(
             &Err(String::from(
-                "KELD-CORE-045: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
+                "KELD-CORE-052: guardian stage argument does not match its validated executable stage. Relaunch through `keld dev`.",
             )),
             temp.path(),
             relative,
             identity.dev(),
             identity.ino(),
+            true,
             "/tmp/link#token",
         )
         .expect_err("failed stage validation must refuse the Bun command");
@@ -574,10 +629,255 @@ mod tests {
             relative,
             identity.dev(),
             identity.ino(),
+            true,
             "/tmp/link#token",
         )
         .expect("validated stage must still produce the Bun command");
         assert_eq!(command.get_program(), "bun");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".as_ref(),
+                "run".as_ref(),
+                entry.as_os_str()
+            ]
+        );
+
+        fs::create_dir(temp.path().join("src")).expect("transport directory");
+        let sidecar = temp.path().join("src/kipc-transport.ts");
+        fs::write(&sidecar, "export {};\n").expect("transport sidecar");
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            relative,
+            identity.dev(),
+            identity.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect("canonical sidecar launch");
+        let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(
+            args[0],
+            "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
+        );
+        assert_eq!(args[1], format!("--preload={}", sidecar.display()).as_str());
+        assert_eq!(args[2], "run");
+        assert_eq!(args[3], entry.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(temp.path()));
+        // Bun config can replace a CLI preload. Qualify every generation,
+        // including recovery after a previously absent config appears.
+        for config in ["bunfig.toml", ".bunfig.toml"] {
+            let config_path = temp.path().join(config);
+            fs::write(&config_path, "preload = [\"./app-hook.ts\"]\n").expect("hostile config");
+            let error = guardian_bun_command(
+                &Ok(temp.path().to_path_buf()),
+                temp.path(),
+                relative,
+                identity.dev(),
+                identity.ino(),
+                true,
+                "/tmp/link#token",
+            )
+            .expect_err("ambient preload override must refuse launch");
+            assert!(error.to_string().contains("runtime config"), "{error}");
+            fs::remove_file(config_path).expect("restore qualified stage");
+        }
+    }
+
+    #[test]
+    fn guardian_freezes_mode_with_and_without_a_transport_sidecar() {
+        let temp = tempfile::tempdir().expect("boot mode fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        for with_sidecar in [false, true] {
+            let sidecar = temp.path().join("src/kipc-transport.ts");
+            if with_sidecar {
+                fs::create_dir_all(sidecar.parent().expect("sidecar directory"))
+                    .expect("create src");
+                fs::write(&sidecar, "export {};\n").expect("sidecar fixture");
+            }
+            for native_facade in [false, true] {
+                let command = guardian_bun_command(
+                    &Ok(temp.path().to_path_buf()),
+                    temp.path(),
+                    std::path::Path::new("entry.ts"),
+                    identity.dev(),
+                    identity.ino(),
+                    native_facade,
+                    "/tmp/link#token",
+                )
+                .expect("raw no-sidecar launch remains supported");
+                let mut expected = vec![std::ffi::OsString::from(if native_facade {
+                    "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\""
+                } else {
+                    "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"0\""
+                })];
+                if with_sidecar {
+                    expected.push(format!("--preload={}", sidecar.display()).into());
+                }
+                expected.extend(["run".into(), entry.as_os_str().to_owned()]);
+                assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn guardian_accepts_only_an_exact_private_boot_mode_argument() {
+        let mut args: Vec<String> = ["host", "guardian", "root", "entry", "1", "2"]
+            .map(String::from)
+            .into();
+        assert!(
+            parse_guardian_boot_mode(&args)
+                .expect_err("missing mode")
+                .starts_with("KELD-CORE-050:")
+        );
+        for mode in ["", "true", "false", "01", "2", "-1", " 1", "1 "] {
+            args.push(mode.into());
+            assert!(
+                parse_guardian_boot_mode(&args)
+                    .expect_err("strict private bit")
+                    .starts_with("KELD-CORE-050:")
+            );
+            args.pop();
+        }
+        for (mode, expected) in [("0", false), ("1", true)] {
+            args.push(mode.into());
+            assert_eq!(parse_guardian_boot_mode(&args), Ok(expected));
+            args.push("extra".into());
+            assert!(
+                parse_guardian_boot_mode(&args).is_err(),
+                "extra arguments cannot be ignored"
+            );
+            args.truncate(6);
+        }
+    }
+
+    #[test]
+    fn guardian_rejects_runtime_config_without_a_transport_sidecar() {
+        let temp = tempfile::tempdir().expect("config admission fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        for native_facade in [false, true] {
+            for name in ["bunfig.toml", ".bunfig.toml"] {
+                let config = temp.path().join(name);
+                fs::write(
+                    &config,
+                    "[define]\n\"process.env.KELD_NATIVE_WINDOW_FACADE\" = '\"0\"'\n",
+                )
+                .expect("hostile staged config");
+                let error = guardian_bun_command(
+                    &Ok(temp.path().to_path_buf()),
+                    temp.path(),
+                    std::path::Path::new("entry.ts"),
+                    identity.dev(),
+                    identity.ino(),
+                    native_facade,
+                    "/tmp/link#token",
+                )
+                .expect_err("runtime config must refuse before entry execution");
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("runtime config {name}")),
+                    "{error}"
+                );
+                fs::remove_file(config).expect("restore stage");
+            }
+        }
+    }
+
+    #[test]
+    fn guardian_removes_inherited_bun_options_before_the_canonical_preload() {
+        let temp = tempfile::tempdir().expect("inherited preload fixture");
+        let entry = temp.path().join("entry.ts");
+        fs::write(&entry, "console.log('ENTRY_REACHED');\n").expect("entry fixture");
+        let identity = fs::metadata(&entry).expect("entry identity");
+        let command = guardian_bun_command(
+            &Ok(temp.path().to_path_buf()),
+            temp.path(),
+            std::path::Path::new("entry.ts"),
+            identity.dev(),
+            identity.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect("qualified command");
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "BUN_OPTIONS" && value.is_none()),
+            "ambient Bun arguments must be removed at the actual child command"
+        );
+    }
+
+    #[test]
+    fn guardian_inherited_preload_cannot_run_before_qualified_capture() {
+        let temp = tempfile::tempdir().expect("actual Bun inherited preload fixture");
+        fs::create_dir(temp.path().join("src")).expect("sidecar directory");
+        fs::write(
+            temp.path().join("src/kipc-transport.ts"),
+            "console.log('QUALIFIED_CAPTURE');\n",
+        )
+        .expect("independent preload order marker");
+        fs::write(
+            temp.path().join("injected.ts"),
+            "console.log('INHERITED_PRELOAD_EXECUTED');\n",
+        )
+        .expect("independent hostile preload marker");
+        fs::write(
+            temp.path().join("entry.ts"),
+            "console.log('ORIGINAL_ENTRY_EXECUTED');\n",
+        )
+        .expect("independent original entry marker");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "tests::guardian_inherited_preload_child",
+                "--nocapture",
+            ])
+            .env("KELD_GUARDIAN_PRELOAD_FIXTURE", temp.path())
+            .env(
+                "BUN_OPTIONS",
+                format!("--preload={}", temp.path().join("injected.ts").display()),
+            )
+            .output()
+            .expect("isolated inherited-environment child");
+        assert!(
+            output.status.success(),
+            "Bun command child failed: {output:?}"
+        );
+        let stdout = String::from_utf8(output.stdout).expect("marker output");
+        assert!(
+            stdout.contains("QUALIFIED_CAPTURE\nORIGINAL_ENTRY_EXECUTED\n"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("INHERITED_PRELOAD_EXECUTED"), "{stdout}");
+    }
+
+    #[test]
+    fn guardian_inherited_preload_child() {
+        let Some(root) = std::env::var_os("KELD_GUARDIAN_PRELOAD_FIXTURE") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let identity = fs::metadata(root.join("entry.ts")).expect("entry identity");
+        let output = guardian_bun_command(
+            &Ok(root.clone()),
+            &root,
+            std::path::Path::new("entry.ts"),
+            identity.dev(),
+            identity.ino(),
+            true,
+            "/tmp/link#token",
+        )
+        .expect("actual shipping Bun command")
+        .output()
+        .expect("execute actual Bun command");
+        assert!(output.status.success(), "Bun failed: {output:?}");
+        print!("{}", String::from_utf8(output.stdout).expect("Bun stdout"));
     }
 
     #[test]

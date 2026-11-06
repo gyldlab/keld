@@ -195,6 +195,9 @@ apply_consumer_contract() {
     if grep -Fxq 'input_mermaid=true' <<<"$consumer_contract"; then
         mermaid="$TRUE"
     fi
+    if grep -Fxq 'input_hygiene=true' <<<"$consumer_contract"; then
+        hygiene="$TRUE"
+    fi
 }
 
 load_workspace_metadata() {
@@ -955,7 +958,8 @@ classify_stream() {
     if [[ "$mode" == paths ]]; then
         contract_options+=(--paths-only)
     else
-        # Base tree owns crate membership; no reader digest persists (GH-1275).
+        # Membership (a crate path the base did not track) is read from the base
+        # tree; nothing about reader bytes is recorded between changes (GH-1275).
         contract_options+=(--base "$base")
     fi
     if [[ ${#changed_files[@]} -gt 0 ]]; then

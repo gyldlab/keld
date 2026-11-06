@@ -1,30 +1,32 @@
 # Agent playbook index
 
-Use this file only to select the minimum task-relevant guidance. Product behavior
-remains owned by `docs/architecture/`; development lifecycle remains owned by
-`docs/agents/workflow.md`.
+Select task-relevant guidance here. Product behavior: `docs/architecture/`.
+Maintainer lifecycle: `docs/agents/workflow.md`.
 
 ## Precedence
 
-Root [`AGENTS.md`](../AGENTS.md) is the binding repository floor. The nearest crate
-`AGENTS.md` adds path-local constraints and MUST NOT weaken the root. Topic playbooks
-under `.agents/` are loaded only when their trigger matches the task. If applicable
-instructions conflict, stop mutation, cite both rules, and ask one focused question;
-do not silently choose the less restrictive rule.
+Root [`AGENTS.md`](../AGENTS.md) binds every task; nearest crate rules add constraints.
+Load playbooks only for matching triggers. On conflicting instructions, stop mutation,
+cite both rules and ask one focused question.
+
+External contributors and their coding agents read workflow § Public contributions
+and follow [public claims](../CONTRIBUTING.md#claim-an-issue-before-editing).
+Internal tracker/worktree/branch/handoff/merge steps require maintainer authority;
+other engineering playbooks still apply.
 
 ## Task routing
 
 | Task or path | Read |
 |---|---|
 | Any non-trivial design, diagnosis, review, or implementation | Root `AGENTS.md` § Atomic problem-solving protocol, relevant architecture and nearest crate `AGENTS.md`; query only relevant-area entries in `docs/agents/learnings.md` |
-| Starting, resuming, or closing non-trivial repository work: implementation, research, audit, review, or cleanup | [`docs/agents/workflow.md`](../docs/agents/workflow.md) |
-| Using an issue tracker, creating/using a branch or worktree, OS-scoped acceptance, or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
+| Starting, resuming, or closing non-trivial repository work | [`docs/agents/workflow.md`](../docs/agents/workflow.md) (external: § Public contributions only) |
+| Maintainer tracker, branch/worktree, OS acceptance or handoff | [`docs/agents/workflow.md`](../docs/agents/workflow.md), [`coordination.md`](coordination.md), and [`review.md`](review.md) for branch operations |
 | Opening/updating/rebasing/pushing/reviewing a PR or resolving review feedback | [`review.md`](review.md); CodeRabbit fixes additionally use [`autofix/SKILL.md`](skills/autofix/SKILL.md) and [`autofix/github.md`](skills/autofix/github.md) |
 | Editing GitHub Actions, the CI router/checkers, required checks, KeldBot, or branch protection | [`ci.md`](ci.md) and [`testing.md`](testing.md) |
 | Observed protocol failure or editing agent instructions, playbooks, workflow/templates, skills, repository harness assembly config, instruction budgets, or their CI enforcement | [`instructions.md`](instructions.md) and [`instruction-review/SKILL.md`](skills/instruction-review/SKILL.md) |
 | Editing generated docs, Mermaid, public documentation, or publishing/correcting a public technical audit | [`docs.md`](docs.md) and [`testing.md`](testing.md) |
 | Writing or changing a feature/architecture specification | [`docs/agents/spec-template.md`](../docs/agents/spec-template.md) and the governing architecture section |
-| Starting work on an issue when another agent or device may also hold it | `docs/agents/workflow.md` § Agent claim |
+| Maintainer issue another agent/device may hold | `docs/agents/workflow.md` § Agent claim |
 | Test-layout, placement, oversized tests, discovery or acceptance refactors | [`test-layout.md`](test-layout.md) |
 | Tests, bug fixes, compatibility, process boundaries, fuzzing, or platform behavior | [`testing.md`](testing.md) |
 | Add/change Mermaid under private research or synthesize external evidence | [`docs.md`](docs.md), [`testing.md`](testing.md), and [`research.md`](research.md) |
