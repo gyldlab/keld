@@ -10,6 +10,9 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use webview2_com::DocumentTitleChangedEventHandler;
+use windows::core::PWSTR;
+
 use super::super::WebEngine;
 use super::super::{FIXTURE_DEADLINE, blank_spec, failure};
 use super::{profile_fixture_engine, profile_fixture_root, run_renderer_until_quit};
@@ -125,8 +128,65 @@ fn later_nul_defect(
     None
 }
 
+/// After a malformed later call is refused, prove a distinct valid call changed
+/// the actual WebView2 document. The original NavigationReady cannot satisfy
+/// this oracle: only a newly registered native title-change callback can.
+fn prove_later_recovery(
+    engine: &mut crate::webview2::WebView2Engine,
+    id: WebviewId,
+    case: LaterNulCase,
+) -> Result<(), WvError> {
+    let webview = engine.view(id)?.webview.clone();
+    let (changed_tx, changed_rx) = mpsc::channel();
+    let callback = DocumentTitleChangedEventHandler::create(Box::new(move |_, _| {
+        let _ = changed_tx.send(());
+        Ok(())
+    }));
+    let mut token = 0_i64;
+    // SAFETY: the live WebView2, handler and token stay on the owning STA.
+    unsafe { webview.add_DocumentTitleChanged(&callback, &raw mut token) }
+        .map_err(failure)?;
+
+    let marker = match case {
+        LaterNulCase::Html => "keld-later-html-recovered",
+        LaterNulCase::Url => "keld-later-url-recovered",
+        LaterNulCase::Eval => "keld-later-eval-recovered",
+    };
+    let outcome = (|| -> Result<(), WvError> {
+        match case {
+            LaterNulCase::Html => engine.navigate(
+                id,
+                NavTarget::Html(format!("<!doctype html><title>{marker}</title>")),
+            )?,
+            LaterNulCase::Url => engine.navigate(
+                id,
+                NavTarget::Url(format!("data:text/html,%3Ctitle%3E{marker}%3C/title%3E")),
+            )?,
+            LaterNulCase::Eval => engine.eval(id, &format!("document.title = '{marker}';"))?,
+        }
+        // WebView2 fires this for a real changed document title, not for a
+        // successful Rust return or the already-observed initial navigation.
+        super::super::wait_with_pump(changed_rx).map_err(failure)?;
+        let mut title = PWSTR::null();
+        // SAFETY: the COM getter writes a caller-owned PWSTR on its creating STA.
+        unsafe { webview.DocumentTitle(&raw mut title) }.map_err(failure)?;
+        let observed = super::super::owned_string(title)?;
+        if observed != marker {
+            return Err(failure(format!(
+                "post-refusal native title mismatch: expected {marker:?}, got {observed:?}"
+            )));
+        }
+        println!("KELD_LATER_NUL_RECOVERED title={marker}");
+        Ok(())
+    })();
+    // SAFETY: remove the test observer on the same STA, even after a failed
+    // post-refusal operation; the production observer remains installed.
+    unsafe { webview.remove_DocumentTitleChanged(token) }.map_err(failure)?;
+    outcome
+}
 struct Creation {
-    events: mpsc::Receiver<crate::AppWindowEvent>,
+    events: Option<mpsc::Receiver<crate::AppWindowEvent>>,
+    ready_before_run: bool,
     refused_events: Option<mpsc::Receiver<crate::AppWindowEvent>>,
     defect: Option<WvError>,
 }
@@ -149,7 +209,8 @@ fn start_case(
             Ok(_) => {
                 // Drain the wrongly accepted document normally before reporting failure.
                 return Ok(Creation {
-                    events: bad_rx,
+                    events: Some(bad_rx),
+                    ready_before_run: false,
                     refused_events: None,
                     defect: Some(failure("initial navigation accepted an embedded NUL")),
                 });
@@ -168,14 +229,28 @@ fn start_case(
     // serving as the healthy document's independent NavigationReady witness.
     let (healthy_tx, events) = mpsc::channel();
     let live_id = engine.create_app(healthy, healthy_tx)?;
-    if let Some(case) = later {
+    let (events, ready_before_run) = if let Some(case) = later {
+        // Pump COM until the first real navigation completes. Otherwise a
+        // later navigation could cancel startup and its old Ready could be
+        // mistaken for post-refusal recovery.
+        let initial = super::super::wait_with_pump(events).map_err(failure)?;
+        if !matches!(initial, crate::AppWindowEvent::NavigationReady) {
+            defect = Some(failure(format!("first native navigation was not ready: {initial:?}")));
+        }
         let late_defect = later_nul_defect(engine, live_id, case);
         if defect.is_none() {
             defect = late_defect;
         }
-    }
+        if defect.is_none() {
+            defect = prove_later_recovery(engine, live_id, case).err();
+        }
+        (None, matches!(initial, crate::AppWindowEvent::NavigationReady))
+    } else {
+        (Some(events), false)
+    };
     Ok(Creation {
         events,
+        ready_before_run,
         refused_events,
         defect,
     })
@@ -224,6 +299,7 @@ fn first_navigation_after(
         };
         let Creation {
             events: events_rx,
+            ready_before_run,
             refused_events,
             defect,
         } = start_case(&mut engine, &spec, invalid, later)?;
@@ -233,10 +309,11 @@ fn first_navigation_after(
         // 15-second shipping navigation deadline; it remains a test RED.
         let (commands_tx, commands_rx) = mpsc::channel();
         let readiness = thread::spawn(move || {
-            let ready = matches!(
-                events_rx.recv_timeout(Duration::from_secs(20)),
-                Ok(crate::AppWindowEvent::NavigationReady)
-            );
+            let ready = ready_before_run
+                || matches!(
+                    events_rx.and_then(|rx| rx.recv_timeout(Duration::from_secs(20)).ok()),
+                    Some(crate::AppWindowEvent::NavigationReady)
+                );
             let command = if ready {
                 crate::AppWindowCommand::Quit
             } else {
