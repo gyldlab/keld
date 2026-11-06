@@ -874,6 +874,18 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-098
+
+- crate: @keld/electron
+- message: `ipcMain.handle()` was called for a channel that already has an invoke handler
+- fix: Keep one invoke handler per channel: call `ipcMain.removeHandler(channel)` before registering a replacement, or register the handler once. Electron raises the same error.
+
+## KELD-COMPAT-099
+
+- crate: @keld/electron
+- message: `ipcMain.handle()` received a handler that is not a function
+- fix: Pass the invoke handler function as the second argument of `ipcMain.handle(channel, handler)`; check the import or variable that produced the non-function value.
+
 ## KELD-CORE-030
 
 - crate: keld-core
