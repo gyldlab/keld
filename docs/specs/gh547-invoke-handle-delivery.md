@@ -10,7 +10,7 @@
 
 Let an admitted renderer call `ipcRenderer.invoke(topic, ...args)` and receive the result of the matching Bun main handler.
 Preserve the original caller, exact channel, argument order and terminal disposition throughout the call.
-Support Zettlr's macOS mount under the existing product and profile owners. Every AC below is a target, subject to section 10.
+Qualify Zettlr’s macOS development-stage mount under explicit Legacy. Qualify installed operation separately. Every AC below is a target, subject to section 10.
 
 - Exclude `sendSync`, `returnValue`, ports, subframes, service workers and per-frame or per-WebContents handler registration.
 - Exclude new transports, topic-to-numeric channel registries, manifest parsers, filesystem grants and app-specific handler substitutions.
@@ -139,16 +139,26 @@ These references do not transfer approval, wire ownership, device claims or prod
   - **At-risk precondition:** All live slots are occupied. Enough byte capacity remains. Keep handlers pending and all non-record checks valid.
   - **Expected RED:** The native owner admits one excess record. Observe admission before a downstream refusal can mask it.
 
-### AC-11: Qualify the installed Zettlr mount
+### AC-11: Qualify the Zettlr document workload in its recorded mode
 
-- **Given:** B-5 freezes the app, oracle, artifact, policy, required startup calls, input document and observer. The fixture text alone exceeds 4,096 UTF-8 bytes. Freeze its independently measured length and digest.
-- **When:** Launch the installed app on macOS. Reach its ready editor and execute the admitted open and edit invoke probes through the real preload.
+- **Given:** B-5 freezes the development stage, app, oracle, explicit Legacy policy, inputs and observer. An installed arm additionally requires B-7. The fixture text alone exceeds 4,096 UTF-8 bytes. Freeze its independently measured length and digest.
+- **When:** Launch the pinned app on macOS in the recorded mode. Verify AC-12’s initial store reads before the open and edit probes. Use the real preload.
 - **Then:** The editor mounts. Required startup calls and at least twenty consecutive documents-authority/push-updates invokes from one window settle without unexpected bridge-floor errors.
   Verify opened text bytes/digest, final edit, and Host-observed setDocumentEdited(true) independently.
 - **Negative control:**
   - **Single fault:** Remove only the shipping registration for `documents-authority`.
   - **At-risk precondition:** The unchanged real app reaches an admitted `get-document` request for that topic. Other startup and file-input prerequisites pass.
   - **Expected RED:** The requested document content does not appear. The missing-handler receipt identifies the failed request. A visible window alone cannot qualify mount.
+
+### AC-12: Prove both overlapping mount reads reach the document store
+
+- **Given:** A non-null window ID selects a seeded pane tree. The main application's modified-file list contains a distinct nondefault marker. Both requests fit the approved credits.
+- **When:** Mount the real document-tree store. Hold the first `retrieve-tab-config` completion at its admission owner until `get-file-modification-status` arrives there.
+- **Then:** Record two overlapping, separately correlated `documents-provider` calls through the real preload. Verify the restored pane tree and modified paths from their initial replies. A logged failure, later update event or visible editor cannot satisfy either assertion.
+- **Negative control:**
+  - **Single fault:** Restore a one-pending-call limit at the shared renderer admission owner instead of the approved limit of at least two.
+  - **At-risk precondition:** Keep the first call’s slot occupied at that owner. The second store call reaches it with valid binding, grant, handler, byte capacity and all other credits.
+  - **Expected RED:** The second initial call is refused. Its required reply and store update are absent. Observe this before any later refresh can supply the marker.
 
 ## 4. Design
 
@@ -165,7 +175,7 @@ All design paragraphs below propose targets. Do not read a target as a current i
 | #466 registration | Topic to existing handler or absence | Listener delivery or consumed replacement. AC-1/AC-2/AC-3. |
 | #544 endpoints | Argument list or return value to bounded bytes | Silent unsupported-value conversion. AC-2/AC-4. |
 | KEL-142/GH547 outcomes | Handler outcome to approved single settlement | Text leakage, hidden failure or retry. AC-7/AC-8/AC-9. |
-| GH1354 evidence | Installed pinned app to observable mount | Synthetic success without the requested content. AC-11. |
+| GH1354 evidence | Mode-specific launch to store, document and edit effects | Missing initial reply or substituted text. AC-11/AC-12. |
 
 A named invocation does not grant filesystem or network authority. The application's own operations retain their normal owners and checks.
 The scope of `documents-provider` includes multiple commands. An exact topic grant does not validate an argument or make its path an OS grant.
@@ -260,9 +270,12 @@ FACT: Electron v44.4.5 sources below were retrieved 2026-11-06 at commit `694f45
 - [Renderer API](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/ipc-renderer.md#L157-L164): `Structured Clone Algorithm` describes Electron serialization. Keld's approved subset and limits require separate dispositions.
 
 FACT: The [Zettlr proof owner](https://github.com/gyldlab/keld/issues/1354) distinguishes app release v4.9.0, its Electron 44.9.1 lock, and the Electron 44.4.5 reference.
+FACT: The [program owner](https://github.com/gyldlab/keld/issues/1358) selects macOS `keld dev` with explicit Legacy. GH1354 keeps `install` unknown pending KEL-141 and rejects a dev-to-install promotion. Retrieved 2026-11-06.
 The following app sources were retrieved 2026-11-06 at `04128af42b58f7fea3f39f7b1efd597f5021f48a`:
 
 - [Preload](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/common/modules/preload/index.ts#L39): `ipcRenderer.invoke(channel, ...args)` forwards dynamic topics. A public wrapper is not a grant.
+- [Mount store](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/pinia/document-tree-store.ts#L185-L195): `retrieve-tab-config` starts for a non-null window ID. `get-file-modification-status` starts without awaiting it. Both catches log errors.
+- [Initial main results](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/documents/index.ts#L292-L320): `toJSON()` supplies that window’s pane tree. The modification branch returns actual modified paths.
 - [Open action](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/win-main/file-manager/util/item-composable.ts#L157-L169): `command: 'open-file'` accompanies the `documents-provider` invoke.
 - [Main handlers](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/documents/index.ts#L270-L301): `case 'get-document':` and `case 'push-updates':` select genuine application operations.
 
@@ -302,15 +315,23 @@ A qualified small-payload mechanism test must not qualify a product document abo
 - Prove zero, exact and excess boundaries separately for records, bytes, diagnostics and return capacity.
 - Publish actual native, Bun, Host and fixture identities and results. This task produces B-4 evidence.
 
-### T-4: Qualify the product mount, then enable only qualified scope
+### T-4: Qualify the development-stage mount
 
 - **Blocked by:** T-3, B-4, B-5
-- Run AC-11 with the approved exact app and mounted editor fixtures in the isolated configuration.
-- Record each required startup invoke and one open-file and update path through actual app handlers.
+- Launch the actual staged app via `keld dev` on macOS under explicit Legacy. Record stage/source, runtime, engine, policy and fixture identities.
+- Run AC-12 before AC-11. Seed nondefault state through legitimate app setup, not substituted replies or direct renderer-store writes. Label any second-window/remount fixture separately from a fresh-profile launch.
+- Record each initial correlation, both returned values, both store effects and both fault-arm outcomes. Then exercise the independent actual open/edit workload.
 - Record the encoded reply size separately. Wrapper metadata cannot meet the text-size requirement.
 - Run the large-text and push-updates cases after capacity qualification. Reject truncated or substituted document text.
-- Keep scoring with the corpus owner. Enable the qualified route only after B-6 closes and the production owner approves the final implementation.
-- A failed mount keeps the affected compatibility claim and production activation blocked.
+- T-4 produces B-6 evidence for the development mode only. No installer is required. Keep scoring with the corpus owner.
+- A staging pass cannot authorize installed activation or change the installation cell. Record `install: unknown` until its own qualification.
+
+### T-5: Qualify the installed mode separately
+
+- **Blocked by:** T-4, B-6, B-7
+- Launch the authenticated installed application through its installed entry. Record its installation identity, executable, resources, runtime, engine and observed launch path.
+- Repeat AC-12 and AC-11 with the real installed preload and handlers. Reuse expected fixture values, never staged receipts. Reject fallback to `keld dev`.
+- No package or no installed run means no installed result. Enable only the tested mode after the production owner approves its exact implementation and evidence.
 
 ## 7. Test plan & evidence
 
@@ -321,7 +342,8 @@ A qualified small-payload mechanism test must not qualify a product document abo
 | AC-5, AC-6 | Final Host guard decision, per-window effects, registry-backed wrapper identities, independent native frame retirement |
 | AC-7, AC-8 | Recorded reference text, own error properties, endpoint failure-byte sentinel check and public result discriminator |
 | AC-9, AC-10 | Ordered Host/native/Bun barriers, first-terminal transcript, retained-object census, one healthy successor |
-| AC-11 | Installed app identity, real preload/handler transcript, visible mounted editor and verified document/edit observables |
+| AC-11 | Stage or installed provenance, actual document-text length/digest, twenty update replies, final edit and Host edited flag |
+| AC-12 | Non-null window, overlapping initial correlations, both distinct handler replies and both store effects before refresh |
 
 Observe each order with barriers, never sleeps. Run every single-fault variant in isolation and restore the positive fixture.
 Test malformed, oversized, hostile-coercion and unexpected-terminal inputs before enabling a route. Retain unrelated working correlations.
@@ -389,19 +411,26 @@ Require the existing owners' exact activation contract before any named route ca
 - **Impact:** Blocks T-4 and mechanism compatibility claims. It does not block disabled T-2/T-3 construction.
 - **Check:** T-3 records AC-1 through AC-10, all single-fault controls, both retirement orders, healthy recovery and independently measured retained-work bounds.
 
-### B-5: Product artifact and run preconditions
+### B-5: Development-stage run preconditions
 
 - **Status:** open
 - **Owner:** GH1354 product owner with the macOS operator, preload, profile, document and capacity owners.
-- **Impact:** Blocks T-4 and Zettlr mount claims. It does not block isolated mechanism qualification.
-- **Check:** Pin the installed Zettlr artifact, profile, loader, expected mount calls and editor observer. Require producer evidence for the complete document result and update workload.
+- **Impact:** Blocks T-4 and development-stage mount claims. It does not require packaging or block isolated mechanism qualification.
+- **Check:** Pin the actual `keld dev` stage, explicit Legacy profile, loader, non-null window, initial pane/modification markers and observers. Qualify concurrent calls, the complete document result and update workload.
 
-### B-6: Activation after actual product evidence
+### B-6: Development-stage qualification
 
 - **Status:** open
 - **Owner:** Monish Khandelwal with GH1354, security and compatibility owners.
-- **Impact:** Blocks production activation and product compatibility claims. Isolated T-4 can produce its evidence.
-- **Check:** T-4 passes AC-11 on the final approved artifact and implementation. Record all limits, hidden divergences, failed attempts and the exact supported scope.
+- **Impact:** Blocks any development-stage compatibility claim and T-5 entry. It does not block T-4 or imply installed success.
+- **Check:** T-4 passes AC-12 and AC-11 on the exact approved development stage. Record divergences, all attempts and the scope. The package/install cell remains independent.
+
+### B-7: Authenticated installed artifact and launch prerequisites
+
+- **Status:** open
+- **Owner:** KEL-141 packaging and GH1354 product owners with the macOS operator.
+- **Impact:** Blocks only T-5 and installed claims. It does not block T-4, B-5 or B-6.
+- **Check:** Supply a verifiable installable artifact, installation procedure and independent launch-provenance observer. This prerequisite does not require GH547’s installed mount to pass. T-5 produces that later evidence.
 
 ### U-1: Product pressure and real retirement orders
 
