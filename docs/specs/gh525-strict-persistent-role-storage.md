@@ -233,8 +233,10 @@ every supported OS.
 2. Resolve current Linux /app staging versus persistent submount ownership, including stage-cleanup safety; qualify macOS
 container and Windows LPAC ACL behavior separately.
 
-3. Define concurrency/lease behavior if multiple valid roles or sessions may access the same intended data; default to
-distinct private roots until explicitly approved.
+3. Define concurrency/lease behavior for simultaneous sessions of the same validated app/role identity. Distinct app/role
+identities retain distinct private roots. Until same-identity concurrency is approved, refuse the conflicting storage
+admission; never salt the persistent namespace with a session or generation identifier or allocate a replacement root.
+Confirm that a later admitted relaunch reads the marker written before the conflict.
 
 4. Keep implementation parked until scheduled and attach real raw-access/relaunch/isolation evidence before any Strict
 support claim.
