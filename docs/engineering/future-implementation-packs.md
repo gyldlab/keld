@@ -1,17 +1,20 @@
 # Future implementation packs
 
-Snapshot for [GH-1414](https://github.com/gyldlab/keld/issues/1414) on 6 November 2026. Main is [`0eb3ce203187`](https://github.com/gyldlab/keld/commit/0eb3ce203187f35c5276a4237189c906a5220d5a). This is a dispatch list for specification and review. The owning issue and approved contract control implementation.
+Census captured for [GH-1414](https://github.com/gyldlab/keld/issues/1414) on 6 November 2026. Its main source pin is [`0eb3ce203187`](https://github.com/gyldlab/keld/commit/0eb3ce203187f35c5276a4237189c906a5220d5a). This is a dispatch list for specification and review. The owning issue and approved contract control implementation.
 
 ## Published after the census
 
-All fourteen issue-level packs in the two claimed groups now have a single-file draft PR. Combined with the original six below, this brings the tracked total to **20 feature packs**. The inventory PR itself is separate. Each source link pins the reviewed publication snapshot; follow the PR for later revisions and see [the tracker](https://github.com/gyldlab/keld/issues/1414) for the handoff.
+Fifteen issue-level packs were published after the census. Combined with the original six below, the tracked total is **21 feature packs**. The inventory PR itself is separate.
+The links were reconciled on 6 November 2026 against the [21-pack dispatch](https://github.com/gyldlab/keld/issues/1414#issuecomment-6677387749) and the current feature PR heads.
+At those revisions the specifications contain **167 acceptance criteria and 77 implementation tasks**. Every listed feature PR is an open draft, and its hosted `CI required` check passed. These documentation checks do not establish implementation, approval or native acceptance.
+Each source link pins that publication revision. Follow the PR for later changes. The issue and PR census files remain the original historical snapshot; this publication reconciliation is not a fresh repository census.
 
 | Owner | Pack | Published draft and source |
 |---|---|---|
 | [#591](https://github.com/gyldlab/keld/issues/591) | Reversible migration writes | [#1415](https://github.com/gyldlab/keld/pull/1415) · [spec at 20cfcab9](https://github.com/gyldlab/keld/blob/20cfcab90c7a2dd9c74c3de42ef68a8062671521/docs/specs/gh591-reversible-migrate-write.md) |
-| [#1129](https://github.com/gyldlab/keld/issues/1129) | Installed Linux draw.io proof | [#1416](https://github.com/gyldlab/keld/pull/1416) · [spec at 34e91754](https://github.com/gyldlab/keld/blob/34e917543ff9e83aab1d78f2c647245b47ed2714/docs/specs/gh1129-linux-drawio-product-proof.md) |
+| [#1129](https://github.com/gyldlab/keld/issues/1129) | Installed Linux draw.io proof | [#1416](https://github.com/gyldlab/keld/pull/1416) · [spec at ce0596ff](https://github.com/gyldlab/keld/blob/ce0596ff0080d496610ef1675325c64ddc92fd16/docs/specs/gh1129-linux-drawio-product-proof.md) |
 | [#555](https://github.com/gyldlab/keld/issues/555) | Network-status reads | [#1418](https://github.com/gyldlab/keld/pull/1418) · [spec at 70cc54e6](https://github.com/gyldlab/keld/blob/70cc54e673f6b5e76b10ed0a304ff51f93683197/docs/specs/gh555-legacy-net-online.md) |
-| [#550](https://github.com/gyldlab/keld/issues/550) | Dropped-file identity | [#1419](https://github.com/gyldlab/keld/pull/1419) · [spec at 27622e75](https://github.com/gyldlab/keld/blob/27622e758ebf8717f5aebcbcbecf56fe3dcc1e23/docs/specs/gh550-dropped-file-path.md) |
+| [#550](https://github.com/gyldlab/keld/issues/550) | Dropped-file identity | [#1419](https://github.com/gyldlab/keld/pull/1419) · [spec at 449e6143](https://github.com/gyldlab/keld/blob/449e61437c4106dafacdf3bdc69a163de72edaf4/docs/specs/gh550-dropped-file-path.md) |
 | [#488](https://github.com/gyldlab/keld/issues/488) | Renderer termination | [#1420](https://github.com/gyldlab/keld/pull/1420) · [spec at 044da001](https://github.com/gyldlab/keld/blob/044da001a871653ef20b933251ff5183b25f736e/docs/specs/gh488-render-process-gone.md) |
 | [#574](https://github.com/gyldlab/keld/issues/574) | Renderer responsiveness | [#1421](https://github.com/gyldlab/keld/pull/1421) · [spec at 5d25070b](https://github.com/gyldlab/keld/blob/5d25070bc030ec38e9e896f0acd43c27753676fa/docs/specs/gh574-renderer-responsiveness.md) |
 | [#1356](https://github.com/gyldlab/keld/issues/1356) | Zettlr system appearance subscriptions | [#1422](https://github.com/gyldlab/keld/pull/1422) · [spec at f8a23c14](https://github.com/gyldlab/keld/blob/f8a23c14bcf670b84e042d63d95995f3fc62c14b/docs/specs/gh1356-system-preferences-theme.md) |
@@ -21,13 +24,17 @@ All fourteen issue-level packs in the two claimed groups now have a single-file 
 | [#522](https://github.com/gyldlab/keld/issues/522) | App paths and logs | [#1426](https://github.com/gyldlab/keld/pull/1426) · [spec at 2b5a4f97](https://github.com/gyldlab/keld/blob/2b5a4f978d84ebd7ddcbda3fb1c69c8a602bb731/docs/specs/gh522-app-path-overrides.md) |
 | [#474](https://github.com/gyldlab/keld/issues/474) | Default session and scoped storage clearing | [#1427](https://github.com/gyldlab/keld/pull/1427) · [spec at ffdbb828](https://github.com/gyldlab/keld/blob/ffdbb828d36b40718f99d7b823830b924c120123/docs/specs/gh474-session-profile-clear.md) |
 | [#479](https://github.com/gyldlab/keld/issues/479) | Guarded shell operations | [#1428](https://github.com/gyldlab/keld/pull/1428) · [spec at 806940d0](https://github.com/gyldlab/keld/blob/806940d03d767b66ad880f519ad5d11002d1ba99/docs/specs/gh479-guarded-shell-broker.md) |
-| [#547](https://github.com/gyldlab/keld/issues/547) | Renderer invoke and main-process handlers | [#1429](https://github.com/gyldlab/keld/pull/1429) · [spec at 78818088](https://github.com/gyldlab/keld/blob/78818088df4661eee6f87d8b3229c9a8ac60b06d/docs/specs/gh547-invoke-handle-delivery.md) |
+| [#547](https://github.com/gyldlab/keld/issues/547) | Renderer invoke and main-process handlers | [#1429](https://github.com/gyldlab/keld/pull/1429) · [spec at b303a80c](https://github.com/gyldlab/keld/blob/b303a80c44999eac0dd33780c3b5dd7ec78db3bf/docs/specs/gh547-invoke-handle-delivery.md) |
+| [#556](https://github.com/gyldlab/keld/issues/556) | Non-role menu clicks and custom accelerators | [#1430](https://github.com/gyldlab/keld/pull/1430) · [spec at 092ba4ff](https://github.com/gyldlab/keld/blob/092ba4ff958ad401bf4d7d70c49492f0f6fcff4d/docs/specs/gh556-non-role-menu-click.md) |
 
-### Open correction for the Zettlr invoke pack
+### Reconciled specification corrections
 
-[#1429](https://github.com/gyldlab/keld/pull/1429) originally makes an installed artifact a prerequisite for the mount criterion. [#1358](https://github.com/gyldlab/keld/issues/1358) qualifies the explicit Legacy development launch first. Before approving AC-11 and B-5, record a separate development-stage mount result and leave installation with its packaging owner.
+The current [invoke pack #1429](https://github.com/gyldlab/keld/pull/1429) separates the explicit-Legacy macOS `keld dev` lane from installed-app proof. The earlier requirement for an installer before development qualification is corrected in the linked specification.
+The development lane requires independent results from two overlapping startup reads, more than 4,096 UTF-8 bytes of actual document text and 20 real edit updates. The installed lane repeats its observations from an identified installation. These remain future execution criteria.
 
-The original Zettlr store starts two requests without waiting for the first response. Seed distinct pane and modified-file results and verify each response reaches its own caller. A window can become visible while both errors are logged. The [exact-source handoff](https://github.com/gyldlab/keld/issues/547#issuecomment-6677180910) gives the fixture and first negative control.
+The [Linux proof #1416](https://github.com/gyldlab/keld/pull/1416) uses a never-saved modified diagram for nested Save As cancellation, so the chooser is actually reached.
+The [dropped-file pack #1419](https://github.com/gyldlab/keld/pull/1419) compares raw Electron and Keld results before application wrappers mask an empty result or thrown error; activation still requires integrated evidence.
+The [menu pack #1430](https://github.com/gyldlab/keld/pull/1430) checks action-time focus, the original menu incarnation and no duplicate native-role dispatch. Its Cmd+S proof requires window A's file to change while window B's file stays unchanged.
 
 ## Start here
 
@@ -48,7 +55,7 @@ The original Zettlr store starts two requests without waiting for the first resp
 
 ### Complementary pack priorities
 
-These five published packs extend the original nine. Start migration, IPC and the Linux proof in parallel. The Linux proof design can proceed while its installation and runtime dependencies are still open. Live publication receipts belong on the feature issue and the [roll-up tracker](https://github.com/gyldlab/keld/issues/1414).
+These six published packs extend the original nine. Start migration, IPC and the Linux proof in parallel. The Linux proof design can proceed while its installation and runtime dependencies are still open. Live publication receipts belong on the feature issue and the [roll-up tracker](https://github.com/gyldlab/keld/issues/1414).
 
 | Owner | Pack | First independent check | Inputs to reconcile |
 |---|---|---|---|
@@ -57,6 +64,7 @@ These five published packs extend the original nine. Start migration, IPC and th
 | [#1129](https://github.com/gyldlab/keld/issues/1129) Installed Linux draw.io proof | Product evidence for an installed artifact. | Substitute a preview launcher, inert fixture or different digest. Each must fail proof admission. | [#500](https://github.com/gyldlab/keld/issues/500), [#587](https://github.com/gyldlab/keld/issues/587), [#1124](https://github.com/gyldlab/keld/issues/1124), [#1406](https://github.com/gyldlab/keld/issues/1406) |
 | [#555](https://github.com/gyldlab/keld/issues/555) Legacy network status | Synchronous connectivity hint used by the Zettlr updater. | Read both APIs before/after Ready. Distinguish offline from an unconfirmed route. | [#554](https://github.com/gyldlab/keld/issues/554) |
 | [#550](https://github.com/gyldlab/keld/issues/550) Dropped-file path | Host-captured file identity for the Zettlr renderer. | Drop a real file and construct a same-name File. Only the original may disclose its path. | [#467](https://github.com/gyldlab/keld/issues/467) |
+| [#556](https://github.com/gyldlab/keld/issues/556) Native menu actions | Non-role selection and custom accelerators. | Invoke Cmd+S with two dirty windows. Only the action-time focused window's file changes; retired-menu actions cannot target a replacement. | [#480](https://github.com/gyldlab/keld/issues/480), [#531](https://github.com/gyldlab/keld/issues/531), [#508](https://github.com/gyldlab/keld/issues/508), [#527](https://github.com/gyldlab/keld/issues/527) |
 
 ### Original nine pack priorities
 
@@ -79,7 +87,7 @@ Order within a feature follows its prerequisites. The Bun and Zettlr startup wor
 | Priority | Work item | First check and reason |
 |---|---|---|
 | 1 | [#498](https://github.com/gyldlab/keld/issues/498) Read-only migration analysis | Reconcile the output contract in [#497](https://github.com/gyldlab/keld/issues/497) and analyzer rules in [#1410](https://github.com/gyldlab/keld/pull/1410). Compare the CLI and MCP tool against one hand-resolved call-site list. Reversible writes in [#591](https://github.com/gyldlab/keld/issues/591) consume this result. |
-| 1 | [#546](https://github.com/gyldlab/keld/issues/546) Concurrent renderer requests | Use the carrier in [#1122](https://github.com/gyldlab/keld/pull/1122) and codec in [#1190](https://github.com/gyldlab/keld/pull/1190). Force two overlapping calls, reversed completion and a refusal at capacity. The carrier explicitly leaves multiple simultaneous invokes to this owner. |
+| 1 | [#546](https://github.com/gyldlab/keld/issues/546) Concurrent renderer requests | Reconcile the live issue's conflicting GitHub-versus-KEL-80 tracker text before claiming. Then verify the carrier in [#1122](https://github.com/gyldlab/keld/pull/1122), codec in [#1190](https://github.com/gyldlab/keld/pull/1190), and payload owner [#545](https://github.com/gyldlab/keld/issues/545). Force overlapping calls, reversed completion and refusal at capacity. |
 | 1 | [#554](https://github.com/gyldlab/keld/issues/554) Session and network reference cases | Record the pinned Electron 44.4.5 calls before scoring [#474](https://github.com/gyldlab/keld/issues/474) or [#555](https://github.com/gyldlab/keld/issues/555). Separate browser storage types, origin filtering, pre-Ready access and offline observation. |
 | 2 | [#533](https://github.com/gyldlab/keld/issues/533) Window reference cases | Record the order between native state, setter return and callbacks before implementing [#534](https://github.com/gyldlab/keld/issues/534) or [#535](https://github.com/gyldlab/keld/issues/535). Keep the [#521](https://github.com/gyldlab/keld/issues/521) reopen observation with its own owner. |
 | 2 | [#481](https://github.com/gyldlab/keld/issues/481) / [#558](https://github.com/gyldlab/keld/issues/558) System appearance | Check whether the approved mirror can distinguish a true OS theme change from an app override, including a zero-window role. This is the integration gate for [#1356](https://github.com/gyldlab/keld/issues/1356). |
@@ -92,7 +100,7 @@ Only queue a later feature after its current owner and prerequisites are checked
 | Owner | Future deliverable | First action on GitHub | Related |
 |---|---|---|---|
 | [#592](https://github.com/gyldlab/keld/issues/592) | Analyzer blocker classification | Reuse the scan rules in PR #1410. Examine an unresolved native addon against the owning evidence table before proposing another rule. | [#498](https://github.com/gyldlab/keld/issues/498), [#590](https://github.com/gyldlab/keld/issues/590) |
-| [#549](https://github.com/gyldlab/keld/issues/549) | Context bridge return values | Reconcile #1354 decision D-Z21 with the older issue first. Select only the current product-required return behavior, then verify the isolated-world value table. | [#399](https://github.com/gyldlab/keld/issues/399), [#467](https://github.com/gyldlab/keld/issues/467) |
+| [#549](https://github.com/gyldlab/keld/issues/549) | Context bridge return values | Reconcile #1354 decision D-Z21 and [#1375](https://github.com/gyldlab/keld/issues/1375) with the older issue first. Select only still-required synchronous bridge shapes, then verify the isolated-world value table. | [#399](https://github.com/gyldlab/keld/issues/399), [#467](https://github.com/gyldlab/keld/issues/467) |
 | [#535](https://github.com/gyldlab/keld/issues/535) | Initially hidden window | Trace ready-to-show versus first paint against the pinned Electron recording and registry. Reuse existing window ownership. | [#394](https://github.com/gyldlab/keld/issues/394), [#449](https://github.com/gyldlab/keld/issues/449), [#533](https://github.com/gyldlab/keld/issues/533) |
 | [#558](https://github.com/gyldlab/keld/issues/558) | Display and theme updates | Reuse the host display/theme mirror in PR #1164. Inspect event fan-out and removal across two windows. | [#481](https://github.com/gyldlab/keld/issues/481) |
 | [#561](https://github.com/gyldlab/keld/issues/561) | Synchronous dialogs | Inspect existing dialog and blocking-call contracts, including nested close behavior, before proposing another sync surface. | [#478](https://github.com/gyldlab/keld/issues/478), [#418](https://github.com/gyldlab/keld/issues/418), [#528](https://github.com/gyldlab/keld/issues/528) |
