@@ -23,6 +23,12 @@ All fourteen issue-level packs in the two claimed groups now have a single-file 
 | [#479](https://github.com/gyldlab/keld/issues/479) | Guarded shell operations | [#1428](https://github.com/gyldlab/keld/pull/1428) · [spec at 806940d0](https://github.com/gyldlab/keld/blob/806940d03d767b66ad880f519ad5d11002d1ba99/docs/specs/gh479-guarded-shell-broker.md) |
 | [#547](https://github.com/gyldlab/keld/issues/547) | Renderer invoke and main-process handlers | [#1429](https://github.com/gyldlab/keld/pull/1429) · [spec at 78818088](https://github.com/gyldlab/keld/blob/78818088df4661eee6f87d8b3229c9a8ac60b06d/docs/specs/gh547-invoke-handle-delivery.md) |
 
+### Open correction for the Zettlr invoke pack
+
+[#1429](https://github.com/gyldlab/keld/pull/1429) originally makes an installed artifact a prerequisite for the mount criterion. [#1358](https://github.com/gyldlab/keld/issues/1358) qualifies the explicit Legacy development launch first. Before approving AC-11 and B-5, record a separate development-stage mount result and leave installation with its packaging owner.
+
+The original Zettlr store starts two requests without waiting for the first response. Seed distinct pane and modified-file results and verify each response reaches its own caller. A window can become visible while both errors are logged. The [exact-source handoff](https://github.com/gyldlab/keld/issues/547#issuecomment-6677180910) gives the fixture and first negative control.
+
 ## Start here
 
 1. Pick a feature below. Read its latest trusted claim, linked spec at the recorded commit, and any subsequent review or superseding PR. Read its live dependencies before selecting a task.
