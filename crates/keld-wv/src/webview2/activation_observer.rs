@@ -1,7 +1,7 @@
-//! UI-thread activation observation at Tao's outer message boundary.
+//! Public foreground observation on the UI thread at Tao's outer message boundary.
 //!
 //! Core retains public focus state and filtering. This observer remembers only
-//! the last native HWND sampled, then asks the current live resource owner for facts.
+//! the last foreground HWND sampled, then asks the current live resource owner for facts.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
@@ -56,7 +56,7 @@ struct ActivationBinding {
 pub(super) struct ActivationObserver {
     binding: OnceCell<ActivationBinding>,
     // Observation-work gate only: no view ID or last-sent public focus state.
-    last_active: Cell<Option<HWND>>,
+    last_foreground: Cell<Option<HWND>>,
 }
 
 impl ActivationObserver {
@@ -95,13 +95,13 @@ impl ActivationObserver {
         let Some(windows) = binding.windows.upgrade() else {
             return;
         };
-        let active = view_host::active_window();
+        let foreground = view_host::foreground_window();
         // No COM calls, pumping, focus mutation or retained per-window identity.
-        // Use the same native sample for every member of the current live map.
+        // Use the same foreground sample for every member of the current live map.
         let failed = self
-            .observe_sample(active, |active| {
+            .observe_sample(foreground, |foreground| {
                 let windows = windows.try_borrow().map_err(|_| ())?;
-                windows.observe_activation(active).map_err(|_| ())
+                windows.observe_activation(foreground).map_err(|_| ())
             })
             .is_err();
         if failed {
@@ -112,18 +112,18 @@ impl ActivationObserver {
     /// Direct focus facts and new membership can supersede the last hook sample.
     /// Keep no public focus bits: the next outer message must read the live map.
     pub(super) fn invalidate(&self) {
-        self.last_active.set(None);
+        self.last_foreground.set(None);
     }
 
     fn observe_sample<E>(
         &self,
-        active: HWND,
+        foreground: HWND,
         observe_current: impl FnOnce(HWND) -> Result<(), E>,
     ) -> Result<(), E> {
-        if self.last_active.replace(Some(active)) == Some(active) {
+        if self.last_foreground.replace(Some(foreground)) == Some(foreground) {
             return Ok(());
         }
-        observe_current(active)
+        observe_current(foreground)
     }
 
     fn fail(release: &ProfileReleaseWait, wake: &EventLoopProxy<WindowsLoopEvent>) {

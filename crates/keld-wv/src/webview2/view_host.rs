@@ -8,6 +8,7 @@ use webview2_com::FocusChangedEventHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
 use windows::Win32::Foundation::{E_UNEXPECTED, HWND, RECT};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{ICoreWebView2Controller, View, WindowsLoopEvent};
 use crate::{WebviewId, WvError};
@@ -22,11 +23,26 @@ pub(super) fn active_window() -> HWND {
     unsafe { GetActiveWindow() }
 }
 
+/// Read system foreground ownership on the window's UI thread for public facts.
+pub(super) fn foreground_window() -> HWND {
+    // SAFETY: GetForegroundWindow takes no pointers and only reads global window
+    // state. Compare its numeric result with retained top-level HWNDs; never
+    // dereference it or use it to act on another process's window.
+    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getforegroundwindow
+    unsafe { GetForegroundWindow() }
+}
+
 impl View {
     /// Activation belongs to the top-level HWND even when a `WebView` child has
     /// keyboard focus. Read only on the window's UI thread.
     pub(super) fn is_active(&self) -> bool {
         self.is_active_at(active_window())
+    }
+
+    /// Public focus follows the system foreground window, even when another
+    /// input queue still names this HWND as its thread-local active window.
+    pub(super) fn is_foreground(&self) -> bool {
+        self.is_active_at(foreground_window())
     }
 
     pub(super) fn is_active_at(&self, active: HWND) -> bool {

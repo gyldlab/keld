@@ -1,5 +1,5 @@
-//! AC13: initial active-child and inactive snapshots, with independent Host-thread
-//! activation and the approved pre-configure controller-pump hold.
+//! AC13: initial foreground-child and inactive snapshots, with independent system
+//! foreground and Host-thread activation plus the approved controller-pump hold.
 
 use super::controller::state_until;
 use super::destroy;
@@ -54,11 +54,14 @@ fn activate_anchor(run: &mut FacadeRun, anchor: usize) -> bool {
     let deadline = Instant::now() + OBSERVATION_BOUND;
     loop {
         let focus = initial_focus::read(anchor, run.pid());
-        if focus.active == anchor && focus.focus_is_child {
+        let foreground = native_control::read(anchor, run.pid()).foreground;
+        if foreground == anchor && focus.active == anchor && focus.focus_is_child {
             return true;
         }
         if Instant::now() >= deadline {
-            println!("KELD_GH1188_AC13_VOID reason=anchor-activation-refused actual={focus:?}");
+            println!(
+                "KELD_GH1188_AC13_VOID reason=anchor-activation-refused foreground={foreground} actual={focus:?}"
+            );
             return false;
         }
         native_control::pump();
@@ -72,9 +75,12 @@ struct InitialTrial {
     active_created: Value,
     active_settled: Value,
     active_native: ThreadFocus,
+    active_foreground: usize,
     inactive_created: Value,
     inactive_before: ThreadFocus,
+    inactive_foreground_before: usize,
     inactive_after: ThreadFocus,
+    inactive_foreground_after: usize,
 }
 
 #[allow(clippy::too_many_lines)] // Keep the native preconditions, snapshot interval and normal cleanup ordered.
@@ -95,8 +101,11 @@ fn initial_trial() -> InitialTrial {
     let (active_created, cursor) = release_build(&mut run, &hold, build, cursor);
     // No test activation occurs between release and this native observation.
     let active_native = initial_focus::read(active.hwnd, run.pid());
-    let active_at_risk =
-        anchor_was_active && active_native.active == active.hwnd && active_native.focus_is_child;
+    let active_foreground = native_control::read(active.hwnd, run.pid()).foreground;
+    let active_at_risk = anchor_was_active
+        && active_foreground == active.hwnd
+        && active_native.active == active.hwnd
+        && active_native.focus_is_child;
     let active_id = number(&active_created, "id");
     // A subsequent move is only an ordered drain for the initial Focus facts.
     // It cannot repair the immutable Created snapshot captured above.
@@ -126,15 +135,19 @@ fn initial_trial() -> InitialTrial {
     let (build, cursor, inactive) = held_build(&mut run, &[anchor.hwnd], cursor);
     assert_eq!(build, inactive_build, "stimulus belongs to this build only");
     let inactive_before = initial_focus::read(inactive.hwnd, run.pid());
+    let inactive_foreground_before = native_control::read(inactive.hwnd, run.pid()).foreground;
     let (inactive_created, _) = release_build(&mut run, &hold, build, cursor);
     // The fixture has not activated any window since releasing this build.
-    // Inspect the Host UI queue, not GetForegroundWindow from another queue.
+    // Observe both the Host UI queue and independent system foreground ownership.
     let inactive_after = initial_focus::read(inactive.hwnd, run.pid());
+    let inactive_foreground_after = native_control::read(inactive.hwnd, run.pid()).foreground;
     let shown = app_top_level_windows(run.pid()).iter().any(|window| {
         usize::try_from(window.hwnd).expect("HWND") == inactive.hwnd && window.visible
     });
     let inactive_at_risk = anchor_was_active
         && shown
+        && inactive_foreground_before == anchor.hwnd
+        && inactive_foreground_after == anchor.hwnd
         && inactive_before.active == anchor.hwnd
         && inactive_after.active == anchor.hwnd;
     run.retain_descendants();
@@ -151,9 +164,12 @@ fn initial_trial() -> InitialTrial {
         active_created,
         active_settled,
         active_native,
+        active_foreground,
         inactive_created,
         inactive_before,
+        inactive_foreground_before,
         inactive_after,
+        inactive_foreground_after,
     }
 }
 
@@ -164,13 +180,16 @@ fn windows_initial_focus_snapshots_cover_active_child_and_inactive_windows() {
     for attempt in 1..=3 {
         let trial = initial_trial();
         println!(
-            "KELD_GH1188_AC13_INITIAL attempt={attempt} active_at_risk={} inactive_at_risk={} active_thread={} active_focus={} active_native={:?} inactive_before={:?} inactive_after={:?}",
+            "KELD_GH1188_AC13_INITIAL attempt={attempt} active_at_risk={} inactive_at_risk={} active_thread={} active_focus={} active_foreground={} active_native={:?} inactive_foreground_before={} inactive_before={:?} inactive_foreground_after={} inactive_after={:?}",
             u8::from(trial.active),
             u8::from(trial.inactive),
             trial.active_native.thread,
             trial.active_native.focus,
+            trial.active_foreground,
             trial.active_native,
+            trial.inactive_foreground_before,
             trial.inactive_before,
+            trial.inactive_foreground_after,
             trial.inactive_after,
         );
         // Every trial has completed native/process/profile cleanup first.
@@ -178,7 +197,7 @@ fn windows_initial_focus_snapshots_cover_active_child_and_inactive_windows() {
             active += 1;
             assert_eq!(
                 trial.active_created["createdState"]["focused"], true,
-                "initial Created sampled Tao keyboard focus rather than actual Host-thread activation",
+                "initial Created disagreed with independent foreground and Host-thread child focus",
             );
             assert_eq!(
                 trial.active_settled["facts"]["focusFalse"], 0,

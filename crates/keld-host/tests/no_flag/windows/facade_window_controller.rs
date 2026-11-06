@@ -79,11 +79,19 @@ fn windows_host_window_obligations_reach_the_controller() {
         state["createdState"].is_object()
     });
     let ui_focus = crate::support::window::initial_focus::read(hwnd, pid);
-    if ui_focus.active == hwnd {
-        println!("KELD_GH1188_AC13 initial_active_at_risk=1 initial_inactive_at_risk=0");
+    let initial_foreground = native_control::read(hwnd, pid).foreground;
+    if initial_foreground == hwnd {
+        assert_eq!(
+            ui_focus.active, hwnd,
+            "INVALID: foreground initial window lacks Host-thread activation"
+        );
+        println!(
+            "KELD_GH1188_AC13 initial_active_at_risk=1 initial_inactive_at_risk=0 foreground={initial_foreground} host_thread_active={}",
+            ui_focus.active,
+        );
         assert_eq!(
             initial_state["createdState"]["focused"], true,
-            "Created snapshot used top-level keyboard focus instead of activation"
+            "Created snapshot disagreed with independent system foreground ownership"
         );
         assert!(
             ui_focus.focus_is_child,
@@ -99,7 +107,10 @@ fn windows_host_window_obligations_reach_the_controller() {
             "Created(true) plus later focus facts duplicated initial focus"
         );
     } else {
-        println!("KELD_GH1188_AC13 initial_active_at_risk=0 initial_inactive_at_risk=1");
+        println!(
+            "KELD_GH1188_AC13 initial_active_at_risk=0 initial_inactive_at_risk=1 foreground={initial_foreground} host_thread_active={}",
+            ui_focus.active,
+        );
         assert_eq!(
             initial_state["createdState"]["focused"], false,
             "inactive Created snapshot falsely reported focused"

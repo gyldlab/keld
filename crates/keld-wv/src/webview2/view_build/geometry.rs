@@ -82,7 +82,7 @@ pub(in crate::webview2) fn snapshot(view: &View) -> Result<WindowSnapshot, WvErr
         y: position.y,
         width: size.width,
         height: size.height,
-        focused: view.is_active(),
+        focused: view.is_foreground(),
         maximized: view.window.is_maximized(),
         full_screen: view.window.fullscreen().is_some(),
     })

@@ -168,15 +168,15 @@ impl ManagedWindows {
         }
     }
 
-    /// One native sample, compared against the current live map. Core owns
+    /// One foreground sample, compared against the current live map. Core owns
     /// public focus state and suppresses unchanged or no-longer-owned facts.
-    pub(in crate::webview2) fn observe_activation(&self, active: HWND) -> Result<(), WvError> {
+    pub(in crate::webview2) fn observe_activation(&self, foreground: HWND) -> Result<(), WvError> {
         for (id, view) in &self.views {
             send(
                 &self.events,
                 AppWindowEvent::WindowFocus {
                     view: WebviewId(*id),
-                    focused: view.is_active_at(active),
+                    focused: view.is_active_at(foreground),
                 },
             )?;
         }
@@ -187,7 +187,7 @@ impl ManagedWindows {
         let Some(view) = self.views.get(&id.0) else {
             return Ok(());
         };
-        let focused = view.is_active();
+        let focused = view.is_foreground();
         // This direct observation is newer than the last outer-hook sample.
         self.activation_observer.invalidate();
         #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
