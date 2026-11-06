@@ -1,5 +1,5 @@
 //! Parent-owned invocation and profile checks shared by default Windows tests and the native fixture.
-//! These checks do not create a WebView, profile, or child process.
+//! These checks do not create a `WebView`, profile, or child process.
 
 use std::path::Path;
 
