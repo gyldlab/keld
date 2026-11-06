@@ -48,7 +48,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::IdentityContainerMissing,
             "KELD-PACK-007",
-            "Rebuild with `keld build`",
+            "embed the expected identity into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing",
         ),
         (
             PackError::IdentityContainerDuplicate,
@@ -68,7 +68,7 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         (
             PackError::IdentityContainerInvalid { detail: "d" },
             "KELD-PACK-011",
-            "reinstall the signed package or rebuild with `keld build`",
+            "reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image",
         ),
         (
             PackError::IdentityContainerRead {
@@ -83,6 +83,13 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         let text = error.to_string();
         assert!(text.starts_with(&format!("{code}: ")), "{text}");
         assert!(text.contains(fix), "{text}");
+        if matches!(
+            error,
+            PackError::IdentityContainerMissing | PackError::IdentityContainerInvalid { .. }
+        ) {
+            assert!(!text.contains("`keld build`"), "{text}");
+            assert!(text.contains("`keld-pack`"), "{text}");
+        }
         // The same container serves keld-host.exe and keld-updater-helper.exe (KEL-19
         // container spec §1), so no text names the host alone.
         assert!(
@@ -101,5 +108,12 @@ fn new_errors_have_stable_codes_and_fix_guidance() {
         }
         .to_string()
         .contains("(missing MZ signature)")
+    );
+    assert!(
+        PackError::IdentityContainerInvalid {
+            detail: "nonzero container padding"
+        }
+        .to_string()
+        .contains("(nonzero container padding)")
     );
 }
