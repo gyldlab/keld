@@ -1,0 +1,4 @@
+mkdir -p target/llms-docs
+rustc --edition=2024 -D warnings tools/llms_docs.rs -o target/llms-docs/llms-docs
+target/llms-docs/llms-docs generate .
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-227716141e7546f4a05b8d292cc07e73

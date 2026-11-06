@@ -1,0 +1,127 @@
+{
+  "cleanup": {
+    "globalSettingsWritten": false,
+    "ownedNativeHandles": 0,
+    "ownedWindowsCreated": 0
+  },
+  "dpiContext": {
+    "awareness": 2,
+    "coordinates": "physical-pixels",
+    "exactRequestedContext": true,
+    "requested": "pmv2",
+    "setterLastError": null,
+    "setterSucceeded": true
+  },
+  "machine": {
+    "architecture": "x86_64",
+    "name": "RAMANI",
+    "os": {
+      "build": 26300,
+      "major": 10,
+      "minor": 0,
+      "platformId": 2,
+      "source": "RtlGetVersion"
+    }
+  },
+  "probe": "keld-windows-desktop-facts-feasibility",
+  "processId": 4328,
+  "request": {
+    "control": null,
+    "mode": "pmv2"
+  },
+  "sample": {
+    "desktop": {
+      "coordinateSpace": "physical-pixels",
+      "displays": [
+        {
+          "bounds": {
+            "height": 1080,
+            "width": 1920,
+            "x": 0,
+            "y": 0
+          },
+          "dpi": {
+            "deviceScaleFactor": 1.25,
+            "source": "GetDpiForMonitor(MDT_EFFECTIVE_DPI)",
+            "x": 120,
+            "y": 120
+          },
+          "nativePaths": [
+            {
+              "friendlyName": "",
+              "outputTechnology": -2147483648,
+              "pathFlags": 1,
+              "sourceAdapterLuid": {
+                "highPart": 0,
+                "lowPart": 58488
+              },
+              "sourceId": 0,
+              "targetAdapterLuid": {
+                "highPart": 0,
+                "lowPart": 58488
+              },
+              "targetAvailable": true,
+              "targetDevicePath": "\\\\?\\DISPLAY#CMN153C#5&264fd57a&0&UID512#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+              "targetId": 512
+            }
+          ],
+          "observedHandleHex": "0x10001",
+          "physicalMode": {
+            "frequency": 144,
+            "height": 1080,
+            "source": "EnumDisplaySettingsW",
+            "width": 1920
+          },
+          "primary": true,
+          "sourceName": "\\\\.\\DISPLAY1",
+          "workArea": {
+            "height": 1020,
+            "width": 1920,
+            "x": 0,
+            "y": 0
+          }
+        }
+      ],
+      "primarySourceName": "\\\\.\\DISPLAY1",
+      "primaryWorkAreaViaSpi": {
+        "height": 1020,
+        "width": 1920,
+        "x": 0,
+        "y": 0
+      }
+    },
+    "theme": {
+      "appsUseLightTheme": {
+        "status": 0,
+        "value": 1
+      },
+      "highContrast": {
+        "active": false,
+        "flags": 126,
+        "schemeBufferFreed": true,
+        "schemeBufferReturned": true
+      },
+      "nonForcedColorScheme": "light",
+      "systemColors": {
+        "window": {
+          "b": 255,
+          "colorRef": 16777215,
+          "g": 255,
+          "r": 255
+        },
+        "windowText": {
+          "b": 0,
+          "colorRef": 0,
+          "g": 0,
+          "r": 0
+        }
+      },
+      "systemUsesLightTheme": {
+        "status": 0,
+        "value": 1
+      }
+    }
+  },
+  "schemaVersion": 1,
+  "status": "ok"
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "ready_bypass",
+    "sharedCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "source": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\mutants\\ready_bypass\\packages\\@keld\\api\\src\\link.ts",
+    "originalBlob": "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+    "mutantBlob": "ba21934e24902094887ea699aefc8672c6c1f1be",
+    "restoredBlob": "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+    "pattern": "adversarial raw Ready",
+    "failedAssertion": "no facade Ready before accepted replay",
+    "testReturncode": 1,
+    "cleanupFailure": false,
+    "nativeEnabled": false,
+    "diff": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\ready_bypass.diff",
+    "testReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\mutant_ready_bypass.json"
+  },
+  {
+    "name": "short_deadline",
+    "sharedCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+    "source": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\mutants\\short_deadline\\packages\\@keld\\api\\src\\link.ts",
+    "originalBlob": "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+    "mutantBlob": "2351067cc5cd31f1992905965a547f8d834b5342",
+    "restoredBlob": "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+    "pattern": "original 5000 ms",
+    "failedAssertion": "observe the original 5 s call bound",
+    "testReturncode": 1,
+    "cleanupFailure": false,
+    "nativeEnabled": false,
+    "diff": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\short_deadline.diff",
+    "testReceipt": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\subscribe-proof\\mutant_short_deadline.json"
+  }
+]

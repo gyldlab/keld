@@ -1,0 +1,57 @@
+{
+  "source_head": "f06f89abc9637296c29fca8dd86722fc470fcb59",
+  "dirty_source": true,
+  "records": [
+    {
+      "name": "format",
+      "argv": [
+        "just",
+        "fmt-check"
+      ],
+      "exit": 0,
+      "seconds": 4.348207950592041,
+      "log_sha256": "abe224b96f3d1fb8db10db0a28a1542f11113dd4b1656e6ef42c696e57f94add"
+    },
+    {
+      "name": "adapter",
+      "argv": [
+        "bun",
+        "test",
+        "tools/windows_desktop_facts/native_adapter.test.ts"
+      ],
+      "exit": 0,
+      "seconds": 0.04587292671203613,
+      "log_sha256": "cd7b7626bf5ec07458a510634f6f6114400d5cb8a71805f7d6acd9a5fdc75ca3"
+    },
+    {
+      "name": "executor",
+      "argv": [
+        "python3",
+        "-B",
+        "tools/test_ci_local.py",
+        "ExecutorTests",
+        "-v"
+      ],
+      "exit": 0,
+      "seconds": 1.6697471141815186,
+      "log_sha256": "d1badfe52f66e161d04dc755ed23ec9b5c1312ccae66afc00fc264f197c3b9d8"
+    },
+    {
+      "name": "diff",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.019834041595458984,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "native_run": false,
+  "input_hashes": {
+    "tools/test_ci_local.py": "7c8543be6912f4600c9bd1483de00f39187da9080ceefe64967c7a169339fc50",
+    "tools/windows_desktop_facts/native_adapter.ts": "69fcce20d638ca2ad0cb0dedf708d29358d0a6d78ac7f66ad298f185527e029f",
+    "tools/windows_desktop_facts/native_adapter.test.ts": "72c016b78c670f9175777a7fb6cf71e22acdcbb52f8497353a9f0c000a1899d6"
+  }
+}

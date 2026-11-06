@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python3",
+    "-B",
+    "tools/test_ci_local.py",
+    "TempRepositoryMaintenanceTests.test_every_temp_repository_disables_background_maintenance",
+    "-v"
+  ],
+  "cwd": "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105",
+  "observed_tool": "KELD write_stdin of completed session28409; no rerun",
+  "source_head": "48e3f168716ea8ba25ac6c1bfb35ab213c022b2e",
+  "dirty": true,
+  "driver_sha256": "8eb6bdc30b7cb5709aaf93c6a176ccc0faba55576108a1a73ae9fe3bad5fb3d3",
+  "result": {
+    "exit_code": 0,
+    "output": "test_every_temp_repository_disables_background_maintenance (__main__.TempRepositoryMaintenanceTests.test_every_temp_repository_disables_background_maintenance) ... ok\n\n----------------------------------------------------------------------\nRan 1 test in 1.581s\n\nOK\n"
+  }
+}

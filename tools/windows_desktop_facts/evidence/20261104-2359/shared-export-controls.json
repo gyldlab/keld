@@ -1,0 +1,37 @@
+{
+  "status": "pass",
+  "checks": [
+    {
+      "control": "modified dependency hash",
+      "exit": 1,
+      "outCreated": false,
+      "stderr": "prepare_shared: Git blob mismatch for packages/@keld/kipc/src/transport.ts: expected 0000000000000000000000000000000000000000, found fbc747706a056c2f4c6b1d01dde07a75f4d5a5d1"
+    },
+    {
+      "control": "exact immutable export",
+      "exit": 0,
+      "receipt": {
+        "bytes": 211352,
+        "commit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+        "files": 11,
+        "out": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\prepare-shared-check-20261105\\verified-export",
+        "packageLink": "junction",
+        "schema": "keld.w4-shared-export/v1"
+      },
+      "allBytesEqual": true
+    },
+    {
+      "control": "nonempty output refusal",
+      "exit": 1,
+      "stderr": "prepare_shared: --out must be absent or an empty directory"
+    },
+    {
+      "control": "actual Ramani repo lacks S1",
+      "exit": 1,
+      "outCreated": false,
+      "stderr": "prepare_shared: git rev-parse --verify e09b520eaee1e4bd69bd0bde2137ec52f0fed18a^{commit} failed: fatal: Needed a single revision"
+    }
+  ],
+  "nativeLaunched": false,
+  "ownerRepoMutated": false
+}

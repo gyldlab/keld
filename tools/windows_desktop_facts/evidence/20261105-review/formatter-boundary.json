@@ -1,0 +1,102 @@
+{
+  "app": "D:\\WORK\\keld\\.keld-work\\tmp\\w4-formatter-7squvz3p\\formatted-app",
+  "onlyChange": "git init --quiet --template= in owned disposable app",
+  "sourceBytesUnchanged": true,
+  "sourceSha256": "a88980072d401886a104babcb9e894bf1b125086fbb5f7079a53cae37157de32",
+  "commands": [
+    {
+      "argv": [
+        "C:\\Users\\dnc\\.bun\\bin\\bun.exe",
+        "fmt",
+        "--no-script",
+        "--help",
+        "--all"
+      ],
+      "returncode": 0,
+      "target_pid": 22300,
+      "bootstrap_pid": 23228,
+      "bootstrap_returncode": 0,
+      "stdout_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-help-all.stdout",
+      "stderr_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-help-all.stderr",
+      "metadata_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-help-all.json",
+      "timed_out": false,
+      "forced_cleanup": false,
+      "elapsed_seconds": 0.14210180001100525,
+      "job_active_after": 0,
+      "setup_error": null,
+      "label": "help-all",
+      "stdout": "Usage: bun fmt [flags] [...files, directories or patterns]\n  Format JavaScript, TypeScript, CSS, HTML, JSON, YAML, Markdown and more.\n\nOptions:\n      --config=<val>                          Use this config file instead of looking for one\n      --no-config                             Do not look for a config file\n      --no-editorconfig                       Do not read .editorconfig\n      --init                                  Add a [fmt] section to bunfig.toml\n      --doctor                                Show which files are formatted natively and which packages you can remove\n      --print-width=<val>                     The line length to wrap at (default: 80)\n      --tab-width=<val>                       Spaces per indentation level (default: 2)\n      --use-tabs                              Indent with tabs\n      --no-semi                               Only print semicolons where they are needed\n      --single-quote                          Use single quotes\n      --jsx-single-quote                      Use single quotes in JSX\n      --quote-props=<val>                     as-needed (default), consistent, or preserve\n      --trailing-comma=<val>                  all (default), es5, or none\n      --no-bracket-spacing                    No spaces inside the braces of an object literal\n      --bracket-same-line                     Put the closing bracket of a multi-line element at the end of the last line\n      --arrow-parens=<val>                    always (default) or avoid\n      --object-wrap=<val>                     preserve (default) or collapse\n      --single-attribute-per-line             One attribute per line in HTML, Vue, and JSX\n      --html-whitespace-sensitivity=<val>     css (default), strict, or ignore\n      --vue-indent-script-and-style           Indent the code in the script and style tags of Vue files\n      --prose-wrap=<val>                      preserve (default), always, or never\n      --embedded-language-formatting=<val>    auto (default) or off\n      --end-of-line=<val>                     lf (default), crlf, cr, or auto\n      --no-insert-final-newline               Do not end files with a newline\n      --sort-imports                          Sort and group imports\n      --sort-tailwindcss                      Sort Tailwind CSS classes\n      --sort-package-json                     Sort the keys of package.json\n      --jsdoc                                 Format JSDoc comments\n      --svelte                                Format Svelte components (default without a Prettier or oxfmt config)\n      --no-svelte                             Do not format Svelte components\n\nFiles:\n      --staged                           Only format files that are staged in git, and stage them again\n      --changed=<val>                    Only format files that differ from a branch or commit (default: the default branch)\n      --stdin-filepath=<val>             Format standard input as this file and print the result\n      --ignore-path=<val>                Read ignore patterns from these files (default: .gitignore, .prettierignore, .git/info/exclude)\n      --ignore-pattern=<val>             Skip files that match this pattern\n      --with-node-modules                Format files in node_modules too\n      --no-error-on-unmatched-pattern    Do not fail when an argument matches no file\n  -u, --ignore-unknown                   Ignore files in an unknown language\n      --allow-unsupported                Warn instead of failing when the language of a file is not supported\n      --list-files                       Print the files that would be formatted and exit\n      --cwd=<val>                        Set the working directory\n\nOutput:\n  -c, --check              Do not write. Exit with 1 if a file needs formatting\n  -l, --list-different     Do not write. Print the files that need formatting and exit with 1 if there are any\n      --log-level=<val>    silent, error, warn, log (default), or debug\n  -f, --format=<val>       With --doctor, print the report as json\n      --color              Always use colors\n      --no-color           Never use colors\n      --timing             Print how long each phase took\n\nOther:\n      --threads=<val>    Number of threads (default: one per CPU core)\n      --debug-check      Do not write. Fail if formatting a file would change what it means\n      --no-script        Run the formatter even if the project has a fmt script\n  -v, --version          Print the version of Bun\n  -h, --help             Print the common flags. With --all, every flag\n      --all              With --help, print every flag\n      --help-all         The same as --help --all\n\nCompatibility with Prettier:\n  -w, --write                                   Write the files. This is the default\n      --config-precedence=<val>                 cli-override (default), file-override, or prefer-file\n      --find-config-path=<val>                  Print the path of the config for a file and exit\n      --parser=<val>                            Read every file with this parser. Without files, format standard input\n      --plugin=<val>                            Load these plugins\n      --require-pragma                          Only format files that start with a @format or @prettier comment\n      --check-ignore-pragma                     Skip files that start with a @noformat or @noprettier comment\n      --insert-pragma                           Put a @format comment at the top of formatted files\n      --range-start=<val>                       Only format the statements from this offset on\n      --range-end=<val>                         Only format the statements up to this offset\n      --cursor-offset=<val>                     For standard input, print on stderr where this offset ends up\n      --experimental-ternaries                  Put the question mark of a ternary after the condition\n      --experimental-operator-position=<val>    end (default) or start\n      --jsx-bracket-same-line                   The old name of --bracket-same-line\n      --cache                                   No effect. Every run formats every file\n      --cache-location=<val>                    No effect\n      --cache-strategy=<val>                    No effect\n      --experimental-cli                        No effect\n\nCompatibility with oxfmt:\n      --flavor=<val>             Without a config file, format like prettier or like oxfmt\n      --disable-nested-config    Use the config file in the working directory for every file\n      --migrate=<val>            Not supported\n      --lsp                      Not supported\n\nExamples:\n  bun fmt\n  bun fmt src test/a.test.ts\n  bun fmt --check\n\nFull documentation is available at https://bun.com/docs/format\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "init",
+        "--quiet",
+        "--template="
+      ],
+      "returncode": 0,
+      "target_pid": 21632,
+      "bootstrap_pid": 20492,
+      "bootstrap_returncode": 0,
+      "stdout_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-init.stdout",
+      "stderr_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-init.stderr",
+      "metadata_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-init.json",
+      "timed_out": false,
+      "forced_cleanup": false,
+      "elapsed_seconds": 0.19917350000469014,
+      "job_active_after": 0,
+      "setup_error": null,
+      "label": "git-init",
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "check-ignore",
+        "-v",
+        "D:\\WORK\\keld\\.keld-work\\tmp\\w4-formatter-7squvz3p\\formatted-app\\src\\unformatted source.ts"
+      ],
+      "returncode": 1,
+      "target_pid": 8508,
+      "bootstrap_pid": 16124,
+      "bootstrap_returncode": 0,
+      "stdout_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-ignore.stdout",
+      "stderr_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-ignore.stderr",
+      "metadata_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-git-ignore.json",
+      "timed_out": false,
+      "forced_cleanup": false,
+      "elapsed_seconds": 0.29011040000477806,
+      "job_active_after": 0,
+      "setup_error": null,
+      "label": "git-ignore",
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "C:\\Users\\dnc\\.bun\\bin\\bun.exe",
+        "run",
+        "format:check"
+      ],
+      "returncode": 1,
+      "target_pid": 18312,
+      "bootstrap_pid": 19780,
+      "bootstrap_returncode": 0,
+      "stdout_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-format-check.stdout",
+      "stderr_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-format-check.stderr",
+      "metadata_path": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\formatter-diagnosis\\boundary-format-check.json",
+      "timed_out": false,
+      "forced_cleanup": false,
+      "elapsed_seconds": 0.22132690000580624,
+      "job_active_after": 0,
+      "setup_error": null,
+      "label": "format-check",
+      "stdout": "src/unformatted source.ts\n",
+      "stderr": "$ bun run format --check\n$ bun fmt --no-script '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}' --check\n1 file needs formatting. Run bun fmt to fix it.\nerror: script \"format\" exited with code 1\nerror: script \"format:check\" exited with code 1\n"
+    }
+  ],
+  "productSourceEdited": false,
+  "globalEnvironmentChanged": false
+}

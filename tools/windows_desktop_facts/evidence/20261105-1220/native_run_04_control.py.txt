@@ -1,0 +1,29 @@
+from pathlib import Path
+import hashlib,json,os,sys
+repo=Path(r"D:\WORK\keld\.keld-work\worktrees\gh-1186-windows-desktop-feasibility-20261105")
+base=Path(r"D:\WORK\keld\.git\keld-closeout\chatgpt-w4-desktop-20261105")
+out=base/"native-run-04-control"
+sys.path.insert(0,str(repo/"tools/windows_desktop_facts"))
+from owned_process import run_owned
+native=base/"native-run-04/native-first-sample.json"
+assert native.is_file()
+assert json.loads((base/"native-run-04-driver.json").read_text())["exit"]==0
+results={}
+for variant,adapter,expected in [("old",out/"old-native_adapter.ts",1),("current",repo/"tools/windows_desktop_facts/native_adapter.ts",0)]:
+    meta=out/(variant+".process.json")
+    assert not meta.exists()
+    env=dict(os.environ)
+    env.update(W4_NATIVE_CONTROL_RECEIPT=str(native),W4_ADAPTER_MODULE=str(adapter),W4_NATIVE_CONTROL_VARIANT=variant,W4_NATIVE_CONTROL_RESULT=str(out/(variant+"-observed.json")))
+    run_owned(["bun","test",str(out/"native-control.test.ts")],cwd=repo,env=env,stdout_path=out/(variant+".stdout"),stderr_path=out/(variant+".stderr"),timeout_seconds=15.0,metadata_path=meta)
+    record=json.loads(meta.read_text())
+    assert record["exit"]==expected,(variant,record)
+    assert record["jobActiveAfter"]==0 and not record["timedOut"] and not record["forcedCleanup"] and not record["setupError"],record
+    logs=(out/(variant+".stdout")).read_text()+(out/(variant+".stderr")).read_text()
+    assert ("0 pass" if variant=="old" else "1 pass") in logs,logs
+    assert ("1 fail" if variant=="old" else "0 fail") in logs,logs
+    observed=json.loads((out/(variant+"-observed.json")).read_text())
+    assert observed["afterInvalidIdentityCount"]==(2 if variant=="old" else 1),observed
+    results[variant]={"exit":record["exit"],"jobActiveAfter":record["jobActiveAfter"],"adapterSha256":hashlib.sha256(adapter.read_bytes()).hexdigest(),"observed":observed}
+receipt={"head":"327122ea784f51a01c3ed177d95835eb157e61aa","nativeReceiptSha256":hashlib.sha256(native.read_bytes()).hexdigest(),"testSha256":hashlib.sha256((out/"native-control.test.ts").read_bytes()).hexdigest(),"results":results,"scope":"actual native04 input, mutated copy only; no OS sample or settings write"}
+(out/"receipt.json").write_text(json.dumps(receipt,indent=2)+"\n")
+print(json.dumps(receipt))

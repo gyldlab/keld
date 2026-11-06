@@ -1,0 +1,9 @@
+{
+  "sourceCommit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+  "sourcePath": "docs/engineering/keld-error-codes.md",
+  "section": "KELD-CORE-049",
+  "sourceRowSha256": "0609c6fe4ed72bc88a007b71eaf8c30c19cb2092dffc60f402d0a80de277f0f4",
+  "copiedSectionMatches": true,
+  "registrySha256": "331e44028d44459a795a896a2ccb2932fd4fcfa98a949198730986a763124f13",
+  "claim": "https://github.com/gyldlab/keld/issues/1186#issuecomment-6646655855"
+}

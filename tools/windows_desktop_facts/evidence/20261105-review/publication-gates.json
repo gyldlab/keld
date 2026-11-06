@@ -1,0 +1,122 @@
+{
+  "status": "failed",
+  "sourceHashes": {
+    "tools/windows_desktop_facts/EVIDENCE.md": "dcf52b3c27538b2968ca5cfa1350a5fd7d10eb8ac127b12afe1d8d5ac542fd87",
+    "tools/windows_desktop_facts/integration-notes.md": "643be183891eab1e37fb13ef94ba20c45ea1a7bc8050252d90b26163c6b6b984",
+    "tools/windows_desktop_facts/integration.patch": "14ffc09e134dfee41d2038a44d6942128b1f7f20ae576b98ae659ef011c4664d",
+    "tools/windows_desktop_facts/native-review.json": "feda21c04ef846ab9792d47a40a4b694543616417d023673cf5a13c9a60a3e8e",
+    "tools/windows_desktop_facts/native_adapter.test.ts": "4bbb07fa6d2815d273deb1ab154582ff66cce5f0054ee53317e8b8149bec2561",
+    "tools/windows_desktop_facts/native_adapter.ts": "fb125587b67c3a0aa8891c9df363b3b4ef60429487d9eeedba841abe55bb1f7d",
+    "tools/windows_desktop_facts/oracle.cjs": "a3b3e99d2f1c4ccbe54cd86969717e152494e93f62e1468f6d3aaf74080604af",
+    "tools/windows_desktop_facts/owned_process.py": "f9613f82c29ff5b7bc075033909d197fc665799979d9458021230b82f91181b2",
+    "tools/windows_desktop_facts/prepare_shared.py": "78a009aca5ceeb5797c3d9a1af738a344396f625ba43023af4fdb3e6c253e312",
+    "tools/windows_desktop_facts/README.md": "4e7793bbc2653e668bc6e1050c1a55b201dcedaea9379db159a54d04fa81a774",
+    "tools/windows_desktop_facts/run_native.py": "8d7b8524a2f98ed6b5f31275c62952759f9e218af3e31dfbd9e69b77709420b3",
+    "tools/windows_desktop_facts/shared-pin.json": "786db34212582da83af3de66d1cb77a4a6bed9ca2847a18260f579346ed05f4a",
+    "tools/windows_desktop_facts/subscribe_contract.test.ts": "4c02e4f9dc76efad221a18cc8def83f0839486c594984ea8f12ed34866686c80",
+    "tools/windows_desktop_facts/test_owned_process.py": "92ac0fd71c8eb50b602f3ae065f33efeb6223c23dcfc1d2cfbd77d8f1258f9b7",
+    "tools/windows_desktop_facts/text_scale.ps1": "15dc296d509c04d3e5fb9b9be4de21c1531a44b58b3fc185b5b7f0c944598ee6",
+    "tools/windows_desktop_facts/verify_native.test.ts": "ed9712d6e74fe551cbb29cac0ef8d7994e420b2089942d1edbba03d2682e1586",
+    "tools/windows_desktop_facts/native/.gitignore": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368",
+    "tools/windows_desktop_facts/native/Cargo.lock": "330e9fc6b2fedb98358744752319ff72cdc6cd179c0165e41ee82a6af3a46f5f",
+    "tools/windows_desktop_facts/native/Cargo.toml": "e1ea94e440ecabc7c1f16e4d4bb31b53a1e8072e96c9ebff2582ec13ebf758e1",
+    "tools/windows_desktop_facts/native/README.md": "2a51423c384cdaa58c9c56df5c4dc9e1f1ef23d11bf6368895b9ad91bdd07718",
+    "tools/windows_desktop_facts/subscribe_support/host.ts": "eb2d329263148a941556e70f66cb64d6272d5cfb405dd32c84b2a0e98ae54660",
+    "tools/windows_desktop_facts/subscribe_support/role.ts": "5262b836d343d9cb7155918705dbbfacd4f373ab19dcef252ae955b3dc80a065",
+    "tools/windows_desktop_facts/native/src/args.rs": "81bad19e2948eb20aa54e829a9fd1cf1d36dba88a9fb1e512a3153d7d76d5c30",
+    "tools/windows_desktop_facts/native/src/context.rs": "c7448b7a44aaff2dc5d1089054777cf7e469edce8ec65b3abe3533ce6c9b28b1",
+    "tools/windows_desktop_facts/native/src/display.rs": "7d692f01b616f6baf662ab572095d92ac8fca0c46a028f870ef94beb2be7c829",
+    "tools/windows_desktop_facts/native/src/error.rs": "f507c09af4361542e9ca815ed824302e2e935795b9cd052e1c2c8c0dff3ad1e1",
+    "tools/windows_desktop_facts/native/src/identity.rs": "0eb65a123b8fe6b3949d7f904e97a6992908c3a9e149edf7daaa0fb1a325a96e",
+    "tools/windows_desktop_facts/native/src/main.rs": "bfe6d8c938496ef21e434d5dd44e98a64be686e5fccd85c6544d6abf3725fd33",
+    "tools/windows_desktop_facts/native/src/metadata.rs": "daf7b22531c56ada0489b9ab330b16c04ef8994061e7e35cdd154804ac1b112d",
+    "tools/windows_desktop_facts/native/src/tests.rs": "c23f369c6f9e99c6e684390e2e967d41eddae93f5b492f3e4e13abd363de5ede",
+    "tools/windows_desktop_facts/native/src/theme.rs": "675141ce2b77546e1d0310e4f4bddceea17aa8ae01efa563d1333e0553a99e25"
+  },
+  "checks": [
+    {
+      "check": "fmt-check",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "fmt-check"
+      ],
+      "pid": 23156,
+      "startedUnix": 1793841446.9647918,
+      "completedUnix": 1793841476.7560155,
+      "exit": 0,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-fmt-check.log",
+      "logSha256": "8e1e71a577ff6bf049b6dcb6dbf9a5fa0b6591a05749c54201d83748207d7338"
+    },
+    {
+      "check": "doc-placeholders-check",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "doc-placeholders-check"
+      ],
+      "pid": 12308,
+      "startedUnix": 1793841476.7634282,
+      "completedUnix": 1793841480.53487,
+      "exit": 0,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-doc-placeholders-check.log",
+      "logSha256": "63a077c2a986c8677bd088dbbb12ac3effb5b222378c209f863795525bfd5313"
+    },
+    {
+      "check": "hygiene",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "hygiene"
+      ],
+      "pid": 21596,
+      "startedUnix": 1793841480.544978,
+      "completedUnix": 1793841509.7663,
+      "exit": 0,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-hygiene.log",
+      "logSha256": "50f4cf28c2f75185d800b4e1506f2445cd1094a7c4f7650754ec6b58e720a8f4"
+    },
+    {
+      "check": "llms-check",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "llms-check"
+      ],
+      "pid": 16452,
+      "startedUnix": 1793841509.777359,
+      "completedUnix": 1793841512.29687,
+      "exit": 1,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\publication-llms-check.log",
+      "logSha256": "ece87f98a8ddccd85eddcc7e00a07caa179a0d6953336c7bc75f0bbbb11e1e58"
+    }
+  ]
+}

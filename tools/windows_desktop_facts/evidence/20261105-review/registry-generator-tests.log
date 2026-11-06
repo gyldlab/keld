@@ -1,0 +1,15 @@
+mkdir -p target/llms-docs
+rustc --edition=2024 -D warnings --test tools/llms_docs.rs -o target/llms-docs/llms-docs-test
+target/llms-docs/llms-docs-test
+
+running 6 tests
+test tests::missing_and_empty_sources_report_actionable_errors ... ok
+test tests::corpus_policy_allows_only_explicitly_listed_generated_sources ... ok
+test tests::source_headings_follow_declared_order ... ok
+test tests::unlisted_sources_stay_out_and_forbidden_sources_fail ... ok
+test tests::deterministic_rerun_is_byte_identical_and_normalizes_newlines ... ok
+test tests::stale_check_fails_after_source_change ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+WORKSPACE evidence: D:\WORK\keld\.keld-work\sessions\chatgpt-w4-desktop-20261105\evidence\run-1dc71c24272e44b88936d07671a08211

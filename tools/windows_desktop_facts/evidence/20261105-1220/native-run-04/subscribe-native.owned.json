@@ -1,0 +1,20 @@
+{
+  "bootstrapPid": 21924,
+  "targetPid": 16984,
+  "targetExit": 0,
+  "enrolled": true,
+  "targetWaitTimedOut": false,
+  "setupError": null,
+  "argv": [
+    "bun",
+    "test",
+    "D:\\WORK\\keld\\.keld-work\\worktrees\\gh-1186-windows-desktop-feasibility-20261105\\tools\\windows_desktop_facts\\subscribe_contract.test.ts",
+    "-t",
+    "W4 native first sample"
+  ],
+  "bootstrapExit": 0,
+  "jobActiveAfter": 0,
+  "timedOut": false,
+  "forcedCleanup": false,
+  "elapsedSeconds": 0.746791099983966
+}

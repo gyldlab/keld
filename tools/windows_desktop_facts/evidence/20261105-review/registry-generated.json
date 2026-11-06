@@ -1,0 +1,77 @@
+{
+  "checks": [
+    {
+      "name": "llms",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "llms"
+      ],
+      "exit": 0,
+      "pid": 18460,
+      "start": 1793841582.530409,
+      "end": 1793841587.1229284,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms.log",
+      "sha256": "1a9109d98ca8dd6175a7997ee778a8fa469261013fc892a85ee068bcedb44b1c"
+    },
+    {
+      "name": "llms-test",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "llms-test"
+      ],
+      "exit": 0,
+      "pid": 19772,
+      "start": 1793841587.1351054,
+      "end": 1793841590.977649,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-test.log",
+      "sha256": "e03d42a8e63ff124385769999923dbbf2a6a1356eedf936973b1953ecef7f10f"
+    },
+    {
+      "name": "llms-check",
+      "argv": [
+        "python",
+        "-B",
+        "tools/workspace.py",
+        "run",
+        "gh-1186-windows-desktop-feasibility-20261105",
+        "--session",
+        "chatgpt-w4-desktop-20261105",
+        "--",
+        "just",
+        "llms-check"
+      ],
+      "exit": 0,
+      "pid": 22184,
+      "start": 1793841590.9886897,
+      "end": 1793841594.917791,
+      "log": "D:\\WORK\\keld\\.git\\keld-closeout\\chatgpt-w4-desktop-20261105\\registry-llms-check.log",
+      "sha256": "961f6e4e22f67b1013956b0c79062951bdeccab6b5fd23d61fee1bc330b0f7a6"
+    }
+  ],
+  "before": {
+    "llms.txt": "efda14c72ea64584fd0ec054c9343c0ab6dce6816c6197cf00278725526711de",
+    "llms-full.txt": "391807837c7e49278ed86df26e239f9f9fa8bd2bcb27ee3c9cc54185bcd3d1ad"
+  },
+  "after": {
+    "llms.txt": "efda14c72ea64584fd0ec054c9343c0ab6dce6816c6197cf00278725526711de",
+    "llms-full.txt": "2dd4bc12d0175e976239f1b1c4ca0b187b3c236db60cf0b8255b4e5f768fa553"
+  },
+  "llmsIndexUnchanged": true,
+  "diffSha256": "220a0f7151b3a307c45cf69479cf9a039eb3a9cd0b360b74423de5a35d96cc67"
+}

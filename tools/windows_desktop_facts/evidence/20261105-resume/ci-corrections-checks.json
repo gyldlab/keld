@@ -1,0 +1,60 @@
+{
+  "head": "48e3f168716ea8ba25ac6c1bfb35ab213c022b2e",
+  "dirty": true,
+  "RUSTUP_TOOLCHAIN": "1.99.1",
+  "results": [
+    {
+      "name": "context-compile",
+      "argv": [
+        "rustc",
+        "--edition=2024",
+        "-D",
+        "warnings",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105/tools/agent_context.rs",
+        "-o",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-publication-20261105/ci-corrections-checks/agent-context"
+      ],
+      "exit": 0,
+      "seconds": 1.2509472370147705,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "context-check",
+      "argv": [
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-publication-20261105/ci-corrections-checks/agent-context",
+        "check",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105"
+      ],
+      "exit": 0,
+      "seconds": 0.4753868579864502,
+      "log_sha256": "cfd8c0ed8c7603e6f693fdca8f1bd2fef5076111a7838a9778f10688abf7a23b"
+    },
+    {
+      "name": "seam",
+      "argv": [
+        "python3",
+        "-B",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105/tools/windows_desktop_facts/verify_init_seam.py",
+        "--repo",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/seam-review/object-store",
+        "--source-ref",
+        "ec493b0bc16250a19dd4cc0d8615d7870a364748",
+        "--expected-source-sha256",
+        "03bc98199f767d24cce99e9f1db3c242301491ad07ddca7fb91d3d2e8a53c370",
+        "--patch",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105/tools/windows_desktop_facts/integration.patch",
+        "--red-patch",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105/tools/windows_desktop_facts/integration-v2-negative.patch",
+        "--harness",
+        "/Users/centillionaire/WORK/keld/.keld-work/worktrees/gh-1186-w4-publication-20261105/tools/windows_desktop_facts/init_seam_harness.rs",
+        "--out",
+        "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-publication-20261105/ci-corrections-checks/seam"
+      ],
+      "exit": 0,
+      "seconds": 0.7563331127166748,
+      "log_sha256": "4794a980b4af86340e96ffca5529c2eabcaeaedc7fffff054b50f27b340166e5"
+    }
+  ],
+  "driver_sha256": "8eb6bdc30b7cb5709aaf93c6a176ccc0faba55576108a1a73ae9fe3bad5fb3d3",
+  "learning_bytes": 65279
+}

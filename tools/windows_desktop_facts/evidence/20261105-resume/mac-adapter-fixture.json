@@ -1,0 +1,280 @@
+{
+  "utc": "2026-11-05T11:37:42Z",
+  "scope": "non-GUI Mac exact-source fixture and adapter qualification; not Windows native/full CI",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "head_export": "b18dbb9ebdac4fd554e2accce510a504d4995364",
+  "fixture_fix": "05f87d5d23770119f751edc2cffb657249339331",
+  "fixture_blob": "94c6fae629286faf6914662ea382e4e9e2bb3527",
+  "geometry_original_patch_sha256": "7bd228f86173b61374ab0c8e90d7b11aeb33146b34ed3a1aee4fed8006ff4c3b",
+  "shared_pin": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+  "shared_files": 11,
+  "shared_test_executed": true,
+  "prior_0755_skip_correction": "shared-root dependent, not native dependent",
+  "fixture_exact": {
+    "name": "fixture-exact",
+    "command": [
+      "python3",
+      "tools/test_ci_local.py",
+      "ExecutorTests.test_fmt_repairs_rust_before_codegen_and_restamps_native_output",
+      "-v"
+    ],
+    "exit": 0,
+    "seconds": 1.2656807899475098,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "3ff93cf61d8b908f1718bb8200006b0230f6100e192622308df4ac17816c29d5"
+  },
+  "adapter_before_format": {
+    "name": "adapter-before-format",
+    "command": [
+      "/Users/centillionaire/.bun/bin/bun",
+      "test",
+      "tools/windows_desktop_facts/native_adapter.test.ts"
+    ],
+    "exit": 0,
+    "seconds": 0.15128707885742188,
+    "stdout_sha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+    "stderr_sha256": "01ffe8f3cbef83d1788c8f35071f3445a45f9ce79c12c4b8f575823e3bcb2d86"
+  },
+  "format": {
+    "name": "format",
+    "command": [
+      "/Users/centillionaire/.bun/bin/bun",
+      "fmt",
+      "--no-script",
+      "tools/windows_desktop_facts/native_adapter.ts",
+      "tools/windows_desktop_facts/native_adapter.test.ts"
+    ],
+    "exit": 0,
+    "seconds": 0.06324005126953125,
+    "stdout_sha256": "baaddf386d5997dfe658a3d42cc77ef75cc4de3e7faa8165dfdec99229cc6a96",
+    "stderr_sha256": "8aee5df0ebfa196656da63767814415f3721f6c6cb4d10c4b355339eeffb1bef"
+  },
+  "checks": [
+    {
+      "name": "format-check",
+      "command": [
+        "/Users/centillionaire/.bun/bin/bun",
+        "fmt",
+        "--no-script",
+        "--check",
+        "tools/windows_desktop_facts/native_adapter.ts",
+        "tools/windows_desktop_facts/native_adapter.test.ts"
+      ],
+      "exit": 0,
+      "seconds": 0.00506281852722168,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "63a0cdd7e23934df24a91c2520d86b6f9255b1b5e03961d7939cc9ebe6070557"
+    },
+    {
+      "name": "adapter-after-format",
+      "command": [
+        "/Users/centillionaire/.bun/bin/bun",
+        "test",
+        "tools/windows_desktop_facts/native_adapter.test.ts"
+      ],
+      "exit": 0,
+      "seconds": 0.1319742202758789,
+      "stdout_sha256": "bbe6a94c29cc8d3ff5a1792a5abae1f1122aed0642111b52036ab7e0b2b2ca47",
+      "stderr_sha256": "9ca20cb3f34c8824f6709fc441053c24e13ad002faca6c0be0d37f29b930c191"
+    }
+  ],
+  "files": [
+    {
+      "relative": "tools/windows_desktop_facts/native_adapter.ts",
+      "canonical": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/canonical/native_adapter.ts",
+      "before_sha256": "bce48e78c07d3c99a2d2a127a74350265c03f6ad638d4a48cd4148cb5cbc22ca",
+      "after_sha256": "69fcce20d638ca2ad0cb0dedf708d29358d0a6d78ac7f66ad298f185527e029f",
+      "before_bytes": 13175,
+      "after_bytes": 13191
+    },
+    {
+      "relative": "tools/windows_desktop_facts/native_adapter.test.ts",
+      "canonical": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/canonical/native_adapter.test.ts",
+      "before_sha256": "85ea4c608b315320de32d55f8a6c43e0ae7421bbba60e92e04e8b485f168c962",
+      "after_sha256": "72c016b78c670f9175777a7fb6cf71e22acdcbb52f8497353a9f0c000a1899d6",
+      "before_bytes": 10615,
+      "after_bytes": 10624
+    }
+  ],
+  "format_patch": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/format-only.patch",
+  "format_patch_sha256": "32baded043c061a21d59a9f048547c504206fdbaa212225704f6714037e41541",
+  "versions": {
+    "python": {
+      "exit": 0,
+      "stdout": "Python 3.13.9\n",
+      "stderr": ""
+    },
+    "bun": {
+      "exit": 0,
+      "stdout": "1.4.4\n",
+      "stderr": ""
+    },
+    "cargo": {
+      "exit": 0,
+      "stdout": "cargo 1.99.1 (5f94df478 2026-08-27)\n",
+      "stderr": ""
+    },
+    "rustc": {
+      "exit": 0,
+      "stdout": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\n",
+      "stderr": ""
+    },
+    "rustfmt": {
+      "exit": 0,
+      "stdout": "rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)\n",
+      "stderr": ""
+    },
+    "just": {
+      "exit": 0,
+      "stdout": "just 1.58.0\n",
+      "stderr": ""
+    }
+  },
+  "primary_head_unchanged": true,
+  "primary_refs_unchanged": true,
+  "primary_status_unchanged": true,
+  "fetch_head_unchanged": true,
+  "native_launched": false,
+  "foreign_processes_signalled": false,
+  "temp_fixture_remaining": [],
+  "toolchain_context": {
+    "contexts": {
+      "export": {
+        "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/source",
+        "tools": {
+          "cargo": {
+            "command": [
+              "cargo",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "cargo 1.99.1 (5f94df478 2026-08-27)\n",
+            "stderr": ""
+          },
+          "rustc": {
+            "command": [
+              "rustc",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\n",
+            "stderr": ""
+          },
+          "rustfmt": {
+            "command": [
+              "rustfmt",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)\n",
+            "stderr": ""
+          },
+          "rustup": {
+            "command": [
+              "rustup",
+              "show",
+              "active-toolchain"
+            ],
+            "exit": 0,
+            "stdout": "1.99.1-aarch64-apple-darwin (overridden by '/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/source/rust-toolchain.toml')\n",
+            "stderr": ""
+          }
+        }
+      },
+      "fixture_tmp_parent": {
+        "cwd": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/tmp",
+        "tools": {
+          "cargo": {
+            "command": [
+              "cargo",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "cargo 1.97.1 (c980f4866 2026-06-30)\n",
+            "stderr": ""
+          },
+          "rustc": {
+            "command": [
+              "rustc",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "rustc 1.97.1 (8bab26f4f 2026-07-14)\n",
+            "stderr": ""
+          },
+          "rustfmt": {
+            "command": [
+              "rustfmt",
+              "--version"
+            ],
+            "exit": 0,
+            "stdout": "rustfmt 1.9.0-stable (8bab26f4f6 2026-07-14)\n",
+            "stderr": ""
+          },
+          "rustup": {
+            "command": [
+              "rustup",
+              "show",
+              "active-toolchain"
+            ],
+            "exit": 0,
+            "stdout": "1.97.1-aarch64-apple-darwin (overridden by '/Users/centillionaire/WORK/keld/rust-toolchain.toml')\n",
+            "stderr": ""
+          }
+        }
+      }
+    },
+    "rustup_toolchain_env": null,
+    "fixture_note": "TemporaryDirectory was under private out/tmp; no fixture rust-toolchain file is copied. Its cargo fmt/metadata inherit this ancestor toolchain. Version commands here do not compile.",
+    "source_versions_note": "Earlier receipt.json versions were queried with cwd=source, so they describe export root, not fixture temp workspace."
+  },
+  "failure_first_controls": {
+    "fixture": "Exact upstream test runs deliberately wrong generator-before-rustfmt order, requires nonzero exit and rustfmt-normalized diagnostic while Rust remains unformatted, then restores order and asserts success; parent source unchanged and Cargo metadata owns fixture workspace.",
+    "geometry": "The full suite includes off-monitor work-area refusal before identity allocation and repaired admission with first identity 1. Old RED evidence on Ramani is preserved; this Mac task did not overwrite or relabel it.",
+    "scope": "Synthetic adapter qualification and real formatter/metadata fixture only; existing Windows native facts were not rerun."
+  },
+  "cleanup": {
+    "native_launches": 0,
+    "process_signals": 0,
+    "fixture_tmp_children": [],
+    "all_tool_sessions_completed": true,
+    "private_sources_and_logs_retained": true
+  },
+  "fixture_pinned1991": {
+    "name": "fixture-pinned1991",
+    "command": [
+      "python3",
+      "tools/test_ci_local.py",
+      "ExecutorTests.test_fmt_repairs_rust_before_codegen_and_restamps_native_output",
+      "-v"
+    ],
+    "exit": 0,
+    "seconds": 1.4768903255462646,
+    "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderr_sha256": "04e1698685d8b85717debe97f405973346d97f8e338e1704bad798484a345b44",
+    "env": {
+      "RUSTUP_TOOLCHAIN": "1.99.1",
+      "TMPDIR": "/Users/centillionaire/WORK/keld/.git/keld-closeout/chatgpt-w4-resume-20261105-1114/ci-geometry-checks/tmp",
+      "CARGO_NET_OFFLINE": "true"
+    },
+    "purpose": "Resolve actual fixture temporary-workspace toolchain mismatch with export rust-toolchain pin; original 1.97.1 PASS retained.",
+    "actual_context_versions": {
+      "cargo": {
+        "exit": 0,
+        "stdout": "cargo 1.99.1 (5f94df478 2026-08-27)\n",
+        "stderr": ""
+      },
+      "rustc": {
+        "exit": 0,
+        "stdout": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\n",
+        "stderr": ""
+      },
+      "rustfmt": {
+        "exit": 0,
+        "stdout": "rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)\n",
+        "stderr": ""
+      }
+    }
+  },
+  "final_fixture_temp_children": []
+}

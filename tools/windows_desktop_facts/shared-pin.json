@@ -1,0 +1,19 @@
+{
+  "schema": "keld.w4-shared-source/v1",
+  "commit": "e09b520eaee1e4bd69bd0bde2137ec52f0fed18a",
+  "sourceOwner": "GH-481",
+  "approval": "https://github.com/gyldlab/keld/issues/481#issuecomment-6556306946",
+  "files": {
+    "packages/@keld/api/src/window-source.ts": "b526d8d30796ac6fef8d3c23aecba6324b9b4009",
+    "packages/@keld/api/src/window-codec.ts": "987bb7f8a73afd86a7de0924ecfb4ae05055e5ad",
+    "packages/@keld/kipc/src/transport.ts": "fbc747706a056c2f4c6b1d01dde07a75f4d5a5d1",
+    "packages/@keld/kipc/package.json": "9686efb07b4e978e3ae2168b3630fd5cdc744e35",
+    "packages/@keld/api/src/window-desktop-source.test.ts": "0daa93ff3b7e668ad69eb3b015e853c667c39b11",
+    "crates/keld-ipc/tests/fixtures/desktop-v0.tsv": "606bafb60e8c59eea7de422c410309acf9a192a6",
+    "packages/@keld/api/src/link.ts": "9287ad6d61c783e2e4356ffd72e3f4a2a8a0aa51",
+    "packages/@keld/api/src/echo-call.ts": "29f77d9151cab65d2dd7f003101cae6fec5ccd9a",
+    "packages/@keld/api/src/dialog.generated.ts": "bf49ef662e336f46416fd4169b2032f149d1b38e",
+    "packages/@keld/api/src/mirror.ts": "3fa355e4d1496b369391d925529ff6578d06f431",
+    "packages/@keld/kipc/test/app-link-host.ts": "44bcb200fb43a1a22108d656ab3640edfd5924ac"
+  }
+}
