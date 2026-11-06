@@ -24,6 +24,7 @@ authorizes this draft, not feature implementation.
 - [Screen contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/screen.md)
 - [Theme contract and platform fields](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/native-theme.md)
 - [Theme implementation](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_api_native_theme.cc)
+- [Separate Zettlr subscription owner GH1356](https://github.com/gyldlab/keld/blob/f8a23c14bcf670b84e042d63d95995f3fc62c14b/docs/specs/gh1356-system-preferences-theme.md)
 - [Actual Zettlr display consumer](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/windows/index.ts)
 - [Actual Zettlr appearance consumer](https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/appearance/index.ts)
 
@@ -31,7 +32,9 @@ Verified source and limits: Main 0eb3ce exports app and BrowserWindow only; this
 snapshot contract, and later public source handoffs report scoped S1 work; neither is blanket approval of GH558. The original
 macOS snapshot and the later Windows recovery-policy decision are distinct. Electron's cursor result is a device-independent
 pixel (DIP) point. Zettlr persists getDisplayMatching(window.getBounds()).id and owns nativeTheme changes in its appearance
-provider.
+provider. On macOS that provider unconditionally calls systemPreferences.subscribeNotification before registering its
+nativeTheme.updated listener. GH1356 owns that separate subscription; its approval and qualification are prerequisites for
+the original-consumer AC10 only. Standalone GH558 fixtures and implementation retain their own dependency graph.
 
 All proposed API, schema, ownership and permission changes below are future contracts.
 This documentation PR changes no runtime boundary and approves none of those changes.
@@ -113,9 +116,10 @@ Independent negative control: Coerce an unknown theme to system or accept nonfin
 
 ### AC10
 
-Given the unmodified pinned Zettlr appearance/window callers with appearance mode='system', when an actual Host theme
-observation changes and a window moves between displays, then the original updated listener changes application darkMode and the
-persisted display selection follows the supported contract.
+Given separately approved and qualified GH1356 subscription support lets the unmodified pinned macOS Zettlr appearance
+provider complete its initial systemPreferences.subscribeNotification call, and appearance mode='system', when an actual
+Host theme observation changes and a window moves between displays, then the original updated listener changes application
+darkMode and the persisted display selection follows the supported contract.
 
 Independent negative control: Remove the actual provider's nativeTheme listener while leaving synthetic theme events; the application-visible refresh
 assertion must fail.
@@ -199,16 +203,18 @@ failure and independent CSS/native witnesses.
 
 ### T4
 
-- [ ] Run paired macOS fixtures plus the original Zettlr appearance/window consumers; flip only evidenced members and leave other
-engines/platforms unknown.
+- [ ] Run paired macOS fixtures. Run the original Zettlr appearance/window consumers only after GH1356's subscription support is
+separately approved and qualified; flip only evidenced members and leave other engines/platforms unknown.
 
 ## 7. Test plan
 
 AC1–AC4 require paired physical multi-display/coordinate fixtures, with source snapshots for deterministic tie/boundary cases.
 AC5–AC7 separately witness native appearance and WKWebView CSS; controlled fixture overrides must not change the user's global
 settings. AC8–AC9 use explicit writer/reply/retirement barriers and a healthy follow-up. AC10 executes the real application
-consumer, not a recreated handler. Qualify theme notifications against the pinned Electron build before making an exact
-unchanged-value event claim.
+consumer with the qualified GH1356 subscription precondition. A stubbed or omitted systemPreferences subscription can support
+only a narrower GH558 fixture; it cannot pass AC10 or count as original-Zettlr evidence. Do not block standalone GH558
+implementation on the later product-composition receipt. Qualify theme notifications against the pinned Electron build before
+making an exact unchanged-value event claim.
 
 Every acceptance criterion has an independently observable outcome and named negative control.
 Record source commit, pinned reference, exact platform/runtime and raw receipt for every claimed result.
@@ -246,3 +252,4 @@ implementation.
 
 Independent review must refute or fix concrete findings on the published revision. Platform gaps
 remain explicit; no unexecuted acceptance test is reported as passed.
+
