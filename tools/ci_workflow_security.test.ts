@@ -49,6 +49,15 @@ test("direct native formatter selects JS/TS, honors ignores and checks without w
       (extension) => `source.${extension}`,
     );
     sources.push("source with spaces.ts", "--ignore-pattern=source.ts");
+    const sourceBinding =
+      "crates/keld-wv/tests/fixtures/windows_preload_feasibility/source_binding";
+    const vendorMain = `${sourceBinding}/vendor/drawio/src/main`;
+    sources.push(
+      `${sourceBinding}/authored-format-probe.mjs`,
+      `${sourceBinding}/electron.js`,
+      `${vendorMain}/unpinned-format-probe.js`,
+      `${vendorMain}/electron-helper.js`,
+    );
     const untouched = [
       "source.rs",
       "document.md",
@@ -56,9 +65,13 @@ test("direct native formatter selects JS/TS, honors ignores and checks without w
       "data.json",
       "data.yaml",
       "ignored.ts",
+      `${vendorMain}/electron-preload.js`,
+      `${vendorMain}/electron.js`,
     ];
-    for (const name of [...sources, ...untouched])
+    for (const name of [...sources, ...untouched]) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
       writeFileSync(join(root, name), original);
+    }
     // Track a source and an ignored source; all the remaining sources stay untracked.
     expect(
       Bun.spawnSync(["git", "add", "source.ts", "ignored.ts"], { cwd: root })
