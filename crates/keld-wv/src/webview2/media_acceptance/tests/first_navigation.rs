@@ -180,8 +180,16 @@ fn prove_later_recovery(
     })();
     // SAFETY: remove the test observer on the same STA, even after a failed
     // post-refusal operation; the production observer remains installed.
-    unsafe { webview.remove_DocumentTitleChanged(token) }.map_err(failure)?;
-    outcome
+    let removal = unsafe { webview.remove_DocumentTitleChanged(token) }.map_err(failure);
+    match (outcome, removal) {
+        (Err(primary), Err(cleanup)) => {
+            eprintln!("KELD_LATER_NUL_OBSERVER_REMOVE_FAILED {cleanup}");
+            Err(primary)
+        }
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(()), Err(cleanup)) => Err(cleanup),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 struct Creation {
     events: Option<mpsc::Receiver<crate::AppWindowEvent>>,
