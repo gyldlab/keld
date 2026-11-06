@@ -23,10 +23,13 @@ preload worlds, new-window admission and session ownership remain separate.
 - [N1 wire collision and policy correction](https://github.com/gyldlab/keld/issues/459#issuecomment-6560238948).
 - [Single navigation-authority dependency](https://github.com/gyldlab/keld/issues/459#issuecomment-6371834142).
 - [Electron webContents contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-contents.md).
+- [Later D1 policy and package-pair adoption](https://github.com/gyldlab/keld/issues/553#issuecomment-6561790580).
+- [Scoped D1 native-positive and local integration handoff](https://github.com/gyldlab/keld/issues/553#issuecomment-6563380170).
 
 Verified baseline: Current main's WebContents facade has the destroyed surface but no loadURL. WebEngine.navigate returns command
-admission, not completion. The N1 record identifies a real proposed wire-tag collision and an unresolved CSP selector; it is
-review material, not a qualified runtime implementation.
+admission, not completion. The earlier N1 record identified a proposed wire-tag collision and policy gap. Later D1 comments adopt
+an exact scoped policy/Host-package pair and report local native positives; full independent review, mutation controls and
+whole-app acceptance remain open.
 
 All proposed API, schema, ownership and permission changes below are future contracts. This documentation PR changes no runtime
 boundary and approves none of those changes.
@@ -117,10 +120,11 @@ together. No second parser, channel or implicit navigation during create.
 
 ### 4.5 Resource and CSP gate
 
-File containment stays with the existing resource owner. The exact compiled windows.<key>.web.csp selector and trusted window
-binding need the manifest/policy owner's qualified decision. A raw response header or unchanged source hash is not policy proof.
-Use unchanged original assets, truthful URL/UA/query and positive/negative inline/wasm/resource probes; never loosen script
-authority to obtain a happy path.
+File containment stays with the existing resource owner. Preserve the later GH553 D1 adoption: one verified
+original-editor-offline selector, H2 header, trusted Core window binding and exact Host/provider pairing for its explicit Legacy
+local-demo scope. Do not reopen that adopted choice or broaden it. The public comments report native positives but do not publish
+a general production approval. Reconcile the exact current source and qualified packed pair before enabling this load path;
+missing/changed policy still refuses before response bytes. Unchanged assets and truthful URL/UA/query remain mandatory.
 
 ### 4.6 Compatibility surface
 
@@ -147,7 +151,8 @@ architecture, generated schemas, code and unrelated work remain with their exist
 
 ### T1
 
-- [ ] Approve N1's exact shared schema and CSP/window-binding owner records; record pending identity/order/registration cells.
+- [ ] Reconcile N1's exact shared schema with the later scoped D1 policy/Host-pair adoption; record pending
+identity/order/registration cells without reopening approved scoped choices.
 
 ### T2
 
@@ -196,7 +201,8 @@ No numerical product performance claim is made without a reproducible pinned wor
 ## 10. Open questions (block implementation)
 
 1. Approve the shared request-tag ledger without collision.
-2. Qualify the exact CSP selector/profile/window binding and native attempt classification.
+2. Reconcile the current published source and packed Host/provider pair with the later D1 scoped adoption; complete remaining
+independent mutation/whole-app qualification for this load path.
 3. Approve initial concurrent-load refusal and terminal error registration with GH538 and the central error owner.
 
 Independent review must refute or fix concrete findings on the published revision. Remaining platform qualification is an
