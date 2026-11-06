@@ -162,12 +162,72 @@ pub(super) fn navigate_initial(
     guard: &GuardInstalled<'_>,
     target: &NavTarget,
 ) -> Result<(), WvError> {
-    let webview = guard.0;
-    // SAFETY: `webview` lives on this thread; both calls take an HSTRING by
-    // reference that outlives the call.
-    let loaded = match target {
-        NavTarget::Html(html) => unsafe { webview.NavigateToString(&HSTRING::from(html.as_str())) },
-        NavTarget::Url(url) => unsafe { webview.Navigate(&HSTRING::from(url.as_str())) },
+    dispatch_initial(
+        target,
+        // SAFETY: the guarded webview lives on this STA; each borrowed argument
+        // remains valid until its synchronous COM call returns.
+        |html| unsafe { guard.0.NavigateToString(html) },
+        // SAFETY: the URL buffer has the same lifetime as the HTML buffer above.
+        |url| unsafe { guard.0.Navigate(url) },
+    )
+}
+
+fn dispatch_initial(
+    target: &NavTarget,
+    navigate_to_string: impl FnOnce(&HSTRING) -> windows::core::Result<()>,
+    navigate: impl FnOnce(&HSTRING) -> windows::core::Result<()>,
+) -> Result<(), WvError> {
+    let (NavTarget::Html(text) | NavTarget::Url(text)) = target;
+    let argument = HSTRING::from(text.as_str());
+    let result = match target {
+        NavTarget::Html(_) => navigate_to_string(&argument),
+        NavTarget::Url(_) => navigate(&argument),
     };
-    loaded.map_err(|err| WvError::Navigate(err.to_string()))
+    result.map_err(|err| WvError::Navigate(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_navigation_rejects_nul_before_either_native_call() {
+        for value in ["\0suffix", "private-prefix\0private-suffix", "prefix\0"] {
+            for target in [NavTarget::Html(value.into()), NavTarget::Url(value.into())] {
+                let result = dispatch_initial(
+                    &target,
+                    |_| panic!("submitted a truncated initial document"),
+                    |_| panic!("submitted a truncated initial URL"),
+                );
+                let Err(WvError::Navigate(detail)) = result else {
+                    panic!("expected a navigation refusal");
+                };
+                assert!(!detail.contains("private"));
+            }
+        }
+    }
+
+    #[test]
+    fn initial_navigation_submits_the_complete_argument_to_the_selected_method() {
+        let html = "<p>東京 🦀 %00</p>";
+        let url = "file:///C:/東京/%00.html";
+        dispatch_initial(
+            &NavTarget::Html(html.into()),
+            |arg| {
+                assert!(arg.as_wide().iter().copied().eq(html.encode_utf16()));
+                Ok(())
+            },
+            |_| panic!("HTML routed to Navigate"),
+        )
+        .expect("valid HTML submitted");
+        dispatch_initial(
+            &NavTarget::Url(url.into()),
+            |_| panic!("URL routed to NavigateToString"),
+            |arg| {
+                assert!(arg.as_wide().iter().copied().eq(url.encode_utf16()));
+                Ok(())
+            },
+        )
+        .expect("valid URL submitted");
+    }
 }
