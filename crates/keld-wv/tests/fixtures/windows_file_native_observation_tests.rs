@@ -155,10 +155,13 @@ fn measured_header_loss_is_refutation_not_a_missing_observation() {
 fn native_method_rejection_is_preserved_as_refutation() {
     let mut receipt = sample();
     receipt["host_request"]["navigate_hresult"] = json!("0x80070057");
-    receipt["events"]
-        .as_array_mut()
-        .expect("array")
-        .retain(|event| event["phase"] != "host-header");
+    let events = receipt["events"].as_array_mut().expect("array");
+    events.retain(|event| event["phase"] != "host-header");
+    // This synthetic negative experiment removes its initial phase. The real
+    // Trace::record would number the remaining observed events contiguously.
+    for (index, event) in events.iter_mut().enumerate() {
+        event["seq"] = json!(index + 1);
+    }
     assert_eq!(
         assess(&receipt).expect("rejection plus healthy controls")["q22_a_b_header_propagation_observed"],
         false
