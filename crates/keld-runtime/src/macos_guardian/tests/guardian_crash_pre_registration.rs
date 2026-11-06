@@ -45,13 +45,15 @@ setInterval(() => {}, 1000);
     let bun = std::env::var_os(CRASH_BUN_ENV).expect("verified real Bun executable path");
     if let Err(error) = run_guarded_primary(
         io::stdin().lock(),
-        move |_| {
-            let mut command = Command::new(&bun);
-            command
-                .args(["-e", script])
-                .env(CRASH_MARKER_ENV, &marker)
-                .stdin(Stdio::null());
-            Ok(command)
+        move || {
+            Ok(move |_app_link: &str| {
+                let mut command = Command::new(&bun);
+                command
+                    .args(["-e", script])
+                    .env(CRASH_MARKER_ENV, &marker)
+                    .stdin(Stdio::null());
+                Ok(command)
+            })
         },
         io::stdout(),
     ) {
