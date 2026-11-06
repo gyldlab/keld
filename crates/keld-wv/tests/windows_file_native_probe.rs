@@ -6,6 +6,11 @@
 #[path = "fixtures/windows_file_native_observation.rs"]
 mod observation;
 
+// These two parent-only tests must run in default Windows CI; no native slot is needed.
+#[cfg(target_os = "windows")]
+#[path = "fixtures/windows_file_native_parent_receipt.rs"]
+mod parent_receipt;
+
 #[cfg(all(target_os = "windows", feature = "profile-test-hooks"))]
 #[path = "fixtures/windows_file_native_probe.rs"]
 mod native;
