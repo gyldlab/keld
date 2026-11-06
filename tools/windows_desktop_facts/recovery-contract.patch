@@ -1,0 +1,174 @@
+diff --git a/crates/keld-core/src/app_session/window_router/tests/desktop.rs b/crates/keld-core/src/app_session/window_router/tests/desktop.rs
+--- a/crates/keld-core/src/app_session/window_router/tests/desktop.rs
++++ b/crates/keld-core/src/app_session/window_router/tests/desktop.rs
+@@ -217,3 +217,170 @@
+     completed_capture(&fixture, &current_b, Some(false))?;
+     fact(&mut fixture, &expected(3, Some(false)))
+ }
++
++/// Characterizes the current Windows replacement-resample policy; this does not
++/// approve that policy over Host-cache retention. All native observations here
++/// are synthetic. No physical desktop change or native query failure is proved.
++#[test]
++fn replacement_query_failure_refuses_replay_until_new_valid_capture() -> TestResult {
++    let mut fixture = desktop_fixture()?;
++    pending(&fixture, 71)?;
++    sample(&fixture, Some(false))?;
++    fact(&mut fixture, &expected(1, Some(false)))?;
++    accepted(&mut fixture, 71)?;
++    fixture.ready()?;
++    let window = fixture.build(72, 7)?;
++    let caller_a = fixture.caller()?;
++    let capture_a = keld_wv::AppDesktopCapture::from_current(
++        caller_a.attempt,
++        Arc::clone(&caller_a.reader_stop),
++    );
++    // Retain complete A completions before retirement, including an unavailable
++    // result and values equal to / different from the accepted observation.
++    let held_before =
++        [None, Some(false), Some(true)].map(|value| AppWindowEvent::WindowsDesktopObserved {
++            capture: capture_a.clone(),
++            facts: value.map(observed),
++        });
++    let held_after =
++        [None, Some(false), Some(true)].map(|value| AppWindowEvent::WindowsDesktopObserved {
++            capture: capture_a.clone(),
++            facts: value.map(observed),
++        });
++    fixture.retire_reader(caller_a.attempt)?;
++
++    // The successor owns a real reader. Retire/join it before propagating any
++    // assertion or I/O failure, including a deliberate negative-control failure.
++    let proof = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
++        install_successor(&mut fixture)?;
++        let AppWindowCommand::WindowsDesktopProducer { capture: capture_b } =
++            fixture.commands.recv_timeout(Duration::from_secs(3))?
++        else {
++            return Err("expected successor capture owner".into());
++        };
++        let caller_b = fixture.caller()?;
++        let owner_b = WindowOwner::new(caller_b.identity, caller_b.attempt);
++        // A new link may reuse the same number; the producer context is the fence.
++        pending(&fixture, 71)?;
++        for event in held_before {
++            fixture.handle.window_native_event(event)?;
++        }
++        let pending_state = {
++            let state = fixture
++                .handle
++                .windows
++                .as_ref()
++                .ok_or("selected session")?
++                .lock()
++                .expect("window lock");
++            (
++                state.desktop_epoch.0,
++                state.desktop_seen,
++                state.desktop_latest.clone(),
++                state.subscribed,
++                state
++                    .pending_desktop
++                    .map(|pending| (pending.owner, pending.correlation)),
++                state.registry.replay(owner_b).count(),
++            )
++        };
++        // Assert only after releasing the registry lock, so a control failure
++        // cannot poison the lock needed to retire/join the real reader.
++        assert_eq!(
++            pending_state,
++            (1, false, None, None, Some((owner_b, CorrelationId(71))), 0)
++        );
++
++        // No monitor change is injected. Only B's synthetic capture is unavailable.
++        completed_capture(&fixture, &capture_b, None)?;
++        for correlation in [71, 82] {
++            if correlation == 82 {
++                // This second correlated ERR is an ordered writer barrier: any
++                // desktop/Created replay after the first ERR fails the next read.
++                pending(&fixture, correlation)?;
++            }
++            let (header, bytes) = read_frame(&mut fixture.peer)?;
++            assert_eq!(
++                (header.kind, header.channel, header.corr),
++                (
++                    FrameKind::Err,
++                    LIFECYCLE_CHANNEL,
++                    CorrelationId(correlation)
++                )
++            );
++            assert_eq!(decode::<CallError>(&bytes)?.code, "KELD-CORE-049");
++        }
++        let unavailable_state = {
++            let state = fixture
++                .handle
++                .windows
++                .as_ref()
++                .ok_or("selected session")?
++                .lock()
++                .expect("window lock");
++            (
++                state.desktop_epoch.0,
++                state.desktop_seen,
++                state.desktop_latest.clone(),
++                state.subscribed,
++                state.pending_desktop.is_none(),
++                state.registry.replay(owner_b).count(),
++            )
++        };
++        assert_eq!(unavailable_state, (2, true, None, None, true, 0));
++
++        // A fresh B capture returns the same facts A had. It must be newly
++        // qualified, and the retry must replay desktop -> survivor -> acceptance.
++        completed_capture(&fixture, &capture_b, Some(false))?;
++        pending(&fixture, 83)?;
++        fact(&mut fixture, &expected(3, Some(false)))?;
++        fact(
++            &mut fixture,
++            &WindowEvent::Created {
++                window,
++                state: native_state(snapshot()),
++                pending_close: None,
++            },
++        )?;
++        accepted(&mut fixture, 83)?;
++        for event in held_after {
++            fixture.handle.window_native_event(event)?;
++        }
++        let recovered_state = {
++            let state = fixture
++                .handle
++                .windows
++                .as_ref()
++                .ok_or("selected session")?
++                .lock()
++                .expect("window lock");
++            (
++                WindowEvent::DesktopSnapshot {
++                    epoch: state.desktop_epoch.0,
++                    snapshot: state.desktop_latest.clone(),
++                },
++                state.subscribed,
++                state.pending_desktop.is_none(),
++                state.registry.replay(owner_b).count(),
++            )
++        };
++        assert_eq!(
++            recovered_state,
++            (expected(3, Some(false)), Some(owner_b), true, 1)
++        );
++        // Already-subscribed acknowledgement is another ordered barrier: none of
++        // the stale completions may have emitted a snapshot ahead of this reply.
++        pending(&fixture, 84)?;
++        accepted(&mut fixture, 84)?;
++        assert!(
++            matches!(fixture.commands.try_recv(), Err(mpsc::TryRecvError::Empty)),
++            "no native rebuild; command channel remains connected"
++        );
++        Ok(())
++    }));
++    fixture.retire_reader(2)?;
++    match proof {
++        Ok(result) => result,
++        Err(panic) => std::panic::resume_unwind(panic),
++    }
++}
