@@ -3697,20 +3697,25 @@ impl WebEngine for WebView2Engine {
 
     fn navigate(&mut self, id: WebviewId, target: NavTarget) -> Result<(), WvError> {
         let view = self.view(id)?;
-        // The guard handler registered at create time lives for the webview's
-        // whole life, so later navigations need no new proof.
-        // SAFETY: webview lives on this thread; HSTRINGs outlive the calls.
+        let (NavTarget::Html(text) | NavTarget::Url(text)) = &target;
+        let argument = guarded_navigation::pcwstr_argument(text).ok_or_else(|| {
+            WvError::Navigate("navigation contains a NUL character; remove it before loading".into())
+        })?;
+        // Existing media and popup handlers remain installed for this view's lifetime.
         let loaded = match target {
-            NavTarget::Html(html) => unsafe {
-                view.webview.NavigateToString(&HSTRING::from(html.as_str()))
-            },
-            NavTarget::Url(url) => unsafe { view.webview.Navigate(&HSTRING::from(url.as_str())) },
+            // SAFETY: the webview lives on this STA; argument outlives this call.
+            NavTarget::Html(_) => unsafe { view.webview.NavigateToString(&argument) },
+            // SAFETY: the same STA and argument lifetime apply to URL dispatch.
+            NavTarget::Url(_) => unsafe { view.webview.Navigate(&argument) },
         };
         loaded.map_err(|err| WvError::Navigate(err.to_string()))
     }
 
     fn eval(&mut self, id: WebviewId, script: &str) -> Result<(), WvError> {
         let view = self.view(id)?;
+        let argument = guarded_navigation::pcwstr_argument(script).ok_or_else(|| {
+            WvError::Script("script contains a NUL character; remove it before evaluation".into())
+        })?;
         // Fire-and-forget per the trait contract: the completion handler only
         // satisfies the COM signature. Result plumbing belongs to the
         // command-queue design (engine.rs module docs).
@@ -3718,7 +3723,7 @@ impl WebEngine for WebView2Engine {
         // the script completes on this same thread.
         let queued = unsafe {
             view.webview.ExecuteScript(
-                &HSTRING::from(script),
+                &argument,
                 &ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(()))),
             )
         };
