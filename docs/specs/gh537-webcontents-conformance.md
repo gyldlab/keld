@@ -54,9 +54,12 @@ golden, native execution, conformance record or compatibility percentage is crea
    did-create-window. Tests independently observe native creation count and emitted events.
 6. Given title, load failure and in-page stimuli, cells assert their pinned payload/settlement
    contracts. A test cannot substitute a successful promise alone for an event and its arguments.
-7. Given an external-link or non-granted popup attempt, allowing it in an application hook
-   cannot override a denied authority decision. The cell consumes the adopted Keld policy and
-   proves the relevant host effect did not occur; this spec does not select a new navigation policy.
+7. Given guard-denied page navigation and non-granted popup attempts with an installed hook,
+   the GH460/GH461 application hook still runs exactly once, and a hook's allow cannot widen
+   Host authority. A hook that requests separately authorized shell.openExternal causes exactly
+   one observable GH479 broker invocation; denied navigation commits zero times and the denied
+   popup mints zero native children. Skipping the hook only on guard denial fails the hook-count
+   check even while the denied-effect check remains green; a granted follow-up stays usable.
 8. Given Windows or Linux coverage, unqualified cells remain unknown with explicit platform
    rows. A macOS receipt or headless stub cannot manufacture a pass for another native engine.
 9. Given a recorded cell with its committed fixture removed, renamed without rebinding, or
@@ -130,12 +133,17 @@ A transcript copied from an issue discussion or hand-written expected list is no
 ### 4.4 Keld authority cells
 
 Use the Zettlr-style external link and a non-granted popup as two distinct cells.
-Inputs include the actual guard decision, adopted application hook result and requested effect.
-Output includes the observable navigation/window/shell effect according to the owning policy.
+Inputs include the actual guard decision, exact per-attempt application-hook call count, hook
+result and requested effect. Observe the GH479 shell-broker invocation separately from the
+native navigation/window effect. A broker request is not proof that an external URL opened.
 
-The negative control changes a hook to allow a guard-denied attempt. Assert the denied effect
-is absent using the owner-approved native witness, then prove an authorized follow-up succeeds.
-Do not satisfy the test merely by inspecting an error string or the guard function's source.
+First, mutate only the guard-denied path to skip the installed application hook. That must fail
+the exactly-once hook witness even if no denied native effect occurred. A separate mutation
+calls the hook twice and must fail the same count. Then force hook allow on a guard-denied
+attempt: the denied native navigation/child must remain absent. A hook requesting a separately
+authorized shell.openExternal call must produce exactly one broker invocation, including when
+the guard denies navigation/popup creation. Prove a granted healthy follow-up succeeds.
+Error text or inspection of a guard function is not an independent effect witness.
 
 GH460 navigation and GH461 popup decisions are owned under KEL-79; this spec consumes only
 their exact approved revisions and any governing KEL-102 permission-schema amendment. GH546's
@@ -177,8 +185,9 @@ cells, permission grants, native callback retirement, historical recordings or p
   and independent controls that expose missing behavior without changing runtime code.
 - [ ] T3 Build and record the five observed-only fixtures on macOS arm64; bind their raw/golden
   evidence and retain unknown verdicts.
-- [ ] T4 Add popup and authority cells with real effect/absence witnesses and healthy follow-ups;
-  preserve the adopted guard/application policy.
+- [ ] T4 Add popup and authority cells with native effect, actual hook-call and broker-request
+  witnesses, skip-hook-on-denied negative control and healthy follow-ups; consume the adopted
+  GH460/GH461 guard/application policy without changing it.
 - [ ] T5 Run shared admission/receipt checks, publish exact platform coverage and hand pending
   behavior to its implementing ticket. Windows/Linux remain unknown until separately qualified.
 
@@ -192,7 +201,7 @@ cells, permission grants, native callback retirement, historical recordings or p
 | 4 | Native observed sequence; delete did-navigate or swap two per-process rows |
 | 5 | Native window census plus events; allow invalid handler output or emit canceled child |
 | 6 | Title/payload and load-failure assertions; preserve promise result but delete the event |
-| 7 | Guard-denied effect absent; force hook allow, then prove authorized healthy follow-up |
+| 7 | Skip app hook only when Host guard denies: exactly-one-hook and one allowed broker request must fail independently of zero denied native effects; double-invoke and force-hook-allow mutations; healthy granted follow-up |
 | 8 | Exact platform records; copy macOS result onto an unexecuted Windows/Linux lane |
 | 9 | Fixture/golden/receipt hash join; remove input, mutate one byte or substitute another cell |
 
