@@ -50,12 +50,23 @@ fn release_build(run: &mut FacadeRun, hold: &Path, build: u64, cursor: usize) ->
 }
 
 fn activate_anchor(run: &mut FacadeRun, anchor: usize) -> bool {
-    native_control::foreground(anchor, run.pid());
     let deadline = Instant::now() + OBSERVATION_BOUND;
+    native_control::foreground(anchor, run.pid());
+    // A background harness cannot always transfer the system foreground. Give
+    // the input to our own comparator, then use the same ordinary request.
+    // Only prepare the anchor; never activate either window whose Created is measured.
+    let mut input = (native_control::read(anchor, run.pid()).foreground != anchor).then(|| {
+        let helper = native_control::FocusComparator::for_caption_input();
+        helper.click_caption(deadline);
+        native_control::foreground(anchor, run.pid());
+        helper
+    });
     loop {
         let focus = initial_focus::read(anchor, run.pid());
         let foreground = native_control::read(anchor, run.pid()).foreground;
-        if foreground == anchor && focus.active == anchor && focus.focus_is_child {
+        let eligible = foreground == anchor && focus.active == anchor && focus.focus_is_child;
+        // After the comparator drops, reobserve the anchor before allowing a build.
+        if eligible && input.take().is_none() {
             return true;
         }
         if Instant::now() >= deadline {
