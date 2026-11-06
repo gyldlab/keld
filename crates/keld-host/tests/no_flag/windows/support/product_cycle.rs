@@ -13,6 +13,8 @@ use super::control::{accept_control_or_host_failure, parse_descendant_pid, read_
 use super::process::{open_process_for_wait, wait_for_process_signal};
 use super::product::ProductFixture;
 use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
+use super::signed_process::SignedStateProcessGuard;
+use super::window::NativeWindowSnapshot;
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
     startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
@@ -33,28 +35,18 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     let beacon_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind beacon listener");
     let beacon_port = beacon_listener.local_addr().expect("beacon address").port();
     let beacon = spawn_renderer_beacon(beacon_listener);
-    fs::write(
-        fixture.project.join("index.html"),
-        format!(
-            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
-        ),
-    )
-    .expect("write renderer");
-    let stage = keld_cli::boot::stage_dev_boot(
-        &fixture.project,
-        Path::new(env!("CARGO_BIN_EXE_keld-host")),
-    )
-    .expect("stage Windows product host");
-    let mut child = dev_stage_command(stage.root(), stage.host())
+    let stage = stage_cycle_renderer(fixture, label, beacon_port);
+    let child = dev_stage_command(stage.root(), stage.host())
         .env("KELD_T1B_CONTROL", control_port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch staged no-flag Windows host");
-    let host_pid = child.id();
+    let mut child = SignedStateProcessGuard::new(child);
+    let host_pid = child.host_pid();
     let control = accept_control_or_host_failure(
         &control_listener,
-        &mut child,
+        child.child_mut(),
         Instant::now() + PRODUCT_DEADLINE,
     );
     control
@@ -64,18 +56,11 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     let mut reader = BufReader::new(control);
 
     let hello = read_control_line(&mut reader);
-    let mut hello_fields = hello.split_whitespace();
-    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
-    let bun_pid = hello_fields
-        .next()
-        .expect("HELLO pid")
-        .parse::<u32>()
-        .expect("numeric Bun pid");
-    let app_link = hello_fields.next().expect("HELLO app link").to_owned();
-    assert!(hello_fields.next().is_none(), "{hello}");
+    let (bun_pid, app_link) = parse_cycle_hello(&hello);
     // Bun is live while it sends HELLO, so this handle pins its exact kernel process
     // object; the bare PID names it only until it terminates.
     let bun = open_process_for_wait(bun_pid, false);
+    child.observe_bun(bun_pid);
     let descendant_record = read_control_line(&mut reader);
     assert_eq!(parse_descendant_pid(&descendant_record), 0);
 
@@ -86,7 +71,7 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         startup_kill_switch(),
         "WebView2 renderer requested the exact beacon",
     ) {
-        fail_renderer_beacon_cycle(&mut child, host_pid, bun_pid, &beacon_error);
+        fail_renderer_beacon_cycle(child.child_mut(), host_pid, bun_pid, &beacon_error);
     }
     assert_eq!(read_control_line(&mut reader), "READY");
     assert_eq!(read_control_line(&mut reader), "ECHO1");
@@ -95,11 +80,31 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     assert_ne!(window["handle"].as_u64(), Some(0), "{window}");
     assert_eq!(window["title"], PRODUCT_TITLE, "{window}");
 
+    let native = NativeWindowSnapshot::capture(
+        window["handle"].as_u64().expect("observed nonzero HWND"),
+        host_pid,
+    )
+    .expect("capture the original Host's real native window tree");
+    println!("KELD_NATIVE_WINDOW_BEFORE label={label} host={host_pid} snapshot={native:?}");
+    assert!(
+        !native.children.is_empty(),
+        "renderer observation needs real child HWNDs: {native:?}"
+    );
+    assert!(
+        native.outer_rect[2] > native.outer_rect[0] && native.outer_rect[3] > native.outer_rect[1],
+        "visible renderer needs positive native outer dimensions: {native:?}"
+    );
+    assert_eq!(
+        native.live_handles().len(),
+        native.children.len() + 1,
+        "every captured native handle must be live before Quit"
+    );
+
     writer.write_all(b"QUIT\n").expect("request lifecycle Quit");
     writer.flush().expect("flush lifecycle Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
+    let status = wait_child(child.child_mut(), Instant::now() + ui_end_kill_switch());
     assert!(status.success(), "host exited with {status}");
     // Quit kill-waits Bun before the UI loop exits (architecture 02, Quit), so the
     // exact Bun process is already signaled when the host exit is observed. The zero
@@ -110,6 +115,17 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         WAIT_OBJECT_0,
         "Bun {bun_pid} survived orderly host exit"
     );
+    // Query before any emergency guard cleanup. The retained Host Child is still
+    // owned here. Live/recycled HWND numbers fail conservatively, not as authority.
+    assert!(
+        native.live_handles().is_empty(),
+        "native HWND survived orderly Quit: {native:?}"
+    );
+    println!(
+        "KELD_NATIVE_WINDOW_AFTER label={label} host={host_pid} captured_children={} live=0",
+        native.children.len()
+    );
+
     // The fixture's frame loop reports any frame it does not own, a channel-5 frame
     // included, as an `ERROR` record: a renderer boot's stream ends here with none.
     let mut trailing = String::new();
@@ -128,6 +144,35 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         bun_pid,
         app_link,
     }
+}
+
+fn stage_cycle_renderer(
+    fixture: &ProductFixture,
+    label: &str,
+    beacon_port: u16,
+) -> keld_cli::boot::DevBootStage {
+    fs::write(
+        fixture.project.join("index.html"),
+        format!(
+            "<!doctype html>{DARK_BG}<title>{PRODUCT_TITLE}</title><p id=exact>{label}</p><img src=\"http://127.0.0.1:{beacon_port}/ready.png\">\n"
+        ),
+    )
+    .expect("write renderer");
+    keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
+        .expect("stage Windows product host")
+}
+
+fn parse_cycle_hello(hello: &str) -> (u32, String) {
+    let mut hello_fields = hello.split_whitespace();
+    assert_eq!(hello_fields.next(), Some("HELLO"), "{hello}");
+    let bun_pid = hello_fields
+        .next()
+        .expect("HELLO pid")
+        .parse::<u32>()
+        .expect("numeric Bun pid");
+    let app_link = hello_fields.next().expect("HELLO app link").to_owned();
+    assert!(hello_fields.next().is_none(), "{hello}");
+    (bun_pid, app_link)
 }
 
 fn fail_renderer_beacon_cycle(
