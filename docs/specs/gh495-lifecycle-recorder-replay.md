@@ -16,7 +16,13 @@ behavior, creating product corpus receipts, enabling GH585, or refreshing frozen
 
 ## 2. Spec refs
 
-- [GH495](https://github.com/gyldlab/keld/issues/495), [GH494](https://github.com/gyldlab/keld/issues/494), [GH411](https://github.com/gyldlab/keld/issues/411) and [GH445 lifecycle cell owner](https://github.com/gyldlab/keld/issues/445).
+- [GH495](https://github.com/gyldlab/keld/issues/495), [GH494](https://github.com/gyldlab/keld/issues/494) and [GH411](https://github.com/gyldlab/keld/issues/411) own recording, comparison and the pending raw oracle receipt.
+- [GH445](https://github.com/gyldlab/keld/issues/445) owns first-proof readiness cells;
+  [GH446](https://github.com/gyldlab/keld/issues/446) owns the Host Ready/startup contract;
+  [GH451](https://github.com/gyldlab/keld/issues/451) owns quit and quit-time
+  window-all-closed semantics; [GH521](https://github.com/gyldlab/keld/issues/521)
+  owns activate/reopen and first-launch observations. GH495 supplies their recorded
+  oracle evidence; it does not transfer cell or implementation ownership.
 - [GH532](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/gh532-first-proof-evidence-rules.md), [GH566](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/gh566-corpus-manifest-owner.md) and [KEL74](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/kel74-compat-evidence-schema.md).
 - [Existing lifecycle integration target](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/crates/keld-compat/tests/electron_lifecycle.rs) is a reuse source, not new recorder evidence.
 - [Architecture 06](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/06-runtime-and-tooling.md) owns child supervision; [architecture 01](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/architecture/01-overview.md) owns budgets.
@@ -118,10 +124,10 @@ account, restoring prior state afterward. No native preparation was performed fo
 
 | Fixture | Required observation | Contract authority |
 |---|---|---|
-| Ordinary quit | before-quit, window close path, will-quit and final quit/exit ordering | Cited app contract, GH445/F01 owner |
-| Before-ready | listener installation and readiness boundary | Cited app/ESM contract |
-| Window-all-closed control | natural last-window close versus an active app quit | Cited app contract; runtime fix remains its owner |
-| First launch | whether activate occurs, and its position relative to ready | Record the pin; do not invent undocumented total order |
+| Ordinary quit | before-quit, window close path, will-quit and final quit/exit ordering | GH451 quit/cancel owner; cited app contract |
+| Before-ready | listener installation and readiness boundary | GH445 readiness cells; GH446 Host Ready contract; cited app/ESM contract |
+| Window-all-closed control | natural last-window close versus an active app quit | GH451 quit-time suppression; window-close owner remains separate |
+| First launch | whether activate occurs, and its position relative to ready | GH521 activate owner; record pin, never invent undocumented total order |
 | Recorder renderer control | preload and static-page rows appear with renderer identity | Recorder capability only, no renderer conformance score |
 
 The first-launch sequence is observed-only wherever the pinned docs do not specify the relation.
