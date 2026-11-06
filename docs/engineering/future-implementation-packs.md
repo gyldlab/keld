@@ -26,7 +26,7 @@ The earlier 21-pack and 63-total handoffs are historical snapshots. The 63 figur
 | [#1439](https://github.com/gyldlab/keld/pull/1439) | 4 | 41 | 16 | [source review](https://github.com/gyldlab/keld/pull/1439#issuecomment-6683363998) |
 | [#1440](https://github.com/gyldlab/keld/pull/1440) | 6 | 55 | 24 | [source review](https://github.com/gyldlab/keld/pull/1440#issuecomment-6683378042) |
 | [#1441](https://github.com/gyldlab/keld/pull/1441) | 3 | 29 | 12 | [source review](https://github.com/gyldlab/keld/pull/1441#issuecomment-6683595058) |
-| [#1442](https://github.com/gyldlab/keld/pull/1442) | 3 | 30 | 12 | Current-head independent review pending |
+| [#1442](https://github.com/gyldlab/keld/pull/1442) | 3 | 30 | 12 | [source review at ab677a3](https://github.com/gyldlab/keld/pull/1442#issuecomment-6686069171); native proof pending |
 | [#1443](https://github.com/gyldlab/keld/pull/1443) | 4 | 42 | 16 | [source review](https://github.com/gyldlab/keld/pull/1443#issuecomment-6683546084) |
 | [#1444](https://github.com/gyldlab/keld/pull/1444) | 7 | 67 | 34 | Independent final-head semantic review underway |
 
