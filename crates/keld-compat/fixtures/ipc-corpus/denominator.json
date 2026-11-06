@@ -1,0 +1,21 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-ipc-v1",
+  "corpus_sha256": "sha256:d10b7642a94f7513428e8b7142a500479efe341d1ee86dd4efe75f4c49641047",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "ipc-main.on",
+      "oracle_id": "electron-v44.4.5.ipc-main.on"
+    },
+    {
+      "operation_id": "ipc-main.once",
+      "oracle_id": "electron-v44.4.5.ipc-main.once"
+    },
+    {
+      "operation_id": "ipc-main.remove-listener",
+      "oracle_id": "electron-v44.4.5.ipc-main.remove-listener"
+    }
+  ]
+}
