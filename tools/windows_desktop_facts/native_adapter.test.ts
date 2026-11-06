@@ -208,6 +208,80 @@ for (const [name, mutate] of [
   });
 }
 
+// These are malformed JSON-shaped inputs, not native Windows measurements.
+const requiredNativeBooleans = [
+  {
+    name: "exactRequestedContext",
+    key: "exactRequestedContext",
+    container: (value: NativeSample) =>
+      value.dpiContext as unknown as Record<string, unknown>,
+  },
+  {
+    name: "globalSettingsWritten",
+    key: "globalSettingsWritten",
+    container: (value: NativeSample) =>
+      value.cleanup as unknown as Record<string, unknown>,
+  },
+  {
+    name: "highContrast.active",
+    key: "active",
+    container: (value: NativeSample) =>
+      value.sample.theme.highContrast as unknown as Record<string, unknown>,
+  },
+] as const;
+const invalidBooleanObservations = [
+  ["missing", undefined],
+  ["null", null],
+  ["numeric zero", 0],
+  ["numeric one", 1],
+  ["string false", "false"],
+  ["string true", "true"],
+] as const;
+for (const field of requiredNativeBooleans) {
+  for (const [kind, bad] of invalidBooleanObservations) {
+    test(`refuses ${kind} ${field.name} before allocating IDs`, () => {
+      const sample = raw();
+      const target = field.container(sample);
+      if (kind === "missing") {
+        expect(Reflect.deleteProperty(target, field.key)).toBe(true);
+      } else {
+        target[field.key] = bad;
+      }
+      // Allocation is a Host-lifetime side effect. An invalid receipt must
+      // not consume an ID or change the next valid native target's identity.
+      const ids = new NativeDisplayIds();
+      expect(() => nativeFacts(sample, text, ids)).toThrow("unavailable");
+      expect(ids.retainedIdentities).toBe(0);
+      const healthy = raw();
+      healthy.sample.desktop.displays[0]!.nativePaths[0]!.targetId = 99;
+      expect(nativeFacts(healthy, text, ids).primary_id).toBe(1);
+      expect(ids.retainedIdentities).toBe(1);
+    });
+  }
+}
+
+test("complete native light and dark observations remain usable", () => {
+  for (const [value, scheme] of [
+    [1, "light"],
+    [0, "dark"],
+  ] as const) {
+    const sample = raw();
+    sample.sample.theme.appsUseLightTheme.value = value;
+    sample.sample.theme.nonForcedColorScheme = scheme;
+    expect(nativeFacts(sample, text).should_use_dark_colors).toBe(
+      scheme === "dark",
+    );
+  }
+});
+
+test("an explicit global settings write refuses native facts", () => {
+  const sample = raw();
+  sample.cleanup.globalSettingsWritten = true;
+  const ids = new NativeDisplayIds();
+  expect(() => nativeFacts(sample, text, ids)).toThrow("unavailable");
+  expect(ids.retainedIdentities).toBe(0);
+});
+
 test("invalid or registry-only text scale cannot become a default 1", () => {
   for (const value of [0, NaN, Infinity, 2.251]) {
     expect(() => nativeFacts(raw(), { ...text, value })).toThrow();

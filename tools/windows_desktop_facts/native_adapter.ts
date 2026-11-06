@@ -267,13 +267,13 @@ export function nativeFacts(
     "native sample failed",
   );
   requireFact(
-    raw.dpiContext.exactRequestedContext &&
+    raw.dpiContext.exactRequestedContext === true &&
       raw.dpiContext.coordinates === "physical-pixels" &&
       raw.sample.desktop.coordinateSpace === "physical-pixels",
     "exact PMv2 physical sample required",
   );
   requireFact(
-    !raw.cleanup.globalSettingsWritten,
+    raw.cleanup.globalSettingsWritten === false,
     "probe changed global settings",
   );
   requireFact(
@@ -316,7 +316,7 @@ export function nativeFacts(
     "invalid independent native DPI inputs",
   );
   requireFact(
-    !raw.sample.theme.highContrast.active,
+    raw.sample.theme.highContrast.active === false,
     "forced-color effective theme needs owner-qualified conversion",
   );
   requireFact(
