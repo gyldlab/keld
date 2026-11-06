@@ -447,3 +447,35 @@ test("non-Boolean or absent primary observations refuse before ID allocation", (
     expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
   }
 });
+
+// The native producer derives this label from the same primary sample.
+// A contradictory or absent label is an incomplete native receipt, not a
+// second display identity; never consume a Host-lifetime ID for one.
+test("matching malformed primary source fields still refuse before allocation", () => {
+  for (const name of ["", null, undefined, 7]) {
+    const sample = raw();
+    (
+      sample.sample.desktop.displays[0]! as unknown as { sourceName: unknown }
+    ).sourceName = name;
+    (
+      sample.sample.desktop as unknown as { primarySourceName: unknown }
+    ).primarySourceName = name;
+    const ids = new NativeDisplayIds();
+    expect(() => nativeFacts(sample, text, ids)).toThrow("primary source");
+    expect(ids.retainedIdentities).toBe(0);
+    expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+  }
+});
+
+test("primary source label must agree with marked primary before allocation", () => {
+  for (const label of ["\\\\.\\DISPLAY2", "", null, undefined, 7]) {
+    const sample = raw();
+    (
+      sample.sample.desktop as unknown as { primarySourceName: unknown }
+    ).primarySourceName = label;
+    const ids = new NativeDisplayIds();
+    expect(() => nativeFacts(sample, text, ids)).toThrow("primary source");
+    expect(ids.retainedIdentities).toBe(0);
+    expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+  }
+});

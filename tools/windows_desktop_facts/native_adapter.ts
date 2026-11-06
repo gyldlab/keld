@@ -296,6 +296,12 @@ export function nativeFacts(
   );
   const native = displays[0]!;
   requireFact(
+    typeof native.sourceName === "string" &&
+      native.sourceName.length > 0 &&
+      raw.sample.desktop.primarySourceName === native.sourceName,
+    "primary source name disagrees with selected display",
+  );
+  requireFact(
     native.bounds.x === 0 && native.bounds.y === 0,
     "primary-origin contract not established",
   );
