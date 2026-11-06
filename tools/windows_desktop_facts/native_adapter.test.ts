@@ -434,3 +434,16 @@ test("off-monitor primary work area refuses before identity allocation", () => {
   expect(nativeFacts(repaired, text, ids).primary_id).toBe(1);
   expect(ids.retainedIdentities).toBe(1);
 });
+
+test("non-Boolean or absent primary observations refuse before ID allocation", () => {
+  for (const primary of ["false", "true", 1, 0, {}, null, undefined, false]) {
+    const ids = new NativeDisplayIds();
+    const malformed = raw();
+    (
+      malformed.sample.desktop.displays[0]! as unknown as { primary: unknown }
+    ).primary = primary;
+    expect(() => nativeFacts(malformed, text, ids)).toThrow("unqualified");
+    expect(ids.retainedIdentities).toBe(0);
+    expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+  }
+});

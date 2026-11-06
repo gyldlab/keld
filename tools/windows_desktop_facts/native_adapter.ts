@@ -291,7 +291,7 @@ export function nativeFacts(
   );
   const displays = raw.sample.desktop.displays;
   requireFact(
-    displays.length === 1 && displays[0]?.primary,
+    displays.length === 1 && displays[0]?.primary === true,
     "multi-display layout is an explicit unqualified dependency",
   );
   const native = displays[0]!;
