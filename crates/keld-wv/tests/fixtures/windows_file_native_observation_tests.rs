@@ -405,9 +405,7 @@ fn missing_or_mismatched_native_iframe_id_cannot_pass() {
         .as_array_mut()
         .expect("events")
         .iter_mut()
-        .find(|event| {
-            event["phase"] == "iframe" && event["kind"] == "frame-navigation-completed"
-        })
+        .find(|event| event["phase"] == "iframe" && event["kind"] == "frame-navigation-completed")
         .expect("iframe completion");
     completion["data"]["navigation_id"] = json!(999);
     assert!(assess(&mismatch).is_err(), "wrong iframe ID matched");
@@ -424,7 +422,10 @@ fn non_document_iframe_resource_cannot_pass() {
         .find(|event| event["phase"] == "iframe" && event["kind"] == "resource-request")
         .expect("iframe resource");
     resource["data"]["resource_context"] = json!(6); // SCRIPT, not DOCUMENT (1)
-    assert!(assess(&receipt).is_err(), "non-DOCUMENT resource impersonated iframe");
+    assert!(
+        assess(&receipt).is_err(),
+        "non-DOCUMENT resource impersonated iframe"
+    );
     assert!(assess(&sample()).is_ok(), "DOCUMENT control failed");
 }
 
@@ -433,10 +434,16 @@ fn global_native_sequence_cannot_be_duplicated_or_reordered() {
     let mut duplicated = sample();
     let events = duplicated["events"].as_array_mut().expect("events");
     events[6]["seq"] = events[5]["seq"].clone();
-    assert!(assess(&duplicated).is_err(), "duplicate global seq was accepted");
+    assert!(
+        assess(&duplicated).is_err(),
+        "duplicate global seq was accepted"
+    );
 
     let mut swapped = sample();
     swapped["events"].as_array_mut().expect("events").swap(5, 6);
-    assert!(assess(&swapped).is_err(), "reordered global events were accepted");
+    assert!(
+        assess(&swapped).is_err(),
+        "reordered global events were accepted"
+    );
     assert!(assess(&sample()).is_ok(), "ordered global sequence failed");
 }

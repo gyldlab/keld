@@ -194,7 +194,9 @@ pub(super) fn run_in_child() -> Result<(), String> {
     // Neither the child-supplied flags nor its internal assessment prove either.
     let binding = verify_parent_binding(&receipt, &nonce, child.id(), &source_manifest());
     let profile = verify_profile_absent(&root.join("owned-webview2-profile"));
-    let assessment = binding.and(profile).and_then(|()| observation::assess(&receipt));
+    let assessment = binding
+        .and(profile)
+        .and_then(|()| observation::assess(&receipt));
     let parent_receipt = json!({"child_pid":child.id(),"child_status":status.code(),"executable":executable,"executable_sha256":executable_hash,
         "receipt":receipt_path,"assessment":assessment.as_ref().ok(),"failure":assessment.as_ref().err()});
     create_file(
@@ -403,11 +405,20 @@ mod parent_receipt_tests {
         ));
         std::fs::create_dir(&root).expect("create proof root");
         let profile = root.join("owned-webview2-profile");
-        assert!(verify_profile_absent(&profile).is_ok(), "absent profile refused");
+        assert!(
+            verify_profile_absent(&profile).is_ok(),
+            "absent profile refused"
+        );
         std::fs::create_dir(&profile).expect("create retained profile control");
-        assert!(verify_profile_absent(&profile).is_err(), "retained profile accepted");
+        assert!(
+            verify_profile_absent(&profile).is_err(),
+            "retained profile accepted"
+        );
         std::fs::remove_dir(&profile).expect("remove control profile");
-        assert!(verify_profile_absent(&profile).is_ok(), "removed profile refused");
+        assert!(
+            verify_profile_absent(&profile).is_ok(),
+            "removed profile refused"
+        );
         std::fs::remove_dir(&root).expect("remove proof root");
     }
 }
