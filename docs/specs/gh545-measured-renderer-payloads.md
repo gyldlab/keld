@@ -62,9 +62,11 @@ A synthetic callback or successful write return without byte equality fails.
 
 ### AC-5: Exact limit and limit-plus-one are distinguishable
 
-An approved-profile maximum payload succeeds with complete bytes. A payload one byte above that limit receives the
-approved typed refusal naming the limit before a larger framework allocation or application filesystem side effect.
-Check both request and response directions. The link remains usable after a recoverable refusal.
+An approved-profile maximum payload succeeds with complete bytes. A request one byte above that limit receives the
+approved typed refusal naming the limit before excess framework retention or application-handler/filesystem dispatch.
+An oversize response is refused by its owning sender without partial delivery/decoding; its handler may already have acted.
+Preserve the committed or unknown effect outcome and never infer rollback or safe replay from response refusal.
+The link remains usable after a recoverable refusal, with the diagnostic observed at the correct internal/public owner.
 
 ### AC-6: Encoding and wrapper expansion cannot truncate data
 
@@ -100,7 +102,7 @@ Separate original file size, edited output bytes and full IPC value size. A >409
 | Endpoint opaque bytes | GH540/GH544: 4096 | Exact encoder output including argument wrapper |
 | Private JSON DATA | KEL-142/GH540: 65536 encoded bytes | Actual UTF-8 serialization, escaping and byte-array expansion |
 | Compat CALL/EVENT body | GH540: 16384 bytes | Complete canonical control wrapper and payload |
-| Reply/error/control | GH540: 4096 bytes | Bounded diagnostics and terminal bookkeeping |
+| Canonical compat REPLY/ERR/control operation | GH540: 4096 bytes | Bounded diagnostics and terminal bookkeeping |
 | Per-hop DATA retention | GH540: 262144 accounted bytes | Owned copies, backing capacities, metadata and retired work |
 | Cross-world values | GH467: separate graph/string/proxy budgets | Full copy/freeze/accounting census; no implicit waiver |
 | Aggregate transport | GH623 owning implementation | All producers plus DATA/CONTROL reservations |
@@ -108,6 +110,8 @@ Separate original file size, edited output bytes and full IPC value size. A >409
 The selected inline maximum is constrained by all rows, codec string/visit bounds, scratch overlap and existing frame validation.
 Compute actual worst-case encodings for the admitted grammar; do not infer a safe payload bound from an average expansion ratio.
 The app-link global frame ceiling does not override its smaller compat body limit.
+The table's canonical REPLY/ERR/control ceiling is not a 4096-byte JSON limit for every native result.
+GH540 classifies a successful private invoke-result as DATA; apply its own payload and private-envelope limits.
 Do not advertise these accounting ceilings as bounds on engine-internal allocations made before framework admission.
 
 Prefer reusing the existing inline format if measurements and independently reviewed worst-case bounds fit the required corpus.
@@ -150,7 +154,8 @@ Do not start limit implementation while this decision or its wire review is open
 ### T-3: Implement profile checks across the complete route
 
 After approval, update the existing owners together and prove exact maximum, maximum-plus-one and retirement behavior.
-Cover AC-5/AC-7 with no partial application dispatch and preserved post-refusal link health.
+Cover AC-5/AC-7 with pre-dispatch request refusal, no partial response delivery, and preserved post-refusal link health.
+Record effect-before-response-overflow separately; do not add rollback or automatic retry.
 
 ### T-4: Qualify the real larger-file workflow
 
@@ -164,7 +169,8 @@ Retain unqualified formats, platforms and product cells.
 | AC-1 | Recomputed distribution plus corpus/source digests | Drop the largest raw row from the summary |
 | AC-2/AC-3 | Actual encoder bytes and owner high-water census | Count only document text and omit wrapper |
 | AC-4 | Independent raw file read versus expected edited bytes | Truncate payload while returning success |
-| AC-5 | Valid maximum and plus-one pair, then healthy small message | Change > maximum rejection to silent slicing |
+| AC-5 request | Valid maximum and plus-one pair, zero rejected-handler effects, then healthy small message | Dispatch oversize request before size refusal |
+| AC-5 response | Handler commits a distinct effect before producing oversize result; no partial result reaches receiver | Treat response overflow as definitely-not-dispatched or replay the effect |
 | AC-6 | Non-ASCII and escaping fixtures with byte digests | Use UTF-16 length as UTF-8 size |
 | AC-7 | Held completion barrier and successor document marker | Release old charge at timeout alone |
 | AC-8 | Workflow/corpus/authority denominator audit | Label text-only evidence as all-format pass |
