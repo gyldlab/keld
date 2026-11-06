@@ -234,8 +234,7 @@ fn check_same_uri_frame(receipt: &Value) -> Result<(), String> {
         frame_resources
             .iter()
             .filter(|event| {
-                event["data"]["uri"] == receipt["uri"]
-                    && event["data"]["resource_context"] == 1
+                event["data"]["uri"] == receipt["uri"] && event["data"]["resource_context"] == 1
             })
             .count()
             == 1,
