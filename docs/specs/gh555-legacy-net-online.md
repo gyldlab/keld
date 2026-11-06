@@ -22,6 +22,8 @@ FACT: The current surface exports app and BrowserWindow. `packages/@keld/electro
 
 FACT: The pinned Electron wrapper binds both reads to the same function. Its exact source line is `exports.isOnline = isOnline;`. [Upstream wrapper][ejs]. Sources retrieved 2026-11-06.
 
+FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) selects v4.9.0 for application acceptance. Its Electron lock is 44.9.1. The KELD API oracle stays 44.4.5. The older demand sample e6c7fd8 remains historical.
+
 ## 3. Acceptance criteria
 
 ### AC-1: Record both readiness outcomes
@@ -197,6 +199,6 @@ No measured delta. In the implementation, count monitors per Host lifetime, reta
 [edoc]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/net.md
 [ejs]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/lib/browser/api/net.ts
 [ecpp]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/common/api/electron_api_net.cc
-[zettlr]: https://github.com/Zettlr/Zettlr/blob/e6c7fd8ffebfddb6fa091521b5a9dea673719887/source/app/service-providers/updates/index.ts#L296-L303
+[zettlr]: https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/updates/index.ts#L340-L347
 [path]: https://github.com/phracker/MacOSX-SDKs/blob/041600eda65c6a668f66cb7d56b7d1da3e8bcc93/MacOSX11.3.sdk/System/Library/Frameworks/Network.framework/Versions/A/Headers/path.h
 [monitor]: https://github.com/phracker/MacOSX-SDKs/blob/041600eda65c6a668f66cb7d56b7d1da3e8bcc93/MacOSX11.3.sdk/System/Library/Frameworks/Network.framework/Versions/A/Headers/path_monitor.h
