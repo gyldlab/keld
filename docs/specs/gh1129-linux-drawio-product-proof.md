@@ -32,7 +32,7 @@ FACT: These GitHub source observations were retrieved on 2026-11-06. A reachable
 | Resources and constructor | [Window construction][trace-4] uses `screen.getAllDisplays()`, theme, preload, and a file URL for index.html. | #1125, #1126, #1127, #481. Observe the actual content document. |
 | Bridge | [Isolated preload][trace-5] sends `rendererReq` and receives `mainResp`. | #1127, #463. Verify same-window correlated replies, sender identity and current document. |
 | Lifecycle | [Startup][trace-6] reaches both webRequest registrations before later IPC setup. | #446, #469. A partial startup can create a page yet omit handlers. Exercise the resulting file operation. |
-| Open/save | [Renderer open][trace-7] requests `showOpenDialog` and `readFile`. [Main][trace-8] uses the focused window for dialogs. | #476, #478 and Linux adapter owner. Exercise the native chooser and a real file. |
+| Open/save | [Open][trace-7] loads a LocalFile. The [chooser][trace-7a] delegates the selected path to [readGraphFile][trace-7b]. [Main][trace-8] uses the focused window for dialogs. | #476, #478 and Linux adapter owner. Exercise the native chooser and a real file. |
 | Dirty close | [Main branch][trace-9] sets Linux Save 0, Discard 1 and Cancel 2. [Renderer][trace-10] sends `saveAndClose-result`. | #1125, #450, #564. Probe the actual parented prompt and each disk/window effect. |
 | Menu/updater | [Ready callback][trace-11] calls `menu.setApplicationMenu(null)` outside macOS. Update checks depend on flags and stored settings. | #480, #580. Validate the Linux branch and inert updater. Record fresh-profile state. |
 
@@ -42,7 +42,9 @@ FACT: These GitHub source observations were retrieved on 2026-11-06. A reachable
 [trace-4]: https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js#L714-L777
 [trace-5]: https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron-preload.js#L62-L129
 [trace-6]: https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js#L987-L1027
-[trace-7]: https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L520-L552
+[trace-7]: https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L1187-L1199
+[trace-7a]: https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L1237-L1262
+[trace-7b]: https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L1552-L1560
 [trace-8]: https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js#L4191-L4227
 [trace-9]: https://github.com/jgraph/drawio-desktop/blob/2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e/src/main/electron.js#L849-L945
 [trace-10]: https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L458-L501
@@ -92,9 +94,10 @@ FACT: These GitHub source observations were retrieved on 2026-11-06. A reachable
 
 ### AC-5: Resolve the Linux dirty prompt correctly
 
-- **Given:** After a verified save, change B to C without saving. Use independent fresh documents for each branch.
+- **Given:** For the three ordinary choices, start each arm from a saved B and edit it to C. For nested cancellation, create a new never-saved diagram through the app. Modify it without assigning a backing file.
 - **When:** Request a native close and choose Cancel, Discard or Save by its observed action identity.
 - **Then:** Cancel retains C in the window and B on disk. Discard closes and retains B on disk. Save closes after persistence of C.
+  In the never-saved arm, choose Save, observe the actual file picker and cancel it. No target is created. The original dirty diagram stays editable.
 - **Negative control:**
   - **Single fault:** Exchange the Cancel and Discard responses in the Linux driver.
   - **At-risk precondition:** The same prompt exposes both actions and the window contains C.
@@ -161,6 +164,10 @@ Record failed writes, a canceled Save As, stale replies, unexpected dialogs, bac
 Use only approved recovery semantics. Reacquire every required generation witness. Never replay a possibly delivered write to produce a passing result.
 No boundary change in this documentation proposal. No new channel, capability, policy parser, scorer or receipt collector. No runtime or API fallback.
 
+FACT: The pinned [save continuation](https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L483-L506) requests a normal save.
+The [native picker branch](https://github.com/jgraph/drawio/blob/24b76c2cbd55d88e354042e8d329a2e4708972bc/src/main/webapp/js/diagramly/ElectronApp.js#L2091-L2149) checks `this.fileObject == null`. Retrieved 2026-11-06.
+Use normal application actions to reach this branch. Do not force a picker or change private app state.
+
 ## 5. Boundaries
 
 Future implementation starts under #1129 after exact-spec approval. Limit changes to the Linux driver, its fixtures, and reviewed Linux registration via the existing corpus owner.
@@ -200,7 +207,7 @@ File minimal adapter gaps under the existing family owner with a reproducer. Kee
 |---|---|
 | AC-1, AC-2 | Source admission rejects a modified webapp. Installed admission rejects a redirected launcher against an otherwise valid installation. |
 | AC-3, AC-4 | A title-matching fixture fails activation. Independently mutate open input, suppress the edit, then suppress the write in separate runs. |
-| AC-5 | Run Cancel, Discard and Save from equivalent dirty states. Cancel the nested Save As. Acknowledge success with an unchanged file in a control. |
+| AC-5 | Run the three choices on separately saved diagrams. On a new dirty diagram with no backing file, cancel the observed nested picker. Check the live edit and directory census. Mutate save success separately. |
 | AC-6 | Refuse an ungranted Host action, app-printed receipts, missing admission and post-revocation replay. Preserve the expected pre-retirement success. |
 | AC-7 | Retain a child deliberately in a disposable test. Include process start identity to detect PID reuse. Verify canary and saved document survive cleanup. |
 | AC-8 | Swap backend evidence, remove one attempt, and duplicate another in separate controls. Verify the same owner rejects each mutation. |
