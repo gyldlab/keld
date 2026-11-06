@@ -77,9 +77,9 @@ native effect independently.
 
 ### AC6
 
-Given a handler never responds, throws, responds twice or returns a non-boolean, when the approved request deadline or check
-boundary is reached, then permission remains denied, the native decision is resolved at most once, and admission/retained callback
-budgets remain bounded until real release.
+Given a still-pending handler never responds, throws or supplies a non-boolean before terminal settlement, when that failure or
+the approved deadline/check boundary is reached, then permission denies once and admission/retained callback budgets remain
+bounded until real release. A later failure cannot retroactively deny an already consumed native Allow.
 
 Independent negative control: Free a native reservation on local timeout while the callback is held; repeated requests must expose
 the retained-owner accounting error.
@@ -108,6 +108,15 @@ is requested without its own supported owner, then it refuses with the owning ty
 
 Independent negative control: Route setDisplayMediaRequestHandler into camera Allow or accept a nonempty partition as the default.
 
+### AC10
+
+Given guard Allow and a current request identity, when the first Host-admitted native decision is consumed and the app then
+responds again, then true followed by false preserves that first Allow, while false followed by true preserves that first Deny.
+Each sequence invokes the native decision closure exactly once. A throw or deadline after consumption cannot change that outcome.
+
+Independent negative control: Apply the second boolean, revoke a consumed Allow merely because the handler threw later, or invoke
+the native closure twice; independent decision/effect counters must fail each incorrect transition.
+
 ## 4. Design
 
 ### 4.1 One decision, separate observations
@@ -127,7 +136,9 @@ arbitrary partitions or per-wrapper registries.
 ### 4.3 API shapes and conservative timing
 
 The request API supplies a boolean completion callback; the check API returns a boolean synchronously. Preserve that distinction.
-Handler throws, non-booleans, missing handlers and unresolved requests deny. Do not block the UI thread waiting on a Bun callback
+Missing handlers deny. While a request remains pending, a throw, non-boolean completion or deadline selects Deny. Once its native
+decision is consumed, a later throw, duplicate or timeout cannot change that result or claim to revoke an effect. Do not block the
+UI thread waiting on a Bun callback
 that can reenter the same Host owner. Native synchronous checks need an approved owner path that can satisfy this contract; until
 qualified they remain unsupported/denied rather than returning a fake Promise or optimistic true.
 
@@ -150,8 +161,11 @@ Saved permission behavior belongs to KEL-135 and requires separate qualification
 Propose 16 in-flight native request decisions per view lifetime and 64 per Host session, with an owner-approved 30-second decision
 deadline. Deny overflow before allocating another retained callback. Local timeout settles the app-facing operation and arranges
 the native deny; capacity remains charged until the native completion is consumed or teardown is proved quiescent. Role restart
-does not reset retained work. Each native decision closure is invoked at most once on its owning UI thread; duplicate app
-completions are inert.
+does not reset retained work. One Host-owned terminal latch arbitrates valid completion, pre-settlement failure, deadline and
+lifecycle loss. The first admitted terminal decision wins after the final identity/guard check; each native decision closure is
+invoked at most once on its owning UI thread. Subsequent app completions are inert for both true-then-false and false-then-true.
+A consumed Allow is not retroactively Deny, and a consumed Deny cannot be widened by a later true. Any actual revocation belongs
+to its separate native authority/lifetime owner.
 
 ### 4.7 Unsupported surface and parked status
 
@@ -187,8 +201,8 @@ including camera-only versus combined-media tests.
 
 ### T3
 
-- [ ] Add handler replacement/removal, malformed responses, native held-completion/deadline and role/document retirement tests
-with independent retained-owner counts.
+- [ ] Add handler replacement/removal, malformed responses, both duplicate-boolean orders, throw-after-completion, native
+held-completion/deadline and role/document retirement tests with independent native-decision and retained-owner counts.
 
 ### T4
 
@@ -200,8 +214,9 @@ activating unqualified Windows/Linux or device APIs.
 AC1–AC4 require an available real device/controlled OS consent positive as a counterweight to denied effects. Unit truth-table
 tests prove only guard/app composition. AC5–AC7 fence native request, callback, role loss and deadline events separately; inspect
 real closure retirement and the next healthy request. AC8 checks provenance against a native subframe fixture. AC9 exercises
-direct API intake and verifies no native call. Never use a missing device or unrelated default denial as proof that the tested
-policy branch enforced the outcome.
+direct API intake and verifies no native call. AC10 holds the native-consumption boundary, then injects the opposite duplicate,
+a later throw and a later deadline; observe one immutable consumed decision and its actual effect independently of callback logs.
+Never use a missing device or unrelated default denial as proof that the tested policy branch enforced the outcome.
 
 Every negative control changes one named contract fault while a legitimate positive remains reachable. Native and original-app
 tests above are future acceptance, not runs performed here. Documentation validation checks source pins, complete template
