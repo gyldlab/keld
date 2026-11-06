@@ -52,6 +52,7 @@ export interface NativeSample {
     };
     theme: {
       appsUseLightTheme: { status: number; value: number | null };
+      systemUsesLightTheme: { status: number; value: number | null };
       highContrast: { active: boolean; flags: number };
       nonForcedColorScheme: "light" | "dark" | null;
     };
@@ -325,6 +326,12 @@ export function nativeFacts(
     "native effective scheme unavailable",
   );
   const theme = raw.sample.theme;
+  requireFact(
+    theme.systemUsesLightTheme?.status === 0 &&
+      (theme.systemUsesLightTheme.value === 0 ||
+        theme.systemUsesLightTheme.value === 1),
+    "native system appearance query failed or incomplete",
+  );
   requireFact(
     theme.appsUseLightTheme.status === 0 &&
       (theme.appsUseLightTheme.value === 0 ||

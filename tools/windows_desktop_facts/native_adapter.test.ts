@@ -53,6 +53,7 @@ function raw(): NativeSample {
       },
       theme: {
         appsUseLightTheme: { status: 0, value: 1 },
+        systemUsesLightTheme: { status: 0, value: 1 },
         highContrast: { active: false, flags: 0 },
         nonForcedColorScheme: "light",
       },
@@ -260,6 +261,37 @@ for (const field of requiredNativeBooleans) {
   }
 }
 
+// A failed independent system-theme query must not be hidden by a successful
+// application-theme query. These are synthetic malformed JSON receipts.
+const invalidSystemThemeResults = [
+  ["missing", undefined],
+  ["null", null],
+  ["nonzero status", { status: 5, value: null }],
+  ["nonzero status with stale value", { status: 5, value: 1 }],
+  ["missing status", { value: 1 }],
+  ["missing value", { status: 0 }],
+  ["null value", { status: 0, value: null }],
+  ["out-of-range value", { status: 0, value: 2 }],
+  ["string status", { status: "0", value: 1 }],
+  ["string value", { status: 0, value: "1" }],
+] as const;
+for (const [name, malformed] of invalidSystemThemeResults) {
+  test(`refuses ${name} system-theme observation before allocating IDs`, () => {
+    const sample = raw();
+    const theme = sample.sample.theme as unknown as Record<string, unknown>;
+    if (name === "missing") {
+      expect(Reflect.deleteProperty(theme, "systemUsesLightTheme")).toBe(true);
+    } else {
+      theme.systemUsesLightTheme = malformed;
+    }
+    const ids = new NativeDisplayIds();
+    expect(() => nativeFacts(sample, text, ids)).toThrow("unavailable");
+    expect(ids.retainedIdentities).toBe(0);
+    expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+    expect(ids.retainedIdentities).toBe(1);
+  });
+}
+
 test("complete native light and dark observations remain usable", () => {
   for (const [value, scheme] of [
     [1, "light"],
@@ -267,6 +299,8 @@ test("complete native light and dark observations remain usable", () => {
   ] as const) {
     const sample = raw();
     sample.sample.theme.appsUseLightTheme.value = value;
+    // The shell/system and application theme preferences may legitimately differ.
+    sample.sample.theme.systemUsesLightTheme.value = value === 1 ? 0 : 1;
     sample.sample.theme.nonForcedColorScheme = scheme;
     expect(nativeFacts(sample, text).should_use_dark_colors).toBe(
       scheme === "dark",
