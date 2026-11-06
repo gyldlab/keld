@@ -249,3 +249,213 @@ fn windows_minimized_native_deactivation_reaches_public_focus_before_cleanup() {
         "minimized native deactivation did not reach public focus within the original five-second bound; frozen={frozen}"
     );
 }
+
+fn background_restore_matches(
+    native: &native_control::NativeState,
+    focus: &initial_focus::ThreadFocus,
+    hwnd: usize,
+    helper: usize,
+) -> bool {
+    !native.minimized && native.foreground == helper && focus.active == hwnd
+}
+
+/// One restore bound covers admission, both native brackets and every STATE.
+/// An early null is retained only until a later eligible sample replaces it.
+#[allow(clippy::too_many_lines)] // Keep admission and the frozen public oracle in one bounded loop.
+fn observe_background_restore_focus(
+    run: &mut FacadeRun,
+    records: &mut CapturedRecords,
+    created: &Value,
+    hwnd: usize,
+    helper: usize,
+    deadline: Instant,
+) -> FocusObservation {
+    let id = number(created, "id");
+    let started = deadline
+        .checked_sub(OBSERVATION_BOUND)
+        .expect("restore bound has a start");
+    let mut observed = FocusObservation::default();
+    let mut admitted = false;
+    let mut last_input = None;
+    while Instant::now() < deadline {
+        let native_before = native_control::read(hwnd, run.pid());
+        let focus_before = initial_focus::read(hwnd, run.pid());
+        if !background_restore_matches(&native_before, &focus_before, hwnd, helper) {
+            let actual =
+                format!("helper={helper} native={native_before:?} Host-thread={focus_before:?}");
+            if admitted || native_before.foreground != helper {
+                observed.invalid = Some(format!("restored background regime lost: {actual}"));
+                break;
+            }
+            // Only initial restore settlement may wait. Once admitted, a lost
+            // native condition invalidates the trial and cannot be retried.
+            last_input = Some(actual);
+            native_control::pump();
+            thread::park_timeout(
+                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+            );
+            continue;
+        }
+        if !admitted {
+            println!(
+                "KELD_GH1188_BACKGROUND_RESTORE_INPUT helper={helper} native={native_before:?} host_thread={focus_before:?}"
+            );
+            admitted = true;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        if !observed.pending {
+            if let Err(error) = run.try_send(&format!("STATE {id}")) {
+                observed.invalid = Some(format!("STATE send failed: {error}"));
+                break;
+            }
+            observed.pending = true;
+        }
+        match records.poll(run) {
+            Ok(Some((kind, value))) => {
+                observed.pending = false;
+                if kind != "STATE" || !valid_state(&value, created) {
+                    observed.invalid = Some(format!("wrong STATE identity/shape: {kind} {value}"));
+                    break;
+                }
+                let native_after = native_control::read(hwnd, run.pid());
+                let focus_after = initial_focus::read(hwnd, run.pid());
+                if !background_restore_matches(&native_after, &focus_after, hwnd, helper) {
+                    observed.invalid = Some(format!(
+                        "restored background regime lost after STATE: helper={helper} native={native_after:?} Host-thread={focus_after:?}"
+                    ));
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                observed.samples += 1;
+                println!(
+                    "KELD_GH1188_BACKGROUND_RESTORE_SAMPLE elapsed_ms={} helper={helper} foreground_before={} host_before={focus_before:?} foreground_after={} host_after={focus_after:?} state={value}",
+                    started.elapsed().as_millis(),
+                    native_before.foreground,
+                    native_after.foreground,
+                );
+                observed.last = Some(value);
+                // Continue through the original bound even when this sample is
+                // null. A later wrong public fact must replace an early null.
+            }
+            Ok(None) => {}
+            Err(error) => {
+                observed.invalid = Some(error);
+                break;
+            }
+        }
+        native_control::pump();
+        thread::park_timeout(
+            Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+    if !admitted && observed.invalid.is_none() {
+        observed.invalid = Some(format!(
+            "restored background input was not established inside the original bound: {last_input:?}"
+        ));
+    }
+    observed
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Keep the native split, frozen last sample and normal cleanup ordered.
+fn windows_restore_while_external_helper_foreground_keeps_public_focus_null() {
+    let _physical_coordinates = PhysicalCoordinates::enter();
+    let fixture = FacadeFixture::new();
+    let (mut run, _) = fixture.spawn(&[]);
+    let created = create(&mut run);
+    let id = number(&created, "id");
+    let pid = run.pid();
+    let native = capture(census(pid, 1)[0], pid);
+    assert!(
+        !native.children.is_empty(),
+        "INVALID: no real controller children"
+    );
+    let hwnd = native.hwnd;
+    run.retain_descendants();
+    let profile = fixture.profile_dir();
+    println!(
+        "KELD_GH1188_BACKGROUND_RESTORE_PROFILE {}",
+        profile.display()
+    );
+
+    let input_deadline = Instant::now() + OBSERVATION_BOUND;
+    host_observation::prepare_minimize_input(hwnd, pid, input_deadline);
+    state_until(&mut run, id, input_deadline, |state| {
+        state["focusedId"] == id
+    });
+    let minimize_deadline = Instant::now() + OBSERVATION_BOUND;
+    host_observation::assert_minimize_input(hwnd, pid, input_deadline);
+    native_control::minimize(hwnd, pid, minimize_deadline);
+    host_observation::native_until(hwnd, pid, minimize_deadline, |state| {
+        state.minimized && state.foreground != hwnd && initial_focus::read(hwnd, pid).active != hwnd
+    });
+    state_until(&mut run, id, minimize_deadline, |state| {
+        state["focusedId"].is_null()
+    });
+    assert!(
+        Instant::now() < minimize_deadline,
+        "INVALID minimize setup exceeded its existing bound"
+    );
+
+    let restore_input = host_observation::prepare_restore_input(hwnd, pid);
+    let helper = restore_input.hwnd();
+    run.capture_control();
+    let mut records = CapturedRecords::default();
+    let deadline = Instant::now() + OBSERVATION_BOUND;
+    native_control::restore(hwnd, pid, deadline);
+    let mut observed =
+        observe_background_restore_focus(&mut run, &mut records, &created, hwnd, helper, deadline);
+    println!("KELD_GH1188_BACKGROUND_RESTORE_FROZEN {observed:?}");
+
+    // A late response is cleanup evidence only. Keep the helper alive through
+    // the drain and never replace the last complete in-bound STATE.
+    if observed.pending {
+        let cleanup_only = records.cleanup_record(&mut run, "STATE");
+        if !valid_state(&cleanup_only, &created) {
+            observed.invalid = Some(format!("invalid pending STATE: {cleanup_only}"));
+        }
+        println!("KELD_GH1188_BACKGROUND_RESTORE_CLEANUP_ONLY {cleanup_only}");
+    }
+    drop(restore_input);
+    let final_native = capture(isize::try_from(hwnd).expect("original HWND"), pid);
+    run.send(&format!("DESTROY {id}"));
+    let closed = records.cleanup_record(&mut run, "CLOSED");
+    let returned = records.cleanup_record(&mut run, "DESTROY_RETURN");
+    let finished = records.cleanup_record(&mut run, "DESTROY_FINISHED");
+    assert_eq!(closed["id"], id);
+    assert_eq!(closed["count"], 1);
+    assert_eq!(returned["closed"], 1);
+    assert_eq!(finished["contentsDestroyed"], 1);
+    assert_retired(&native);
+    assert_retired(&final_native);
+    assert_eq!(census(pid, 0), Vec::<isize>::new());
+    run.retain_descendants();
+    run.send("QUIT");
+    records.cleanup_record(&mut run, "QUIT_ACCEPTED");
+    run.finish_quit();
+    let profile_remained = profile.exists();
+    fixture.close();
+
+    assert!(!profile_remained, "normal Quit left the owned profile");
+    println!(
+        "KELD_GH1188_BACKGROUND_RESTORE_CLEANED {}",
+        profile.display()
+    );
+    assert!(
+        observed.invalid.is_none(),
+        "INVALID restored-background focus observation; no semantic regression credit: {observed:?}"
+    );
+    assert!(
+        observed.samples > 0,
+        "INVALID zero complete in-bound STATE records; a deadline alone is not the oracle"
+    );
+    let frozen = observed.last.expect("nonzero actual STATE samples");
+    assert!(
+        frozen["focusedId"].is_null(),
+        "restored background Host remained publicly focused while its owned external helper stayed foreground through the original five-second bound; frozen={frozen}"
+    );
+}

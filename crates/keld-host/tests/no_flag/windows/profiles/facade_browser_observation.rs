@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::time::Instant;
-use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 
 pub(super) struct BrowserObservation {
     pub(super) pid: u32,
@@ -23,9 +23,71 @@ impl BrowserObservation {
         process_times(self.handle.as_raw_handle().cast()).creation
     }
 
+    /// For callers that already require termination, reject a live object.
     pub(super) fn exit(&self) -> u64 {
-        process_times(self.handle.as_raw_handle().cast()).exit
+        self.exit_if_signaled()
+            .expect("browser must be signaled before reading its exit time")
     }
+
+    pub(super) fn exit_if_signaled(&self) -> Option<u64> {
+        exit_after_wait(wait_for_process_signal(&self.handle, 0), || {
+            process_times(self.handle.as_raw_handle().cast()).exit
+        })
+    }
+}
+
+// GetProcessTimes leaves the exit field undefined while the process is live.
+// Only the retained kernel object's signal permits interpreting that field.
+// https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes
+fn exit_after_wait(wait: u32, read_exit: impl FnOnce() -> u64) -> Option<u64> {
+    match wait {
+        WAIT_TIMEOUT => None,
+        WAIT_OBJECT_0 => {
+            let exit = read_exit();
+            assert_ne!(exit, 0, "terminated browser has no kernel exit time");
+            Some(exit)
+        }
+        other => panic!("browser termination observation failed: {other}"),
+    }
+}
+
+#[test]
+fn live_browser_does_not_read_an_undefined_exit_time() {
+    let reads = std::cell::Cell::new(0);
+    let observed = exit_after_wait(WAIT_TIMEOUT, || {
+        reads.set(reads.get() + 1);
+        42 // A possible nonzero output is still undefined for a live process.
+    });
+    assert_eq!(observed, None);
+    assert_eq!(
+        reads.get(),
+        0,
+        "a live process must never consult its exit field"
+    );
+}
+
+#[test]
+fn terminated_browser_preserves_its_exact_kernel_exit_time() {
+    assert_eq!(exit_after_wait(WAIT_OBJECT_0, || 42), Some(42));
+}
+
+#[test]
+fn invalid_wait_cannot_supply_a_browser_exit_time() {
+    for wait in [
+        windows_sys::Win32::Foundation::WAIT_FAILED,
+        windows_sys::Win32::Foundation::WAIT_ABANDONED,
+    ] {
+        let outcome = std::panic::catch_unwind(|| exit_after_wait(wait, || 42));
+        assert!(
+            outcome.is_err(),
+            "unrecognized wait {wait} earned exit credit"
+        );
+    }
+}
+
+#[test]
+fn terminated_browser_cannot_use_the_live_sentinel() {
+    assert!(std::panic::catch_unwind(|| exit_after_wait(WAIT_OBJECT_0, || 0)).is_err());
 }
 
 pub(super) fn observe_browser(

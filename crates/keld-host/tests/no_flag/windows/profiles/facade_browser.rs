@@ -189,7 +189,7 @@ fn windows_installed_managed_browser_instances_preserve_independent_generation_c
             run.retain_descendants();
             let second = replace(&mut run, &first, gap);
             let second_browser = run.browser(Some(first_browser.pid), false);
-            let first_exit = first_browser.exit();
+            let first_exit = first_browser.exit_if_signaled();
             let generation = if second_browser.pid == first_browser.pid {
                 1
             } else {
@@ -197,12 +197,12 @@ fn windows_installed_managed_browser_instances_preserve_independent_generation_c
             };
             let regime = if generation == 1 {
                 assert_eq!(
-                    first_exit, 0,
+                    first_exit, None,
                     "same PID must still name the retained live object"
                 );
                 same_pid += 1;
                 "same-live-instance"
-            } else if first_exit != 0 && first_exit < second_browser.creation() {
+            } else if first_exit.is_some_and(|exit| exit < second_browser.creation()) {
                 clean_new += 1;
                 "clean-new-instance"
             } else {
@@ -235,7 +235,7 @@ fn windows_installed_managed_browser_instances_preserve_independent_generation_c
             println!(
                 "KELD_GH1188_AC21_REGIME attempt={attempt} requested_gap_ms={gap} regime={regime} at_risk=1 first_pid={} first_exit={} second_pid={} second_creation={} hwnd_reused={}",
                 first_browser.pid,
-                first_exit,
+                first_exit.unwrap_or(0),
                 second_browser.pid,
                 second_browser.creation(),
                 first.native.hwnd == second.native.hwnd,
