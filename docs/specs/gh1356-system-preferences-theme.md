@@ -21,6 +21,8 @@ FACT: The pinned macOS binding starts with an empty sender string and uses a dic
 
 FACT: Zettlr subscribes to `AppleInterfaceThemeChangedNotification` separately from `nativeTheme.on('updated', ...)`. [Consumer][zapp]. Sources retrieved 2026-11-06.
 
+FACT: [Zettlr proof owner #1354](https://github.com/gyldlab/keld/issues/1354) selects v4.9.0 for application acceptance. Its Electron lock is 44.9.1. The KELD API oracle stays 44.4.5. The older demand sample e6c7fd8 remains historical.
+
 ## 3. Acceptance criteria
 
 ### AC-1: Record the reference behavior
@@ -184,5 +186,5 @@ Approve the inert-null and metadata projection divergences, numeric retention bu
 [surface]: https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/packages/@keld/electron/src/index.ts
 [edoc]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/system-preferences.md
 [ebind]: https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/shell/browser/api/electron_api_system_preferences_mac.mm
-[zapp]: https://github.com/Zettlr/Zettlr/blob/e6c7fd8ffebfddb6fa091521b5a9dea673719887/source/app/service-providers/appearance/index.ts#L77-L111
-[zcolor]: https://github.com/Zettlr/Zettlr/blob/e6c7fd8ffebfddb6fa091521b5a9dea673719887/source/common/util/get-system-colors.ts#L23-L47
+[zapp]: https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/app/service-providers/appearance/index.ts#L77-L111
+[zcolor]: https://github.com/Zettlr/Zettlr/blob/04128af42b58f7fea3f39f7b1efd597f5021f48a/source/common/util/get-system-colors.ts#L23-L47
