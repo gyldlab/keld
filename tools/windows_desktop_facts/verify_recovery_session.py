@@ -13,6 +13,9 @@ import subprocess
 import time
 from pathlib import Path
 
+if not __debug__:
+    raise SystemExit("W4 recovery proof refuses optimized Python: validation must stay enabled")
+
 SOURCE_COMMIT = "cd87be23ea375118224f9687894ad24e7179cc73"
 PINS = {
     "crates/keld-wv/src/webview2/desktop_session.rs": "5d5fcfa0288c257b78f3fb13943be5607e66673193289cc45917b9820d7f257a",

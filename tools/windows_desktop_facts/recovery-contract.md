@@ -26,12 +26,14 @@ Six tests passed. Five isolated semantic mutations each compiled successfully an
 | Replace refresh with a no-op | Live B must still publish after retired A is ignored |
 | Suppress unavailable observations | B's failed acquisition must publish B-owned absence, not silently retain a prior value |
 
-The final execution receipt SHA-256 is `aff15c6fc721e88ac3590937c5fbae879ef950611ff0e89739e3142a51301522`. A separate one-byte source corruption was refused before output-directory creation. Rustfmt check and Python syntax validation passed.
+The final execution receipt SHA-256 is `5da935aaa90583bf22abbba5fe815acd4bc12c59bd4aff0e922798c0453f0e51`. A separate one-byte source corruption was refused before output-directory creation. Rustfmt check and Python syntax validation passed.
+
+The earlier receipt `aff15c6fc721e88ac3590937c5fbae879ef950611ff0e89739e3142a51301522` used the machine's default Rust 1.97.1; its original logs remain retained. The final run explicitly selected repository Rust 1.99.1. Independent review also found that optimized Python bypassed the driver's assertions. The old driver actually accepted a mismatched source under `PYTHONOPTIMIZE=1`; the corrected driver rejects optimized execution before reading inputs or starting a compiler. Both optimized healthy/corrupt inputs and normal corrupt input now refuse with exit 1. Exact transported log bytes are hash-checked against the native receipts, including final newlines.
 
 Reproduce against an export of the two exact paths:
 
 ```sh
-python3 -B tools/windows_desktop_facts/verify_recovery_session.py \
+RUSTUP_TOOLCHAIN=1.99.1 python3 -B tools/windows_desktop_facts/verify_recovery_session.py \
   --source-root /path/to/exact-source-export \
   --harness tools/windows_desktop_facts/recovery_session_harness.rs \
   --out /path/to/new-owned-evidence
