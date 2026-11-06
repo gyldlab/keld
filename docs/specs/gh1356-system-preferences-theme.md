@@ -1,7 +1,10 @@
 # Spec: macOS system appearance subscriptions for Zettlr
 
-Status: draft
-Linear: GH-1356 (#517) · Owner: gyldlab/keld · Updated: 2026-11-06
+- Status: draft
+- Tracker: GH-1356
+- Owner: @0monish
+- Updated: 2026-11-06
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
 
@@ -14,15 +17,81 @@ Zettlr's AppearanceProvider must be able to register for a macOS system-theme ch
 
 Upstream [Electron API][edoc] and [macOS binding][ebind] establish numeric subscription IDs, callback arguments, unsubscribe by ID and RGBA output. [Zettlr's constructor][zapp] uses the OS event and the effective-theme event for different purposes. [Its color helper][zcolor] catches failures and supplies its own fallback.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+FACT: The pinned macOS binding starts with an empty sender string and uses a dictionary for user information. [Electron binding][ebind].
 
-1. A conformance record for Electron 44.4.5 captures subscription, duplicate callback registration, unknown-ID removal and accent format. The KELD row links the exact notification subset, payload divergence and chosen accent behavior.
-2. The unmodified macOS AppearanceProvider construction reaches the assignment after registration with zero windows. Registration returns an integer ID. Multiple registrations produce distinct live IDs. Initial snapshot installation fires zero theme-change callbacks.
-3. With the app forcing light appearance, move the OS from light to dark. Each active subscriber to the one supported name fires once with that exact name. The applied OS fact is already visible to consumers before callbacks. The effective app color can remain light.
-4. With the OS unchanged, change only app themeSource, reapply the same host revision, or change only a display's work area. None may fire that systemPreferences callback. A real OS transition still reaches it after these controls.
-5. After removing one of two active IDs, the next OS transition reaches only the remaining registration. An unknown ID is a no-op. Replacing the role drops its callbacks and any queued old-generation delivery.
-6. Other valid names register as inert handles with a declared divergence. Include a wildcard/null test. KELD never turns a user string or null into a native subscription. Invalid argument types take the validated diagnostic path.
-7. The bounded accent path either returns the exact eight hex digits for an approved host fact or raises the typed unsupported error. For this initial slice select the latter. The actual Zettlr helper returns its own default. A synthesized color must fail this cell.
+FACT: Zettlr subscribes to `AppleInterfaceThemeChangedNotification` separately from `nativeTheme.on('updated', ...)`. [Consumer][zapp]. Sources retrieved 2026-11-06.
+
+## 3. Acceptance criteria
+
+### AC-1: Record the reference behavior
+
+- **Given:** Electron 44.4.5 runs a main-process fixture.
+- **When:** Register two callbacks, remove an unknown ID, and read accent color.
+- **Then:** Record numeric IDs, callback shape, unsubscribe behavior and RGBA output per tested operation.
+- **Negative control:**
+  - **Single fault:** Store only the first of two subscriptions in the reference fixture.
+  - **At-risk precondition:** Register the same callback twice under distinct IDs.
+  - **Expected RED:** The second expected registration is missing from the census.
+
+### AC-2: Register before the first window
+
+- **Given:** The real AppearanceProvider constructor runs on Darwin with zero windows.
+- **When:** Install its subscription, then deliver the initial system-appearance seed.
+- **Then:** Construction succeeds. Each registration has a distinct live integer ID. Seeding triggers zero change callbacks.
+- **Negative control:**
+  - **Single fault:** Emit on seed.
+  - **At-risk precondition:** Register a counting callback before the first snapshot arrives.
+  - **Expected RED:** The counter changes before any OS transition.
+
+### AC-3: Separate OS transitions from app appearance
+
+- **Given:** The app forces light. The system is light and the baseline is applied.
+- **When:** Switch the OS to dark while the effective app stays light.
+- **Then:** Deliver exactly one callback per supported subscriber with the exact event name.
+- **Negative control:**
+  - **Single fault:** Drive subscriptions from effective app appearance only.
+  - **At-risk precondition:** Keep the app pinned light across the real system transition.
+  - **Expected RED:** The OS transition has zero callbacks.
+
+### AC-4: Suppress unrelated updates
+
+- **Given:** Keep the OS appearance fixed on a live admitted generation.
+- **When:** Change app themeSource, update display geometry and replay the same revision.
+- **Then:** Each control fires zero OS-theme callbacks. A following genuine OS transition fires one.
+- **Negative control:**
+  - **Single fault:** Publish the event on every nativeTheme update.
+  - **At-risk precondition:** Change only the app override while OS appearance stays fixed.
+  - **Expected RED:** The observer records a spurious OS notification.
+
+### AC-5: Revoke per subscription and generation
+
+- **Given:** Two subscriptions and a queued old-generation delivery exist.
+- **When:** Unsubscribe one live ID and an unknown ID. Reattach a successor and release the queued event.
+- **Then:** Only the surviving live registration is called. The successor receives no previous-generation callback.
+- **Negative control:**
+  - **Single fault:** Leave a removed ID eligible during dispatch.
+  - **At-risk precondition:** Schedule removal before dispatch reaches that still-referenced callback.
+  - **Expected RED:** A removed registration appears in the callback log.
+
+### AC-6: Close the supported notification set
+
+- **Given:** The admitted facade exposes one supported system-theme name.
+- **When:** Register another string and null. Drive a known unrelated notification and a genuine theme change.
+- **Then:** Unsupported names are inert and explicitly divergent. No general native observer is created.
+- **Negative control:**
+  - **Single fault:** Forward a null name to the distributed notification center.
+  - **At-risk precondition:** Hold a null registration live when the unrelated notification occurs.
+  - **Expected RED:** The platform registration census shows a wildcard observer.
+
+### AC-7: Preserve the app's accent fallback
+
+- **Given:** The first slice has no approved RGBA host fact.
+- **When:** Call getAccentColor directly and through Zettlr's original color helper.
+- **Then:** The direct call raises the typed unsupported error. Zettlr supplies its own fallback.
+- **Negative control:**
+  - **Single fault:** Return a hardcoded Zettlr accent.
+  - **At-risk precondition:** Run the direct getter before the application helper.
+  - **Expected RED:** The direct error assertion fails even if the UI color looks identical.
 
 ## 4. Design
 
@@ -51,13 +120,28 @@ No new native observer, framework-level configuration or persisted registration.
 
 Implement in the canonical Electron module, the process-local subscriber registry, and conformance cells. Coordinate any missing raw OS fact with #481/#558. Other systemPreferences members remain with #482. Linux and Windows have independent platform rows. This spec does not enable posting notifications, arbitrary native names, or a new sender metadata channel.
 
-## 6. Tasks (ordered, each approximately one PR)
+## 6. Tasks
 
-- [ ] T1. Land missing red conformance rows and record the pinned Electron cases. Verify link-time export ownership against PR #1366. Trace the current host fact from acquisition to a zero-window role.
-- [ ] T2. Implement the bounded registry and typed accent fallback, with subscribe/unsubscribe and generation teardown as a usable vertical slice. Registering a callback must work before window construction.
-- [ ] T3. Attach one projection to the approved #481/#558 apply path. Run forced-theme and reentrancy controls and the actual Zettlr constructor on macOS. Update the compatibility record with the captured divergence.
+### T-1: Record supported and divergent cells
 
-## 7. Test plan
+- **Blocked by:** none
+
+Land missing red conformance rows and record the pinned Electron cases. Verify link-time export ownership against PR #1366. Trace the current host fact from acquisition to a zero-window role.
+
+### T-2: Implement local registration and fallback
+
+- **Blocked by:** T-1, B-1
+
+Implement the bounded registry and typed accent fallback, with subscribe/unsubscribe and generation teardown as a usable vertical slice. Registering a callback must work before window construction.
+
+### T-3: Qualify raw OS appearance delivery
+
+- **Blocked by:** T-2
+
+Attach one projection to the approved #481/#558 apply path. Run forced-theme and reentrancy controls and the actual Zettlr constructor on macOS. Update the compatibility record with the captured divergence.
+
+
+## 7. Test plan & evidence
 
 | Criteria | Oracle and targeted defect |
 |---|---|
@@ -69,6 +153,13 @@ Implement in the canonical Electron module, the process-local subscriber registr
 
 Record macOS, app/profile, Electron executable, source revisions, registration counts, OS/effective values and callback sequence. No desktop observation has been run for this proposal.
 
+### E-1: Zettlr and Electron source trace
+
+- **Run:** [AppearanceProvider][zapp], [color helper][zcolor] and [native implementation][ebind]
+- **n:** One unconditionally registered system name and one accent read protected by try/catch
+- **Environment:** Pinned GitHub sources on 2026-11-06
+- **Limits:** No OS notification, registration or executable app construction was exercised.
+
 ## 8. Review gates triggered
 
 Public API and permission model. A change to the shared mirror wire shape requires its owner's independent protocol review. This document changes no runtime authority or dependencies.
@@ -77,7 +168,16 @@ Public API and permission model. A change to the shared mirror wire shape requir
 
 No measurement. Count host observations per OS transition and messages per registration. Callback work is proportional to active supported subscribers. Verify cleanup returns the registration count to baseline.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
+
+### B-1: Qualify system appearance under override
+
+- **Status:** open
+- **Owner:** The #481 and #558 mirror owners
+- **Impact:** An effective-theme-only mirror cannot implement the actual Zettlr callback.
+- **Check:** Observe an OS change while the app forces light and identify its authenticated underlying source.
+
+### Q-1: Approve the bounded subscription contract
 
 Approve the inert-null and metadata projection divergences, numeric retention budget, exhaustion behavior, and source of the system-level fact when themeSource is overridden. The actual OS event/order and native app behavior require their own receipts.
 
