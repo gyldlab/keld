@@ -13,7 +13,8 @@ use std::time::Duration;
 use super::super::{FIXTURE_DEADLINE, blank_spec, failure};
 use super::{profile_fixture_engine, profile_fixture_root, run_renderer_until_quit};
 use crate::webview2::tests::run_with_watchdog;
-use crate::{NavTarget, WebviewSpec, WvError};
+use crate::{NavTarget, WebviewId, WebviewSpec, WvError};
+use super::super::WebEngine;
 
 /// Native Windows COM proof: the actual `create_app`/`NavigateToString`
 /// subscription, not a direct call to the phase reducer, must observe
@@ -23,24 +24,101 @@ use crate::{NavTarget, WebviewSpec, WvError};
 #[test]
 #[ignore = "requires actual Windows WebView2 initial-navigation COM callbacks"]
 fn windows_first_navigation_start_is_observed_by_real_com_callback() -> Result<(), WvError> {
-    first_navigation_after(None)
+    first_navigation_after(None, None)
 }
 
 #[test]
 #[ignore = "requires a claimed Windows WebView2 native slot"]
 fn initial_html_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
-    first_navigation_after(Some(NavTarget::Html(
-        "<!doctype html><title>prefix</title>\0<p>suffix</p>".to_owned(),
-    )))
+    first_navigation_after(
+        Some(NavTarget::Html("<!doctype html><title>prefix</title>\0<p>suffix</p>".to_owned())),
+        None,
+    )
 }
 
 #[test]
 #[ignore = "requires a claimed Windows WebView2 native slot"]
 fn initial_url_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
     // A local data URL gives the broken implementation a valid, self-contained prefix.
-    first_navigation_after(Some(NavTarget::Url(
-        "data:text/html,%3Ctitle%3Eprefix%3C/title%3E\0suffix".to_owned(),
-    )))
+    first_navigation_after(
+        Some(NavTarget::Url(
+            "data:text/html,%3Ctitle%3Eprefix%3C/title%3E\0suffix".to_owned(),
+        )),
+        None,
+    )
+}
+
+/// Actual subsequent HTML navigation must refuse NUL without poisoning the
+/// existing window's independently observed first navigation and release.
+#[test]
+#[ignore = "requires a claimed Windows WebView2 native slot"]
+fn later_html_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
+    first_navigation_after(None, Some(LaterNulCase::Html))
+}
+
+/// The URL route has its own native COM call and typed refusal.
+#[test]
+#[ignore = "requires a claimed Windows WebView2 native slot"]
+fn later_url_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
+    first_navigation_after(None, Some(LaterNulCase::Url))
+}
+
+/// ExecuteScript must refuse truncation before the native COM call.
+#[test]
+#[ignore = "requires a claimed Windows WebView2 native slot"]
+fn later_eval_nul_refused_then_valid_navigation_ready() -> Result<(), WvError> {
+    first_navigation_after(None, Some(LaterNulCase::Eval))
+}
+
+#[derive(Clone, Copy)]
+enum LaterNulCase {
+    Html,
+    Url,
+    Eval,
+}
+
+/// The native window exists before checking later-call error precedence.
+/// A mutation that removes only the later guard must fail this exact selector.
+fn later_nul_defect(
+    engine: &mut crate::webview2::WebView2Engine,
+    id: WebviewId,
+    case: LaterNulCase,
+) -> Option<WvError> {
+    let bad_html = NavTarget::Html("<title>prefix</title>\0private-suffix".to_owned());
+    let bad_url = NavTarget::Url("data:text/html,%3Ctitle%3Eprefix\0private-suffix".to_owned());
+    let bad_script = "globalThis.__keldTest = 'prefix';\0globalThis.__keldTest = 'suffix'";
+    let rejected = match case {
+        LaterNulCase::Html => engine.navigate(id, bad_html.clone()),
+        LaterNulCase::Url => engine.navigate(id, bad_url.clone()),
+        LaterNulCase::Eval => engine.eval(id, bad_script),
+    };
+    let correct = match (case, &rejected) {
+        (LaterNulCase::Html | LaterNulCase::Url, Err(WvError::Navigate(reason))) =>
+            reason == "navigation contains a NUL character; remove it before loading",
+        (LaterNulCase::Eval, Err(WvError::Script(reason))) =>
+            reason == "script contains a NUL character; remove it before evaluation",
+        _ => false,
+    };
+
+    // The lookup must precede argument conversion even for malformed input.
+    let stale = WebviewId(u32::MAX);
+    let stale_reply = match case {
+        LaterNulCase::Html => engine.navigate(stale, bad_html),
+        LaterNulCase::Url => engine.navigate(stale, bad_url),
+        LaterNulCase::Eval => engine.eval(stale, bad_script),
+    };
+    if !matches!(stale_reply, Err(WvError::UnknownWebview { .. })) {
+        return Some(failure(format!(
+            "later NUL operation lost stale-view precedence: {stale_reply:?}"
+        )));
+    }
+    if !correct {
+        return Some(failure(format!(
+            "later NUL operation did not return its exact typed refusal: {rejected:?}"
+        )));
+    }
+    println!("KELD_LATER_NUL_REFUSED known-view and stale-view controls passed");
+    None
 }
 
 struct Creation {
@@ -53,6 +131,7 @@ fn start_case(
     engine: &mut crate::webview2::WebView2Engine,
     healthy: &WebviewSpec,
     invalid: Option<NavTarget>,
+    later: Option<LaterNulCase>,
 ) -> Result<Creation, WvError> {
     let mut refused_events = None;
     let mut defect = None;
@@ -84,7 +163,13 @@ fn start_case(
     // A separate channel prevents a callback from the rejected attempt from
     // serving as the healthy document's independent NavigationReady witness.
     let (healthy_tx, events) = mpsc::channel();
-    engine.create_app(healthy, healthy_tx)?;
+    let live_id = engine.create_app(healthy, healthy_tx)?;
+    if let Some(case) = later {
+        let late_defect = later_nul_defect(engine, live_id, case);
+        if defect.is_none() {
+            defect = late_defect;
+        }
+    }
     Ok(Creation {
         events,
         refused_events,
@@ -92,7 +177,10 @@ fn start_case(
     })
 }
 
-fn first_navigation_after(invalid: Option<NavTarget>) -> Result<(), WvError> {
+fn first_navigation_after(
+    invalid: Option<NavTarget>,
+    later: Option<LaterNulCase>,
+) -> Result<(), WvError> {
     run_with_watchdog(FIXTURE_DEADLINE, || {
         use crate::profile::{EphemeralProfile, WebProfileSelection};
 
@@ -112,7 +200,7 @@ fn first_navigation_after(invalid: Option<NavTarget>) -> Result<(), WvError> {
         }
         let root = profile_fixture_root("first-navigation-start");
         std::fs::create_dir_all(&root).map_err(failure)?;
-        let nul_case = invalid.is_some();
+        let nul_case = invalid.is_some() || later.is_some();
         if nul_case {
             println!("KELD_INITIAL_NUL_ROOT {}", root.display());
         }
@@ -134,7 +222,7 @@ fn first_navigation_after(invalid: Option<NavTarget>) -> Result<(), WvError> {
             events: events_rx,
             refused_events,
             defect,
-        } = start_case(&mut engine, &spec, invalid)?;
+        } = start_case(&mut engine, &spec, invalid, later)?;
 
         // Only a real production NavigationReady authorizes the Quit.
         // A missing callback is not fixed by sleeping or relaxing the
