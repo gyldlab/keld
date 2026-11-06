@@ -32,7 +32,6 @@ pub(super) fn state_until(
     }
 }
 
-
 // Keep the observation timestamp separate so the exact deadline boundary can be
 // tested without sleeps, a fabricated native window, or a renewed deadline.
 fn state_matches_before_deadline(
@@ -41,14 +40,11 @@ fn state_matches_before_deadline(
     deadline: Instant,
     satisfies: impl FnOnce(&Value) -> bool,
 ) -> bool {
-    if satisfies(value) {
-        return true;
-    }
     assert!(
         observed_at < deadline,
         "public state observation reached its deadline: {value}"
     );
-    false
+    satisfies(value)
 }
 
 fn geometry_matches(state: &Value, native: &NativeState) -> bool {
@@ -259,7 +255,6 @@ fn windows_host_window_obligations_reach_the_controller() {
     assert!(!profile.exists());
     fixture.close();
 }
-
 
 #[cfg(test)]
 mod state_observation_tests {
