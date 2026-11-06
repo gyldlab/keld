@@ -211,23 +211,30 @@ mod tests {
     fn initial_navigation_submits_the_complete_argument_to_the_selected_method() {
         let html = "<p>東京 🦀 %00</p>";
         let url = "file:///C:/東京/%00.html";
-        dispatch_initial(
-            &NavTarget::Html(html.into()),
-            |arg| {
-                assert!(arg.as_wide().iter().copied().eq(html.encode_utf16()));
-                Ok(())
-            },
-            |_| panic!("HTML routed to Navigate"),
-        )
-        .expect("valid HTML submitted");
+        let mut submitted = Vec::new();
+        for value in ["", html] {
+            dispatch_initial(
+                &NavTarget::Html(value.into()),
+                |arg| {
+                    submitted.push(arg.to_vec());
+                    Ok(())
+                },
+                |_| panic!("HTML routed to Navigate"),
+            )
+            .expect("valid HTML submitted");
+        }
         dispatch_initial(
             &NavTarget::Url(url.into()),
             |_| panic!("URL routed to NavigateToString"),
             |arg| {
-                assert!(arg.as_wide().iter().copied().eq(url.encode_utf16()));
+                submitted.push(arg.to_vec());
                 Ok(())
             },
         )
         .expect("valid URL submitted");
+        assert_eq!(
+            submitted,
+            ["", html, url].map(|value| value.encode_utf16().collect::<Vec<_>>())
+        );
     }
 }
