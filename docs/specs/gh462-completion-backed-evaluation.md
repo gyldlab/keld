@@ -22,6 +22,7 @@ page-world eval permission does not expose bridge or preload worlds.
 - [Endpoint codec draft](https://github.com/gyldlab/keld/blob/0437c9104077e6a52c9128e4367e91c57937b22a/docs/specs/gh544-endpoint-value-codec.md).
 - [Electron executeJavaScript contract](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-contents.md).
 - [Eval owner issue](https://github.com/gyldlab/keld/issues/462).
+- [Retirement distinction](https://github.com/gyldlab/keld/blob/0eb3ce203187f35c5276a4237189c906a5220d5a/docs/specs/kel143-macos-generation-filesystem-recovery.md): local caller settlement and native quiescence are separate observations; eval retains its own owner.
 
 Verified baseline: Main WebEngine.eval returns Result<(), WvError> and is explicitly fire-and-forget. GH544 is a draft, with a
 4096-byte encoded value limit, depth 16, 256 nodes and 256 value/property visits; its Proxy trap and pre-return allocation limits
@@ -62,10 +63,10 @@ Independent negative control: Evaluate immediately while loading or compare only
 
 ### AC5
 
-Given the approved pending cap, when one more call is admitted to a never-finished page, then it rejects before allocating another
-pending record.
+Given the approved aggregate reservation cap, when queued or native-entered evaluations reach the limit, then one more call
+rejects before allocating a queue record, native callback or closure. Locally settled but unquiesced native work still counts.
 
-Independent negative control: Check the cap only after native callback registration.
+Independent negative control: Check the cap only after native callback registration, or exclude locally rejected native work.
 
 ### AC6
 
@@ -88,6 +89,16 @@ object.
 
 Independent negative control: Execute the same code in the bridge/preload world.
 
+### AC9
+
+Given native evaluation completion is held, when callers time out, navigate or lose their role and a fresh generation requests
+more work, then queued plus native-entered plus locally settled/unquiesced reservations remain within both approved caps.
+No generation or replacement-view transition resets the host-session aggregate. After correlated native completion or proved
+teardown, the reservation releases once and a healthy follow-up call can enter.
+
+Independent negative control: Release on Promise rejection or reset the aggregate on role restart. Independently count retained
+native callbacks/closures and admitted evaluations; the bound must fail even when the active Promise count stays below the cap.
+
 ## 4. Design
 
 ### 4.1 Completion seam proposal
@@ -106,10 +117,20 @@ preload app world.
 
 ### 4.3 Budgets
 
-Propose 32 pending records per view and 128 per authenticated app generation, charged before queue/callback allocation and
-released on every terminal path. Code bytes and encoded result bytes consume their existing owning transport/codec limits. The
-GH544 4096-byte value budget is authoritative; envelope overhead needs separate transport accounting and must not silently reduce
-the result allowance.
+Propose 32 reservations per immutable native-view lifetime and 128 across the host application session, partitioned for
+attribution by authenticated generation. Charge before queue/callback allocation. The aggregate spans retired roles and replaced
+views; their still-retained work never disappears by resetting a generation counter. Count queued, native-entered and locally
+settled but unquiesced records together. Each record owns its callback/closure references and retained script/result charges.
+
+Cancellation before native entry can release after proving queue removal. After native entry, local rejection only revokes
+caller settlement authority. Release its reservation on the correlated native callback or independently proved native
+teardown/quiescence, once only. If neither is provable, retain bounded retirement state and refuse further admission when the
+cap is reached. Do not replay, silently evict retained native work or call a timeout cancellation of the engine.
+
+Code bytes and encoded result bytes also consume their existing transport/codec limits; the owning implementation must account
+for queued and retired backing, not only live Promise bytes. GH544's 4096-byte value budget is authoritative. Envelope overhead
+has separate transport accounting and must not silently reduce the result allowance. These reservation caps do not bound all
+engine allocations or CPU work.
 
 ### 4.4 Native allocation limitation
 
@@ -120,8 +141,10 @@ before enabling arbitrary results. This draft does not mislabel a bounded JS dec
 ### 4.5 Lifetime and ordering
 
 Capture authenticated caller/view/navigation identity at admission. Wait for the corresponding completed document before
-evaluating; rejection/destroy/retirement cancels queued work exactly once. Callback completion posts to the existing owner; it
-does not touch native handles on an I/O thread. A hung page script is not safely preempted by a local timeout.
+evaluating. Rejection, destruction or retirement settles the caller once and fences stale delivery. Queued work must be removed
+before releasing its reservation; native-entered work follows section 4.3's independent quiescence rule. Callback completion
+posts to the existing owner and cannot touch native handles on an I/O thread. A hung page script is not safely preempted by a
+local timeout. No new role may inherit a retired call's correlation identity or freed-looking budget.
 
 ### 4.6 Migration
 
@@ -156,7 +179,8 @@ cells.
 
 ### T3
 
-- [ ] Add load-wait, stale-navigation/destruction and pending-budget retirement with exact-boundary controls.
+- [ ] Add load-wait and stale-navigation/destruction settlement, independently owned native retirement and host-session budget
+accounting with exact-boundary and restart controls.
 
 ### T4
 
@@ -168,8 +192,10 @@ Every AC has a distinct observable and negative mutation in section 3. Map the r
 preserve pending-fail/unknown status until the actual implementing commit passes the relevant fixture.
 
 Use independent GH544 golden bytes plus native result fixtures. Do not use encode-then-decode alone as the oracle. Synchronize
-navigation/finish/destruction with explicit native attempts. Record callback/record counts and distinguish local rejection from
-native script termination.
+navigation/finish/destruction with explicit native attempts. AC9 holds the native completion seam while local terminal paths
+and generation turnover run; observe actual retained callback/closure owners separately from Promise and queue counts. Record
+releases and successful follow-up admission. A state-model test proves the reservation ledger; actual macOS callback teardown
+and release evidence must independently qualify the native boundary. Local rejection never proves native script termination.
 
 Documentation validation in this batch covers immutable reference/readback, all ten sections, independent controls,
 source-versus-proposal wording and file limits. Runtime, native and original-app tests are planned, not executed. GitHub CI status
@@ -194,7 +220,8 @@ No numerical product performance claim is made without a reproducible pinned wor
 
 ## 10. Open questions (block implementation)
 
-1. Approve the 32-per-view/128-per-generation proposal and exact timeout/cancellation semantics.
+1. Approve the 32-per-view-lifetime/128-per-host-session proposal, timeout semantics and correlated native-quiescence receipt.
+   No role restart may reset unresolved native charges; inability to prove quiescence is an explicit admission blocker.
 2. Resolve GH544's pre-return extraction/Proxy admission limitations for this live backend.
 3. Approve native callback shape, result-envelope transport accounting and error-registry additions.
 
