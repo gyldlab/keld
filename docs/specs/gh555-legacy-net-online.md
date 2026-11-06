@@ -1,7 +1,10 @@
 # Spec: synchronous Legacy connectivity reads on macOS
 
-Status: draft
-Linear: GH-555 (#517) · Owner: gyldlab/keld · Updated: 2026-11-06
+- Status: draft
+- Tracker: GH-555
+- Owner: @0monish
+- Updated: 2026-11-06
+- Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
 
@@ -15,15 +18,81 @@ Scope is the main role and these two synchronous reads. Strict-profile support, 
 - [Owner #555](https://github.com/gyldlab/keld/issues/555) and [conformance owner #554](https://github.com/gyldlab/keld/issues/554). #554 owns the red-before-implementation record. [Session facts PR #1362](https://github.com/gyldlab/keld/pull/1362) and [display mirror PR #1164](https://github.com/gyldlab/keld/pull/1164) are related proposals with distinct scopes and approval boundaries.
 - Electron 44.4.5 [public contract][edoc], [JavaScript exports][ejs] and [native implementation][ecpp]. Zettlr [UpdateProvider.check at the application pin][zettlr]. Apple-authored macOS SDK [path status][path] and [monitor callback lifecycle][monitor] in a versioned SDK mirror.
 
-## 3. Acceptance criteria (binary, each becomes a test)
+FACT: The current surface exports app and BrowserWindow. `packages/@keld/electron/src/index.ts:26`.
 
-1. The #554 recording captures module import separately from property access and function call before Ready, inside Ready, and after Ready. Each row contains type/value or error class/message, Electron executable version and digest. A missing row leaves that comparison unqualified.
-2. After Ready, read both forms from the same unchanged snapshot. An observed unsatisfied path yields false for both. A satisfied path yields true for both. Repeated reads perform zero network requests, synchronous IPC calls or additional monitor registrations.
-3. Satisfiable (a connection could activate the route), an invalid observation, and no first path sample project to the conservative value true in an admitted, initialized mirror. Their native/synthetic status remains distinguishable in evidence. A missing carrier, corrupt frame or unauthenticated role is a setup failure, never an initial sample.
-4. On a transition from satisfied to unsatisfied, both reads switch only after the accepted new observation. After an unsatisfied-to-satisfied update they switch back. Duplicate updates have no visible effect. Hold the same role and subscription open throughout both transitions.
-5. A replacement role cannot receive a delayed update bound to its predecessor. Native callbacks from an invalidated monitor cannot overwrite the current host state. An admitted replacement attaches to the latest valid host sample, including offline.
-6. With updates enabled, a false value takes Zettlr's early return and preserves prior state. With true, the offline condition permits evaluation of the remaining update path. Run against an instrumented boundary that records entry and prevents real downloads. Evidence for this branch alone cannot score application updates.
-7. Changing a facade object, environment variable, app message or page state cannot seed the host mirror. Under Strict or an unsupported OS the Legacy cell is unavailable and stays unscored until that profile and OS have their own contract.
+FACT: The pinned Electron wrapper binds both reads to the same function. Its exact source line is `exports.isOnline = isOnline;`. [Upstream wrapper][ejs]. Sources retrieved 2026-11-06.
+
+## 3. Acceptance criteria
+
+### AC-1: Record both readiness outcomes
+
+- **Given:** The pinned main process starts with a pre-Ready listener.
+- **When:** Read each API before, inside and after Ready in fresh processes.
+- **Then:** Record the ordered result type, value or exact error and the binary digest.
+- **Negative control:**
+  - **Single fault:** Move the early read into the Ready handler.
+  - **At-risk precondition:** Register the listener while the process still reports pre-Ready.
+  - **Expected RED:** The timing assertion rejects the supposed early sample.
+
+### AC-2: Use one host observation for both reads
+
+- **Given:** An admitted Legacy role has applied a satisfied path.
+- **When:** Read both forms, then deliver and apply an unsatisfied path and repeat.
+- **Then:** Both report true then false. No getter sends a frame, starts a network request or adds a monitor.
+- **Negative control:**
+  - **Single fault:** Make the property return true unconditionally.
+  - **At-risk precondition:** Deliver a valid unsatisfied update on the current generation.
+  - **Expected RED:** The property disagrees with both its oracle and the method.
+
+### AC-3: Keep uncertainty distinct from a broken carrier
+
+- **Given:** The current generation has an authenticated seed and no first OS sample.
+- **When:** Exercise pending, invalid and satisfiable states. Separately remove the carrier.
+- **Then:** Admitted uncertain states project to true. Missing or corrupt admission yields the existing diagnostic.
+- **Negative control:**
+  - **Single fault:** Treat a missing seed as authenticated pending.
+  - **At-risk precondition:** Withhold the initial seed while leaving the link alive.
+  - **Expected RED:** The missing-seed control unexpectedly obtains a Boolean.
+
+### AC-4: Update after each observable transition
+
+- **Given:** Both phases use the same monitor and role generation.
+- **When:** Deliver satisfied, unsatisfied, then satisfied with an apply barrier between them.
+- **Then:** Reads alternate true, false and true. Duplicates leave the snapshot unchanged.
+- **Negative control:**
+  - **Single fault:** Freeze the first seed.
+  - **At-risk precondition:** Keep the subscription open across the unsatisfied phase.
+  - **Expected RED:** The second read stays true.
+
+### AC-5: Reject stale callbacks and role deliveries
+
+- **Given:** A replacement role or monitor has a valid current offline sample.
+- **When:** Release an old queued online observation after its replacement has applied offline.
+- **Then:** The replacement stays offline. Its first read can use the Host's current sample.
+- **Negative control:**
+  - **Single fault:** Drop the source monitor lifetime check.
+  - **At-risk precondition:** Keep the role unchanged. Queue a late callback from the preceding monitor.
+  - **Expected RED:** The valid offline snapshot changes to online.
+
+### AC-6: Exercise Zettlr's actual branch
+
+- **Given:** Updates are enabled. The original updater has a prior-state sentinel and a captured request boundary.
+- **When:** Call check under offline and online snapshots.
+- **Then:** Offline returns before work and preserves the sentinel. Online reaches the instrumented continuation.
+- **Negative control:**
+  - **Single fault:** Remove the offline part of the condition.
+  - **At-risk precondition:** Keep the build-time disable flag off.
+  - **Expected RED:** The offline invocation reaches the continuation.
+
+### AC-7: Contain the signal to the named role
+
+- **Given:** A Legacy control is subscribed and a Strict role lacks this contract.
+- **When:** Request the same observation from both. Attempt to seed it from application data.
+- **Then:** Only the eligible role receives authenticated facts. Strict remains unqualified.
+- **Negative control:**
+  - **Single fault:** Remove the recipient eligibility check.
+  - **At-risk precondition:** Use a valid authenticated Strict connection with the same app identity.
+  - **Expected RED:** The recipient census includes an ineligible role.
 
 ## 4. Design
 
@@ -62,13 +131,28 @@ can express the required offline branch. No performance claim accompanies this c
 
 Implement on the owning macOS Host/native observation path, the existing authorized app-link facts carrier, the canonical `@keld/electron` export and the #554 cell. Preserve profile admission, public Ready ownership, renderer isolation and unrelated updater APIs. No manifest grant for networking follows from reading this scalar. Linux and Windows remain separate cells.
 
-## 6. Tasks (each approximately one PR, ordered)
+## 6. Tasks
 
-- [ ] T1. Land #554's executable comparison and capture the Zettlr offline/eligible branches. Record a separate pre-Ready disposition for each form and confirm the selected carrier with its owner.
-- [ ] T2. At the approved carrier revision, publish the signed-off schema, generation binding and a bounded Host seed/update vertical slice. Exercise a windowless role and stale delivery across restart. Hold if schema or callback ownership requires a new approval.
-- [ ] T3. Export the property and method from the canonical module. Connect them to the admitted snapshot, preserve the specified readiness outcome and run the paired conformance cells on native macOS. Attach actual output and exact pins to #555.
+### T-1: Record the executable comparison
 
-## 7. Test plan
+- **Blocked by:** none
+
+Land #554's executable comparison and capture the Zettlr offline/eligible branches. Record a separate pre-Ready disposition for each form and confirm the selected carrier with its owner.
+
+### T-2: Deliver an authorized Host observation
+
+- **Blocked by:** T-1, B-1
+
+At the approved carrier revision, publish the signed-off schema, generation binding and a bounded Host seed/update vertical slice. Exercise a windowless role and stale delivery across restart. Hold if schema or callback ownership requires a new approval.
+
+### T-3: Qualify synchronous facade reads
+
+- **Blocked by:** T-2
+
+Export the property and method from the canonical module. Connect them to the admitted snapshot, preserve the specified readiness outcome and run the paired conformance cells on native macOS. Attach actual output and exact pins to #555.
+
+
+## 7. Test plan & evidence
 
 | Criteria | Independent observation | Fault that must break the test |
 |---|---|---|
@@ -81,6 +165,13 @@ Implement on the owning macOS Host/native observation path, the existing authori
 
 Native receipts record macOS/SDK, executable and revision, declared profile, role generation, zero-window state and monotonic observation order. Use owner-controlled callbacks or explicit barriers. Sleeping, a live internet site or toggling Wi-Fi without excluding other routes cannot provide the oracle.
 
+### E-1: Electron, Zettlr and SDK source comparison
+
+- **Run:** [Electron wrapper][ejs], [native binding][ecpp] and [application gate][zettlr]
+- **n:** Two public connectivity reads and one application gate
+- **Environment:** Pinned GitHub sources on 2026-11-06
+- **Limits:** Source inspection cannot establish executable timing, real network state or native parity.
+
 ## 8. Review gates triggered
 
 Public API. Wire protocol if an approved carrier must change. Permission-model review if eligibility or recipient selection changes. Native unsafe and dependency gates apply to the eventual implementation's chosen SDK binding. This document introduces no channel, dependency or permission.
@@ -89,7 +180,16 @@ Public API. Wire protocol if an approved carrier must change. Permission-model r
 
 No measured delta. In the implementation, count monitors per Host lifetime, retained snapshots per admitted generation and messages per getter. Prove no growth with repeated reads and no unbounded queue behind a slow recipient.
 
-## 10. Open questions
+## 10. Open questions, blockers & unknowns
+
+### B-1: Resolve readiness and the fact carrier
+
+- **Status:** open
+- **Owner:** The #554 conformance and host facts owners
+- **Impact:** The unresolved recording and carrier block parity and runtime work.
+- **Check:** Attach both pre-Ready outcomes and an approved zero-window seed/update trace.
+
+### Q-1: Define pre-Ready divergence and the exact carrier
 
 #554's executable pre-Ready result, the exact authorized seed/update carrier and native callback/lifetime acceptance are open. Record these on #555 before approving the relevant implementation slice.
 
