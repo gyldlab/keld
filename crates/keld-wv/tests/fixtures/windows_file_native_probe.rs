@@ -342,4 +342,3 @@ pub(super) fn child_entry() -> Result<(), String> {
     written?;
     assessment.map(|_| ())
 }
-
