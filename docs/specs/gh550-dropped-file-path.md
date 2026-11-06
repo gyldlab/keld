@@ -27,13 +27,13 @@ Expose the real path synchronously to an authorized preload for the exact engine
 
 ### AC-1: Keep the synchronous API and distinct invalid cases
 
-- **Given:** The pinned Electron oracle runs in its renderer and preload.
-- **When:** Call with a script-created File, bare Blob, ordinary object, null and a genuine file.
-- **Then:** Record the same-turn result or exception for each. The script-created File returns empty. Plain objects throw. Verify bare Blob against the pinned upstream test. Record any version or world divergence.
+- **Given:** Run the pinned Electron method and the actual Keld preload method in separate arms. Use the disabled shipping adapter for Keld.
+- **When:** Call each raw method before the application wrapper. Supply a script-created File, bare Blob, ordinary object, null and a genuine dropped file.
+- **Then:** Both raw methods return empty strings for the script-created File and bare Blob. Ordinary objects and null throw synchronous TypeError. The genuine drop returns its path synchronously. Record each arm separately. Check Zettlr's wrapper conversion afterward.
 - **Negative control:**
-  - **Single fault:** Return an empty string for every invalid input.
-  - **At-risk precondition:** Use a plain object and observe the raw preload method directly.
-  - **Expected RED:** The expected exception is missing.
+  - **Single fault:** Return an empty string instead of throwing for an ordinary non-Blob object in the Keld method.
+  - **At-risk precondition:** The actual Keld method is installed. Observe its raw synchronous result before Zettlr catches errors or converts empty strings.
+  - **Expected RED:** The raw Keld arm lacks the required TypeError even if the Electron and wrapped application arms remain green.
 
 ### AC-2: Bind the chosen object to its own physical file
 
@@ -105,20 +105,35 @@ The renderer compatibility owner, #467 and #549 own facade calls. The native ada
 
 ## 6. Tasks
 
-### T-1: Commit the conformance row and fixture
+### T-1: Prepare the conformance rows and failing fixtures
 
 - **Blocked by:** none
-- Compare raw pinned Electron and unmodified Zettlr wrapper results. Mark KELD's positive path expected-fail until a backend qualifies.
 
-### T-2: Establish isolated native drop identity
+- Obtain separate fixture scope before test changes or device runs. Record raw pinned Electron outcomes and unmodified Zettlr wrapper outcomes separately.
+- Register AC-1 through AC-5 with independent expectations. Keep unimplemented Keld outcomes explicitly expected-fail. Fixture registration cannot qualify the actual Keld method.
+
+### T-2: Qualify the native mechanism without product wiring
 
 - **Blocked by:** T-1
-- Run AC-2 through AC-4 on one real engine. Publish the supported public primitive, exact argument representation, late-callback refusal, overflow and object-lifetime evidence to B-1.
 
-### T-3: Enable only the qualified adapter
+- Obtain a separate test-only native safety approval and macOS operator claim before running the mechanism fixture.
+- Use actual OS drops and isolated worlds to prove the proposed public backing-object primitive. Exercise duplicate basenames, constructed objects, synchronous return, revocation and capacity refusal.
+- This isolated fixture produces B-1 evidence. It requires neither the shipping GH550 adapter nor the installed Zettlr path. If the primitive cannot qualify, stop here.
 
-- **Blocked by:** T-2, B-1
-- Wire the proved path through the existing facade. Execute all five criteria. Give the Zettlr scoring owner separate native receipts.
+### T-3: Integrate the approved adapter with activation disabled
+
+- **Blocked by:** T-2, B-1, B-2
+
+- Wire the approved mechanism through the actual restricted preload and shared bridge in an isolated acceptance build. Keep production activation disabled.
+- Run AC-1 through AC-5 and their individual controls on this build, including the raw Keld method and actual Zettlr wrapper. Publish the integrated evidence for B-3.
+
+### T-4: Qualify the installed consumer before activation
+
+- **Blocked by:** T-3, B-3
+
+- Pin the installed macOS artifact, editor fixture, native engine and operator. Exercise the real page drop caller and unmodified preload while production activation remains disabled.
+- Give the product owner the observed genuine and forged-file results, application effect, and failed attempts. A visible method name or a native-only receipt cannot qualify the app.
+- Activate only after the integrated and installed evidence passes, the owners approve the exact implementation, and the shipping configuration preserves those outcomes. Otherwise keep support unavailable.
 
 ## 7. Test plan & evidence
 
@@ -145,5 +160,19 @@ No measured result. The proposed lookup must complete before returning to page c
 
 - **Status:** open
 - **Owner:** Platform adapter and isolated-preload owners under #550/#467/#549.
-- **Impact:** No positive-path support claim or product pass is available for an unqualified engine.
-- **Check:** On a real macOS drop prove same-object, same-name collision, constructed File refusal, same-turn lookup and revocation through the production isolated bridge.
+- **Impact:** Blocks T-3 and positive mechanism claims. It does not block the separately approved T-2 experiment.
+- **Check:** T-2 proves the native primitive with real drops, same-name collisions, constructed File refusal, same-turn isolated lookup and revocation. No GH550 production wiring or installed Zettlr result is needed to close this prerequisite.
+
+### B-2: Approve the exact contract and integration prerequisites
+
+- **Status:** open
+- **Owner:** Monish Khandelwal with the platform, preload, security and compatibility owners.
+- **Impact:** Blocks T-3, production adapter implementation, and new API or permission exposure.
+- **Check:** After B-1, approve the exact spec text, supported primitive, existing bridge interfaces, disclosure boundary, retention limits and native safety scope. Pin independent shared-owner prerequisites. This approval does not require T-3 integration or T-4 app evidence.
+
+### B-3: Verify the actual disabled adapter
+
+- **Status:** open
+- **Owner:** GH550 implementation owner with the platform, security and compatibility reviewers.
+- **Impact:** Blocks T-4 and any production activation. It does not block the disabled T-3 integration that produces this evidence.
+- **Check:** T-3 passes all five criteria and controls on its exact implementation head. Include raw Keld invalid-input outcomes, synchronous isolated delivery, independent filesystem denial and retained-resource boundaries. The installed-app result remains T-4's responsibility.
