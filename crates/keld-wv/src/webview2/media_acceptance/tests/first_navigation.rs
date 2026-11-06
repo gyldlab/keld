@@ -129,7 +129,7 @@ fn later_nul_defect(
 }
 
 /// After a malformed later call is refused, prove a distinct valid call changed
-/// the actual WebView2 document. The original NavigationReady cannot satisfy
+/// the actual `WebView2` document. The original `NavigationReady` cannot satisfy
 /// this oracle: only a newly registered native title-change callback can.
 fn prove_later_recovery(
     engine: &mut crate::webview2::WebView2Engine,
