@@ -356,13 +356,21 @@ fn windows_facade_recovery_keeps_the_live_hwnd_and_does_not_replay_an_accepted_d
     run.retain_descendants();
     destroy(&mut run, first_id);
     assert_retired(&first_native);
+    // The surviving view was captured before its sibling was destroyed.
+    // Retain every original HWND; log the first boundary before reading the browser.
+    println!("KELD_GH1188_RECOVERY_CHILDREN phase=after-sibling-destroy");
+    let after_sibling = pre_close_tree(&second_native, run.pid());
     let browser = fixture.browser(&run);
     let old_bun = run.bun_pid;
     let old_link = run.link.clone();
     let retired_bun = open_process_for_wait(old_bun, false);
+    println!("KELD_GH1188_RECOVERY_CHILDREN phase=before-crash");
+    let before_crash = pre_close_tree(&after_sibling, run.pid());
     run.send("CRASH");
     assert_eq!(run.read("CRASHING")["pid"], old_bun);
     let ready = fixture.reconnect(&mut run);
+    println!("KELD_GH1188_RECOVERY_CHILDREN phase=after-reconnect");
+    same_tree(&before_crash, run.pid());
     assert_ne!(run.bun_pid, old_bun);
     assert_ne!(
         run.link, old_link,
@@ -378,19 +386,22 @@ fn windows_facade_recovery_keeps_the_live_hwnd_and_does_not_replay_an_accepted_d
     assert_eq!(replay[0]["id"], second_id);
     assert_eq!(replay[0]["generation"], second["generation"]);
     assert_eq!(replay[0]["closed"], 0);
-    same_tree(&second_native, run.pid());
     assert_eq!(census(run.pid(), 1), vec![second_hwnd]);
     assert_eq!(fixture.browser(&run)["browser_pid"], browser["browser_pid"]);
     fixture.assert_lease_held();
     run.retain_descendants();
+    println!("KELD_GH1188_RECOVERY_CHILDREN phase=before-veto");
+    let before_close = pre_close_tree(&before_crash, run.pid());
     post_close(u64::try_from(second_hwnd).expect("surviving HWND"));
     assert_eq!(run.read("CLOSE_EVENT")["id"], second_id);
     run.send(&format!("VERIFY_VETO {second_id}"));
     assert_eq!(run.read("VETO_VERIFIED")["reply"], "ReplyStale");
-    same_tree(&second_native, run.pid());
+    println!("KELD_GH1188_RECOVERY_CHILDREN phase=after-veto");
+    same_tree(&before_close, run.pid());
     let profile = fixture.profile_dir();
     destroy(&mut run, second_id);
     assert_retired(&second_native);
+    assert_retired(&before_close);
     let trace = run.quit();
     assert_eq!(
         trace
