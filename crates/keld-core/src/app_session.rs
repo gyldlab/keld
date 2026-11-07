@@ -5206,7 +5206,7 @@ fn receive_initial_milestone_with_native_order(
 fn receive_ordered_initial_window_events(
     events: &Receiver<AppWindowEvent>,
     router: &PrimaryRouterHandle,
-    commands: &Sender<AppWindowCommand>,
+    #[cfg(target_os = "macos")] commands: &Sender<AppWindowCommand>,
     ready_trigger: AppReadyTrigger,
     init_watch: InitTerminalWatch<'_>,
     #[cfg(windows)] init_seen: &std::cell::Cell<bool>,
@@ -5409,6 +5409,7 @@ fn coordinate_window_events(
     receive_ordered_initial_window_events(
         events,
         router,
+        #[cfg(target_os = "macos")]
         commands,
         ready_trigger,
         init_watch,
