@@ -4,7 +4,6 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -42,6 +41,9 @@ function withPackages(run: (root: string) => void): void {
     ]) {
       cpSync(join(import.meta.dir, name), join(fixtures, name));
     }
+    const scope = join(root, "api/node_modules/@keld");
+    mkdirSync(scope, { recursive: true });
+    cpSync(join(root, "kipc"), join(scope, "kipc"), { recursive: true });
     run(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -69,57 +71,65 @@ function observe(root: string, name: string): Observation {
 // Reproduce the SDK package edge without importing an unmerged branch or
 // replacing the transport implementation. The package export map must resolve.
 function usePackageTransport(root: string): void {
-  const api = join(root, "api/src");
-  let replacements = 0;
-  for (const name of readdirSync(api)) {
-    if (!name.endsWith(".ts")) continue;
-    const path = join(api, name);
-    const source = readFileSync(path, "utf8");
-    const changed = source.replaceAll(
-      "../../kipc/src/transport.ts",
-      "@keld/kipc",
-    );
-    if (source !== changed) {
-      replacements++;
-      writeFileSync(path, changed);
-    }
-  }
-  expect(replacements).toBeGreaterThan(0);
-  const scope = join(root, "api/node_modules/@keld");
-  mkdirSync(scope, { recursive: true });
-  cpSync(join(root, "kipc"), join(scope, "kipc"), { recursive: true });
+  const link = join(root, "api/src/link.ts");
+  const source = readFileSync(link, "utf8");
+  const changed = source.replaceAll(
+    "../../kipc/src/transport.ts",
+    "@keld/kipc",
+  );
+  expect(changed).toMatch(/from\s+["']@keld\/kipc["']/);
+  writeFileSync(link, changed);
 }
 
-for (const block of [
-  "export { app, BrowserWindow };",
-  "export {\n  app,\n  BrowserWindow,\n};",
-  "export { BrowserWindow, app };",
-]) {
-  test(`mutation removes only BrowserWindow from ${JSON.stringify(block)}`, () => {
+// This parser only prepares formatting variants. The oracle below is the
+// independently imported namespace/default object, not these source tokens.
+function valueExportBlock(source: string) {
+  const blocks = [...source.matchAll(/\bexport\s*\{([^{}]*)\}/g)].map(
+    (match) => ({
+      text: match[0],
+      names: match[1]
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean),
+    }),
+  );
+  const matches = blocks.filter((block) =>
+    block.names.includes("BrowserWindow"),
+  );
+  expect(matches).toHaveLength(1);
+  return matches[0];
+}
+
+for (const format of ["single-line", "multiline", "BrowserWindow-first"]) {
+  test(`mutation removes only BrowserWindow from ${format} exports`, () => {
     withPackages((root) => {
       const entry = join(root, "electron/src/index.ts");
       const source = readFileSync(entry, "utf8");
-      expect(source).toContain("export { app, BrowserWindow };");
-      writeFileSync(
-        entry,
-        source.replace("export { app, BrowserWindow };", block),
-      );
+      const original = observe(root, "module_process_probe.ts");
+      expect(original.namespace).toContain("BrowserWindow");
+      expect(original.defaultKeys).toContain("BrowserWindow");
+      const block = valueExportBlock(source);
+      const names =
+        format === "BrowserWindow-first"
+          ? [
+              "BrowserWindow",
+              ...block.names.filter((name) => name !== "BrowserWindow"),
+            ]
+          : block.names;
+      const formatted =
+        format === "multiline"
+          ? `export {\n  ${names.join(",\n  ")},\n}`
+          : `export { ${names.join(", ")} }`;
+      const prepared = source.replace(block.text, formatted);
+      writeFileSync(entry, prepared);
       const before = observe(root, "module_process_probe.ts");
-      expect(before.namespace).toEqual([
-        "BrowserWindow",
-        "ELECTRON_VERSION_SHIM",
-        "app",
-        "isCallError",
-      ]);
-      expect(before.defaultKeys).toEqual(["BrowserWindow", "app"]);
+      expect(before).toEqual(original);
       const after = observe(root, "module_export_mutation_probe.ts");
       expect(after).toEqual({
         ...before,
         namespace: before.namespace.filter((name) => name !== "BrowserWindow"),
       });
-      expect(readFileSync(entry, "utf8")).toBe(
-        source.replace("export { app, BrowserWindow };", block),
-      );
+      expect(readFileSync(entry, "utf8")).toBe(prepared);
     });
   });
 }
@@ -160,13 +170,21 @@ test("missing local KIPC export target is refused for the dependency failure", (
 test("an absent named BrowserWindow export is not accepted as a mutation", () => {
   withPackages((root) => {
     const entry = join(root, "electron/src/index.ts");
+    const source = readFileSync(entry, "utf8");
+    const before = observe(root, "module_process_probe.ts");
+    expect(before.namespace).toContain("BrowserWindow");
+    const block = valueExportBlock(source);
     writeFileSync(
       entry,
-      readFileSync(entry, "utf8").replace(
-        "export { app, BrowserWindow };",
-        "export { app };",
+      source.replace(
+        block.text,
+        `export { ${block.names.filter((name) => name !== "BrowserWindow").join(", ")} }`,
       ),
     );
+    expect(observe(root, "module_process_probe.ts")).toEqual({
+      ...before,
+      namespace: before.namespace.filter((name) => name !== "BrowserWindow"),
+    });
     const result = probe(root, "module_export_mutation_probe.ts");
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr.toString()).toContain(
