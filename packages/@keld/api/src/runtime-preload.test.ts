@@ -278,12 +278,12 @@ test("actual packed API wrapper captures and ACKs over its same stamped installe
         [
           "tar",
           "-xzf",
-          join(stage, `keld-${name}-${version}.tgz`),
+          `keld-${name}-${version}.tgz`,
           "--strip-components=1",
           "-C",
-          target,
+          join("node_modules", "@keld", name),
         ],
-        { stdout: "pipe", stderr: "pipe" },
+        { cwd: stage, stdout: "pipe", stderr: "pipe" },
       );
       expect(unpacked.exitCode, unpacked.stderr.toString()).toBe(0);
     }

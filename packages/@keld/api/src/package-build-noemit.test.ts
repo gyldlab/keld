@@ -7,36 +7,121 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 const packages = resolve(import.meta.dir, "../..");
-const trustedCompilerModules = resolve(
-  packages,
-  "api/node_modules/.bun/node_modules",
-);
+const api = resolve(packages, "api");
+const apiManifest = JSON.parse(
+  readFileSync(join(api, "package.json"), "utf8"),
+) as {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+const apiLock = Bun.JSONC.parse(
+  readFileSync(join(api, "bun.lock"), "utf8"),
+) as {
+  packages?: Record<string, [string, ...unknown[]]>;
+};
+
+function lockedVersion(name: string): string {
+  const locked = apiLock.packages?.[name]?.[0];
+  const prefix = `${name}@`;
+  if (typeof locked !== "string" || !locked.startsWith(prefix))
+    throw new Error(`API lock does not pin ${name}`);
+  return locked.slice(prefix.length);
+}
+
+for (const name of ["typescript", "@types/bun"] as const) {
+  const declared = apiManifest.devDependencies?.[name];
+  if (
+    typeof declared !== "string" ||
+    !/^\d+\.\d+\.\d+$/.test(declared) ||
+    declared !== lockedVersion(name)
+  )
+    throw new Error(`API manifest and lock must pin the same exact ${name}`);
+}
+
+function installedPackage(name: string, from: string): string {
+  const manifest = realpathSync(Bun.resolveSync(`${name}/package.json`, from));
+  const root = dirname(manifest);
+  const version = (
+    JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown }
+  ).version;
+  if (version !== lockedVersion(name))
+    throw new Error(`Installed ${name} does not match API lock`);
+  return root;
+}
+
+function optionalInstalledPackage(
+  name: string,
+  from: string,
+): string | undefined {
+  let resolved: string;
+  try {
+    resolved = Bun.resolveSync(`${name}/package.json`, from);
+  } catch {
+    return undefined;
+  }
+  const manifest = realpathSync(resolved);
+  const root = dirname(manifest);
+  const version = (
+    JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown }
+  ).version;
+  if (version !== lockedVersion(name))
+    throw new Error(`Installed ${name} does not match API lock`);
+  return root;
+}
 
 function copyCompilerClosure(root: string): void {
   const nodeModules = join(root, "packages/@keld/api/node_modules");
   mkdirSync(nodeModules, { recursive: true });
-  for (const name of ["typescript", "bun-types", "undici-types"]) {
-    cpSync(join(trustedCompilerModules, name), join(nodeModules, name), {
+  function copyPackage(name: string, from: string): string {
+    const source = installedPackage(name, from);
+    const destination = join(nodeModules, ...name.split("/"));
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(source, destination, {
       recursive: true,
       dereference: true,
     });
+    return source;
   }
-  for (const scope of ["@types", "@typescript"]) {
-    cpSync(join(trustedCompilerModules, scope), join(nodeModules, scope), {
+  function copyOptionalPackage(name: string, from: string): boolean {
+    const source = optionalInstalledPackage(name, from);
+    if (source === undefined) return false;
+    const destination = join(nodeModules, ...name.split("/"));
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(source, destination, {
       recursive: true,
       dereference: true,
     });
+    return true;
   }
+
+  const typescript = copyPackage("typescript", api);
+  const bunDeclarations = copyPackage("@types/bun", api);
+  const bunTypes = copyPackage("bun-types", bunDeclarations);
+  const nodeTypes = copyPackage("@types/node", bunTypes);
+  copyPackage("undici-types", nodeTypes);
+
+  const compilerManifest = JSON.parse(
+    readFileSync(join(typescript, "package.json"), "utf8"),
+  ) as { optionalDependencies?: Record<string, string> };
+  let platformCompiler = 0;
+  for (const name of Object.keys(compilerManifest.optionalDependencies ?? {})) {
+    if (!name.startsWith("@typescript/typescript-")) continue;
+    if (copyOptionalPackage(name, typescript)) platformCompiler += 1;
+  }
+  expect(platformCompiler).toBe(1);
+
   const fixtureKipc = join(root, "packages/@keld/kipc");
   const installedKipc = join(nodeModules, "@keld/kipc");
+  expect(apiManifest.dependencies?.["@keld/kipc"]).toBe("link:../kipc");
   mkdirSync(join(nodeModules, "@keld"), { recursive: true });
   cpSync(fixtureKipc, installedKipc, {
     recursive: true,
@@ -45,6 +130,9 @@ function copyCompilerClosure(root: string): void {
   });
   expect(existsSync(join(nodeModules, "typescript/bin/tsc"))).toBe(true);
   expect(existsSync(join(nodeModules, "@types/bun/package.json"))).toBe(true);
+  expect(existsSync(join(nodeModules, "@types/node/package.json"))).toBe(true);
+  expect(existsSync(join(nodeModules, "bun-types/package.json"))).toBe(true);
+  expect(existsSync(join(nodeModules, "undici-types/package.json"))).toBe(true);
   expect(existsSync(join(nodeModules, "@keld/kipc/package.json"))).toBe(true);
 }
 
