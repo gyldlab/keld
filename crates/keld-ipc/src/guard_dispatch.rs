@@ -12,8 +12,8 @@
 //! (`crate::session::serve_echo_session` stays ungated).
 
 use keld_guard::{
-    Decision, DenyReason, PermissionsManifest, Principal, ScopePermit, capability, evaluate,
-    json_pointer_for, validate_fs_component,
+    Decision, DenyReason, GuardQuery, NativeCapabilityQuery, PermissionsManifest, Principal,
+    ScopePermit, capability, evaluate_query, json_pointer_for, validate_fs_component,
 };
 
 /// Evaluates `(principal, operation, path)` against `manifest`; only calls
@@ -52,22 +52,127 @@ pub fn dispatch_privileged<T>(
     path: &str,
     handler: impl FnOnce(&ScopePermit) -> T,
 ) -> Result<T, DenyReason> {
-    let decision = match evaluate(manifest, principal, operation, path) {
-        Decision::Deny(reason @ DenyReason::NotAppProcess { .. }) => return Err(reason),
-        decision => decision,
-    };
-    if !filesystem_dispatch_path_is_valid(operation, path) {
-        return Err(DenyReason::OutOfScope {
+    dispatch_privileged_query(
+        manifest,
+        principal,
+        NativeCapabilityQuery { operation, path },
+        handler,
+    )
+}
+
+/// Rechecks a typed query immediately before its only authorized effect callback.
+///
+/// The native compatibility entry [`dispatch_privileged`] delegates here. Query
+/// kind selects a disjoint callback permit; a renderer query can never lend a
+/// native `ScopePermit`. Core must authenticate the actual native document and
+/// current role, and order its final nonblocking lease fence before entering.
+/// A previous preflight does not authorize this effect or replace the final check.
+///
+/// # Errors
+///
+/// Returns the original Guard denial without running `handler`. Native filesystem
+/// grammar is checked only for native queries, preserving its existing priority.
+///
+/// Renderer callbacks cannot accept the native permit:
+///
+/// ```compile_fail
+/// # use keld_guard::{parse_manifest, Principal, RendererChannelQuery, ScopePermit};
+/// # use keld_ipc::guard_dispatch::dispatch_privileged_query;
+/// # let policy = parse_manifest(r#"{"windows":{"editor":{"channels":["el:fs.read"]}}}"#)?;
+/// let query = RendererChannelQuery {
+///     channel: "fs.read",
+///     current_window: policy.window_channel_grants("editor"),
+/// };
+/// let _ = dispatch_privileged_query(
+///     &policy, Principal::Webview { id: 7, generation: 1 }, query,
+///     |permit: &ScopePermit| permit.grant_index(),
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Native callbacks cannot accept the channel permit either:
+///
+/// ```compile_fail
+/// # use keld_guard::{parse_manifest, Principal, NativeCapabilityQuery, RendererChannelPermit};
+/// # use keld_ipc::guard_dispatch::dispatch_privileged_query;
+/// # let policy = parse_manifest("{}")?;
+/// let _ = dispatch_privileged_query(
+///     &policy, Principal::AppProcess,
+///     NativeCapabilityQuery { operation: "fs.read", path: "/file" },
+///     |_permit: &RendererChannelPermit| (),
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// A channel permit borrow cannot escape its callback:
+///
+/// ```compile_fail
+/// # use keld_guard::{parse_manifest, Principal, RendererChannelQuery};
+/// # use keld_ipc::guard_dispatch::dispatch_privileged_query;
+/// # let policy = parse_manifest(r#"{"windows":{"editor":{"channels":["el:topic"]}}}"#)?;
+/// let escaped = dispatch_privileged_query(
+///     &policy,
+///     Principal::Webview { id: 7, generation: 1 },
+///     RendererChannelQuery {
+///         channel: "topic",
+///         current_window: policy.window_channel_grants("editor"),
+///     },
+///     |permit| permit,
+/// );
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn dispatch_privileged_query<T, Q: GuardQuery>(
+    manifest: &PermissionsManifest,
+    principal: Principal,
+    query: Q,
+    handler: impl for<'permit> FnOnce(&'permit Q::Permit) -> T,
+) -> Result<T, DenyReason> {
+    match checked_decision(manifest, principal, query) {
+        Decision::Allow(permit) => Ok(handler(&permit)),
+        Decision::Deny(reason) => Err(reason),
+    }
+}
+
+/// Checks the same policy before original preload bookkeeping is entered.
+///
+/// Success returns no permit and cannot be reused to authorize a later send.
+/// Core checks current native document/role/credit before this policy preflight;
+/// final currentness and [`dispatch_privileged_query`] still run at the effect.
+///
+/// # Errors
+///
+/// Returns the same typed Guard denial as final dispatch for the same inputs.
+pub fn preflight_privileged_query<Q: GuardQuery>(
+    manifest: &PermissionsManifest,
+    principal: Principal,
+    query: Q,
+) -> Result<(), DenyReason> {
+    match checked_decision(manifest, principal, query) {
+        Decision::Allow(_) => Ok(()),
+        Decision::Deny(reason) => Err(reason),
+    }
+}
+
+fn checked_decision<Q: GuardQuery>(
+    manifest: &PermissionsManifest,
+    principal: Principal,
+    query: Q,
+) -> Decision<Q::Permit> {
+    let decision = evaluate_query(manifest, principal, query);
+    if matches!(decision, Decision::Deny(DenyReason::NotAppProcess { .. })) {
+        return decision;
+    }
+    if let Some(NativeCapabilityQuery { operation, path }) = query.native_capability()
+        && !filesystem_dispatch_path_is_valid(operation, path)
+    {
+        return Decision::Deny(DenyReason::OutOfScope {
             capability: operation.to_owned(),
             scope: "absolute normalized filesystem request".to_owned(),
             json_pointer: json_pointer_for(operation),
             requested: path.to_owned(),
         });
     }
-    match decision {
-        Decision::Allow(permit) => Ok(handler(&permit)),
-        Decision::Deny(reason) => Err(reason),
-    }
+    decision
 }
 
 fn filesystem_dispatch_path_is_valid(operation: &str, path: &str) -> bool {

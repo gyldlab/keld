@@ -131,6 +131,8 @@ fn accepted_app_bound_identity_is_refused_by_primary_admission() {
             auth_configuration: AuthConfiguration::new(),
             presentation: None,
             facade_windows: false,
+            original_selection: None,
+            renderer_outcomes: None,
         },
     );
     let Err(error) = result else {
@@ -174,6 +176,8 @@ fn accepted_primary_identity_fences_caller_context_before_healthy_echo() {
             auth_configuration: AuthConfiguration::new(),
             presentation: None,
             facade_windows: false,
+            original_selection: None,
+            renderer_outcomes: None,
         },
     )
     .expect("actual authenticated primary router");

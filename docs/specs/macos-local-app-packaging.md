@@ -1,15 +1,28 @@
 # Spec: local macOS application packaging and installed boot
 
-Status: draft
+Status: implementing (human authorization recorded; installed acceptance pending)
 Linear: GH-1404 (#517 fallback) · Owner: GYLDLAB · Updated: 2026-11-05
 
 Tracker of record: [GH-1404](https://github.com/gyldlab/keld/issues/1404).
 Future design only: [Windows GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [Linux GH-1406](https://github.com/gyldlab/keld/issues/1406).
-This document is a proposed contract, not implementation or approval evidence.
-Product implementation starts only after exact-content human approval under
-[workflow step 2](../agents/workflow.md) and the [spec template](../agents/spec-template.md).
+The user authorized implementation of the exact reviewed contract at
+`3c490596ceb483254551d37041d25e7e110dfa41` on 2026-11-05. The assistant recorded
+that authorization through the connected non-author account in
+[review 5787262030](https://github.com/gyldlab/keld/pull/1407#pullrequestreview-5787262030),
+after verifying the specification and independent review findings. This is the
+[workflow step 2](../agents/workflow.md) approval record, not native implementation
+or installed-artifact acceptance. The approved behavioral contract below is unchanged.
 The user's delivery objective remains open until installed macOS acceptance passes.
+
+Implementation note: the first local installed cell requires an explicitly declared
+Legacy permission profile; an absent profile is refused rather than inferred as
+consent to uncontained execution. Existing development schemas and their historical
+profile behavior are unchanged. The local Guardian reuses the authenticated private
+role with a closed `local-bundle-v1` suffix carrying the exact Bun, boot and policy
+digests; those expected values are data, not an admission capability. Installed
+origin is independently derived from current code before each generation. These
+mechanical choices do not qualify the original application graph or final artifact.
 
 ## 1. Goal & non-goals
 
@@ -383,6 +396,13 @@ executes the absolute bundled Bun. Existing environment sanitation and qualified
 canonical preload remain mandatory. No PATH, BUN_OPTIONS, ambient bunfig, developer
 Bun or source-tree fallback is allowed.
 
+The first installed cell also selects an explicit empty TypeScript configuration
+with `--tsconfig-override=/dev/null`. Application `tsconfig.json` path aliases must
+not redirect the fixed bootstrap or verified entry. Such aliases must be resolved
+before packaging; ordinary relative imports and package exports remain supported.
+Development launch behavior is unchanged. Real Bun controls cover wildcard and
+exact preload/entry aliases, including removal of the override as a negative control.
+
 The transport remains a separately packaged canonical `kipc-transport.ts` or
 `.js` with the existing release build/stamp requirements. Do not inline it into
 entry code or use `bun build --compile` to bypass that contract.
@@ -409,6 +429,37 @@ The Host currently rejects general user arguments; forwarding, associations and
 open-document delivery remain separate work. Native menu Open satisfies the present
 draw.io workflow. Main-role facts must arrive through the existing authenticated
 bootstrap before app imports; config/environment/renderer messages cannot mint them.
+
+**Bounded implementation note (2026-11-06):** reuse the closed development codec
+from PR #1362 at `c2dd2ff53767adf20dc0e91d276310095fe31acf` and the standalone
+process-property owner from PR #1363 at
+`9b6b4b495d1e8d060cc8a189ade9cc87c23edd0e`. This approved section supplies the
+installed behavior; it does not approve or integrate the rest of PR #1363's draft
+development-spawn proposal. Private schemas 1–3 retain their development meaning.
+The independent immutable original-content snapshot already uses schema 4 for
+development single-instance data and schema 5 for original-resource policy data.
+The installed variant therefore uses schema 6 with the exact fields
+`schema`, `kind: "local-development"`, `name`, `root`, `version` and
+`resourcesRoot`. This bounded consumer refuses schemas 4/5, unknown fields,
+mixed kinds and missing installed fields; it does not reinterpret those records.
+
+The authenticated Guardian derives and retains this record from its independently
+validated local bundle. The existing private 7-argument development and 11-argument
+`local-bundle-v1` Guardian shapes remain unchanged. The existing parse-time
+`__KELD_HOST_LAUNCH_FACTS__` constant carries data to Bun. The historical macOS
+development path explicitly defines its absence. No environment authority or
+application IPC channel is added.
+
+One Core source list supplies three fixed generated files below
+`keld-launch-facts/`: the intact KIPC launch-fact codec, the intact Electron
+process-facts owner and their tiny preload composition, with their relative package
+layout preserved. Installed admission compares all three against the Host's compiled
+owner bytes, retains their file identities and repeats validation before each Bun
+generation. The existing transport generator embeds the same standalone codec into
+the stamped canonical transport, so development/template sidecar layout stays
+standalone. The installed preload invokes the process-property owner before app
+imports; a later facade import is idempotent. This slice does not provide the original
+application graph or installed draw.io workflow acceptance.
 
 Known existing limitations include simultaneous Host+Guardian death and detached
 descendants outside the owned process group. Qualify actual owned-family cleanup
@@ -585,8 +636,8 @@ launch-fact codec extension must be versioned and reject unknown/mixed records.
 
 ## 6. Tasks (ordered vertical slices)
 
-- [ ] T0: independently review this exact proposal, reconcile owners and obtain
-  exact-content human specification approval. Keep the draft PR open.
+- [x] T0: independently review this exact proposal, reconcile owners and obtain
+  exact-content human specification approval. The specification PR remains draft/open.
 - [ ] T1: minimal real local app through the shipping Host: bundle admission,
   absolute bundled Bun, existing Guard, ephemeral profile, durable cleanup and
   installed launch facts, using Pack's native app/signing path. Fail-first controls
@@ -664,12 +715,12 @@ new async runtime or performance budget waiver is proposed.
 
 ## 10. Open questions
 
-**Approval decision:** approve or reject this exact local-development contract:
+**Recorded approval:** the user authorized this exact local-development contract:
 ad-hoc self-consistency without publisher authenticity; an ephemeral browser profile;
 existing explicit Legacy authority; no Strict/updater/publisher-profile privileges;
 the existing Host as launcher; exact bundled Bun; provenance-scoped cleanup; and a
-separately qualified original-content package caller. This is the missing feature
-spec approval artifact, not an optional implementation preference.
+separately qualified original-content package caller. The approval provenance is
+recorded above; implementation review and native acceptance remain separate gates.
 
 **Integration evidence needed:** owners of #499/#502/#553/#452/#570 must supply the
 exact committed source/provider and applicable qualification handoff required by

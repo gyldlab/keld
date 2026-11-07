@@ -12,7 +12,10 @@
     "typecheck": "tsc --noEmit"
   },
   "exports": {
-    ".": "./src/transport.ts"
+    ".": "./src/transport.ts",
+    "./endpoint-value-codec": "./src/endpoint-value-codec.ts",
+    "./compat-control": "./src/compat-control.generated.ts",
+    "./runtime-process-facts": "./src/runtime-process.generated.ts"
   },
   "files": [
     "src"

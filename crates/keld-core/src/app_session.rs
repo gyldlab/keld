@@ -2,14 +2,32 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
+#[cfg(target_os = "macos")]
+mod compat_router;
+#[cfg(any(test, target_os = "macos"))]
+mod dialog_custody;
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod dialog_custody_contract;
+#[cfg(target_os = "macos")]
+mod dialog_session;
 mod error;
+#[cfg(target_os = "macos")]
+mod menu_router;
+#[cfg(target_os = "macos")]
+mod original_webapp;
+mod profile_preflight;
+#[cfg(target_os = "macos")]
+mod single_instance;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_router;
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
+pub use self::boot_contract::boot_schema;
 pub use self::error::HostAppError;
 #[cfg(all(test, any(target_os = "macos", windows)))]
 use self::error::startup_resource_snapshot;
+pub(crate) use self::profile_preflight::reject_diagnostic_profile;
 
 #[cfg(all(test, windows))]
 use self::boot_contract::decode_digest;
@@ -17,9 +35,29 @@ use self::boot_contract::decode_digest;
 use self::boot_contract::{InitialWindow, boot_error, parse_boot_bytes, target_error};
 
 #[cfg(target_os = "macos")]
+mod graph_contract;
+#[cfg(target_os = "macos")]
+mod launch_facts;
+#[cfg(target_os = "macos")]
+pub use self::graph_contract::{
+    AdmittedStageGraph, ApprovedGraphCaptureInput, GRAPH_FILE, MAX_GRAPH_BYTES,
+    SelectedRendererSource, make_graph_leaf_from_retained_root,
+    read_bound_graph_leaf_from_retained_root, validate_graph_relative_path,
+};
+#[cfg(target_os = "macos")]
+pub use self::launch_facts::{
+    MACOS_LOCAL_LAUNCH_PRELOAD_PATH, macos_local_launch_bootstrap_sources,
+};
+#[cfg(target_os = "macos")]
+mod macos_installed;
+#[cfg(target_os = "macos")]
 mod macos_profile_selection;
+#[cfg(target_os = "macos")]
+pub use self::macos_installed::{MacLocalGuardianFacts, MacLocalIntegrityPins};
 #[cfg(all(test, target_os = "macos"))]
 use self::macos_profile_selection::MacValidatedAppIdentity;
+#[cfg(target_os = "macos")]
+use self::macos_profile_selection::local_bundle_ephemeral_profile;
 #[cfg(target_os = "macos")]
 use self::macos_profile_selection::macos_profile_selection;
 #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
@@ -386,6 +424,8 @@ enum HandoverWait {
 /// or, on Windows, from the authenticated installed package that holds the host.
 pub struct ValidatedBootSelection {
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    schema: u8,
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     app: AppBootSelection,
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     permissions_file: File,
@@ -406,10 +446,34 @@ struct AppBootSelection {
     entry_file: File,
     initial_window: ValidatedInitialWindow,
     auth_configuration: AuthConfiguration,
+    #[cfg(target_os = "macos")]
+    mac_origin: MacBootOrigin,
     #[cfg(windows)]
     mode: WindowsBootMode,
 }
 
+/// Only Core's current-executable admission may select an installed local app.
+///
+/// The retained origin has no development-lease or stage-deletion capability.
+#[cfg(target_os = "macos")]
+enum MacBootOrigin {
+    DevStage,
+    LocalDevelopment(Box<macos_installed::ValidatedMacLocalBundle>),
+}
+
+/// Side-effect-free lexical discriminator for macOS installed-app cleanup.
+///
+/// This conservatively includes malformed executable layouts under any `.app`
+/// ancestor. It provides no admission or deletion right; callers must refuse
+/// an invalid candidate instead of falling back to developer stage handling.
+///
+/// # Errors
+///
+/// Returns a typed failure when the process executable cannot be read.
+#[cfg(target_os = "macos")]
+pub fn macos_local_app_candidate() -> Result<bool, HostAppError> {
+    macos_installed::current_exe_is_local_app_candidate()
+}
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 enum ValidatedInitialWindow {
     Renderer(Vec<u8>),
@@ -1202,10 +1266,10 @@ impl ValidatedBootSelection {
     /// Validates the no-flag app staged beside the current executable.
     ///
     /// On platforms whose first KEL-96 host slice has not landed, this fails
-    /// before reading the executable path or any boot file. Windows admits
-    /// exactly two boot states (KEL-254 A3 AC2): a valid dev lease reaches only
-    /// stage validation, and a lease-less launch boots only the authenticated
-    /// installed package that holds the KEL-135-verified executable.
+    /// before reading the executable path or any boot file. macOS derives
+    /// installed local origin only from this executable and the sealed bundle,
+    /// while retaining the private dev-stage path. Windows admits a valid dev
+    /// lease into stage or the authenticated installed tree.
     ///
     /// # Errors
     ///
@@ -1233,7 +1297,21 @@ impl ValidatedBootSelection {
                 validate_installed_current_exe,
             )
         }
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            if macos_local_app_candidate()? {
+                let local = macos_installed::validate_current_exe_local_bundle()?;
+                Ok(Self {
+                    schema: local.schema,
+                    app: local.app,
+                    permissions_file: local.permissions_file,
+                    permissions_digest: local.permissions_digest,
+                })
+            } else {
+                validate_current_exe_stage()
+            }
+        }
+        #[cfg(target_os = "linux")]
         {
             validate_current_exe_stage()
         }
@@ -1332,13 +1410,17 @@ impl std::error::Error for HostRunFailure {
 }
 #[cfg(target_os = "macos")]
 struct RetainedMacSession {
+    _single_instance: Option<single_instance::HostInstanceLease>,
     _presentation: keld_native::auth::AsMainOwner,
+    _dialog_main: Option<dialog_session::DialogMainOwner>,
+    _menu_main: Option<menu_router::MenuMainOwner>,
     _engine: WkWebViewEngine,
     _router: PrimaryRouter,
     _guardian: GuardianOwner,
     _coordinator: JoinHandle<Result<(), HostAppError>>,
     _renderer: RendererDispatch,
     _commands: Sender<AppWindowCommand>,
+    _mac_origin: MacBootOrigin,
     guard: Option<GuardSnapshot>,
 }
 
@@ -1423,6 +1505,7 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
     let permissions_file =
         open_relative_file(&root_fd, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1430,6 +1513,8 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
             entry_file,
             initial_window,
             auth_configuration: parsed.auth_configuration,
+            #[cfg(target_os = "macos")]
+            mac_origin: MacBootOrigin::DevStage,
         },
         permissions_file,
         permissions_digest: parsed.permissions_digest,
@@ -1493,6 +1578,7 @@ fn validate_windows_boot_files(
     let permissions_file =
         open_relative_file_windows(&root, Path::new(PERMISSIONS_FILE), "permissions file")?;
     Ok(ValidatedBootSelection {
+        schema: parsed.schema,
         app: AppBootSelection {
             root,
             name: parsed.name,
@@ -1936,33 +2022,54 @@ pub fn run_unprivileged(
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
         // This explicit diagnostic/test path remains incapable of registering
         // a privileged channel. It never serves as recovery from run_guarded.
-        drop((permissions_file, permissions_digest));
-        run_app(app, None, pre_init_terminal)
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        let profile = profile_preflight::validate_profile(schema, &verified, true)?;
+        run_app(app, None, profile, pre_init_terminal)
     }
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, true)?;
         run_app_direct(app, None, pre_init_terminal).map_err(HostRunFailure::from)
     }
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
         } = boot;
-        drop((permissions_file, permissions_digest));
+        let verified = load_verified_manifest(
+            permissions_file,
+            app.root.join(PERMISSIONS_FILE),
+            permissions_digest,
+        )
+        .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, true)?;
         run_app_direct(app, None).map_err(HostRunFailure::from)
     }
 }
@@ -1995,6 +2102,7 @@ pub fn run_guarded(
     #[cfg(windows)]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2002,6 +2110,7 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot), pre_init_terminal).map_err(HostRunFailure::from)
@@ -2009,6 +2118,7 @@ pub fn run_guarded(
     #[cfg(target_os = "macos")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2016,12 +2126,31 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        let profile = match &app.mac_origin {
+            MacBootOrigin::LocalDevelopment(_) => {
+                profile_preflight::validate_installed_profile(schema, &verified)?
+            }
+            MacBootOrigin::DevStage => {
+                profile_preflight::validate_profile(schema, &verified, false)?
+            }
+        };
+        if matches!(&app.mac_origin, MacBootOrigin::LocalDevelopment(_))
+            && profile != keld_guard::ProfileState::Legacy
+        {
+            return Err(HostAppError::new(
+                "KELD-CORE-036",
+                "local application security profile",
+                "a locally installed ad-hoc bundle requires an explicit Legacy policy",
+                "Declare /profile as legacy in keld.permissions.jsonc and rebuild the sealed app; Strict remains unavailable until independently qualified.",
+            )
+            .into());
+        }
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         // The owner stays in this frame while run_app performs every startup,
         // event-loop, and ordered-cleanup step. run_app receives only a borrow,
         // so it cannot destroy the verified session policy early.
-        let mut result = run_app(app, Some(&guard_snapshot), pre_init_terminal);
+        let mut result = run_app(app, Some(&guard_snapshot), profile, pre_init_terminal);
         if let Err(failure) = &mut result
             && let Some(retained) = &mut failure.retained
         {
@@ -2032,6 +2161,7 @@ pub fn run_guarded(
     #[cfg(target_os = "linux")]
     {
         let ValidatedBootSelection {
+            schema,
             app,
             permissions_file,
             permissions_digest,
@@ -2039,6 +2169,7 @@ pub fn run_guarded(
         let display_path = app.root.join(PERMISSIONS_FILE);
         let verified = load_verified_manifest(permissions_file, display_path, permissions_digest)
             .map_err(HostAppError::manifest)?;
+        profile_preflight::validate_profile(schema, &verified, false)?;
         let guard_snapshot =
             GuardSnapshot::prepare(verified).map_err(|source| HostAppError::fs_prepare(&source))?;
         run_app_direct(app, Some(&guard_snapshot)).map_err(HostRunFailure::from)
@@ -2373,15 +2504,54 @@ impl SessionShutdownState {
 }
 
 #[cfg(target_os = "macos")]
-fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTrigger) {
-    // One validated boot decision supplies both the strict private argument and
-    // the existing compatibility environment input. Neither reads caller env.
-    let mode = if ready_trigger == AppReadyTrigger::HostInitialized {
-        "1"
-    } else {
-        "0"
+fn configure_guardian_boot_mode(
+    command: &mut Command,
+    ready_trigger: AppReadyTrigger,
+    require_runtime_process_facts: bool,
+) -> Result<(), HostAppError> {
+    // The admitted source selects the private runtime-capture mode. The facade
+    // environment input remains boolean and never comes from caller environment.
+    let facade = ready_trigger == AppReadyTrigger::HostInitialized;
+    let mode = match (facade, require_runtime_process_facts) {
+        (false, false) => "0",
+        (true, false) => "1",
+        (true, true) => "2",
+        (false, true) => {
+            return Err(app_detail(
+                "guardian boot mode",
+                "canonical runtime facts require the verified facade source selection",
+            ));
+        }
     };
-    command.arg(mode).env(NATIVE_WINDOW_FACADE_ENV, mode);
+    command
+        .arg(mode)
+        .env(NATIVE_WINDOW_FACADE_ENV, if facade { "1" } else { "0" });
+    Ok(())
+}
+
+/// Selects stage-only lease acquisition before any descriptor side effects.
+///
+/// A locally sealed bundle has no development lease capability. Even an empty
+/// or invalid inherited marker is refused without calling the stage parser,
+/// which would otherwise set `FD_CLOEXEC` / `O_NONBLOCK` on inherited stdin.
+#[cfg(target_os = "macos")]
+fn macos_lease_before_runtime(
+    local_bundle: bool,
+    inherited_marker: Option<&OsStr>,
+    acquire_stage: impl FnOnce() -> Result<Option<DevHostLease>, HostAppError>,
+) -> Result<Option<DevHostLease>, HostAppError> {
+    if local_bundle {
+        if inherited_marker.is_some() {
+            return Err(HostAppError::new(
+                "KELD-CORE-036",
+                "local bundle lease admission",
+                "an installed local application cannot acquire a developer-stage lease",
+                "Launch the locally sealed .app normally, without a developer-stage lease.",
+            ));
+        }
+        return Ok(None);
+    }
+    acquire_stage()
 }
 
 #[cfg(target_os = "macos")]
@@ -2389,9 +2559,18 @@ fn configure_guardian_boot_mode(command: &mut Command, ready_trigger: AppReadyTr
 fn run_app(
     boot: AppBootSelection,
     guard_snapshot: Option<&GuardSnapshot>,
+    admitted_profile: keld_guard::ProfileState,
     pre_init_terminal: fn(&HostAppError) -> !,
 ) -> Result<(), HostRunFailure> {
-    let mut dev_lease = DevHostLease::from_environment()?;
+    // A local signed bundle must reject *any* inherited developer lease marker
+    // before from_environment can inspect or modify the shared stdin flags.
+    // Only an admitted dev-stage origin is allowed to acquire that lease.
+    let inherited_marker = std::env::var_os(DEV_LEASE_ENV);
+    let mut dev_lease = macos_lease_before_runtime(
+        matches!(&boot.mac_origin, MacBootOrigin::LocalDevelopment(_)),
+        inherited_marker.as_deref(),
+        DevHostLease::from_environment,
+    )?;
     let shutdown = SessionShutdownState::new();
     let AppBootSelection {
         root,
@@ -2400,6 +2579,7 @@ fn run_app(
         entry_file,
         initial_window,
         auth_configuration,
+        mac_origin,
     } = boot;
     let (html, ready_trigger) = match initial_window {
         ValidatedInitialWindow::Renderer(renderer_html) => {
@@ -2415,9 +2595,90 @@ fn run_app(
         }
         ValidatedInitialWindow::None => (None, AppReadyTrigger::HostInitialized),
     };
-    // Authenticate the running package, or mint one explicit dev nonce, before
-    // starting the guardian child, listener, app-link, or WebKit engine.
-    let profile_selection = macos_profile_selection(dev_lease.as_ref())?;
+    // Installed ad-hoc identity has no Apple publisher scope and can never
+    // receive a persistent KEL-135 profile or a developer lease. Revalidate
+    // retained signed roots before any child, listener or WebKit allocation.
+    // Developer stages keep their existing lease / Apple identity behavior.
+    let profile_selection = match &mac_origin {
+        MacBootOrigin::DevStage => macos_profile_selection(dev_lease.as_ref())?,
+        MacBootOrigin::LocalDevelopment(local) => {
+            local.revalidate_generation()?;
+            local_bundle_ephemeral_profile()?
+        }
+    };
+
+    // Installed admission and immutable Guard preflight precede every native
+    // observation and lock effect. Reuse the retained boot-6 graph; neither the
+    // application nor a later generation can supply a replacement source root.
+    profile_preflight::disclose_profile(admitted_profile, false)?;
+    let original_source = match &mac_origin {
+        MacBootOrigin::LocalDevelopment(local) => local
+            .graph()
+            .map(|graph| {
+                if ready_trigger != AppReadyTrigger::HostInitialized {
+                    return Err(app_detail(
+                        "installed original source",
+                        "an installed original graph requires the native window facade",
+                    ));
+                }
+                let snapshot = guard_snapshot.ok_or_else(|| {
+                    app_detail(
+                        "installed original source",
+                        "the immutable Guard snapshot is unavailable",
+                    )
+                })?;
+                let policy = snapshot
+                    .verified
+                    .resolve_unique_original_window_csp()
+                    .map_err(HostAppError::manifest)?;
+                original_webapp::PreparedOriginalSource::prepare(
+                    Arc::clone(graph),
+                    admitted_profile,
+                    policy,
+                    keld_wv::wkwebview::AppPreloadBudget::default(),
+                )
+            })
+            .transpose()?,
+        MacBootOrigin::DevStage => None,
+    };
+    let mut installed_launch_facts = match (&mac_origin, original_source.as_ref()) {
+        (MacBootOrigin::LocalDevelopment(local), Some(prepared)) => Some(
+            launch_facts::LaunchFacts::from_validated_original(local, prepared)?,
+        ),
+        _ => None,
+    };
+    let (single_instance, application_name_for_user_agent) = match &mac_origin {
+        MacBootOrigin::LocalDevelopment(local) => (
+            local.single_instance(),
+            local
+                .application_name_for_user_agent()
+                .map(|label| keld_wv::ApplicationNameForUserAgent::new(label.as_str().to_owned()))
+                .transpose()
+                .map_err(|error| app_detail("installed user-agent metadata", error.to_string()))?,
+        ),
+        MacBootOrigin::DevStage => (None, None),
+    };
+    // This non-clone owner remains on the original Host stack across every Bun
+    // generation. Only its observed verdict is sent to the authenticated Guardian.
+    let single_instance_owner = if let Some(declaration) = single_instance {
+        let facts = installed_launch_facts.as_mut().ok_or_else(|| {
+            app_detail(
+                "installed singleInstance",
+                "the sealed declaration requires admitted original runtime facts",
+            )
+        })?;
+        let native_root = facts.application_support().ok_or_else(|| {
+            app_detail(
+                "installed singleInstance",
+                "native Application Support directory is unavailable",
+            )
+        })?;
+        let attempted = single_instance::acquire(Path::new(native_root), declaration)?;
+        facts.set_single_instance(attempted.verdict)?;
+        attempted.owner
+    } else {
+        None
+    };
 
     let entry_metadata = entry_file
         .metadata()
@@ -2425,13 +2686,44 @@ fn run_app(
     let executable =
         std::env::current_exe().map_err(|source| app_io("current executable", &source))?;
     let mut guardian_command = Command::new(executable);
+    if matches!(&mac_origin, MacBootOrigin::LocalDevelopment(_)) {
+        // The installed Guardian must not inherit Bun/Node/DYLD overrides,
+        // ambient Keld startup flags or a developer PATH. Runtime owns the
+        // exact allowlist and leaves the authenticated bootstrap injection to
+        // GuardianBootstrap after these launch defaults are cleared.
+        keld_runtime::primary::configure_local_macos_guardian_startup(&mut guardian_command);
+    }
     guardian_command
         .arg(keld_runtime::macos_guardian::SUPERVISED_GUARDIAN_ARG)
         .arg(&root)
         .arg(&entry_path)
         .arg(entry_metadata.dev().to_string())
         .arg(entry_metadata.ino().to_string());
-    configure_guardian_boot_mode(&mut guardian_command, ready_trigger);
+    configure_guardian_boot_mode(
+        &mut guardian_command,
+        ready_trigger,
+        original_source.is_some(),
+    )?;
+    if let MacBootOrigin::LocalDevelopment(local) = &mac_origin {
+        // The private Guardian independently derives current-code provenance
+        // after authenticated registration, then compares all three exact
+        // parent-selected inputs before every Bun generation. Original graphs
+        // use the distinct bounded facts suffix, consumed only after registration
+        // and the Host-retention ACK. Neither suffix confers cleanup authority.
+        let [bun, boot, policy] = local.integrity_pins().to_encoded();
+        guardian_command
+            .arg(if installed_launch_facts.is_some() {
+                "local-bundle-v2"
+            } else {
+                "local-bundle-v1"
+            })
+            .arg(bun)
+            .arg(boot)
+            .arg(policy);
+        if let Some(facts) = &installed_launch_facts {
+            guardian_command.arg(facts.private_argument()?);
+        }
+    }
     guardian_command
         // The facade Host's blocked pre-Init main stack can retain an open
         // native profile when its coordinator terminates the process. Only
@@ -2452,9 +2744,13 @@ fn run_app(
     let pending = GuardianBootstrap::spawn_supervised(guardian_command)
         .map_err(|source| app_runtime("guardian bootstrap", &source))?;
     drop(entry_file);
-    let mut guardian = pending
-        .register_guarded_primary_until(Instant::now() + APP_LINK_IO_DEADLINE)
-        .map_err(|source| app_runtime("guardian registration", &source))?;
+    let registration_deadline = Instant::now() + APP_LINK_IO_DEADLINE;
+    let mut guardian = if original_source.is_some() {
+        pending.register_guarded_primary_with_runtime_process_facts_until(registration_deadline)
+    } else {
+        pending.register_guarded_primary_until(registration_deadline)
+    }
+    .map_err(|source| app_runtime("guardian registration", &source))?;
     LISTENER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
     let Some(initial) = await_bound_generation(
         &mut guardian,
@@ -2465,6 +2761,20 @@ fn run_app(
     else {
         return Ok(());
     };
+
+    // Consume the same prepared graph/source after canonical pre-entry capture.
+    // A missing runtime observation refuses before original native preload use.
+    let original_selection = original_source
+        .map(|prepared| {
+            let versions = initial.runtime_versions().ok_or_else(|| {
+                app_detail(
+                    "original preload versions",
+                    "qualified pre-app runtime capture is unavailable",
+                )
+            })?;
+            Ok::<_, HostAppError>(prepared.with_runtime_versions(versions.clone()))
+        })
+        .transpose()?;
 
     let (window_commands_tx, window_commands_rx) = mpsc::channel();
     let main_thread = objc2::MainThreadMarker::new().ok_or_else(|| {
@@ -2486,6 +2796,8 @@ fn run_app(
         dev_lease,
         shutdown.clone(),
     )?;
+    let (renderer_requests_tx, renderer_requests_rx) = mpsc::sync_channel(1);
+    let (renderer_outcomes_tx, renderer_outcomes_rx) = mpsc::channel();
     let router = PrimaryRouter::start_bound(
         initial,
         window_commands_tx.clone(),
@@ -2496,6 +2808,8 @@ fn run_app(
             auth_configuration,
             presentation: Some(presentation_port),
             facade_windows: ready_trigger == AppReadyTrigger::HostInitialized,
+            original_selection,
+            renderer_outcomes: Some(renderer_outcomes_tx.clone()),
         },
     )?;
     guardian_owner.attach_router(router.handle())?;
@@ -2518,8 +2832,21 @@ fn run_app(
         })
         .map_err(|source| app_io("window event coordinator", &source))?;
 
-    let (renderer_requests_tx, renderer_requests_rx) = mpsc::sync_channel(1);
-    let (renderer_outcomes_tx, renderer_outcomes_rx) = mpsc::channel();
+    // Actual authentication and router binding precede this diagnostic. It is
+    // not a product receipt: child output shares the sink; GH-587 owns collection.
+    if let Err(primary) = profile_preflight::disclose_profile(admitted_profile, true) {
+        return cleanup_window_start_failure(
+            &primary,
+            guard_snapshot,
+            window_events_tx,
+            event_coordinator,
+            None,
+            (router, presentation_owner, main_thread),
+            guardian_owner,
+        )
+        .map_err(HostRunFailure::from);
+    }
+
     let renderer_dispatch = match start_renderer_dispatch(
         renderer_requests_rx,
         renderer_outcomes_tx,
@@ -2542,7 +2869,10 @@ fn run_app(
         }
     };
 
-    let mut engine = match WkWebViewEngine::new(profile_selection) {
+    let mut engine = match WkWebViewEngine::new_with_application_name_for_user_agent(
+        profile_selection,
+        application_name_for_user_agent,
+    ) {
         Ok(engine) => engine,
         Err(source) => {
             let primary = app_webview_error("macOS profile store initialization", &source);
@@ -2597,10 +2927,38 @@ fn run_app(
             }
         }
     } else {
-        drop(renderer_requests_tx);
-        drop(renderer_outcomes_rx);
+        // A facade starts without a view. Later native Create operations bind
+        // their document to this same existing request/outcome endpoint.
+        let endpoint = RendererBridgeEndpoint::new(
+            renderer_requests_tx,
+            renderer_outcomes_rx,
+            keld_ipc::channel_table::ECHO.wire_id(),
+        );
+        if let Err(source) = engine.install_renderer_endpoint(endpoint) {
+            let primary = app_webview_error("facade renderer endpoint", &source);
+            return cleanup_window_start_failure(
+                &primary,
+                guard_snapshot,
+                window_events_tx,
+                event_coordinator,
+                Some(renderer_dispatch),
+                (router, presentation_owner, main_thread),
+                guardian_owner,
+            )
+            .map_err(HostRunFailure::from);
+        }
         None
     };
+    // Create the native owners after startup succeeds. A retained event sender
+    // before this point would prevent pre-loop cleanup from joining the coordinator.
+    let mut dialog_presentation = router.handle.dialog.as_ref().map(|session| {
+        dialog_session::DialogMainOwner::new(Arc::clone(session), window_events_tx.clone())
+    });
+    let mut menu_presentation = router
+        .handle
+        .menu
+        .as_ref()
+        .map(|session| menu_router::MenuMainOwner::new(main_thread, Arc::clone(session)));
     let presentation_router = router.handle();
     let mut presentation_unproved = None;
     let mut retains_main_custody = false;
@@ -2609,27 +2967,60 @@ fn run_app(
         window_events_tx,
         primary_view,
         ready_trigger,
-        &mut |main_thread, anchor, stopping| {
+        &mut |main_thread, anchor, dialog_parent, request_close, stopping| {
             if let Err(error) = presentation_router.window_main_owner_stopping(stopping) {
                 let detail = error.to_string();
                 presentation_unproved.get_or_insert(error);
                 return Err(WvError::EventLoop(detail));
             }
             let stop_scope = presentation_router.prepare_auth_presentation_drive(stopping);
-            match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
-                keld_native::auth::AsMainProgress::Pending { next_deadline } => {
-                    Ok((false, next_deadline))
-                }
-                keld_native::auth::AsMainProgress::Drained => Ok((true, None)),
-                keld_native::auth::AsMainProgress::Unproved { fault, .. } => {
-                    presentation_unproved.get_or_insert_with(|| {
-                        app_detail("auth presentation custody", format!("{fault:?}"))
-                    });
-                    Err(WvError::EventLoop(format!(
-                        "native presentation custody unproved: {fault:?}"
-                    )))
-                }
+            let (auth_drained, auth_deadline) =
+                match presentation_owner.drive(main_thread, &mut |_| anchor(), stop_scope) {
+                    keld_native::auth::AsMainProgress::Pending { next_deadline } => {
+                        (false, next_deadline)
+                    }
+                    keld_native::auth::AsMainProgress::Drained => (true, None),
+                    keld_native::auth::AsMainProgress::Unproved { fault, .. } => {
+                        presentation_unproved.get_or_insert_with(|| {
+                            app_detail("auth presentation custody", format!("{fault:?}"))
+                        });
+                        return Err(WvError::EventLoop(format!(
+                            "native presentation custody unproved: {fault:?}"
+                        )));
+                    }
+                };
+            let (dialog_drained, dialog_deadline) = if let Some(dialog) = &mut dialog_presentation {
+                dialog
+                    .drive(main_thread, dialog_parent, stopping)
+                    .map_err(|error| {
+                        let detail = error.to_string();
+                        presentation_unproved.get_or_insert(error);
+                        WvError::EventLoop(detail)
+                    })?
+            } else {
+                (true, None)
+            };
+            if let Some(menu) = &mut menu_presentation {
+                let menu_close: &mut keld_native::menu::macos::MenuCloseRequest<'_> =
+                    &mut |window| {
+                        request_close(window).map_err(|_| IpcError::Protocol {
+                            detail: "menu Close requires the current registry-owned focused window",
+                        })
+                    };
+                menu.drive(&presentation_router, menu_close, stopping)
+                    .map_err(|error| {
+                        let detail = error.to_string();
+                        presentation_unproved.get_or_insert(error);
+                        WvError::EventLoop(detail)
+                    })?;
             }
+            Ok((
+                auth_drained && dialog_drained,
+                match (auth_deadline, dialog_deadline) {
+                    (Some(auth), Some(dialog)) => Some(auth.min(dialog)),
+                    (auth, dialog) => auth.or(dialog),
+                },
+            ))
         },
         (&mut retains_main_custody, || {
             if ready_trigger == AppReadyTrigger::HostInitialized {
@@ -2652,17 +3043,27 @@ fn run_app(
         return Err(HostRunFailure {
             error,
             retained: Some(Box::new(RetainedMacSession {
+                _single_instance: single_instance_owner,
                 _engine: engine,
                 _presentation: presentation_owner,
+                _dialog_main: dialog_presentation,
+                _menu_main: menu_presentation,
                 _router: router,
                 _guardian: guardian_owner,
                 _coordinator: event_coordinator,
                 _renderer: renderer_dispatch,
                 _commands: window_commands_tx,
+                _mac_origin: mac_origin,
                 guard: None,
             })),
         });
     }
+    // Keep the opened signed root, entry and Bun identities alive through the
+    // complete guarded shutdown. They never become a dev-stage cleanup root.
+    let _mac_origin = mac_origin;
+    // A proved native drain releases the completion sender before joining its
+    // receiver. Fatal custody above retains the sender and its real native owner.
+    drop(dialog_presentation.take());
     finish_guarded_session(guard_snapshot, |_| {
         drop(window_commands_tx);
         let event_result = event_coordinator
@@ -4439,6 +4840,48 @@ struct RendererDispatch {
 }
 
 #[cfg(target_os = "macos")]
+fn wait_renderer_echo_outcome(
+    call: &PrimaryEchoCall,
+    stop: &AtomicBool,
+    webview: keld_wv::WebviewId,
+    navigation: u64,
+    local_request: u32,
+) -> Option<RendererBridgeOutcome> {
+    let reply = loop {
+        match call.reply.recv_timeout(APP_LINK_READER_POLL) {
+            Ok(reply) => break Some(reply),
+            Err(RecvTimeoutError::Timeout) if stop.load(Ordering::Acquire) => {
+                return None;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break None,
+        }
+    };
+    Some(match reply {
+        Some(Ok(PrimaryEchoReply::Reply(payload))) => RendererBridgeOutcome::Reply {
+            webview,
+            navigation,
+            request: local_request,
+            payload,
+        },
+        Some(Ok(PrimaryEchoReply::Err(error))) => RendererBridgeOutcome::Error {
+            webview,
+            navigation,
+            request: local_request,
+            code: error.code,
+            detail: error.message,
+        },
+        Some(Err(_)) | None => RendererBridgeOutcome::Error {
+            webview,
+            navigation,
+            request: local_request,
+            code: String::from("KELD-WV-011"),
+            detail: String::from("application link ended before the renderer reply"),
+        },
+    })
+}
+
+#[cfg(target_os = "macos")]
 fn start_renderer_dispatch(
     requests: Receiver<RendererBridgeRequest>,
     outcomes: Sender<RendererBridgeOutcome>,
@@ -4457,6 +4900,26 @@ fn start_renderer_dispatch(
                     }
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                };
+                // The actual dequeue frees the existing bounded native control
+                // slot. Its owner can retry retained completion controls now.
+                if outcomes
+                    .send(RendererBridgeOutcome::ControlCapacity)
+                    .is_err()
+                {
+                    let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                    return Err(app_detail(
+                        "renderer control capacity",
+                        "existing native outcome endpoint ended",
+                    ));
+                }
+                let request = match router.dispatch_renderer_request(request) {
+                    Ok(Some(request)) => request,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        let _ = router.window_commands.send(AppWindowCommand::Fatal);
+                        return Err(error);
+                    }
                 };
                 let webview = request.webview();
                 let navigation = request.navigation();
@@ -4501,39 +4964,14 @@ fn start_renderer_dispatch(
                     );
                 }
 
-                let reply = loop {
-                    match call.reply.recv_timeout(APP_LINK_READER_POLL) {
-                        Ok(reply) => break Some(reply),
-                        Err(RecvTimeoutError::Timeout)
-                            if stop_for_thread.load(Ordering::Acquire) =>
-                        {
-                            return Ok(());
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break None,
-                    }
-                };
-                let outcome = match reply {
-                    Some(Ok(PrimaryEchoReply::Reply(payload))) => RendererBridgeOutcome::Reply {
-                        webview,
-                        navigation,
-                        request: local_request,
-                        payload,
-                    },
-                    Some(Ok(PrimaryEchoReply::Err(error))) => RendererBridgeOutcome::Error {
-                        webview,
-                        navigation,
-                        request: local_request,
-                        code: error.code,
-                        detail: error.message,
-                    },
-                    Some(Err(_)) | None => RendererBridgeOutcome::Error {
-                        webview,
-                        navigation,
-                        request: local_request,
-                        code: String::from("KELD-WV-011"),
-                        detail: String::from("application link ended before the renderer reply"),
-                    },
+                let Some(outcome) = wait_renderer_echo_outcome(
+                    &call,
+                    &stop_for_thread,
+                    webview,
+                    navigation,
+                    local_request,
+                ) else {
+                    return Ok(());
                 };
                 if outcomes.send(outcome).is_err() {
                     return Ok(());
@@ -4684,27 +5122,59 @@ fn initial_milestone_poll(until: Option<Instant>, now: Instant) -> Duration {
 /// well as an empty queue. A genuine on-time UI first turn keeps its native
 /// timestamp even when this worker is descheduled before observing the event.
 #[cfg(any(target_os = "macos", windows))]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum InitialMilestoneReceive {
     Event(AppWindowEvent),
     Again,
     Expired,
+    #[cfg(target_os = "macos")]
+    UnexpectedDesktop,
     Disconnected,
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(windows, all(test, target_os = "macos")))]
 fn receive_initial_milestone(
     events: &Receiver<AppWindowEvent>,
     watch: Option<&OnceLock<Instant>>,
 ) -> InitialMilestoneReceive {
+    receive_initial_milestone_with_native_order(
+        events,
+        watch,
+        #[cfg(target_os = "macos")]
+        false,
+        #[cfg(target_os = "macos")]
+        true,
+    )
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn receive_initial_milestone_with_native_order(
+    events: &Receiver<AppWindowEvent>,
+    watch: Option<&OnceLock<Instant>>,
+    #[cfg(target_os = "macos")] first_desktop_allowed: bool,
+    #[cfg(target_os = "macos")] poll_reader_stop: bool,
+) -> InitialMilestoneReceive {
     let before_receive = watch.and_then(|clock| clock.get().copied());
     let poll = initial_milestone_poll(before_receive, Instant::now());
+    #[cfg(windows)]
     let received = events.recv_timeout(poll);
+    #[cfg(target_os = "macos")]
+    let received = if watch.is_none() && !poll_reader_stop {
+        events
+            .recv()
+            .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+    } else {
+        events.recv_timeout(poll)
+    };
     // The coordinator can begin waiting before the UI thread arms its first
     // loop-entry deadline. Re-read after receipt; real Init is sent only after
     // the native producer has armed this same OnceLock.
     let deadline = watch.and_then(|clock| clock.get().copied());
     match received {
+        #[cfg(target_os = "macos")]
+        Ok(AppWindowEvent::DesktopObserved { .. }) if !first_desktop_allowed => {
+            InitialMilestoneReceive::UnexpectedDesktop
+        }
         Ok(AppWindowEvent::HostInitialized { observed_at })
             if watch.is_some() && deadline.is_none_or(|at| observed_at >= at) =>
         {
@@ -4712,7 +5182,12 @@ fn receive_initial_milestone(
         }
         Ok(event)
             if deadline.is_some_and(|at| {
-                !matches!(event, AppWindowEvent::HostInitialized { .. }) && Instant::now() >= at
+                let native_init = matches!(event, AppWindowEvent::HostInitialized { .. });
+                #[cfg(target_os = "macos")]
+                let native_init = native_init
+                    || first_desktop_allowed
+                        && matches!(event, AppWindowEvent::DesktopObserved { .. });
+                !native_init && Instant::now() >= at
             }) =>
         {
             // A busy queue of non-Init events must not starve the watchdog.
@@ -4727,78 +5202,37 @@ fn receive_initial_milestone(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", windows))]
-fn coordinate_window_events(
+#[cfg(any(target_os = "macos", windows))]
+fn receive_ordered_initial_window_events(
     events: &Receiver<AppWindowEvent>,
     router: &PrimaryRouterHandle,
     commands: &Sender<AppWindowCommand>,
-    #[cfg(any(target_os = "macos", windows))] ready_trigger: AppReadyTrigger,
-    mut on_ready: impl FnMut(&PrimaryRouterHandle) -> Result<(), HostAppError>,
-    #[cfg(any(target_os = "macos", windows))] init_watch: InitTerminalWatch<'_>,
+    ready_trigger: AppReadyTrigger,
+    init_watch: InitTerminalWatch<'_>,
+    #[cfg(windows)] init_seen: &std::cell::Cell<bool>,
+    #[cfg(target_os = "macos")] observed: (&std::cell::Cell<bool>, &std::cell::Cell<bool>),
+    mut process_event: impl FnMut(AppWindowEvent) -> Result<(), HostAppError>,
 ) -> Result<(), HostAppError> {
-    #[cfg(any(target_os = "macos", windows))]
-    let mut ready_signaled = false;
-    #[cfg(any(target_os = "macos", windows))]
-    let init_seen = std::cell::Cell::new(false);
-    #[cfg(any(target_os = "macos", windows))]
-    let mut accept_ready = |observed| {
-        accept_boot_ready_trigger(ready_trigger, observed, &mut ready_signaled)?;
-        if observed == AppReadyTrigger::HostInitialized {
-            init_seen.set(true);
-        }
-        Ok::<(), HostAppError>(())
-    };
-    let mut publish_ready = || router.signal_ready().and_then(|()| on_ready(router));
-    let mut process_event = |event| {
-        let result = match event {
-            AppWindowEvent::NavigationReady => {
-                #[cfg(target_os = "macos")]
-                {
-                    accept_ready(AppReadyTrigger::NavigationReady).and_then(|()| publish_ready())
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    if router.windows.is_none() {
-                        publish_ready()
-                    } else {
-                        Ok(())
-                    }
-                }
-            }
-            #[cfg(any(target_os = "macos", windows))]
-            AppWindowEvent::HostInitialized { .. } => {
-                accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| publish_ready())
-            }
-            AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
-                router.signal_last_window_closed().map(drop)
-            }
-            // Registry windows own their count; never emit a legacy count.
-            AppWindowEvent::LastWindowClosed => Ok(()),
-            event => router.window_native_event(event),
-        };
-        if let Err(error) = result {
-            let _ = commands.send(AppWindowCommand::Fatal);
-            Err(error)
-        } else {
-            Ok(())
-        }
-    };
-    // A Windows renderer boot has no Init watch and keeps its blocking receive.
-    #[cfg(windows)]
-    if ready_trigger != AppReadyTrigger::HostInitialized {
-        while let Ok(event) = events.recv() {
-            process_event(event)?;
-        }
-        return router.finish_window_facts();
-    }
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(target_os = "macos")]
+    let (init_seen, desktop_seen) = observed;
     loop {
         if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
             break;
         }
         let until_init = init_watch
             .filter(|_| ready_trigger == AppReadyTrigger::HostInitialized && !init_seen.get());
-        let event = match receive_initial_milestone(events, until_init.map(|(clock, _)| clock)) {
+        #[cfg(windows)]
+        let received = receive_initial_milestone(events, until_init.map(|(clock, _)| clock));
+        #[cfg(target_os = "macos")]
+        let received = receive_initial_milestone_with_native_order(
+            events,
+            until_init.map(|(clock, _)| clock),
+            ready_trigger == AppReadyTrigger::HostInitialized
+                && !init_seen.get()
+                && !desktop_seen.get(),
+            router.windows.is_none(),
+        );
+        let event = match received {
             InitialMilestoneReceive::Event(event) => {
                 if router.shutdown.reader_stop.load(Ordering::Acquire) && router.windows.is_none() {
                     break;
@@ -4815,6 +5249,14 @@ fn coordinate_window_events(
                 ));
             }
             InitialMilestoneReceive::Again => continue,
+            #[cfg(target_os = "macos")]
+            InitialMilestoneReceive::UnexpectedDesktop => {
+                let _ = commands.send(AppWindowCommand::Fatal);
+                return Err(app_detail(
+                    "initial UI milestone",
+                    "a second or foreign desktop event cannot replace the pending Init milestone",
+                ));
+            }
             InitialMilestoneReceive::Disconnected if until_init.is_some() => {
                 return Err(app_detail(
                     "initial UI milestone",
@@ -4825,6 +5267,157 @@ fn coordinate_window_events(
         };
         process_event(event)?;
     }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn forward_native_desktop_sample(
+    router: &PrimaryRouterHandle,
+    ready_trigger: AppReadyTrigger,
+    init_seen: &std::cell::Cell<bool>,
+    desktop_seen: &std::cell::Cell<bool>,
+    facts: Option<keld_wv::AppDesktopFacts>,
+) -> Result<(), HostAppError> {
+    if ready_trigger != AppReadyTrigger::HostInitialized
+        || init_seen.get()
+        || desktop_seen.replace(true)
+    {
+        Err(app_detail(
+            "initial UI milestone",
+            "duplicate or foreign native desktop sample before Init",
+        ))
+    } else {
+        router.window_native_event(AppWindowEvent::DesktopObserved { facts })
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn report_window_event_failure(
+    result: Result<(), HostAppError>,
+    commands: &Sender<AppWindowCommand>,
+) -> Result<(), HostAppError> {
+    if let Err(error) = result {
+        let _ = commands.send(AppWindowCommand::Fatal);
+        Err(error)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn forward_navigation_ready(
+    #[cfg(not(target_os = "macos"))] router: &PrimaryRouterHandle,
+    #[cfg(target_os = "macos")] accept_ready: &mut impl FnMut(
+        AppReadyTrigger,
+    ) -> Result<(), HostAppError>,
+    publish_ready: &mut impl FnMut() -> Result<(), HostAppError>,
+) -> Result<(), HostAppError> {
+    #[cfg(target_os = "macos")]
+    {
+        accept_ready(AppReadyTrigger::NavigationReady).and_then(|()| publish_ready())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if router.windows.is_none() {
+            publish_ready()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn coordinate_window_events(
+    events: &Receiver<AppWindowEvent>,
+    router: &PrimaryRouterHandle,
+    commands: &Sender<AppWindowCommand>,
+    #[cfg(any(target_os = "macos", windows))] ready_trigger: AppReadyTrigger,
+    mut on_ready: impl FnMut(&PrimaryRouterHandle) -> Result<(), HostAppError>,
+    #[cfg(any(target_os = "macos", windows))] init_watch: InitTerminalWatch<'_>,
+) -> Result<(), HostAppError> {
+    #[cfg(any(target_os = "macos", windows))]
+    let mut ready_signaled = false;
+    #[cfg(any(target_os = "macos", windows))]
+    let init_seen = std::cell::Cell::new(false);
+    #[cfg(target_os = "macos")]
+    let desktop_seen = std::cell::Cell::new(false);
+    #[cfg(any(target_os = "macos", windows))]
+    let mut accept_ready = |observed| {
+        accept_boot_ready_trigger(ready_trigger, observed, &mut ready_signaled)?;
+        if observed == AppReadyTrigger::HostInitialized {
+            init_seen.set(true);
+        }
+        Ok::<(), HostAppError>(())
+    };
+    let mut publish_ready = || router.signal_ready().and_then(|()| on_ready(router));
+    let mut process_event = |event| {
+        let result = match event {
+            AppWindowEvent::NavigationReady => forward_navigation_ready(
+                #[cfg(not(target_os = "macos"))]
+                router,
+                #[cfg(target_os = "macos")]
+                &mut accept_ready,
+                &mut publish_ready,
+            ),
+            #[cfg(windows)]
+            AppWindowEvent::HostInitialized { .. } => {
+                accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| publish_ready())
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::HostInitialized { .. } => {
+                if ready_trigger == AppReadyTrigger::HostInitialized && !desktop_seen.get() {
+                    Err(app_detail(
+                        "initial UI milestone",
+                        "HostInitialized arrived without its preceding native desktop sample",
+                    ))
+                } else {
+                    accept_ready(AppReadyTrigger::HostInitialized).and_then(|()| publish_ready())
+                }
+            }
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::DesktopObserved { facts } => forward_native_desktop_sample(
+                router,
+                ready_trigger,
+                &init_seen,
+                &desktop_seen,
+                facts,
+            ),
+            #[cfg(target_os = "macos")]
+            AppWindowEvent::MacDialogFinished {
+                attempt,
+                nonce,
+                outcome,
+            } => router.dialog_native_finished(attempt, nonce, outcome),
+            AppWindowEvent::LastWindowClosed if router.windows.is_none() => {
+                router.signal_last_window_closed().map(drop)
+            }
+            // Registry windows own their count; never emit a legacy count.
+            AppWindowEvent::LastWindowClosed => Ok(()),
+            event => router.window_native_event(event),
+        };
+        report_window_event_failure(result, commands)
+    };
+    // A Windows renderer boot has no Init watch and keeps its blocking receive.
+    #[cfg(windows)]
+    if ready_trigger != AppReadyTrigger::HostInitialized {
+        while let Ok(event) = events.recv() {
+            process_event(event)?;
+        }
+        return router.finish_window_facts();
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    receive_ordered_initial_window_events(
+        events,
+        router,
+        commands,
+        ready_trigger,
+        init_watch,
+        #[cfg(windows)]
+        &init_seen,
+        #[cfg(target_os = "macos")]
+        (&init_seen, &desktop_seen),
+        &mut process_event,
+    )?;
     #[cfg(target_os = "linux")]
     while let Ok(event) = events.recv() {
         process_event(event)?;
@@ -6071,6 +6664,31 @@ type PlatformPrimaryOwnerHandle = GuardianOwnerHandle;
 type PlatformPrimaryOwnerHandle = DirectPrimaryOwnerHandle;
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct PrimaryPrivilegedChannels {
+    entries: [&'static keld_ipc::channel_table::ChannelEntry; 5],
+    len: usize,
+}
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl Default for PrimaryPrivilegedChannels {
+    fn default() -> Self {
+        Self {
+            entries: [&keld_ipc::channel_table::FS; 5],
+            len: 0,
+        }
+    }
+}
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+impl PrimaryPrivilegedChannels {
+    fn push(&mut self, entry: &'static keld_ipc::channel_table::ChannelEntry) {
+        self.entries[self.len] = entry;
+        self.len += 1;
+    }
+    fn as_slice(&self) -> &[&'static keld_ipc::channel_table::ChannelEntry] {
+        &self.entries[..self.len]
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 #[derive(Clone)]
 struct PrimaryRouterHandle {
     current: Arc<Mutex<Option<ActivePrimaryGeneration>>>,
@@ -6103,6 +6721,13 @@ struct PrimaryRouterHandle {
     auth: Option<Arc<AuthSession>>,
     #[cfg(target_os = "macos")]
     auth_commands: Option<SyncSender<AuthWork>>,
+    /// One verified, immutable dialog policy and native effect custody owner.
+    #[cfg(target_os = "macos")]
+    dialog: Option<Arc<dialog_session::DialogSession>>,
+    #[cfg(target_os = "macos")]
+    menu: Option<Arc<menu_router::MenuSession>>,
+    #[cfg(target_os = "macos")]
+    compat: Option<Arc<Mutex<compat_router::CompatSession>>>,
     guardian: PlatformPrimaryOwnerHandle,
     window_commands: Sender<AppWindowCommand>,
     #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -6114,6 +6739,8 @@ struct PrimaryRouterHandle {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
 #[derive(Default)]
 struct QuitDrainTestHooks {
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    native_admission_after_take: Option<Arc<keld_wv::wkwebview::OriginalDocumentDestroyAdmission>>,
     stall: Option<(SyncSender<()>, Receiver<()>)>,
     end: Option<SyncSender<QuitDrainEnd>>,
     // Only the macOS CLI-publication fixture reads this slot.
@@ -6178,11 +6805,30 @@ struct ActivePrimaryGeneration {
     identity: PrimaryLinkIdentity,
     writer: BootstrapStream,
     reader_stop: Arc<AtomicBool>,
+    /// The authenticated current primary role owns this sequence. Its value
+    /// is protected by the same current-generation/transition lock as the
+    /// caller fence, and is reset only by installing a new Runtime generation.
+    /// The dialog effect owner must not copy or independently advance it.
+    #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+    dialog_nonce_high_water: u64,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
     /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
     /// the generation lock, so retirement answers it at most once and never
     /// after its real REPLY.
     pending_quit: Option<CorrelationId>,
+}
+
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+impl ActivePrimaryGeneration {
+    /// Admit each positive Message nonce at most once for this authenticated
+    /// primary generation. The caller fence MUST run before invoking this.
+    fn accept_dialog_nonce(&mut self, nonce: u64) -> bool {
+        if nonce == 0 || nonce <= self.dialog_nonce_high_water {
+            return false;
+        }
+        self.dialog_nonce_high_water = nonce;
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -6524,20 +7170,27 @@ impl PrimaryRouterHandle {
         }
     }
 
-    fn privileged_calls(&self) -> &'static [&'static keld_ipc::channel_table::ChannelEntry] {
-        #[cfg(target_os = "macos")]
-        if self.auth.is_some() {
-            return if self.fs.is_some() {
-                &[&keld_ipc::channel_table::FS, &keld_ipc::channel_table::AUTH]
-            } else {
-                &[&keld_ipc::channel_table::AUTH]
-            };
-        }
+    fn privileged_calls(&self) -> PrimaryPrivilegedChannels {
+        let mut channels = PrimaryPrivilegedChannels::default();
         if self.fs.is_some() {
-            &[&keld_ipc::channel_table::FS]
-        } else {
-            &[]
+            channels.push(&keld_ipc::channel_table::FS);
         }
+        #[cfg(target_os = "macos")]
+        {
+            if self.auth.is_some() {
+                channels.push(&keld_ipc::channel_table::AUTH);
+            }
+            if self.dialog.is_some() {
+                channels.push(&keld_ipc::channel_table::DIALOG);
+            }
+            if self.menu.is_some() {
+                channels.push(&keld_ipc::channel_table::MENU);
+            }
+            if self.compat.is_some() {
+                channels.push(&keld_ipc::channel_table::COMPAT_CONTROL);
+            }
+        }
+        channels
     }
 
     fn retire_current_generation_locked(
@@ -6553,13 +7206,45 @@ impl PrimaryRouterHandle {
         {
             return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        let native_admission = current.as_ref().map_or(Ok(()), |active| {
+            self.cancel_window_native_admissions(window_registry::WindowOwner::new(
+                active.identity,
+                active.attempt,
+            ))
+        });
+        #[cfg(not(target_os = "macos"))]
+        let native_admission = Ok(());
+        // Cancellation precedes current removal, but its failure must not leave
+        // the old role/reader/link live or bypass the remaining cleanup owners.
         let Some(active) = current.take() else {
             return Err(app_detail(
                 "primary generation retirement",
                 "current generation disappeared while its lock was held",
             ));
         };
+        #[cfg(all(test, target_os = "macos", debug_assertions))]
+        if let Some(admission) = self
+            .quit_drain_hooks
+            .lock()
+            .map_err(|_| app_detail("native admission retirement fixture", "hook lock poisoned"))?
+            .native_admission_after_take
+            .take()
+        {
+            // The placement regression observes this same ticket's terminal state.
+            let _ = admission.fixture_try_accept();
+        }
+        #[cfg(target_os = "macos")]
+        let mut active = active;
+        #[cfg(target_os = "macos")]
+        let compat_retirement = self.retire_compat_locked(&mut active);
+        #[cfg(not(target_os = "macos"))]
+        let compat_retirement = Ok(());
         active.reader_stop.store(true, Ordering::Release);
+        #[cfg(target_os = "macos")]
+        if let Some(dialog) = &self.dialog {
+            dialog.retire(active.identity, active.attempt);
+        }
         let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
             active.identity,
             active.attempt,
@@ -6576,6 +7261,8 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
         collapse_app_results([
+            native_admission,
+            compat_retirement,
             window_retirement,
             auth_retirement,
             self.fail_pending_echo_for_attempt(attempt, pending_detail),
@@ -6622,6 +7309,33 @@ impl PrimaryRouterHandle {
                 .map(|corr| (LIFECYCLE_CHANNEL, corr)),
         ];
         #[cfg(target_os = "macos")]
+        let dialog_pending = self
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.pending_original_for(active.identity, attempt))
+            .map(|corr| (keld_ipc::channel_table::DIALOG.id(), corr));
+        #[cfg(target_os = "macos")]
+        let menu_pending = match self
+            .menu
+            .as_ref()
+            .map(|menu| {
+                menu.take_pending_for_retirement(
+                    window_registry::WindowOwner::new(active.identity, attempt),
+                    error,
+                )
+            })
+            .transpose()
+        {
+            Ok(pending) => pending
+                .flatten()
+                .map(|corr| (keld_ipc::channel_table::MENU.id(), corr)),
+            Err(error) => {
+                eprintln!("{error}");
+                let _ = self.window_commands.send(AppWindowCommand::Fatal);
+                None
+            }
+        };
+        #[cfg(target_os = "macos")]
         let auth_pending = match self
             .auth
             .as_ref()
@@ -6642,7 +7356,16 @@ impl PrimaryRouterHandle {
         let auth_pending = std::iter::empty();
         write_best_effort_answers(
             &mut active.writer,
-            pending.into_iter().flatten().chain(auth_pending),
+            pending.into_iter().flatten().chain(auth_pending).chain({
+                #[cfg(target_os = "macos")]
+                {
+                    dialog_pending.into_iter().chain(menu_pending)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None.into_iter()
+                }
+            }),
             error,
         );
     }
@@ -6702,7 +7425,7 @@ impl PrimaryRouterHandle {
         loop {
             let header = match read_quit_drain_frame_with_privileged_calls(
                 reader,
-                privileged_calls,
+                privileged_calls.as_slice(),
                 idle_deadline,
                 hard_deadline,
             ) {
@@ -6715,6 +7438,7 @@ impl PrimaryRouterHandle {
             let declares_err = header.channel() == LIFECYCLE_CHANNEL
                 || header.channel() == keld_ipc::channel_table::WINDOW.id()
                 || privileged_calls
+                    .as_slice()
                     .iter()
                     .any(|entry| entry.id() == header.channel());
             if header.kind() != FrameKind::Call || !declares_err {
@@ -6728,6 +7452,10 @@ impl PrimaryRouterHandle {
             let Some(active) = current.as_mut().filter(|active| active.attempt == attempt) else {
                 return QuitDrainEnd::GenerationGone;
             };
+            #[cfg(target_os = "macos")]
+            if header.channel() == keld_ipc::channel_table::MENU.id() {
+                menu_router::report_retired_install(&error, attempt, header.corr());
+            }
             if !write_best_effort_answers(
                 &mut active.writer,
                 [(header.channel(), header.corr())],
@@ -7077,6 +7805,13 @@ impl PrimaryRouterHandle {
         {
             return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        if let Some(active) = current_guard.as_ref() {
+            self.cancel_window_native_admissions(window_registry::WindowOwner::new(
+                active.identity,
+                active.attempt,
+            ))?;
+        }
         if !self.shutdown.reserve_guarded(SESSION_LIFECYCLE_QUIT) {
             drop(current_guard);
             drop(transition);
@@ -7140,6 +7875,8 @@ impl PrimaryRouterHandle {
         &self,
         auth_retirement: Result<(), HostAppError>,
     ) -> Result<(), HostAppError> {
+        #[cfg(target_os = "macos")]
+        let transition = self.shutdown.transition_guard();
         let Ok(mut current_guard) = self.current.lock() else {
             return collapse_app_results([
                 auth_retirement,
@@ -7158,11 +7895,23 @@ impl PrimaryRouterHandle {
                 )),
             ]);
         };
+        #[cfg(target_os = "macos")]
+        let native_admission = self.cancel_window_native_admissions(
+            window_registry::WindowOwner::new(active.identity, active.attempt),
+        );
+        #[cfg(not(target_os = "macos"))]
+        let native_admission = Ok(());
+        #[cfg(target_os = "macos")]
+        let compat_retirement = self.retire_compat_locked(active);
+        #[cfg(not(target_os = "macos"))]
+        let compat_retirement = Ok(());
         let window_retirement = self.retire_window_owner(window_registry::WindowOwner::new(
             active.identity,
             active.attempt,
         ));
         let link_close = collapse_app_results([
+            native_admission,
+            compat_retirement,
             window_retirement,
             finish_link_shutdown(
                 active.writer.shutdown_app_link(),
@@ -7171,6 +7920,8 @@ impl PrimaryRouterHandle {
         ]);
         current_guard.take();
         drop(current_guard);
+        #[cfg(target_os = "macos")]
+        drop(transition);
         collapse_app_results([
             auth_retirement,
             link_close,
@@ -7231,12 +7982,17 @@ impl PrimaryRouterHandle {
     /// Caller holds the shutdown transition and has won `begin_tail`: accept
     /// its reserved forced cause and end the managed window session atomically.
     fn accept_forced_tail_guarded(&self, reserved: u8) -> Result<(), HostAppError> {
+        #[cfg(target_os = "macos")]
+        let native_admission = self.cancel_current_window_native_admissions_guarded();
+        #[cfg(not(target_os = "macos"))]
+        let native_admission = Ok(());
         if self.shutdown.cause() == SESSION_RUNNING {
             self.shutdown.accept_reserved_guarded(reserved);
             #[cfg(all(test, target_os = "macos"))]
             self.hold_cli_acceptance_for_test()?;
         }
-        self.end_window_session_guarded()
+        let ending = self.end_window_session_guarded();
+        collapse_app_results([native_admission, ending])
     }
 
     /// The forced tail: the host-initiated session end without the application's
@@ -7274,6 +8030,8 @@ impl PrimaryRouterHandle {
         let _tail = self.shutdown.tail_run();
         window_ending?;
         self.quiesce_and_drain_fs()?;
+        #[cfg(target_os = "macos")]
+        let transition = self.shutdown.transition_guard();
         let mut current_guard = self
             .current
             .lock()
@@ -7301,7 +8059,19 @@ impl PrimaryRouterHandle {
         #[cfg(not(target_os = "macos"))]
         let auth_retirement = Ok(());
         let link = current_guard.as_mut().map_or(Ok(()), |active| {
+            #[cfg(target_os = "macos")]
+            let native_admission = self.cancel_window_native_admissions(
+                window_registry::WindowOwner::new(active.identity, active.attempt),
+            );
+            #[cfg(not(target_os = "macos"))]
+            let native_admission = Ok(());
+            #[cfg(target_os = "macos")]
+            let compat_retirement = self.retire_compat_locked(active);
+            #[cfg(not(target_os = "macos"))]
+            let compat_retirement = Ok(());
             collapse_app_results([
+                native_admission,
+                compat_retirement,
                 self.retire_window_owner(window_registry::WindowOwner::new(
                     active.identity,
                     active.attempt,
@@ -7311,6 +8081,8 @@ impl PrimaryRouterHandle {
         });
         current_guard.take();
         drop(current_guard);
+        #[cfg(target_os = "macos")]
+        drop(transition);
         collapse_app_results([pending, auth_retirement, link, self.finish_tail(tail_phase)])
     }
 
@@ -7331,6 +8103,10 @@ impl PrimaryRouterHandle {
                 }
                 self.retire_generation(attempt).map_err(Into::into)
             }
+            #[cfg(target_os = "macos")]
+            PrimaryOwnerUpdate::Role(PrimaryRoleEvent::ProcessDrained { retirement }) => self
+                .compat_runtime_drained(retirement.principal(), retirement.attempt())
+                .map_err(Into::into),
             PrimaryOwnerUpdate::Role(_) => Ok(()),
             PrimaryOwnerUpdate::Bound(bound) => {
                 let identity = PrimaryLinkIdentity::Role(bound.principal());
@@ -7342,6 +8118,23 @@ impl PrimaryRouterHandle {
                 }
                 #[cfg(target_os = "macos")]
                 {
+                    let versions_check = self.windows.as_ref().map_or(Ok(()), |windows| {
+                        windows
+                            .lock()
+                            .map_err(|_| {
+                                app_detail("original runtime rebind", "registry lock poisoned")
+                            })?
+                            .validate_runtime_versions(bound.runtime_versions())
+                    });
+                    if let Err(primary) = versions_check {
+                        self.guardian.deny_recovery();
+                        let stream = bound.into_stream();
+                        let close = finish_link_shutdown(
+                            stream.shutdown_app_link(),
+                            "incompatible runtime generation link close",
+                        );
+                        return Err(append_app_cleanup(primary, [close]).into());
+                    }
                     self.install_prepared_generation_with_identity(
                         attempt,
                         bound.into_stream(),
@@ -7536,6 +8329,8 @@ impl PrimaryRouterHandle {
                 identity,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
+                #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+                dialog_nonce_high_water: 0,
                 pending_quit: None,
             });
             drop(current);
@@ -7684,6 +8479,8 @@ struct MacBoundStart {
     auth_configuration: AuthConfiguration,
     presentation: Option<keld_native::auth::AsWorkerPort>,
     facade_windows: bool,
+    original_selection: Option<original_webapp::OriginalLoadSelection>,
+    renderer_outcomes: Option<Sender<RendererBridgeOutcome>>,
 }
 
 /// One optional runtime setup bundle keeps the primary admission boundary
@@ -7692,6 +8489,10 @@ struct MacBoundStart {
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct BoundSetup {
     window_native_support: Option<bool>,
+    #[cfg(target_os = "macos")]
+    original_selection: Option<original_webapp::OriginalLoadSelection>,
+    #[cfg(target_os = "macos")]
+    renderer_outcomes: Option<Sender<RendererBridgeOutcome>>,
     #[cfg(target_os = "macos")]
     auth_startup: Option<(
         VerifiedManifest,
@@ -7811,6 +8612,22 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
+            #[cfg(target_os = "macos")]
+            dialog: fs.map(|guard| {
+                Arc::new(dialog_session::DialogSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
+            #[cfg(target_os = "macos")]
+            menu: fs.map(|guard| {
+                Arc::new(menu_router::MenuSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
+            #[cfg(target_os = "macos")]
+            compat: None,
             guardian,
             window_commands,
             #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -7823,6 +8640,8 @@ impl PrimaryRouter {
             None,
             #[cfg(test)]
             fs_worker_test_gate,
+            #[cfg(target_os = "macos")]
+            None,
             #[cfg(target_os = "macos")]
             None,
         )?;
@@ -7850,6 +8669,8 @@ impl PrimaryRouter {
             #[cfg(target_os = "macos")]
             BoundSetup {
                 window_native_support: mac_start.facade_windows.then_some(true),
+                original_selection: mac_start.original_selection,
+                renderer_outcomes: mac_start.renderer_outcomes,
                 auth_startup: fs.map(|snapshot| {
                     (
                         snapshot.verified.clone(),
@@ -7931,6 +8752,33 @@ impl PrimaryRouter {
             auth: None,
             #[cfg(target_os = "macos")]
             auth_commands: None,
+            #[cfg(target_os = "macos")]
+            dialog: fs.map(|guard| {
+                Arc::new(dialog_session::DialogSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
+            #[cfg(target_os = "macos")]
+            menu: fs.map(|guard| {
+                Arc::new(menu_router::MenuSession::new(
+                    guard.verified.clone(),
+                    window_commands.clone(),
+                ))
+            }),
+            #[cfg(target_os = "macos")]
+            compat: options
+                .window_native_support
+                .filter(|supported| *supported)
+                .and(options.renderer_outcomes.as_ref())
+                .and_then(|outcomes| {
+                    fs.map(|guard| {
+                        Arc::new(Mutex::new(compat_router::CompatSession::new(
+                            guard.fs.verified.clone(),
+                            outcomes.clone(),
+                        )))
+                    })
+                }),
             guardian,
             window_commands,
             #[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
@@ -7945,6 +8793,8 @@ impl PrimaryRouter {
             fs_worker_test_gate,
             #[cfg(target_os = "macos")]
             options.auth_startup,
+            #[cfg(target_os = "macos")]
+            options.original_selection,
         )?;
         router
             .handle
@@ -7963,9 +8813,30 @@ impl PrimaryRouter {
             AuthConfiguration,
             Option<keld_native::auth::AsWorkerPort>,
         )>,
+        #[cfg(target_os = "macos")] original_selection: Option<
+            original_webapp::OriginalLoadSelection,
+        >,
     ) -> Result<Self, HostAppError> {
+        #[cfg(target_os = "macos")]
+        if original_selection.is_some() && window_native_support != Some(true) {
+            return Err(app_detail(
+                "original source install",
+                "an original source requires the managed facade window session",
+            ));
+        }
         handle.windows = window_native_support
-            .map(|supported| Arc::new(Mutex::new(window_router::WindowSession::new(supported))));
+            .map(|supported| {
+                #[cfg(target_os = "macos")]
+                let mut session = window_router::WindowSession::with_desktop(supported);
+                #[cfg(not(target_os = "macos"))]
+                let session = window_router::WindowSession::new(supported);
+                #[cfg(target_os = "macos")]
+                if let Some(selection) = original_selection {
+                    session.install_original_selection(selection)?;
+                }
+                Ok::<_, HostAppError>(Arc::new(Mutex::new(session)))
+            })
+            .transpose()?;
         #[cfg(target_os = "macos")]
         let auth_worker = auth_startup
             .map(|(verified, configuration, presentation)| {
@@ -8013,6 +8884,29 @@ impl PrimaryRouter {
             if let Some(auth) = &self.handle.auth {
                 auth.stop_tail();
             }
+            #[cfg(target_os = "macos")]
+            let compat_retirement = {
+                let (mut current, lock_result) = match self.handle.current.lock() {
+                    Ok(current) => (current, Ok(())),
+                    Err(poisoned) => (
+                        poisoned.into_inner(),
+                        Err(app_detail(
+                            "compat router shutdown",
+                            "generation lock poisoned",
+                        )),
+                    ),
+                };
+                let retirement = current.as_mut().map_or(Ok(()), |active| {
+                    let admission = self.handle.cancel_window_native_admissions(
+                        window_registry::WindowOwner::new(active.identity, active.attempt),
+                    );
+                    let compat = self.handle.retire_compat_locked(active);
+                    collapse_app_results([admission, compat])
+                });
+                collapse_app_results([lock_result, retirement])
+            };
+            #[cfg(not(target_os = "macos"))]
+            let compat_retirement = Ok(());
             self.handle.shutdown.stop_reader();
             let window_end = self.handle.end_window_session_guarded();
             let mut current = match self.handle.current.lock() {
@@ -8020,6 +8914,7 @@ impl PrimaryRouter {
                 Err(poisoned) => poisoned.into_inner(),
             };
             let mut pending = collapse_app_results([
+                compat_retirement,
                 window_end,
                 self.handle
                     .fail_any_pending_echo("application call retired by router shutdown"),
@@ -8300,11 +9195,12 @@ fn read_primary_frames(
         // selects the existing privileged CALL policy for the `fs` channel
         // table entry; an unguarded session keeps the legacy
         // echo/lifecycle/PING policy.
+        let privileged_calls = handle.privileged_calls();
         let frame = read_primary_app_frame_interruptible_with_admission(
             reader,
             reader_stop,
             || handle.pending_echo_corr_for(attempt),
-            handle.privileged_calls(),
+            privileged_calls.as_slice(),
             |entry, corr| {
                 #[cfg(not(target_os = "macos"))]
                 let _ = corr; // Auth correlation admission is macOS-only.
@@ -8323,6 +9219,27 @@ fn read_primary_frames(
                         .map_or(GuardedCallAdmission::RejectSession, |auth| {
                             auth.admission(attempt, corr)
                         });
+                }
+                #[cfg(target_os = "macos")]
+                if entry.id() == keld_ipc::channel_table::MENU.id() {
+                    return handle
+                        .menu
+                        .as_ref()
+                        .map_or(GuardedCallAdmission::RejectSession, |menu| {
+                            menu.admission(attempt, corr)
+                        });
+                }
+                #[cfg(target_os = "macos")]
+                if entry.id() == keld_ipc::channel_table::COMPAT_CONTROL.id() {
+                    return GuardedCallAdmission::Admit;
+                }
+                #[cfg(target_os = "macos")]
+                if entry.id() == keld_ipc::channel_table::DIALOG.id() {
+                    // Unlike a new Message, Cancel must remain decodable when
+                    // the original physically retained panel is at capacity.
+                    // Core's guarded owner determines the typed Busy result
+                    // after decoding the bounded, complete request.
+                    return GuardedCallAdmission::Admit;
                 }
                 GuardedCallAdmission::RejectSession
             },
@@ -8464,6 +9381,27 @@ fn read_primary_frames(
             {
                 handle.enqueue_auth(attempt, header.corr(), &payload, reader_stop)?;
             }
+            #[cfg(target_os = "macos")]
+            (FrameKind::Call, channel)
+                if channel == keld_ipc::channel_table::DIALOG.id()
+                    && handle.shutdown.is_running() =>
+            {
+                handle.dispatch_dialog(caller, header.corr(), &payload)?;
+            }
+            #[cfg(target_os = "macos")]
+            (FrameKind::Call, channel)
+                if channel == keld_ipc::channel_table::MENU.id()
+                    && handle.shutdown.is_running() =>
+            {
+                handle.dispatch_menu(caller, header.corr(), &payload)?;
+            }
+            #[cfg(target_os = "macos")]
+            (FrameKind::Call, channel)
+                if channel == keld_ipc::channel_table::COMPAT_CONTROL.id()
+                    && handle.shutdown.is_running() =>
+            {
+                handle.dispatch_compat(caller, header.corr(), payload)?;
+            }
             (FrameKind::Call, channel) if channel == keld_ipc::channel_table::WINDOW.id() => {
                 handle.dispatch_window(caller, header.corr(), &payload)?;
             }
@@ -8480,7 +9418,19 @@ fn read_primary_frames(
                     continue;
                 };
                 match request {
+                    LifecycleRequest::Init { .. } => {
+                        return Err(app_ipc(
+                            "late runtime Init",
+                            &IpcError::Protocol {
+                                detail: "runtime Init is accepted only by authenticated role admission",
+                            },
+                        ));
+                    }
                     LifecycleRequest::Subscribe { channel } => {
+                        #[cfg(target_os = "macos")]
+                        if handle.subscribe_compat(caller, header.corr(), channel)? {
+                            continue;
+                        }
                         handle.subscribe_window(caller, header.corr(), channel)?;
                     }
                     LifecycleRequest::Quit => {

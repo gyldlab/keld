@@ -469,16 +469,20 @@ impl ReceivePolicy {
     /// Privileged receiver: authenticated `CALL`s on one host-selected channel
     /// table entry (spec table row 8). This policy cannot mint authority — the
     /// guard still runs after payload decode. Only a
-    /// [`ReceiveClass::GuardedCall`] entry admits it, so this constructor builds
+    /// [`ReceiveClass::GuardedCall`] or [`ReceiveClass::GuardedCallWithEvents`]
+    /// entry admits it, so this constructor builds
     /// no policy for an unallocated id or a host-internal channel (GH-508 spec
     /// criterion 10). The class check runs at policy construction.
     ///
     /// # Errors
     ///
     /// Returns [`IpcError::Protocol`] (`KELD-IPC-005`) when `entry` is not a
-    /// [`ReceiveClass::GuardedCall`] channel.
+    /// guarded-call channel.
     pub const fn privileged_call_receiver(entry: &'static ChannelEntry) -> Result<Self, IpcError> {
-        if !matches!(entry.class(), ReceiveClass::GuardedCall) {
+        if !matches!(
+            entry.class(),
+            ReceiveClass::GuardedCall | ReceiveClass::GuardedCallWithEvents
+        ) {
             return Err(IpcError::Protocol {
                 detail: "channel class does not admit this policy",
             });
@@ -793,6 +797,48 @@ impl AbsoluteDeadline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guarded_renderer_control_has_typed_err_and_events_but_menu_has_no_event_route() {
+        let control = &crate::channel_table::COMPAT_CONTROL;
+        let menu = &crate::channel_table::MENU;
+        let call = header(FrameKind::Call, 0, control.wire_id(), 37, 4);
+        assert!(validate_primary_app_header_with_privileged_calls(None, &[], call).is_err());
+        validate_primary_app_header_with_privileged_calls(None, &[control], call)
+            .expect("Host selects the canonical guarded control entry");
+        let control_event =
+            ReceivePolicy::event_receiver(control).expect("declared control events");
+        validate_received_header(
+            &control_event,
+            header(FrameKind::Event, 0, control.wire_id(), 0, 4),
+        )
+        .expect("uncorrelated event on declared canonical control id");
+        for entry in [control, menu] {
+            let waiter =
+                ReceivePolicy::reply_waiter(entry, CorrelationId(37)).expect("typed error waiter");
+            validate_received_header(&waiter, header(FrameKind::Err, 0, entry.wire_id(), 37, 4))
+                .expect("correlated CallError ERR");
+            assert!(
+                validate_received_header(
+                    &waiter,
+                    header(FrameKind::Err, 0, entry.wire_id(), 38, 4)
+                )
+                .is_err()
+            );
+            let policy = ReceivePolicy::privileged_call_receiver(entry).expect("guarded entry");
+            assert!(
+                validate_received_header(
+                    &policy,
+                    header(FrameKind::Event, 0, entry.wire_id(), 0, 4)
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            ReceivePolicy::event_receiver(menu).is_err(),
+            "GH556 menu activation EVENTs remain deferred"
+        );
+    }
 
     #[test]
     fn window_call_uses_its_named_policy_without_widening_baseline_primary() {

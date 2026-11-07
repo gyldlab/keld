@@ -228,6 +228,11 @@ where
             FrameKind::Call => {
                 let req: LifecycleRequest = decode(&payload)?;
                 let response = match req {
+                    LifecycleRequest::Init { .. } => {
+                        return Err(IpcError::Protocol {
+                            detail: "runtime Init is accepted only by authenticated role admission",
+                        });
+                    }
                     LifecycleRequest::Quit => LifecycleResponse::Quit,
                     // This standalone service owns no event source or subscription
                     // state; the registry-backed primary router is the owner.
@@ -402,6 +407,33 @@ mod tests {
 
         host.wait_for_quit()
             .expect("session must end after Quit reply");
+    }
+
+    #[test]
+    fn standalone_late_runtime_init_has_no_acknowledgement_or_quit_effect() {
+        let request = LifecycleRequest::Init {
+            runtime_process_facts: keld_ipc::lifecycle::RuntimeProcessFacts {
+                versions: [(String::from("bun"), String::from("1.4.4"))].into(),
+            },
+        };
+        let mut incoming = Vec::new();
+        write_frame(
+            &mut incoming,
+            FrameKind::Call,
+            0,
+            LIFECYCLE_CHANNEL,
+            CorrelationId(1),
+            &encode(&request).expect("valid runtime facts payload"),
+        )
+        .expect("one late Init frame");
+        let outgoing = Mutex::new(Vec::new());
+        let result = read_until_quit(
+            std::io::Cursor::new(incoming),
+            &outgoing,
+            &AtomicBool::new(false),
+        );
+        assert!(matches!(result, Err(IpcError::Protocol { .. })));
+        assert_eq!(outgoing.into_inner().expect("owned output"), [] as [u8; 0]);
     }
 
     #[test]
