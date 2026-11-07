@@ -17,6 +17,7 @@ fn failed_initial_ready_write_denies_recovery_before_successor() {
             attempt: 1,
             writer: server,
             reader_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "macos")]
             dialog_nonce_high_water: 0,
             pending_quit: None,
         }))),

@@ -6810,7 +6810,7 @@ struct ActivePrimaryGeneration {
     /// is protected by the same current-generation/transition lock as the
     /// caller fence, and is reset only by installing a new Runtime generation.
     /// The dialog effect owner must not copy or independently advance it.
-    #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
     dialog_nonce_high_water: u64,
     /// Correlation id of this generation's accepted-but-unanswered `Quit`
     /// while it waits for its FS drain (GH-527 §4.9). Set and cleared under
@@ -6819,7 +6819,7 @@ struct ActivePrimaryGeneration {
     pending_quit: Option<CorrelationId>,
 }
 
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(target_os = "macos")]
 impl ActivePrimaryGeneration {
     /// Admit each positive Message nonce at most once for this authenticated
     /// primary generation. The caller fence MUST run before invoking this.
@@ -8330,7 +8330,7 @@ impl PrimaryRouterHandle {
                 identity,
                 writer: writer_stream,
                 reader_stop: Arc::clone(&reader_stop),
-                #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+                #[cfg(target_os = "macos")]
                 dialog_nonce_high_water: 0,
                 pending_quit: None,
             });
