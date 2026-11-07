@@ -12,6 +12,9 @@
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 
+import { app } from "../../electron/src/index.ts";
+import { isCallError } from "../../kipc/src/transport.ts";
+
 const fixtures = join(import.meta.dir, "..", "fixtures");
 
 /** Kill switch only; every fixture exits by itself once its sequence settles. */
@@ -235,10 +238,12 @@ test("electron-updater.replay.env-disabled: with DRAWIO_DISABLE_UPDATE=true set 
   });
 });
 
-// Negative control: remove the packaged gate; the facade-backed check refuses
+// Negative control: remove the packaged gate; the explicitly unpackaged check refuses
 // and the replica records a rejection.
-test("electron-updater.replay.env-absent-unpackaged: with the variable absent and the Electron facade unpackaged, the boot check runs once, resolves null and emits nothing", () => {
-  const run = runFixture("replay.ts");
+test("electron-updater.replay.env-absent-unpackaged: with the variable absent and an injected unpackaged fact, the boot check runs once, resolves null and emits nothing", () => {
+  const run = runFixture("replay.ts", (env) => {
+    env.GH491_PACKAGED = "0";
+  });
   expectCleanExit(run);
   expectNoIo(run);
   expect(run.result).toMatchObject({
@@ -258,6 +263,50 @@ test("electron-updater.replay.env-absent-unpackaged: with the variable absent an
       "info Skip checkForUpdates because application is not packed and dev update config is not forced",
     ],
   });
+});
+
+// Keep the real bridge under the I/O probe as well as the injected positives.
+// Negative control: write a file or open a socket from its isPackaged getter.
+test("electron-updater.replay.facade-no-host-facts: the real singleton reads its facade without I/O, invented facts or updater events", () => {
+  const run = runFixture("replay.ts");
+  expectCleanExit(run);
+  expectNoIo(run);
+  expect(run.result).toMatchObject({
+    disableUpdate: false,
+    checkForUpdatesCalls: 1,
+    events: ZERO_EVENTS,
+    errorCodes: [],
+    rejections: [],
+    quitCalls: 0,
+  });
+  let fact: unknown;
+  let refusal: unknown;
+  try {
+    fact = Reflect.get(app, "isPackaged");
+  } catch (error) {
+    refusal = error;
+  }
+  if (refusal === undefined) {
+    expect(fact).toBeUndefined();
+    expect("isPackaged" in app).toBe(false);
+    expect(run.result).toMatchObject({
+      checkOutcome: "null",
+      syncThrows: [],
+      logLines: [
+        "info Skip checkForUpdates because application is not packed and dev update config is not forced",
+      ],
+    });
+  } else {
+    expect(refusal).toBeInstanceOf(Error);
+    expect(isCallError(refusal)).toBe(true);
+    expect((refusal as Error).name).toBe("AppSessionFactError");
+    expect(Reflect.get(refusal as Error, "fact")).toBe("isPackaged");
+    expect(run.result).toMatchObject({
+      checkOutcome: "no-promise",
+      syncThrows: [`checkForUpdates (boot): ${(refusal as Error).message}`],
+      logLines: [],
+    });
+  }
 });
 
 // Negative controls: resolve null when packaged (no error, no rejection), or

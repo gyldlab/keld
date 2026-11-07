@@ -10,10 +10,9 @@
  *
  * Environment, set or cleared explicitly by the test, never inherited:
  * - `DRAWIO_DISABLE_UPDATE`: read exactly as draw.io reads it (`=== "true"`).
- * - `GH491_PACKAGED=1`: drive an `AppUpdater` built on injected application
- *   facts that report packaged with no host updater, instead of the module
- *   `autoUpdater` whose Electron facade reports the F01-T4 fact (unpackaged
- *   until #452 mints it).
+ * - `GH491_PACKAGED=0|1`: drive an `AppUpdater` built on explicit injected
+ *   unpackaged/packaged facts. Without either value, use the real module
+ *   `autoUpdater`. An unlaunched facade is not a delivered development fact.
  */
 import electronUpdater, { AppUpdater, type Logger } from "../src/index.ts";
 
@@ -52,10 +51,11 @@ const log: ElectronLogShape & { lines: string[] } = {
 };
 
 let quitCalls = 0;
+const injectedPackaged = process.env.GH491_PACKAGED;
 const updater =
-  process.env.GH491_PACKAGED === "1"
+  injectedPackaged === "0" || injectedPackaged === "1"
     ? new AppUpdater(null, {
-        isPackaged: true,
+        isPackaged: injectedPackaged === "1",
         quit() {
           quitCalls += 1;
         },
@@ -166,6 +166,8 @@ if (!disableUpdate) {
     } catch (error) {
       checkOutcome = `rejected:${codeOf(error) ?? "no-code"}`;
     }
+  } else {
+    checkOutcome = "no-promise";
   }
 }
 

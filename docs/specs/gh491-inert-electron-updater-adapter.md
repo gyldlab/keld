@@ -310,11 +310,12 @@ of the form `electron-updater.<member>.<observable>` so #580's cells can map to 
 | 3 | `app-updater.test.ts`: `electron-updater.logger.identity` | strict equality; property write lands | return a wrapper from the getter |
 | 4 | `app-updater.test.ts`: `electron-updater.flags.plain-booleans` | field values; zero events | a setter with a side effect |
 | 5, 6 | `app-updater.test.ts`: `electron-updater.set-feed-url.no-throw-no-effect`, `electron-updater.get-feed-url.deprecated-literal` | `undefined` return; exact literal; zero events; probe in replay | `throw` inside `setFeedURL` |
-| 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.unpackaged-null`, `electron-updater.check-for-updates.facade-today-unpackaged` | `null`; zero events; upstream skip line | remove the gate (packaged path taken) |
+| 7 | `app-updater.test.ts`: `electron-updater.check-for-updates.unpackaged-null`, `electron-updater.check-for-updates.facade-no-host-facts` | explicit unpackaged adapter resolves `null`; the module singleton preserves the independent real facade's outcome, including synchronous typed refusal with zero events/logs after GH-452 composition | remove the gate; coerce the facade refusal to false; make the check async; bypass the facade with an unpackaged adapter |
 | 8 | `app-updater.test.ts`: `electron-updater.check-for-updates.packaged-no-host-updater-error`, `electron-updater.error-code.provenance`, `electron-updater.check-for-updates-and-notify.same-outcome` | one `error`; `isCallError`; `code === KELD-COMPAT-050`; identical rejection; registry heading present | resolve `null` when packaged; reuse `KELD-UPDATE-001` |
 | 7, 8 (fact-read failure) | `replay.test.ts`: `electron-updater.checks.missing-facts`, through `fixtures/missing_facts.ts` and the existing I/O probe | both methods synchronously throw the identical test-only typed error; no Promise, events, log, quit or probe-visible I/O | make `checkForUpdates` async; catch the getter failure and treat it as `false` |
 | 9 | `app-updater.test.ts`: `electron-updater.download-update.check-first`, `electron-updater.quit-and-install.nothing-staged-no-quit` | upstream message text; one `error`; `quit` count 0 | call `app.quit()` from `quitAndInstall` |
 | 10 | `replay.test.ts`: `electron-updater.replay.env-disabled`, `electron-updater.replay.env-absent-unpackaged`, `electron-updater.replay.env-absent-packaged-no-host-updater` | fixture `GH491_RESULT` line: call count, events, replica catch; probe counts | make `setFeedURL` throw (env-disabled replica records a sync throw) |
+| 2, 7 (real facade) | `replay.test.ts`: `electron-updater.replay.facade-no-host-facts` | the real singleton's fact read remains under the I/O probe; absent-property source resolves null, composed typed refusal reaches the synchronous caller catch with no Promise, events or logs | add I/O to the real facade adapter getter; swallow its refusal |
 | 11 | `app-updater.test.ts`: `electron-updater.never-fabricate`; every replay case | listeners for all nine names count zero | emit `update-not-available` from `checkForUpdates` |
 | 12 | `cargo test -p keld-cli --test error_registry` | registry ↔ scanned emitters, both directions | delete the heading |
 | 13 | `app-updater.test.ts`: `electron-updater.error-event.no-app-listener-logs` | no synchronous throw; logger receives `Error: …` | remove the constructor's `error` listener |
@@ -322,8 +323,14 @@ of the form `electron-updater.<member>.<observable>` so #580's cells can map to 
 Anti-flake: fixtures are spawned with `Bun.spawnSync` and a kill-switch timeout only; they
 await `setImmediate` to let events flush and exit by themselves. The environment is built
 explicitly (`DRAWIO_DISABLE_UPDATE` set or deleted per case). No ports, no files, no timing
-assertions. The facade-today case (criterion 7) is pinned to the current facade: when #452 mints
-`isPackaged`, its delivered-facts and missing-facts paths must be exercised explicitly.
+assertions. The singleton case (criterion 7) reads the real facade independently: the
+pre-GH-452 source must have no `isPackaged` property, while the composed unlaunched
+facade's typed refusal must propagate synchronously through both updater check methods.
+The two enabled replay cases inject explicit false/true facts through `AppAdapter`;
+the disabled and no-Host-facts replays still use the real singleton under the I/O probe.
+Neither the absent-property case nor
+an injected false value proves an authenticated Host development launch. GH-452's
+delivered-facts positive and hostile-origin controls remain separate acceptance gates.
 An unlaunched Bun test is not proof of a development `false` fact. The missing-facts fixture
 uses the public `AppAdapter` seam and a test-only typed error; it proves propagation and
 probe-visible purity, not Host fact delivery or installed-package resolution. Those composed

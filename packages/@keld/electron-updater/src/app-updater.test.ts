@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 
+import { app } from "../../electron/src/index.ts";
 import { isCallError } from "../../kipc/src/transport.ts";
 import { AppUpdater, NoOpLogger, autoUpdater } from "./index.ts";
 import { UPDATE_CHECK_REFUSED } from "./error.ts";
@@ -199,16 +200,61 @@ test("electron-updater.check-for-updates.unpackaged-null: with facts not package
   ]);
 });
 
-// Pinned to today's facade: `@keld/electron`'s app has no isPackaged (#452 open),
-// which upstream's `=== true` reads as not packaged, as `keld dev` is.
-test("electron-updater.check-for-updates.facade-today-unpackaged: the module autoUpdater reads the Electron facade, which is unpackaged under bun test, so it resolves null with no event", async () => {
+// The real facade owns the fact, independently of the updater. Before GH-452 the
+// property is absent; after composition its getter refuses an unlaunched role.
+// Neither state is evidence of an authenticated development launch.
+// Negative controls: swallow a getter refusal, make the check async, or bypass
+// the real facade with an injected unpackaged app. The composed case must fail.
+test("electron-updater.check-for-updates.facade-no-host-facts: the module autoUpdater preserves the real facade's synchronous refusal without inventing an unpackaged fact", async () => {
   const log = recordingLogger();
   autoUpdater.logger = log;
   const observed = observe(autoUpdater);
-  await expect(autoUpdater.checkForUpdates()).resolves.toBeNull();
+  let fact: unknown;
+  let refusal: unknown;
+  try {
+    fact = Reflect.get(app, "isPackaged");
+  } catch (error) {
+    refusal = error;
+  }
+  if (refusal === undefined) {
+    // Preserve the standalone pre-GH-452 source contract explicitly. A false
+    // value here is not accepted as proof that the Host supplied dev facts.
+    expect(fact).toBeUndefined();
+    expect("isPackaged" in app).toBe(false);
+    await expect(autoUpdater.checkForUpdates()).resolves.toBeNull();
+    expect(log.lines).toEqual([
+      "info Skip checkForUpdates because application is not packed and dev update config is not forced",
+    ]);
+  } else {
+    expect(refusal).toBeInstanceOf(Error);
+    expect(isCallError(refusal)).toBe(true);
+    expect((refusal as Error).name).toBe("AppSessionFactError");
+    expect(Reflect.get(refusal as Error, "fact")).toBe("isPackaged");
+    for (const check of [
+      () => autoUpdater.checkForUpdates(),
+      () => autoUpdater.checkForUpdatesAndNotify(),
+    ]) {
+      let actual: unknown;
+      try {
+        // Drain an incorrect asynchronous rejection, but only a synchronous
+        // throw can populate `actual` and satisfy the assertions below.
+        void check().catch(() => undefined);
+      } catch (error) {
+        actual = error;
+      }
+      expect(actual).toBeInstanceOf(Error);
+      expect(isCallError(actual)).toBe(true);
+      expect((actual as Error).name).toBe((refusal as Error).name);
+      expect((actual as Error).message).toBe((refusal as Error).message);
+      expect(isCallError(actual) && actual.code).toBe(
+        isCallError(refusal) && refusal.code,
+      );
+      expect(Reflect.get(actual as Error, "fact")).toBe("isPackaged");
+    }
+    expect(log.lines).toEqual([]);
+  }
   expect(observed.counts.error).toBe(0);
   expectNothingFabricated(observed);
-  expect(log.lines).toHaveLength(1);
 });
 
 // Negative controls: resolve null when packaged (no error, no rejection); emit
