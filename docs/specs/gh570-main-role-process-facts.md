@@ -100,6 +100,11 @@ Non-goals:
    an `Error` whose message starts with `KELD-COMPAT-014:`, names the property and the
    fix (remove the second owner), and defines no fact on that target. A foreign
    *configurable* definition with the *same* value is adopted and frozen, not refused.
+   On ordinary objects, an absent fact whose owner is non-extensible also refuses
+   before any write with `KELD-COMPAT-014`, naming the property and directing the
+   caller to install the facts before making their owners non-extensible. Compatible
+   existing facts on non-extensible owners remain adoptable; arbitrary Proxy traps
+   are outside the no-partial-write guarantee.
 8. Given a Bun role launched with `--preload=<a preload that imports only
    process-facts and installs>`, when a dependency shaped like electron-log evaluates
    before the entry imports `electron`, then it observes `process.type === "browser"`
@@ -140,7 +145,11 @@ non-configurable, enumerable), as Electron installs them (`default_app/main.ts:9
 `KELD-COMPAT-014`, never as a silent overwrite or a bare `TypeError`.
 
 Failure. The installer does no I/O and opens no link, so it cannot fail on the
-transport; its only failure is the two-owner conflict above.
+transport. Planning refuses conflicting descriptors or an absent fact on an ordinary
+non-extensible owner with `KELD-COMPAT-014` before any fact is written. Existing
+compatible facts can still be adopted on sealed owners. Arbitrary Proxy traps can
+throw or mutate during inspection or definition; transactional installation on those
+targets is not promised.
 
 The `(argv, defaultApp)` atom — Option A (selected). Keep Bun's `process.argv`
 untouched and define `defaultApp = true`. Electron documents `defaultApp` as `true`
@@ -204,7 +213,7 @@ export const MAIN_ROLE_UNDEFINED_FLAGS: readonly [
 export interface ProcessFactsTarget {
   readonly versions: object;
 }
-/** Installs `type`, `defaultApp` and `versions.electron`; idempotent; KELD-COMPAT-014 on a second owner. */
+/** Installs `type`, `defaultApp` and `versions.electron`; idempotent; KELD-COMPAT-014 on incompatible descriptors or absent facts on non-extensible owners. */
 export function installMainProcessFacts(target?: ProcessFactsTarget): void;
 ```
 

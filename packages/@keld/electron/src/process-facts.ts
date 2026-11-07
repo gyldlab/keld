@@ -93,7 +93,14 @@ const FIX =
  */
 function plan(fact: Fact): Plan {
   const existing = Object.getOwnPropertyDescriptor(fact.owner, fact.name);
-  if (existing === undefined) return { fact, write: true };
+  if (existing === undefined) {
+    if (!Object.isExtensible(fact.owner)) {
+      throw new Error(
+        `KELD-COMPAT-014: ${fact.label} is absent and its owner is non-extensible. Install main-role process.* facts before making their owners non-extensible.`,
+      );
+    }
+    return { fact, write: true };
+  }
   const sameValue = "value" in existing && existing.value === fact.value;
   if (!sameValue) {
     throw new Error(
@@ -119,8 +126,9 @@ function plan(fact: Fact): Plan {
  * configurable is adopted and frozen.
  *
  * @throws Error `KELD-COMPAT-014` when a fact is already defined with another
- * value, as an accessor, or in a shape that cannot be frozen; nothing is written
- * in that case.
+ * value, as an accessor, in a shape that cannot be frozen, or absent on a
+ * non-extensible owner. For ordinary objects, planning refuses before any write.
+ * Arbitrary Proxy traps are outside this guarantee.
  */
 export function installMainProcessFacts(
   target: ProcessFactsTarget = process,

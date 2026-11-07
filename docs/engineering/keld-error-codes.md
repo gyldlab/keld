@@ -877,8 +877,8 @@ match the crate that already emits the code. Do not invent a third spelling.
 ## KELD-COMPAT-014
 
 - crate: @keld/electron
-- message: A conflicting `process.type`, `process.defaultApp` or `process.versions.electron` value or accessor already exists, so the main-role process facts were not installed
-- fix: Remove the other owner of the named `process` property before installing `@keld/electron`; no fact is written when this refusal is raised.
+- message: A `process.type`, `process.defaultApp` or `process.versions.electron` descriptor conflicts with the required fact, or the fact is absent on a non-extensible owner, so the main-role process facts were not installed
+- fix: Remove the conflicting definition, or install the facts before making their owners non-extensible. For ordinary objects, planning refuses before any fact is written; arbitrary Proxy traps are outside this guarantee.
 
 ## KELD-CORE-030
 

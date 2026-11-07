@@ -237,6 +237,57 @@ describe("one owner — AC6, AC7", () => {
       frozen(true),
     );
   });
+
+  // Failure-contract regressions: remove the absent-fact extensibility check
+  // and these cases throw TypeError or permanently freeze earlier facts.
+  for (const [name, versions] of [
+    ["non-extensible", Object.preventExtensions({})],
+    ["frozen", Object.freeze({})],
+  ] as const) {
+    test(`an absent electron fact on ${name} versions refuses before any write`, () => {
+      const target = { versions, type: "browser" };
+      const before = descriptors(target);
+      expect(() => installMainProcessFacts(target)).toThrow(
+        /^KELD-COMPAT-014: process\.versions\.electron /,
+      );
+      expect(descriptors(target)).toEqual(before);
+    });
+  }
+
+  test("a non-extensible target with absent type refuses without changing descriptors", () => {
+    const target = Object.preventExtensions({ versions: {} });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("an absent defaultApp on a non-extensible target refuses before freezing a compatible type", () => {
+    const target = Object.preventExtensions({ versions: {}, type: "browser" });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.defaultApp /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("compatible facts on sealed owners are adopted and repeated installation is a no-op", () => {
+    const target = Object.seal({
+      versions: Object.seal({ electron: ELECTRON_VERSION_SHIM }),
+      type: "browser",
+      defaultApp: true,
+    });
+    installMainProcessFacts(target);
+    expect(descriptors(target)).toEqual({
+      type: frozen("browser"),
+      defaultApp: frozen(true),
+      electron: frozen(ELECTRON_VERSION_SHIM),
+    });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).not.toThrow();
+    expect(descriptors(target)).toEqual(before);
+  });
 });
 
 describe("pre-entry readiness — AC8", () => {
