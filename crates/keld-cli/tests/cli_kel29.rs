@@ -685,12 +685,7 @@ fn keld_dev_unknown_flag_exits_2_without_opening_window() {
 fn keld_reserved_verbs_exit_2_with_045_and_do_not_scaffold() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    for (verb, tracking) in [
-        ("migrate", "KEL-17"),
-        ("build", "KEL-19"),
-        ("gen", "KEL-13"),
-        ("ext", "KEL-19"),
-    ] {
+    for (verb, tracking) in [("migrate", "KEL-17"), ("gen", "KEL-13"), ("ext", "KEL-19")] {
         let out = keld()
             .args([verb, "hello"])
             .current_dir(dir.path())
@@ -721,6 +716,26 @@ fn keld_reserved_verbs_exit_2_with_045_and_do_not_scaffold() {
             !dir.path().join("hello").exists(),
             "{verb} hello must not scaffold a project"
         );
+    }
+}
+
+#[test]
+fn keld_build_requires_the_explicit_supported_target_before_io() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for args in [
+        vec!["build", "hello"],
+        vec!["build", "--target", "windows-x64"],
+        vec!["build", "--target", "macos-arm64", "--sign"],
+    ] {
+        let output = keld()
+            .args(&args)
+            .current_dir(dir.path())
+            .output()
+            .expect("keld build");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("KELD-CLI-052"), "{stderr}");
+        assert!(!dir.path().join("output").exists());
     }
 }
 

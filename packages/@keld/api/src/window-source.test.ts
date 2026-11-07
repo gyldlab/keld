@@ -1,6 +1,8 @@
 /** Pure source/alias contracts, not link attachment, heap bytes or native proof. */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { expect, test } from "bun:test";
 import {
   APP_LINK_IO_DEADLINE_MS,
@@ -9,7 +11,7 @@ import {
   linkError,
   withIoDeadline,
   type KeldCallError,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import {
   encodeWindowEvent,
   type WindowEvent,
@@ -24,6 +26,12 @@ const STATE = {
   maximized: false,
   full_screen: true,
 };
+const RECOVERED = {
+  variant: "DocumentRecovered",
+  window: WINDOW,
+  document_generation: 5,
+  native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+} as const;
 const literals = new Map<string, string>();
 for (const row of readFileSync(
   join(
@@ -66,6 +74,8 @@ function rejected(action: () => void): KeldCallError {
 async function sourceRole(
   file: string,
   args: readonly string[] = [],
+  diagnosticArgs: readonly string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<unknown> {
   const runtime = {
     version: Bun.version,
@@ -73,20 +83,48 @@ async function sourceRole(
     platform: process.platform,
     arch: process.arch,
   };
+  const semantic = file === "window-source-semantic-release.test-role.ts";
+  const token = semantic ? randomUUID() : undefined;
+  const sourcePath = resolve(import.meta.dir, "./window-source.ts");
+  const observed = token
+    ? join(
+        dirname(sourcePath),
+        `.window-source-observer-${token}.${sourcePath.endsWith(".js") ? "js" : "ts"}`,
+      )
+    : undefined;
+  if (observed && existsSync(observed))
+    throw new Error("observer path already exists");
   const child = Bun.spawn(
     [
       process.execPath,
+      // The one-shot observer has no independently scheduled JIT compiler root.
+      // It still imports the real role/artifacts and performs one collection.
+      ...(file === "window-source-release.test-role.ts"
+        ? [
+            "--eval",
+            'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]).href);',
+          ]
+        : []),
       join(import.meta.dir, file),
       ...args,
+      ...(semantic
+        ? [
+            resolve(import.meta.dir, "../node_modules/typescript"),
+            Bun.resolveSync("@keld/kipc", import.meta.dir),
+            token!,
+          ]
+        : []),
       runtime.version,
       runtime.revision,
       runtime.platform,
       runtime.arch,
+      ...diagnosticArgs,
     ],
     {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      env,
     },
   );
   try {
@@ -107,8 +145,51 @@ async function sourceRole(
   } finally {
     if (child.exitCode === null) child.kill();
     await child.exited;
+    if (observed) rmSync(observed, { force: true });
   }
 }
+
+test("Source collection diagnostics are explicit and preserve the zero oracle", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "keld-source-gc-diagnostic-"));
+  try {
+    for (const mode of [
+      "history:0:retire",
+      "history:1:retire",
+      "history:1:retain",
+    ]) {
+      const path = join(scratch, `${mode.replaceAll(":", "-")}.json`);
+      const result = (await sourceRole(
+        "window-source-release.test-role.ts",
+        [mode],
+        [`--heap-snapshot=${path}`],
+      )) as { settled: { objectsLive: number } };
+      expect(result.settled.objectsLive).toBe(mode.endsWith(":retain") ? 4 : 0);
+      expect(existsSync(path)).toBe(true);
+      const heap = JSON.parse(readFileSync(path, "utf8"));
+      expect(heap.version).toBe(3);
+      expect(heap.type).toBe("GCDebugging");
+      expect(heap.nodes.length).toBeGreaterThan(0);
+    }
+    await expect(
+      sourceRole(
+        "window-source-release.test-role.ts",
+        ["history:0:retire"],
+        ["--unknown-gc-option"],
+      ),
+    ).rejects.toThrow();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Source collection realm refuses unqualified compiler overrides", async () => {
+  await expect(
+    sourceRole("window-source-release.test-role.ts", ["history:0:retire"], [], {
+      ...process.env,
+      BUN_JSC_useConcurrentJIT: "true",
+    }),
+  ).rejects.toThrow("unqualified JSC override");
+});
 
 test("Created literal supplies the complete host snapshot on the generated channel", () => {
   const source = new WindowSource(() => {
@@ -186,6 +267,8 @@ test("Destroyed stays readable through its callback and retires even when it thr
   accept(source, literal("event-created"));
   const earlier = accept(source, literal("event-focus"));
   const destroyed = accept(source, literal("event-destroyed"));
+  if (destroyed.variant !== "Destroyed")
+    throw new Error("destroyed literal has the wrong tag");
   terminal = source.get(WINDOW)!;
   expect(terminal).toHaveProperty("host_destroyed", true);
   source.dispatch(earlier);
@@ -295,8 +378,215 @@ test("every state fact changes only its own host-confirmed field", () => {
   expect(source.get(WINDOW)).not.toBe(initial);
 });
 
-test("all eight Rust-owned event vectors are accepted in their specified order", () => {
-  expect(literals.size).toBe(8);
+test("DocumentRecovered literal establishes one finished document after Created", () => {
+  const observed: WindowEvent[] = [];
+  const source = new WindowSource((fact) => observed.push(fact));
+  accept(source, literal("event-created-pending-close"));
+  const before = source.get(WINDOW)!;
+  // Tag10, WindowRef(7,300), generation5 and the Rust fixture's native URL.
+  // Keep this literal usable before codegen so the old decoder is a real RED.
+  const bytes = Uint8Array.from(
+    Buffer.from(
+      "0a07ac02053f6b656c642d7265736f757263653a2f2f30313233343536373839616263646566303132333435363738396162636465662f696e6465782e68746d6c3f713d31",
+      "hex",
+    ),
+  );
+  const fact = source.decode(bytes);
+  if (fact.variant !== "DocumentRecovered")
+    throw new Error("wrong recovered literal event fixture");
+  expect(fact).toEqual(RECOVERED);
+  expect(encodeWindowEvent(fact)).toEqual(bytes);
+  expect(literal("event-document-recovered")).toEqual(bytes);
+  bytes.fill(0xff);
+  source.apply(fact);
+  expect(observed).toEqual([]);
+  const recovered = source.get(WINDOW)!;
+  expect(recovered).toEqual({
+    window: WINDOW,
+    state: STATE,
+    pending_close: 300n,
+    host_destroyed: false,
+    document: {
+      generation: 5,
+      native_url: RECOVERED.native_url,
+      finished: true,
+      current: true,
+    },
+  });
+  expect(recovered).not.toBe(before);
+  expect(recovered.window).not.toBe(fact.window);
+  expect(recovered.state).not.toBe(before.state);
+  for (const value of [
+    fact,
+    fact.window,
+    recovered,
+    recovered.window,
+    recovered.state,
+    recovered.state.bounds,
+    recovered.document,
+  ])
+    expect(Object.isFrozen(value)).toBe(true);
+  expect(Reflect.set(recovered.document!, "current", false)).toBe(false);
+  source.dispatch(fact);
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toBe(fact);
+});
+
+test("DocumentRecovered refuses missing, stale and terminal window identities", () => {
+  const missing = new WindowSource(() => {});
+  rejected(() => missing.apply(RECOVERED));
+  for (const window of [
+    { id: 0, incarnation: 300n },
+    { id: 7, incarnation: 0n },
+    { id: 8, incarnation: 300n },
+    { id: 7, incarnation: 301n },
+  ]) {
+    const source = new WindowSource(() => {});
+    accept(source, literal("event-created"));
+    rejected(() => source.apply({ ...RECOVERED, window }));
+    rejected(() => source.get(WINDOW));
+  }
+  for (const dispatchDestroyed of [false, true]) {
+    const source = new WindowSource(() => {});
+    accept(source, literal("event-created"));
+    const destroyed = accept(source, literal("event-destroyed"));
+    if (dispatchDestroyed) source.dispatch(destroyed);
+    rejected(() => source.apply(RECOVERED));
+    rejected(() => source.get(WINDOW));
+  }
+  const ended = new WindowSource(() => {});
+  accept(ended, literal("event-created"));
+  ended.end(linkError("KELD-IPC-022", "recovery source already ended"));
+  expect(diagnostic(() => ended.apply(RECOVERED)).code).toBe("KELD-IPC-022");
+});
+
+test("DocumentRecovered rejects duplicate, older, retired and replacement documents", () => {
+  for (const existing of [
+    "recovered",
+    "committed",
+    "finished",
+    "retired",
+    "replaced",
+  ]) {
+    for (const generation of [4, 5, 6, 7]) {
+      const source = new WindowSource(() => {});
+      accept(source, literal("event-created"));
+      if (existing === "recovered") source.apply(RECOVERED);
+      else {
+        accept(source, literal("event-navigation-committed"));
+        if (existing !== "committed")
+          accept(source, literal("event-navigation-finished"));
+        if (existing === "retired") source.retireNativeDocument(WINDOW, 5);
+        if (existing === "replaced")
+          source.apply({
+            variant: "NavigationCommitted",
+            window: WINDOW,
+            document_generation: 6,
+            native_url: RECOVERED.native_url + "#replacement",
+          });
+      }
+      expect(source.get(WINDOW)?.document).toBeDefined();
+      rejected(() =>
+        source.apply({ ...RECOVERED, document_generation: generation }),
+      );
+      rejected(() => source.get(WINDOW));
+    }
+  }
+});
+
+test("DocumentRecovered keeps the existing nonzero u32 generation boundary", () => {
+  for (const document_generation of [
+    0,
+    -1,
+    0.5,
+    NaN,
+    Infinity,
+    0x1_0000_0000,
+  ]) {
+    const source = new WindowSource(() => {});
+    accept(source, literal("event-created"));
+    rejected(() => source.apply({ ...RECOVERED, document_generation }));
+  }
+  const maximum = new WindowSource(() => {});
+  accept(maximum, literal("event-created"));
+  accept(
+    maximum,
+    encodeWindowEvent({ ...RECOVERED, document_generation: 0xffff_ffff }),
+  );
+  expect(maximum.get(WINDOW)?.document).toEqual({
+    generation: 0xffff_ffff,
+    native_url: RECOVERED.native_url,
+    finished: true,
+    current: true,
+  });
+});
+
+test("DocumentRecovered wire keeps native URL bounds and rejects malformed payloads", () => {
+  const oversized = new Uint8Array(7 + 8193);
+  oversized.set([10, 7, 0xac, 2, 5, 0x81, 0x40]);
+  oversized.fill(0x61, 7);
+  for (const bytes of [
+    Uint8Array.of(10, 7, 0xac, 2, 0, 1, 0x61),
+    Uint8Array.of(10, 7, 0xac, 2, 5, 0),
+    Uint8Array.of(10, 7, 0xac, 2, 5, 1, 0xff),
+    Uint8Array.of(10, 7, 0xac, 2, 5, 2, 0x61),
+    new Uint8Array([...literal("event-document-recovered"), 0]),
+    oversized,
+  ]) {
+    const source = new WindowSource(() => {});
+    accept(source, literal("event-created"));
+    rejected(() => accept(source, bytes));
+  }
+  const maximum = new WindowSource(() => {});
+  accept(maximum, literal("event-created"));
+  const native_url =
+    "keld-resource://" + "a".repeat(8192 - "keld-resource://".length);
+  accept(maximum, encodeWindowEvent({ ...RECOVERED, native_url }));
+  expect(maximum.get(WINDOW)?.document?.native_url).toBe(native_url);
+  expect(maximum.get(WINDOW)?.document?.finished).toBe(true);
+});
+
+test("DocumentRecovered preserves later ordinary navigation completion", () => {
+  const source = new WindowSource(() => {});
+  accept(source, literal("event-created"));
+  source.apply(RECOVERED);
+  source.apply({
+    variant: "NavigationCommitted",
+    window: WINDOW,
+    document_generation: 6,
+    native_url: RECOVERED.native_url + "#next",
+  });
+  const committed = source.get(WINDOW)!;
+  expect(committed.document?.finished).toBe(false);
+  accept(source, literal("event-navigation-finished"));
+  expect(source.get(WINDOW)).toBe(committed);
+  source.apply({
+    variant: "NavigationFinished",
+    window: WINDOW,
+    document_generation: 6,
+  });
+  expect(source.get(WINDOW)?.document).toEqual({
+    generation: 6,
+    native_url: RECOVERED.native_url + "#next",
+    finished: true,
+    current: true,
+  });
+});
+
+test("Rust-owned event inventory and ordinary navigation retain their specified identities", () => {
+  expect([...literals.keys()]).toEqual([
+    "event-created",
+    "event-created-pending-close",
+    "event-bounds",
+    "event-focus",
+    "event-maximized",
+    "event-full-screen",
+    "event-close-requested",
+    "event-destroyed",
+    "event-navigation-committed",
+    "event-navigation-finished",
+    "event-document-recovered",
+  ]);
   for (const created of ["event-created", "event-created-pending-close"]) {
     const source = new WindowSource(() => {});
     accept(source, literal(created));
@@ -315,12 +605,27 @@ test("all eight Rust-owned event vectors are accepted in their specified order",
     }
     expect(source.get(WINDOW)?.pending_close).toBe(300n);
     expect(source.get(WINDOW)?.state).toEqual(STATE);
+    const document = {
+      generation: 5,
+      native_url:
+        "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      finished: false,
+      current: true,
+    };
+    accept(source, literal("event-navigation-committed"));
+    expect(source.get(WINDOW)?.document).toEqual(document);
+    accept(source, literal("event-navigation-finished"));
+    expect(source.get(WINDOW)?.document).toEqual({
+      ...document,
+      finished: true,
+    });
     accept(source, literal("event-destroyed"));
     expect(source.get(WINDOW)).toEqual({
       window: WINDOW,
       state: STATE,
       pending_close: null,
       host_destroyed: true,
+      document: { ...document, finished: true },
     });
     expect(source.all()).toHaveLength(1);
   }
@@ -635,32 +940,196 @@ test(
       arch: process.arch,
     };
     expect(
-      await sourceRole("window-source-release.test-role.ts", [
+      await sourceRole("window-source-semantic-release.test-role.ts", [
         Buffer.from(literal("event-created")).toString("hex"),
+        "baseline",
       ]),
     ).toEqual({
       runtime,
+      mode: "baseline",
+      immediateSemantic: true,
+      terminalSemantic: true,
+      oldComponents: 128,
+      prototypeGraphNodes: expect.any(Number),
       replacement: {
-        trackedGraphs: 33,
-        oldObjectsLive: 0,
-        currentObjectsLive: 4,
+        old: 0,
+        current: 4,
         sourceAlive: true,
-        callbackCaptureAlive: true,
-        externalSnapshotAlive: true,
-        census: 2,
+        callback: true,
+        witness: true,
+        externalAlive: true,
       },
       end: {
-        oldObjectsLive: 0,
-        currentObjectsLive: 0,
+        old: 0,
+        current: 0,
         sourceAlive: true,
-        callbackCaptureAlive: false,
-        externalSnapshotAlive: true,
-        readsDenied: true,
+        callback: false,
+        witness: false,
+        externalAlive: true,
       },
+      afterCallerDrop: null,
     });
   },
   APP_LINK_IO_DEADLINE_MS * 2,
 );
+
+test(
+  "caller-held old snapshot survives until its independent owner releases it",
+  async () => {
+    const result = (await sourceRole(
+      "window-source-semantic-release.test-role.ts",
+      [Buffer.from(literal("event-created")).toString("hex"), "caller"],
+    )) as {
+      immediateSemantic: boolean;
+      terminalSemantic: boolean;
+      replacement: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      end: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      afterCallerDrop: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+    };
+    expect(result.immediateSemantic && result.terminalSemantic).toBe(true);
+    expect(result.replacement).toMatchObject({
+      old: 4,
+      current: 4,
+      callback: true,
+      witness: true,
+      externalAlive: true,
+    });
+    expect(result.end).toMatchObject({
+      old: 4,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
+    });
+    expect(result.afterCallerDrop).toMatchObject({
+      old: 0,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
+    });
+  },
+  APP_LINK_IO_DEADLINE_MS * 2,
+);
+
+test(
+  "caller-held old snapshot survives until its independent owner releases it",
+  async () => {
+    const result = (await sourceRole(
+      "window-source-semantic-release.test-role.ts",
+      [Buffer.from(literal("event-created")).toString("hex"), "caller"],
+    )) as {
+      immediateSemantic: boolean;
+      terminalSemantic: boolean;
+      replacement: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      end: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+      afterCallerDrop: {
+        old: number;
+        current: number;
+        callback: boolean;
+        witness: boolean;
+        externalAlive: boolean;
+      };
+    };
+    expect(result.immediateSemantic && result.terminalSemantic).toBe(true);
+    expect(result.replacement).toMatchObject({
+      old: 4,
+      current: 4,
+      callback: true,
+      witness: true,
+      externalAlive: true,
+    });
+    expect(result.end).toMatchObject({
+      old: 4,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
+    });
+    expect(result.afterCallerDrop).toMatchObject({
+      old: 0,
+      current: 0,
+      callback: false,
+      witness: false,
+      externalAlive: true,
+    });
+  },
+  APP_LINK_IO_DEADLINE_MS * 2,
+);
+
+for (const mode of ["document-baseline", "document-caller"] as const) {
+  test(
+    `document snapshot replacement, native retirement and terminal release (${mode})`,
+    async () => {
+      const caller = mode === "document-caller";
+      const live = (old: number, current: number, callback: boolean) => ({
+        old,
+        current,
+        sourceAlive: true,
+        callback,
+        witness: callback,
+        externalAlive: true,
+      });
+      expect(
+        await sourceRole("window-source-semantic-release.test-role.ts", [
+          Buffer.from(literal("event-created")).toString("hex"),
+          mode,
+        ]),
+      ).toEqual({
+        runtime: {
+          version: Bun.version,
+          revision: Bun.revision,
+          platform: process.platform,
+          arch: process.arch,
+        },
+        mode,
+        immediateSemantic: true,
+        terminalSemantic: true,
+        oldComponents: 160,
+        prototypeGraphNodes: expect.any(Number),
+        documentRetirement: {
+          retiredCurrent: false,
+          duplicateCurrent: false,
+          nextGeneration: 34,
+        },
+        replacement: live(caller ? 5 : 0, 5, true),
+        end: live(caller ? 5 : 0, 0, false),
+        afterCallerDrop: caller ? live(0, 0, false) : null,
+      });
+    },
+    APP_LINK_IO_DEADLINE_MS * 2,
+  );
+}
 
 test(
   "source releases original fault and supplied terminal Errors with live source and external Error controls",
@@ -691,6 +1160,7 @@ for (const history of [0, 1, 1024]) {
       ])) as {
         history: number;
         retaining: boolean;
+        collectionRealm: string;
         settled: {
           objectsLive: number;
           snapshotsVisible: number;
@@ -701,6 +1171,7 @@ for (const history of [0, 1, 1024]) {
       };
       expect(result.history).toBe(history);
       expect(result.retaining).toBe(mode === "retain");
+      expect(result.collectionRealm).toBe("one-shot");
       expect(result.settled.objectsLive).toBe(
         mode === "retain" ? 4 * history : 0,
       );

@@ -1,7 +1,10 @@
 //! Literal-only static authentication configuration parsing, not config evaluation.
 //! Provider validation remains with keld-native.
 
+mod literal;
 mod source_scan;
+
+pub use literal::{LiteralConfigValue, StaticConfigError, literal_config_from_ts};
 
 use self::source_scan::{root_auth_slice, root_facade_property_slice};
 
@@ -13,11 +16,21 @@ pub struct AuthConfigError {
 
 impl std::fmt::Display for AuthConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "KELD-CORE-035: invalid static auth configuration: {}. Use export default {{ auth: {{ \"entra-common\": {{ clientId: \"...\" }} }} }} as const with literal strings; remove expressions, computed keys and spreads.",
-            self.detail
-        )
+        match self.detail {
+            "root profile belongs in permissions manifest" => write!(
+                f,
+                "KELD-CORE-035: root profile in keld.config.ts is unsupported. Declare the exact root profile in keld.permissions.jsonc instead."
+            ),
+            "root initialWindow requires facade integration" => write!(
+                f,
+                "KELD-CORE-035: root initialWindow in keld.config.ts is unsupported until GH #446 facade Ready integration; no renderer fallback is allowed."
+            ),
+            _ => write!(
+                f,
+                "KELD-CORE-035: invalid static auth configuration: {}. Use export default {{ auth: {{ \"entra-common\": {{ clientId: \"...\" }} }} }} as const with literal strings; remove expressions, computed keys and spreads.",
+                self.detail
+            ),
+        }
     }
 }
 
@@ -40,6 +53,119 @@ impl std::fmt::Display for InitialWindowConfigError {
 }
 
 impl std::error::Error for InitialWindowConfigError {}
+
+/// Literal cooperative application ID; not a principal or permission grant.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SingleInstanceDeclaration {
+    #[serde(deserialize_with = "deserialize_single_instance_id")]
+    id: String,
+}
+
+impl SingleInstanceDeclaration {
+    /// Returns the bounded canonical coordination ID.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// The single-instance declaration is not one closed bounded literal ID.
+#[derive(Debug, Clone, Copy)]
+pub struct SingleInstanceConfigError;
+
+impl std::fmt::Display for SingleInstanceConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "KELD-CORE-035: invalid singleInstance declaration. Use one literal singleInstance: { id: \"dev.example.app\" } object with a 1..128-byte canonical lowercase app ID; remove expressions, accessors, duplicate or extra fields.",
+        )
+    }
+}
+
+impl std::error::Error for SingleInstanceConfigError {}
+
+fn validate_single_instance_id(id: &str) -> Result<(), SingleInstanceConfigError> {
+    // Keep the established coordination limit while sharing the application-ID
+    // grammar with signed metadata; this never mints a publisher identity.
+    if id.len() > 128 {
+        return Err(SingleInstanceConfigError);
+    }
+    keld_wv::profile::validate_canonical_app_id(id).map_err(|_| SingleInstanceConfigError)
+}
+
+fn deserialize_single_instance_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let id = <String as serde::Deserialize>::deserialize(deserializer)?;
+    validate_single_instance_id(&id).map_err(serde::de::Error::custom)?;
+    Ok(id)
+}
+
+/// Reads the installed application's optional declaration through the shared
+/// closed literal parser. It performs no filesystem or lock operation.
+///
+/// # Errors
+/// Rejects executable or ambiguous authoring, a non-object declaration, extra
+/// fields, or an ID outside the existing canonical coordination grammar.
+pub fn single_instance_from_config_ts(
+    source: &str,
+) -> Result<Option<SingleInstanceDeclaration>, SingleInstanceConfigError> {
+    let mut root = literal_config_from_ts(source).map_err(|_| SingleInstanceConfigError)?;
+    let Some(value) = root.remove("singleInstance") else {
+        return Ok(None);
+    };
+    let LiteralConfigValue::Object(mut fields) = value else {
+        return Err(SingleInstanceConfigError);
+    };
+    if fields.len() != 1 {
+        return Err(SingleInstanceConfigError);
+    }
+    let Some(LiteralConfigValue::Text(id)) = fields.remove("id") else {
+        return Err(SingleInstanceConfigError);
+    };
+    validate_single_instance_id(&id)?;
+    Ok(Some(SingleInstanceDeclaration { id }))
+}
+
+/// Invalid literal application metadata for the native user agent.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ApplicationNameForUserAgentConfigError {
+    detail: String,
+}
+
+impl std::fmt::Display for ApplicationNameForUserAgentConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KELD-CORE-035: invalid applicationNameForUserAgent: {}. Declare one literal string with 1..=256 visible ASCII bytes and internal spaces only.",
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for ApplicationNameForUserAgentConfigError {}
+
+/// Reads optional installed user-agent metadata without evaluating the config.
+/// The existing `WebView` value owner retains the only value validator.
+///
+/// # Errors
+/// Rejects nonliteral authoring or values refused by the `WebView` metadata owner.
+pub fn application_name_for_user_agent_from_config_ts(
+    source: &str,
+) -> Result<Option<keld_wv::ApplicationNameForUserAgent>, ApplicationNameForUserAgentConfigError> {
+    let invalid = |detail: String| ApplicationNameForUserAgentConfigError { detail };
+    let mut root = literal_config_from_ts(source).map_err(|error| invalid(error.to_string()))?;
+    let Some(value) = root.remove("applicationNameForUserAgent") else {
+        return Ok(None);
+    };
+    let LiteralConfigValue::Text(value) = value else {
+        return Err(invalid(String::from("the value must be a literal string")));
+    };
+    keld_wv::ApplicationNameForUserAgent::new(value)
+        .map(Some)
+        .map_err(|error| invalid(error.to_string()))
+}
 
 /// Whether the exported root selects an app-owned first window.
 ///

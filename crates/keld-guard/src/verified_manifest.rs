@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-use crate::{ManifestError, PermissionsManifest, parse_manifest_at, read_manifest_bytes};
+use crate::{
+    ManifestError, PermissionsManifest, ResolvedWindowCsp, WindowCspProfile, parse_manifest_at,
+    read_manifest_bytes,
+};
 
 /// Parsed permissions paired with the SHA-256 verified over its exact source bytes.
 ///
@@ -37,6 +40,88 @@ impl VerifiedManifest {
     #[must_use]
     pub const fn verified_sha256(&self) -> [u8; 32] {
         self.verified_sha256
+    }
+
+    /// Resolves one Host-selected key through the sole immutable policy catalog.
+    ///
+    /// Directly parsed data cannot mint this verified result:
+    ///
+    /// ```compile_fail
+    /// if let Ok(data) = keld_guard::parse_manifest("{}") {
+    ///     let _policy = data.resolve_window_csp("main");
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns `KELD-GUARD005` when the key has no selected CSP. This never
+    /// synthesizes a default policy or derives a response from `/app/net`.
+    pub fn resolve_window_csp(&self, key: &str) -> Result<ResolvedWindowCsp, ManifestError> {
+        let profile = self.manifest.windows.get(key).and_then(|window| window.web.csp)
+            .ok_or_else(|| ManifestError::Parse {
+                path: None,
+                detail: format!("window {key:?} has no verified CSP selector; set windows.<key>.web.csp to the qualified named policy before loading content"),
+            })?;
+        Ok(ResolvedWindowCsp::new(key, self.verified_sha256, profile))
+    }
+
+    /// Resolves the sole key for a Host-selected resource policy class.
+    ///
+    /// The caller supplies a closed profile, never an application-selected key.
+    /// Each native view must still bind this key to its current Core registry
+    /// association before loading content. This value is not a native receipt.
+    ///
+    /// # Errors
+    /// Returns `KELD-GUARD005` for zero or multiple matching keys. A missing or
+    /// ambiguous mapping never guesses a key or creates a default permission.
+    pub fn resolve_unique_window_csp(
+        &self,
+        profile: WindowCspProfile,
+    ) -> Result<ResolvedWindowCsp, ManifestError> {
+        self.resolve_unique_matching_window_csp(|candidate| candidate == profile, profile.as_str())
+    }
+
+    /// Resolves exactly one installed-original policy across its two explicit
+    /// catalog choices. A mixed pair is ambiguous; there is no fallback order.
+    ///
+    /// # Errors
+    /// Returns `KELD-GUARD005` for zero or multiple eligible original-window keys.
+    pub fn resolve_unique_original_window_csp(&self) -> Result<ResolvedWindowCsp, ManifestError> {
+        self.resolve_unique_matching_window_csp(
+            |candidate| {
+                matches!(
+                    candidate,
+                    WindowCspProfile::OriginalEditorOffline
+                        | WindowCspProfile::OriginalEditorOfflineEmptyStyle
+                )
+            },
+            "an explicitly selected original-editor-offline catalog policy",
+        )
+    }
+
+    fn resolve_unique_matching_window_csp(
+        &self,
+        accepts: impl Fn(WindowCspProfile) -> bool,
+        selection: &str,
+    ) -> Result<ResolvedWindowCsp, ManifestError> {
+        let mut keys = self
+            .manifest
+            .windows
+            .iter()
+            .filter(|(_, window)| window.web.csp.is_some_and(&accepts))
+            .map(|(key, _)| key);
+        let key = keys.next().ok_or_else(|| ManifestError::Parse {
+            path: None,
+            detail: format!("no window selects {selection}; declare exactly one trusted window key before loading original resources"),
+        })?;
+        if keys.next().is_some() {
+            return Err(ManifestError::Parse {
+                path: None,
+                detail: format!(
+                    "multiple windows select {selection}; declare exactly one trusted window key for this resource class"
+                ),
+            });
+        }
+        self.resolve_window_csp(key)
     }
 }
 

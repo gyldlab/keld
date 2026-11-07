@@ -25,7 +25,7 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
     fact(
         &mut fixture,
-        WindowEvent::Bounds {
+        &WindowEvent::Bounds {
             window,
             bounds: keld_ipc::window::Rect {
                 x: 50,
@@ -37,7 +37,7 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
     )?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 1,
         },
@@ -52,7 +52,7 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
     fixture.call(&WindowRequest::RequestClose { window }, 4)?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 2,
         },
@@ -75,13 +75,13 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
         },
         6,
     )?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::SetFullScreen {
             view: WebviewId(7),
             full_screen: true
         }
-    );
+    ));
     reply(&mut fixture, 6, WindowResponse::Accepted)?;
     fixture
         .handle
@@ -91,17 +91,17 @@ fn bounds_precede_close_and_stale_allow_is_diagnosed_once_without_teardown() -> 
         })?;
     fact(
         &mut fixture,
-        WindowEvent::FullScreen {
+        &WindowEvent::FullScreen {
             window,
             full_screen: true,
         },
     )?;
     verdict(&fixture, window, 2, CloseVerdict::Allow, 7)?;
     reply(&mut fixture, 7, WindowResponse::ReplyApplied)?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     assert!(fixture.commands.try_recv().is_err());
     Ok(())
 }
@@ -113,10 +113,10 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
     fixture.ready()?;
     let window = fixture.build(1, 7)?;
     fixture.call(&WindowRequest::Destroy { window }, 2)?;
-    assert_eq!(
+    assert!(matches!(
         fixture.commands.recv_timeout(Duration::from_secs(3))?,
         AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-    );
+    ));
     fixture.call(&WindowRequest::Destroy { window }, 3)?;
     assert!(
         fixture.commands.try_recv().is_err(),
@@ -135,7 +135,7 @@ fn repeated_destroy_waits_for_actual_release_then_facts_precede_both_replies() -
     fixture
         .handle
         .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
-    fact(&mut fixture, WindowEvent::Destroyed { window })?;
+    fact(&mut fixture, &WindowEvent::Destroyed { window })?;
     let (header, bytes) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel),
@@ -162,10 +162,10 @@ fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_err
     for correlation in 2..=65 {
         fixture.call(&WindowRequest::Destroy { window }, correlation)?;
         if correlation == 2 {
-            assert_eq!(
+            assert!(matches!(
                 fixture.commands.recv_timeout(Duration::from_secs(3))?,
                 AppWindowCommand::DestroyWindow { view: WebviewId(7) }
-            );
+            ));
         } else {
             assert!(fixture.commands.try_recv().is_err(), "one native teardown");
         }
@@ -179,7 +179,7 @@ fn one_stalled_release_caps_host_destroy_correlations_with_typed_nonterminal_err
     fixture
         .handle
         .window_native_event(AppWindowEvent::WindowReleased { view: WebviewId(7) })?;
-    fact(&mut fixture, WindowEvent::Destroyed { window })?;
+    fact(&mut fixture, &WindowEvent::Destroyed { window })?;
     let (header, body) = read_frame(&mut fixture.peer)?;
     assert_eq!(
         (header.kind, header.channel),
@@ -208,7 +208,7 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
     fixture.call(&WindowRequest::RequestClose { window }, 2)?;
     fact(
         &mut fixture,
-        WindowEvent::CloseRequested {
+        &WindowEvent::CloseRequested {
             window,
             close_seq: 1,
         },
@@ -262,7 +262,7 @@ fn gap_close_replays_one_coalesced_pending_snapshot_and_only_successor_can_answe
     expected.maximized = true;
     fact(
         &mut fixture,
-        WindowEvent::Created {
+        &WindowEvent::Created {
             window,
             state: expected,
             pending_close: Some(2),

@@ -74,6 +74,40 @@ test("Veto ack arriving before retained Created/CloseRequested dispatch suppress
   expect(pending()).toEqual([]);
 });
 
+test("GH481 global desktop EVENT cannot access a WindowRef or change close receipts", () => {
+  const receipts = new WindowCloseReceipts();
+  receipts.observe({
+    variant: "Created",
+    window: WINDOW,
+    state: STATE,
+    pending_close: 7n,
+  });
+  const before = receipts.pending();
+  receipts.observe({
+    variant: "DesktopSnapshot",
+    epoch: 1n,
+    snapshot: {
+      primary_id: 17,
+      displays: [
+        {
+          id: 17,
+          bounds: { x: 0, y: 0, width: 1440, height: 900 },
+          work_area: { x: 0, y: 24, width: 1440, height: 876 },
+          scale_factor: 2,
+        },
+      ],
+      should_use_dark_colors: false,
+    },
+  });
+  expect(receipts.pending()).toEqual(before);
+  receipts.observe({
+    variant: "CloseRequested",
+    window: WINDOW,
+    close_seq: 8n,
+  });
+  expect(receipts.pending().map((entry) => entry.closeSeq)).toEqual([8n]);
+});
+
 // Poisoning runs in a disposable process so no Bun runner/native client sees it.
 for (const mode of [
   "control",

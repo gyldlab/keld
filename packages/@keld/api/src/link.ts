@@ -1,3 +1,9 @@
+import {
+  encodeMenuRequest,
+  decodeMenuInstallReceipt,
+  type MenuRequestV1,
+  type MenuInstallReceipt,
+} from "./menu.generated.ts";
 /**
  * Host-lifecycle channel adapter over the canonical kipc transport (KEL-72 / KEL-136).
  *
@@ -31,11 +37,32 @@ export {
   withIoDeadline,
   type KeldCallError,
   type ReceivePolicy,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
+import {
+  decodeRuntimeInitialized,
+  decodeLifecycleEvent as decodeEvent,
+} from "@keld/kipc/runtime-process-facts";
 import { resolveEchoCall } from "./echo-call.ts";
+import {
+  decodeDialogReply,
+  encodeDialogRequest,
+  type DialogReplyV1,
+  type DialogRequestV1,
+  type MessageOptions,
+  type OpenDialogOptions,
+  type SaveDialogOptions,
+} from "./dialog.generated.ts";
+import type { WindowRef } from "./window-codec.ts";
 import { attachMirror } from "./mirror.ts";
 import { WindowSource } from "./window-source.ts";
+import { CompatSource, type CompatConsumer } from "./compat-source.ts";
+import {
+  decodeCompatControlResponse,
+  encodeCompatControlRequest,
+  type CompatControlRequest,
+  type CompatControlResponse,
+} from "@keld/kipc/compat-control";
 import {
   decodeWindowResponse,
   encodeWindowRequest,
@@ -49,6 +76,9 @@ import {
   ECHO_CHANNEL,
   FS_CHANNEL,
   AUTH_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
+  DIALOG_CHANNEL,
+  MENU_CHANNEL,
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
   WorkerLink,
@@ -57,36 +87,21 @@ import {
   linkError,
   nativeFacadeBootSelected,
   quitAndCloseLink,
-  stateByteLength,
+  stateFreeze,
   type KeldCallError,
   type WorkerReceiveTable,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
-export type LifecycleEventName = "ready" | "last-window-closed";
-
-function decodeUnitEnum(bytes: Uint8Array): number {
-  if (stateByteLength(bytes) !== 1) {
-    throw kipcError(
-      "KELD-IPC-003",
-      "lifecycle enum must be a single postcard varint byte",
-    );
-  }
-  return bytes[0];
-}
-
-function decodeEvent(bytes: Uint8Array): LifecycleEventName {
-  const disc = decodeUnitEnum(bytes);
-  if (disc === 0) return "ready";
-  if (disc === 1) return "last-window-closed";
-  throw kipcError(
-    "KELD-IPC-003",
-    `unknown LifecycleEvent discriminant ${disc}`,
-  );
-}
+export type { LifecycleEventName } from "@keld/kipc/runtime-process-facts";
 
 export type LifecycleHandler = {
+  /** Endpoint consumer of native-stamped facts; never an authority minter. */
+  onCompatEvent?: CompatConsumer;
+  onCompatError?: (error: unknown) => void;
   onReady: () => void;
   onLastWindowClosed: () => void;
+  /** Scoped Host intent; the captured live session is rechecked by the consumer. */
+  onQuitRequested?: (session: LifecycleLink) => void;
   /** The singleton belongs to @keld/api before a Ready callback may construct. */
   onConnected?: (session: LifecycleLink) => void;
   /** Host-owned window facts, dispatched only after the mirror applied them. */
@@ -116,10 +131,13 @@ const LIFECYCLE_RECEIVE: WorkerReceiveTable = {
 export class LifecycleLink {
   readonly #link: WorkerLink;
   readonly #windowSource: WindowSource | undefined;
+  #compatSource: CompatSource | undefined;
   #closed = false;
   /** The error that ended the link without a local close: later quits rethrow it. */
-  #dead: KeldCallError | undefined;
+  #dead: Error | undefined;
   #quitPromise: Promise<void> | undefined;
+  /** The one authenticated WorkerLink generation alone allocates nonces. */
+  #nextDialogNonce = 1n;
   /** Authenticated lifecycle apply/dispatch ordinals across a parked CALL. */
   #appliedLastWindowClosed = 0;
   #dispatchedLastWindowClosed = 0;
@@ -133,6 +151,25 @@ export class LifecycleLink {
   /** Only a completed, accepted replay makes the native window mirror observable. */
   get windowSource(): WindowSource | undefined {
     return this.#windowSource;
+  }
+
+  /** @internal The existing role/link owns this observation, not a new generation mint. */
+  get windowAdmissionOpen(): boolean {
+    return (
+      !this.#closed &&
+      this.#dead === undefined &&
+      this.#quitPromise === undefined &&
+      this.#windowSource !== undefined &&
+      this.#link.callAdmissionOpen
+    );
+  }
+
+  /** @internal Retire only this original link with its actual post-handoff cause. */
+  retireWindowHandoffFailure(error: Error): void {
+    this.#dead ??= error;
+    this.#closed = true;
+    // Existing onEnd still disposes Sources after the earlier ring records drain.
+    this.#link.close();
   }
 
   /**
@@ -155,6 +192,7 @@ export class LifecycleLink {
   static async connect(
     link: string,
     handlers: LifecycleHandler,
+    runtimeInitPayload?: Uint8Array,
   ): Promise<LifecycleLink> {
     // A verified schema-two Host sets the role hint before the Guardian spawns
     // Bun. This hint does not grant window authority: the existing authenticated
@@ -165,7 +203,11 @@ export class LifecycleLink {
       receive: facadeWindows
         ? {
             ...LIFECYCLE_RECEIVE,
-            eventChannels: [LIFECYCLE_CHANNEL, WINDOW_CHANNEL],
+            eventChannels: [
+              LIFECYCLE_CHANNEL,
+              WINDOW_CHANNEL,
+              COMPAT_CONTROL_CHANNEL,
+            ],
           }
         : LIFECYCLE_RECEIVE,
     });
@@ -174,6 +216,41 @@ export class LifecycleLink {
       : undefined;
     const session = new LifecycleLink(workerLink, windowSource);
     if (windowSource) attachMirror(workerLink, windowSource);
+    if (windowSource) {
+      const compatSource = new CompatSource(
+        COMPAT_CONTROL_CHANNEL,
+        windowSource,
+        (event, current) =>
+          handlers.onCompatEvent?.(event, current) ?? { variant: "NoListener" },
+        (request) => {
+          if (session.#closed) return;
+          void workerLink
+            .call(
+              COMPAT_CONTROL_CHANNEL,
+              encodeCompatControlRequest(request),
+              APP_LINK_IO_DEADLINE_MS,
+            )
+            .then((raw) => {
+              if (decodeCompatControlResponse(raw).variant !== "Released")
+                throw linkError(
+                  "KELD-IPC-003",
+                  "compat release received a delivery terminal",
+                );
+            })
+            .catch((error: unknown) => {
+              // Unconfirmed release never refunds Host capacity or retries.
+              session.close();
+              try {
+                handlers.onCompatError?.(error);
+              } catch {
+                /* diagnostic only */
+              }
+            });
+        },
+      );
+      session.#compatSource = compatSource;
+      attachMirror(workerLink, compatSource);
+    }
     let rawReady = false;
     let replayComplete = !facadeWindows;
     let readyPublished = false;
@@ -190,9 +267,15 @@ export class LifecycleLink {
       }
     });
     workerLink.onEvent(LIFECYCLE_CHANNEL, (payload) => {
-      if (decodeEvent(payload) === "ready") {
+      const event = decodeEvent(payload);
+      if (event === "ready") {
         rawReady = true;
         maybePublishReady();
+      } else if (event === "quit-requested") {
+        // A buffered old/terminal event cannot become a successor's app effect.
+        // The API owner additionally selects the exact original composition.
+        if (readyPublished && session.windowAdmissionOpen)
+          handlers.onQuitRequested?.(session);
       } else {
         session.#dispatchedLastWindowClosed += 1;
         // A native Destroy may already have claimed this Host milestone
@@ -211,6 +294,7 @@ export class LifecycleLink {
       resolveEchoCall(ECHO_CHANNEL, payload, handlers.onApplicationCall),
     );
     workerLink.onEnd((err: KeldCallError) => {
+      session.#compatSource?.end();
       // onEnd follows the earlier-record drain even when local Quit already
       // marked the session closed. Always release the retained source here.
       windowSource?.end(err);
@@ -224,6 +308,22 @@ export class LifecycleLink {
       }
     });
     handlers.onConnected?.(session);
+    if (runtimeInitPayload !== undefined) {
+      try {
+        // The ordinary allocator yields correlation 1: no Subscribe or app call
+        // precedes this private admission handshake on the same WorkerLink.
+        decodeRuntimeInitialized(
+          await workerLink.call(
+            LIFECYCLE_CHANNEL,
+            runtimeInitPayload,
+            APP_LINK_IO_DEADLINE_MS,
+          ),
+        );
+      } catch (error) {
+        session.close();
+        throw error;
+      }
+    }
     if (windowSource) {
       try {
         // Postcard LifecycleRequest::Subscribe { channel } discriminant=1.
@@ -247,6 +347,16 @@ export class LifecycleLink {
                 "Host returned an invalid native window subscription reply",
               );
         }
+        const compatReply = await workerLink.call(
+          LIFECYCLE_CHANNEL,
+          Uint8Array.of(1, ...encodeVarint(COMPAT_CONTROL_CHANNEL)),
+          APP_LINK_IO_DEADLINE_MS,
+        );
+        if (compatReply.length !== 1 || compatReply[0] !== 1)
+          throw linkError(
+            "KELD-CORE-045",
+            "Host refused the compat subscription",
+          );
         replayComplete = true;
         maybePublishReady();
       } catch (error) {
@@ -255,6 +365,120 @@ export class LifecycleLink {
       }
     }
     return session;
+  }
+
+  /** Existing single-link carriage; native/role/Guard admission remains Host-owned. */
+  async callCompat(
+    request: CompatControlRequest,
+    current: () => boolean,
+    payload = encodeCompatControlRequest(request),
+  ): Promise<CompatControlResponse> {
+    if (
+      this.#closed ||
+      this.#quitPromise !== undefined ||
+      !this.#compatSource ||
+      !current()
+    )
+      throw (
+        this.#dead ??
+        linkError(
+          "KELD-CORE-043",
+          "compat original target is no longer current",
+        )
+      );
+    if (!current())
+      throw linkError(
+        "KELD-CORE-043",
+        "compat target retired before link admission",
+      );
+    const raw = await this.#link.call(
+      COMPAT_CONTROL_CHANNEL,
+      payload,
+      APP_LINK_IO_DEADLINE_MS,
+    );
+    const response = decodeCompatControlResponse(raw);
+    const expected =
+      request.variant === "ReleaseConsumed" ? "Released" : "Deliver";
+    if (response.variant !== expected) {
+      this.close();
+      throw linkError(
+        "KELD-IPC-003",
+        "compat reply variant does not match its operation",
+      );
+    }
+    return response;
+  }
+
+  /** @internal Observe the existing unique, authenticated document association.
+   * This reads the compat owner; it grants no delivery or filesystem authority. */
+  captureCurrentWindowDocument(
+    ref: Readonly<WindowRef>,
+  ):
+    | Readonly<{ webview: number; navigation: number; current(): boolean }>
+    | undefined {
+    const source = this.#compatSource;
+    if (!this.windowAdmissionOpen || !source) return undefined;
+    const selected = source.captureForWindow(ref);
+    if (!selected) return undefined;
+    return stateFreeze({
+      webview: selected.webview,
+      navigation: selected.navigation,
+      current: (): boolean =>
+        this.windowAdmissionOpen &&
+        this.#compatSource === source &&
+        selected.current(),
+    });
+  }
+
+  /** Target an existing native document from this link's single Host-fact map.
+   * The outbound call carries the exact captured view/navigation; a newer
+   * window or document cannot inherit this event after an async link yield.
+   */
+  sendToCurrentWindow(
+    ref: Readonly<WindowRef>,
+    topic: string,
+    payload: Uint8Array,
+    sessionCurrent: () => boolean,
+  ): Promise<void> {
+    const selected = this.captureCurrentWindowDocument(ref);
+    if (
+      !selected ||
+      this.#closed ||
+      this.#quitPromise !== undefined ||
+      !sessionCurrent()
+    ) {
+      throw linkError(
+        "KELD-CORE-043",
+        "no unique current Host-authenticated renderer target",
+      );
+    }
+    const { webview, navigation } = selected;
+    const request: CompatControlRequest = {
+      variant: "DeliverToOriginalDocument",
+      webview,
+      navigation,
+      topic,
+      payload,
+    };
+    // Encode before yielding and before returning to the original caller.
+    // An invalid channel or endpoint cannot become an unhandled async reject.
+    const encoded = encodeCompatControlRequest(request);
+    const current = (): boolean =>
+      !this.#closed &&
+      this.#quitPromise === undefined &&
+      sessionCurrent() &&
+      selected.current();
+    return this.callCompat(request, current, encoded).then((reply) => {
+      if (
+        reply.variant !== "Deliver" ||
+        reply.disposition.variant !== "Consumed"
+      ) {
+        throw linkError(
+          "KELD-CORE-043",
+          "original renderer event was not confirmed consumed by its current document",
+        );
+      }
+    });
   }
 
   /** Synchronous Electron constructor/Destroy over the existing authenticated link. */
@@ -297,6 +521,20 @@ export class LifecycleLink {
       .then(decodeWindowResponse);
   }
 
+  /** One bounded guarded install, with the actual Host generation as its receipt. */
+  callMenu(request: MenuRequestV1): Promise<MenuInstallReceipt> {
+    if (this.#closed || this.#quitPromise !== undefined) {
+      return Promise.reject(
+        this.#dead ??
+          linkError("KELD-IPC-005", "menu installation link has ended"),
+      );
+    }
+    const payload = encodeMenuRequest(request);
+    return this.#link
+      .call(MENU_CHANNEL, payload, APP_LINK_IO_DEADLINE_MS)
+      .then(decodeMenuInstallReceipt);
+  }
+
   /**
    * Sends the role's Quit without parking (PANEL-P2: `app.quit` returns
    * immediately) and closes the link once its REPLY or typed failure settles
@@ -336,9 +574,128 @@ export class LifecycleLink {
     return this.#link.call(AUTH_CHANNEL, payload, deadlineMs);
   }
 
+  /** Async native Message uses the existing authenticated WorkerLink. A
+   * timeout posts a fresh Cancel CALL(c_cancel); its acknowledgement never
+   * substitutes for the original terminal CALL(c_original). */
+  async callMessageDialog(
+    parent: WindowRef | null,
+    options: MessageOptions,
+  ): Promise<DialogReplyV1> {
+    return this.#callNativeDialog(
+      (nonce) => ({
+        variant: "Message",
+        nonce,
+        parent,
+        options,
+      }),
+      "Message",
+    );
+  }
+
+  /** Only the transport invocation blocks; Message policy and cancellation
+   * remain owned by the same private path as all asynchronous dialogs. */
+  callMessageDialogBlocking(
+    parent: WindowRef | null,
+    options: MessageOptions,
+  ): DialogReplyV1 {
+    return this.#callNativeDialog(
+      (nonce) => ({ variant: "Message", nonce, parent, options }),
+      "Message",
+      true,
+    );
+  }
+
+  /** Both file operations use the same role nonce high-water, Guard and
+   * WorkerLink correlations as Message; no second file-dialog channel. */
+  async callFileDialog(
+    variant: "Open" | "Save",
+    parent: WindowRef | null,
+    options: OpenDialogOptions | SaveDialogOptions,
+  ): Promise<DialogReplyV1> {
+    return this.#callNativeDialog(
+      (nonce) =>
+        variant === "Open"
+          ? { variant, nonce, parent, options: options as OpenDialogOptions }
+          : { variant, nonce, parent, options: options as SaveDialogOptions },
+      variant,
+    );
+  }
+
+  #callNativeDialog(
+    request: (nonce: bigint) => DialogRequestV1,
+    expected: "Message" | "Open" | "Save",
+    blocking: true,
+  ): DialogReplyV1;
+  #callNativeDialog(
+    request: (nonce: bigint) => DialogRequestV1,
+    expected: "Message" | "Open" | "Save",
+    blocking?: false,
+  ): Promise<DialogReplyV1>;
+  #callNativeDialog(
+    request: (nonce: bigint) => DialogRequestV1,
+    expected: "Message" | "Open" | "Save",
+    blocking = false,
+  ): DialogReplyV1 | Promise<DialogReplyV1> {
+    if (this.#closed || this.#quitPromise !== undefined) {
+      throw this.#dead ?? kipcError("KELD-IPC-001", "session is closed");
+    }
+    if (this.#nextDialogNonce > 0xffff_ffff_ffff_ffffn) {
+      throw kipcError(
+        "KELD-IPC-003",
+        "dialog generation nonce exhausted; restart the role",
+      );
+    }
+    const nonce = this.#nextDialogNonce++;
+    const payload = encodeDialogRequest(request(nonce));
+    const deadlineMs = 600_000;
+    const receive = (raw: Uint8Array): DialogReplyV1 => {
+      const value = decodeDialogReply(raw);
+      if (value.variant !== expected) {
+        throw kipcError(
+          "KELD-IPC-003",
+          "native dialog original correlation received a different operation's reply",
+        );
+      }
+      return value;
+    };
+    const fail = (error: unknown): never => {
+      // A role-local timeout does not prove whether the Host opened a sheet.
+      // Never replay the original effect, and do not await Cancel from a
+      // synchronous caller or overwrite its original typed failure.
+      if (
+        !this.#closed &&
+        (error as { code?: unknown } | null)?.code === "KELD-IPC-006"
+      ) {
+        const cancel = encodeDialogRequest({ variant: "Cancel", nonce });
+        void this.#link
+          .call(DIALOG_CHANNEL, cancel, APP_LINK_IO_DEADLINE_MS)
+          .then(decodeDialogReply)
+          .catch(() => {
+            // Link failure independently retires the generation. The Host
+            // cleanup is not claimed from this best-effort relay.
+          });
+      }
+      throw error;
+    };
+    try {
+      if (blocking) {
+        return receive(
+          this.#link.callBlocking(DIALOG_CHANNEL, payload, deadlineMs),
+        );
+      }
+      return this.#link
+        .call(DIALOG_CHANNEL, payload, deadlineMs)
+        .then(receive)
+        .catch(fail);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#compatSource?.end();
     this.#link.close();
   }
 }

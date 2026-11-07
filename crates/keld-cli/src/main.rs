@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process;
 use std::sync::mpsc;
 
+use keld_cli::build::run_build;
 use keld_cli::create::{CreateError, create_project};
 use keld_cli::dev::{find_project_root, run_dev};
 use keld_cli::doctor::{all_ok, findings_all_ok, findings_json, run_checks, run_findings};
@@ -62,6 +63,13 @@ fn main() {
                 process::exit(2);
             }
         },
+        Some("build") => match run_build(&args[2..]) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                eprintln!("{error}");
+                process::exit(error.exit_code());
+            }
+        },
         Some("doctor") => match env::current_dir() {
             Ok(cwd) => find_project_root(&cwd)
                 .map_err(|error| error.to_string())
@@ -101,13 +109,14 @@ fn print_usage() {
     eprintln!("commands:");
     eprintln!("  create <name>   Scaffold the hello-world template");
     eprintln!("  dev             Run the app (Bun main + IPC echo + window)");
+    eprintln!("  build --target macos-arm64  Produce a locally signed macOS app and DMG");
     eprintln!("  doctor [--json] Check local toolchain and project layout");
     eprintln!("  mcp serve       Speak MCP over stdio (doctor/docs/permissions)");
     eprintln!("  hello           Open the hello window (WKWebView on macOS, WebView2 on Windows)");
     eprintln!("  ipc-echo        Run the typed kipc echo round-trip demo");
     eprintln!("  ipc-client      Internal: kipc client helpers for templates");
     eprintln!("  --version       Print version");
-    eprintln!("reserved (not live): build, migrate, gen, ext");
+    eprintln!("reserved (not live): migrate, gen, ext");
 }
 
 fn run_create(name: &str) -> Result<(), CreateError> {

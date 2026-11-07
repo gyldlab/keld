@@ -3,7 +3,7 @@ import {
   MAX_FRAME_LEN,
   encodeCallError,
   type WorkerCallReply,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 
 export type EchoCallHandler = (
   channel: number,

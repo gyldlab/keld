@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "noEmitOnError": true,
+    "declaration": true,
+    "rootDir": "src",
+    "rewriteRelativeImportExtensions": true
+  },
+  "files": [
+    "src/transport.ts",
+    "src/compat-control.generated.ts",
+    "src/endpoint-value-codec.ts",
+    "src/runtime-process.generated.ts"
+  ],
+  "include": []
+}

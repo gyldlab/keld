@@ -92,6 +92,7 @@ fn assert_caller_decides_only_after_its_own_reap(
                 }
             }
             TestGroupSignalPoint::AfterDeniedSignal => denial_count.set(denial_count.get() + 1),
+            TestGroupSignalPoint::AfterDelivery => {}
         }),
     );
     if host == HostSignal::BeforeCall {

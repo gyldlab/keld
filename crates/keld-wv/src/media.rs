@@ -322,6 +322,18 @@ impl<'a> GuardedWryBuilder<wry::WebViewBuilder<'a>> {
             .build(window)
             .map_err(|error| WvError::Webview(error.to_string()))
     }
+
+    /// Constructs an empty facade while retaining the installed default-deny
+    /// media handler and selected native configuration. The Host binds the
+    /// actual view and verified original source before initiating navigation.
+    pub(crate) fn build_empty_facade_window(
+        self,
+        window: &'a tao::window::Window,
+    ) -> Result<wry::WebView, WvError> {
+        self.inner
+            .build(window)
+            .map_err(|error| WvError::Webview(error.to_string()))
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

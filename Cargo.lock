@@ -1519,6 +1519,7 @@ dependencies = [
  "keld-core",
  "keld-guard",
  "keld-ipc",
+ "keld-pack",
  "keld-runtime",
  "rmcp",
  "rustix",
@@ -1552,11 +1553,13 @@ dependencies = [
  "keld-guard",
  "keld-ipc",
  "keld-native",
+ "keld-pack",
  "keld-runtime",
  "keld-update",
  "keld-wv",
  "nix",
  "objc2",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1619,6 +1622,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-authentication-services",
  "objc2-foundation",
+ "objc2-uniform-type-identifiers",
  "rustix",
  "serde",
  "serde_json",
@@ -1632,6 +1636,9 @@ version = "0.0.1"
 dependencies = [
  "blake3",
  "keld-guard",
+ "rustix",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "zstd",
@@ -1692,6 +1699,7 @@ name = "keld-wv"
 version = "0.0.1"
 dependencies = [
  "block2",
+ "dispatch2",
  "getrandom 0.4.3",
  "keld-guard",
  "nix",
@@ -1900,9 +1908,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.0",
+ "block2",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-uniform-type-identifiers",
 ]
 
 [[package]]
@@ -2063,6 +2073,16 @@ dependencies = [
  "objc2-foundation",
  "objc2-quartz-core",
  "objc2-user-notifications",
+]
+
+[[package]]
+name = "objc2-uniform-type-identifiers"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-// @keld/kipc-transport sha256:11703ad7b5efccc74227e166d225a2628813a1c958391cc77d62547b3c8194a9
+// @keld/kipc-transport sha256:bdc2c95325c7d7bd157d3b7ca5e8059c808565e3920b56e2db9e47f5dfa909d8
 /**
  * Canonical TypeScript kipc v2 app-link transport (KEL-136).
  *
@@ -32,6 +32,386 @@ import { isProxy } from "node:util/types";
 export const nativeFacadeBootSelected =
   process.env.KELD_NATIVE_WINDOW_FACADE === "1";
 
+/** @internal Trusted Host selection; metadata never grants a principal or Ready. */
+declare const __KELD_RUNTIME_PROCESS_FACTS__: boolean;
+export const runtimeProcessFactsSelected =
+  typeof __KELD_RUNTIME_PROCESS_FACTS__ !== "undefined" &&
+  __KELD_RUNTIME_PROCESS_FACTS__ === true;
+
+// @generated-begin host-launch-facts: packages/@keld/kipc/scripts/echo-codegen.ts from
+// packages/@keld/kipc/src/launch-facts.ts. Do not edit by hand.
+/**
+ * Closed, non-authority Host launch facts (GH-452; GH-1404 §4.5).
+ *
+ * This is the single JavaScript codec. echo-codegen embeds this module intact in
+ * the standalone canonical transport. Installed bootstrap imports this same
+ * source as a separately generated, exact-byte-checked module.
+ */
+import { isProxy as isLaunchFactsProxy } from "node:util/types";
+
+// The qualified Host fixes this parse-time constant before application imports.
+declare const __KELD_HOST_LAUNCH_FACTS__: unknown;
+
+export interface DevelopmentHostLaunchFacts {
+  readonly schema: 1 | 2 | 3 | 4 | 5;
+  readonly kind: "development";
+  readonly name: string;
+  readonly root: string;
+  readonly version?: string;
+  readonly locale?: string;
+  readonly singleInstance?: HostSingleInstanceFact;
+  readonly originalResourcePolicy?: HostOriginalResourcePolicy;
+  readonly paths?: Readonly<
+    Partial<Record<"appData" | "userData" | "documents", string>>
+  >;
+}
+
+/** A captured kernel-lock result; the descriptor and ownership stay with Host. */
+export interface HostSingleInstanceFact {
+  readonly verdict: "acquired" | "contended";
+}
+
+/** Prepared-source data; each native operation still needs its own Guard grant. */
+export interface HostOriginalResourcePolicy {
+  readonly contract: "gh473-original-editor-offline/v1";
+  readonly graphSha256: string;
+  readonly policySha256: string;
+  readonly windowKey: string;
+  readonly selector:
+    "original-editor-offline" | "original-editor-offline-empty-style";
+}
+
+export interface InstalledHostLaunchFacts {
+  readonly schema: 6;
+  readonly kind: "local-development";
+  readonly name: string;
+  readonly root: string;
+  readonly version: string;
+  readonly resourcesRoot: string;
+  readonly locale?: never;
+  readonly paths?: never;
+  readonly singleInstance?: never;
+  readonly originalResourcePolicy?: never;
+}
+
+/** Closed installed-original extension; schema 6 retains its original meaning. */
+export interface InstalledOriginalHostLaunchFacts {
+  readonly schema: 7;
+  readonly kind: "local-development";
+  readonly name: string;
+  readonly root: string;
+  readonly version: string;
+  readonly resourcesRoot: string;
+  readonly paths: Readonly<
+    Partial<Record<"appData" | "userData" | "documents", string>>
+  >;
+  readonly locale?: string;
+  readonly singleInstance?: HostSingleInstanceFact;
+  readonly originalResourcePolicy: HostOriginalResourcePolicy;
+}
+
+/** Data only. Neither a path nor a packaged-state fact grants access. */
+export type HostLaunchFacts =
+  | DevelopmentHostLaunchFacts
+  | InstalledHostLaunchFacts
+  | InstalledOriginalHostLaunchFacts;
+
+function invalidLaunchFacts(): never {
+  throw Object.assign(
+    new Error(
+      "KELD-IPC-029: invalid Host launch facts; restage through the qualified Host startup path",
+    ),
+    { code: "KELD-IPC-029" },
+  );
+}
+
+/** @internal The single closed decoder, also used by the installed preload. */
+export function captureHostLaunchFacts(
+  value: unknown,
+): HostLaunchFacts | undefined {
+  if (value === undefined) return undefined;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    isLaunchFactsProxy(value)
+  )
+    return invalidLaunchFacts();
+  const keys = Reflect.ownKeys(value);
+  const baseKeys = ["schema", "kind", "name", "root"];
+  for (const key of keys) {
+    if (!Object.getOwnPropertyDescriptor(value, key)?.hasOwnProperty("value"))
+      return invalidLaunchFacts();
+  }
+  const record = value as Record<string, unknown>;
+  // Decide the closed variant from an own data descriptor. A missing schema
+  // must not read a prototype accessor before the required-key refusal below.
+  const schema = Object.getOwnPropertyDescriptor(value, "schema")?.value;
+  const installed = schema === 6 || schema === 7;
+  const required = installed
+    ? [
+        ...baseKeys,
+        "version",
+        "resourcesRoot",
+        ...(schema === 7 ? ["paths", "originalResourcePolicy"] : []),
+      ]
+    : baseKeys;
+  const allowed = installed
+    ? [...required, ...(schema === 7 ? ["locale", "singleInstance"] : [])]
+    : [
+        ...baseKeys,
+        "version",
+        "paths",
+        "locale",
+        "singleInstance",
+        "originalResourcePolicy",
+      ];
+  if (
+    required.some((key) => !keys.includes(key)) ||
+    keys.some((key) => typeof key !== "string" || !allowed.includes(key))
+  )
+    return invalidLaunchFacts();
+  const encoder = new TextEncoder();
+  const validText = (text: unknown): text is string =>
+    typeof text === "string" &&
+    text.length > 0 &&
+    !text.includes("\0") &&
+    encoder.encode(text).byteLength <= 4096;
+  if (
+    !validText(record.name) ||
+    !validText(record.root) ||
+    !record.root.startsWith("/")
+  )
+    return invalidLaunchFacts();
+
+  if (
+    installed
+      ? record.kind !== "local-development"
+      : (schema !== 1 &&
+          schema !== 2 &&
+          schema !== 3 &&
+          schema !== 4 &&
+          schema !== 5) ||
+        record.kind !== "development"
+  )
+    return invalidLaunchFacts();
+  if (schema === 1 && keys.length !== baseKeys.length)
+    return invalidLaunchFacts();
+
+  // Only the new installed schema has these canonical native-path requirements.
+  // Earlier schemas retain their existing lexical contract.
+  const canonicalPath = (path: string): boolean =>
+    path === "/" ||
+    (path.startsWith("/") &&
+      path
+        .slice(1)
+        .split("/")
+        .every((part) => part !== "" && part !== "." && part !== ".."));
+  let version: string | undefined;
+  if (keys.includes("version")) {
+    if (!validText(record.version)) return invalidLaunchFacts();
+    version = record.version;
+  }
+  let locale: string | undefined;
+  if (keys.includes("locale")) {
+    if (
+      (schema !== 3 && schema !== 4 && schema !== 5 && schema !== 7) ||
+      !validText(record.locale)
+    )
+      return invalidLaunchFacts();
+    // The native owner already selected the first ordered preference. Preserve
+    // those bounded UTF-8 bytes; do not invent a second localization policy.
+    locale = record.locale;
+  }
+  let paths: DevelopmentHostLaunchFacts["paths"];
+  if (schema !== 1 && schema !== 6) {
+    if (!keys.includes("paths")) return invalidLaunchFacts();
+    const input = record.paths;
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      isLaunchFactsProxy(input)
+    )
+      return invalidLaunchFacts();
+    const copied: Partial<
+      Record<"appData" | "userData" | "documents", string>
+    > = Object.create(null);
+    for (const key of Reflect.ownKeys(input)) {
+      if (key !== "appData" && key !== "userData" && key !== "documents")
+        return invalidLaunchFacts();
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor?.hasOwnProperty("value")) return invalidLaunchFacts();
+      const path: unknown = descriptor.value;
+      if (
+        !validText(path) ||
+        !path.startsWith("/") ||
+        (schema === 7 && !canonicalPath(path))
+      )
+        return invalidLaunchFacts();
+      copied[key] = path;
+    }
+    paths = Object.freeze(copied);
+  }
+  let singleInstance: HostSingleInstanceFact | undefined;
+  if (keys.includes("singleInstance")) {
+    const input = record.singleInstance;
+    if (
+      (schema !== 4 && schema !== 5 && schema !== 7) ||
+      input === null ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      isLaunchFactsProxy(input)
+    )
+      return invalidLaunchFacts();
+    const fields = Reflect.ownKeys(input);
+    const descriptor = Object.getOwnPropertyDescriptor(input, "verdict");
+    if (
+      fields.length !== 1 ||
+      fields[0] !== "verdict" ||
+      !descriptor?.hasOwnProperty("value") ||
+      (descriptor.value !== "acquired" && descriptor.value !== "contended")
+    )
+      return invalidLaunchFacts();
+    const copy = Object.create(null) as { verdict: "acquired" | "contended" };
+    copy.verdict = descriptor.value;
+    singleInstance = Object.freeze(copy);
+  }
+  let originalResourcePolicy: HostOriginalResourcePolicy | undefined;
+  if (
+    (schema === 5 || schema === 7) !== keys.includes("originalResourcePolicy")
+  )
+    return invalidLaunchFacts();
+  if (keys.includes("originalResourcePolicy")) {
+    const input = record.originalResourcePolicy;
+    if (
+      input === null ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      isLaunchFactsProxy(input)
+    )
+      return invalidLaunchFacts();
+    const fields = [
+      "contract",
+      "graphSha256",
+      "policySha256",
+      "windowKey",
+      "selector",
+    ] as const;
+    const own = Reflect.ownKeys(input);
+    if (
+      own.length !== fields.length ||
+      own.some(
+        (key) =>
+          typeof key !== "string" ||
+          !fields.includes(key as (typeof fields)[number]),
+      )
+    )
+      return invalidLaunchFacts();
+    const copied = Object.create(null) as Record<
+      (typeof fields)[number],
+      string
+    >;
+    for (const key of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor?.hasOwnProperty("value") || !validText(descriptor.value))
+        return invalidLaunchFacts();
+      copied[key] = descriptor.value;
+    }
+    if (
+      copied.contract !== "gh473-original-editor-offline/v1" ||
+      (copied.selector !== "original-editor-offline" &&
+        !(
+          schema === 7 &&
+          copied.selector === "original-editor-offline-empty-style"
+        )) ||
+      !/^sha256:[0-9a-f]{64}$/.test(copied.graphSha256) ||
+      !/^sha256:[0-9a-f]{64}$/.test(copied.policySha256)
+    )
+      return invalidLaunchFacts();
+    originalResourcePolicy = Object.freeze(
+      copied,
+    ) as HostOriginalResourcePolicy;
+  }
+
+  let captured: HostLaunchFacts;
+  if (installed) {
+    if (
+      !validText(version) ||
+      !validText(record.resourcesRoot) ||
+      !record.resourcesRoot.startsWith("/") ||
+      record.root !== record.resourcesRoot + "/app"
+    )
+      return invalidLaunchFacts();
+    const metadata = {
+      kind: "local-development" as const,
+      name: record.name,
+      root: record.root,
+      version,
+      resourcesRoot: record.resourcesRoot,
+    };
+    if (schema === 7) {
+      if (
+        paths === undefined ||
+        originalResourcePolicy === undefined ||
+        record.name === "." ||
+        record.name === ".." ||
+        record.name.includes("/") ||
+        !canonicalPath(record.root) ||
+        !canonicalPath(record.resourcesRoot)
+      )
+        return invalidLaunchFacts();
+      if (singleInstance !== undefined && paths.appData === undefined)
+        return invalidLaunchFacts();
+      if (
+        paths.userData !== undefined &&
+        (paths.appData === undefined ||
+          paths.userData !==
+            (paths.appData === "/" ? "/" : paths.appData + "/") + record.name)
+      )
+        return invalidLaunchFacts();
+      captured = {
+        schema: 7,
+        ...metadata,
+        paths,
+        ...(locale === undefined ? {} : { locale }),
+        ...(singleInstance === undefined ? {} : { singleInstance }),
+        originalResourcePolicy,
+      };
+    } else {
+      captured = { schema: 6, ...metadata };
+    }
+  } else {
+    captured = {
+      schema,
+      kind: "development",
+      name: record.name,
+      root: record.root,
+      ...(version === undefined ? {} : { version }),
+      ...(locale === undefined ? {} : { locale }),
+      ...(paths === undefined ? {} : { paths }),
+      ...(singleInstance === undefined ? {} : { singleInstance }),
+      ...(originalResourcePolicy === undefined
+        ? {}
+        : { originalResourcePolicy }),
+    };
+  }
+  // Do this before serialization too: an inherited toJSON must not run.
+  Object.setPrototypeOf(captured, null);
+  if (encoder.encode(JSON.stringify(captured)).byteLength > 16 * 1024)
+    return invalidLaunchFacts();
+  // Missing facts must not become readable through later prototype writes.
+  return Object.freeze(captured);
+}
+
+/** @internal Frozen at preload/import; the application has no setter. */
+export const hostLaunchFacts = captureHostLaunchFacts(
+  typeof __KELD_HOST_LAUNCH_FACTS__ === "undefined"
+    ? undefined
+    : __KELD_HOST_LAUNCH_FACTS__,
+);
+// @generated-end host-launch-facts
+
 // The macOS guardian preloads this sidecar before application dependencies. These
 // immutable operations own §4.6 state/wake-drain/copy and Source failure; consumers
 // never invoke a saved method through mutable Function.prototype methods.
@@ -43,6 +423,9 @@ const IntrinsicSharedArrayBuffer = SharedArrayBuffer;
 const IntrinsicMap = Map;
 const IntrinsicWeakMap = WeakMap;
 const IntrinsicArray = Array;
+const intrinsicIsArray = Array.isArray;
+const IntrinsicDataView = DataView;
+const intrinsicGetFloat64 = DataView.prototype.getFloat64;
 const intrinsicFreeze = Object.freeze;
 const intrinsicSetPrototypeOf = Object.setPrototypeOf;
 const intrinsicDefineProperty = Object.defineProperty;
@@ -205,6 +588,16 @@ export function stateIsUint8Array(value: unknown): value is Uint8Array {
 export function stateByteLength(value: Uint8Array): number {
   return intrinsicApply(intrinsicByteLength, value, []);
 }
+/** @internal Array brand test captured before application dependencies. */
+export const stateIsArray: typeof Array.isArray = intrinsicIsArray;
+/** @internal Decode one little-endian f64 without late buffer/offset/native hooks. */
+export function stateFloat64At(value: Uint8Array, offset: number): number {
+  const buffer = intrinsicApply(intrinsicBuffer, value, []) as ArrayBuffer;
+  const byteOffset = intrinsicApply(intrinsicByteOffset, value, []) as number;
+  const byteLength = intrinsicApply(intrinsicByteLength, value, []) as number;
+  const view = new IntrinsicDataView(buffer, byteOffset, byteLength);
+  return intrinsicApply(intrinsicGetFloat64, view, [offset, true]);
+}
 /** @internal Private dense helper backing; bounded own indices preserve its shape. */
 export function stateSlots<T>(capacity: number): (T | undefined)[] {
   const slots = new IntrinsicArray<T | undefined>(capacity);
@@ -234,13 +627,22 @@ export const LIFECYCLE_CHANNEL = 3;
 export const AUTH_CHANNEL = 4;
 /** Channel `window` (`keld_ipc::channel_table::WINDOW`). */
 export const WINDOW_CHANNEL = 5;
+/** Channel `dialog` (`keld_ipc::channel_table::DIALOG`). */
+export const DIALOG_CHANNEL = 6;
+/** Channel `compat-control` (`keld_ipc::channel_table::COMPAT_CONTROL`). */
+export const COMPAT_CONTROL_CHANNEL = 7;
+/** Channel `menu` (`keld_ipc::channel_table::MENU`). */
+export const MENU_CHANNEL = 8;
 /** An allocated channel id (`keld_ipc::channel_table::CHANNEL_TABLE`). */
 export type AllocatedChannel =
   | typeof ECHO_CHANNEL
   | typeof FS_CHANNEL
   | typeof LIFECYCLE_CHANNEL
   | typeof AUTH_CHANNEL
-  | typeof WINDOW_CHANNEL;
+  | typeof WINDOW_CHANNEL
+  | typeof DIALOG_CHANNEL
+  | typeof COMPAT_CONTROL_CHANNEL
+  | typeof MENU_CHANNEL;
 /** Every allocated channel id, in table order. */
 export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   ECHO_CHANNEL,
@@ -248,11 +650,15 @@ export const ALLOCATED_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   AUTH_CHANNEL,
   WINDOW_CHANNEL,
+  DIALOG_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
+  MENU_CHANNEL,
 ]);
 /** Channels whose receive class carries host `EVENT`s (`ReceiveClass::carries_host_events`). */
 export const HOST_EVENT_CHANNELS: readonly AllocatedChannel[] = Object.freeze([
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
 ]);
 // @generated-end channel-table
 /** Mirrors `keld_ipc::APP_LINK_IO_DEADLINE` (arch/02 §7). Bun has no `SO_RCVTIMEO`. */
@@ -328,12 +734,17 @@ export interface ReceivePolicy {
     { rule: "zero" } | { rule: "non-zero" } | { rule: "exactly"; id: number };
   /** Exact declared payload length, if the policy pins one. */
   exactLen?: number;
+  /** Canonical per-kind bound checked before any body allocation/read. */
+  maxLen?: number;
   /** Whether the payload must be empty. */
   emptyPayload?: boolean;
   /** Whether the live v0 `PING` probe is admissible. */
   allowPing?: boolean;
 }
 
+// The source generator imports stamping primitives before it regenerates new
+// table exports. Defer this one factory until first use; retain one stable policy.
+let lifecycleEventPolicy: ReceivePolicy | undefined;
 export const RECEIVE_POLICIES = {
   serverPreAuthHello: {
     channel: HANDSHAKE_CHANNEL,
@@ -359,7 +770,9 @@ export const RECEIVE_POLICIES = {
     corr: { rule: "non-zero" },
     allowPing: true,
   } as ReceivePolicy,
-  lifecycleEventReceiver: eventReceiverOn(LIFECYCLE_CHANNEL),
+  get lifecycleEventReceiver(): ReceivePolicy {
+    return (lifecycleEventPolicy ??= eventReceiverOn(LIFECYCLE_CHANNEL));
+  },
 } as const;
 
 /**
@@ -417,6 +830,7 @@ export function replyWaiter(
     channel,
     kinds: [FrameKind.Reply, FrameKind.Err],
     corr: { rule: "exactly", id: corr },
+    maxLen: channel === COMPAT_CONTROL_CHANNEL ? 4_096 : undefined,
   };
 }
 
@@ -425,6 +839,7 @@ function eventReceiverOn(channel: number): ReceivePolicy {
     channel,
     kinds: [FrameKind.Event],
     corr: { rule: "zero" },
+    maxLen: channel === COMPAT_CONTROL_CHANNEL ? 16_384 : undefined,
     allowPing: true,
   };
 }
@@ -680,6 +1095,10 @@ export function validateReceivedHeader(
   if (policy.emptyPayload === true && header.len !== 0) {
     throw kipcError("KELD-IPC-005", "payload must be empty for this frame");
   }
+  if (policy.maxLen !== undefined && header.len > policy.maxLen)
+    throw payloadTooLarge(
+      "compat-control header exceeds its admitted per-kind bound",
+    );
   return header;
 }
 
@@ -1468,7 +1887,11 @@ export function decodePostcardStringAt(
  * A rejected privileged `Call`: the `Error` carries the registered `KELD-*`
  * code as a field, so callers branch on `code` instead of parsing `message`.
  */
-export type KeldCallError = Error & { code: string };
+export type KeldCallError = Error & {
+  code: string;
+  /** Decoder-marked peer ERR diagnostic; never authentication or effect certainty. */
+  readonly origin?: "peer";
+};
 
 /** True when `e` is a rejected `Call` carrying a registered `KELD-*` code. */
 export function isCallError(e: unknown): e is KeldCallError {
@@ -1560,7 +1983,19 @@ export function errorFromErrFrame(payload: Uint8Array): Error {
       "peer sent an Err payload that is not a CallError",
     );
   }
-  return codedError(call.code, call.message);
+  const error = codedError(call.code, call.message);
+  // The normal caller has validated the matching authenticated reply waiter.
+  // Calling this public decoder alone does not authenticate supplied bytes.
+  // Provenance is distinct from whether the Host committed, canceled or even
+  // dispatched the operation; the original typed outcome/fix keeps that meaning.
+  intrinsicDefineProperty(error, "origin", {
+    __proto__: null,
+    value: "peer",
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  } as PropertyDescriptor);
+  return error;
 }
 
 // ---------------------------------------------------------------------------
@@ -2426,6 +2861,10 @@ export class WorkerLink {
   readonly #pending = new Map<number, PendingAsyncCall>();
   readonly #appliers = stateMap<number, (payload: Uint8Array) => void>();
   readonly #listeners = new Map<number, Set<(payload: Uint8Array) => void>>();
+  /** One framework consumer whose receipt follows this ring's physical release. */
+  #releasedEventHandler:
+    | { channel: number; dispatch: (payload: Uint8Array) => () => void }
+    | undefined;
   readonly #callHandlers = new Map<
     number,
     (payload: Uint8Array) => Promise<WorkerCallReply>
@@ -2635,6 +3074,15 @@ export class WorkerLink {
     }
   }
 
+  /** @internal Read-only admission observation; never a Host/native authority. */
+  get callAdmissionOpen(): boolean {
+    return (
+      atomicLoad(this.#ctrl, STATE) === 0 &&
+      !this.#finalized &&
+      !this.#terminated
+    );
+  }
+
   /** Same correlation and ring path, Promise-shaped, for non-blocking callers. */
   call(
     channel: number,
@@ -2723,6 +3171,9 @@ export class WorkerLink {
     listener: (payload: Uint8Array) => void,
   ): () => void {
     this.#requireEventChannel(channel);
+    if (this.#releasedEventHandler?.channel === channel) {
+      throw linkError("KELD-IPC-005", "EVENT already has a post-ring consumer");
+    }
     let set = this.#listeners.get(channel);
     if (set === undefined) {
       set = new Set();
@@ -2731,6 +3182,26 @@ export class WorkerLink {
     set.add(listener);
     return () => {
       set.delete(listener);
+    };
+  }
+
+  /** One framework consumer; its returned receipt runs after R_BYTES/R_RECS advance. */
+  onEventAfterRingRelease(
+    channel: number,
+    dispatch: (payload: Uint8Array) => () => void,
+  ): () => void {
+    this.#requireEventChannel(channel);
+    if (
+      this.#releasedEventHandler !== undefined ||
+      (this.#listeners.get(channel)?.size ?? 0) > 0
+    ) {
+      throw linkError("KELD-IPC-005", "EVENT already has a consumer");
+    }
+    const owner = { channel, dispatch };
+    this.#releasedEventHandler = owner;
+    return () => {
+      if (this.#releasedEventHandler === owner)
+        this.#releasedEventHandler = undefined;
     };
   }
 
@@ -3117,7 +3588,27 @@ export class WorkerLink {
         continue;
       }
       switch (header.kind) {
-        case FrameKind.Event:
+        case FrameKind.Event: {
+          const dispatch =
+            this.#releasedEventHandler?.channel === header.channel
+              ? this.#releasedEventHandler.dispatch
+              : undefined;
+          let afterRelease: (() => void) | undefined;
+          if (dispatch !== undefined) {
+            try {
+              afterRelease = dispatch(payload);
+              if (typeof afterRelease !== "function")
+                throw linkError(
+                  "KELD-IPC-005",
+                  "EVENT consumer returned no release callback",
+                );
+            } catch (err) {
+              if (!failed) {
+                failed = true;
+                firstError = err;
+              }
+            }
+          }
           for (const listener of this.#listeners.get(header.channel) ?? []) {
             try {
               listener(payload);
@@ -3129,7 +3620,18 @@ export class WorkerLink {
             }
           }
           release();
+          if (afterRelease)
+            intrinsicSetImmediate(() => {
+              try {
+                afterRelease();
+              } catch (err) {
+                intrinsicSetImmediate(() => {
+                  throw err;
+                });
+              }
+            });
           break;
+        }
         case FrameKind.Reply:
         case FrameKind.Err: {
           release();

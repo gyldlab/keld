@@ -33,6 +33,10 @@ sha2 = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# GH-1404: one native assembly owner; no installer implementation on other hosts.
+keld-pack = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-permissions = { workspace = true }
 windows-sys = { workspace = true }

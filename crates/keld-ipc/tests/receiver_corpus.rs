@@ -343,6 +343,23 @@ fn positive_vectors_match_the_live_codec_bytes() {
         keld_ipc::codec::encode(&LifecycleEvent::Ready).expect("encode"),
     );
     assert_eq!(
+        unhex(by_id("lifecycle-event-quit-requested").payload_hex),
+        keld_ipc::codec::encode(&LifecycleEvent::QuitRequested).expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("lifecycle-call-init").payload_hex),
+        keld_ipc::codec::encode(&LifecycleRequest::Init {
+            runtime_process_facts: keld_ipc::lifecycle::RuntimeProcessFacts {
+                versions: std::collections::BTreeMap::from([("bun".to_owned(), "1".to_owned())]),
+            },
+        })
+        .expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("lifecycle-reply-initialized").payload_hex),
+        keld_ipc::codec::encode(&LifecycleResponse::Initialized).expect("encode"),
+    );
+    assert_eq!(
         unhex(by_id("lifecycle-call-quit").payload_hex),
         keld_ipc::codec::encode(&LifecycleRequest::Quit).expect("encode"),
     );
@@ -353,6 +370,10 @@ fn positive_vectors_match_the_live_codec_bytes() {
             message: "KELD-GUARD001: denied".to_owned(),
         })
         .expect("encode"),
+    );
+    assert_eq!(
+        unhex(by_id("window-reply-loaded").payload_hex),
+        keld_ipc::codec::encode(&WindowResponse::Loaded).expect("encode"),
     );
     // The HELLO positive rows carry the declared fixture token bytes.
     assert_eq!(

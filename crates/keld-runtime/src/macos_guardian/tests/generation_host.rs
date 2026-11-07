@@ -37,6 +37,21 @@ fn guardian_exchange(
     response
 }
 
+fn await_bound_generation(
+    updates: &mpsc::Receiver<GuardedPrimaryUpdate>,
+    diagnostic: &str,
+) -> crate::primary::BoundPrimaryGeneration {
+    loop {
+        match updates
+            .recv_timeout(Duration::from_secs(5))
+            .expect(diagnostic)
+        {
+            GuardedPrimaryUpdate::Bound(bound) => return bound,
+            GuardedPrimaryUpdate::Role(_) => {}
+        }
+    }
+}
+
 // Native generation-host fixture: group leaders below are real direct children
 // of this test process, which is the deliberately retained host/Guardian owner.
 fn start_generation_host_fixture(
@@ -45,7 +60,18 @@ fn start_generation_host_fixture(
     current: Arc<Mutex<Option<super::super::RegisteredPrimaryGeneration>>>,
     recovery: Arc<Mutex<RecoveryState>>,
 ) -> std::thread::JoinHandle<Result<(), RuntimeError>> {
+    start_generation_host_fixture_with_setup(host, updates_tx, current, recovery, || ())
+}
+
+fn start_generation_host_fixture_with_setup<T>(
+    host: std::os::unix::net::UnixStream,
+    updates_tx: mpsc::Sender<GuardedPrimaryUpdate>,
+    current: Arc<Mutex<Option<super::super::RegisteredPrimaryGeneration>>>,
+    recovery: Arc<Mutex<RecoveryState>>,
+    setup: impl FnOnce() -> T + Send + 'static,
+) -> std::thread::JoinHandle<Result<(), RuntimeError>> {
     std::thread::spawn(move || {
+        let _setup = setup();
         run_generation_host(
             super::super::generation_host::GenerationHostAdmission::new(
                 std::process::id(),
@@ -124,15 +150,9 @@ fn generation_host_revokes_and_clears_before_preparing_successor() {
     let (endpoint, token) = parse_app_link(&app_link).expect("parse g1 app link");
     let mut app = UnixStream::connect(endpoint).expect("connect g1 app link");
     handshake_client(&mut app, &token).expect("authenticate g1 app link");
-    let bound = loop {
-        let update = updates_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("g1 bound update");
-        if let GuardedPrimaryUpdate::Bound(bound) = update {
-            break bound;
-        }
-    };
+    let bound = await_bound_generation(&updates_rx, "g1 bound update");
     assert_eq!(bound.attempt(), 1);
+    let original_principal = bound.principal();
 
     guardian_exchange(
         &mut guardian,
@@ -190,7 +210,18 @@ fn generation_host_revokes_and_clears_before_preparing_successor() {
         .iter()
         .position(|event| matches!(event, RoleEvent::Provisioned { attempt: 2, .. }))
         .expect("g2 Provisioned event");
-    assert!(revoked < provisioned, "g2 provisioned before g1 revocation");
+    let physically_drained = events
+        .iter()
+        .position(|event| {
+            matches!(event,
+        RoleEvent::ProcessDrained { retirement }
+            if retirement.attempt() == 1 && retirement.principal() == original_principal)
+        })
+        .expect("actual reaped native group has an exact-old-generation physical witness");
+    assert!(
+        revoked < physically_drained && physically_drained < provisioned,
+        "physical old-process absence must follow logical revoke and precede any successor"
+    );
 }
 
 #[test]

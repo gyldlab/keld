@@ -653,6 +653,22 @@ impl BootstrapListener {
 }
 
 impl BootstrapCancellation {
+    /// Whether this existing admission owner has latched cancellation.
+    ///
+    /// Cold post-HELLO admission extensions use this same latch when retaining
+    /// their accepted stream, so cancellation cannot miss the handoff race.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.stopping.load(Ordering::Acquire)
+        }
+        #[cfg(windows)]
+        {
+            self.cancellation.stopping.load(Ordering::Acquire)
+        }
+    }
+
     /// Cancels a blocked accept or active handshake.
     ///
     /// # Errors
@@ -4699,3 +4715,17 @@ mod tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod ac9_macos_tests;
+
+#[cfg(test)]
+mod cancellation_latch_tests {
+    #[test]
+    fn post_hello_admission_uses_the_existing_bootstrap_cancellation_latch() {
+        let listener = super::BootstrapListener::bind().expect("owned bootstrap");
+        let cancellation = listener.cancellation();
+        let copy = cancellation.clone();
+        assert!(!cancellation.is_cancelled());
+        cancellation.cancel().expect("cancel bootstrap");
+        assert!(cancellation.is_cancelled());
+        assert!(copy.is_cancelled());
+    }
+}

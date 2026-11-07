@@ -212,6 +212,48 @@ function nextTask(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+// Actual existing ring counters, not a consumer-supplied physical-release flag.
+async function afterRingRelease(): Promise<void> {
+  const { link, control } = await open();
+  let count = 0;
+  let resolve: () => void = () => undefined;
+  const receipt = new Promise<void>((done) => {
+    resolve = done;
+  });
+  link.onEventAfterRingRelease(LIFECYCLE_CHANNEL, () => {
+    count += 1;
+    report("ring-before-receipt", word(control, WORKER_LINK_CONTROL.R_RECS));
+    report(
+      "ring-nested",
+      decoder.decode(
+        link.callBlocking(ECHO_CHANNEL, text("ring-nested"), 30_000),
+      ),
+    );
+    return () => {
+      report(
+        "ring-after-receipt",
+        word(control, WORKER_LINK_CONTROL.R_RECS) >= 1,
+      );
+      report(
+        "ring-bytes-released",
+        word(control, WORKER_LINK_CONTROL.R_BYTES) >= 24,
+      );
+      resolve();
+    };
+  });
+  report(
+    "ring-first",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("after-ring"), 30_000)),
+  );
+  await receipt;
+  report("ring-dispatch-count", count);
+  report(
+    "ring-healthy",
+    decoder.decode(await link.call(ECHO_CHANNEL, text("ring-healthy"), 30_000)),
+  );
+  link.close();
+}
+
 // Criteria 1, 2, 3 and 9: the #418 arm-B load during one park.
 const ARM_B_EVENTS = 11_000;
 async function armB(): Promise<void> {
@@ -1545,6 +1587,7 @@ async function wedgedKick(): Promise<void> {
 }
 
 const SCENARIOS: Record<string, () => Promise<void>> = {
+  "after-ring-release": afterRingRelease,
   "t2-blocking-call": t2BlockingCall,
   "t2-worker-dies": t2WorkerDies,
   "on-end": onEndReport,

@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { mock } from "bun:test";
 import { linkError } from "../../kipc/src/transport.ts";
+import { decodeEndpointArguments } from "../../kipc/src/endpoint-value-codec.ts";
 import { WindowSource } from "../../api/src/window-source.ts";
 import {
   encodeWindowEvent,
@@ -39,6 +40,12 @@ let listener: (fact: WindowEvent) => void = () => {};
 const source = new WindowSource((fact) => listener(fact));
 const calls: WindowRequest[] = [];
 const creationEvents: { name: string; value: unknown }[] = [];
+const deliveries: {
+  window: WindowRef;
+  topic: string;
+  payload: Uint8Array;
+}[] = [];
+let refuseDelivery: ((error: Error) => void) | undefined;
 const ref = { id: 41, incarnation: 9001n };
 let adopted = false;
 let failConfirmation = false;
@@ -55,6 +62,29 @@ function fact(event: WindowEvent, dispatch = true): void {
 }
 mock.module("../../api/src/app.ts", () => ({
   app: { isReady: () => true, whenReady: async () => {} },
+  // These ownership cases have no admitted original-document recovery source.
+  captureOriginalWindowRecoveryDocument: (_window: WindowRef): undefined =>
+    undefined,
+  sendCurrentWindowEvent: (
+    window: WindowRef,
+    topic: string,
+    payload: Uint8Array,
+  ): Promise<void> => {
+    if (
+      !mode.startsWith("web-contents-send-") ||
+      !source.get(window)?.document?.current
+    )
+      throw linkError(
+        "KELD-CORE-043",
+        "fixture has no admitted renderer route",
+      );
+    deliveries.push({ window: { ...window }, topic, payload });
+    if (mode === "web-contents-send-async-error")
+      return new Promise<void>((_resolve, reject) => {
+        refuseDelivery = reject;
+      });
+    return Promise.resolve();
+  },
   flushAppliedLastWindowClosedAfterDestroy: () => {},
   getDispatchedPendingWindowCloses: () => [],
   getWindowSnapshots: () => source.all(),
@@ -97,13 +127,16 @@ mock.module("../../api/src/app.ts", () => ({
   },
 }));
 mock.module("./app.ts", () => ({
+  // This controlled window-fact role owns no original Quit handoff attempt.
+  joinOriginalQuitBeforeClose: () => false,
   emitNativeAppEvent: (name: string, _event: unknown, value: unknown) => {
     creationEvents.push({ name, value });
     if (mode === "published-listener-throws")
       throw new Error("application creation callback threw");
   },
 }));
-const { BrowserWindow } = await import("./browser-window.ts");
+const { BrowserWindow, readDialogParentRef } =
+  await import("./browser-window.ts");
 if (mode === "unknown-create-outcome") {
   assert.throws(() => new BrowserWindow(), /KELD-IPC-022/);
   assert.deepEqual(calls, [
@@ -182,6 +215,65 @@ if (mode === "unknown-create-outcome") {
   const win = BrowserWindow.getAllWindows()[0];
   assert.equal(win.id, ref.id);
   win.destroy();
+} else if (mode.startsWith("web-contents-send-")) {
+  const win = new BrowserWindow();
+  const contents = win.webContents;
+  assert.throws(
+    () => contents.send("isModified", "unqualified"),
+    /KELD-CORE-043/,
+    "no native document is a synchronous refusal",
+  );
+  fact({
+    variant: "NavigationCommitted",
+    window: ref,
+    document_generation: 2,
+    native_url: "keld-app://original/index.html",
+  });
+  const original = { note: "before" };
+  const uniqueId = "original-close-unique-id";
+  let closes = 0;
+  win.on("close", (event) => {
+    closes += 1;
+    assert.equal(contents.send("isModified", uniqueId, original), undefined);
+    event.preventDefault();
+  });
+  fact({ variant: "CloseRequested", window: ref, close_seq: 7n });
+  assert.equal(closes, 1, "real Host close must dispatch once");
+  assert.equal(deliveries.length, 1);
+  assert.deepEqual(deliveries[0]!.window, ref);
+  assert.equal(deliveries[0]!.topic, "isModified");
+  original.note = "after";
+  assert.deepEqual(
+    decodeEndpointArguments(deliveries[0]!.payload),
+    [uniqueId, { note: "before" }],
+    "original argument vector was copied synchronously before returning",
+  );
+  const cyclic: { self?: unknown } = {};
+  cyclic.self = cyclic;
+  assert.throws(() => contents.send("isModified", cyclic), /KELD-COMPAT-101/);
+  assert.equal(deliveries.length, 1, "invalid bytes never reach the sender");
+  assert.deepEqual(
+    calls.filter((call) => call.variant === "CloseReply"),
+    [{ variant: "CloseReply", window: ref, close_seq: 7n, verdict: "Veto" }],
+    "a valid void send still permits synchronous close Veto",
+  );
+  if (mode === "web-contents-send-async-error") {
+    const previousError = console.error;
+    const reports: string[] = [];
+    console.error = (...args: unknown[]) => {
+      reports.push(String(args[0]));
+    };
+    try {
+      assert.ok(refuseDelivery, "this controlled Host route is still pending");
+      refuseDelivery(linkError("KELD-CORE-043", "native delivery refused"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.deepEqual(reports, ["KELD webContents.send failed:"]);
+    } finally {
+      console.error = previousError;
+    }
+  }
+  fact({ variant: "Destroyed", window: ref });
+  assert.throws(() => contents.send("isModified", uniqueId), /KELD-COMPAT-011/);
 } else {
   let win: InstanceType<typeof BrowserWindow> | undefined;
   if (mode === "weakmap-set") poison(WeakMap.prototype, "set");
@@ -195,6 +287,10 @@ if (mode === "unknown-create-outcome") {
   }
   assert.ok(win, "successful Host Create must return an owned wrapper");
   assert.equal(win.id, ref.id);
+  if (mode === "dialog-parent") {
+    assert.deepEqual(readDialogParentRef(win), ref);
+    assert.throws(() => readDialogParentRef(new Proxy(win, {})), TypeError);
+  }
   assert.equal(BrowserWindow.getAllWindows()[0], win);
   assert.deepEqual(
     creationEvents.map(({ name }) => name),
@@ -233,6 +329,9 @@ if (mode === "unknown-create-outcome") {
     if (mode.startsWith("terminal-")) restore();
   }
   assert.equal(win.isDestroyed(), true);
+  if (mode === "dialog-parent") {
+    assert.throws(() => readDialogParentRef(win), /KELD-COMPAT-011/);
+  }
   assert.equal(contents.isDestroyed(), true);
   assert.deepEqual(terminal, ["contents", "closed"]);
   assert.deepEqual(BrowserWindow.getAllWindows(), []);

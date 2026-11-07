@@ -1,6 +1,6 @@
 [package]
 name = "keld-pack"
-description = "Canonical Windows v0 update package production for Keld"
+description = "Canonical update packages and native macOS local application packaging for Keld"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# GH-1404: existing workspace pins only. SHA-256 binds captured inputs; tempfile
+# owns unpublished staging; rustix supplies descriptor-relative no-follow opens
+# and Apple's exclusive rename. Its existing safe event API bounds native-tool
+# pipe polling without retaining blocked worker threads. No new crate/version.
+# Serde emits external, non-authoritative receipts.
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+rustix = { workspace = true, features = ["event"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # KEL-263: reuse the guard-owned native namespace validator and the existing

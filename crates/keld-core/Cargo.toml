@@ -31,7 +31,11 @@ serde_json = { workspace = true }
 nix = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# GH-1404: producer and installed admission share one closed metadata codec.
+# keld-pack is Core-independent; this adds no third-party package or version.
+keld-pack = { workspace = true }
 objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSArray", "NSPathUtilities", "NSLocale", "NSString"] }
 core-foundation = { workspace = true }
 getrandom = { workspace = true }
 sha2 = { workspace = true }

@@ -66,6 +66,42 @@ fn private_guardian_discriminator_without_authenticated_handoff_spawns_nothing()
 
 #[test]
 fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_spawns_nothing() {
+    assert_private_guardian_requires_registration(&["1".to_owned()]);
+}
+
+#[test]
+fn private_original_guardian_authenticates_before_native_facts_are_consumed() {
+    let forged = serde_json::json!({
+        "schema": 7,
+        "kind": "local-development",
+        "name": "Unregistered",
+        "version": "1.0.0",
+        "root": "/tmp/unregistered.app/Contents/Resources/app",
+        "resourcesRoot": "/tmp/unregistered.app/Contents/Resources",
+        "paths": {},
+        "singleInstance": { "verdict": "acquired" },
+        "originalResourcePolicy": {
+            "contract": "gh473-original-editor-offline/v1",
+            "graphSha256": format!("sha256:{}", "ab".repeat(32)),
+            "policySha256": format!("sha256:{}", "cd".repeat(32)),
+            "windowKey": "main",
+            "selector": "original-editor-offline"
+        }
+    })
+    .to_string();
+    for native_facts in ["not-json".to_owned(), forged] {
+        assert_private_guardian_requires_registration(&[
+            "2".to_owned(),
+            "local-bundle-v2".to_owned(),
+            "ab".repeat(32),
+            "cd".repeat(32),
+            "ef".repeat(32),
+            native_facts,
+        ]);
+    }
+}
+
+fn assert_private_guardian_requires_registration(suffix: &[String]) {
     let temp = tempfile::tempdir().expect("private valid-pipe fixture");
     let marker = temp.path().join("must-not-spawn");
     let entry = temp.path().join("entry.ts");
@@ -83,7 +119,7 @@ fn private_guardian_with_valid_liveness_but_no_authenticated_registration_still_
         .arg("entry.ts")
         .arg("1")
         .arg("1")
-        .arg("1") // valid native mode keeps the liveness/authentication fence reachable
+        .args(suffix) // closed role shape keeps the authentication fence reachable
         .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
         .env(
             "KELD_APP_LINK",

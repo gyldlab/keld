@@ -24,6 +24,9 @@ repository = "https://github.com/gyldlab/keld"
 authors = ["GYLDLAB"]
 
 [workspace.dependencies]
+# GH-1404 reuses GH473's owned macOS reader-queue shutdown join. This exact
+# safe wrapper is already locked via Tao; no version upgrade or public queue.
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
 keld-core = { path = "crates/keld-core" }
 keld-wv = { path = "crates/keld-wv" }
 keld-ipc = { path = "crates/keld-ipc" }

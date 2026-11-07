@@ -5,9 +5,9 @@ import {
   isCallError,
   withIoDeadline,
   nativeFacadeBootSelected,
-} from "../../kipc/src/transport.ts";
+} from "@keld/kipc";
 import { Worker, MessagePort } from "node:worker_threads";
-import { WorkerLink, FrameKind } from "../../kipc/src/transport.ts";
+import { WorkerLink, FrameKind } from "@keld/kipc";
 import type { WindowEvent } from "./window-codec.ts";
 
 const mode = process.argv[2];
@@ -54,6 +54,10 @@ async function lifecycleDrain(): Promise<void> {
           throw new Error("explicit close must not notify unexpected death");
         },
         onWindowFact(fact: WindowEvent) {
+          assert.ok(
+            fact.variant !== "DesktopSnapshot",
+            "this fixture sends window facts only",
+          );
           log.push(`${fact.variant}:${fact.window.id}`);
           if (fact.variant !== "Destroyed") return;
           const source = session!.windowSource!;

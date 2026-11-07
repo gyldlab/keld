@@ -11,6 +11,8 @@ use super::{
 use crate::IpcError;
 use crate::codec::{decode, encode, encode_into};
 
+mod desktop;
+
 const VECTORS: &str = include_str!("../../tests/fixtures/window-v0.tsv");
 const WINDOW: WindowRef = WindowRef {
     id: WindowId(7),
@@ -67,7 +69,7 @@ fn assert_vectors<T: Serialize + DeserializeOwned + Debug + PartialEq>(
             .remove(id)
             .expect("case exists once in shared oracle");
         assert_eq!(encode(value).expect("encode payload"), bytes, "{id}");
-        let mut scratch = [0; 64];
+        let mut scratch = vec![0; super::NAVIGATION_EVENT_STORAGE_BYTES].into_boxed_slice();
         assert_eq!(
             encode_into(value, &mut scratch).expect("encode in fixed storage"),
             bytes,
@@ -220,79 +222,146 @@ fn window_events_match_shared_vectors() {
                 },
             ),
             ("event-destroyed", WindowEvent::Destroyed { window: WINDOW }),
+            (
+                "event-navigation-committed",
+                WindowEvent::NavigationCommitted {
+                    window: WINDOW,
+                    document_generation: 5,
+                    native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
+                        .to_owned(),
+                },
+            ),
+            (
+                "event-navigation-finished",
+                WindowEvent::NavigationFinished {
+                    window: WINDOW,
+                    document_generation: 5,
+                },
+            ),
+            (
+                "event-document-recovered",
+                WindowEvent::DocumentRecovered {
+                    window: WINDOW,
+                    document_generation: 5,
+                    native_url: "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1"
+                        .to_owned(),
+                },
+            ),
         ],
     );
 }
 
+fn preload_request_vectors() -> [(&'static str, WindowRequest); 2] {
+    [
+        // Exact postcard bytes are independently pinned in window-v0.tsv.
+        // This must fail to compile until tag-6 is appended at the Rust owner.
+        (
+            "request-create-preload-empty",
+            WindowRequest::CreateWithPreload {
+                width: 640,
+                height: 480,
+                x: Some(-3),
+                y: Some(4),
+                preload_absolute: String::from("/app/p.js"),
+                additional_arguments: vec![],
+            },
+        ),
+        (
+            "request-create-preload-adaptive",
+            WindowRequest::CreateWithPreload {
+                width: 1,
+                height: 2,
+                x: None,
+                y: None,
+                preload_absolute: String::from("/a/p.js"),
+                additional_arguments: vec![String::from("--initial-adaptive-colors=auto")],
+            },
+        ),
+    ]
+}
+
 #[test]
 fn window_requests_match_shared_vectors() {
-    assert_vectors(
-        "request",
-        &[
-            (
-                "request-create-positioned",
-                WindowRequest::Create {
-                    width: 640,
-                    height: 480,
-                    x: Some(-3),
-                    y: Some(4),
-                },
-            ),
-            (
-                "request-create-no-position",
-                WindowRequest::Create {
-                    width: 0,
-                    height: 0,
-                    x: None,
-                    y: None,
-                },
-            ),
-            (
-                "request-create-maxima",
-                WindowRequest::Create {
-                    width: u32::MAX,
-                    height: u32::MAX,
-                    x: Some(i32::MIN),
-                    y: Some(i32::MAX),
-                },
-            ),
-            (
-                "request-maximized",
-                WindowRequest::SetMaximized {
-                    window: WINDOW,
-                    maximized: true,
-                },
-            ),
-            (
-                "request-full-screen",
-                WindowRequest::SetFullScreen {
-                    window: WINDOW,
-                    full_screen: false,
-                },
-            ),
-            (
-                "request-close",
-                WindowRequest::RequestClose { window: WINDOW },
-            ),
-            (
-                "request-close-allow",
-                WindowRequest::CloseReply {
-                    window: WINDOW,
-                    close_seq: 300,
-                    verdict: CloseVerdict::Allow,
-                },
-            ),
-            (
-                "request-close-veto",
-                WindowRequest::CloseReply {
-                    window: WINDOW,
-                    close_seq: 300,
-                    verdict: CloseVerdict::Veto,
-                },
-            ),
-            ("request-destroy", WindowRequest::Destroy { window: WINDOW }),
-        ],
-    );
+    let mut cases = vec![
+        (
+            "request-create-positioned",
+            WindowRequest::Create {
+                width: 640,
+                height: 480,
+                x: Some(-3),
+                y: Some(4),
+            },
+        ),
+        (
+            "request-create-no-position",
+            WindowRequest::Create {
+                width: 0,
+                height: 0,
+                x: None,
+                y: None,
+            },
+        ),
+        (
+            "request-create-maxima",
+            WindowRequest::Create {
+                width: u32::MAX,
+                height: u32::MAX,
+                x: Some(i32::MIN),
+                y: Some(i32::MAX),
+            },
+        ),
+        (
+            "request-maximized",
+            WindowRequest::SetMaximized {
+                window: WINDOW,
+                maximized: true,
+            },
+        ),
+        (
+            "request-full-screen",
+            WindowRequest::SetFullScreen {
+                window: WINDOW,
+                full_screen: false,
+            },
+        ),
+        (
+            "request-close",
+            WindowRequest::RequestClose { window: WINDOW },
+        ),
+        (
+            "request-close-allow",
+            WindowRequest::CloseReply {
+                window: WINDOW,
+                close_seq: 300,
+                verdict: CloseVerdict::Allow,
+            },
+        ),
+        (
+            "request-close-veto",
+            WindowRequest::CloseReply {
+                window: WINDOW,
+                close_seq: 300,
+                verdict: CloseVerdict::Veto,
+            },
+        ),
+        ("request-destroy", WindowRequest::Destroy { window: WINDOW }),
+        (
+            "request-destroy-original-document",
+            WindowRequest::DestroyOriginalDocument {
+                window: WINDOW,
+                document_generation: 5,
+            },
+        ),
+        (
+            "request-load-url",
+            WindowRequest::LoadUrl {
+                window: WINDOW,
+                uri: "file:///s/drawio/src/main/webapp/index.html?q=1".to_owned(),
+            },
+        ),
+    ];
+    cases.extend(preload_request_vectors());
+    assert_vectors("request", &cases);
 }
 
 #[test]
@@ -314,6 +383,7 @@ fn window_responses_match_shared_vectors() {
             ("response-reply-applied", WindowResponse::ReplyApplied),
             ("response-reply-stale", WindowResponse::ReplyStale),
             ("response-destroyed", WindowResponse::Destroyed),
+            ("response-loaded", WindowResponse::Loaded),
             (
                 "response-adopted",
                 WindowResponse::Adopted { window: WINDOW },
@@ -338,15 +408,15 @@ fn window_responses_match_shared_vectors() {
 #[test]
 fn window_payloads_reject_unknown_discriminants_and_invalid_scalar_values() {
     assert!(matches!(
-        decode::<WindowEvent>(&[7]),
+        decode::<WindowEvent>(&[10]),
         Err(IpcError::Codec(_))
     ));
     assert!(matches!(
-        decode::<WindowRequest>(&[6]),
+        decode::<WindowRequest>(&[9]),
         Err(IpcError::Codec(_))
     ));
     assert!(matches!(
-        decode::<WindowResponse>(&[9]),
+        decode::<WindowResponse>(&[10]),
         Err(IpcError::Codec(_))
     ));
     assert!(matches!(
@@ -372,4 +442,115 @@ fn window_payloads_reject_unknown_discriminants_and_invalid_scalar_values() {
         decode::<WindowGeneration>(&[0xff; 10]),
         Err(IpcError::Codec(_))
     ));
+}
+
+#[test]
+fn preload_metadata_bounds_are_utf8_bytes_not_characters() {
+    fn request(path: String, arguments: Vec<String>) -> WindowRequest {
+        WindowRequest::CreateWithPreload {
+            width: 1,
+            height: 2,
+            x: None,
+            y: None,
+            preload_absolute: path,
+            additional_arguments: arguments,
+        }
+    }
+    for value in [
+        request("/".to_owned() + &"x".repeat(2047), vec![]),
+        request("/p".into(), vec![String::new(); 16]),
+        request("/p".into(), vec!["é".repeat(128); 8]),
+    ] {
+        let bytes = encode(&value).expect("bounded request encodes");
+        assert_eq!(
+            decode::<WindowRequest>(&bytes).expect("bounded metadata"),
+            value
+        );
+    }
+    for value in [
+        request(String::new(), vec![]),
+        request("/".to_owned() + &"x".repeat(2048), vec![]),
+        request("/".to_owned() + &"é".repeat(1024), vec![]),
+        request("/p".into(), vec![String::new(); 17]),
+        request("/p".into(), vec!["x".repeat(257)]),
+        request("/p".into(), vec!["é".repeat(129)]),
+        request("/p".into(), vec!["x".repeat(256); 9]),
+    ] {
+        let bytes = encode(&value).expect("untrusted wire can encode invalid metadata");
+        assert!(matches!(
+            decode::<WindowRequest>(&bytes),
+            Err(IpcError::Codec(_))
+        ));
+    }
+}
+
+#[test]
+fn borrowed_native_commit_matches_the_owning_literal_schema_without_url_copy() {
+    let native_url = "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1";
+    let mut scratch = vec![0_u8; super::NAVIGATION_EVENT_STORAGE_BYTES].into_boxed_slice();
+    let bytes = super::encode_navigation_committed_into(WINDOW, 5, native_url, &mut scratch)
+        .expect("borrowed native commit");
+    let expected = vectors("event")
+        .remove("event-navigation-committed")
+        .expect("shared append-only literal");
+    assert_eq!(bytes, expected);
+    assert_eq!(
+        decode::<WindowEvent>(bytes).expect("owned app decoder"),
+        WindowEvent::NavigationCommitted {
+            window: WINDOW,
+            document_generation: 5,
+            native_url: native_url.to_owned()
+        }
+    );
+    let mut tiny = [0_u8; 4];
+    assert!(super::encode_navigation_committed_into(WINDOW, 5, native_url, &mut tiny).is_err());
+    let maximum = "a".repeat(8192);
+    let bytes = super::encode_navigation_committed_into(WINDOW, u32::MAX, &maximum, &mut scratch)
+        .expect("native UTF-8 reservation ceiling fits the owning wire storage");
+    assert_eq!(
+        decode::<WindowEvent>(bytes).expect("maximum observation"),
+        WindowEvent::NavigationCommitted {
+            window: WINDOW,
+            document_generation: u32::MAX,
+            native_url: maximum
+        }
+    );
+}
+
+#[test]
+fn original_document_destroy_keeps_its_selector_and_generic_destroy_bytes() {
+    let a = WindowRequest::DestroyOriginalDocument {
+        window: WINDOW,
+        document_generation: 5,
+    };
+    let b = WindowRequest::DestroyOriginalDocument {
+        window: WINDOW,
+        document_generation: 6,
+    };
+    assert_eq!(encode(&a).expect("original A selector"), [8, 7, 0xac, 2, 5]);
+    assert_eq!(encode(&b).expect("original B selector"), [8, 7, 0xac, 2, 6]);
+    assert_eq!(
+        encode(&WindowRequest::Destroy { window: WINDOW }).expect("generic contract unchanged"),
+        [5, 7, 0xac, 2]
+    );
+}
+
+#[test]
+fn recovered_document_borrow_matches_literal_without_replaying_finish() {
+    let native_url = "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1";
+    let mut scratch = vec![0_u8; super::NAVIGATION_EVENT_STORAGE_BYTES].into_boxed_slice();
+    let bytes = super::encode_document_recovered_into(WINDOW, 5, native_url, &mut scratch)
+        .expect("borrowed recovery snapshot");
+    assert_eq!(bytes, vectors("event")["event-document-recovered"]);
+    assert_eq!(
+        decode::<WindowEvent>(bytes).expect("owned snapshot decoder"),
+        WindowEvent::DocumentRecovered {
+            window: WINDOW,
+            document_generation: 5,
+            native_url: native_url.to_owned(),
+        }
+    );
+    assert_ne!(bytes, vectors("event")["event-navigation-finished"]);
+    let mut tiny = [0_u8; 4];
+    assert!(super::encode_document_recovered_into(WINDOW, 5, native_url, &mut tiny).is_err());
 }

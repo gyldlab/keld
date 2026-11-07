@@ -11,6 +11,7 @@ for (const scenario of [
   "late-import-replay",
   "ready-same-turn-continuation",
   "applied-ahead-close-order",
+  "desktop-windowless-dispatch",
   "recovery-gap",
   "replay-order",
   "pre-ready-close-order",

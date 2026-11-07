@@ -41,7 +41,8 @@ fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
             command
                 .arg("entry-inode")
                 .env(NATIVE_WINDOW_FACADE_ENV, ambient);
-            configure_guardian_boot_mode(&mut command, trigger);
+            configure_guardian_boot_mode(&mut command, trigger, false)
+                .expect("existing boot mode needs no runtime process facts");
             assert_eq!(
                 command.get_args().collect::<Vec<_>>(),
                 ["entry-inode", expected]
@@ -54,6 +55,84 @@ fn guardian_mode_argument_and_environment_share_the_validated_boot_decision() {
                 Some(std::ffi::OsStr::new(expected))
             );
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn original_guardian_mode_preserves_boolean_facade_environment() {
+    use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
+
+    for ambient in ["0", "1", "2", "unknown"] {
+        let mut command = std::process::Command::new("unused-guardian");
+        command
+            .arg("entry-inode")
+            .env(NATIVE_WINDOW_FACADE_ENV, ambient);
+        configure_guardian_boot_mode(&mut command, AppReadyTrigger::HostInitialized, true)
+            .expect("admitted original facade requires canonical runtime process facts");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["entry-inode", "2"]);
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == NATIVE_WINDOW_FACADE_ENV)
+                .and_then(|(_, value)| value),
+            Some(std::ffi::OsStr::new("1")),
+            "private mode 2 must not become a third facade boolean value"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn navigation_boot_refuses_runtime_facts_before_changing_command() {
+    use super::{AppReadyTrigger, NATIVE_WINDOW_FACADE_ENV, configure_guardian_boot_mode};
+
+    for ambient in [None, Some("0"), Some("1"), Some("2"), Some("unknown")] {
+        let mut command = std::process::Command::new("unused-guardian");
+        command
+            .arg("entry-inode")
+            .env("UNRELATED_SETTING", "retained");
+        if let Some(ambient) = ambient {
+            command.env(NATIVE_WINDOW_FACADE_ENV, ambient);
+        }
+        let arguments = command
+            .get_args()
+            .map(std::ffi::OsStr::to_os_string)
+            .collect::<Vec<_>>();
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_os_string(),
+                    value.map(std::ffi::OsStr::to_os_string),
+                )
+            })
+            .collect::<Vec<_>>();
+        let error =
+            configure_guardian_boot_mode(&mut command, AppReadyTrigger::NavigationReady, true)
+                .expect_err("renderer navigation cannot select the original facade capture mode");
+        assert_eq!(error.code(), "KELD-CORE-037");
+        assert_eq!(
+            command
+                .get_args()
+                .map(std::ffi::OsStr::to_os_string)
+                .collect::<Vec<_>>(),
+            arguments,
+            "invalid source selection must append no private role argument"
+        );
+        assert_eq!(
+            command
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_os_string(),
+                        value.map(std::ffi::OsStr::to_os_string),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            environment,
+            "invalid source selection must not modify any command environment entry"
+        );
     }
 }
 
@@ -191,7 +270,9 @@ fn on_time_native_first_init_survives_delayed_coordinator_and_disarms_deadline()
     send.send(first).expect("queue genuine timely UI event");
     assert_eq!(
         receive_initial_milestone(&events, Some(&clock)),
-        InitialMilestoneReceive::Event(first),
+        InitialMilestoneReceive::Event(AppWindowEvent::HostInitialized {
+            observed_at: on_time,
+        }),
         "coordinator descheduling must not transform timely native Init into timeout"
     );
     send.send(AppWindowEvent::LastWindowClosed)
@@ -318,10 +399,14 @@ use super::{
 };
 
 include!("tests/app_identity_and_shared_probes.rs");
+#[cfg(target_os = "macos")]
+#[path = "tests/gh499_graph.rs"]
+pub(in crate::app_session) mod gh499_graph;
 include!("tests/session_handover.rs");
 include!("tests/windows_profile_and_boot.rs");
 include!("tests/windows_signature_and_lease.rs");
 include!("tests/boot_schema_and_preflight.rs");
+include!("tests/profile_admission.rs");
 include!("tests/filesystem_guard_and_recovery.rs");
 include!("tests/guarded_router_and_quit.rs");
 // The existing macOS declaration stays with its historical selector. Linux

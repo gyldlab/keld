@@ -1,4 +1,4 @@
-//! Non-release owner-private boot stage compiler (KEL-96/T1a/T4).
+//! Shared boot-byte compiler and owner-private non-release stage (KEL-96/T1a/T4).
 
 use std::fs;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -138,7 +138,7 @@ pub(crate) fn ensure_current_principal_owns(path: &Path) -> Result<(), ProjectOw
 }
 
 #[cfg(unix)]
-fn ensure_unix_metadata_owned_by(
+pub(crate) fn ensure_unix_metadata_owned_by(
     path: &Path,
     metadata: &fs::Metadata,
     invoking_uid: u32,
@@ -195,6 +195,580 @@ impl std::fmt::Display for BootCompileError {
 }
 
 impl std::error::Error for BootCompileError {}
+
+/// Compiles exactly the shipping Host's boot contract from already captured inputs.
+///
+/// The config source is consumed as inert authoring data; Guard is the only parser
+/// for the exact permissions bytes. Both `keld dev` and the local macOS build
+/// use these bytes, while neither compilation nor this function creates a stage,
+/// authority, profile, lease, or executable.
+///
+/// # Errors
+/// Refuses malformed auth or initial-window configuration, invalid relative
+/// entry/renderer paths, invalid permissions, or oversized descriptor output.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+pub fn compile_boot_descriptor_bytes(
+    config_source: &str,
+    name: &str,
+    entry: &str,
+    renderer: Option<&str>,
+    permissions_bytes: &[u8],
+) -> Result<Vec<u8>, BootCompileError> {
+    let facade = keld_core::initial_window_from_config_ts(config_source)
+        .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
+    if facade == renderer.is_some() {
+        return Err(BootCompileError::new(
+            "project config",
+            "renderer is required for renderer boots and forbidden with initialWindow: 'none'",
+        ));
+    }
+    validate_relative("entry", entry)?;
+    if let Some(renderer) = renderer {
+        validate_relative("renderer", renderer)?;
+    }
+    let declared_profile = keld_guard::parse_manifest(
+        std::str::from_utf8(permissions_bytes)
+            .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?,
+    )
+    .map_err(|source| BootCompileError::new("permissions profile", source.to_string()))?
+    .declared_profile();
+    let schema = keld_core::app_session::boot_schema(facade, declared_profile);
+    let auth_configuration =
+        keld_core::auth_configuration_from_config_ts(config_source).map_err(|source| {
+            BootCompileError::new("project auth configuration", source.to_string())
+        })?;
+    let digest = Sha256::digest(permissions_bytes);
+    let mut descriptor = serde_json::json!({
+        "schema": schema,
+        "name": name,
+        "entry": entry,
+        "renderer": renderer,
+        "permissions": {
+            "file": PERMISSIONS_FILE,
+            "content_sha256": format!("sha256:{digest:x}"),
+        }
+    });
+    if facade {
+        let object = descriptor.as_object_mut().ok_or_else(|| {
+            BootCompileError::new("boot descriptor", "generated root is not an object")
+        })?;
+        object.remove("renderer");
+    }
+    // Preserve the exact historical no-auth bytes; Native owns provider checks.
+    if !auth_configuration.is_empty() {
+        let auth = serde_json::to_value(&auth_configuration).map_err(|source| {
+            BootCompileError::new("boot auth configuration", source.to_string())
+        })?;
+        let object = descriptor.as_object_mut().ok_or_else(|| {
+            BootCompileError::new("boot descriptor", "generated root is not an object")
+        })?;
+        object.insert(String::from("auth"), auth);
+    }
+    let bytes = serde_json::to_vec(&descriptor)
+        .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?;
+    if bytes.len() > 64 * 1024 {
+        return Err(BootCompileError::new(
+            "boot descriptor",
+            "compiled boot descriptor exceeds the Host's 64 KiB limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn require_installed_graph_boot_inputs(
+    name: &str,
+    main_entry: &str,
+    graph_bytes: &[u8],
+) -> Result<(), BootCompileError> {
+    if name.is_empty() {
+        return Err(BootCompileError::new(
+            "installed graph boot",
+            "name is empty",
+        ));
+    }
+    validate_relative("entry", main_entry)?;
+    if graph_bytes.is_empty() || graph_bytes.len() > keld_core::app_session::MAX_GRAPH_BYTES {
+        return Err(BootCompileError::new(
+            "installed graph boot",
+            "graph-v1 source bytes must be present and within the 8 MiB bound",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn require_installed_graph_config_shape(
+    config_source: &str,
+    root: &std::collections::BTreeMap<String, keld_core::LiteralConfigValue>,
+) -> Result<(), BootCompileError> {
+    if !keld_core::initial_window_from_config_ts(config_source)
+        .map_err(|error| BootCompileError::new("installed graph config", error.to_string()))?
+        || root.contains_key("renderer")
+        || root.contains_key("auth")
+        || root.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "name"
+                    | "id"
+                    | "version"
+                    | "entry"
+                    | "initialWindow"
+                    | "rendererSource"
+                    | "singleInstance"
+                    | "applicationNameForUserAgent"
+            )
+        })
+    {
+        return Err(BootCompileError::new(
+            "installed graph config",
+            "original source requires initialWindow: 'none' without renderer or auth",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn require_installed_graph_renderer_source<'a>(
+    root: &std::collections::BTreeMap<String, keld_core::LiteralConfigValue>,
+    selected: &'a keld_core::app_session::SelectedRendererSource,
+) -> Result<(&'a str, &'a str, &'a str), BootCompileError> {
+    use keld_core::LiteralConfigValue;
+
+    let Some(LiteralConfigValue::Object(declared)) = root.get("rendererSource") else {
+        return Err(BootCompileError::new(
+            "installed graph config",
+            "missing closed rendererSource root/entry declaration",
+        ));
+    };
+    let source_root = selected
+        .root()
+        .to_str()
+        .ok_or_else(|| BootCompileError::new("installed graph config", "non UTF-8 source root"))?;
+    let source_entry = selected
+        .entry()
+        .to_str()
+        .ok_or_else(|| BootCompileError::new("installed graph config", "non UTF-8 source entry"))?;
+    let preload_path = selected
+        .preload_path()
+        .to_str()
+        .ok_or_else(|| BootCompileError::new("installed graph config", "non UTF-8 preload"))?;
+    if declared.len() != 2
+        || !matches!(declared.get("root"), Some(LiteralConfigValue::Text(path)) if path == source_root)
+        || !matches!(declared.get("entry"), Some(LiteralConfigValue::Text(path)) if path == source_entry)
+    {
+        return Err(BootCompileError::new(
+            "installed graph config",
+            "selected rendererSource differs from the app's closed literal declaration",
+        ));
+    }
+    Ok((source_root, source_entry, preload_path))
+}
+
+#[cfg(target_os = "macos")]
+fn require_installed_graph_legacy_permissions(
+    permissions_bytes: &[u8],
+) -> Result<(), BootCompileError> {
+    let manifest =
+        keld_guard::parse_manifest(std::str::from_utf8(permissions_bytes).map_err(|error| {
+            BootCompileError::new("installed graph permissions", error.to_string())
+        })?)
+        .map_err(|error| BootCompileError::new("installed graph permissions", error.to_string()))?;
+    if manifest.declared_profile() != Some(keld_guard::DeclaredProfile::Legacy) {
+        return Err(BootCompileError::new(
+            "installed graph permissions",
+            "rendererSource requires an explicit root /profile: 'legacy'; no inferred permission",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn encode_installed_graph_preload_sha256(
+    selected: &keld_core::app_session::SelectedRendererSource,
+) -> String {
+    let preload_sha256 = selected.preload_sha256();
+    preload_sha256
+        .iter()
+        .flat_map(|byte| {
+            [
+                char::from(LOWER_HEX[usize::from(byte >> 4)]),
+                char::from(LOWER_HEX[usize::from(byte & 15)]),
+            ]
+        })
+        .collect::<String>()
+}
+
+#[cfg(target_os = "macos")]
+fn serialize_installed_graph_descriptor(
+    descriptor: &mut serde_json::Value,
+    single_instance: Option<keld_core::SingleInstanceDeclaration>,
+    application_name_for_user_agent: Option<String>,
+) -> Result<Vec<u8>, BootCompileError> {
+    let object = descriptor.as_object_mut().ok_or_else(|| {
+        BootCompileError::new("installed graph boot", "generated root is not an object")
+    })?;
+    if let Some(declaration) = single_instance {
+        object.insert(
+            String::from("singleInstance"),
+            serde_json::to_value(declaration).map_err(|error| {
+                BootCompileError::new("singleInstance encoding", error.to_string())
+            })?,
+        );
+    }
+    if let Some(application_name) = application_name_for_user_agent {
+        object.insert(
+            String::from("applicationNameForUserAgent"),
+            serde_json::Value::String(application_name),
+        );
+    }
+    let bytes = serde_json::to_vec(descriptor)
+        .map_err(|error| BootCompileError::new("installed graph boot", error.to_string()))?;
+    if bytes.len() > 64 * 1024 {
+        return Err(BootCompileError::new(
+            "installed graph boot",
+            "compiled boot-6 descriptor exceeds the Host's 64 KiB bound",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Compile the one installed macOS graph-facade boot variant from Pack's
+/// already copied and GH499-admitted graph-v1 bytes. This is a pure compiler:
+/// it opens no paths, publishes no stage, and cannot mint a Guard grant.
+///
+/// Boot schema 6 is independent of the installed *launch-facts* schema 6.
+/// The existing development and renderer boot schemas 1–4 remain unchanged.
+///
+/// # Errors
+/// Refuses non-Legacy, a renderer/auth declaration, mismatched source selector,
+/// a missing graph or noncanonical main entry before producing any bytes.
+#[cfg(target_os = "macos")]
+pub fn compile_installed_graph_boot_descriptor_bytes(
+    config_source: &str,
+    name: &str,
+    main_entry: &str,
+    permissions_bytes: &[u8],
+    graph_bytes: &[u8],
+    selected: &keld_core::app_session::SelectedRendererSource,
+) -> Result<Vec<u8>, BootCompileError> {
+    use keld_core::LiteralConfigValue;
+
+    require_installed_graph_boot_inputs(name, main_entry, graph_bytes)?;
+    let root = keld_core::literal_config_from_ts(config_source)
+        .map_err(|error| BootCompileError::new("installed graph config", error.to_string()))?;
+    require_installed_graph_config_shape(config_source, &root)?;
+    let Some(LiteralConfigValue::Text(app_id)) = root.get("id") else {
+        return Err(BootCompileError::new(
+            "installed graph config",
+            "a canonical literal application id is required",
+        ));
+    };
+    keld_core::validate_canonical_app_id(app_id)
+        .map_err(|error| BootCompileError::new("installed graph app id", error.to_string()))?;
+    let single_instance =
+        keld_core::single_instance_from_config_ts(config_source).map_err(|error| {
+            BootCompileError::new("installed graph singleInstance", error.to_string())
+        })?;
+    if single_instance
+        .as_ref()
+        .is_some_and(|declaration| declaration.id() != app_id.as_str())
+    {
+        return Err(BootCompileError::new(
+            "installed graph singleInstance",
+            "singleInstance.id must equal the canonical application id",
+        ));
+    }
+    let application_name_for_user_agent =
+        keld_core::application_name_for_user_agent_from_config_ts(config_source).map_err(
+            |error| {
+                BootCompileError::new(
+                    "installed graph applicationNameForUserAgent",
+                    error.to_string(),
+                )
+            },
+        )?;
+    if !matches!(root.get("name"), Some(LiteralConfigValue::Text(value)) if value == name)
+        || match root.get("entry") {
+            Some(LiteralConfigValue::Text(value)) => value != main_entry,
+            None => keld_core::DEFAULT_ENTRY != main_entry,
+            _ => true,
+        }
+    {
+        return Err(BootCompileError::new(
+            "installed graph config",
+            "supplied main entry or name differs from the app's closed literal declaration",
+        ));
+    }
+    let (source_root, source_entry, preload_path) =
+        require_installed_graph_renderer_source(&root, selected)?;
+    require_installed_graph_legacy_permissions(permissions_bytes)?;
+    let permissions_sha256 = Sha256::digest(permissions_bytes);
+    let graph_sha256 = Sha256::digest(graph_bytes);
+    let preload_sha256 = encode_installed_graph_preload_sha256(selected);
+    let mut descriptor = serde_json::json!({
+        "schema": 6,
+        "name": name,
+        "entry": main_entry,
+        "permissions": {
+            "file": PERMISSIONS_FILE,
+            "content_sha256": format!("sha256:{permissions_sha256:x}"),
+        },
+        "graph": {
+            "file": keld_core::app_session::GRAPH_FILE,
+            "content_sha256": format!("sha256:{graph_sha256:x}"),
+        },
+        "rendererSource": {
+            "root": source_root,
+            "entry": source_entry,
+        },
+        "preload": {
+            "path": preload_path,
+            "content_sha256": format!("sha256:{preload_sha256}"),
+        },
+    });
+    serialize_installed_graph_descriptor(
+        &mut descriptor,
+        single_instance,
+        application_name_for_user_agent
+            .as_ref()
+            .map(|application_name| application_name.as_str().to_owned()),
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod installed_graph_boot_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const CONFIG: &str = "export default {name:'Demo',id:'dev.example.demo',version:'1.2.3',entry:'src/main.ts',initialWindow:'none',rendererSource:{root:'client/published',entry:'pages/editor.html'}} as const;";
+    const GRAPH: &[u8] = b"keld.stage.graph/v1\n";
+    const PERMISSIONS: &[u8] = br#"{"profile":"legacy"}"#;
+
+    fn selected()
+    -> Result<keld_core::app_session::SelectedRendererSource, Box<dyn std::error::Error>> {
+        Ok(keld_core::app_session::SelectedRendererSource::new(
+            "client/published",
+            "pages/editor.html",
+            "bootstrap/original-preload.cjs",
+            [0xab; 32],
+        )?)
+    }
+
+    #[test]
+    fn installed_graph_boot_six_binds_known_bytes_and_has_no_other_authority_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The two expected SHA-256 literals were calculated independently
+        // from these exact byte strings, not from the implementation under test.
+        let bytes = compile_installed_graph_boot_descriptor_bytes(
+            CONFIG,
+            "Demo",
+            "src/main.ts",
+            PERMISSIONS,
+            GRAPH,
+            &selected()?,
+        )
+        .expect("pure installed graph compiler");
+        let actual: Value = serde_json::from_slice(&bytes).expect("strict boot JSON");
+        assert_eq!(
+            actual,
+            json!({
+                "schema": 6,
+                "name": "Demo",
+                "entry": "src/main.ts",
+                "permissions": {
+                    "file": "keld.permissions.jsonc",
+                    "content_sha256": "sha256:578b29790d2ab97e8c3e5dacb92d294c2155bdab922b626c965f1c414eaf6db7"
+                },
+                "graph": {
+                    "file": "keld.stage-graph.json",
+                    "content_sha256": "sha256:19e1a4c3b0f42ca2a87ece27b0673d6d1579b9619453a0dbd7f09491292e512a"
+                },
+                "rendererSource": {
+                    "root": "client/published",
+                    "entry": "pages/editor.html"
+                },
+                "preload": {
+                    "path": "bootstrap/original-preload.cjs",
+                    "content_sha256": format!("sha256:{}", "ab".repeat(32))
+                }
+            })
+        );
+        for forbidden in ["renderer", "auth", "profile", "sourceUrl"] {
+            assert!(
+                actual.get(forbidden).is_none(),
+                "{forbidden} leaked into boot6"
+            );
+        }
+        // Fail if a mutation adds an alternate boot authority or drops one
+        // of the exact selected source/preload binding fields.
+        assert_eq!(actual.as_object().expect("closed object").len(), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn installed_graph_boot_serializes_only_present_runtime_declarations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (declarations, expected_fields) in [
+            ("singleInstance:{id:'dev.example.demo'},", 8),
+            ("applicationNameForUserAgent:'Example/1 Native',", 8),
+            (
+                "singleInstance:{id:'dev.example.demo'},applicationNameForUserAgent:'Example/1 Native',",
+                9,
+            ),
+        ] {
+            let config = CONFIG.replace(
+                "rendererSource:",
+                &(declarations.to_owned() + "rendererSource:"),
+            );
+            let bytes = compile_installed_graph_boot_descriptor_bytes(
+                &config,
+                "Demo",
+                "src/main.ts",
+                PERMISSIONS,
+                GRAPH,
+                &selected()?,
+            )
+            .expect("optional boot-6 runtime declarations");
+            let actual: Value = serde_json::from_slice(&bytes).expect("strict boot JSON");
+            assert_eq!(actual["schema"], 6);
+            assert_eq!(
+                actual.as_object().expect("closed boot").len(),
+                expected_fields
+            );
+            if declarations.contains("singleInstance") {
+                assert_eq!(actual["singleInstance"], json!({"id":"dev.example.demo"}));
+            } else {
+                assert!(actual.get("singleInstance").is_none());
+            }
+            if declarations.contains("applicationNameForUserAgent") {
+                assert_eq!(actual["applicationNameForUserAgent"], "Example/1 Native");
+            } else {
+                assert!(actual.get("applicationNameForUserAgent").is_none());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn installed_graph_compiler_refuses_unbound_or_malformed_runtime_declarations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for declaration in [
+            "singleInstance:{id:'dev.example.other'}",
+            "singleInstance:{id:'dev.example.demo',extra:'yes'}",
+            "singleInstance:{id:'dev.example.demo',id:'dev.example.demo'}",
+            "singleInstance:null",
+            "singleInstance:['dev.example.demo']",
+            "applicationNameForUserAgent:null",
+            "applicationNameForUserAgent:''",
+            "applicationNameForUserAgent:' Trailing '",
+            "applicationNameForUserAgent:'A',applicationNameForUserAgent:'B'",
+        ] {
+            let config =
+                CONFIG.replace("rendererSource:", &format!("{declaration},rendererSource:"));
+            assert!(
+                compile_installed_graph_boot_descriptor_bytes(
+                    &config,
+                    "Demo",
+                    "src/main.ts",
+                    PERMISSIONS,
+                    GRAPH,
+                    &selected()?,
+                )
+                .is_err(),
+                "accepted {config}"
+            );
+        }
+        for config in [
+            CONFIG.replace("id:'dev.example.demo',", ""),
+            CONFIG.replace("dev.example.demo", "Dev.Example.Demo"),
+        ] {
+            assert!(
+                compile_installed_graph_boot_descriptor_bytes(
+                    &config,
+                    "Demo",
+                    "src/main.ts",
+                    PERMISSIONS,
+                    GRAPH,
+                    &selected()?,
+                )
+                .is_err(),
+                "accepted noncanonical or absent app identity"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn installed_graph_boot_rejects_source_policy_and_graph_single_fault_mutations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let wrong_source = keld_core::app_session::SelectedRendererSource::new(
+            "unrelated",
+            "pages/editor.html",
+            "bootstrap/original-preload.cjs",
+            [0xab; 32],
+        )
+        .expect("syntax-valid mismatched source");
+        let negatives: [(
+            &str,
+            &[u8],
+            &[u8],
+            keld_core::app_session::SelectedRendererSource,
+        ); 4] = [
+            (CONFIG, br#"{"profile":"strict"}"#, GRAPH, selected()?),
+            (CONFIG, b"{}", GRAPH, selected()?),
+            (CONFIG, PERMISSIONS, &b""[..], selected()?),
+            (CONFIG, PERMISSIONS, GRAPH, wrong_source),
+        ];
+        for (config, policy, graph, selected) in negatives {
+            assert!(
+                compile_installed_graph_boot_descriptor_bytes(
+                    config,
+                    "Demo",
+                    "src/main.ts",
+                    policy,
+                    graph,
+                    &selected,
+                )
+                .is_err(),
+                "accepted an unqualified source, policy, or graph"
+            );
+        }
+        for config in [
+            CONFIG.replace("initialWindow:'none',", ""),
+            CONFIG.replace("initialWindow:'none',", "renderer:'index.html',"),
+            CONFIG.replace("initialWindow:'none',", "initialWindow:'none',auth:{},"),
+            CONFIG.replace("client/published", "different/root"),
+            CONFIG.replace("rendererSource:{root:", "rendererSource:null,other:{root:"),
+        ] {
+            assert!(
+                compile_installed_graph_boot_descriptor_bytes(
+                    &config,
+                    "Demo",
+                    "src/main.ts",
+                    PERMISSIONS,
+                    GRAPH,
+                    &selected()?,
+                )
+                .is_err(),
+                "accepted a changed rendererSource declaration: {config}"
+            );
+        }
+        assert!(
+            compile_installed_graph_boot_descriptor_bytes(
+                CONFIG,
+                "Demo",
+                "src/other.ts",
+                PERMISSIONS,
+                GRAPH,
+                &selected()?,
+            )
+            .is_err(),
+            "caller may not compile a main entry different from the closed application input"
+        );
+        Ok(())
+    }
+}
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct StageGuard {
@@ -312,6 +886,127 @@ impl ProjectPermissionsSource {
     }
 }
 
+/// Captures the required macOS packaging manifest from the same owner-checked,
+/// no-follow retained source used by the development boot compiler.
+///
+/// # Errors
+/// Refuses missing, nonregular, foreign-owned, unreadable, or oversized policy.
+#[cfg(target_os = "macos")]
+pub fn capture_required_packaging_permissions(
+    project_root: &Path,
+) -> Result<Vec<u8>, BootCompileError> {
+    let source = ProjectPermissionsSource::open(project_root)?;
+    if source.policy.is_none() {
+        return Err(BootCompileError::new(
+            "permissions source",
+            "keld.permissions.jsonc must exist for packaging; no default policy is synthesized",
+        ));
+    }
+    source.capture()
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux", windows)))]
+mod packaging_boot_tests {
+    use super::compile_boot_descriptor_bytes;
+    use serde_json::{Value, json};
+
+    // Fixture construction must fail the test when an expected valid input is
+    // refused; no production error path uses this assertion-only helper.
+    #[allow(clippy::expect_used)]
+    fn compile(config: &str, renderer: Option<&str>, policy: &[u8]) -> Value {
+        let bytes = compile_boot_descriptor_bytes(config, "Demo", "src/main.ts", renderer, policy)
+            .expect("shared compiler");
+        serde_json::from_slice(&bytes).expect("closed compiled descriptor")
+    }
+
+    #[test]
+    fn shared_dev_and_pack_compiler_preserves_schema_one_exact_policy_digest() {
+        let result = compile(
+            "export default {name:'Demo',renderer:'index.html'} as const;",
+            Some("index.html"),
+            b"{}\n",
+        );
+        // SHA-256 independently checked with the shell's shasum -a 256.
+        assert_eq!(
+            result,
+            json!({
+                "schema": 1,
+                "name": "Demo",
+                "entry": "src/main.ts",
+                "renderer": "index.html",
+                "permissions": {
+                    "file": "keld.permissions.jsonc",
+                    "content_sha256": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn declared_profile_selects_guarded_schema_without_carrying_second_profile() {
+        let legacy = br#"{"profile":"legacy"}"#;
+        let renderer = compile(
+            "export default {name:'Demo',renderer:'index.html'} as const;",
+            Some("index.html"),
+            legacy,
+        );
+        assert_eq!(renderer["schema"], 3);
+        assert!(renderer.get("profile").is_none());
+        let facade = compile(
+            "export default {name:'Demo',initialWindow:'none'} as const;",
+            None,
+            legacy,
+        );
+        assert_eq!(facade["schema"], 4);
+        assert!(facade.get("renderer").is_none());
+        assert!(facade.get("auth").is_none());
+        let unprofiled = compile(
+            "export default {name:'Demo',initialWindow:'none'} as const;",
+            None,
+            b"{}",
+        );
+        assert_eq!(unprofiled["schema"], 2);
+    }
+
+    #[test]
+    fn malformed_policy_and_mismatched_boot_shape_fail_before_any_stage() {
+        for policy in [
+            br#"{"profile":"legacy","profile":"strict"}"#.as_slice(),
+            br#"{"profile":"unverified"}"#,
+            b"\xff",
+            b"",
+        ] {
+            assert!(
+                compile_boot_descriptor_bytes(
+                    "export default {name:'Demo'}",
+                    "Demo",
+                    "src/main.ts",
+                    Some("index.html"),
+                    policy,
+                )
+                .is_err()
+            );
+        }
+        for (config, renderer) in [
+            ("export default {name:'Demo'}", None),
+            (
+                "export default {name:'Demo',initialWindow:'none'}",
+                Some("index.html"),
+            ),
+            (
+                "export default {name:'Demo',renderer:'index.html'}",
+                Some("../escape.html"),
+            ),
+            ("export default {name:'Demo'}", Some("/absolute.html")),
+        ] {
+            assert!(
+                compile_boot_descriptor_bytes(config, "Demo", "src/main.ts", renderer, b"{}")
+                    .is_err()
+            );
+        }
+    }
+}
+
 /// Compiles one fresh, non-release owner-private platform boot stage.
 ///
 /// This is a tooling surface: it creates the bytes consumed by the exact
@@ -392,16 +1087,44 @@ where
         keld_core::renderer_from_config_ts(&config)
             .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())
     });
-    // The reviewed Core extractor reads the same already-open project config.
-    // It returns the shared Native type without filtering profiles or requiring clientId.
-    let auth_configuration =
-        keld_core::auth_configuration_from_config_ts(&config).map_err(|source| {
-            BootCompileError::new("project auth configuration", source.to_string())
-        })?;
     validate_relative("entry", &entry)?;
     if let Some(renderer) = &renderer {
         validate_relative("renderer", renderer)?;
     }
+
+    #[cfg(target_os = "macos")]
+    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
+    #[cfg(target_os = "macos")]
+    let permissions_bytes = permissions_snapshot.as_slice();
+    #[cfg(not(target_os = "macos"))]
+    {
+        // The historical fixed policy remains the output on these platforms,
+        // but it must never silently erase an explicit project request.
+        match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
+            Ok(manifest) if manifest.declared_profile().is_some() => {
+                return Err(BootCompileError::new(
+                    "permissions profile",
+                    "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
+                ));
+            }
+            Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => (),
+            Err(source) => {
+                return Err(BootCompileError::new(
+                    "permissions profile",
+                    source.to_string(),
+                ));
+            }
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let permissions_bytes = PERMISSIONS_BYTES;
+    let compiled_boot = compile_boot_descriptor_bytes(
+        &config,
+        &name,
+        &entry,
+        renderer.as_deref(),
+        permissions_bytes,
+    )?;
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = renderer
@@ -503,60 +1226,15 @@ where
             return Err(BootCompileError::new("kipc transport", source.to_string()));
         }
     }
-    #[cfg(target_os = "macos")]
-    let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
-    #[cfg(target_os = "macos")]
-    let permissions_bytes = permissions_snapshot.as_slice();
-    #[cfg(not(target_os = "macos"))]
-    let permissions_bytes = PERMISSIONS_BYTES;
     write_new_file(
         &root.join(PERMISSIONS_FILE),
         permissions_bytes,
         0o400,
         "permissions",
     )?;
-    let digest = Sha256::digest(permissions_bytes);
-    let mut descriptor = serde_json::json!({
-        "schema": 1,
-        "name": name,
-        "entry": entry,
-        "renderer": renderer,
-        "permissions": {
-            "file": PERMISSIONS_FILE,
-            "content_sha256": format!("sha256:{digest:x}"),
-        }
-    });
-    if facade {
-        let object = descriptor.as_object_mut().ok_or_else(|| {
-            BootCompileError::new("boot descriptor", "generated root is not an object")
-        })?;
-        object.insert(String::from("schema"), serde_json::Value::from(2));
-        object.remove("renderer");
-    }
-    // Preserve the byte shape of legacy stages when no auth profile is configured.
-    // A configured-but-incomplete profile is nonempty and must be carried unchanged;
-    // Native owns the post-Allow missing-client decision.
-    if !auth_configuration.is_empty() {
-        let auth = serde_json::to_value(&auth_configuration).map_err(|source| {
-            BootCompileError::new("boot auth configuration", source.to_string())
-        })?;
-        match &mut descriptor {
-            serde_json::Value::Object(object) => {
-                object.insert(String::from("auth"), auth);
-            }
-            _ => {
-                return Err(BootCompileError::new(
-                    "boot descriptor",
-                    "generated descriptor root is not an object",
-                ));
-            }
-        }
-    }
-    let descriptor = serde_json::to_vec(&descriptor)
-        .map_err(|source| BootCompileError::new("boot descriptor", source.to_string()))?;
     write_new_file(
         &root.join("keld.boot.json"),
-        &descriptor,
+        &compiled_boot,
         0o400,
         "boot descriptor",
     )?;
@@ -1013,6 +1691,39 @@ mod error_tests {
 #[cfg(all(test, unix))]
 #[allow(clippy::expect_used, clippy::panic)] // unit-test fixture failures are assertion oracles
 mod tests {
+    #[test]
+    fn explicit_profile_staging_never_discards_the_project_request() {
+        for profile in ["strict", "legacy"] {
+            let (_temp, project, host) = fixture();
+            let source = format!(r#"{{"profile":"{profile}"}}"#);
+            std::fs::write(project.join(super::PERMISSIONS_FILE), source.as_bytes())
+                .expect("explicit source policy");
+            let staged = super::stage_dev_boot(&project, &host);
+            #[cfg(target_os = "macos")]
+            {
+                let stage = staged.expect("qualified renderer/profile producer");
+                let descriptor: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(stage.root().join("keld.boot.json")).expect("descriptor"),
+                )
+                .expect("compiled JSON");
+                assert_eq!(
+                    descriptor["schema"], 3,
+                    "explicit profile must not be ignored by an old host"
+                );
+                assert_eq!(
+                    std::fs::read(stage.root().join(super::PERMISSIONS_FILE))
+                        .expect("captured policy"),
+                    source.as_bytes()
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let error = staged.expect_err("unsupported explicit-profile producer must refuse");
+                assert!(error.to_string().contains("profile"), "{error}");
+            }
+        }
+    }
+
     use std::fs;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -1197,6 +1908,43 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn explicit_facade_profile_stage_selects_schema_four_without_renderer() {
+        for profile in ["legacy", "strict"] {
+            let (_temp, project, source_host) = fixture();
+            fs::write(
+                project.join("keld.config.ts"),
+                "export default { name: 'Stage Fixture', entry: 'src/main.ts', initialWindow: 'none' } as const;",
+            )
+            .expect("facade config");
+            fs::remove_file(project.join("index.html")).expect("no renderer source");
+            let permissions = format!("{{\"profile\":\"{profile}\"}}\n");
+            fs::write(project.join(PERMISSIONS_FILE), &permissions).expect("explicit profile");
+            let stage = stage_dev_boot(&project, &source_host).expect("stage explicit facade");
+            let descriptor: serde_json::Value = serde_json::from_slice(
+                &fs::read(stage.root().join("keld.boot.json")).expect("descriptor bytes"),
+            )
+            .expect("descriptor JSON");
+            assert_eq!(
+                descriptor["schema"], 4,
+                "profile must not silently downgrade"
+            );
+            assert_eq!(descriptor.as_object().expect("closed object").len(), 4);
+            assert!(descriptor.get("renderer").is_none());
+            assert!(descriptor.get("auth").is_none());
+            assert!(!stage.root().join("index.html").exists());
+            assert_eq!(
+                fs::read(stage.root().join(PERMISSIONS_FILE)).expect("same staged bytes"),
+                permissions.as_bytes()
+            );
+            assert_eq!(
+                descriptor["permissions"]["content_sha256"],
+                format!("sha256:{:x}", Sha256::digest(permissions.as_bytes()))
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn facade_stage_has_closed_schema_two_and_no_renderer_file() {
         let (_temp, project, source_host) = fixture();
         fs::write(
@@ -1371,13 +2119,15 @@ mod tests {
     #[test]
     fn linux_project_policy_does_not_change_historical_staged_policy() {
         let (_temp, project, source_host) = fixture();
-        fs::write(project.join(PERMISSIONS_FILE), b"explicit project bytes\n")
-            .expect("unselected Linux project policy");
+        let project_policy = br#"{"app":{"fs":{"read":["/tmp/keld-policy/**"]}}}"#;
+        fs::write(project.join(PERMISSIONS_FILE), project_policy)
+            .expect("valid unselected Linux project policy");
         let stage = stage_dev_boot(&project, &source_host).expect("unchanged Linux stage");
         assert_eq!(
             fs::read(stage.root().join(PERMISSIONS_FILE)).expect("fixed Linux policy"),
             b"{}\n"
         );
+        assert_ne!(project_policy.as_slice(), b"{}\n");
     }
 
     #[test]
@@ -1465,8 +2215,7 @@ mod tests {
     #[test]
     fn failed_stage_removes_partial_launch_directory() {
         let (_temp, project, source_host) = fixture();
-        fs::write(project.join("keld.permissions.jsonc"), "entry collision\n")
-            .expect("colliding entry source");
+        fs::write(project.join("keld.permissions.jsonc"), b"{}\n").expect("colliding entry source");
         fs::write(
             project.join("keld.config.ts"),
             "export default {\n  name: \"Stage Fixture\",\n  entry: \"keld.permissions.jsonc\",\n  renderer: \"index.html\",\n} as const;\n",
@@ -1474,9 +2223,20 @@ mod tests {
         .expect("collision config");
         let error = stage_dev_boot(&project, &source_host)
             .expect_err("fixed permissions destination collision must fail");
-        assert!(error.to_string().contains("permissions"), "{error}");
+        assert!(
+            matches!(
+                error,
+                BootCompileError::Staging {
+                    phase: "permissions",
+                    ..
+                }
+            ),
+            "collision must fail at the post-root permissions write: {error}"
+        );
         let dev_root = project.join(".keld/dev");
-        let children = fs::read_dir(&dev_root).map_or(0, std::iter::Iterator::count);
+        let children = fs::read_dir(&dev_root)
+            .expect("collision must occur after the stage parent was created")
+            .count();
         assert_eq!(
             children, 0,
             "post-root failure leaked a partial launch stage"
