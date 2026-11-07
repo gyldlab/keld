@@ -1,0 +1,56 @@
+{
+  "schema": "keld.compat.corpus/v1",
+  "corpus_id": "electron-session-v1",
+  "scope": "@keld/electron session.webRequest cells for draw.io's two listener registrations on macOS at Electron 44.4.5 (onBeforeRequest with the file://* filter and onHeadersReceived, both installed in app.whenReady at drawio-desktop@2edf9fb src/main/electron.js:987-1010); red until GH-553, then an intentional divergence; not the F05-T1 probe list a-g, not median-app product compatibility",
+  "panel": "showcase",
+  "kind": "primary_workflow",
+  "artifact_digest": "manifest_bytes",
+  "engine": {
+    "macos": "headless-lifecycle-conformance",
+    "linux": "headless-lifecycle-conformance",
+    "windows": "headless-lifecycle-conformance"
+  },
+  "doc_snapshots": {
+    "docs/api/web-request.md": "sha256:ea683f5e45607e75da85aeeddfd335e3552bde228ec1b3afc5cc303fdd3c8800"
+  },
+  "upstream": {
+    "electron_version": "44.4.5",
+    "electron_commit": "694f45852a0f1726cd23bfd379854de489cccb65"
+  },
+  "cells": [
+    {
+      "operation_id": "web-request.on-before-request.file-url-filter",
+      "oracle_id": "electron-v44.4.5.web-request.on-before-request",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-request.md#webrequestonbeforerequestfilter-listener",
+        "quote": "The `listener` will be called with `listener(details, callback)` when a request\nis about to occur.",
+        "quote_sha256": "sha256:1c9c3cbb1ba18bee2cfb02f50fd0ee85e9162928fde0050514eba8658cda235d"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-553",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/session_web_request.rs",
+      "test_name": "web_request_on_before_request_file_url_filter_default_session_refuses_typed",
+      "negative_control": "Today: removing either session export, returning successfully from registration, throwing plain TypeError, changing any exact refusal field (UnsupportedMemberError, KELD-COMPAT-013, session.defaultSession, GH-553, property), or attempting a Host connection fails the mapped test. The recorder is installed before import with KELD_APP_LINK set. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; file:// read policy is host-owned (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+    },
+    {
+      "operation_id": "web-request.on-headers-received.response-headers",
+      "oracle_id": "electron-v44.4.5.web-request.on-headers-received",
+      "doc_citation": {
+        "url": "https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/web-request.md#webrequestonheadersreceivedfilter-listener",
+        "quote": "The `listener` will be called with `listener(details, callback)` when HTTP\nresponse headers of a request have been received.",
+        "quote_sha256": "sha256:6065527754ee504f66e2cd6cce7b758726d2b0bcb76cb4a6eea405b1c70cc16f"
+      },
+      "expected_verdict": "fail",
+      "implementing_ticket": "GH-553",
+      "platforms": [
+        "macos"
+      ],
+      "test_path": "crates/keld-compat/tests/session_web_request.rs",
+      "test_name": "web_request_on_headers_received_default_session_refuses_typed",
+      "negative_control": "Today: removing either session export, returning successfully from registration, throwing plain TypeError, changing any exact refusal field (UnsupportedMemberError, KELD-COMPAT-013, session.defaultSession, GH-553, property), or attempting a Host connection fails the mapped test. The recorder is installed before import with KELD_APP_LINK set. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; response headers (CSP) are host-injected (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+    }
+  ]
+}
