@@ -1,27 +1,20 @@
-//! Conformance (GH-470, the F05-T1 listener slice): present-day observation of draw.io's
-//! two `session.defaultSession.webRequest` registrations against `@keld/electron`.
+//! GH-470 F05-T1 listener slice: the named/default session bindings exist, but
+//! GH-565 D4 refuses defaultSession with KELD-COMPAT-013 owned by GH-553.
+//! The two cells remain RED against pinned Electron v44.4.5 web-request.md.
+//! Linux execution proves only this platform-neutral refusal oracle, not macOS
+//! listener acceptance. GH-553 owns any later recorded-listener divergence.
 //!
-//! Oracle: `docs/api/web-request.md` at the Electron v44.4.5 pin, cited per cell in
-//! `fixtures/session-corpus/corpus.json` (corpus `electron-session-v1`). Both cells are
-//! red until GH-553 exports `session` (gh532 rule 3), so each mapped test asserts today's
-//! behaviour, which the Bun fixture `web_request_absent.ts` records through the
-//! `electron` alias with no host: the facade has no `session` export, and draw.io's two
-//! registration shapes (drawio-desktop@2edf9fb `src/main/electron.js:994` and `:1010`)
-//! throw a `TypeError`. GH-553 inverts both tests and switches each cell's key to its
-//! `intentional_divergence` (listener recorded, never invoked; the file:// read policy
-//! and the response headers are host-owned, GH-473).
-//!
-//! Negative control: a stub `session.defaultSession.webRequest` in the fixture whose two
-//! methods return `undefined` makes both tests fail at their `threw:TypeError` assertion
-//! (the marker then reads `returned:undefined`). A fixture that exits non-zero, prints a
-//! marker twice or omits one fails closed.
+//! Independent negative controls: absent exports falsify binding presence; plain
+//! TypeError or a wrong typed field falsifies the refusal; successful registration
+//! falsifies the outcome; calling app.whenReady falsifies zero Host attempts even
+//! if the property still throws correctly. The recorder never opens a socket.
 
 #![allow(clippy::expect_used, clippy::panic)] // extra test crate: expect/panic are assertion oracles
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The import-only Bun fixture that records the observations.
+/// The Bun fixture that records refusal fields and attempted Host connections.
 const FIXTURE: &str = "web_request_absent.ts";
 /// Prefix of every marker line the fixture prints.
 const MARKER_PREFIX: &str = "GH470_";
@@ -52,7 +45,7 @@ impl Markers {
         let output = Command::new("bun")
             .arg(format!("./{FIXTURE}"))
             .current_dir(&fixtures)
-            .env_remove("KELD_APP_LINK")
+            .env("KELD_APP_LINK", "gh470-recorder-only")
             .output()
             .expect("spawn bun — bun must be on PATH");
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -89,42 +82,31 @@ impl Markers {
     }
 }
 
-/// Cell `web-request.on-before-request.file-url-filter`: draw.io registers
-/// `onBeforeRequest({urls: ['file://*']}, listener)` (`electron.js:1010`).
-#[test]
-fn web_request_on_before_request_file_url_filter_today_no_session_export_registration_throws_type_error()
- {
-    let markers = Markers::observe();
-    assert_eq!(
-        markers.one("SESSION_NAMED"),
-        "undefined",
-        "the facade exports no `session` binding yet (GH-553)"
-    );
-    assert_eq!(
-        markers.one("SESSION_DEFAULT"),
-        "undefined",
-        "the default export carries no `session` yet (GH-553)"
-    );
-    assert_eq!(
-        markers.one("ON_BEFORE_REQUEST"),
-        "threw:TypeError",
-        "draw.io's onBeforeRequest({{urls: ['file://*']}}, listener) registration must throw today"
-    );
+/// Both cells assert the current refusal, not successful listener support. Literal
+/// fields come from GH-565 D4; the fixture only observes the actual thrown value.
+fn assert_registration_refused(markers: &Markers, operation: &str) {
+    assert_eq!(markers.one("SESSION_NAMED"), "object");
+    assert_eq!(markers.one("SESSION_DEFAULT"), "object");
+    assert_eq!(markers.one(operation), "threw:UnsupportedMemberError");
+    for (field, expected) in [
+        ("CODE", "string:KELD-COMPAT-013"),
+        ("MEMBER", "string:session.defaultSession"),
+        ("TICKET", "string:GH-553"),
+        ("KIND", "string:property"),
+    ] {
+        assert_eq!(markers.one(&format!("{operation}_{field}")), expected);
+    }
+    assert_eq!(markers.one("HOST_CONNECTS"), "0");
 }
 
-/// Cell `web-request.on-headers-received.response-headers`: draw.io registers
-/// `onHeadersReceived(listener)` without a filter (`electron.js:994`).
+/// Cell `web-request.on-before-request.file-url-filter`: draw.io's filtered listener.
 #[test]
-fn web_request_on_headers_received_today_no_session_export_registration_throws_type_error() {
-    let markers = Markers::observe();
-    assert_eq!(
-        markers.one("SESSION_NAMED"),
-        "undefined",
-        "the facade exports no `session` binding yet (GH-553)"
-    );
-    assert_eq!(
-        markers.one("ON_HEADERS_RECEIVED"),
-        "threw:TypeError",
-        "draw.io's onHeadersReceived(listener) registration must throw today"
-    );
+fn web_request_on_before_request_file_url_filter_default_session_refuses_typed() {
+    assert_registration_refused(&Markers::observe(), "ON_BEFORE_REQUEST");
+}
+
+/// Cell `web-request.on-headers-received.response-headers`: draw.io's unfiltered listener.
+#[test]
+fn web_request_on_headers_received_default_session_refuses_typed() {
+    assert_registration_refused(&Markers::observe(), "ON_HEADERS_RECEIVED");
 }

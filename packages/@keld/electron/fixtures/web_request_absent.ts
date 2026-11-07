@@ -1,19 +1,21 @@
 /**
- * GH-470 red cells (corpus `electron-session-v1`): present-day observation of
- * draw.io's two `session.defaultSession.webRequest` registrations against the
- * `electron` alias. Import-only: no kipc, no whenReady (that needs a host).
- * The keld-compat target `tests/session_web_request.rs` asserts the markers.
- *
- * draw.io's own `import { session } from 'electron'` would be a link-time
- * SyntaxError against the facade today, so this probe reads the namespace and
- * the default export instead, then makes both registrations in draw.io's
- * argument shapes (drawio-desktop@2edf9fb src/main/electron.js:994 and :1010).
- *
- * Markers use `writeSync(1, …)` so a piped stdout cannot hide them behind
- * block buffering.
+ * GH-470 listener cells stay RED: GH-565 links session but defaultSession still
+ * refuses under GH-553. Observe draw.io's two registration shapes and Host-link
+ * attempts without opening sockets. The Rust target owns the independent oracle.
+ * Keep this historical fixture filename for existing references.
  */
 import { writeSync } from "node:fs";
-import * as electron from "electron";
+import { LifecycleLink } from "../src/link.ts";
+
+let connects = 0;
+LifecycleLink.connect = (async () => {
+  connects += 1;
+  throw new Error("GH470_UNEXPECTED_CONNECT");
+}) as typeof LifecycleLink.connect;
+
+// Install the recorder before module evaluation. The parent sets KELD_APP_LINK
+// so an attempted Host call cannot stop early at the missing-env check.
+const electron = await import("electron");
 
 type Listener = (
   details: unknown,
@@ -31,13 +33,23 @@ function marker(name: string, value: string): void {
   writeSync(1, `GH470_${name}=${value}\n`);
 }
 
-/** Records what the registration did: its return type, or the thrown error's name. */
+/** Observe raw error fields, without importing the production refusal predicate. */
 function probe(name: string, register: () => unknown): void {
   try {
     const result = register();
     marker(name, `returned:${typeof result}`);
   } catch (error) {
     marker(name, `threw:${error instanceof Error ? error.name : typeof error}`);
+    for (const field of ["code", "member", "ticket", "kind"] as const) {
+      const value =
+        error !== null && typeof error === "object"
+          ? Reflect.get(error, field)
+          : undefined;
+      marker(
+        `${name}_${field.toUpperCase()}`,
+        `${typeof value}:${String(value)}`,
+      );
+    }
   }
 }
 
@@ -48,8 +60,7 @@ const viaDefault = (
 marker("SESSION_NAMED", typeof named);
 marker("SESSION_DEFAULT", typeof viaDefault);
 
-// Today `named` is undefined; the cast keeps draw.io's call shape intact so the
-// observation is the registration's own outcome, not a guard of this fixture.
+// Keep draw.io's call shapes: defaultSession refuses before either listener registers.
 const session = named as SessionLike;
 // electron.js:1010 — onBeforeRequest with draw.io's file:// filter.
 probe("ON_BEFORE_REQUEST", () =>
@@ -64,3 +75,5 @@ probe("ON_HEADERS_RECEIVED", () =>
     callback({}),
   ),
 );
+
+marker("HOST_CONNECTS", String(connects));

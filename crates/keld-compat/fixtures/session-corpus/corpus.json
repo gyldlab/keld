@@ -32,8 +32,8 @@
         "macos"
       ],
       "test_path": "crates/keld-compat/tests/session_web_request.rs",
-      "test_name": "web_request_on_before_request_file_url_filter_today_no_session_export_registration_throws_type_error",
-      "negative_control": "Today: exporting a session whose defaultSession.webRequest.onBeforeRequest accepts draw.io's ({urls: ['file://*']}, listener) registration (drawio-desktop@2edf9fb src/main/electron.js:1010) without inverting this case fails it: the fixture records returned:undefined instead of threw:TypeError. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; file:// read policy is host-owned (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+      "test_name": "web_request_on_before_request_file_url_filter_default_session_refuses_typed",
+      "negative_control": "Today: removing either session export, returning successfully from registration, throwing plain TypeError, changing any exact refusal field (UnsupportedMemberError, KELD-COMPAT-013, session.defaultSession, GH-553, property), or attempting a Host connection fails the mapped test. The recorder is installed before import with KELD_APP_LINK set. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; file:// read policy is host-owned (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
     },
     {
       "operation_id": "web-request.on-headers-received.response-headers",
@@ -49,8 +49,8 @@
         "macos"
       ],
       "test_path": "crates/keld-compat/tests/session_web_request.rs",
-      "test_name": "web_request_on_headers_received_today_no_session_export_registration_throws_type_error",
-      "negative_control": "Today: exporting a session whose defaultSession.webRequest.onHeadersReceived accepts draw.io's unfiltered (listener) registration (drawio-desktop@2edf9fb src/main/electron.js:994) without inverting this case fails it: the fixture records returned:undefined instead of threw:TypeError. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; response headers (CSP) are host-injected (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
+      "test_name": "web_request_on_headers_received_default_session_refuses_typed",
+      "negative_control": "Today: removing either session export, returning successfully from registration, throwing plain TypeError, changing any exact refusal field (UnsupportedMemberError, KELD-COMPAT-013, session.defaultSession, GH-553, property), or attempting a Host connection fails the mapped test. The recorder is installed before import with KELD_APP_LINK set. GH-553 inverts the test and switches this key to the intentional divergence 'listener recorded, never invoked; response headers (CSP) are host-injected (GH-473)': after that, invoking the recorded listener once across the F05-T1 probe list, or a registration that throws on macOS, fails it."
     }
   ]
 }
