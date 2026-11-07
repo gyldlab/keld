@@ -308,6 +308,23 @@ test("complete native light and dark observations remain usable", () => {
   }
 });
 
+// The cleanup container itself may be absent in malformed JSON receipts.
+// It must produce the same typed feasibility refusal, not a raw property error.
+for (const kind of ["missing", "null"] as const) {
+  test(`refuses ${kind} cleanup object before allocating IDs`, () => {
+    const sample = raw();
+    if (kind === "missing") {
+      expect(Reflect.deleteProperty(sample, "cleanup")).toBe(true);
+    } else {
+      (sample as unknown as Record<string, unknown>).cleanup = null;
+    }
+    const ids = new NativeDisplayIds();
+    expect(() => nativeFacts(sample, text, ids)).toThrow("unavailable");
+    expect(ids.retainedIdentities).toBe(0);
+    expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+  });
+}
+
 // These JSON-shaped cleanup counter mutations are not native Windows measurements.
 // The probe currently reports exact zero owned windows and native handles. A
 // malformed or nonzero attestation must not allocate a Host-session display ID.

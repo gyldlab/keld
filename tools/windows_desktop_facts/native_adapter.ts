@@ -274,7 +274,8 @@ export function nativeFacts(
     "exact PMv2 physical sample required",
   );
   requireFact(
-    raw.cleanup.ownedWindowsCreated === 0 &&
+    raw.cleanup != null &&
+      raw.cleanup.ownedWindowsCreated === 0 &&
       raw.cleanup.ownedNativeHandles === 0,
     "probe-owned resources did not return to zero",
   );
