@@ -144,6 +144,25 @@ function stageSource(root: string, mutateReady = false): string {
       ),
     );
   }
+  if (process.env.W4_GETTER_FAULT === "first-index-primary") {
+    // Staged-only negative control: an implementation that uses display[0]
+    // rather than primary_id passes all existing single-display tests.
+    const file = join(shared, "packages/@keld/electron/src/screen.ts");
+    const original = readFileSync(file, "utf8");
+    const selection =
+      "const primary = snapshot.displays.find(\n" +
+      "      (display) => display.id === snapshot.primary_id,\n" +
+      "    );";
+    assert.equal(
+      original.split(selection).length,
+      2,
+      "expected one immutable public primary-ID selection",
+    );
+    writeFileSync(
+      file,
+      original.replace(selection, "const primary = snapshot.displays[0];"),
+    );
+  }
   return shared;
 }
 
@@ -424,7 +443,13 @@ async function startPeer(shared: string, endpoint: string) {
       const [out, err] = await Promise.all([stdout, stderr]);
       if (cleanupError === undefined) {
         if (allowExpectedFault && sawChildFatal) {
-          assert.match(err, /KELD-CORE-049/);
+          if (process.env.W4_GETTER_FAULT === "first-index-primary") {
+            assert.match(err, /AssertionError|ERR_ASSERTION/);
+            assert.match(err, /23/);
+            assert.match(err, /17/);
+          } else {
+            assert.match(err, /KELD-CORE-049/);
+          }
         } else {
           assert.equal(
             err,
@@ -512,6 +537,42 @@ const expectedChanged = {
     workArea: { x: 0, y: 32, width: 1440, height: 868 },
     scaleFactor: 2,
   },
+  dark: true,
+};
+
+// The shared S1 codec permits several displays, with primary_id independent
+// of array position. Windows native W4 still qualifies only one physical
+// primary; this exercises the shared public consumer, not Windows topology.
+const secondary = {
+  id: 23,
+  bounds: { x: -1280, y: 0, width: 1280, height: 800 },
+  work_area: { x: -1280, y: 12, width: 1280, height: 788 },
+  scale_factor: 1.25,
+};
+const secondaryPublic = {
+  id: 23,
+  bounds: { x: -1280, y: 0, width: 1280, height: 800 },
+  workArea: { x: -1280, y: 12, width: 1280, height: 788 },
+  scaleFactor: 1.25,
+};
+const primarySecond = {
+  primary_id: 17,
+  displays: [secondary, initial.displays[0]!],
+  should_use_dark_colors: false,
+};
+const primaryFirstAfterReorder = {
+  primary_id: 17,
+  displays: [changed.displays[0]!, secondary],
+  should_use_dark_colors: true,
+};
+const expectedPrimarySecond = {
+  all: [secondaryPublic, expectedInitial.primary],
+  primary: expectedInitial.primary,
+  dark: false,
+};
+const expectedAfterReorder = {
+  all: [expectedChanged.primary, secondaryPublic],
+  primary: expectedChanged.primary,
   dark: true,
 };
 
@@ -669,6 +730,64 @@ for (const order of [
     15000,
   );
 }
+
+test.skipIf(process.platform !== "darwin")(
+  "W4 public primary display follows identity, not index, across reorder",
+  async () => {
+    await withPeer(async (peer) => {
+      const corr = await peer.handshake();
+      assert.equal((await peer.request("checkpoint")).ready, false);
+      await peer.desktop(1n, primarySecond);
+      await peer.created();
+      const first = await peer.notice("fact");
+      const created = await peer.notice("fact");
+      assert.deepEqual(
+        [first.variant, first.epoch, created.variant],
+        ["DesktopSnapshot", "1", "Created"],
+      );
+      await peer.accepted(corr);
+      await peer.ready();
+      const ready = await peer.notice("ready-result");
+      assert.deepEqual([ready.outcome, ready.ready], ["ready", true]);
+      const beforeCalls = peer.incoming.filter(
+        (frame) => frame.header.kind === peer.t.FrameKind.Call,
+      ).length;
+      assert.equal(
+        (
+          await peer.request("getters", {
+            expected: expectedPrimarySecond,
+            count: 1000,
+          })
+        ).hostCalls,
+        0,
+      );
+      await peer.desktop(2n, primaryFirstAfterReorder);
+      const update = await peer.notice("fact");
+      assert.deepEqual(
+        [update.variant, update.epoch, update.publicReady],
+        ["DesktopSnapshot", "2", true],
+      );
+      assert.equal(
+        (
+          await peer.request("getters", {
+            expected: expectedAfterReorder,
+            count: 1000,
+          })
+        ).hostCalls,
+        0,
+      );
+      await peer.fence();
+      assert.equal(
+        peer.incoming.filter(
+          (frame) => frame.header.kind === peer.t.FrameKind.Call,
+        ).length,
+        beforeCalls,
+        "array reordering must not add Host getter RPCs",
+      );
+    }, process.env.W4_GETTER_FAULT === "first-index-primary");
+  },
+  15000,
+);
 
 test.skipIf(process.platform !== "darwin")(
   "W4 missing first sample rejects public Ready and cannot revive the role",
