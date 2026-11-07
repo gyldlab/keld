@@ -1,0 +1,184 @@
+/**
+ * Main-role Electron `process.*` facts — the one owner (GH-570,
+ * `docs/specs/gh570-main-role-process-facts.md`).
+ *
+ * Values Electron v44.4.5 defines in its main process and Keld can state
+ * truthfully from the Bun role alone:
+ *
+ * - `type` is `"browser"` (`docs/api/process.md`: "`browser` - The main
+ *   process").
+ * - `defaultApp` is `true`. The Host runs `bun … run <entry> …user`, so
+ *   `process.argv` is `[bun, entry, ...user]`: the shape of `electron .`, for
+ *   which Electron's `default_app/main.ts` defines `defaultApp = true` "even if
+ *   the app is packaged". Keeping Bun's argv and declaring the shape (spec
+ *   Option A) makes `argv.slice(defaultApp ? 2 : 1)` the user argument list.
+ * - `versions.electron` is the Keld shim constant, never an Electron release.
+ *
+ * Never defined here: `mas`, `windowsStore`, `sandboxed`, `contextIsolated` and
+ * `isMainFrame` (Electron leaves them `undefined` in the main process; `false`
+ * would be a lie) and `resourcesPath` (Host-minted in the #452 payload; a
+ * role-side path heuristic is forbidden, so it stays absent until spec T3).
+ *
+ * Descriptors match Electron: enumerable and non-writable for all three;
+ * `type` and `versions.electron` are configurable (`SetReadOnly`), while
+ * `defaultApp` is non-configurable (`default_app/main.ts:92-96`). This module
+ * imports nothing from kipc or the facade, so a Host-selected preload (spec T2)
+ * can install the facts before the app entry evaluates; the facade import that
+ * follows finds identical descriptors and writes nothing.
+ */
+
+/** Reported `process.versions.electron`: the `@keld/electron` package version, not an Electron release. */
+export const ELECTRON_VERSION_SHIM = "0.0.1";
+
+/** Electron's `process.type` in the main process. */
+export const MAIN_PROCESS_TYPE = "browser";
+
+/** Electron leaves these `undefined` in the main process; Keld never defines them. */
+export const MAIN_ROLE_UNDEFINED_FLAGS = Object.freeze([
+  "mas",
+  "windowsStore",
+  "sandboxed",
+  "contextIsolated",
+  "isMainFrame",
+] as const);
+
+/** The `process`-shaped object the installer writes to; `process` satisfies it. */
+export interface ProcessFactsTarget {
+  readonly versions: object;
+}
+
+type FactValue = string | boolean;
+
+interface Fact {
+  /** Object that carries the property: the target or its `versions`. */
+  readonly owner: object;
+  /** Dotted name for diagnostics, for example `process.versions.electron`. */
+  readonly label: string;
+  readonly name: string;
+  readonly value: FactValue;
+  /** Electron uses `SetReadOnly` for native facts; `defaultApp` is frozen. */
+  readonly configurable: boolean;
+}
+
+interface Plan {
+  readonly fact: Fact;
+  /** `false` when the Electron descriptor is already in place. */
+  readonly write: boolean;
+}
+
+/** Reproduces each Electron v44.4.5 process fact's own descriptor. */
+function electronDescriptor(fact: Fact): PropertyDescriptor {
+  return {
+    value: fact.value,
+    writable: false,
+    enumerable: true,
+    configurable: fact.configurable,
+  };
+}
+
+function isInstalled(existing: PropertyDescriptor, fact: Fact): boolean {
+  return (
+    existing.value === fact.value &&
+    existing.writable === false &&
+    existing.enumerable === true &&
+    existing.configurable === fact.configurable
+  );
+}
+
+function show(existing: PropertyDescriptor): string {
+  if (!("value" in existing)) return "an accessor";
+  const value: unknown = existing.value;
+  // Diagnostics must not invoke a conflicting value's application-owned hooks.
+  if (typeof value === "function") return "a function";
+  if (typeof value === "object" && value !== null) return "an object";
+  return typeof value === "string" ? JSON.stringify(value) : String(value);
+}
+
+const FIX =
+  "Remove that definition: @keld/electron's process-facts module is the only installer of main-role process.* facts, and a Host preload must import it instead of defining its own.";
+
+/**
+ * Decides whether `fact` must be written, is already in place, or belongs to a
+ * second owner. Writes nothing, so a conflict on the last fact cannot leave the
+ * first ones installed.
+ */
+function plan(fact: Fact): Plan {
+  const existing = Object.getOwnPropertyDescriptor(fact.owner, fact.name);
+  if (existing === undefined) {
+    if (!Object.isExtensible(fact.owner)) {
+      throw new Error(
+        `KELD-COMPAT-014: ${fact.label} is absent and its owner is non-extensible. Install main-role process.* facts before making their owners non-extensible.`,
+      );
+    }
+    return { fact, write: true };
+  }
+  const sameValue = "value" in existing && existing.value === fact.value;
+  if (!sameValue) {
+    throw new Error(
+      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)}; a second owner defined it before @keld/electron. ${FIX}`,
+    );
+  }
+  // A non-configurable definition cannot be made configurable, even if its
+  // value is already correct. Refuse during planning, before any facts change.
+  if (existing.configurable !== true && fact.configurable) {
+    throw new Error(
+      `KELD-COMPAT-014: ${fact.label} is already non-configurable, but Electron requires a configurable read-only property. ${FIX}`,
+    );
+  }
+  // A non-configurable property also keeps its enumerability, so only an
+  // enumerable one can become Electron's non-configurable defaultApp fact.
+  if (existing.configurable !== true && existing.enumerable !== true) {
+    throw new Error(
+      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)} but non-configurable and non-enumerable, so it cannot become Electron's enumerable fact. ${FIX}`,
+    );
+  }
+  return { fact, write: !isInstalled(existing, fact) };
+}
+
+/**
+ * Installs `type`, `defaultApp` and `versions.electron` on `target` (default:
+ * this process) with Electron's read-only property descriptors.
+ *
+ * Idempotent: a repeat call, or the facade import after a preload already
+ * installed the facts, writes nothing. A same-value configurable definition
+ * is adopted with its native descriptor; an incompatible non-configurable
+ * definition is refused before any write.
+ *
+ * @throws Error `KELD-COMPAT-014` when a fact is already defined with another
+ * value, as an accessor, in a shape that cannot match Electron, or absent on a
+ * non-extensible owner. For ordinary objects, planning refuses before any write.
+ * Arbitrary Proxy traps are outside this guarantee.
+ */
+export function installMainProcessFacts(
+  target: ProcessFactsTarget = process,
+): void {
+  const facts: readonly Fact[] = [
+    {
+      owner: target,
+      label: "process.type",
+      name: "type",
+      value: MAIN_PROCESS_TYPE,
+      configurable: true,
+    },
+    {
+      owner: target,
+      label: "process.defaultApp",
+      name: "defaultApp",
+      value: true,
+      configurable: false,
+    },
+    {
+      owner: target.versions,
+      label: "process.versions.electron",
+      name: "electron",
+      value: ELECTRON_VERSION_SHIM,
+      configurable: true,
+    },
+  ];
+  const plans = facts.map(plan);
+  for (const { fact, write } of plans) {
+    if (write) {
+      Object.defineProperty(fact.owner, fact.name, electronDescriptor(fact));
+    }
+  }
+}

@@ -874,6 +874,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
 
+## KELD-COMPAT-014
+
+- crate: @keld/electron
+- message: A `process.type`, `process.defaultApp` or `process.versions.electron` descriptor conflicts with the required fact, or the fact is absent on a non-extensible owner, so the main-role process facts were not installed
+- fix: Remove the conflicting definition, or install the facts before making their owners non-extensible. For ordinary objects, planning refuses before any fact is written; arbitrary Proxy traps are outside this guarantee.
+
 ## KELD-CORE-030
 
 - crate: keld-core
