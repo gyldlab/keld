@@ -3,7 +3,8 @@
  *
  * Each case binds to one spec acceptance criterion. Oracles are independent of the
  * installer: the launcher's own argument list echoed back by a child process, exact
- * property descriptors against Electron v44.4.5's `default_app/main.ts:92-96`, the
+ * property descriptors against Electron v44.4.5's `default_app/main.ts:92-96`
+ * and `gin_helper/dictionary.h::SetReadOnly`, the
  * package manifest bytes, and the pinned oracle release string.
  *
  * Negative controls (one mutation each, named per case): defining `defaultApp` as
@@ -44,6 +45,11 @@ const KILL_MS = 4_000;
 /** Electron's `defaultApp` descriptor (`default_app/main.ts:92-96`). */
 function frozen(value: string | boolean): PropertyDescriptor {
   return { value, writable: false, enumerable: true, configurable: false };
+}
+
+/** Electron's native `SetReadOnly` descriptor for `type` and `versions.electron`. */
+function readOnly(value: string | boolean): PropertyDescriptor {
+  return { value, writable: false, enumerable: true, configurable: true };
 }
 
 function spawnFixture(
@@ -123,14 +129,14 @@ describe("descriptors — AC3, AC4", () => {
     );
   });
 
-  test("process.type and process.versions.electron are frozen read-only facts", () => {
+  test("process.type and process.versions.electron are read-only but configurable, as in Electron", () => {
     expect(Object.getOwnPropertyDescriptor(process, "type")).toEqual(
-      frozen(MAIN_PROCESS_TYPE),
+      readOnly(MAIN_PROCESS_TYPE),
     );
     expect(MAIN_PROCESS_TYPE).toBe("browser");
     expect(
       Object.getOwnPropertyDescriptor(process.versions, "electron"),
-    ).toEqual(frozen(ELECTRON_VERSION_SHIM));
+    ).toEqual(readOnly(ELECTRON_VERSION_SHIM));
     const versions = process.versions as { electron?: string };
     expect(() => {
       versions.electron = "44.4.5";
@@ -188,9 +194,9 @@ describe("one owner — AC6, AC7", () => {
     };
     installMainProcessFacts(target);
     expect(descriptors(target as { versions: object })).toEqual({
-      type: frozen("browser"),
+      type: readOnly("browser"),
       defaultApp: frozen(true),
-      electron: frozen(ELECTRON_VERSION_SHIM),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
     });
     expect(Object.keys(target).sort()).toEqual([
       "defaultApp",
@@ -279,15 +285,63 @@ describe("one owner — AC6, AC7", () => {
     expect(descriptors(target)).toEqual(before);
   });
 
-  test("a same-value configurable definition is adopted and frozen", () => {
+  test("a same-value configurable definition is adopted with the native descriptor", () => {
     const target = { versions: {}, type: "browser" };
     installMainProcessFacts(target);
     expect(Object.getOwnPropertyDescriptor(target, "type")).toEqual(
-      frozen("browser"),
+      readOnly("browser"),
     );
     expect(Object.getOwnPropertyDescriptor(target, "defaultApp")).toEqual(
       frozen(true),
     );
+  });
+
+  test("native-configurable facts can be deleted; defaultApp cannot", () => {
+    const target: ProcessFactsTarget & Record<string, unknown> = {
+      versions: {},
+    };
+    installMainProcessFacts(target);
+    expect(Reflect.deleteProperty(target, "type")).toBe(true);
+    expect(Reflect.deleteProperty(target.versions, "electron")).toBe(true);
+    expect(Reflect.deleteProperty(target, "defaultApp")).toBe(false);
+  });
+
+  test("a non-configurable same-value type is refused before writing other facts", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(target, "type", frozen(MAIN_PROCESS_TYPE));
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("a non-configurable same-value electron version is refused without partial writes", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(
+      target.versions,
+      "electron",
+      frozen(ELECTRON_VERSION_SHIM),
+    );
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.versions\.electron /,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  test("a compatible non-configurable defaultApp is retained while native facts are installed", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    Object.defineProperty(target, "defaultApp", frozen(true));
+    installMainProcessFacts(target);
+    expect(descriptors(target)).toEqual({
+      type: readOnly(MAIN_PROCESS_TYPE),
+      defaultApp: frozen(true),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
+    });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).not.toThrow();
+    expect(descriptors(target)).toEqual(before);
   });
 
   // Failure-contract regressions: remove the absent-fact extensibility check
@@ -324,17 +378,20 @@ describe("one owner — AC6, AC7", () => {
     expect(descriptors(target)).toEqual(before);
   });
 
-  test("compatible facts on sealed owners are adopted and repeated installation is a no-op", () => {
-    const target = Object.seal({
-      versions: Object.seal({ electron: ELECTRON_VERSION_SHIM }),
+  test("compatible facts on non-extensible owners are adopted and repeated installation is a no-op", () => {
+    const versions = Object.preventExtensions(
+      Object.defineProperty({}, "electron", readOnly(ELECTRON_VERSION_SHIM)),
+    );
+    const target = Object.preventExtensions({
+      versions,
       type: "browser",
       defaultApp: true,
     });
     installMainProcessFacts(target);
     expect(descriptors(target)).toEqual({
-      type: frozen("browser"),
+      type: readOnly("browser"),
       defaultApp: frozen(true),
-      electron: frozen(ELECTRON_VERSION_SHIM),
+      electron: readOnly(ELECTRON_VERSION_SHIM),
     });
     const before = descriptors(target);
     expect(() => installMainProcessFacts(target)).not.toThrow();

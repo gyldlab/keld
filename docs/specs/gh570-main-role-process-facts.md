@@ -84,7 +84,7 @@ Non-goals:
    descriptor Electron's `default_app/main.ts` installs.
 4. After facade import, `process.type === "browser"` and
    `process.versions.electron === ELECTRON_VERSION_SHIM`, both read-only and
-   non-configurable; `ELECTRON_VERSION_SHIM` equals the `@keld/electron` package
+   configurable (Electron v44.4.5 native `SetReadOnly`); `ELECTRON_VERSION_SHIM` equals the `@keld/electron` package
    version, is not `44.4.5` (the pinned oracle release), and is outside the npm
    `electron` release list (the full-list predicate is #569's cell
    `process.versions.electron.honesty`; this branch proves the constant against the
@@ -99,7 +99,10 @@ Non-goals:
    with a different value (configurable or not), when the installer runs, then it throws
    an `Error` whose message starts with `KELD-COMPAT-014:`, names the property and the
    fix (remove the second owner), and defines no fact on that target. A foreign
-   *configurable* definition with the *same* value is adopted and frozen, not refused.
+   *configurable* definition with the *same* value is adopted with Electron's
+   descriptor, not refused. A same-value, non-configurable `type` or
+   `versions.electron` is refused before any write because its configurability
+   cannot be restored; a compatible non-configurable `defaultApp` is allowed.
    On ordinary objects, an absent fact whose owner is non-extensible also refuses
    before any write with `KELD-COMPAT-014`, naming the property and directing the
    caller to install the facts before making their owners non-extensible. Compatible
@@ -139,9 +142,11 @@ Trust. A `process.*` value mints no authority: `defaultApp` is a parsing hint,
 `versions.electron` a version string, `resourcesPath` a path the Host already staged.
 Nothing here widens a grant or reads an environment variable.
 
-Lifecycle. Facts are installed once per role process and frozen (non-writable,
-non-configurable, enumerable), as Electron installs them (`default_app/main.ts:92-96`;
-`node_bindings.cc` `SetReadOnly`). A second owner is a defect and surfaces as
+Lifecycle. Facts are installed once per role process, non-writable and enumerable.
+`process.type` and `process.versions.electron` are configurable because Electron
+uses `SetReadOnly` without `DontDelete` (`gin_helper/dictionary.h:173-192`;
+`node_bindings.cc:933,1237`). Only `defaultApp` is non-configurable
+(`default_app/main.ts:92-96`). A second owner is a defect and surfaces as
 `KELD-COMPAT-014`, never as a silent overwrite or a bare `TypeError`.
 
 Failure. The installer does no I/O and opens no link, so it cannot fail on the
@@ -279,7 +284,7 @@ the electron-log-first fixture (AC8) observing `undefined` in a real staged role
 
 ## 6. Tasks (each ≈ one PR; ordered; no placeholders — vertical slices only)
 
-- [ ] T1 — one owner module, Option A `(argv, defaultApp)`, frozen descriptors,
+- [ ] T1 — one owner module, Option A `(argv, defaultApp)`, Electron-matching descriptors,
   `KELD-COMPAT-014`, red-first Bun tests and fixtures, scoreboard rows, arch 04
   sentence. Proposed on the same branch as this draft; it is not landed work until the
   spec is approved.
@@ -298,7 +303,7 @@ the electron-log-first fixture (AC8) observing `undefined` in a real staged role
 | 3, 4 | descriptor equality in-process after `import "./index"`; `ELECTRON_VERSION_SHIM` vs `package.json` version and vs `44.4.5` | `Object.getOwnPropertyDescriptor` values; file bytes |
 | 5 | in-process `Object.hasOwn`/`typeof` over `MAIN_ROLE_UNDEFINED_FLAGS` and `versions.chrome`; `resourcesPath` absent today (T3 inverts this case) | property census |
 | 6 | second `installMainProcessFacts()` call; descriptors deep-equal before/after | no throw, equal descriptors |
-| 7 | plain-object targets with a foreign `type: "renderer"` (configurable and not), a foreign `versions.electron: "44.4.5"`, and a same-value configurable `type` | message prefix `KELD-COMPAT-014:`, no fact defined on refusal; adoption freezes the same-value case |
+| 7 | plain-object targets with foreign `type: "renderer"` (configurable and not), foreign `versions.electron: "44.4.5"`, same-value configurable and non-configurable `type`/`versions.electron`, and non-extensible compatible owners | `KELD-COMPAT-014:` on refusal without partial writes; adopt same-value configurable facts with native descriptors; permit compatible `defaultApp` |
 | 8 | spawn `fixtures/process_facts_early_entry.ts` with and without `--preload=./process_facts_preload.ts` | `GH570_EARLY mode=main defaultApp=true facadeType=browser` with the preload; `mode=unknown defaultApp=undefined facadeType=browser` without |
 | 9 | T2: #569 `crates/keld-host/tests/no_flag_macos.rs` exact case, real macOS | the two cells flip in the corpus manifest |
 | 10 | T3: #569 `process.resources-path.string` plus a Keld rule test that the value has no `app.asar` segment and equals the payload field | corpus cell plus exact string |
@@ -338,8 +343,11 @@ none — three `Object.defineProperty` calls at import; no steady-state work, no
 - Q3 `resourcesPath` under `keld dev` is the launch root `<project>/.keld/dev/<nonce>`;
   the installed value follows the KEL-141/KEL-53 bundle layout — confirm with those
   owners before T3.
-- Q4 `type` and `versions.electron` become non-configurable (Electron's descriptors).
-  Any consumer that reassigns them today? None found in this repository.
+- Q4 `type` and `versions.electron` are configurable but non-writable,
+  matching Electron's native `SetReadOnly`; only `defaultApp` is
+  non-configurable. Any consumer that deletes/redefines the native facts?
+  No such consumer was found in this repository. This corrects the earlier
+  proposed non-configurable behavior, not an owner approval of the draft.
 - Q5 `ELECTRON_VERSION_SHIM` stays the `@keld/electron` package version (`0.0.1`,
   outside the npm `electron` list, which starts at `0.1.0`); the test binds the two.
   Should the honesty rule also forbid any `0.x.y` that Electron later publishes? (#569's

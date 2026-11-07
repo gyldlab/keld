@@ -19,8 +19,9 @@
  * would be a lie) and `resourcesPath` (Host-minted in the #452 payload; a
  * role-side path heuristic is forbidden, so it stays absent until spec T3).
  *
- * Descriptors are Electron's: enumerable, non-writable, non-configurable
- * (`default_app/main.ts:92-96`; `node_bindings.cc` `SetReadOnly`). This module
+ * Descriptors match Electron: enumerable and non-writable for all three;
+ * `type` and `versions.electron` are configurable (`SetReadOnly`), while
+ * `defaultApp` is non-configurable (`default_app/main.ts:92-96`). This module
  * imports nothing from kipc or the facade, so a Host-selected preload (spec T2)
  * can install the facts before the app entry evaluates; the facade import that
  * follows finds identical descriptors and writes nothing.
@@ -55,24 +56,32 @@ interface Fact {
   readonly label: string;
   readonly name: string;
   readonly value: FactValue;
+  /** Electron uses `SetReadOnly` for native facts; `defaultApp` is frozen. */
+  readonly configurable: boolean;
 }
 
 interface Plan {
   readonly fact: Fact;
-  /** `false` when the frozen fact is already in place. */
+  /** `false` when the Electron descriptor is already in place. */
   readonly write: boolean;
 }
 
-function frozenDescriptor(value: FactValue): PropertyDescriptor {
-  return { value, writable: false, enumerable: true, configurable: false };
+/** Reproduces each Electron v44.4.5 process fact's own descriptor. */
+function electronDescriptor(fact: Fact): PropertyDescriptor {
+  return {
+    value: fact.value,
+    writable: false,
+    enumerable: true,
+    configurable: fact.configurable,
+  };
 }
 
-function isInstalled(existing: PropertyDescriptor, value: FactValue): boolean {
+function isInstalled(existing: PropertyDescriptor, fact: Fact): boolean {
   return (
-    existing.value === value &&
+    existing.value === fact.value &&
     existing.writable === false &&
     existing.enumerable === true &&
-    existing.configurable === false
+    existing.configurable === fact.configurable
   );
 }
 
@@ -109,26 +118,34 @@ function plan(fact: Fact): Plan {
       `KELD-COMPAT-014: ${fact.label} is already ${show(existing)}; a second owner defined it before @keld/electron. ${FIX}`,
     );
   }
-  // A non-configurable property keeps its enumerability, so only an enumerable
-  // one can still become Electron's frozen enumerable fact.
-  if (existing.configurable !== true && existing.enumerable !== true) {
+  // A non-configurable definition cannot be made configurable, even if its
+  // value is already correct. Refuse during planning, before any facts change.
+  if (existing.configurable !== true && fact.configurable) {
     throw new Error(
-      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)} but non-configurable and non-enumerable, so it cannot become Electron's frozen enumerable fact. ${FIX}`,
+      `KELD-COMPAT-014: ${fact.label} is already non-configurable, but Electron requires a configurable read-only property. ${FIX}`,
     );
   }
-  return { fact, write: !isInstalled(existing, fact.value) };
+  // A non-configurable property also keeps its enumerability, so only an
+  // enumerable one can become Electron's non-configurable defaultApp fact.
+  if (existing.configurable !== true && existing.enumerable !== true) {
+    throw new Error(
+      `KELD-COMPAT-014: ${fact.label} is already ${show(existing)} but non-configurable and non-enumerable, so it cannot become Electron's enumerable fact. ${FIX}`,
+    );
+  }
+  return { fact, write: !isInstalled(existing, fact) };
 }
 
 /**
  * Installs `type`, `defaultApp` and `versions.electron` on `target` (default:
- * this process) with Electron's frozen descriptors.
+ * this process) with Electron's read-only property descriptors.
  *
  * Idempotent: a repeat call, or the facade import after a preload already
- * installed the facts, writes nothing. A same-value definition that is still
- * configurable is adopted and frozen.
+ * installed the facts, writes nothing. A same-value configurable definition
+ * is adopted with its native descriptor; an incompatible non-configurable
+ * definition is refused before any write.
  *
  * @throws Error `KELD-COMPAT-014` when a fact is already defined with another
- * value, as an accessor, in a shape that cannot be frozen, or absent on a
+ * value, as an accessor, in a shape that cannot match Electron, or absent on a
  * non-extensible owner. For ordinary objects, planning refuses before any write.
  * Arbitrary Proxy traps are outside this guarantee.
  */
@@ -141,28 +158,27 @@ export function installMainProcessFacts(
       label: "process.type",
       name: "type",
       value: MAIN_PROCESS_TYPE,
+      configurable: true,
     },
     {
       owner: target,
       label: "process.defaultApp",
       name: "defaultApp",
       value: true,
+      configurable: false,
     },
     {
       owner: target.versions,
       label: "process.versions.electron",
       name: "electron",
       value: ELECTRON_VERSION_SHIM,
+      configurable: true,
     },
   ];
   const plans = facts.map(plan);
   for (const { fact, write } of plans) {
     if (write) {
-      Object.defineProperty(
-        fact.owner,
-        fact.name,
-        frozenDescriptor(fact.value),
-      );
+      Object.defineProperty(fact.owner, fact.name, electronDescriptor(fact));
     }
   }
 }
