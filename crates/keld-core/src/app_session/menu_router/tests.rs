@@ -1,11 +1,18 @@
 //! Actual Core caller fence, ordered socket writer and inherited-stderr capture.
 //! Component fixture identities prove these local contracts, not Runtime or UI.
-use super::*;
+use super::{
+    HostAppError, MenuSession, MenuWork, PrimaryCallerContext, PrimaryRouterHandle,
+    publish_quit_requested, retire_quit_intent_write_failure, same_caller, window_owner,
+    with_primary_caller_locked,
+};
 use crate::app_session as app;
 use keld_ipc::codec::{decode, encode};
 use keld_ipc::link::{AppLinkDeadlines as _, GuardedCallAdmission, read_frame};
-use keld_native::menu::{MenuAction, MenuKind, MenuNodeV1, MenuRole};
+use keld_ipc::{CallError, CorrelationId, FrameKind, LIFECYCLE_CHANNEL, LifecycleEvent};
+use keld_native::menu::{MenuAction, MenuKind, MenuNodeV1, MenuRequestV1, MenuRole};
+use keld_wv::wkwebview::AppWindowCommand;
 use sha2::{Digest as _, Sha256};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
