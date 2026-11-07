@@ -10,6 +10,7 @@ import { LifecycleLink } from "../src/link.ts";
 let connects = 0;
 LifecycleLink.connect = (async () => {
   connects += 1;
+  process.exitCode = 1;
   throw new Error("GH470_UNEXPECTED_CONNECT");
 }) as typeof LifecycleLink.connect;
 
