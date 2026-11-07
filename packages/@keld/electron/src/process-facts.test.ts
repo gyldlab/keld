@@ -227,6 +227,58 @@ describe("one owner — AC6, AC7", () => {
     expect(Object.hasOwn(target, "defaultApp")).toBe(false);
   });
 
+  test("a null-prototype conflicting value refuses with the typed error and unchanged descriptors", () => {
+    const target = { versions: {}, type: Object.create(null) };
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.type is already an object/,
+    );
+    expect(descriptors(target)).toEqual(before);
+  });
+
+  for (const kind of ["object", "function"] as const) {
+    test(`a conflicting ${kind} cannot mutate facts through diagnostic coercion`, () => {
+      const target: ProcessFactsTarget = { versions: {} };
+      let calls = 0;
+      const value = kind === "object" ? {} : () => undefined;
+      Object.defineProperty(value, "toString", {
+        value: () => {
+          calls += 1;
+          Object.defineProperty(target, "type", frozen("browser"));
+          return "foreign";
+        },
+      });
+      Object.defineProperty(target.versions, "electron", { value });
+      const before = descriptors(target);
+      expect(() => installMainProcessFacts(target)).toThrow(
+        /^KELD-COMPAT-014: process\.versions\.electron /,
+      );
+      expect(calls).toBe(0);
+      expect(descriptors(target)).toEqual(before);
+    });
+  }
+
+  test("conflict diagnostics do not inspect primitive-conversion or type-tag getters", () => {
+    const target: ProcessFactsTarget = { versions: {} };
+    let calls = 0;
+    const value = {};
+    for (const key of [Symbol.toPrimitive, Symbol.toStringTag]) {
+      Object.defineProperty(value, key, {
+        get: () => {
+          calls += 1;
+          throw new Error("diagnostics must not execute value hooks");
+        },
+      });
+    }
+    Object.defineProperty(target.versions, "electron", { value });
+    const before = descriptors(target);
+    expect(() => installMainProcessFacts(target)).toThrow(
+      /^KELD-COMPAT-014: process\.versions\.electron is already an object/,
+    );
+    expect(calls).toBe(0);
+    expect(descriptors(target)).toEqual(before);
+  });
+
   test("a same-value configurable definition is adopted and frozen", () => {
     const target = { versions: {}, type: "browser" };
     installMainProcessFacts(target);

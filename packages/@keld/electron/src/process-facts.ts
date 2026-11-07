@@ -78,9 +78,11 @@ function isInstalled(existing: PropertyDescriptor, value: FactValue): boolean {
 
 function show(existing: PropertyDescriptor): string {
   if (!("value" in existing)) return "an accessor";
-  return typeof existing.value === "string"
-    ? JSON.stringify(existing.value)
-    : String(existing.value);
+  const value: unknown = existing.value;
+  // Diagnostics must not invoke a conflicting value's application-owned hooks.
+  if (typeof value === "function") return "a function";
+  if (typeof value === "object" && value !== null) return "an object";
+  return typeof value === "string" ? JSON.stringify(value) : String(value);
 }
 
 const FIX =
