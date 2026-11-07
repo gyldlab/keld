@@ -5,7 +5,7 @@
 //! listener acceptance. GH-553 owns any later recorded-listener divergence.
 //!
 //! Independent negative controls: absent exports falsify binding presence; plain
-//! TypeError or a wrong typed field falsifies the refusal; successful registration
+//! `TypeError` or a wrong typed field falsifies the refusal; successful registration
 //! falsifies the outcome; calling app.whenReady falsifies zero Host attempts even
 //! if the property still throws correctly. The recorder never opens a socket.
 
