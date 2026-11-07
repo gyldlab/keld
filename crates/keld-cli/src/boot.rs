@@ -1096,24 +1096,22 @@ where
     let permissions_snapshot = ProjectPermissionsSource::open(&project_root)?.capture()?;
     #[cfg(target_os = "macos")]
     let permissions_bytes = permissions_snapshot.as_slice();
+    // The historical fixed policy remains the output on these platforms,
+    // but it must never silently erase an explicit project request.
     #[cfg(not(target_os = "macos"))]
-    {
-        // The historical fixed policy remains the output on these platforms,
-        // but it must never silently erase an explicit project request.
-        match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
-            Ok(manifest) if manifest.declared_profile().is_some() => {
-                return Err(BootCompileError::new(
-                    "permissions profile",
-                    "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
-                ));
-            }
-            Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => (),
-            Err(source) => {
-                return Err(BootCompileError::new(
-                    "permissions profile",
-                    source.to_string(),
-                ));
-            }
+    match keld_guard::load_manifest(&project_root.join(PERMISSIONS_FILE)) {
+        Ok(manifest) if manifest.declared_profile().is_some() => {
+            return Err(BootCompileError::new(
+                "permissions profile",
+                "explicit security profiles are qualified only for macOS primary boots; preserve the request and use a supporting target",
+            ));
+        }
+        Ok(_) | Err(keld_guard::ManifestError::NotFound { .. }) => (),
+        Err(source) => {
+            return Err(BootCompileError::new(
+                "permissions profile",
+                source.to_string(),
+            ));
         }
     };
     #[cfg(not(target_os = "macos"))]

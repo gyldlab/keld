@@ -107,6 +107,7 @@ async function pack(
       version: string;
       exports: Record<string, string>;
       dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
       [key: string]: unknown;
     }
     function manifest(path: string): SourceManifest {
@@ -116,6 +117,44 @@ async function pack(
     }
     const apiManifest = manifest(api);
     const kipcManifest = manifest(kipc);
+    function exactPinnedDevVersion(
+      source: SourceManifest,
+      name: "typescript" | "@types/bun",
+    ): string {
+      const version = source.devDependencies?.[name];
+      if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version))
+        throw new Error(`${source.name} must pin exact ${name}`);
+      return version;
+    }
+    const typescriptVersion = exactPinnedDevVersion(apiManifest, "typescript");
+    const bunTypesVersion = exactPinnedDevVersion(apiManifest, "@types/bun");
+    if (
+      exactPinnedDevVersion(kipcManifest, "typescript") !== typescriptVersion ||
+      exactPinnedDevVersion(kipcManifest, "@types/bun") !== bunTypesVersion
+    )
+      throw new Error(
+        "API and KIPC must share the exact pinned TypeScript compiler closure",
+      );
+    const compiler = join(api, "node_modules/typescript/bin/tsc");
+    const typeRoots = join(api, "node_modules/@types");
+    try {
+      const installedTypescript = JSON.parse(
+        readFileSync(join(api, "node_modules/typescript/package.json"), "utf8"),
+      ).version;
+      const installedBunTypes = JSON.parse(
+        readFileSync(join(typeRoots, "bun/package.json"), "utf8"),
+      ).version;
+      readFileSync(compiler);
+      if (
+        installedTypescript !== typescriptVersion ||
+        installedBunTypes !== bunTypesVersion
+      )
+        throw new Error("installed compiler closure version mismatch");
+    } catch (error) {
+      throw new Error(
+        `Pinned API TypeScript compiler closure is unavailable: ${String(error)}`,
+      );
+    }
     const apiExports = {
       ".": "./src/index.ts",
       "./internal/app": "./src/app.ts",
@@ -140,21 +179,27 @@ async function pack(
     }
     run(
       [
-        join(api, "node_modules/.bin/tsc"),
+        process.execPath,
+        compiler,
         "-p",
         join(api, "tsconfig.build.json"),
         "--outDir",
         apiOut,
+        "--typeRoots",
+        typeRoots,
       ],
       api,
     );
     run(
       [
-        join(kipc, "node_modules/.bin/tsc"),
+        process.execPath,
+        compiler,
         "-p",
         join(kipc, "tsconfig.build.json"),
         "--outDir",
         kipcOut,
+        "--typeRoots",
+        typeRoots,
       ],
       kipc,
     );
