@@ -5,6 +5,9 @@
  * never evidence of physical AppKit capture or WorkerLink frame counts.
  */
 import assert from "node:assert/strict";
+import { lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { mock } from "bun:test";
 import { hostLaunchFacts, nativeFacadeBootSelected } from "@keld/kipc";
 import { encodeWindowEvent } from "./window-codec.ts";
@@ -12,6 +15,7 @@ import { WindowSource } from "./window-source.ts";
 import type { LifecycleHandler } from "./link.ts";
 
 const mode = process.argv[2];
+const electronSourceRoot = process.argv[3];
 assert.ok(
   [
     "other-facade",
@@ -22,6 +26,17 @@ assert.ok(
     "mac-invalidated",
   ].includes(mode ?? ""),
 );
+assert.ok(
+  electronSourceRoot !== undefined && isAbsolute(electronSourceRoot),
+  "GH481 role requires an absolute private Electron source root",
+);
+const privateElectronSource = realpathSync(electronSourceRoot);
+for (const name of ["screen.ts", "native-theme.ts", "unsupported.ts"]) {
+  const path = join(privateElectronSource, name);
+  const metadata = lstatSync(path);
+  assert.ok(metadata.isFile() && !metadata.isSymbolicLink());
+  assert.equal(realpathSync(path), path);
+}
 assert.equal(hostLaunchFacts !== undefined, mode?.startsWith("mac-"));
 assert.equal(nativeFacadeBootSelected, mode !== "other-renderer");
 
@@ -132,10 +147,10 @@ if (mode === "other-facade" || mode === "other-renderer") {
   // development record MUST preserve the previous public Ready contract.
   // It does not manufacture desktop support on these platforms.
   const { screen } = await import(
-    new URL("../../electron/src/screen.ts", import.meta.url).href
+    pathToFileURL(join(privateElectronSource, "screen.ts")).href
   );
   const { nativeTheme } = await import(
-    new URL("../../electron/src/native-theme.ts", import.meta.url).href
+    pathToFileURL(join(privateElectronSource, "native-theme.ts")).href
   );
   for (const attempt of [
     () => screen.getAllDisplays(),
@@ -150,10 +165,10 @@ if (mode === "other-facade" || mode === "other-renderer") {
   }
 } else if (mode === "mac-valid") {
   const { screen } = await import(
-    new URL("../../electron/src/screen.ts", import.meta.url).href
+    pathToFileURL(join(privateElectronSource, "screen.ts")).href
   );
   const { nativeTheme } = await import(
-    new URL("../../electron/src/native-theme.ts", import.meta.url).href
+    pathToFileURL(join(privateElectronSource, "native-theme.ts")).href
   );
   const observed = getDesktopSnapshot();
   assert.equal(Object.isFrozen(observed), true);

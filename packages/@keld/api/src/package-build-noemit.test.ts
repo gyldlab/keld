@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   appendFileSync,
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,38 @@ import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 
 const packages = resolve(import.meta.dir, "../..");
+const trustedCompilerModules = resolve(
+  packages,
+  "api/node_modules/.bun/node_modules",
+);
+
+function copyCompilerClosure(root: string): void {
+  const nodeModules = join(root, "packages/@keld/api/node_modules");
+  mkdirSync(nodeModules, { recursive: true });
+  for (const name of ["typescript", "bun-types", "undici-types"]) {
+    cpSync(join(trustedCompilerModules, name), join(nodeModules, name), {
+      recursive: true,
+      dereference: true,
+    });
+  }
+  for (const scope of ["@types", "@typescript"]) {
+    cpSync(join(trustedCompilerModules, scope), join(nodeModules, scope), {
+      recursive: true,
+      dereference: true,
+    });
+  }
+  const fixtureKipc = join(root, "packages/@keld/kipc");
+  const installedKipc = join(nodeModules, "@keld/kipc");
+  mkdirSync(join(nodeModules, "@keld"), { recursive: true });
+  cpSync(fixtureKipc, installedKipc, {
+    recursive: true,
+    dereference: true,
+    filter: (source) => basename(source) !== "node_modules",
+  });
+  expect(existsSync(join(nodeModules, "typescript/bin/tsc"))).toBe(true);
+  expect(existsSync(join(nodeModules, "@types/bun/package.json"))).toBe(true);
+  expect(existsSync(join(nodeModules, "@keld/kipc/package.json"))).toBe(true);
+}
 
 function fixture(check: (root: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), "keld-noemit-"));
@@ -25,20 +58,8 @@ function fixture(check: (root: string) => void): void {
         recursive: true,
         filter: (source) => basename(source) !== "node_modules",
       });
-      const install = Bun.spawnSync(
-        [
-          process.execPath,
-          "install",
-          "--frozen-lockfile",
-          "--offline",
-          "--ignore-scripts",
-        ],
-        { cwd: destination, stdout: "pipe", stderr: "pipe" },
-      );
-      expect(install.exitCode, new TextDecoder().decode(install.stderr)).toBe(
-        0,
-      );
     }
+    copyCompilerClosure(root);
     check(root);
     passed = true;
   } finally {
@@ -89,6 +110,46 @@ function refusal(root: string, command: string[], diagnostic: string): void {
   expect(output).toContain(diagnostic);
   expect(after).toEqual(before);
 }
+
+test("package producer refuses mismatched pinned compiler manifests", () => {
+  fixture((root) => {
+    const kipcManifest = join(root, "packages/@keld/kipc/package.json");
+    const manifest = JSON.parse(readFileSync(kipcManifest, "utf8"));
+    manifest.devDependencies.typescript = "7.0.1";
+    writeFileSync(kipcManifest, JSON.stringify(manifest, null, 2) + "\n");
+    const output = join(root, "artifacts");
+    mkdirSync(output);
+    refusal(
+      root,
+      [
+        process.execPath,
+        join(root, "packages/@keld/kipc/scripts/package-artifacts.ts"),
+        output,
+      ],
+      "API and KIPC must share the exact pinned TypeScript compiler closure",
+    );
+  });
+});
+
+test("package producer refuses a missing pinned compiler closure", () => {
+  fixture((root) => {
+    rmSync(join(root, "packages/@keld/api/node_modules/typescript"), {
+      recursive: true,
+      force: true,
+    });
+    const output = join(root, "artifacts");
+    mkdirSync(output);
+    refusal(
+      root,
+      [
+        process.execPath,
+        join(root, "packages/@keld/kipc/scripts/package-artifacts.ts"),
+        output,
+      ],
+      "Pinned API TypeScript compiler closure is unavailable",
+    );
+  });
+});
 
 for (const seeded of [false, true]) {
   test(`failed API relative-edge build does not ${seeded ? "overwrite" : "create"} sibling files`, () => {
@@ -143,11 +204,14 @@ test("failed KIPC declaration build neither emits nor overwrites output", () => 
     refusal(
       root,
       [
-        join(root, "packages/@keld/kipc/node_modules/.bin/tsc"),
+        process.execPath,
+        join(root, "packages/@keld/api/node_modules/typescript/bin/tsc"),
         "-p",
         join(root, "packages/@keld/kipc/tsconfig.build.json"),
         "--outDir",
         output,
+        "--typeRoots",
+        join(root, "packages/@keld/api/node_modules/@types"),
       ],
       "TS2322",
     );
