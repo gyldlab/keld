@@ -168,7 +168,9 @@ async function main(): Promise<void> {
     assert.equal(calls.length, 0);
     await quit;
   } else {
-    const electron = await import("../../electron/src/index.ts");
+    const electron = await import(
+      new URL("../../electron/src/index.ts", import.meta.url).href
+    );
     const parent = electron.BrowserWindow.getAllWindows()[0];
     assert.ok(
       parent,
