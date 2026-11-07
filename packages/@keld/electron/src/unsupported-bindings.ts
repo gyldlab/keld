@@ -1,0 +1,86 @@
+/**
+ * The link-time bindings GH-565 adds and the member table behind them
+ * (`docs/specs/gh565-link-time-electron-bindings.md` §4.3).
+ *
+ * Each binding exists so draw.io's `import { Menu, shell, dialog, session, screen,
+ * ClipboardItem, clipboard, nativeImage, nativeTheme, ipcMain, app, BrowserWindow } from
+ * "electron"` (`src/main/electron.js:5-6` at 2edf9fb9) links. `ipcMain` is not declared
+ * here: the GH-466 registration slice (PR #1365) exports it (spec D5). Every member the
+ * pinned Electron v44.4.5 page (694f45852a0f1726cd23bfd379854de489cccb65) documents at
+ * module or static level refuses with `KELD-COMPAT-013` naming the issue that owns it; the
+ * `Returns Promise<…>` lines of those pages decide which members reject instead of
+ * throwing. Members no ticket covers yet name the F06 epic #476 (§ Not yet specified).
+ *
+ * An implementing ticket moves its module out of this file into its own module and
+ * deletes the rows it implements in the same change that flips its corpus cells.
+ * The partially implemented dialog module retains its remaining refusal rows itself. Instance
+ * members of a refusing constructor (`menu.popup`, `image.toPNG`) are unreachable and are
+ * not declared.
+ */
+import {
+  method,
+  promise,
+  property,
+  refuse,
+  refuseLater,
+  unsupportedSurface,
+} from "./unsupported.ts";
+
+/** Pinned `shell.md`: five members for the GH-479 broker; the Windows shortcut pair is a GH-482 scoreboard row. */
+export const shell = unsupportedSurface("shell", {
+  showItemInFolder: method("GH-479"),
+  openPath: promise("GH-479"),
+  openExternal: promise("GH-479"),
+  trashItem: promise("GH-479"),
+  beep: method("GH-479"),
+  writeShortcutLink: method("GH-482"),
+  readShortcutLink: method("GH-482"),
+});
+
+/** Pinned `clipboard.md` (W3C promise shape): draw.io's three members are GH-559's; the rest are unspecified on #476. */
+export const clipboard = unsupportedSurface("clipboard", {
+  readText: promise("GH-559"),
+  writeText: promise("GH-559"),
+  read: promise("GH-476"),
+  write: promise("GH-559"),
+  has: promise("GH-476"),
+  clear: method("GH-476"),
+  selection: property("GH-476"),
+});
+
+/**
+ * Pinned `clipboard-item.md`: `new ClipboardItem(items)` takes a record keyed by MIME type
+ * and constructs locally (GH-565 AC8); its payload members belong to GH-559.
+ */
+export class ClipboardItem {
+  constructor(items: Readonly<Record<string, unknown>>) {
+    if (items === null || typeof items !== "object") {
+      throw new TypeError(
+        "ClipboardItem items must be an object whose keys are MIME types (Electron 44.4.5 clipboard-item.md)",
+      );
+    }
+  }
+
+  get types(): never {
+    return refuse("property", "ClipboardItem.types", "GH-559");
+  }
+
+  getType(..._type: unknown[]): Promise<never> {
+    return refuseLater("ClipboardItem.getType", "GH-559");
+  }
+}
+
+/** Pinned `native-image.md` module methods: `createFromDataURL` is GH-559's; the rest are unspecified on #476. */
+export const nativeImage = unsupportedSurface("nativeImage", {
+  createEmpty: method("GH-476"),
+  createThumbnailFromPath: promise("GH-476"),
+  createFromPath: method("GH-476"),
+  createFromBitmap: method("GH-476"),
+  createFromBuffer: method("GH-476"),
+  createFromDataURL: method("GH-559"),
+  createFromNamedImage: method("GH-476"),
+  createMenuSymbol: method("GH-476"),
+});
+
+// GH481 owns screen and nativeTheme's first supported members in their
+// dedicated modules. The GH558 refusal rows remain there, one owner each.

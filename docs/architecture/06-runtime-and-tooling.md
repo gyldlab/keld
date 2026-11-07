@@ -2,6 +2,21 @@
 
 ## 1. keld-runtime: Bun as a supervised component
 
+**Explicit-profile implementation (KEL-78 / GH #586 and #588):**
+the [profile amendment](../specs/kel78-explicit-legacy-profile.md#44-boot-version-compatibility-and-downgrade-prevention)
+R1 correction separates renderer/profile schema 3 from facade/profile schema 4,
+preserving current schema 1 and GH #446's no-profile facade schema 2. This
+correction has a separate delegated design approval on #1120/KEL-78. The compiler
+and guarded macOS primary reader enforce window mode, exact version and verified declaration together before
+application execution, including alternate diagnostic entries. Unsupported
+combinations refuse; there is no schema downgrade or implicit legacy fallback.
+The descriptor carries no second profile value. Public kipc and role bootstrap
+remain unchanged. Renderer/profile and facade/profile launch are implemented for
+the macOS primary role; other roles/platforms refuse unsupported explicit profiles.
+This source implementation does not qualify Strict OS containment, trusted product
+receipts, original-app workflows or released/installed artifacts. Availability requires
+a matching compiler/host pair from an integrated revision.
+
 - **Contract, not embedding.** Bun has no stable embedding C API (oven-sh/bun#12017 /
   #14252 remain unshipped; bun:ffi is explicitly experimental). Keld therefore treats
   the runtime as a *versioned process contract*. The live bootstrap contract is exactly
@@ -516,11 +531,13 @@ the [product-status ledger](../engineering/product-status.md#packages) owns pack
 
 **Current versus proposed:** `keld-pack` implements the separately scoped Windows
 update/container primitives; format names alone do not implement installers.
-[GH-1404's draft local macOS successor](../specs/macos-local-app-packaging.md)
-proposes native Apple `codesign` and `hdiutil` for a local ad-hoc `.app`/DMG,
-with a new reviewed installed-bundle admission contract. It is not yet approved or
-implemented, and it does not weaken publisher identity, Strict or public-release
-requirements. The formats and cross-host signing below remain longer-term targets;
+[GH-1404's approved local macOS successor](../specs/macos-local-app-packaging.md)
+is being implemented using native Apple `codesign` and `hdiutil` for a local ad-hoc
+`.app`/DMG, with executable-derived installed-bundle admission. The candidate build
+command supports only native arm64 macOS and explicit Legacy; original draw.io
+integration, installed workflow and final-artifact qualification remain separate
+open gates. Local ad-hoc consistency never grants publisher, Strict or updater
+authority. The formats and cross-host signing below remain longer-term targets;
 the future Windows/Linux packaging records [GH-1405](https://github.com/gyldlab/keld/issues/1405)
 and [GH-1406](https://github.com/gyldlab/keld/issues/1406) are design-only and defer
 their implementation and final installer-format choices.

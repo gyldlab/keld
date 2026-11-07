@@ -17,7 +17,7 @@ import { writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
-import { LifecycleLink } from "../src/link.ts";
+import { LifecycleLink } from "@keld/api/internal/link";
 
 function marker(line: string): void {
   writeSync(1, `${line}\n`);
@@ -44,7 +44,7 @@ LifecycleLink.connect = ((link, handlers) => {
   return realConnect(link, handlers);
 }) as typeof LifecycleLink.connect;
 
-const { app } = await import("../src/app.ts");
+const { app } = await import("electron");
 
 let unhandled = 0;
 process.on("unhandledRejection", (reason) => {

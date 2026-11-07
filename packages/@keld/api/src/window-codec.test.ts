@@ -151,6 +151,30 @@ replay<WindowEvent>(
       { variant: "CloseRequested", window: WINDOW, close_seq: 300n },
     ],
     ["event-destroyed", { variant: "Destroyed", window: WINDOW }],
+    [
+      "event-navigation-committed",
+      {
+        variant: "NavigationCommitted",
+        window: WINDOW,
+        document_generation: 5,
+        native_url:
+          "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      },
+    ],
+    [
+      "event-navigation-finished",
+      { variant: "NavigationFinished", window: WINDOW, document_generation: 5 },
+    ],
+    [
+      "event-document-recovered",
+      {
+        variant: "DocumentRecovered",
+        window: WINDOW,
+        document_generation: 5,
+        native_url:
+          "keld-resource://0123456789abcdef0123456789abcdef/index.html?q=1",
+      },
+    ],
   ],
   encodeWindowEvent,
   decodeWindowEvent,
@@ -204,6 +228,46 @@ replay<WindowRequest>(
       },
     ],
     ["request-destroy", { variant: "Destroy", window: WINDOW }],
+    [
+      "request-create-preload-empty",
+      {
+        variant: "CreateWithPreload",
+        width: 640,
+        height: 480,
+        x: -3,
+        y: 4,
+        preload_absolute: "/app/p.js",
+        additional_arguments: [],
+      },
+    ],
+    [
+      "request-create-preload-adaptive",
+      {
+        variant: "CreateWithPreload",
+        width: 1,
+        height: 2,
+        x: null,
+        y: null,
+        preload_absolute: "/a/p.js",
+        additional_arguments: ["--initial-adaptive-colors=auto"],
+      },
+    ],
+    [
+      "request-load-url",
+      {
+        variant: "LoadUrl",
+        window: WINDOW,
+        uri: "file:///s/drawio/src/main/webapp/index.html?q=1",
+      },
+    ],
+    [
+      "request-destroy-original-document",
+      {
+        variant: "DestroyOriginalDocument",
+        window: WINDOW,
+        document_generation: 5,
+      },
+    ],
   ],
   encodeWindowRequest,
   decodeWindowRequest,
@@ -222,6 +286,7 @@ replay<WindowResponse>(
     ["response-reply-applied", { variant: "ReplyApplied" }],
     ["response-reply-stale", { variant: "ReplyStale" }],
     ["response-destroyed", { variant: "Destroyed" }],
+    ["response-loaded", { variant: "Loaded" }],
     ["response-adopted", { variant: "Adopted", window: WINDOW }],
     [
       "response-close-sequence-maximum",
@@ -242,7 +307,7 @@ replay<CloseVerdict>(
 );
 
 test("every shared vector is replayed exactly once", () => {
-  expect(vectors.size).toBe(37);
+  expect(vectors.size).toBe(45);
   expect([...replayed].sort()).toEqual([...vectors.keys()].sort());
 });
 
@@ -250,7 +315,7 @@ test("unknown discriminants and malformed scalar bytes fail closed", () => {
   for (const [decode, bytes] of [
     [decodeWindowEvent, [7]],
     [decodeWindowRequest, [6]],
-    [decodeWindowResponse, [9]],
+    [decodeWindowResponse, [10]],
     [decodeCloseVerdict, [2]],
     [decodeWindowEvent, [2, 7, 0xac, 2, 2]],
     [decodeWindowRequest, [0, 0, 0, 2]],
