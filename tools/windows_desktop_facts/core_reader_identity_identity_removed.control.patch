@@ -1,0 +1,13 @@
+--- a/crates/keld-wv/src/engine/desktop.rs
++++ b/crates/keld-wv/src/engine/desktop.rs
+@@ -27,9 +27,7 @@
+     /// Accept the sample only while the same authenticated reader remains live.
+     #[must_use]
+     pub fn matches(&self, attempt: u32, reader: &Arc<AtomicBool>) -> bool {
+-        self.attempt == attempt
+-            && Arc::ptr_eq(&self.reader, reader)
+-            && !reader.load(Ordering::Acquire)
++        self.attempt == attempt && !reader.load(Ordering::Acquire)
+     }
+ }
+ 

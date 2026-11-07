@@ -1,0 +1,232 @@
+diff --git a/crates/keld-core/src/app_session/window_router/tests/desktop.rs b/crates/keld-core/src/app_session/window_router/tests/desktop.rs
+index 12c5cfa511e8a2c0243a1e146fa574074c9ea2c3..0969ab78554d65a9cd6fb3377d7b8ca60ad5a41d
+--- a/crates/keld-core/src/app_session/window_router/tests/desktop.rs
++++ b/crates/keld-core/src/app_session/window_router/tests/desktop.rs
+@@ -144,76 +144,155 @@
+     fixture.ready()?;
+     let window = fixture.build(72, 7)?;
+ 
+-    fixture.handle.retire_generation(caller_a.attempt)?;
+-    install_successor(&mut fixture)?;
+-    // The real successor install conveys its provenance on the existing
+-    // command channel, before that generation's reader can submit Subscribe.
+-    let AppWindowCommand::WindowsDesktopProducer { capture: current_b } =
+-        fixture.commands.recv_timeout(Duration::from_secs(3))?
+-    else {
+-        return Err("expected successor capture owner".into());
+-    };
+-    pending(&fixture, 81)?;
+-    let caller_b = fixture.caller()?;
+-    let expected_owner = WindowOwner::new(caller_b.identity, caller_b.attempt);
+-    for value in [None, Some(false), Some(true)] {
+-        completed_capture(&fixture, &held_a, value)?;
++    fixture.retire_reader(caller_a.attempt)?;
++    // Always retire/join the real successor reader before propagating a failure.
++    let proof = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
++        install_successor(&mut fixture)?;
++        // The real successor install conveys its provenance on the existing
++        // command channel, before that generation's reader can submit Subscribe.
++        let AppWindowCommand::WindowsDesktopProducer { capture: current_b } =
++            fixture.commands.recv_timeout(Duration::from_secs(3))?
++        else {
++            return Err("expected successor capture owner".into());
++        };
++        pending(&fixture, 81)?;
++        let caller_b = fixture.caller()?;
++        let expected_owner = WindowOwner::new(caller_b.identity, caller_b.attempt);
++        // Return owned values so a failed assertion cannot poison the registry lock
++        // required by reader retirement and cleanup.
++        let desktop_state = |fixture: &Fixture| -> TestResult<_> {
++            let state = fixture
++                .handle
++                .windows
++                .as_ref()
++                .ok_or("selected session")?
++                .lock()
++                .map_err(|_| "window lock poisoned")?;
++            Ok((
++                state.desktop_epoch.0,
++                state.desktop_seen,
++                state.desktop_latest.clone(),
++                state.subscribed,
++                state
++                    .pending_desktop
++                    .map(|pending| (pending.owner, pending.correlation)),
++            ))
++        };
++        // Deliberately give another live reader the successor's numerical attempt.
++        // Reader identity, rather than attempt mismatch or a stopped flag, must fence it.
++        let other_attempt = 2;
++        assert_eq!(
++            caller_b.attempt, other_attempt,
++            "equal-attempt prerequisite"
++        );
++        let other_reader = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        assert!(!Arc::ptr_eq(&caller_b.reader_stop, &other_reader));
++        assert!(!caller_b.reader_stop.load(Ordering::Acquire));
++        assert!(!other_reader.load(Ordering::Acquire));
++        let same_attempt_other_reader =
++            keld_wv::AppDesktopCapture::from_current(other_attempt, Arc::clone(&other_reader));
++        for capture in [&held_a, &same_attempt_other_reader] {
++            for value in [None, Some(false), Some(true)] {
++                completed_capture(&fixture, capture, value)?;
++                let (epoch, seen, latest, subscribed, reservation) = desktop_state(&fixture)?;
++                assert_eq!(
++                    epoch, 1,
++                    "foreign capture cannot advance pending desktop epoch"
++                );
++                assert_eq!(reservation, Some((expected_owner, CorrelationId(81))));
++                assert!(!seen && latest.is_none());
++                assert_eq!(subscribed, None);
++            }
++        }
++        // A correlated refusal fences the writer while B still awaits its first sample.
++        fixture
++            .handle
++            .dispatch_window(&caller_b, CorrelationId(82), &[])?;
++        fixture.error(82, "KELD-CORE-045")?;
++        assert!(
++            sample(&fixture, Some(false)).is_err(),
++            "initial scope cannot revive B"
++        );
++        completed_capture(&fixture, &current_b, Some(true))?;
++        {
++            let (epoch, seen, latest, subscribed, reservation) = desktop_state(&fixture)?;
++            assert_eq!(
++                epoch, 2,
++                "current reader must settle pending desktop sample"
++            );
++            assert!(
++                reservation.is_none(),
++                "current capture must settle Subscribe"
++            );
++            assert!(seen);
++            assert_eq!(
++                WindowEvent::DesktopSnapshot {
++                    epoch,
++                    snapshot: latest,
++                },
++                expected(2, Some(true))
++            );
++            assert_eq!(subscribed, Some(expected_owner));
++        }
++        fact(&mut fixture, &expected(2, Some(true)))?;
++        fact(
++            &mut fixture,
++            &WindowEvent::Created {
++                window,
++                state: native_state(snapshot()),
++                pending_close: None,
++            },
++        )?;
++        accepted(&mut fixture, 81)?;
++
++        for capture in [&held_a, &same_attempt_other_reader] {
++            for value in [None, Some(true), Some(false)] {
++                completed_capture(&fixture, capture, value)?;
++                let (epoch, seen, latest, subscribed, reservation) = desktop_state(&fixture)?;
++                assert_eq!(epoch, 2);
++                assert_eq!(subscribed, Some(expected_owner));
++                assert!(reservation.is_none());
++                assert!(seen);
++                assert_eq!(
++                    WindowEvent::DesktopSnapshot {
++                        epoch,
++                        snapshot: latest,
++                    },
++                    expected(2, Some(true))
++                );
++            }
++        }
++        assert!(!caller_b.reader_stop.load(Ordering::Acquire));
++        assert!(!other_reader.load(Ordering::Acquire));
++        // Re-subscribing an accepted owner emits only its correlated acknowledgement.
++        pending(&fixture, 83)?;
++        accepted(&mut fixture, 83)?;
++        completed_capture(&fixture, &current_b, Some(false))?;
++        {
++            let (epoch, seen, latest, subscribed, reservation) = desktop_state(&fixture)?;
++            assert_eq!(
++                epoch, 3,
++                "current capture must still update after stale input"
++            );
++            assert!(seen);
++            assert!(reservation.is_none());
++            assert_eq!(subscribed, Some(expected_owner));
++            assert_eq!(
++                WindowEvent::DesktopSnapshot {
++                    epoch,
++                    snapshot: latest,
++                },
++                expected(3, Some(false))
++            );
++        }
++        fact(&mut fixture, &expected(3, Some(false)))?;
++        pending(&fixture, 84)?;
++        accepted(&mut fixture, 84)?;
++        Ok(())
++    }));
++    fixture.retire_reader(2)?;
++    match proof {
++        Ok(result) => result,
++        Err(panic) => std::panic::resume_unwind(panic),
+     }
+-    {
+-        let state = fixture
+-            .handle
+-            .windows
+-            .as_ref()
+-            .ok_or("selected session")?
+-            .lock()
+-            .expect("window lock");
+-        let pending = state
+-            .pending_desktop
+-            .as_ref()
+-            .ok_or("B still owns the reservation")?;
+-        assert_eq!(
+-            (pending.owner, pending.correlation),
+-            (expected_owner, CorrelationId(81))
+-        );
+-        assert!(!state.desktop_seen && state.desktop_latest.is_none());
+-        assert_eq!(state.desktop_epoch.0, 1);
+-    }
+-    assert!(
+-        sample(&fixture, Some(false)).is_err(),
+-        "initial scope cannot revive B"
+-    );
+-    completed_capture(&fixture, &current_b, Some(true))?;
+-    fact(&mut fixture, &expected(2, Some(true)))?;
+-    fact(
+-        &mut fixture,
+-        &WindowEvent::Created {
+-            window,
+-            state: native_state(snapshot()),
+-            pending_close: None,
+-        },
+-    )?;
+-    accepted(&mut fixture, 81)?;
+-
+-    for value in [None, Some(true), Some(false)] {
+-        completed_capture(&fixture, &held_a, value)?;
+-    }
+-    {
+-        let state = fixture
+-            .handle
+-            .windows
+-            .as_ref()
+-            .ok_or("selected session")?
+-            .lock()
+-            .expect("window lock");
+-        assert_eq!(state.desktop_epoch.0, 2);
+-        assert_eq!(state.subscribed, Some(expected_owner));
+-        assert!(
+-            state
+-                .desktop_latest
+-                .as_ref()
+-                .is_some_and(|value| value.should_use_dark_colors)
+-        );
+-    }
+-    completed_capture(&fixture, &current_b, Some(false))?;
+-    fact(&mut fixture, &expected(3, Some(false)))
+-}
++}

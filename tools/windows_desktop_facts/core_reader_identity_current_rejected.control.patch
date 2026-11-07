@@ -1,0 +1,10 @@
+--- a/crates/keld-wv/src/engine/desktop.rs
++++ b/crates/keld-wv/src/engine/desktop.rs
+@@ -30,6 +30,7 @@
+         self.attempt == attempt
+             && Arc::ptr_eq(&self.reader, reader)
+             && !reader.load(Ordering::Acquire)
++            && std::hint::black_box(false)
+     }
+ }
+ 
