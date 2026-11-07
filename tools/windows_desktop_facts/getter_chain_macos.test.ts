@@ -124,6 +124,26 @@ function stageSource(root: string, mutateReady = false): string {
     );
     writeFileSync(file, original.replace(guard, "else if (false) {"));
   }
+  if (process.env.W4_GETTER_FAULT === "block-restoration") {
+    // Test-only negative control: initial and changed snapshots still work,
+    // but an invalidated mirror cannot recover from the next valid snapshot.
+    // The immutable source and production files are never changed.
+    const file = join(shared, "packages/@keld/api/src/window-source.ts");
+    const original = readFileSync(file, "utf8");
+    const assignment = "this.#desktop = next;";
+    assert.equal(
+      original.split(assignment).length,
+      2,
+      "expected one exact S1 desktop restoration assignment",
+    );
+    writeFileSync(
+      file,
+      original.replace(
+        assignment,
+        "if (this.#desktopEpoch === 0n || this.#desktop !== undefined || fact.snapshot === null) this.#desktop = next;",
+      ),
+    );
+  }
   return shared;
 }
 
@@ -143,7 +163,7 @@ async function withPeer(
     failure = error;
   } finally {
     try {
-      await peer?.dispose();
+      await peer?.dispose(failure !== undefined);
     } catch (error) {
       if (failure === undefined) failure = error;
       else console.error("owned getter-chain cleanup also failed:", error);
@@ -167,6 +187,7 @@ async function startPeer(shared: string, endpoint: string) {
   const peerClosed = Promise.withResolvers<void>();
   let connections = 0;
   let didClose = false;
+  let sawChildFatal = false;
   const listener = Bun.listen<undefined>({
     unix: endpoint,
     socket: {
@@ -228,6 +249,7 @@ async function startPeer(shared: string, endpoint: string) {
     ipc(input) {
       assert.ok(input && typeof input === "object");
       const value = input as Notice;
+      if (value.kind === "fatal") sawChildFatal = true;
       const i = waiters.findIndex(
         (waiter) => waiter.match(value) || value.kind === "fatal",
       );
@@ -361,15 +383,30 @@ async function startPeer(shared: string, endpoint: string) {
     );
     assert.deepEqual(frame.payload, payload);
   }
-  async function dispose(): Promise<void> {
+  async function dispose(allowExpectedFault = false): Promise<void> {
     let cleanupError: unknown;
     try {
       let exit: number | null = child.exitCode;
       if (child.exitCode === null) {
-        await request("finish");
-        exit = await t.withIoDeadline(child.exited, 5000);
+        if (allowExpectedFault && sawChildFatal) {
+          // An intentionally broken staged source already terminated the role.
+          // Never send finish to a dead peer and obscure the semantic failure
+          // with a secondary five-second IPC timeout.
+          exit = await t.withIoDeadline(child.exited, 5000);
+        } else {
+          await request("finish");
+          exit = await t.withIoDeadline(child.exited, 5000);
+        }
       }
-      assert.equal(exit, 0, "owned getter-chain child must exit successfully");
+      if (allowExpectedFault && sawChildFatal) {
+        assert.notEqual(exit, 0, "deliberately mutated role must fail");
+      } else {
+        assert.equal(
+          exit,
+          0,
+          "owned getter-chain child must exit successfully",
+        );
+      }
       await t.withIoDeadline(peerClosed.promise, 5000);
     } catch (error) {
       cleanupError = error;
@@ -386,12 +423,16 @@ async function startPeer(shared: string, endpoint: string) {
       reader.fail(new Error("fixture disposed"));
       const [out, err] = await Promise.all([stdout, stderr]);
       if (cleanupError === undefined) {
-        assert.equal(
-          err,
-          "",
-          "owned child must not emit unexplained diagnostics",
-        );
-        assert.match(out, /"cleanup":true/);
+        if (allowExpectedFault && sawChildFatal) {
+          assert.match(err, /KELD-CORE-049/);
+        } else {
+          assert.equal(
+            err,
+            "",
+            "owned child must not emit unexplained diagnostics",
+          );
+          assert.match(out, /"cleanup":true/);
+        }
         assert.equal(didClose, true);
       } else {
         throw new Error(
@@ -587,6 +628,42 @@ for (const order of [
         });
         assert.equal(failure.readyOutcome, "ready");
         assert.equal(failure.getterError, "KELD-CORE-049");
+        // A later valid Host observation can restore the same ready role.
+        // This is not a new Ready or an app-side recovery RPC.
+        await peer.desktop(4n, initial);
+        const restored = await peer.notice("fact");
+        assert.deepEqual(
+          [restored.variant, restored.epoch, restored.publicReady],
+          ["DesktopSnapshot", "4", true],
+        );
+        const afterRestore = await peer.request("checkpoint");
+        assert.equal(afterRestore.ready, true);
+        assert.equal(afterRestore.readyOutcome, "ready");
+        assert.deepEqual(afterRestore.factOrder, [
+          "DesktopSnapshot",
+          "Created",
+          "DesktopSnapshot",
+          "DesktopSnapshot",
+          "DesktopSnapshot",
+        ]);
+        assert.equal(
+          (
+            await peer.request("getters", {
+              expected: expectedInitial,
+              count: 1000,
+            })
+          ).hostCalls,
+          0,
+          "post-invalidation public getters must use restored local snapshot",
+        );
+        await peer.fence();
+        assert.equal(
+          peer.incoming.filter(
+            (frame) => frame.header.kind === peer.t.FrameKind.Call,
+          ).length,
+          beforeCalls,
+          "getter recovery must not issue additional Host calls",
+        );
       });
     },
     15000,
