@@ -139,6 +139,9 @@ impl Fixture {
             fs_worker_commands: None,
             auth: None,
             auth_commands: None,
+            dialog: None,
+            menu: None,
+            compat: None,
             guardian: GuardianOwnerHandle {
                 command_tx: guardian_tx,
             },
@@ -155,6 +158,7 @@ impl Fixture {
             None,
             None,
             Some((verified.clone(), configuration, None)),
+            None,
         )?;
         router
             .handle
@@ -1284,7 +1288,7 @@ fn anchor_close_keeps_host_auth_and_real_token_denials_live() -> FixtureResult<(
         let fatal = fixture
             .window
             .try_iter()
-            .any(|command| command == super::super::AppWindowCommand::Fatal);
+            .any(|command| matches!(command, super::super::AppWindowCommand::Fatal));
         // Join the actual reader/Native worker before any predicate can panic.
         let cleanup = fixture.finish();
         assert_eq!(

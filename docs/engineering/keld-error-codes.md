@@ -202,6 +202,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: the keld-attempt claim wait was cancelled by its owner before a claimant was accepted (the launched candidate's handle signaled, or the owner ended the wait); the endpoint is closed
 - fix: Roll the attempt back: health cannot commit, and end the candidate family if any of it still runs.
 
+## KELD-IPC-029
+
+- crate: @keld/kipc
+- message: A present Host launch-facts record is malformed, unsupported or oversized, or installed startup has no installed record
+- fix: Rebuild and launch through the qualified Host. Do not substitute application globals, environment values or mixed development/installed records for the private Host data.
+
 ## KELD-WV-001
 
 - crate: keld-wv
@@ -267,6 +273,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-wv
 - message: Renderer bridge request rejected, or ended without a reply; until GH-1095 lands this code is also returned after application dispatch
 - fix: Never resend the call automatically. Until GH-1095 lands, treat it as possibly run whatever the detail says. Invoke only the declared Keld renderer API with a valid payload, one call at a time, and never supply stale document state, undeclared channels, oversized payloads, or page-selected authority. Do not reload the document to recover.
+
+## KELD-WV-014
+
+- crate: keld-wv
+- message: Original preload source was refused
+- fix: Restore the independently pinned package image and create the window again; inspect the reported source-refusal detail rather than substituting another preload.
 
 ## KELD-CLI-010
 
@@ -362,13 +374,13 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-cli
 - message: Reserved CLI verb is not implemented
-- fix: Use `keld create <name>` then `keld dev` (Phase 2). Track KEL-17 (migrate), KEL-19 (build/ext), or KEL-13 (gen).
+- fix: Use `keld create <name>` then `keld dev`; the implemented local packaging cell is `keld build --target macos-arm64` on Apple Silicon macOS. Track KEL-17 (migrate), KEL-19 (remaining packaging/ext), or KEL-13 (gen) for reserved verbs.
 
 ## KELD-CLI-046
 
 - crate: keld-cli
 - message: Unknown CLI command
-- fix: Use a live verb: create, dev, doctor, mcp, hello, ipc-echo, ipc-client.
+- fix: Use a live verb: create, dev, build, doctor, mcp, hello, ipc-echo, ipc-client. The build command currently accepts only native macOS arm64 local packaging.
 
 ## KELD-CLI-047
 
@@ -399,6 +411,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: A process argument is not valid Unicode
 - fix: Pass every argument, including the program path, as valid Unicode text; rename or re-quote the offending path or name.
+
+## KELD-CLI-052
+
+- crate: keld-cli
+- message: Local macOS packaging was refused during the named build phase
+- fix: Use `keld build --target macos-arm64` on Apple Silicon macOS with closed literal application/build configuration, an explicitly declared Legacy permission profile, pinned Host/Bun inputs and a new output directory. Correct the named input or native-tool failure; do not bypass admission or edit a signed bundle.
 
 ## KELD-MCP001
 
@@ -802,6 +820,60 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Filesystem broker preparation failed or a call presented a different verified manifest snapshot
 - fix: Repair the absolute serviceable scopes or use the same verified snapshot, then start a fresh session.
 
+## KELD-NATIVE-009
+
+- crate: keld-core
+- message: The bounded native Message request or generation nonce is invalid or was already accepted
+- fix: Use positive increasing nonces from the current authenticated app-link generation and source-exact bounded Message options.
+
+## KELD-NATIVE-010
+
+- crate: keld-core
+- message: This form of native dialog presentation is not yet supported by the current macOS adapter
+- fix: Supply a live parented BrowserWindow for the admitted Message operation; do not enter a synchronous modal loop inside Tao. Parentless presentation and hidden-parent synchronous fallback remain unqualified.
+
+## KELD-NATIVE-011
+
+- crate: keld-core
+- message: The requested Message dialog parent is not an authenticated current-role BrowserWindow
+- fix: Use the Host-minted current-window reference, not a forged object or numeric native pointer.
+
+## KELD-NATIVE-012
+
+- crate: keld-core
+- message: The Message dialog parent was destroyed, closed, or belongs to a retired generation
+- fix: Wait for the successor's current window admission before requesting a new native dialog.
+
+## KELD-NATIVE-013
+
+- crate: keld-core
+- message: Another native Message dialog still owns this role's bounded panel capacity
+- fix: Wait until the prior panel and its native callback have physically drained, then make a fresh request.
+
+## KELD-NATIVE-014
+
+- crate: keld-core
+- message: The authenticated Message dialog exceeded its own finite native interaction deadline
+- fix: Inspect the real OS session and perform a new user-directed action; never automatically replay an unknown effect.
+
+## KELD-NATIVE-015
+
+- crate: keld-core
+- message: The original native Message operation was canceled before its terminal result committed
+- fix: Treat the original correlation as canceled, not as a clicked Cancel button or an acknowledgement of the new Cancel correlation.
+
+## KELD-NATIVE-016
+
+- crate: keld-core
+- message: The macOS native Message presentation or callback failed without a confirmed user selection
+- fix: Inspect Host and AppKit's reported cause and retry only as a fresh user-directed action after physical cleanup.
+
+## KELD-NATIVE-017
+
+- crate: keld-native
+- message: Native application-menu materialization failed without a confirmed installation receipt
+- fix: Inspect Host/AppKit diagnostics and correct the cause before a fresh deliberate install; never replay an unknown effect automatically.
+
 ## KELD-COMPAT-001
 
 - crate: keld-compat
@@ -873,6 +945,96 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: @keld/electron
 - message: `app.quit()` is not yet a cancelable Electron quit sequence with live or not-yet-censused native windows; a direct Host Quit would bypass unsaved-document close veto
 - fix: Close each native window through its cancelable `close` policy before requesting Quit. Full `before-quit`/`will-quit` and OS-initiated quit integration belongs to GH451; do not claim application compatibility until independently reviewed.
+
+## KELD-COMPAT-013
+
+- crate: @keld/electron
+- message: An Electron main-process member is linked but not implemented by this Keld compatibility surface
+- fix: Guard or remove the named member's call, property access or construction until the issue named in its typed refusal lands; do not treat the linked binding as a working stub.
+
+## KELD-COMPAT-014
+
+- crate: @keld/electron
+- message: A second owner defined a conflicting or incompatible main-role process fact before the canonical installer
+- fix: Remove the competing definition and use the process-facts owner through the Host-selected preload or facade import. A conflict refuses the complete set before writing another property.
+
+## KELD-COMPAT-040
+
+- crate: @keld/electron
+- message: An app session fact was read but the Host did not deliver that fact to this role
+- fix: Launch through a qualified Host that supplies the named fact, or handle the typed absence. Do not derive it from environment variables, cwd, argv, Intl or package.json.
+
+## KELD-COMPAT-041
+
+- crate: @keld/electron
+- message: app.getPath received a non-string or an undocumented path name
+- fix: Pass one of the documented names listed in the error. A recognized name can still have a typed absent Host fact.
+
+## KELD-COMPAT-042
+
+- crate: @keld/electron
+- message: The application tried to assign app.name, which this bounded session-facts surface does not support
+- fix: Declare the application name in keld.config.ts and rebuild. The Host owns the admitted name; setName remains separate work.
+
+## KELD-COMPAT-051
+
+- crate: @keld/electron
+- message: A second Electron compatibility entry was evaluated within one application role
+- fix: Use one installed @keld/electron package for all Electron imports; remove the competing evaluation rather than replacing the process-local identity marker.
+
+## KELD-COMPAT-052
+
+- crate: keld-native
+- message: The menu projection is outside the approved bounded grammar or local ownership contract
+- fix: Use this facade's Menu/MenuItem objects and the approved fields, types, roles and limits before requesting installation.
+
+## KELD-COMPAT-053
+
+- crate: keld-native
+- message: Native custom-click or checkbox activation is unsupported until GH556
+- fix: Keep the initial checkbox state and app data unchanged; use a supported role or wait for GH556's approved callback protocol.
+
+## KELD-COMPAT-054
+
+- crate: keld-native
+- message: Native application-menu Quit/Cmd+Q is held until GH563's cancelable OS-quit integration
+- fix: Close windows through their vetoable close policy; do not bypass the hold with native terminate or infer before-quit parity.
+
+## KELD-COMPAT-098
+
+- crate: @keld/electron
+- message: A second ipcMain invoke handler was registered for an existing channel
+- fix: Call ipcMain.removeHandler for that channel before registering a replacement; Electron keeps only one invoke handler per channel.
+
+## KELD-COMPAT-099
+
+- crate: @keld/electron
+- message: The ipcMain invoke handler argument is not a function
+- fix: Pass a function as the second argument of ipcMain.handle(channel, handler).
+
+## KELD-COMPAT-100
+
+- crate: @keld/kipc
+- message: Unsupported value encountered by the bounded Electron endpoint-value codec
+- fix: Replace the unsupported value with a supported, snapshot-safe endpoint value before sending; do not substitute an unbounded or ambient-authority object.
+
+## KELD-COMPAT-101
+
+- crate: @keld/kipc
+- message: Malformed endpoint value or renderer argument encoding was refused
+- fix: Correct the endpoint value encoding and declared value domain before sending it through the renderer channel.
+
+## KELD-COMPAT-102
+
+- crate: @keld/kipc
+- message: Endpoint value exceeded the codec's bounded byte, depth, or node budget
+- fix: Shrink or simplify the endpoint value to the approved codec limits before sending it.
+
+## KELD-COMPAT-103
+
+- crate: @keld/electron
+- message: Original preload runtime refused a local page-to-application crossing or its callback did not complete
+- fix: Correct the reported preload request, binding, document identity or value-bound failure; never infer that a missing page callback means the application effect did not run.
 
 ## KELD-CORE-030
 
@@ -987,6 +1149,42 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-core
 - message: This Host session has reached its cumulative distinct-window admission capacity, including destroyed window identities
 - fix: Start a fresh Host session to mint further window identities. Do not retry Create within this session, recycle a retired identity, or bypass the native admission limit. The candidate numeric capacity remains unapproved pending GH1149.
+
+## KELD-CORE-049
+
+- crate: keld-core
+- message: The Host's native desktop display or appearance snapshot is unavailable
+- fix: Correct the native display or appearance capture error reported by the Host and relaunch; do not fabricate desktop facts.
+
+## KELD-CORE-050
+
+- crate: keld-core
+- message: An original document load is already pending for this window
+- fix: Wait for that window's actual native load finish or failure before issuing another original load.
+
+## KELD-CORE-051
+
+- crate: keld-core
+- message: Verified original document source, selected URI, preload or native admission is unavailable or refused
+- fix: Prepare the verified original resource graph and exact selected entry or preload with bounded arguments; resolve the reported source or native admission failure before a new explicit request.
+
+## KELD-CORE-052
+
+- crate: keld-core
+- message: The admitted original native navigation failed or its document was revoked
+- fix: Treat the original load as failed; use a new explicit load against a current live window after correcting the native failure or revocation cause.
+
+## KELD-CORE-053
+
+- crate: keld-core
+- message: A window closed before its admitted original document load finished
+- fix: Use a current live window for a new explicit load; do not reuse the closed window's pending correlation.
+
+## KELD-CORE-054
+
+- crate: keld-core
+- message: The original document close was not admitted because its current document or ownership is stale or unavailable
+- fix: Preserve the current window and document, ignore the old result, and wait for a new explicit current-document close action; do not infer that a stale event can close the latest document.
 
 ## KELD-UPDATE-001
 
@@ -1178,13 +1376,25 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The expected-identity container is not canonical
-- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image; `keld build` is reserved (`KELD-CLI-045`) and is not implemented.
+- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the Windows packaging integration's `keld-pack` embedding step before signing a new image. The local macOS build command does not implement this Windows producer or authenticate Windows installations.
 
 ## KELD-PACK-012
 
 - crate: keld-pack
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
+
+## KELD-PACK-013
+
+- crate: keld-pack
+- message: The local macOS bundle metadata is malformed or outside the closed schema
+- fix: Rebuild with the supported macOS packager using valid literal application metadata and the exact qualified Bun digest. Remove duplicate, unknown or wrongly typed authoring fields; do not manually alter the sealed Info.plist.
+
+## KELD-PACK-014
+
+- crate: keld-pack
+- message: Local macOS package construction or verification failed at the named phase
+- fix: Correct the named missing, changed, escaping or incompatible input, executable mode, native signature or disk-image error, then build into a new output directory. Preserve the previous artifact and any reported cleanup failure. Do not use quarantine removal, deep signing or permission overrides as a remedy.
 
 ## KELD-HELPER-001
 

@@ -1,6 +1,6 @@
 /** Independent original-Error lifetime oracle; no source/link/heap introspection. */
 import { WindowSource } from "./window-source.ts";
-import { isCallError, linkError } from "../../kipc/src/transport.ts";
+import { isCallError, linkError } from "@keld/kipc";
 
 function requireFact(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
