@@ -39,7 +39,10 @@ function withPackages(run: (root: string) => void): void {
       "module_process_probe.ts",
       "module_export_mutation_probe.ts",
     ]) {
-      cpSync(join(import.meta.dir, name), join(fixtures, name));
+      cpSync(
+        resolve(import.meta.dir, "../fixtures", name),
+        join(fixtures, name),
+      );
     }
     const scope = join(root, "api/node_modules/@keld");
     mkdirSync(scope, { recursive: true });
