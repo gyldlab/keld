@@ -843,103 +843,98 @@ test.skipIf(process.platform !== "darwin")(
 test.skipIf(process.platform !== "darwin")(
   "W4 post-Init orthogonal theme and scale changes use one shared getter mirror",
   async () => {
-    await withPeer(
-      async (peer) => {
-        const corr = await peer.handshake();
-        await peer.desktop(1n, initial);
-        await peer.created();
-        const first = await peer.notice("fact");
-        const created = await peer.notice("fact");
-        assert.deepEqual(
-          [first.variant, first.epoch, created.variant],
-          ["DesktopSnapshot", "1", "Created"],
-        );
-        await peer.accepted(corr);
-        await peer.ready();
-        const ready = await peer.notice("ready-result");
-        assert.deepEqual([ready.outcome, ready.ready], ["ready", true]);
-        const originalCalls = peer.incoming.filter(
-          (frame) => frame.header.kind === peer.t.FrameKind.Call,
-        ).length;
+    await withPeer(async (peer) => {
+      const corr = await peer.handshake();
+      await peer.desktop(1n, initial);
+      await peer.created();
+      const first = await peer.notice("fact");
+      const created = await peer.notice("fact");
+      assert.deepEqual(
+        [first.variant, first.epoch, created.variant],
+        ["DesktopSnapshot", "1", "Created"],
+      );
+      await peer.accepted(corr);
+      await peer.ready();
+      const ready = await peer.notice("ready-result");
+      assert.deepEqual([ready.outcome, ready.ready], ["ready", true]);
+      const originalCalls = peer.incoming.filter(
+        (frame) => frame.header.kind === peer.t.FrameKind.Call,
+      ).length;
 
-        // Atom A: only the effective theme changes; the screen must not.
-        const themeOnly = { ...initial, should_use_dark_colors: true };
-        await peer.desktop(2n, themeOnly);
-        const themeFact = await peer.notice("fact");
-        assert.deepEqual(
-          [themeFact.variant, themeFact.epoch, themeFact.publicReady],
-          ["DesktopSnapshot", "2", true],
-        );
-        assert.equal(
-          (
-            await peer.request("getters", {
-              expected: { ...expectedInitial, dark: true },
-              count: 1000,
-            })
-          ).hostCalls,
-          0,
-        );
+      // Atom A: only the effective theme changes; the screen must not.
+      const themeOnly = { ...initial, should_use_dark_colors: true };
+      await peer.desktop(2n, themeOnly);
+      const themeFact = await peer.notice("fact");
+      assert.deepEqual(
+        [themeFact.variant, themeFact.epoch, themeFact.publicReady],
+        ["DesktopSnapshot", "2", true],
+      );
+      assert.equal(
+        (
+          await peer.request("getters", {
+            expected: { ...expectedInitial, dark: true },
+            count: 1000,
+          })
+        ).hostCalls,
+        0,
+      );
 
-        // Atom B: theme remains Dark while work area and scale change.
-        // Identity stays 17. These are injected S1 facts, not Win32 events.
-        const scaleOnly = {
-          ...themeOnly,
-          displays: [
-            {
-              ...initial.displays[0]!,
-              work_area: { x: 0, y: 40, width: 1440, height: 860 },
-              scale_factor: 1.25,
+      // Atom B: theme remains Dark while work area and scale change.
+      // Identity stays 17. These are injected S1 facts, not Win32 events.
+      const scaleOnly = {
+        ...themeOnly,
+        displays: [
+          {
+            ...initial.displays[0]!,
+            work_area: { x: 0, y: 40, width: 1440, height: 860 },
+            scale_factor: 1.25,
+          },
+        ],
+      };
+      const expectedDisplay = {
+        ...expectedInitial.primary,
+        workArea: { x: 0, y: 40, width: 1440, height: 860 },
+        scaleFactor: 1.25,
+      };
+      await peer.desktop(3n, scaleOnly);
+      const scaleFact = await peer.notice("fact");
+      assert.deepEqual(
+        [scaleFact.variant, scaleFact.epoch, scaleFact.publicReady],
+        ["DesktopSnapshot", "3", true],
+      );
+      assert.equal(
+        (
+          await peer.request("getters", {
+            expected: {
+              all: [expectedDisplay],
+              primary: expectedDisplay,
+              dark: true,
             },
-          ],
-        };
-        const expectedDisplay = {
-          ...expectedInitial.primary,
-          workArea: { x: 0, y: 40, width: 1440, height: 860 },
-          scaleFactor: 1.25,
-        };
-        await peer.desktop(3n, scaleOnly);
-        const scaleFact = await peer.notice("fact");
-        assert.deepEqual(
-          [scaleFact.variant, scaleFact.epoch, scaleFact.publicReady],
-          ["DesktopSnapshot", "3", true],
-        );
-        assert.equal(
-          (
-            await peer.request("getters", {
-              expected: {
-                all: [expectedDisplay],
-                primary: expectedDisplay,
-                dark: true,
-              },
-              count: 1000,
-            })
-          ).hostCalls,
-          0,
-        );
-        await peer.fence();
-        const checkpoint = await peer.request("checkpoint");
-        assert.deepEqual(checkpoint.factOrder, [
-          "DesktopSnapshot",
-          "Created",
-          "DesktopSnapshot",
-          "DesktopSnapshot",
-        ]);
-        assert.deepEqual(
-          [checkpoint.ready, checkpoint.readyOutcome],
-          [true, "ready"],
-        );
-        assert.equal(
-          peer.incoming.filter(
-            (frame) => frame.header.kind === peer.t.FrameKind.Call,
-          ).length,
-          originalCalls,
-          "orthogonal getter changes must not issue extra Host RPCs",
-        );
-      },
-      ["constant-light", "constant-scale"].includes(
-        process.env.W4_GETTER_FAULT ?? "",
-      ),
-    );
+            count: 1000,
+          })
+        ).hostCalls,
+        0,
+      );
+      await peer.fence();
+      const checkpoint = await peer.request("checkpoint");
+      assert.deepEqual(checkpoint.factOrder, [
+        "DesktopSnapshot",
+        "Created",
+        "DesktopSnapshot",
+        "DesktopSnapshot",
+      ]);
+      assert.deepEqual(
+        [checkpoint.ready, checkpoint.readyOutcome],
+        [true, "ready"],
+      );
+      assert.equal(
+        peer.incoming.filter(
+          (frame) => frame.header.kind === peer.t.FrameKind.Call,
+        ).length,
+        originalCalls,
+        "orthogonal getter changes must not issue extra Host RPCs",
+      );
+    });
   },
   15000,
 );
