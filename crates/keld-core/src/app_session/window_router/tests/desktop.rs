@@ -3,8 +3,15 @@
 //! the final engine type when implementing, and must run real Mac/native tests.
 //! No marker, native callback or fake Monitor observation is accepted as OS proof.
 
-use super::*;
+use super::{
+    AppWindowEvent, CallError, CorrelationId, Fixture, FrameKind, LifecycleResponse, Rect,
+    TestResult, WindowEvent, fact, install_successor, native_state, snapshot, subscription_refusal,
+};
+use keld_ipc::channel_table::{Authority, ReceiveClass};
+use keld_ipc::codec::decode;
+use keld_ipc::link::read_frame;
 use keld_ipc::window::{DesktopFact, DesktopFacts};
+use keld_ipc::{LIFECYCLE_CHANNEL, SubscribeRefusal};
 use keld_wv::{AppDesktopDisplay, AppDesktopFacts, AppDesktopRect};
 
 fn desktop_fixture() -> TestResult<Fixture> {

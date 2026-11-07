@@ -18,7 +18,7 @@ const source = JSON.parse(
     "utf8",
   ),
 ) as string;
-const token = "0123456789abcdef0123456789abcdef";
+const token = "00000000000000000000000000000000";
 const facts: PreloadFacts = {
   argv: ["--initial-adaptive-colors=auto"],
   versions: { keld: "canonical-test-facts", bun: "1.4.4" },
