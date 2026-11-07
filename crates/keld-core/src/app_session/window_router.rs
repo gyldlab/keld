@@ -35,6 +35,7 @@ use super::{
 // codec vectors and maximum Created socket test qualify the current schema.
 const WINDOW_PAYLOAD_STORAGE_BYTES: usize = 64;
 /// GH481's event-specific body cap; the existing control frame limit is unchanged.
+#[cfg(target_os = "macos")]
 const MAX_DESKTOP_EVENT_BYTES: usize = 32 * 1024;
 
 /// Core alone increments native observation epochs. Epoch zero has no authority.
@@ -1200,11 +1201,32 @@ impl PrimaryRouterHandle {
                     failed,
                 )
             }
+            #[cfg(target_os = "macos")]
             request @ WindowRequest::CreateWithPreload { .. } => self
                 .window_create_with_original_locked(session, active, correlation, request, failed),
+            #[cfg(not(target_os = "macos"))]
+            request @ WindowRequest::CreateWithPreload { .. } => {
+                Self::window_create_with_original_locked(
+                    session,
+                    active,
+                    correlation,
+                    request,
+                    failed,
+                )
+            }
+            #[cfg(target_os = "macos")]
             WindowRequest::LoadUrl { window, uri } => {
                 self.window_original_load_locked(session, active, correlation, window, &uri, failed)
             }
+            #[cfg(not(target_os = "macos"))]
+            WindowRequest::LoadUrl { window, uri } => Self::window_original_load_locked(
+                session,
+                active,
+                correlation,
+                window,
+                &uri,
+                failed,
+            ),
             WindowRequest::SetMaximized { window, maximized } => {
                 let outcome = session.registry.set_maximized(caller, window, maximized);
                 self.window_setter_result(active, correlation, outcome, failed)
@@ -1565,7 +1587,6 @@ impl PrimaryRouterHandle {
     }
     #[cfg(not(target_os = "macos"))]
     fn window_original_load_locked(
-        &self,
         _session: &mut WindowSession,
         active: &mut ActivePrimaryGeneration,
         correlation: CorrelationId,
@@ -1772,7 +1793,6 @@ impl PrimaryRouterHandle {
     }
     #[cfg(not(target_os = "macos"))]
     fn window_create_with_original_locked(
-        &self,
         _session: &mut WindowSession,
         active: &mut ActivePrimaryGeneration,
         correlation: CorrelationId,

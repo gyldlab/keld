@@ -131,8 +131,12 @@ if (mode === "other-facade" || mode === "other-renderer") {
   // Windows/Linux facade (or renderer) without the macOS-only immutable
   // development record MUST preserve the previous public Ready contract.
   // It does not manufacture desktop support on these platforms.
-  const { screen } = await import("../../electron/src/screen.ts");
-  const { nativeTheme } = await import("../../electron/src/native-theme.ts");
+  const { screen } = await import(
+    new URL("../../electron/src/screen.ts", import.meta.url).href
+  );
+  const { nativeTheme } = await import(
+    new URL("../../electron/src/native-theme.ts", import.meta.url).href
+  );
   for (const attempt of [
     () => screen.getAllDisplays(),
     () => screen.getPrimaryDisplay(),
@@ -145,8 +149,12 @@ if (mode === "other-facade" || mode === "other-renderer") {
     );
   }
 } else if (mode === "mac-valid") {
-  const { screen } = await import("../../electron/src/screen.ts");
-  const { nativeTheme } = await import("../../electron/src/native-theme.ts");
+  const { screen } = await import(
+    new URL("../../electron/src/screen.ts", import.meta.url).href
+  );
+  const { nativeTheme } = await import(
+    new URL("../../electron/src/native-theme.ts", import.meta.url).href
+  );
   const observed = getDesktopSnapshot();
   assert.equal(Object.isFrozen(observed), true);
   assert.equal(observed.primary_id, 17);

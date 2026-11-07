@@ -1,5 +1,7 @@
 import { invokeMenuInstall } from "./app.ts";
-import { Menu } from "../../electron/src/menu.ts";
+const { Menu } = await import(
+  new URL("../../electron/src/menu.ts", import.meta.url).href
+);
 if (process.argv[2] === "setter") {
   const menu = Menu.buildFromTemplate([
     {
