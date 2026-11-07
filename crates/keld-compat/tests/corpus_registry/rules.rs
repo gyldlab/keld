@@ -502,3 +502,171 @@ fn admission_rejects_missing_skipped_and_ignored_cases() {
         Err(CorpusError::CaseNotAdmitted { .. })
     ));
 }
+
+/// GH-569: cross-crate targets are trusted static registrations, never manifest commands.
+#[test]
+fn exact_cross_crate_target_validates_package_path_and_recursion() {
+    use crate::corpus_manifest::check_targets;
+    const VALID: &[TestTarget] = &[TestTarget {
+        path: "crates/keld-host/tests/no_flag_macos.rs",
+        runner: Runner::ExactLibtest {
+            package: "keld-host",
+            target: "no_flag_macos",
+            case: "module_process::shipping_role_early_dependency_reports_process_facts",
+        },
+    }];
+    const WRONG: &[TestTarget] = &[TestTarget {
+        path: "crates/keld-host/tests/no_flag_macos.rs",
+        runner: Runner::ExactLibtest {
+            package: "keld-compat",
+            target: "no_flag_macos",
+            case: "module_process::shipping_role_early_dependency_reports_process_facts",
+        },
+    }];
+    const RECURSIVE: &[TestTarget] = &[TestTarget {
+        path: "crates/keld-compat/tests/lifecycle_corpus.rs",
+        runner: Runner::ExactLibtest {
+            package: "keld-compat",
+            target: "lifecycle_corpus",
+            case: "lifecycle_corpus_denominator_matches_exact_manifest_bytes",
+        },
+    }];
+    const CONSUMER: &[TestTarget] = &[TestTarget {
+        path: "crates/keld-compat/tests/module_process_corpus.rs",
+        runner: Runner::ExactLibtest {
+            package: "keld-compat",
+            target: "module_process_corpus",
+            case: "actual_observations_match_manifest_statuses",
+        },
+    }];
+    assert!(matches!(
+        check_targets(&Registration {
+            targets: CONSUMER,
+            ..LIFECYCLE_V0
+        }),
+        Err(CorpusError::InvalidTarget { .. })
+    ));
+    assert!(
+        check_targets(&Registration {
+            targets: VALID,
+            ..LIFECYCLE_V0
+        })
+        .is_ok()
+    );
+    assert!(matches!(
+        check_targets(&Registration {
+            targets: WRONG,
+            ..LIFECYCLE_V0
+        }),
+        Err(CorpusError::InvalidTarget { .. })
+    ));
+    assert!(matches!(
+        check_targets(&Registration {
+            targets: RECURSIVE,
+            ..LIFECYCLE_V0
+        }),
+        Err(CorpusError::InvalidTarget { .. })
+    ));
+}
+
+#[test]
+fn exact_case_selection_and_platform_filter_fail_closed() {
+    use crate::corpus_admission::{rust_case_passed, target_eligible};
+    use crate::corpus_manifest::MODULE_PROCESS_V1;
+    let corpus = Corpus::load(&MODULE_PROCESS_V1).expect("validated module/process corpus");
+    let host = corpus
+        .registration()
+        .targets
+        .iter()
+        .find(|target| matches!(target.runner, Runner::ExactLibtest { .. }))
+        .expect("host registration");
+    assert!(target_eligible(&corpus, host, Platform::Macos));
+    assert!(!target_eligible(&corpus, host, Platform::Linux));
+    assert!(!target_eligible(&corpus, host, Platform::Windows));
+    assert!(!rust_case_passed("test missing ... ignored\n", "missing"));
+    assert!(!rust_case_passed(
+        "test similarly_named ... ok\n",
+        "missing"
+    ));
+    assert!(!rust_case_passed(
+        "test missing ... ok\ntest missing ... ok\n",
+        "missing"
+    ));
+    for detail in ["cannot spawn cargo", "compilation failed"] {
+        let unrelated = Err(CorpusError::RunnerFailed {
+            target: "no_flag_macos".to_owned(),
+            detail: detail.to_owned(),
+        });
+        assert!(
+            !is_zero_selected(&unrelated),
+            "unrelated runner failure cannot prove zero selection: {detail}"
+        );
+    }
+    let selected_nothing = Err(CorpusError::RunnerFailed {
+        target: "no_flag_macos".to_owned(),
+        detail: "exit exit status: 0. stdout:\nrunning 0 tests\n".to_owned(),
+    });
+    assert!(
+        is_zero_selected(&selected_nothing),
+        "a zero-selection detail must be recognized"
+    );
+}
+
+/// The oracle is the runner's observed libtest output, not merely its error type.
+fn is_zero_selected(result: &Result<String, CorpusError>) -> bool {
+    matches!(result, Err(CorpusError::RunnerFailed { detail, .. })
+        if detail.lines().any(|line| line.trim() == "running 0 tests"))
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_exact_missing_selector_rejects_zero_selected_tests() {
+    use crate::corpus_admission::run_exact_case;
+    let wrong = run_exact_case("keld-host", "no_flag_macos", "gh569_nonexistent_exact_case");
+    assert!(
+        is_zero_selected(&wrong),
+        "missing selector must run and report zero selected tests: {wrong:?}"
+    );
+}
+
+#[test]
+fn exact_registered_case_mismatch_is_rejected_before_execution() {
+    use crate::corpus_manifest::{MODULE_PROCESS_V1, read_store_snapshot, workspace_root};
+    let (manifest, denominator) =
+        Corpus::fixture_bytes(&MODULE_PROCESS_V1).expect("module corpus bytes");
+    let mut edited: serde_json::Value = serde_json::from_slice(&manifest).expect("manifest JSON");
+    let cell = edited["cells"]
+        .as_array_mut()
+        .expect("cells")
+        .iter_mut()
+        .find(|cell| cell["operation_id"] == "process.early.type")
+        .expect("early type cell");
+    cell["test_name"] = serde_json::json!("wrong::selector");
+    let changed = serde_json::to_vec_pretty(&edited).expect("mutated manifest");
+    let denominator = rehash(&changed, &denominator);
+    let error = Corpus::parse_with_snapshots(&MODULE_PROCESS_V1, &changed, &denominator, &|key| {
+        read_store_snapshot(&workspace_root(), key)
+    })
+    .expect_err("mismatched selector must fail before spawn");
+    assert!(
+        matches!(error, CorpusError::InvalidTarget { .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn duplicate_static_target_path_is_rejected_as_ambiguous() {
+    use crate::corpus_manifest::{MODULE_PROCESS_V1, check_targets};
+    const DUPLICATE: &[TestTarget] = &[MODULE_PROCESS_V1.targets[1], MODULE_PROCESS_V1.targets[1]];
+    let registration = Registration {
+        targets: DUPLICATE,
+        ..MODULE_PROCESS_V1
+    };
+    assert!(
+        matches!(
+            check_targets(&registration),
+            Err(CorpusError::InvalidTarget { .. })
+        ),
+        "duplicate target path must fail before selection"
+    );
+}
