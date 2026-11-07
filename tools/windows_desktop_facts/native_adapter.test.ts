@@ -308,6 +308,39 @@ test("complete native light and dark observations remain usable", () => {
   }
 });
 
+// These JSON-shaped cleanup counter mutations are not native Windows measurements.
+// The probe currently reports exact zero owned windows and native handles. A
+// malformed or nonzero attestation must not allocate a Host-session display ID.
+const invalidCleanupCounts = [
+  ["missing", undefined],
+  ["null", null],
+  ["positive", 1],
+  ["negative", -1],
+  ["fractional", 0.5],
+  ["string zero", "0"],
+  ["boolean false", false],
+  ["NaN", NaN],
+  ["infinity", Infinity],
+] as const;
+for (const field of ["ownedWindowsCreated", "ownedNativeHandles"] as const) {
+  for (const [kind, invalid] of invalidCleanupCounts) {
+    test(`refuses ${kind} ${field} cleanup receipt before allocating IDs`, () => {
+      const sample = raw();
+      const cleanup = sample.cleanup as unknown as Record<string, unknown>;
+      if (kind === "missing") {
+        expect(Reflect.deleteProperty(cleanup, field)).toBe(true);
+      } else {
+        cleanup[field] = invalid;
+      }
+      const ids = new NativeDisplayIds();
+      expect(() => nativeFacts(sample, text, ids)).toThrow("unavailable");
+      expect(ids.retainedIdentities).toBe(0);
+      expect(nativeFacts(raw(), text, ids).primary_id).toBe(1);
+      expect(ids.retainedIdentities).toBe(1);
+    });
+  }
+}
+
 test("an explicit global settings write refuses native facts", () => {
   const sample = raw();
   sample.cleanup.globalSettingsWritten = true;
