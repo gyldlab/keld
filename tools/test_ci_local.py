@@ -522,7 +522,16 @@ class ExecutorTests(SelectionTests):
     def test_fmt_repairs_rust_before_codegen_and_restamps_native_output(self):
         source = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory(prefix="keld-fmt-order-") as temporary:
-            root = Path(temporary)
+            parent = Path(temporary)
+            # A real ancestor workspace makes fixture isolation testable even
+            # when the caller's temporary directory is outside the repository.
+            (parent / "Cargo.toml").write_bytes(
+                b'[workspace]\n[package]\nname = "format-parent-control"\n'
+                b'version = "0.0.0"\nedition = "2024"\n[lib]\npath = "lib.rs"\n')
+            parent_source = b'pub fn untouched(  ) {}\n'
+            (parent / "lib.rs").write_bytes(parent_source)
+            root = parent / "fixture"
+            root.mkdir()
             outputs = ["crates/keld-cli/templates/hello/src/echo.generated.ts",
                        "packages/@keld/api/src/echo.generated.ts",
                        "packages/@keld/api/src/fs.generated.ts",
@@ -568,6 +577,12 @@ class ExecutorTests(SelectionTests):
             result = subprocess.run(["just", "fmt"], cwd=root, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
             self.assertIn(b"pub struct EchoRequest {", echo.read_bytes())
+            self.assertEqual((parent / "lib.rs").read_bytes(), parent_source)
+            metadata = subprocess.run(
+                ["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1"],
+                cwd=root, capture_output=True)
+            self.assertEqual(metadata.returncode, 0, metadata.stderr.decode("utf-8", errors="replace"))
+            self.assertEqual(Path(json.loads(metadata.stdout)["workspace_root"]).resolve(), root.resolve())
             self.assertEqual((root / "src/included.rs").read_bytes(), b"pub fn included() {}\n")
             self.assertEqual((root / "src/path.rs").read_bytes(), b"pub fn path() {}\n")
             for command in (["bun", "packages/@keld/kipc/scripts/echo-codegen.ts", "check"],
@@ -1006,6 +1021,7 @@ class ProductionConsumerTests(unittest.TestCase):
             "crates/keld-host/tests/no_flag/macos/public_fs/project.rs",
             "crates/keld-host/tests/no_flag/macos/facade_ready.rs",
             "crates/keld-host/tests/no_flag/macos/facade_window.rs",
+            "crates/keld-host/tests/no_flag/macos/multifile_staging/fixture.rs",
         )
         source = Path(__file__).resolve().parent.parent
         for reader in readers:
