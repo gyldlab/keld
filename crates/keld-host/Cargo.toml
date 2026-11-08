@@ -33,7 +33,10 @@ keld-cli = { workspace = true }
 keld-wv = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-windows-sys = { workspace = true }
+# GH-1188 A23: top-level window census and fixtures only, on this test line and never on
+# the workspace line, so no production crate's feature set changes. windows-sys has no
+# optional dependencies: no new crate and no Cargo.lock change.
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # Independent native-stage observer; reuse existing pins, not production policy.
