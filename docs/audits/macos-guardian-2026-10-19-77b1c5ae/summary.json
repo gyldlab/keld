@@ -1,0 +1,37 @@
+{
+  "all_architecture_review_complete": false,
+  "changed_paths_pending_full_review": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner.rs",
+    "crates/keld-runtime/src/macos_guardian/process_group.rs",
+    "crates/keld-runtime/src/macos_guardian/tests/process_group_failsafe.rs"
+  ],
+  "current_guardian_path_count": 78,
+  "evidence_file": "review_evidence.csv",
+  "fresh_source_reviewed": 7,
+  "historical_949_sha": "899e287ea487f38ec1cd347f7c9db8f1927348ef",
+  "historical_ledger_file": "ledger_77.csv",
+  "historical_path_count": 77,
+  "historical_verified_scoped_only": 4,
+  "new_paths_pending_full_review": [
+    "crates/keld-runtime/src/macos_guardian/authenticated_runner/tests.rs"
+  ],
+  "reused_pinned_source_reviewed": 5,
+  "review_status_counts_77": {
+    "changed-since-949-pending": 3,
+    "historical-scoped-only": 4,
+    "pending-source-review": 58,
+    "source-reviewed-new": 7,
+    "source-reviewed-reused": 5
+  },
+  "reviewed_stack_952_sha": "77b1c5aef9202a6cc0d84195fc1f4c32e1eb1cba",
+  "schema_version": 1,
+  "scope_delta_file": "scope_delta.csv",
+  "scope_exclusions": [
+    "Prime owns five macos_host_death_guardian integration file reviews",
+    "No execution validation inferred from source/test presence",
+    "Public-FS host acceptance investigated in parallel",
+    "Detached descendant and simultaneous host+Guardian death remain uncontained"
+  ],
+  "source_review_date": "2026-10-19",
+  "source_reviewed_blobs_identical_949_952": true
+}
