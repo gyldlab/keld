@@ -242,7 +242,11 @@ fn validate_renderer_relpath(renderer: &str) -> Result<&Path, DevError> {
 }
 
 fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
-    let checks = run_checks(Some(project_root));
+    report_checks(run_checks(Some(project_root)).into_iter())
+}
+
+fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
+    let checks: Vec<_> = checks.collect();
     if all_ok(&checks) {
         return Ok(());
     }
@@ -252,6 +256,24 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
+}
+
+/// The preflight of a launch whose stage goes to the no-flag host. On Windows the host
+/// owns a schema-2 boot's admission (GH-1188 D2), so its `KELD-CORE-034`, not a second
+/// CLI verdict, answers that project here; `keld doctor` keeps its own refusal until the
+/// host admits the boot in every build (D15), which removes this exception.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn staged_host_doctor_or_err(project_root: &Path) -> Result<(), DevError> {
+    #[cfg(windows)]
+    let facade = facade_mode_for_project(project_root).map_err(DevError::Doctor)?;
+    #[cfg(not(windows))]
+    let facade = false;
+    let checks = run_checks(Some(project_root));
+    report_checks(
+        checks
+            .into_iter()
+            .filter(|check| !(facade && check.label == "renderer")),
+    )
 }
 
 fn staged_host_launch_error(
@@ -336,7 +358,7 @@ pub fn run_dev(project_root: &Path) -> Result<(), DevError> {
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn run_dev_host(project_root: &Path) -> Result<(), DevError> {
-    doctor_or_err(project_root)?;
+    staged_host_doctor_or_err(project_root)?;
     let cli_executable = std::env::current_exe()?;
     let developer_host = cli_executable
         .parent()
@@ -1115,6 +1137,56 @@ mod tests {
         assert!(
             !msg.contains("bun child"),
             "must fail at doctor, not at spawn: {msg}"
+        );
+    }
+
+    /// GH-1188 D15 at T1: the staged-host preflight leaves only a valid Windows schema-2
+    /// project's renderer verdict to the host. A renderer project's missing renderer and
+    /// an invalid `initialWindow` still fail here, and `keld doctor` keeps its refusal.
+    #[cfg(windows)]
+    #[test]
+    fn staged_host_preflight_defers_only_a_valid_windows_facade_renderer_verdict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("src")).expect("src");
+        fs::write(dir.path().join("src/main.ts"), "export {}\n").expect("main");
+        let config = dir.path().join("keld.config.ts");
+
+        fs::write(&config, "export default {}\n").expect("renderer config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("a missing renderer must fail before staging")
+            .to_string();
+        assert!(msg.contains("[FAIL] renderer"), "{msg}");
+        assert!(msg.contains(RENDERER_LOAD_CODE), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { initialWindow: \"window\" } as const;\n",
+        )
+        .expect("invalid facade config");
+        let msg = staged_host_doctor_or_err(dir.path())
+            .expect_err("an invalid initialWindow must fail before staging")
+            .to_string();
+        assert!(msg.contains("KELD-CLI-047"), "{msg}");
+
+        fs::write(
+            &config,
+            "export default { entry: \"src/main.ts\", initialWindow: \"none\" } as const;\n",
+        )
+        .expect("facade config");
+        if let Err(error) = staged_host_doctor_or_err(dir.path()) {
+            let msg = error.to_string();
+            assert!(!msg.contains("renderer"), "{msg}");
+        }
+        let doctor = run_checks(Some(dir.path()));
+        let renderer = doctor
+            .iter()
+            .find(|check| check.label == "renderer")
+            .expect("doctor renderer check");
+        assert!(!renderer.ok, "keld doctor keeps its T1 refusal");
+        assert!(
+            renderer.detail.contains("KELD-CLI-047"),
+            "{}",
+            renderer.detail
         );
     }
 
