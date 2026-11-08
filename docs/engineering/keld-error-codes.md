@@ -55,7 +55,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-ipc
 - message: Frame payload exceeds MAX_FRAME_LEN
-- fix: Shrink the payload or move large transfers to the bulk plane (shm / keld://).
+- fix: Shrink the payload to at most MAX_FRAME_LEN (16 MiB). The shared-memory and `keld://` bulk planes are future designs, not available transports in the current implementation.
 
 ## KELD-IPC-005
 
@@ -1100,7 +1100,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-update
 - message: The verified executable image does not carry exactly one readable, canonical expected-identity container
-- fix: Reinstall the signed package or rebuild `keld-host.exe` or `keld-updater-helper.exe` with `keld build`; the installed image refuses to run until it carries exactly one valid container.
+- fix: Reinstall the signed package if its executable image is damaged. For a new image, the packaging integration must embed one valid expected-identity container before signing; `keld build` is reserved (`KELD-CLI-045`) and cannot perform this repair today. The installed image refuses to run until it carries a valid container.
 
 ## KELD-UPDATE-020
 
@@ -1154,7 +1154,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The executable image carries no `.keldeai` expected-identity container
-- fix: Rebuild with `keld build` so `keld-pack` embeds the expected identity into `keld-host.exe` or `keld-updater-helper.exe` before signing.
+- fix: The packaging integration must use `keld-pack` to embed the expected identity into the unsigned prebuilt `keld-host.exe` or `keld-updater-helper.exe` before signing. `keld build` is reserved (`KELD-CLI-045`) and is not an available packaging command.
 
 ## KELD-PACK-008
 
@@ -1178,7 +1178,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-pack
 - message: The expected-identity container is not canonical
-- fix: The image's identity container is damaged or was produced by another tool; reinstall the signed package or rebuild with `keld build`.
+- fix: The image's identity container is damaged or was produced by another tool. Reinstall a trusted signed package or correct the packaging integration's `keld-pack` embedding step before signing a new image; `keld build` is reserved (`KELD-CLI-045`) and is not implemented.
 
 ## KELD-PACK-012
 

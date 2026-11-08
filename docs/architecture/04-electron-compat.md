@@ -158,9 +158,10 @@ workaround is emitted by migration: #502 owns the single installed-package
 resolver with one self-contained entry for ESM/default/CommonJS forms.
 The current package exports a `BrowserWindow` subset backed by the
 macOS Host-owned native window registry for creation/adoption, selected
-geometry and state, close/destroy, and recovery events. Linux and Windows
-currently refuse facade-window subscription; this is not a cross-platform
-native window backend. Broader Electron behavior and surfaces (`ipcMain`,
+geometry and state, close/destroy, and recovery events. Linux currently
+refuses facade-window subscription. A Windows product build refuses a
+schema-2 facade boot, and Windows answers no window `Create` yet; this is
+not a cross-platform native window backend. Broader Electron behavior and surfaces (`ipcMain`,
 preload/`contextBridge`, …) remain later slices. `keld migrate` is not live.
 
 ### 3.1 `utilityProcess` and `MessageChannelMain` stay facades
