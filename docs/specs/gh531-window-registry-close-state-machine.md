@@ -27,8 +27,10 @@ Sections 4.a to 4.h map to the ticket's sections (a) to (h).
 
 Non-goals:
 
-- Windows and Linux (F02-T12, parked). Window-channel calls on those hosts fail with a
-  typed error.
+- Linux (F02-T12, parked). Window-channel calls on that host fail with a typed error.
+- Windows, which `docs/specs/gh1188-windows-window-adapter.md` owns. A product build
+  refuses a schema-2 boot until that spec's T2, and a window `Create` answers
+  `KELD-CORE-042` until its T3.
 - Multiple views per window, `BrowserView`, `WebContentsView` (Tier 3).
 - Window-bound roles (KEL-75/T4). This spec only keeps the close transition at which
   KEL-75's `WindowClosing(w)` tombstone is linearized.
@@ -704,7 +706,7 @@ registers each code in `docs/engineering/keld-error-codes.md` with a fix sentenc
 | `KELD-CORE-039` | a registry counter is exhausted (`WindowId`, `WindowGeneration` or `close_seq`; the detail names it) | F02-T2 |
 | `KELD-CORE-040` | registry not ready | F02-T2 |
 | `KELD-CORE-041` | native create failed (names the failed stage; the keld-wv `WvError` text goes to the host log) | F02-T2 |
-| `KELD-CORE-042` | window calls unsupported on this platform (Windows/Linux, F02-T12) | F02-T2 |
+| `KELD-CORE-042` | window calls unsupported on this platform (Linux, F02-T12; Windows until gh1188 T3) | F02-T2 |
 | `KELD-CORE-043` | window not owned by the calling RoleInstance generation | F02-T2 (T1 carries admission check 2; amended by #657) |
 | `KELD-CORE-045` | `window` CALL on a link not subscribed to `window` | F02-T2 (amended by #657) |
  The facade's own
@@ -1482,8 +1484,11 @@ there is no `PROTOCOL_VERSION` bump. Review gates: wire protocol and public API.
   (`window_delegate.rs:326-331`, FACT). The veto primitive exists; the change is host
   policy. tao registers no `applicationShouldTerminate:` (FACT, #419 packet), which is
   F01-T3's concern.
-- Windows and Linux: window `CALL`s answer the unsupported-platform `ERR`. Backends
-  never receive the new commands. F02-T12 owns these platforms.
+- Linux: window `CALL`s answer the unsupported-platform `ERR`. The backend never
+  receives the new commands. F02-T12 owns this platform.
+- Windows: `docs/specs/gh1188-windows-window-adapter.md` owns this platform. Until its
+  T3 the same `ERR` answers window `CALL`s, the backend receives none of the new
+  commands, and a test-admitted facade session answers `Subscribe`.
 
 ### Runtime seam
 

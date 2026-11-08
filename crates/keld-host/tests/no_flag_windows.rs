@@ -30,6 +30,9 @@ mod console;
 #[path = "no_flag/windows/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "no_flag/windows/facade_ready.rs"]
+mod facade_ready;
+
 #[path = "no_flag/windows/recovery.rs"]
 mod recovery;
 
