@@ -110,6 +110,18 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         WAIT_OBJECT_0,
         "Bun {bun_pid} survived orderly host exit"
     );
+    // The fixture's frame loop reports any frame it does not own, a channel-5 frame
+    // included, as an `ERROR` record: a renderer boot's stream ends here with none.
+    let mut trailing = String::new();
+    match reader.read_to_string(&mut trailing) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => panic!("control stream after Bun exit: {error}"),
+    }
+    assert!(
+        trailing.is_empty(),
+        "a renderer boot wrote a frame after Quit: {trailing}"
+    );
 
     ProductEvidence {
         host_pid,
