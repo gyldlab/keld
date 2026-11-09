@@ -52,7 +52,9 @@
 //! assert_eq!((waiter.channel(), events.channel()), (channel_table::FS.id(), channel_table::LIFECYCLE.id()));
 //! ```
 
-use keld_guard::capability::{AUTH_BEGIN, AUTH_TOKEN, FS_READ, FS_WRITE};
+use keld_guard::capability::{
+    AUTH_BEGIN, AUTH_TOKEN, DIALOG as DIALOG_CAPABILITY, FS_READ, FS_WRITE,
+};
 
 use crate::frame::ChannelId;
 
@@ -206,8 +208,16 @@ pub const WINDOW: ChannelEntry = ChannelEntry::new(
     Authority::HostInternal,
 );
 
+/// Host-owned guarded native dialogs (GH-478).
+pub const DIALOG: ChannelEntry = ChannelEntry::new(
+    "dialog",
+    6,
+    ReceiveClass::GuardedCall,
+    Authority::Guarded(&[DIALOG_CAPABILITY]),
+);
+
 /// Every allocated channel, in strictly increasing id order.
-pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW];
+pub const CHANNEL_TABLE: &[ChannelEntry] = &[ECHO, FS, LIFECYCLE, AUTH, WINDOW, DIALOG];
 
 // An invalid table does not build (spec §3 criteria 2-5).
 const _: () = assert!(validate_table(CHANNEL_TABLE).is_ok());
@@ -376,7 +386,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::{
-        AUTH, AUTH_BEGIN, AUTH_TOKEN, Authority, CHANNEL_TABLE, ChannelEntry, ECHO, FS,
+        AUTH, AUTH_BEGIN, AUTH_TOKEN, Authority, CHANNEL_TABLE, ChannelEntry, DIALOG, ECHO, FS,
         HANDSHAKE_CHANNEL, LIFECYCLE, ReceiveClass, TableDefect, entry, validate_table,
     };
     use crate::frame::{ChannelId, CorrelationId, FrameHeader, FrameKind};
@@ -462,7 +472,7 @@ mod tests {
         Ok(())
     }
 
-    /// Criterion 1: the table lists exactly the five allocated channels, with the
+    /// Criterion 1: the table lists exactly the allocated channels, with the
     /// spec §4.2 classes and authorities.
     #[test]
     fn table_lists_exactly_echo_fs_and_lifecycle() {
@@ -497,6 +507,12 @@ mod tests {
                     5,
                     ReceiveClass::HostCallWithEvents,
                     Authority::HostInternal,
+                ),
+                (
+                    "dialog",
+                    6,
+                    ReceiveClass::GuardedCall,
+                    Authority::Guarded(&["system.dialog"]),
                 ),
             ]
         );
@@ -608,7 +624,10 @@ mod tests {
     /// Criterion 3a: the real table matches the committed baseline.
     #[test]
     fn real_table_matches_the_committed_allocation_baseline() {
-        assert_eq!(BASELINE, "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\n");
+        assert_eq!(
+            BASELINE,
+            "echo 1\nfs 2\nlifecycle 3\nauth 4\nwindow 5\ndialog 6\n"
+        );
         assert_eq!(check_allocations(CHANNEL_TABLE, BASELINE), Ok(()));
     }
 
@@ -700,7 +719,7 @@ mod tests {
         for allocated in CHANNEL_TABLE {
             assert_eq!(entry(allocated.id()), Some(allocated));
         }
-        for unallocated in [0, 6, 9, u16::MAX] {
+        for unallocated in [0, 7, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
     }
@@ -708,7 +727,7 @@ mod tests {
     /// Criterion 10: only a `GuardedCall` entry admits the privileged policy.
     #[test]
     fn privileged_policy_requires_a_guarded_call_entry() {
-        for guarded in [&FS, &AUTH] {
+        for guarded in [&FS, &AUTH, &DIALOG] {
             let policy =
                 ReceivePolicy::privileged_call_receiver(guarded).expect("guarded CALL channel");
             assert_eq!(policy.channel(), guarded.id());
@@ -892,11 +911,11 @@ mod tests {
         }
         assert_eq!(
             waiters,
-            ["fs", "lifecycle", "auth", "window"],
+            ["fs", "lifecycle", "auth", "window", "dialog"],
             "echo keeps its REPLY-only waiter"
         );
         assert_eq!(receivers, ["lifecycle", "window"]);
-        for unallocated in [0, 6, 9, u16::MAX] {
+        for unallocated in [0, 7, 9, u16::MAX] {
             assert_eq!(entry(ChannelId(unallocated)), None, "{unallocated}");
         }
         assert!(ReceiveClass::HostCallWithEvents.carries_host_events());

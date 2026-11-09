@@ -34,6 +34,13 @@ export {
 } from "../../kipc/src/transport.ts";
 
 import { resolveEchoCall } from "./echo-call.ts";
+import {
+  decodeDialogReply,
+  encodeDialogRequest,
+  type DialogReplyV1,
+  type MessageOptions,
+} from "./dialog.generated.ts";
+import type { WindowRef } from "./window-codec.ts";
 import { attachMirror } from "./mirror.ts";
 import { WindowSource } from "./window-source.ts";
 import {
@@ -49,6 +56,7 @@ import {
   ECHO_CHANNEL,
   FS_CHANNEL,
   AUTH_CHANNEL,
+  DIALOG_CHANNEL,
   LIFECYCLE_CHANNEL,
   WINDOW_CHANNEL,
   WorkerLink,
@@ -120,6 +128,8 @@ export class LifecycleLink {
   /** The error that ended the link without a local close: later quits rethrow it. */
   #dead: KeldCallError | undefined;
   #quitPromise: Promise<void> | undefined;
+  /** The one authenticated WorkerLink generation alone allocates nonces. */
+  #nextDialogNonce = 1n;
   /** Authenticated lifecycle apply/dispatch ordinals across a parked CALL. */
   #appliedLastWindowClosed = 0;
   #dispatchedLastWindowClosed = 0;
@@ -334,6 +344,60 @@ export class LifecycleLink {
       );
     }
     return this.#link.call(AUTH_CHANNEL, payload, deadlineMs);
+  }
+
+  /** Async native Message uses the existing authenticated WorkerLink. A
+   * timeout posts a fresh Cancel CALL(c_cancel); its acknowledgement never
+   * substitutes for the original terminal CALL(c_original). */
+  async callMessageDialog(
+    parent: WindowRef | null,
+    options: MessageOptions,
+  ): Promise<DialogReplyV1> {
+    if (this.#closed || this.#quitPromise !== undefined) {
+      throw this.#dead ?? kipcError("KELD-IPC-001", "session is closed");
+    }
+    if (this.#nextDialogNonce > 0xffff_ffff_ffff_ffffn) {
+      throw kipcError(
+        "KELD-IPC-003",
+        "dialog generation nonce exhausted; restart the role",
+      );
+    }
+    const nonce = this.#nextDialogNonce++;
+    const payload = encodeDialogRequest({
+      variant: "Message",
+      nonce,
+      parent,
+      options,
+    });
+    try {
+      const raw = await this.#link.call(DIALOG_CHANNEL, payload, 600_000);
+      const value = decodeDialogReply(raw);
+      if (value.variant !== "Message") {
+        throw kipcError(
+          "KELD-IPC-003",
+          "original Message correlation received Cancel disposition",
+        );
+      }
+      return value;
+    } catch (error) {
+      // A role-local timeout does not prove whether the Host opened a sheet.
+      // Never replay the original effect, and do not await Cancel from a
+      // synchronous caller or overwrite its original typed failure.
+      if (
+        !this.#closed &&
+        (error as { code?: unknown } | null)?.code === "KELD-IPC-006"
+      ) {
+        const cancel = encodeDialogRequest({ variant: "Cancel", nonce });
+        void this.#link
+          .call(DIALOG_CHANNEL, cancel, APP_LINK_IO_DEADLINE_MS)
+          .then(decodeDialogReply)
+          .catch(() => {
+            // Link failure independently retires the generation. The Host
+            // cleanup is not claimed from this best-effort relay.
+          });
+      }
+      throw error;
+    }
   }
 
   close(): void {
