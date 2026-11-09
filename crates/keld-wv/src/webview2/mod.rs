@@ -1558,6 +1558,17 @@ impl ProfileReleaseFault {
     }
 }
 
+/// The existing observer's attribution decision, independently tested from its pump.
+fn browser_exit_is_relevant(expected: u32, pid: u32, normal: bool, site: ReleaseSite) -> bool {
+    match site {
+        // A normal receipt still needs the current PID. An abnormal environment
+        // event is a fault even when it belongs to an older browser instance.
+        // https://learn.microsoft.com/microsoft-edge/webview2/concepts/process-related-events
+        ReleaseSite::Host => !normal || matching_browser_exit(expected, pid, true),
+        ReleaseSite::Probe => expected != 0 && expected == pid,
+    }
+}
+
 fn observe_profile_browser_exit(
     environment: &ICoreWebView2Environment,
     expected_pid: Arc<AtomicU32>,
@@ -1586,7 +1597,7 @@ fn observe_profile_browser_exit(
         if media_acceptance::swallow_browser_exit(site) {
             return Ok(());
         }
-        if matching_browser_exit(expected, pid, normal) || (expected != 0 && expected == pid) {
+        if browser_exit_is_relevant(expected, pid, normal, site) {
             let result = if normal {
                 Ok(())
             } else {
@@ -1597,6 +1608,10 @@ fn observe_profile_browser_exit(
             };
             tx.send(result)
                 .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
+            #[cfg(all(feature = "media-acceptance", test))]
+            media_acceptance::release_receipt_control::after_native_receipt(
+                &tx, pid, expected, normal, site,
+            )?;
             if let Some(wake) = wake.as_ref() {
                 wake.send_event(WindowsLoopEvent::ProfileReleaseWake)
                     .map_err(|_| windows::core::Error::from(E_UNEXPECTED))?;
@@ -2665,43 +2680,56 @@ impl ProfileReleaseWait {
     }
 
     fn poll(&self) {
-        if self.observed.get() || self.fault.get().is_some() {
+        // Normal credit is not terminal: another already-delivered failure can
+        // invalidate release. Only a latched fault prevents further processing.
+        if self.fault.get().is_some() {
             return;
         }
         let Some(receiver) = self.receiver.as_ref() else {
-            self.observed.set(true);
-            self.normal_exit_observed_at.set(Some(Instant::now()));
+            if !self.observed.replace(true) {
+                self.normal_exit_observed_at.set(Some(Instant::now()));
+            }
             return;
         };
         #[cfg(feature = "profile-test-hooks")]
         let withhold_release_event = self.withhold_release_event;
         #[cfg(not(feature = "profile-test-hooks"))]
         let withhold_release_event = false;
-        // The barrier observable is drained first: a queued event is proof of
-        // release whatever the process handle or the grace say.
-        match receiver.try_recv() {
-            Ok(Ok(())) if withhold_release_event => {
-                // The h9 fault fixture: the event is consumed and lost, and the
-                // exited browser is judged by the grace alone below.
-            }
-            Ok(Ok(())) => {
-                self.observed.set(true);
-                self.normal_exit_observed_at.set(Some(Instant::now()));
-                #[cfg(all(feature = "media-acceptance", test))]
-                if let Some(armed_at) = self.armed_at.get() {
-                    media_acceptance::observe_barrier_released(self.site, armed_at.elapsed());
+        // Drain all available native receipts before deciding exit. A normal
+        // event cannot hide a following abnormal event or restart its grace.
+        loop {
+            match receiver.try_recv() {
+                Ok(Ok(())) if withhold_release_event => {}
+                Ok(Ok(())) => {
+                    if !self.observed.replace(true) {
+                        self.normal_exit_observed_at.set(Some(Instant::now()));
+                        #[cfg(all(feature = "media-acceptance", test))]
+                        if let Some(armed_at) = self.armed_at.get() {
+                            media_acceptance::observe_barrier_released(
+                                self.site,
+                                armed_at.elapsed(),
+                            );
+                        }
+                    }
                 }
-                return;
+                Ok(Err(_)) => {
+                    self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    // Once a matching normal receipt was delivered, closure of
+                    // its producer does not erase that fact. Without credit it
+                    // remains the existing fail-closed ObserverDropped outcome.
+                    if !self.observed.get() {
+                        self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
+                    }
+                    return;
+                }
+                Err(TryRecvError::Empty) => break,
             }
-            Ok(Err(_)) => {
-                self.fault.set(Some(ProfileReleaseFault::AbnormalExit));
-                return;
-            }
-            Err(TryRecvError::Disconnected) => {
-                self.fault.set(Some(ProfileReleaseFault::ObserverDropped));
-                return;
-            }
-            Err(TryRecvError::Empty) => {}
+        }
+        if self.observed.get() {
+            return;
         }
         let Some(armed_at) = self.armed_at.get() else {
             return;
@@ -2730,6 +2758,24 @@ impl ProfileReleaseWait {
         {
             self.fault.set(Some(ProfileReleaseFault::GraceExpired));
         }
+    }
+
+    /// Apply one receipt decision to the existing Host/hello close owner. Every
+    /// loop poll uses this path so a preterminal fault cannot leave Running or
+    /// wait forever for a later user command. Probe callers retain plain `poll()`.
+    fn poll_host_receipts(
+        &self,
+        views: &mut BTreeMap<u32, View>,
+        stop: Option<&PersistentStopTransition>,
+    ) -> bool {
+        self.poll();
+        if self.fault().is_none() {
+            return false;
+        }
+        commit_profile_stop(stop);
+        views.clear();
+        self.arm();
+        true
     }
 
     /// The next instant the barrier must be re-judged: the post-exit grace
@@ -2807,14 +2853,14 @@ fn wait_for_browser_exit(release: &ProfileReleaseWait) -> Result<(), WvError> {
     release.arm();
     loop {
         release.poll();
-        if release.observed.get() {
-            return Ok(());
-        }
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
                 fault.context(release.site),
             ));
+        }
+        if release.observed.get() {
+            return Ok(());
         }
         let Some(deadline) = release.next_deadline() else {
             return Err(profile_failure(ProfileErrorKind::LifecycleUnproven));
@@ -3113,7 +3159,7 @@ impl WebView2Engine {
             #[cfg(all(feature = "media-acceptance", test))]
             let native_probe_point = media_acceptance::host_window_probe::Point::capture(&event);
             *control_flow = ControlFlow::Wait;
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
                 return;
@@ -3163,7 +3209,7 @@ impl WebView2Engine {
                     control_flow,
                 );
             }
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
             } else {
@@ -3392,10 +3438,7 @@ impl WebView2Engine {
                 exit_requested = true;
                 release_in_loop.arm();
             }
-            release_in_loop.poll();
-            if release_in_loop.fault().is_some() {
-                exit_requested = true;
-            }
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
                 return;
@@ -3506,7 +3549,7 @@ impl WebView2Engine {
                     control_flow,
                 );
             }
-            release_in_loop.poll();
+            exit_requested |= release_in_loop.poll_host_receipts(&mut views, stop_in_loop.as_ref());
             if exit_requested && release_in_loop.exit_ready(&expected_browser_pid) {
                 *control_flow = ControlFlow::Exit;
             } else {
@@ -3911,6 +3954,7 @@ mod tests {
 
     mod exit_wait_pump;
     mod profile_lifecycle;
+    mod release_receipts;
 
     /// The teardown bound charges the post-release scavenge one full probe (launch
     /// plus release barrier) per leaf it may try, on top of the session's own UI

@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::{atomic::Ordering, mpsc};
 use std::time::Instant;
 
-fn raw_phase(plan: &backend::WindowsProfilePlan) -> Result<String, WvError> {
+pub(super) fn raw_phase(plan: &backend::WindowsProfilePlan) -> Result<String, WvError> {
     let bytes = std::fs::read(plan.control_dir.join("profile.lifecycle.v1")).map_err(failure)?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).map_err(failure)?;
     json.get("phase")

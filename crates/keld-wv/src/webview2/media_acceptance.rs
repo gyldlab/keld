@@ -2,6 +2,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub(super) mod host_window_probe;
+pub(super) mod release_receipt_control;
 
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
@@ -1074,6 +1075,7 @@ mod tests {
 
     mod first_navigation;
     mod profile_release;
+    mod release_receipts;
     mod saved_permission_deadline;
     mod view_focus;
     mod view_host;
