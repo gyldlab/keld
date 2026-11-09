@@ -79,7 +79,7 @@ struct Args {
     control: String,
     scheme: String,
     host: String,
-    /// `WebView2` user data folder; the WebKit arms use an in-memory store.
+    /// `WebView2` user data folder; the `WebKit` arms use an in-memory store.
     #[cfg_attr(
         not(target_os = "windows"),
         allow(
@@ -250,7 +250,7 @@ mod wry_lab {
             .header(CONTENT_TYPE, mime)
             .header("Cache-Control", "no-store")
             .body(Cow::Owned(body))
-            .unwrap_or_else(|_| Response::new(Cow::Borrowed(&[])))
+            .unwrap_or_else(|_| Response::new(Cow::Owned(Vec::new())))
     }
 
     fn engine_facts() -> &'static str {

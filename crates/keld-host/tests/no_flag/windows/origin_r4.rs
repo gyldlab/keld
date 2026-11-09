@@ -5,7 +5,7 @@
 //! placeholder per-app custom scheme, the same scheme without an authority
 //! component (negative control: opaque origin) and a host-backed
 //! `https://app-a.invalid/` URL. Input is `SendInput`/`SendKeys` through the
-//! round-2 PowerShell tool; observation is the page's own reports, the
+//! round-2 `PowerShell` tool; observation is the page's own reports, the
 //! harness's control plane and a read-only screen capture of the client area.
 //!
 //! The real-host X3 control row is the existing
@@ -88,7 +88,7 @@ fn gh1081_r4_windows_x0_engine_census() {
     let runtime = keld_wv::webview2::runtime_version();
     let census = json!({
         "runner": runner_census(),
-        "webview2_runtime": runtime.as_ref().map_or_else(|error| error.to_string(), Clone::clone),
+        "webview2_runtime": runtime.as_ref().map_or_else(ToString::to_string, Clone::clone),
         "webview2_com_sdk_crate": "webview2-com 0.38.2 (Cargo.lock)",
         "ver": command_output("cmd", &["/c", "ver"]),
         "os": command_output(

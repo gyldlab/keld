@@ -2,7 +2,7 @@
 //! origin experiments X0 (engine census), X1 (origin, secure context,
 //! storage), X2 (reload matrix) and the X3 byte-source atom, in the isolated
 //! `gh1081_origin_lab` harness. Arms: inline HTML string (control) and a
-//! placeholder per-app custom scheme. Input is real CoreGraphics events through
+//! placeholder per-app custom scheme. Input is real `CoreGraphics` events through
 //! the round-2 Swift tool; observation is the page's own reports, the harness's
 //! control plane and a read-only `screencapture` of the harness window.
 //!
@@ -69,7 +69,7 @@ impl Driver for MacDriver {
 }
 
 /// X0: the engine and image this job ran on (recorded, not asserted beyond
-/// readability of the WebKit framework version).
+/// readability of the `WebKit` framework version).
 #[test]
 fn gh1081_r4_macos_x0_engine_census() {
     let webkit = command_output(

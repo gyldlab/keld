@@ -343,6 +343,7 @@ jobs:
       # GH-1081 [DO NOT MERGE]: round-2 XTEST input for the Linux reload/typing rows.
       - name: GH-1081 install xdotool (research only)
         if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 15
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool
       # GH-1081 [DO NOT MERGE]: research-only narrowing on a never-merge draft PR.
       # Round 4 (KEL-79 origin experiments X0-X3) runs, GH1081_ITERATIONS times
