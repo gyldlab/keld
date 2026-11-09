@@ -50,6 +50,34 @@ async function waitChildOrKill(
 }
 
 describe("app.quit vs Electron void", () => {
+  test("native facade refuses pre-Ready Quit when its Host census is not yet trusted", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./quit_native_before_ready.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("KELD_QUIT_BEFORE_NATIVE_READY_REFUSED");
+  });
+
+  test("delayed LastWindowClosed cannot default-quit a newly created native window", async () => {
+    child = Bun.spawn({
+      cmd: ["bun", "./quit_stale_last_window_closed.ts"],
+      cwd: fixtures,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, KELD_NATIVE_WINDOW_FACADE: "1" },
+    });
+    const { stdout, stderr, code } = await waitChildOrKill(child, 4_000);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("KELD_QUIT_STALE_LAST_WINDOW_SAFE");
+  });
+
   test("returns Promise<void> so unset KELD_APP_LINK is KELD-IPC-007, not silent void", async () => {
     const prev = process.env.KELD_APP_LINK;
     delete process.env.KELD_APP_LINK;

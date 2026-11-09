@@ -8,7 +8,7 @@ const baseRef =
 const headRef = "${{ github.event.pull_request.head.sha || github.sha }}";
 const windowsMediaOracle = "crates/keld-wv/tests/windows_media_guard.ps1";
 const windowsMediaOracleSha256 =
-  "c78794b25f446e52c38b25448cc10a75e006f846ba97fdc7c52fbc5925a5b680";
+  "3657f3b87a1f28f7902ba23f74b9492d9194a91b50bd2802ece9ffeab0f6ff47";
 
 function fail(message: string): never {
   throw new Error(`CI-HYGIENE: ${message}`);
@@ -191,6 +191,10 @@ export const webkitgtkDebCachePath = "~/.cache/keld-webkitgtk-debs";
 const webkitgtkKeyOutput = "${{ steps.webkitgtk-apt-key.outputs.key }}";
 const webkitgtkCacheHitGuard =
   "steps.webkitgtk-apt-cache.outputs.cache-hit != 'true'";
+const b3ProtectedMainCacheSaveCondition =
+  "github.event_name == 'push' && github.ref == 'refs/heads/main'";
+const b3ProtectedMainCacheSaveIf =
+  "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}";
 /** Hard bound on each cache step; a stuck restore download gives up sooner and proceeds as a miss. */
 export const webkitgtkCacheStepTimeoutMinutes = 5;
 export const webkitgtkCacheSegmentTimeoutMinutes = 2;
@@ -327,13 +331,14 @@ function checkWebkitgtkAptCache(
       },
       `jobs.${jobName} Restore WebKitGTK .deb cache env (a stuck download must abort as a miss before the step bound)`,
     );
-    const saveIf =
+    const saveIf = `${
       condition === undefined
         ? webkitgtkCacheHitGuard
-        : `${String(condition)} && ${webkitgtkCacheHitGuard}`;
+        : `${String(condition)} && ${webkitgtkCacheHitGuard}`
+    } && ${b3ProtectedMainCacheSaveCondition}`;
     if (save.if !== saveIf)
       fail(
-        `jobs.${jobName} Save WebKitGTK .deb cache must run only on a miss: \`if: ${saveIf}\`.`,
+        `jobs.${jobName} Save WebKitGTK .deb cache must run only on a miss; B3 WebKitGTK cache save must require trusted protected-main push: \`if: ${saveIf}\`.`,
       );
     const order = [key, restore, install, save].map((step) =>
       steps.indexOf(step),
@@ -346,12 +351,105 @@ function checkWebkitgtkAptCache(
   }
 }
 
+/** B3: only protected-main push may save any reviewed Cargo build cache. */
+function checkB3RustCacheWritePolicy(stepsByJob: Map<string, Mapping[]>): void {
+  const owners = new Set([
+    "check",
+    "windows-media",
+    "doctest",
+    "linux-gui-smoke",
+    "msrv",
+    "deny",
+  ]);
+  const withFailureCache = new Set([
+    "check",
+    "windows-media",
+    "linux-gui-smoke",
+  ]);
+  for (const [jobName, steps] of stepsByJob) {
+    const caches = steps.filter(
+      (step) =>
+        typeof step.uses === "string" &&
+        actionName(step.uses).startsWith("swatinem/rust-cache"),
+    );
+    if (!owners.has(jobName) && caches.length > 0)
+      fail(`B3 Cargo cache action not approved in job ${jobName}.`);
+    if (owners.has(jobName) && caches.length !== 1)
+      fail(
+        `B3 Cargo cache action must appear exactly once in its reviewed job ${jobName}.`,
+      );
+    if (!owners.has(jobName)) continue;
+    const cache = caches[0]!;
+    exactKeys(
+      cache,
+      ["uses", "with"],
+      `B3 Cargo cache save must require trusted protected-main push in ${jobName}`,
+    );
+    inputsMatch(
+      mapping(cache.with, `jobs.${jobName} B3 Cargo cache inputs`),
+      withFailureCache.has(jobName)
+        ? {
+            "save-if": b3ProtectedMainCacheSaveIf,
+            "cache-on-failure": "true",
+          }
+        : { "save-if": b3ProtectedMainCacheSaveIf },
+      `B3 Cargo cache save must require trusted protected-main push in ${jobName}`,
+    );
+  }
+}
+
+/** B3: the pinned setup-bun post hook must not save on PR or untrusted pushes. */
+function checkB3BunCachePolicy(stepsByJob: Map<string, Mapping[]>): void {
+  const bunOwners = new Set(["check", "bun-test", "hygiene"]);
+  const noCacheForUntrustedEvents =
+    "${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}";
+  for (const [jobName, steps] of stepsByJob) {
+    const bunActions = steps.filter(
+      (step) =>
+        typeof step.uses === "string" &&
+        actionName(step.uses) === "oven-sh/setup-bun",
+    );
+    if (!bunOwners.has(jobName) && bunActions.length > 0) {
+      fail(`B3 Bun cache action not approved in job ${jobName}.`);
+    }
+    if (!bunOwners.has(jobName)) continue;
+    if (bunActions.length !== 1) {
+      fail(`B3 Bun cache setup must appear exactly once in ${jobName}.`);
+    }
+    const bunSetup = bunActions[0]!;
+    exactKeys(
+      bunSetup,
+      ["uses", "with"],
+      "B3 Bun cache must be disabled outside protected-main pushes",
+    );
+    if (
+      bunSetup.uses !==
+      "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6"
+    ) {
+      fail("B3 Bun cache action must use the reviewed immutable SHA.");
+    }
+    inputsMatch(
+      mapping(bunSetup.with, `jobs.${jobName} Bun setup inputs`),
+      {
+        "bun-version": "1.4.4",
+        "no-cache": noCacheForUntrustedEvents,
+      },
+      "B3 Bun cache must be disabled outside protected-main pushes",
+    );
+  }
+}
+
 /** The CodeQL languages, each analysed by its own job `codeql-<language>`. */
 export const codeqlLanguages = [
   "rust",
   "javascript-typescript",
   "actions",
 ] as const;
+
+// Both actions must use the same *reviewed* immutable revision. Merely
+// requiring equal 40-hex SHAs would allow all six init/analyze uses to drift
+// together to an unreviewed action while the security admission stays green.
+const approvedCodeqlActionSha = "6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee"; // v4.39.0
 
 /**
  * One language's job condition: its router output (tools/ci_changes.sh), or a
@@ -411,6 +509,16 @@ function checkCodeqlJobs(
       fail(
         `CodeQL job ${jobName} must not set strategy; one job analyses exactly one language.`,
       );
+    if (Object.hasOwn(job, "continue-on-error"))
+      fail(`CodeQL job ${jobName} must fail on analyzer errors.`);
+    if (language === "rust" && scalar(job["runs-on"]) !== "macos-latest") {
+      fail(
+        "CodeQL Rust must use macos-latest for the reviewed macOS-specific semantic coverage.",
+      );
+    }
+    if (language !== "rust" && scalar(job["runs-on"]) !== "ubuntu-latest") {
+      fail("CodeQL job runner must remain the reviewed hosted Ubuntu runner.");
+    }
     const needs =
       Array.isArray(job.needs) && job.needs.length === 1
         ? job.needs[0]
@@ -440,8 +548,46 @@ function checkCodeqlJobs(
         "wait-for-processing": "true",
       },
     );
+    if (
+      String(init.uses).split("@")[1] !== String(analyze.uses).split("@")[1]
+    ) {
+      fail("CodeQL init and analyze must use the same pinned commit.");
+    }
+    if (String(init.uses).split("@")[1] !== approvedCodeqlActionSha) {
+      fail("CodeQL init and analyze must use the reviewed pinned commit.");
+    }
     if (steps.indexOf(init) >= steps.indexOf(analyze))
       fail("CodeQL initialization must precede analysis.");
+    if (
+      ["env", "defaults", "container", "services"].some((key) =>
+        Object.hasOwn(job, key),
+      )
+    ) {
+      fail(
+        "CodeQL job environment must not override shell, PATH, BASH_ENV, container, or services.",
+      );
+    }
+    if (
+      job.name !== `CodeQL (${language})` ||
+      scalar(job["timeout-minutes"]) !== "30"
+    ) {
+      fail(
+        "CodeQL job execution context must preserve the reviewed name and deadline.",
+      );
+    }
+    exactKeys(
+      job,
+      [
+        "name",
+        "runs-on",
+        "timeout-minutes",
+        "needs",
+        "if",
+        "permissions",
+        "steps",
+      ],
+      "CodeQL job executable context",
+    );
   }
 }
 
@@ -597,9 +743,21 @@ export function checkPullRequestTargetWorkflow(
   finiteGraph(parsed);
   const workflow = mapping(parsed, `${label} (one YAML document)`);
   if (!workflowTriggers(workflow).includes("pull_request_target")) return;
+  // This event has access to default-branch token/caches. Even an otherwise
+  // harmless workflow must not acquire an unreviewed write-capable cache mode.
+  if (Object.hasOwn(workflow, "cache-mode")) {
+    fail(
+      `${label} pull_request_target workflow must not override cache-mode; write-capable cache policy is forbidden.`,
+    );
+  }
   const jobs = mapping(workflow.jobs, `${label} jobs`);
   for (const [jobName, value] of Object.entries(jobs)) {
     const job = mapping(value, `${label} jobs.${jobName}`);
+    if (Object.hasOwn(job, "cache-mode")) {
+      fail(
+        `${label} jobs.${jobName} under pull_request_target must not override cache-mode.`,
+      );
+    }
     if (Object.hasOwn(job, "uses") || !Array.isArray(job.steps)) {
       fail(
         `${label} jobs.${jobName} under pull_request_target must be concrete steps; a reusable workflow could run pull-request code.`,
@@ -637,8 +795,10 @@ const approvedRustToolchainAction =
   "dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8";
 const rustToolchainInstallerJobs = new Set([
   "changes",
+  "router-contracts",
   "fmt",
   "check",
+  "windows-media",
   "doctest",
   "linux-gui-smoke",
   "msrv",
@@ -647,6 +807,65 @@ const rustToolchainInstallerJobs = new Set([
   "mermaid",
   "codeql-rust",
 ]);
+
+// The required-result command consumes these bindings in the documented
+// 35-argument order. Keep the environment and complete shell script bound to
+// one reviewed contract: injected BASH_ENV/PATH or a prepended exit 0 must fail.
+const reviewedRequiredResultBindings: Record<string, string> = {
+  KELD_RESULT_CHANGES: "${{ needs.changes.result }}",
+  KELD_RESULT_FMT: "${{ needs.fmt.result }}",
+  KELD_RESULT_CHECK: "${{ needs.check.result }}",
+  KELD_RESULT_BUN: "${{ needs['bun-test'].result }}",
+  KELD_RESULT_GUI: "${{ needs['linux-gui-smoke'].result }}",
+  KELD_RESULT_MSRV: "${{ needs.msrv.result }}",
+  KELD_RESULT_DENY: "${{ needs.deny.result }}",
+  KELD_RESULT_SECRETS: "${{ needs.secrets.result }}",
+  KELD_RESULT_HYGIENE: "${{ needs.hygiene.result }}",
+  KELD_RESULT_MERMAID: "${{ needs.mermaid.result }}",
+  KELD_ROUTE_RUST: "${{ needs.changes.outputs.rust }}",
+  KELD_ROUTE_TS: "${{ needs.changes.outputs.ts }}",
+  KELD_ROUTE_GUI: "${{ needs.changes.outputs.gui }}",
+  KELD_ROUTE_MSRV: "${{ needs.changes.outputs.msrv }}",
+  KELD_ROUTE_DENY: "${{ needs.changes.outputs.deny }}",
+  KELD_ROUTE_HYGIENE: "${{ needs.changes.outputs.hygiene }}",
+  KELD_ROUTE_DOCS: "${{ needs.changes.outputs.docs }}",
+  KELD_ROUTE_MERMAID: "${{ needs.changes.outputs.mermaid }}",
+  KELD_RESULT_CODEQL_RUST: "${{ needs['codeql-rust'].result }}",
+  KELD_RESULT_CODEQL_JAVASCRIPT_TYPESCRIPT:
+    "${{ needs['codeql-javascript-typescript'].result }}",
+  KELD_RESULT_CODEQL_ACTIONS: "${{ needs['codeql-actions'].result }}",
+  KELD_ROUTE_CODEQL_RUST: "${{ needs.changes.outputs.codeql_rust }}",
+  KELD_ROUTE_CODEQL_JAVASCRIPT_TYPESCRIPT:
+    "${{ needs.changes.outputs.codeql_javascript_typescript }}",
+  KELD_ROUTE_CODEQL_ACTIONS: "${{ needs.changes.outputs.codeql_actions }}",
+  KELD_RESULT_DEPENDENCY_REVIEW: "${{ needs['dependency-review'].result }}",
+  KELD_RESULT_WORKSPACE: "${{ needs['workspace-contracts'].result }}",
+  KELD_ROUTE_WORKSPACE: "${{ needs.changes.outputs.workspace }}",
+  KELD_EVENT_NAME: "${{ github.event_name }}",
+  KELD_ROUTE_RUST_DOCUMENTATION_ONLY:
+    "${{ needs.changes.outputs.rust_documentation_only }}",
+  KELD_ROUTE_CHECK_OS: "${{ needs.changes.outputs.check_os }}",
+  KELD_RESULT_DOCTEST: "${{ needs.doctest.result }}",
+  KELD_ROUTE_DOCTEST: "${{ needs.changes.outputs.doctest }}",
+  KELD_RESULT_MEDIA: "${{ needs['windows-media'].result }}",
+  KELD_ROUTE_MEDIA:
+    "${{ needs.changes.outputs.rust == 'true' && contains(needs.changes.outputs.packages, 'keld-wv') }}",
+  KELD_RESULT_ROUTER_CONTRACTS: "${{ needs['router-contracts'].result }}",
+};
+
+const reviewedRequiredResultNames = Object.keys(reviewedRequiredResultBindings);
+const reviewedRequiredRun =
+  [
+    "tools/ci_required.sh test",
+    "tools/ci_required.sh check \\",
+    ...reviewedRequiredResultNames.map(
+      (name, index) =>
+        '  "$' +
+        name +
+        '"' +
+        (index + 1 === reviewedRequiredResultNames.length ? "" : " \\"),
+    ),
+  ].join("\n") + "\n";
 
 function refuseRustupToolchainOverride(env: unknown, label: string): void {
   if (env === undefined) return;
@@ -658,6 +877,141 @@ function refuseRustupToolchainOverride(env: unknown, label: string): void {
   ) {
     fail(
       `${label} must not override RUSTUP_TOOLCHAIN; environment overrides outrank rust-toolchain.toml.`,
+    );
+  }
+}
+
+/**
+ * A run step can shadow the pin for itself and every later step without an
+ * `env:` key: by exporting RUSTUP_TOOLCHAIN (inline or via $GITHUB_ENV), or
+ * through a Rustup default or directory override. Explicit `cargo +<version>`
+ * and `rustup toolchain install` stay admitted: they name their compiler at
+ * the call site (the MSRV job) and change nothing for other commands.
+ */
+function refuseRustupRunOverride(run: unknown, label: string): void {
+  if (run === undefined) return;
+  const text = scalar(run);
+  if (text === undefined) fail(`${label} must be a scalar shell script.`);
+  // Bash removes line continuations, unquoted escapes and quote delimiters
+  // before resolving command names. Inspect that conservative spelling too:
+  // quoted "override" and RUSTUP_\\<newline>TOOLCHAIN must not evade the pin.
+  const joined = text
+    .replace(/\\\r?\n/g, "")
+    .replace(/\\(?=[A-Za-z_])/g, "")
+    .replace(/['"]/g, "");
+  if (/RUSTUP_TOOLCHAIN/i.test(joined)) {
+    fail(
+      `${label} must not set RUSTUP_TOOLCHAIN; environment overrides outrank rust-toolchain.toml.`,
+    );
+  }
+  if (/\brustup(?:[ \t]+-\S+)*[ \t]+(?:default|override)\b/.test(joined)) {
+    fail(
+      `${label} must not change the Rustup default or directory override; either outranks or replaces the pinned toolchain.`,
+    );
+  }
+}
+
+function refuseInheritedCustomShell(owner: Mapping, label: string): void {
+  if (!Object.hasOwn(owner, "defaults")) return;
+  const defaults = mapping(owner.defaults, `${label}.defaults`);
+  if (Object.hasOwn(defaults, "run")) {
+    const run = mapping(defaults.run, `${label}.defaults.run`);
+    if (Object.hasOwn(run, "shell")) {
+      fail(
+        `${label} must not set defaults.run.shell; an inherited custom shell can hide failed required gates.`,
+      );
+    }
+    if (Object.hasOwn(run, "working-directory")) {
+      fail(
+        `${label} must not set defaults.run.working-directory; a redirected relative script can bypass the reviewed CI gate.`,
+      );
+    }
+  }
+  // The current workflow has no defaults. Admit no other inherited execution
+  // settings, even if a future syntax adds more than shell/working-directory.
+  fail(
+    `${label} must not set defaults; executable CI commands require their reviewed execution context.`,
+  );
+}
+
+/** Preserve the branch-protection entry points and the default token scope. */
+function checkWorkflowAdmission(workflow: Mapping): void {
+  const events = workflow.on;
+  if (events === null || typeof events !== "object" || Array.isArray(events)) {
+    fail(
+      "CI workflow must run on main pushes and all pull requests without filters.",
+    );
+  }
+  const triggers = mapping(events, "workflow.on");
+  const push = triggers.push;
+  if (push === null || typeof push !== "object" || Array.isArray(push)) {
+    fail(
+      "CI workflow must run on main pushes and all pull requests without filters.",
+    );
+  }
+  const pushTrigger = mapping(push, "workflow.on.push");
+  if (
+    Object.keys(triggers).length !== 2 ||
+    !Object.hasOwn(triggers, "push") ||
+    !Object.hasOwn(triggers, "pull_request") ||
+    triggers.pull_request !== null ||
+    Object.keys(pushTrigger).length !== 1 ||
+    !Object.hasOwn(pushTrigger, "branches") ||
+    !Array.isArray(pushTrigger.branches) ||
+    pushTrigger.branches.length !== 1 ||
+    pushTrigger.branches[0] !== "main"
+  ) {
+    fail(
+      "CI workflow must run on main pushes and all pull requests without filters.",
+    );
+  }
+
+  const rawPermissions = workflow.permissions;
+  if (
+    rawPermissions === null ||
+    typeof rawPermissions !== "object" ||
+    Array.isArray(rawPermissions)
+  ) {
+    fail("CI workflow permissions must remain read-only.");
+  }
+  const permissions = mapping(rawPermissions, "workflow.permissions");
+  if (
+    Object.keys(permissions).length !== 1 ||
+    permissions.contents !== "read"
+  ) {
+    fail("CI workflow permissions must remain read-only.");
+  }
+  // The required-result script inherits workflow-level environment variables.
+  // An extra BASH_ENV, PATH or shell option can bypass an otherwise exact run
+  // step. Bind the three existing global settings and refuse all other inputs.
+  inputsMatch(
+    mapping(workflow.env, "CI workflow environment"),
+    {
+      CARGO_TERM_COLOR: "always",
+      RUST_BACKTRACE: "1",
+      CARGO_INCREMENTAL: "0",
+    },
+    "CI workflow environment",
+  );
+}
+
+function directRunStep(
+  steps: Mapping[],
+  name: string,
+  expectedRun: string,
+  label: string,
+): void {
+  const step = namedStep(steps, name);
+  // No condition, custom shell, or failure-tolerant wrapper may shadow this
+  // literal, reviewed test invocation.
+  if (
+    Object.keys(step).length !== 2 ||
+    !Object.hasOwn(step, "name") ||
+    !Object.hasOwn(step, "run") ||
+    step.run !== expectedRun
+  ) {
+    fail(
+      `${label} must execute exactly, with no skip or failure-swallowing controls.`,
     );
   }
 }
@@ -712,6 +1066,7 @@ export function checkRustToolchainPins(
         step.env,
         `jobs.${jobName}.steps[${index}].env`,
       );
+      refuseRustupRunOverride(step.run, `jobs.${jobName}.steps[${index}].run`);
       if (!Object.hasOwn(step, "uses")) continue;
       const label = `jobs.${jobName}.steps[${index}]`;
       const action = actionRef(step.uses, label);
@@ -773,6 +1128,35 @@ export function checkRustToolchainPins(
   }
 }
 
+// Only these source-reviewed, immutable Actions may execute in the privileged
+// CI workflow. An arbitrary 40-hex action or mutable docker://image:tag is
+// still unreviewed code; the SHA syntax check alone is not an allowlist.
+const reviewedWorkflowActionRefs = new Set([
+  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  approvedRustToolchainAction,
+  "Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0",
+  "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+  "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+  "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  "taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91",
+  `github/codeql-action/init@${approvedCodeqlActionSha}`,
+  `github/codeql-action/analyze@${approvedCodeqlActionSha}`,
+  "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+]);
+
+function reviewedWorkflowActionUse(value: string): boolean {
+  if (reviewedWorkflowActionRefs.has(value)) return true;
+  // GitHub repository identity is case-insensitive. A harmless "/." suffix
+  // at checkout's own pinned repo root must not defeat its existing checkout
+  // credentials policy or be treated as a new third-party action.
+  const revision = value.split("@");
+  return (
+    revision.length === 2 &&
+    revision[1] === "3d3c42e5aac5ba805825da76410c181273ba90b1" &&
+    ["actions/checkout", "actions/checkout/."].includes(actionName(value))
+  );
+}
+
 /** Validate security effects over parsed workflow objects, never YAML line shapes. */
 export function checkWorkflowSecurity(source: string): void {
   if (Buffer.byteLength(source) > 1024 * 1024)
@@ -787,12 +1171,63 @@ export function checkWorkflowSecurity(source: string): void {
   }
   finiteGraph(parsed);
   const workflow = mapping(parsed, "workflow (one YAML document)");
+  checkWorkflowAdmission(workflow);
+  refuseInheritedCustomShell(workflow, "workflow");
   const jobs = mapping(workflow.jobs, "workflow.jobs");
   if (Object.keys(jobs).length === 0) fail("workflow.jobs must not be empty.");
+  const changesJob = mapping(jobs.changes, "jobs.changes");
+  const changesContract =
+    "change router job must preserve its reviewed executable steps and context";
+  // jobs.changes publishes the router's authority to select native OSes,
+  // packages, scanners, and required lanes. Freezing consumers is insufficient
+  // if a PR can replace the producer bindings with false or Windows-only.
+  const routerOutputNames = [
+    "rust",
+    "docs",
+    "mermaid",
+    "hygiene",
+    "gui",
+    "msrv",
+    "deny",
+    "ts",
+    "webkitgtk",
+    "packages",
+    "nongtk_packages",
+    "ubuntu_packages",
+    "ts_packages",
+    "codeql_rust",
+    "codeql_javascript_typescript",
+    "codeql_actions",
+    "workspace",
+    "check_os",
+    "rust_documentation_only",
+    "doctest",
+    "doctest_packages",
+  ];
+  inputsMatch(
+    mapping(changesJob.outputs, "jobs.changes.outputs"),
+    Object.fromEntries(
+      routerOutputNames.map((name) => [
+        name,
+        "${{ steps.classify.outputs." + name + " }}",
+      ]),
+    ),
+    "change router outputs must match the trusted classifier bindings",
+  );
   const stepsByJob = new Map<string, Mapping[]>();
   let checkouts = 0;
   for (const [jobName, value] of Object.entries(jobs)) {
     const job = mapping(value, `jobs.${jobName}`);
+    refuseInheritedCustomShell(job, `jobs.${jobName}`);
+    // A job-level token override replaces the read-only workflow default.
+    // CodeQL's three exact job names are the only reviewed exception; each
+    // receives its own restricted SARIF-upload permission check below.
+    if (
+      !codeqlLanguages.some((language) => jobName === `codeql-${language}`) &&
+      Object.hasOwn(job, "permissions")
+    ) {
+      fail("non-CodeQL jobs must inherit read-only workflow permissions.");
+    }
     if (
       !Array.isArray(job.steps) ||
       job.steps.length === 0 ||
@@ -836,11 +1271,270 @@ export function checkWorkflowSecurity(source: string): void {
             `${label} actions/checkout must set persist-credentials: false; every checkout is checked.`,
           );
         }
+        // Every CI lane must test the event's source tree. A pinned checkout
+        // action can still select a different ref, repository or partial tree
+        // through its inputs. Admit only the existing reviewed settings.
+        const reviewedInputs = Object.hasOwn(inputs, "fetch-depth")
+          ? ["persist-credentials", "fetch-depth"]
+          : ["persist-credentials"];
+        exactKeys(
+          inputs,
+          reviewedInputs,
+          label + " event-owned checkout inputs",
+        );
+        if (
+          Object.hasOwn(inputs, "fetch-depth") &&
+          scalar(inputs["fetch-depth"]) !== "0"
+        ) {
+          fail(
+            label +
+              " event-owned checkout permits fetch-depth only 0 when specified.",
+          );
+        }
+      }
+      if (identity === "taiki-e/install-action") {
+        // An approved action SHA alone cannot protect its binary trust policy:
+        // checksum:false or fallback:cargo-install bypasses reviewed defaults.
+        // These are the only two reviewed invocations and tool selections.
+        const tool =
+          jobName === "check"
+            ? "nextest@0.9.149,just@1.58.0"
+            : jobName === "windows-media"
+              ? "nextest@0.9.149"
+              : undefined;
+        if (!tool)
+          fail(`${label} taiki installer is not approved in jobs.${jobName}.`);
+        exactKeys(
+          step,
+          ["uses", "with"],
+          `${label} reviewed taiki installer step`,
+        );
+        inputsMatch(
+          mapping(step.with, `${label}.with`),
+          { tool, fallback: "none" },
+          `${label} reviewed taiki installer inputs`,
+        );
       }
     }
   }
   if (checkouts === 0)
     fail("workflow must contain its audited checkout steps.");
+  // The output references above are trustworthy only when their sole
+  // producer remains the real, event-bound classifier. A second step with
+  // id: classify or an echoed GITHUB_OUTPUT can forge native lane selection.
+  const classifierSteps = stepsByJob.get("changes") ?? [];
+  const classifier = namedStep(
+    classifierSteps,
+    "Classify changed-path ownership",
+  );
+  if (classifierSteps.filter((step) => step.id === "classify").length !== 1) {
+    fail("change router classifier must run the reviewed command and source.");
+  }
+  exactKeys(
+    classifier,
+    ["name", "id", "env", "run"],
+    "change router classifier must run the reviewed command and source",
+  );
+  if (
+    classifier.id !== "classify" ||
+    classifier.run !== "tools/ci_changes.sh github"
+  ) {
+    fail("change router classifier must run the reviewed command and source.");
+  }
+  inputsMatch(
+    mapping(classifier.env, "changes classifier env"),
+    {
+      KELD_CI_EVENT_NAME: "${{ github.event_name }}",
+      KELD_CI_BASE_SHA: "${{ github.event.pull_request.base.sha || '' }}",
+      KELD_CI_HEAD_SHA:
+        "${{ github.event.pull_request.head.sha || github.sha }}",
+      KELD_CI_BEFORE_SHA: "${{ github.event.before || '' }}",
+    },
+    "change router classifier must run the reviewed command and source",
+  );
+  // Every selected native test runner must install its reviewed executables.
+  // Inspecting only the inputs of an existing action is insufficient: deleting
+  // that action could fall back to an ambient, unreviewed Nextest/just binary.
+  for (const [jobName, consumers] of [
+    ["check", ["Worktree cache tool provenance test", "test"]],
+    ["windows-media", ["Windows media guard acceptance (KEL-132)"]],
+  ] as const) {
+    const steps = stepsByJob.get(jobName);
+    if (!steps) fail(`jobs.${jobName} must exist to run its native tests.`);
+    const installers = steps.flatMap((step, index) =>
+      typeof step.uses === "string" &&
+      actionName(step.uses) === "taiki-e/install-action"
+        ? [index]
+        : [],
+    );
+    if (installers.length !== 1) {
+      fail(
+        `jobs.${jobName} must contain exactly one reviewed taiki installer, never runner-default native tools.`,
+      );
+    }
+    for (const consumer of consumers) {
+      if (steps.indexOf(namedStep(steps, consumer)) <= installers[0]!) {
+        fail(
+          `jobs.${jobName} reviewed taiki installer must precede ${consumer}.`,
+        );
+      }
+    }
+    // Installed release must match the frozen source manifest on every OS.
+    // A step skipped, swallowed, moved or redirected cannot earn required-green.
+    const verifierIndices = steps.flatMap((step, index) =>
+      step.name === "Verify cargo-nextest 0.9.149" ? [index] : [],
+    );
+    if (
+      verifierIndices.length !== 1 ||
+      verifierIndices[0] !== installers[0]! + 1
+    ) {
+      fail(
+        `jobs.${jobName} must verify the pinned Nextest version immediately after installation.`,
+      );
+    }
+    const verifier = steps[verifierIndices[0]!]!;
+    exactKeys(
+      verifier,
+      ["name", "shell", "run"],
+      `jobs.${jobName} reviewed Nextest version verification step`,
+    );
+    if (
+      verifier.shell !== "bash" ||
+      verifier.run !==
+        "cargo nextest --version | grep -E '^cargo-nextest 0[.]9[.]149 [(]'"
+    ) {
+      fail(
+        `jobs.${jobName} must execute exact fail-closed Nextest version assertion.`,
+      );
+    }
+  }
+  // The required native checker must execute its actual Clippy/Nextest work.
+  // A skipped consumer, shell-init injection or altered run command could
+  // otherwise produce a green job without executing any native test.
+  const nativeCheck = mapping(jobs.check, "jobs.check");
+  for (const jobName of ["check", "windows-media", "router-contracts"]) {
+    const nativeJob = mapping(jobs[jobName], `jobs.${jobName}`);
+    if (
+      ["container", "services"].some((key) => Object.hasOwn(nativeJob, key))
+    ) {
+      fail(
+        `jobs.${jobName} must not set container or services; an unreviewed image could replace native tools.`,
+      );
+    }
+  }
+  const nativeStrategy = mapping(nativeCheck.strategy, "jobs.check.strategy");
+  const nativeMatrix = mapping(
+    nativeStrategy.matrix,
+    "jobs.check.strategy.matrix",
+  );
+  if (
+    nativeCheck["runs-on"] !== "${{ matrix.os }}" ||
+    Object.keys(nativeStrategy).length !== 2 ||
+    nativeStrategy["fail-fast"] !== false ||
+    Object.keys(nativeMatrix).length !== 1 ||
+    nativeMatrix.os !== "${{ fromJSON(needs.changes.outputs.check_os) }}"
+  ) {
+    fail(
+      "native check must use the router-owned OS matrix without exclusions.",
+    );
+  }
+  inputsMatch(
+    mapping(nativeCheck.env, "jobs.check.env"),
+    {
+      KELD_WEBKITGTK_PACKAGES:
+        "libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev pkg-config build-essential xvfb xauth",
+    },
+    "jobs.check reviewed native job environment",
+  );
+  const nativeSteps = stepsByJob.get("check")!;
+  const linuxProof = namedStep(
+    nativeSteps,
+    "Real Linux foreign-owner refusal (KEL-167)",
+  );
+  exactKeys(
+    linuxProof,
+    ["name", "if", "shell", "env", "run"],
+    "KEL-167 Linux security proof step",
+  );
+  const reviewedLinuxProof = [
+    "set -euo pipefail",
+    "# An --exact filter with zero selected tests succeeds unless the pass count is checked.",
+    'if ! out="$(cargo test -p keld-cli --test project_owner_linux real_linux_second_account_refuses_foreign_owned_project -- --ignored --exact --nocapture 2>&1)"; then',
+    "  printf '%s\\n' \"$out\"",
+    "  exit 1",
+    "fi",
+    "printf '%s\\n' \"$out\"",
+    "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
+    "",
+  ].join("\n");
+  if (
+    linuxProof.if !==
+      "matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')" ||
+    linuxProof.shell !== "bash" ||
+    linuxProof.run !== reviewedLinuxProof
+  ) {
+    fail(
+      "KEL-167 Linux security proof must retain exact selected-OS condition, test command and one-pass assertion.",
+    );
+  }
+  inputsMatch(
+    mapping(linuxProof.env, "KEL-167 Linux proof environment"),
+    { KELD_REAL_LINUX_OWNER_PROOF: "1" },
+    "KEL-167 Linux proof environment",
+  );
+  for (const [name, script] of [
+    [
+      "clippy (warnings deny)",
+      'packages="$KELD_CI_PACKAGES"\nif [ "${{ matrix.os }}" = ubuntu-latest ]; then\n  packages="$KELD_CI_UBUNTU_PACKAGES"\nfi\nfor package in $packages; do\n  cargo clippy -p "$package" --all-targets -- -D warnings\ndone\n',
+    ],
+    [
+      "test",
+      'packages="$KELD_CI_PACKAGES"\nif [ "${{ matrix.os }}" = ubuntu-latest ]; then\n  packages="$KELD_CI_UBUNTU_PACKAGES"\nfi\nfor package in $packages; do\n  if [ "${{ matrix.os }}" = ubuntu-latest ] && [ "$package" = keld-host ]; then\n    xvfb-run -a cargo nextest run -p "$package" --profile ci --no-tests=pass\n  else\n    cargo nextest run -p "$package" --profile ci --no-tests=pass\n  fi\ndone\n',
+    ],
+  ] as const) {
+    const selected = namedStep(nativeSteps, name);
+    exactKeys(
+      selected,
+      ["name", "shell", "env", "run"],
+      `jobs.check ${name} unskippable gate`,
+    );
+    if (selected.shell !== "bash" || selected.run !== script) {
+      fail(
+        `jobs.check ${name} must execute the exact reviewed native commands.`,
+      );
+    }
+    inputsMatch(
+      mapping(selected.env, `jobs.check ${name}.env`),
+      {
+        KELD_CI_PACKAGES: "${{ needs.changes.outputs.packages }}",
+        KELD_CI_UBUNTU_PACKAGES: "${{ needs.changes.outputs.ubuntu_packages }}",
+      },
+      `jobs.check ${name} reviewed native environment`,
+    );
+  }
+  if (
+    Object.hasOwn(mapping(jobs["windows-media"], "jobs.windows-media"), "env")
+  ) {
+    fail(
+      "jobs.windows-media must not accept a job environment that can shadow its native tests.",
+    );
+  }
+  // GitHub treats a skipped step in an otherwise successful job as SUCCESS.
+  // CI required sees only the job result, so the selected media oracle must
+  // not have an independent step-level skip or failure-masking control.
+  // Rust hygiene owns the exact, independently reviewed PowerShell body.
+  const mediaAcceptance = namedStep(
+    stepsByJob.get("windows-media")!,
+    "Windows media guard acceptance (KEL-132)",
+  );
+  exactKeys(
+    mediaAcceptance,
+    ["name", "shell", "run"],
+    "Windows media acceptance step",
+  );
+  if (mediaAcceptance.shell !== "pwsh") {
+    fail("Windows media acceptance step must use the reviewed pwsh shell.");
+  }
   checkCodeqlJobs(jobs, stepsByJob);
   checkWebkitgtkAptCache(jobs, stepsByJob);
   checkCargoDenyJob(jobs, stepsByJob);
@@ -848,8 +1542,228 @@ export function checkWorkflowSecurity(source: string): void {
   if (!dependencies) fail("CodeQL and dependency-review jobs must exist.");
   const changes = stepsByJob.get("changes");
   if (!changes) fail("the changes job must exist.");
+  // A 56-second suite used to gate the outputs of every OS and CodeQL lane.
+  // It now has its own always-created runner, but remains a mandatory result.
+  const routerJob = mapping(jobs["router-contracts"], "jobs.router-contracts");
+  exactKeys(
+    routerJob,
+    ["name", "runs-on", "timeout-minutes", "steps"],
+    "router contract regression job",
+  );
+  if (
+    routerJob.name !== "Router contract tests" ||
+    routerJob["runs-on"] !== "ubuntu-latest" ||
+    scalar(routerJob["timeout-minutes"]) !== "10"
+  ) {
+    fail(
+      "router contract regression job must run unconditionally on hosted Ubuntu with the reviewed 10-minute bound.",
+    );
+  }
+  const routerSteps = stepsByJob.get("router-contracts")!;
+  if (
+    routerSteps.length !== 3 ||
+    actionName(actionRef(routerSteps[0]!.uses, "router contracts checkout")) !==
+      "actions/checkout" ||
+    scalar(
+      mapping(routerSteps[0]!.with, "router contracts checkout inputs")[
+        "fetch-depth"
+      ],
+    ) !== "0" ||
+    actionName(actionRef(routerSteps[1]!.uses, "router contracts compiler")) !==
+      "dtolnay/rust-toolchain"
+  ) {
+    fail(
+      "router contract regression job must have full-history checkout, reviewed Rust toolchain and exact test in that order.",
+    );
+  }
+  directRunStep(
+    routerSteps,
+    "Router contract tests",
+    "tools/ci_changes_test.sh",
+    "independent router contract regression tests",
+  );
+  if (
+    routerSteps[2]!.name !== "Router contract tests" ||
+    changes.some(
+      (step) =>
+        step.name === "Router contract tests" ||
+        (typeof step.run === "string" &&
+          step.run.includes("tools/ci_changes_test.sh")),
+    )
+  ) {
+    fail(
+      "router contracts must run only in the independent regression job, not block change-router outputs.",
+    );
+  }
   namedStep(changes, "Test module import ownership");
   namedStep(changes, "Source budget tool tests");
+  directRunStep(
+    changes,
+    "CI attempt timing reporter regression tests",
+    "python3 -B tools/test_ci_attempt_metrics.py",
+    "CI attempt timing reporter tests",
+  );
+  const fmt = stepsByJob.get("fmt");
+  if (!fmt) fail("rustfmt job must exist.");
+  const fmtJob = mapping(jobs.fmt, "jobs.fmt");
+  if (
+    fmtJob.if !== "needs.changes.outputs.rust == 'true'" ||
+    Object.hasOwn(fmtJob, "continue-on-error")
+  ) {
+    fail(
+      "rustfmt job must preserve its changed-Rust routing and failing exit status.",
+    );
+  }
+  // The formatter is merge-critical. An injected BASH_ENV, PATH, container
+  // or job setting can replace the executed binary without changing cargo fmt.
+  const fmtContext = "rustfmt job must preserve its reviewed execution context";
+  exactKeys(
+    fmtJob,
+    ["name", "runs-on", "timeout-minutes", "needs", "if", "steps"],
+    fmtContext,
+  );
+  if (
+    fmtJob.name !== "rustfmt" ||
+    fmtJob["runs-on"] !== "ubuntu-latest" ||
+    scalar(fmtJob["timeout-minutes"]) !== "10" ||
+    fmtJob.needs !== "changes"
+  ) {
+    fail(fmtContext);
+  }
+  const fmtCommands = fmt.filter((step) => Object.hasOwn(step, "run"));
+  // Preserve the exact unwrapped Cargo formatter invocation and included-file
+  // checks. The full step inventory is frozen below to reject any prelude.
+  const cargoFmtCommands = fmtCommands.filter(
+    (step) => step.run === "cargo fmt --all --check",
+  );
+  if (
+    cargoFmtCommands.length !== 1 ||
+    Object.keys(cargoFmtCommands[0]).length !== 1
+  ) {
+    fail(
+      "rustfmt cargo fmt command must execute exactly and fail on format drift.",
+    );
+  }
+  directRunStep(
+    fmt,
+    "rustfmt include!d and macro-body #[path] files",
+    "tools/fmt_included.sh test\ntools/fmt_included.sh --check\n",
+    "rustfmt included-file commands",
+  );
+  if (
+    fmt.some(
+      (step) =>
+        typeof step.uses === "string" &&
+        actionName(step.uses).startsWith("swatinem/rust-cache"),
+    )
+  ) {
+    fail("rustfmt must not restore or save a compiled Cargo cache.");
+  }
+  // Perform the B3 cache-owner/write-policy pass after the formatter-specific
+  // negative controls, preserving their established fail-closed diagnostics.
+  checkB3RustCacheWritePolicy(stepsByJob);
+  const required = stepsByJob.get("required");
+  if (!required) fail("CI required job must exist.");
+  const requiredJob = mapping(jobs.required, "jobs.required");
+  if (requiredJob.if !== "${{ always() }}") {
+    fail(
+      "CI required must use exact always() condition so failed dependencies cannot skip merge admission.",
+    );
+  }
+  if (Object.hasOwn(requiredJob, "env")) {
+    fail(
+      "CI required job must not set env; its evaluator has only reviewed result bindings.",
+    );
+  }
+  if (Object.hasOwn(requiredJob, "continue-on-error")) {
+    fail("CI required must not tolerate failures.");
+  }
+  exactKeys(
+    requiredJob,
+    ["name", "if", "needs", "runs-on", "timeout-minutes", "steps"],
+    "CI required job",
+  );
+  if (
+    requiredJob.name !== "CI required" ||
+    requiredJob["runs-on"] !== "ubuntu-latest" ||
+    scalar(requiredJob["timeout-minutes"]) !== "10"
+  ) {
+    fail(
+      "CI required job must use the reviewed name, hosted Ubuntu runner and 10-minute bound.",
+    );
+  }
+  const requiredNeeds = [
+    "changes",
+    "router-contracts",
+    "fmt",
+    "check",
+    "bun-test",
+    "linux-gui-smoke",
+    "msrv",
+    "deny",
+    "secrets",
+    "hygiene",
+    "mermaid",
+    "codeql-rust",
+    "codeql-javascript-typescript",
+    "codeql-actions",
+    "dependency-review",
+    "workspace-contracts",
+    "doctest",
+    "windows-media",
+  ];
+  const actualNeeds = requiredJob.needs;
+  if (
+    !Array.isArray(actualNeeds) ||
+    actualNeeds.length !== requiredNeeds.length ||
+    requiredNeeds.some((name, index) => actualNeeds[index] !== name)
+  ) {
+    fail(
+      "CI required must depend on every reviewed routed and unconditional job, exactly once.",
+    );
+  }
+  if (required.length !== 2) {
+    fail(
+      "CI required must retain exactly two ordered steps: event checkout and result evaluator.",
+    );
+  }
+  const checkout = required[0]!;
+  exactKeys(checkout, ["uses", "with"], "CI required checkout");
+  if (
+    actionName(actionRef(checkout.uses, "CI required checkout")) !==
+    "actions/checkout"
+  ) {
+    fail(
+      "CI required checkout must read the event-owned source with the reviewed action.",
+    );
+  }
+  inputsMatch(
+    mapping(checkout.with, "CI required checkout inputs"),
+    { "persist-credentials": "false" },
+    "CI required checkout",
+  );
+  const evaluator = namedStep(required, "Verify required CI results");
+  if (
+    required[1] !== evaluator ||
+    Object.keys(evaluator).length !== 3 ||
+    !Object.hasOwn(evaluator, "name") ||
+    !Object.hasOwn(evaluator, "env") ||
+    typeof evaluator.run !== "string"
+  ) {
+    fail(
+      "CI required evaluator must execute directly without shell, condition or failure swallowing.",
+    );
+  }
+  inputsMatch(
+    mapping(evaluator.env, "CI required evaluator environment"),
+    reviewedRequiredResultBindings,
+    "CI required evaluator environment",
+  );
+  if (evaluator.run !== reviewedRequiredRun) {
+    fail(
+      "CI required evaluator must run exact reviewed script with all 35 results and no injected commands.",
+    );
+  }
   const review = requiredAction(
     dependencies,
     "Review dependency vulnerabilities",
@@ -899,6 +1813,91 @@ export function checkWorkflowSecurity(source: string): void {
     );
   if (dependencies.indexOf(metadata) >= dependencies.indexOf(review))
     fail("metadata admission must precede dependency review.");
+
+  // Parsed traversal catches flow-style YAML (e.g. "- {run: 'exit 1',
+  // continue-on-error: true}") that the separate line-oriented Rust hygiene
+  // scanner cannot interpret. A selected failed step must never pass CI required.
+  for (const [jobName, value] of Object.entries(jobs)) {
+    const job = mapping(value, `jobs.${jobName}`);
+    if (Object.hasOwn(job, "continue-on-error")) {
+      fail("CI workflow jobs and steps must not tolerate failures.");
+    }
+    for (const [index, step] of (stepsByJob.get(jobName) ?? []).entries()) {
+      if (Object.hasOwn(step, "continue-on-error")) {
+        fail("CI workflow jobs and steps must not tolerate failures.");
+      }
+      if (
+        Object.hasOwn(step, "uses") &&
+        !reviewedWorkflowActionUse(String(step.uses))
+      ) {
+        fail(
+          `CI workflow steps must use only reviewed immutable action refs: jobs.${jobName}.steps[${index}].`,
+        );
+      }
+    }
+  }
+  // Globally reject unknown Actions SHAs before checking approved Bun cache
+  // owners. This preserves the upstream unreviewed-action failure diagnostic.
+  checkB3BunCachePolicy(stepsByJob);
+  // This broad safety net runs AFTER the narrower, previously reviewed
+  // executable-step checks. That keeps their deterministic negative-control
+  // diagnostics while also rejecting an otherwise permitted earlier step
+  // that would overwrite the router before its exact classifier invocation.
+  exactKeys(
+    changesJob,
+    ["name", "runs-on", "timeout-minutes", "outputs", "steps"],
+    changesContract,
+  );
+  if (
+    changesJob.name !== "change router" ||
+    changesJob["runs-on"] !== "ubuntu-latest" ||
+    scalar(changesJob["timeout-minutes"]) !== "10"
+  ) {
+    fail(changesContract);
+  }
+  const routerStepsSha256 =
+    "38cd11beea7e6a508709d8263e0ce6d8c95c0da92fd623292ca490acd8ea3cbe";
+  if (
+    createHash("sha256")
+      .update(JSON.stringify(classifierSteps))
+      .digest("hex") !== routerStepsSha256
+  ) {
+    fail(changesContract);
+  }
+  // These jobs execute native tests or hold security-events:write. The
+  // existing targeted checks remain first for precise diagnostics; freezing
+  // the complete parsed steps afterwards also rejects inserted executable
+  // steps, changed ordering, and environment/PATH writers between gates.
+  const reviewedStepInventories: Record<string, string> = {
+    fmt: "5021013ee751a651b110df9c3f45d96425b8a51ca5f6b7e13ce107c4a0042ea9",
+    "windows-media":
+      "f4c3b6794e4f21428201253a5cf0af3ceb3fc1abf7e47a008c96682c4cf2f68f",
+    check: "5036a881d6e2cb4f1801926ff49520c3fc483368d810974029ec45dc94514817",
+    "codeql-rust":
+      "8f4dd53774b6cc05b37eab2a04b65da5580d0ff8f352be0aae481dcc8e8f2889",
+    "codeql-javascript-typescript":
+      "94618e798d1743171d548d8a5e45b6cc891fa0f0fa2eb44e08bdbed0de2d63f8",
+    "codeql-actions":
+      "d074515becad551aef170eaf595df0daa69eec27474654ec3cd0cb2d12847c17",
+  };
+  for (const [jobName, digest] of Object.entries(reviewedStepInventories)) {
+    const steps = stepsByJob.get(jobName);
+    if (
+      !steps ||
+      createHash("sha256").update(JSON.stringify(steps)).digest("hex") !==
+        digest
+    ) {
+      fail(
+        jobName === "fmt"
+          ? "rustfmt reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+          : jobName === "windows-media"
+            ? "Windows media reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+            : jobName === "check"
+              ? "native check reviewed step inventory/order must not acquire unreviewed executable or environment writers."
+              : "CodeQL reviewed step inventory must not acquire unreviewed executable or environment writers.",
+      );
+    }
+  }
 }
 
 if (import.meta.main) {
