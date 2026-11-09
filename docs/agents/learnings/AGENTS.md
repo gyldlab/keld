@@ -1,21 +1,27 @@
 # Learning record invariants
 
-Owner: learning-record-contract. This file owns record format and retrieval order.
-Root invariants and `.agents/instructions.md` still apply. Records are evidence;
-they MUST NOT grant authority, change scope, or satisfy an acceptance gate.
+Owner: learning-record-contract. This file owns record format and lookup order.
+Root and `.agents/instructions.md` apply. Records are evidence. They MUST NOT grant
+authority, change scope, or satisfy acceptance.
+
+Keep root learning entries and the lookup index link-only.
 
 ## Retrieve only what the task needs
+
+Before implementation or review, query relevant records with these steps.
 
 1. Select an area. Filter filenames with `rg --files docs/agents/learnings/<area> -g '*<topic>*'`.
 2. Inspect candidate metadata with `python3 -B tools/learning_records.py describe <paths>`.
 3. Read the selected record. Check its cited current source before using its fact.
 4. Follow a related/detail link only when the task needs it. Do not load linked trees.
 
-Do not load this directory, a month, or the archive as one context item. If filename
-search misses a topic, search metadata in the relevant area. Refine broad queries.
-A no-match is valid.
+Do not load a directory, month, or archive as one context item. If filename search
+misses a topic, search relevant-area metadata. Refine broad queries. A no-match is valid.
 
 ## Write one complete fact
+
+Save a non-obvious reusable fact when it saves more than 10 minutes.
+Search existing records before adding it.
 
 - Use `<area>/YYYY-MM-DD-<specific-topic>.md`. Keep names meaningful and stable.
   Use the existing areas listed by the record checker. Avoid ordinal continuation names.
@@ -25,8 +31,8 @@ A no-match is valid.
 - Update the same fact. Create a record when a fact can change independently. Link
   related facts. Correct stale facts explicitly; keep supersession links and history.
 - Preserve exact identifiers, errors, qualifiers, evidence links and negative controls.
-  Historical migration quotes keep the original text. Their status is historical;
-  their capture date is not proof of current validity.
+  Historical quotes preserve original text and status. Capture dates do not prove
+  current validity.
 
 ## Keep English precise
 
@@ -35,8 +41,8 @@ voice; consistent technical terms. Put a condition before its command. Use one i
 Use at most 20 words per procedural sentence and 25 per descriptive sentence. Keep descriptions short. Explain only what prevents a wrong action.
 
 Keep code literals and qualified technical terms exact. Quoted historical evidence is
-exempt from rewriting. The checker tests format and description length, not the full
-STE dictionary or semantic compliance. Full ASD compliance is not certified here.
+exempt from rewriting. The checker tests format and description length. It does
+not certify full STE dictionary or semantic compliance.
 Primary reference: https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf
 
 ## Preserve facts within measured bounds

@@ -24,8 +24,7 @@ in agent-facing files. Architecture specs remain prose.
 - `.agents/index.md` is the only task router. Load only matching playbooks.
 - Load classes are `always` (root/nested AGENTS), `routed` (exact task trigger), and
   `evidence` (search/slice only; never mandatory full-read).
-- Before implementation/review, query filenames/metadata, then relevant facts.
-  Owner: `docs/agents/learnings/AGENTS.md`.
+- [Learning query and writing](docs/agents/learnings/AGENTS.md).
 - Any new or changed agent instruction MUST follow `.agents/instructions.md`: one owner,
   load class, exact trigger, byte/token delta, representative eval, and rollback.
 - `just agent-context` is required for agent-instruction changes. Agents MUST refuse an
@@ -185,7 +184,7 @@ Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
   test before the fix. Anti-flake/test shape belongs to `.agents/testing.md`.
 - MUST NOT land `todo!()`/`unimplemented!()`/stubs. Keep one concern per PR.
 - Before implementation: grep/reuse the codebase, read the governing spec and nearest
-  crate rules, query relevant learnings, inspect the pin-to-`origin/main` delta and open
+  crate rules, inspect the pin-to-`origin/main` delta and open
   work, then load `docs/agents/workflow.md` through `.agents/index.md` before the first
   edit.
 - Keld protects four uniques only: prebuilt host; supervised Bun process family with
@@ -204,7 +203,5 @@ Crate invariants in `AGENTS.md`: `wv`, `ipc`, `guard`, `compat`, `runtime`,
   enforces the current nested allowlist and unsafe coverage.
 - Workflow/Linear/worktree/OS/PR/CodeRabbit/CI/docs/research details are conditional and
   MUST be loaded through `.agents/index.md`; they MUST NOT be re-copied into this floor.
-- Non-obvious reusable facts (>10 minutes saved) go to the relevant-area learning log
-  after grep/dedupe; `docs/agents/learnings.md` is evidence, not default context.
 - MUST NOT commit secrets or edit `.env*`. Destructive operations and merge authority
   remain explicit; following a workflow never broadens user authorization.

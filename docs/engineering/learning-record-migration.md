@@ -10,11 +10,12 @@ The published log had 66,011 bytes against a 65,280-byte limit.
 Its 168 entries shared one file. A valid new record also failed instruction
 classification because only the old single file could be evidence.
 
-The candidate keeps the root lookup index at 998 bytes.
+The candidate keeps the root lookup index at 712 bytes.
 It stores all 168 source lines in categorized records. The largest record has
 1,712 bytes. Every record fits the 2,048-byte default. No exception was needed.
 The manifest registers every file. The old index allowance decreases to 2,048 bytes.
-The directory AGENTS.md owns the record contract. Root and router point to that owner.
+The directory AGENTS.md owns lookup, capture and record rules. Root contains its link.
+The lookup index contains only owner, evidence and area links.
 
 Records contain more stored metadata: 161,071 bytes across all cards.
 This is not a claim of lower repository size or faster execution.
@@ -35,7 +36,7 @@ entries use their complete published text. Original profile worktrees remain fro
 
 Root: 13309 → 13307 bytes.
 Router: 4054 → 4081 bytes.
-New path-local owner: 3334 bytes,
+New path-local owner: 3471 bytes,
 with a 3,584-byte registered allowance. Root and existing automatic-chain caps stay unchanged.
 
 The source uses 18,186 comparison tokens.
