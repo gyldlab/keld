@@ -345,14 +345,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool
       # GH-1081 [DO NOT MERGE]: research-only narrowing on a never-merge draft PR.
-      # Runs only the keld-host recovery and crash_recovery_r1 experiment tests,
-      # GH1081_ITERATIONS times with --no-fail-fast, and skips every other
-      # package's tests. It refuses to run anywhere but that PR's branch.
+      # Round 3 runs only the gh1081_r3 error-code rows, GH1081_ITERATIONS
+      # times with --no-fail-fast, and skips every other package's tests:
+      # macOS keld-core router rows, keld-host GUI rows (one at a time) and the
+      # Bun rows; Linux the Bun rows only (the renderer bridge and its router
+      # path are macOS-only); Windows none (the Bun fake host uses AF_UNIX).
+      # It refuses to run anywhere but that PR's branch.
       - name: test (GH-1081 research narrowing, never merge)
         shell: bash
         env:
-          KELD_CI_PACKAGES: ${{ needs.changes.outputs.packages }}
-          KELD_CI_UBUNTU_PACKAGES: ${{ needs.changes.outputs.ubuntu_packages }}
           GH1081_ITERATIONS: "10"
           GH1081_REF: ${{ github.head_ref || github.ref }}
         run: |
@@ -360,40 +361,33 @@ jobs:
             echo "::error::GH-1081 research narrowing reached $GH1081_REF; it must never leave its draft PR. Revert .github/workflows/ci.yml."
             exit 1
           fi
-          packages="$KELD_CI_PACKAGES"
-          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
-            packages="$KELD_CI_UBUNTU_PACKAGES"
+          if [ "${{ matrix.os }}" = windows-latest ]; then
+            echo "gh1081 r3: no Windows rows on this never-merge research PR"
+            exit 0
           fi
-          case "${{ matrix.os }}" in
-            macos-latest) filter='binary(no_flag_macos) & test(/crash_recovery_r2/)' ;;
-            windows-latest) filter='binary(no_flag_windows) & test(/crash_recovery_r2/)' ;;
-            ubuntu-latest) filter='binary(no_flag_linux) & test(/crash_recovery_r2/)' ;;
-          esac
-          # Round 2: macOS builds the existing debug page-load trace hook
-          # (KELD_PROFILE_ACCEPTANCE_REPORT); GUI rows run one at a time.
-          features=""
+          host_filter='binary(no_flag_macos) & test(/gh1081_r3_/)'
+          core_filter='test(/gh1081_r3_/)'
           if [ "${{ matrix.os }}" = macos-latest ]; then
-            features="--features profile-test-hooks"
+            cargo nextest list -p keld-core --profile ci -E "$core_filter"
+            cargo nextest list -p keld-host --profile ci -E "$host_filter"
           fi
-          for package in $packages; do
-            if [ "$package" != keld-host ]; then
-              echo "gh1081: $package tests skipped on this never-merge research PR"
-              continue
+          failed_core=0
+          failed_host=0
+          failed_bun=0
+          for iteration in $(seq 1 "$GH1081_ITERATIONS"); do
+            echo "GH1081_ITERATION_BEGIN $iteration/$GH1081_ITERATIONS os=${{ matrix.os }} sha=$GITHUB_SHA"
+            if [ "${{ matrix.os }}" = macos-latest ]; then
+              echo "GH1081_R3_SUITE core iteration=$iteration"
+              cargo nextest run -p keld-core --profile ci --no-fail-fast --no-tests=fail --success-output immediate -E "$core_filter" || failed_core=$((failed_core + 1))
+              echo "GH1081_R3_SUITE host iteration=$iteration"
+              cargo nextest run -p keld-host --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$host_filter" || failed_host=$((failed_host + 1))
             fi
-            cargo nextest list -p keld-host $features --profile ci -E "$filter"
-            failed=0
-            for iteration in $(seq 1 "$GH1081_ITERATIONS"); do
-              echo "GH1081_ITERATION_BEGIN $iteration/$GH1081_ITERATIONS os=${{ matrix.os }} sha=$GITHUB_SHA"
-              if [ "${{ matrix.os }}" = ubuntu-latest ]; then
-                xvfb-run -a --server-args='-screen 0 1280x800x24' cargo nextest run -p keld-host --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
-              else
-                cargo nextest run -p keld-host $features --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
-              fi
-              echo "GH1081_ITERATION_END $iteration/$GH1081_ITERATIONS failed_iterations=$failed"
-            done
-            echo "GH1081_SUMMARY os=${{ matrix.os }} iterations=$GH1081_ITERATIONS failed_iterations=$failed"
-            [ "$failed" -eq 0 ]
+            echo "GH1081_R3_SUITE bun iteration=$iteration"
+            (cd packages/@keld/api && bun test ./src/gh1081-r3.test.ts) || failed_bun=$((failed_bun + 1))
+            echo "GH1081_ITERATION_END $iteration/$GH1081_ITERATIONS failed_core=$failed_core failed_host=$failed_host failed_bun=$failed_bun"
           done
+          echo "GH1081_SUMMARY os=${{ matrix.os }} iterations=$GH1081_ITERATIONS failed_core=$failed_core failed_host=$failed_host failed_bun=$failed_bun"
+          [ "$failed_core" -eq 0 ] && [ "$failed_host" -eq 0 ] && [ "$failed_bun" -eq 0 ]
       - name: Real Linux foreign-owner refusal (KEL-167)
         if: matrix.os == 'ubuntu-latest' && contains(needs.changes.outputs.ubuntu_packages, 'keld-cli')
         shell: bash

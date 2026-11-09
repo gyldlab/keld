@@ -17,9 +17,16 @@ use crate::support::native_window::{
 use crate::support::process::{await_process_gone, kill_pid, parent_process, process_exists};
 use serde_json::{Value, json};
 use std::fs;
+use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Command, Output};
+use std::process::{ChildStderr, ChildStdin, Command, Output};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
+
+// GH-1081 round 3 (research only): per-stage error codes on the same harness.
+#[path = "crash_recovery_r3.rs"]
+mod crash_recovery_r3;
 
 const DRAFT: &str = "Kal milte hain";
 const GAP_DETAIL: &str = "application call is unavailable or already pending";
@@ -31,6 +38,8 @@ enum HandlerMode {
     BeforeReady,
     /// `channels.handle` inside `whenReady`, held by the test before registration.
     InsideReady,
+    /// Never registered (round 3 missing-handler arm).
+    Never,
 }
 
 impl HandlerMode {
@@ -38,6 +47,7 @@ impl HandlerMode {
         match self {
             Self::BeforeReady => "\"before-ready\"",
             Self::InsideReady => "\"inside-ready\"",
+            Self::Never => "\"never\"",
         }
     }
 }
@@ -58,6 +68,79 @@ struct Experiment {
     journal: Vec<Value>,
     boots: Vec<RecoveryBoot>,
     steps: usize,
+    /// Host stderr, read live (Bun's stderr reaches it too), and kept whole.
+    stderr: StderrTap,
+}
+
+/// Live host stderr: every line is both kept and offered to condition waits,
+/// so a test can act on a host or app marker the moment it is written.
+struct StderrTap {
+    lines: mpsc::Receiver<String>,
+    seen: Vec<String>,
+    reader: Option<thread::JoinHandle<()>>,
+}
+
+impl StderrTap {
+    fn spawn(pipe: ChildStderr) -> Self {
+        let (sender, lines) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut pipe = std::io::BufReader::new(pipe);
+            loop {
+                let mut line = Vec::new();
+                match pipe.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {
+                        if sender
+                            .send(String::from_utf8_lossy(&line).into_owned())
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            lines,
+            seen: Vec::new(),
+            reader: Some(reader),
+        }
+    }
+
+    fn count(&self, marker: &str) -> usize {
+        self.seen
+            .iter()
+            .filter(|line| line.contains(marker))
+            .count()
+    }
+
+    /// Waits until `count` lines contain `marker`; the deadline is a kill switch.
+    fn await_count(&mut self, marker: &str, count: usize) -> Vec<String> {
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        while self.count(marker) < count {
+            let line = self
+                .lines
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|_| panic!("host stderr {marker} x{count} before deadline"));
+            self.seen.push(line);
+        }
+        self.seen
+            .iter()
+            .filter(|line| line.contains(marker))
+            .cloned()
+            .collect()
+    }
+
+    /// Every line, once the host and the processes sharing its stderr exited.
+    fn finish(mut self) -> Vec<u8> {
+        if let Some(reader) = self.reader.take() {
+            reader.join().expect("host stderr reader");
+        }
+        while let Ok(line) = self.lines.try_recv() {
+            self.seen.push(line);
+        }
+        self.seen.concat().into_bytes()
+    }
 }
 
 impl Experiment {
@@ -68,11 +151,28 @@ impl Experiment {
         steps: &Value,
         reload_steps: &Value,
     ) -> Self {
+        let app = |port: &str| {
+            include_str!("../../../fixtures/crash_recovery_r1_app.ts")
+                .replace("__PORT__", port)
+                .replace("__HANDLER_MODE__", mode.literal())
+        };
+        Self::launch_with(fixture, name, app, mode, steps, reload_steps, true)
+    }
+
+    /// [`Self::launch`] with a caller-built app body; `release_inside_ready`
+    /// false keeps an inside-ready G1 unregistered for the caller to release.
+    fn launch_with(
+        fixture: &PublicFsProject,
+        name: &str,
+        app: impl FnOnce(&str) -> String,
+        mode: HandlerMode,
+        steps: &Value,
+        reload_steps: &Value,
+        release_inside_ready: bool,
+    ) -> Self {
         let observer = Observation::bind_recovery();
         let port = observer.port.to_string();
-        let app = include_str!("../../../fixtures/crash_recovery_r1_app.ts")
-            .replace("__PORT__", &port)
-            .replace("__HANDLER_MODE__", mode.literal());
+        let app = app(&port);
         let page = include_str!("../../../fixtures/crash_recovery_r1_page.html")
             .replace("__PORT__", &port)
             .replace("__STEPS__", &steps.to_string())
@@ -90,6 +190,7 @@ impl Experiment {
         let host = cleanup.cli.as_mut().expect("host custody");
         let host_pid = host.id();
         let lease = host.stdin.take().expect("retain dev lease until host exit");
+        let stderr = StderrTap::spawn(host.stderr.take().expect("host stderr pipe"));
         let mut experiment = Self {
             observer,
             cleanup,
@@ -105,11 +206,12 @@ impl Experiment {
             journal: Vec::new(),
             boots: Vec::new(),
             steps: 0,
+            stderr,
         };
         let boot = experiment.await_boot(1);
         experiment.admit(boot);
         experiment.adopt_ready(1, boot);
-        if mode == HandlerMode::InsideReady {
+        if mode == HandlerMode::InsideReady && release_inside_ready {
             experiment.release_registration(1);
         }
         experiment.await_count("page-ready", 1);
@@ -318,17 +420,23 @@ impl Experiment {
     fn quit(mut self) -> Output {
         self.observer
             .send_recovery_command(RecoveryCommand::Quit(self.bun));
-        let output = wait_child_output(
+        let mut output = wait_child_output(
             self.cleanup.cli.take().expect("host custody"),
             EVENT_DEADLINE,
         );
-        eprintln!("KELD_GH1081_HOST_OUTPUT {output:?}");
-        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.status.success(),
+            "{output:?}; stderr so far: {}",
+            self.stderr.seen.concat()
+        );
         for process in [self.bun, self.guardian, self.host_pid] {
             await_process_gone(process);
         }
         assert_eq!(native_windows(self.host_pid, TITLE).len(), 0);
         self.cleanup.bun_group = None;
+        // The tap took the stderr pipe; its lines are the host's whole stderr.
+        output.stderr = self.stderr.finish();
+        eprintln!("KELD_GH1081_HOST_OUTPUT {output:?}");
         output
     }
 }
