@@ -12,6 +12,7 @@ use crate::support::renderer::NavigationBlocker;
 use std::fs;
 use std::io::BufReader;
 use std::os::unix::net::UnixListener;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -42,7 +43,9 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("launch navigation-timeout host");
-    let dev_lease_writer = child.stdin.take();
+    // Hold the dev lease throughout the original Host exit wait. Closing it
+    // before WK's 15s navigation deadline initiates ordinary successful Quit.
+    let _dev_lease_writer = child.stdin.take();
     let host_pid = child.id();
     let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
     control
@@ -65,13 +68,17 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
         .recv_timeout(EVENT_DEADLINE)
         .expect("WKWebView requested stalled resource");
     await_no_native_windows(host_pid, TITLE);
-    drop(dev_lease_writer);
-    let output = wait_child_output(child, EVENT_DEADLINE);
-    blocker
-        .release
-        .send(())
-        .expect("release blocked navigation");
-    blocker.handle.join().expect("navigation blocker joins");
+    // The Child reaper inside wait_child_output remains authoritative. Even
+    // when its original deadline panics, release and join our socket owner
+    // before resuming the first failure with its original diagnostics.
+    let host_exit = catch_unwind(AssertUnwindSafe(|| {
+        wait_child_output(child, EVENT_DEADLINE)
+    }));
+    let release_result = blocker.release.send(());
+    let join_result = blocker.handle.join();
+    let output = host_exit.unwrap_or_else(|failure| resume_unwind(failure));
+    release_result.expect("release blocked navigation");
+    join_result.expect("navigation blocker joins");
 
     assert!(!output.status.success(), "stalled navigation became Ready");
     let stderr = String::from_utf8(output.stderr).expect("navigation stderr UTF-8");
