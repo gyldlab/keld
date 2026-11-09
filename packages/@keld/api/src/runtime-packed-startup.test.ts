@@ -33,7 +33,129 @@ type Message = {
   before?: Record<string, string>;
   appReady?: boolean;
   observedHostReady?: boolean;
+  payload?: number[];
 };
+
+/** An independent raw WorkerLink EVENT oracle, without API Ready mediation. */
+async function provePackedRawEvent(stage: string): Promise<void> {
+  const local = mkdtempSync(join(tmpdir(), "krp-packed-raw-"));
+  const endpoint =
+    process.platform === "win32"
+      ? freshWin32AppLinkPipe()
+      : join(local, "raw.sock");
+  const reader = new FrameReader();
+  const drain = new DrainSignal();
+  let accept!: (socket: Bun.Socket<undefined>) => void;
+  const opened = new Promise<Bun.Socket<undefined>>((resolve) => {
+    accept = resolve;
+  });
+  const server = Bun.listen<undefined>({
+    unix: endpoint,
+    socket: {
+      binaryType: "uint8array",
+      open(socket) {
+        accept(socket);
+      },
+      data(_socket, bytes) {
+        reader.push(bytes);
+      },
+      drain() {
+        drain.fire();
+      },
+      close() {
+        reader.end(new Error("raw peer closed"));
+      },
+      error() {},
+    },
+  });
+  const rawEntry = join(stage, "raw-event.mjs");
+  writeFileSync(
+    rawEntry,
+    `import { WorkerLink, LIFECYCLE_CHANNEL } from "@keld/kipc";
+const link = await WorkerLink.open({
+  link: process.env.KELD_APP_LINK,
+  receive: { eventChannels: [LIFECYCLE_CHANNEL], callReceivers: [] },
+});
+link.onEvent(LIFECYCLE_CHANNEL, (bytes) => {
+  process.send?.({ kind: "raw-event", payload: [...bytes] });
+});
+process.on("message", message => {
+  if (message?.kind === "finish") {
+    link.close();
+    process.exit(0);
+  }
+});
+process.send?.({ kind: "listening" });
+`,
+  );
+  let listening!: (message: Message) => void;
+  let evented!: (message: Message) => void;
+  const listeningReady = new Promise<Message>((resolve) => {
+    listening = resolve;
+  });
+  const eventReady = new Promise<Message>((resolve) => {
+    evented = resolve;
+  });
+  const child = Bun.spawn(
+    [process.execPath, "--no-env-file", "--no-install", rawEntry],
+    {
+      cwd: stage,
+      env: { ...process.env, KELD_APP_LINK: endpoint + "#" + "72".repeat(32) },
+      stdout: "pipe",
+      stderr: "pipe",
+      ipc(message) {
+        const value = message as Message;
+        if (value.kind === "listening") listening(value);
+        if (value.kind === "raw-event") evented(value);
+      },
+    },
+  );
+  let socket: Bun.Socket<undefined> | undefined;
+  let phase = "hello";
+  try {
+    socket = await withIoDeadline(opened);
+    const writer = new WriteQueue(socket, drain);
+    const hello = await withIoDeadline(reader.readFrame());
+    expect(hello.header.kind).toBe(FrameKind.Hello);
+    await writer.writeFrame(
+      FrameKind.Hello,
+      0,
+      0,
+      0,
+      new Uint8Array(32).fill(0x72),
+    );
+    phase = "listen";
+    expect((await withIoDeadline(listeningReady)).kind).toBe("listening");
+    phase = "raw-event";
+    await writer.writeFrame(
+      FrameKind.Event,
+      0,
+      LIFECYCLE_CHANNEL,
+      0,
+      Uint8Array.of(0),
+    );
+    const received = await withIoDeadline(eventReady);
+    expect(received.kind).toBe("raw-event");
+    expect(received.payload).toEqual([0]);
+    phase = "exit";
+    child.send({ kind: "finish" });
+    expect(await withIoDeadline(child.exited)).toBe(0);
+  } catch (error) {
+    child.kill();
+    await child.exited;
+    const stderr = await new Response(child.stderr).text();
+    throw new Error(
+      `packed raw WorkerLink phase=${phase}, error=${String(error)}, child_stderr=${stderr.slice(-1800)}`,
+      { cause: error },
+    );
+  } finally {
+    child.kill();
+    await child.exited;
+    socket?.end();
+    server.stop(true);
+    rmSync(local, { recursive: true, force: true });
+  }
+}
 
 async function provePackedHandshake(
   stage: string,
@@ -274,6 +396,7 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
     }
 
+    await provePackedRawEvent(stage);
     const entry = join(stage, "entry.mjs");
     writeFileSync(
       entry,
