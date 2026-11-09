@@ -4,6 +4,8 @@
 
 // SAFETY policy: all raw Windows token FFI is confined to this module, whose callers
 // receive only a fail-closed admission result and never access its handles or buffers.
+// The one exported buffer helper, `bounded_token_information_buffer`, is safe code: it
+// only sizes and allocates the zeroed storage another reader passes to its own FFI.
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -36,8 +38,9 @@ const ADMINISTRATORS_SUB_AUTHORITIES: [u32; 2] = [32, 544];
 /// allocates: 1 MiB.
 ///
 /// The first query's required length is an untrusted size report. Every variable-length
-/// class read sizes its buffer through [`bounded_token_information_buffer`], so every Keld
-/// Windows token reader that uses it admits the same tokens.
+/// class read in this module sizes its buffer through [`bounded_token_information_buffer`],
+/// and so does keld-runtime's LPAC token observation, so those readers admit the same
+/// tokens.
 /// Fixed-size classes are read into their own structure and never use this bound.
 pub const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
 mod refusals;
