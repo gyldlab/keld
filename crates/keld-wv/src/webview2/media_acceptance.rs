@@ -1,6 +1,7 @@
 //! Opt-in Windows fixture. This module is absent from default shipping builds.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub(super) mod exit_wake_control;
 pub(super) mod host_window_probe;
 pub(super) mod release_receipt_control;
 
@@ -1073,6 +1074,7 @@ mod tests {
     use super::*;
     use crate::webview2::PROFILE_LAUNCH_DEADLINE;
 
+    mod exit_wake_retirement;
     mod first_navigation;
     mod profile_release;
     mod release_receipts;
