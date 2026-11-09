@@ -286,6 +286,7 @@ mermaid-render-check:
 hygiene:
     bun --no-install test tools/ci_workflow_security.test.ts
     {{python_command}} -B tools/test_hello_command.py
+    {{python_command}} -B tools/test_ci_attempt_metrics.py
     mkdir -p target/ci-hygiene
     rustc --edition=2024 -D warnings --test tools/ci_hygiene.rs -o target/ci-hygiene/ci-hygiene-test
     target/ci-hygiene/ci-hygiene-test

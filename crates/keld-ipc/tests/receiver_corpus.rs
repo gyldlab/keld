@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use keld_ipc::link::{read_frame, read_validated_frame};
 use keld_ipc::receive::{AbsoluteDeadline, ReceivePolicy, validate_received_header};
+use keld_ipc::window::{WindowEvent, WindowRequest, WindowResponse};
 use keld_ipc::{
     CallError, ChannelId, CorrelationId, EchoRequest, EchoResponse, FrameHeader, HEADER_LEN,
     IpcError, LifecycleEvent, LifecycleRequest, LifecycleResponse, SessionToken,
@@ -47,6 +48,7 @@ fn policy_by_name(name: &str) -> ReceivePolicy {
         "echo-receiver" => ReceivePolicy::echo_receiver(),
         "echo-reply-waiter" => ReceivePolicy::echo_reply_waiter(corr()),
         "lifecycle-receiver" => ReceivePolicy::lifecycle_receiver(),
+        "window-receiver" => ReceivePolicy::window_receiver(),
         "lifecycle-event-receiver" => ReceivePolicy::lifecycle_event_receiver(),
         "lifecycle-reply-waiter" => ReceivePolicy::lifecycle_reply_waiter(corr()),
         // The row names a wire id; only an allocated guarded entry builds the
@@ -108,6 +110,9 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
         ("lifecycle-receiver", keld_ipc::FrameKind::Call) => {
             keld_ipc::codec::decode::<LifecycleRequest>(payload).map(|_| ())
         }
+        ("window-receiver", keld_ipc::FrameKind::Call) => {
+            keld_ipc::codec::decode::<WindowRequest>(payload).map(|_| ())
+        }
         ("lifecycle-event-receiver", keld_ipc::FrameKind::Event) => {
             keld_ipc::codec::decode::<LifecycleEvent>(payload).map(|_| ())
         }
@@ -118,8 +123,16 @@ fn stage_two(policy_name: &str, header: FrameHeader, payload: &[u8]) -> Result<(
             keld_ipc::codec::decode::<CallError>(payload).map(|_| ())
         }
         ("event-receiver", keld_ipc::FrameKind::Event) => {
-            // GH-527 §4.9: the only EVENT channel today is lifecycle.
-            keld_ipc::codec::decode::<LifecycleEvent>(payload).map(|_| ())
+            if header.channel == keld_ipc::channel_table::WINDOW.id() {
+                keld_ipc::codec::decode::<WindowEvent>(payload).map(|_| ())
+            } else {
+                keld_ipc::codec::decode::<LifecycleEvent>(payload).map(|_| ())
+            }
+        }
+        ("reply-waiter", keld_ipc::FrameKind::Reply)
+            if header.channel == keld_ipc::channel_table::WINDOW.id() =>
+        {
+            keld_ipc::codec::decode::<WindowResponse>(payload).map(|_| ())
         }
         // PING carries no payload; the future privileged channel declares its
         // codec under KEL-102/T3; the primary session's per-channel codecs are

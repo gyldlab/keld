@@ -144,7 +144,10 @@ impl InvalidBoot {
                 br#"{"schema":1,"schema":1,"name":"x","entry":"src/main.ts","renderer":"index.html","permissions":{"file":"keld.permissions.jsonc","content_sha256":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"}}"#,
             ),
             Self::Unknown => mutate_boot(&boot, |document| document["unknown"] = 1.into()),
-            Self::Version => mutate_boot(&boot, |document| document["schema"] = 2.into()),
+            // Schema 2 is now a valid native-facade boot shape. Probe an
+            // intentionally unsupported version rather than misclassifying
+            // a valid facade descriptor containing a renderer field.
+            Self::Version => mutate_boot(&boot, |document| document["schema"] = 255.into()),
             Self::NonUtf8 => replace_boot(&boot, &[0xff]),
             Self::Oversize => replace_boot(&boot, &vec![b' '; 64 * 1024 + 1]),
             Self::EmptyName => mutate_boot(&boot, |document| document["name"] = "".into()),

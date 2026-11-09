@@ -48,7 +48,7 @@
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
 
-use navigation_diagnostics::FirstNavigationDiagnostic;
+use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -80,7 +80,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile4;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     COREWEBVIEW2_WEB_ERROR_STATUS, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
+    ICoreWebView2_2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
     ICoreWebView2EnvironmentOptions,
 };
 #[cfg(test)]
@@ -92,7 +92,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{
     BrowserProcessExitedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    DOMContentLoadedEventHandler, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler,
 };
 #[cfg(all(feature = "media-acceptance", test))]
 use webview2_com::{PermissionRequestedEventHandler, wait_with_pump};
@@ -135,6 +136,8 @@ use windows_permissions::{Acl, LocalBox, SecurityDescriptor};
 use keld_guard::PermissionsManifest;
 
 use crate::WebviewId;
+pub use crate::engine::AppReadyTrigger;
+use crate::engine::first_host_init_turn;
 use crate::engine::{
     AppWindowCommand, AppWindowEvent, DevtoolsAction, NavTarget, Rect, WebEngine,
     WebView2EngineExt, WebviewSpec,
@@ -2217,8 +2220,12 @@ fn install_app_navigation_handler(
     diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     wake: EventLoopProxy<WindowsLoopEvent>,
 ) -> Result<(), WvError> {
+    let starting_diagnostic = Arc::clone(&diagnostic);
+    let diagnostic_for_observer = Arc::clone(&diagnostic);
+    let dom_diagnostic = Arc::clone(&diagnostic);
+    let dom_registration_diagnostic = Arc::clone(&diagnostic);
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-        let (completion, web_error) = if let Some(args) = args {
+        let (completion, web_error, navigation_id) = if let Some(args) = args {
             // SAFETY: WebView2 invokes the handler on the creating STA with live
             // COM event args and writes IsSuccess into a local BOOL out-parameter.
             let mut succeeded = BOOL::default();
@@ -2235,10 +2242,22 @@ fn install_app_navigation_handler(
             } else {
                 None
             };
-            (result, status)
+            // SAFETY: WebView2 owns the navigation args during this STA
+            // callback. Only the opaque ID is read, never a URI or content.
+            let mut id = 0_u64;
+            let navigation_id = unsafe { args.NavigationId(&raw mut id) }.map(|()| id);
+            (result, status, navigation_id)
         } else {
-            (Err(windows::core::Error::from(E_POINTER)), None)
+            (
+                Err(windows::core::Error::from(E_POINTER)),
+                None,
+                Err(windows::core::Error::from(E_POINTER)),
+            )
         };
+        diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_completed_id(navigation_id);
         dispatch_app_navigation_completion_with_proxy(
             completion,
             web_error,
@@ -2254,7 +2273,66 @@ fn install_app_navigation_handler(
     // SAFETY: `webview` and the callback are created and registered on the
     // engine STA. WebView2 retains the handler for the webview lifetime.
     unsafe { webview.add_NavigationCompleted(&handler, &raw mut token) }
-        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))
+        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))?;
+
+    // Observe the first real NavigationStarting callback before any content
+    // is dispatched. Do not read or emit its URL, origin, or frame content.
+    let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        // SAFETY: NavigationStarting supplies live event-local COM args on
+        // this same STA. Read the identity only; no URL or frame data.
+        let navigation_id = if let Some(args) = args {
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        starting_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_starting(navigation_id);
+        Ok(())
+    }));
+    let mut starting_token = 0_i64;
+    // SAFETY: callback, COM webview and token remain on their creating STA;
+    // WebView2 retains the registered handler for the webview lifetime.
+    let registered =
+        unsafe { webview.add_NavigationStarting(&starting_handler, &raw mut starting_token) };
+    // The observer is diagnostic only (unlike the NavigationCompleted handler
+    // above, which gates Ready), so a failed registration is recorded in the
+    // first-navigation snapshot instead of failing webview creation.
+    record_navigation_start_registration(registered, &diagnostic_for_observer);
+
+    // This observer is diagnostic only. It distinguishes an HTML document
+    // parsed on the browser process from subsequent image/resource completion.
+    // It must never add a new startup failure, permission, or COM authority.
+    let dom_handler = DOMContentLoadedEventHandler::create(Box::new(move |_, args| {
+        let navigation_id = if let Some(args) = args {
+            // SAFETY: WebView2 supplies event-local COM args on the owning
+            // STA; the opaque ID is copied into a temporary stack value.
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        dom_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_content_loaded(navigation_id);
+        Ok(())
+    }));
+    let mut dom_token = 0_i64;
+    // SAFETY: the COM interface, handler, and registration token are live on
+    // the creating STA. WebView2 retains the handler after this call.
+    let registered_dom = webview
+        .cast::<ICoreWebView2_2>()
+        .and_then(|v2| unsafe { v2.add_DOMContentLoaded(&dom_handler, &raw mut dom_token) });
+    if let Err(error) = registered_dom {
+        dom_registration_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_registration_failed(&error);
+    }
+    Ok(())
 }
 
 /// One live webview and the host window it fills (v0: one per window).
@@ -2468,6 +2546,13 @@ struct ProfileReleaseWait {
     #[cfg(feature = "profile-test-hooks")]
     withhold_release_event: bool,
 }
+
+/// Parks a [`AppReadyTrigger::HostInitialized`] boot's UI thread after loop setup and
+/// before the first Init turn, so the host's Init watch must end the process alone
+/// (the macOS control's name). A `profile-test-hooks` debug fixture, never in a
+/// release build; `keld-core` removes it from the Bun child's environment.
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub const TEST_STALL_BEFORE_INIT_ENV: &str = "KELD_T1B_STALL_BEFORE_INIT";
 
 /// `KELD_TEST_WINDOWS_BARRIER_GRACE_EXPIRY=1` makes the host site's barrier lose
 /// its `BrowserProcessExited` event under a 1 s post-exit grace, so the handover's
@@ -3019,6 +3104,8 @@ impl WebView2Engine {
                 release_in_loop.schedule(control_flow);
             }
         });
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("event-loop-exited");
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -3026,8 +3113,14 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("stop-synchronized");
         self.finish_profile_release(release.observed.get())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-release-complete");
         scavenge_after_release(scavenge_root)?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-scavenge-complete");
         if code == 0 {
             Ok(())
         } else {
@@ -3118,6 +3211,10 @@ impl WebView2Engine {
     /// Commands cross tao's [`EventLoopProxy`], so I/O threads never mutate
     /// the HWND or `WebView2` controller directly. Closing the last window emits
     /// [`AppWindowEvent::LastWindowClosed`] and waits for the app's Quit.
+    /// `on_loop_entry` runs once after loop setup succeeded, before the first turn:
+    /// the host arms its external Init watch there. A
+    /// [`AppReadyTrigger::HostInitialized`] boot then emits
+    /// [`AppWindowEvent::HostInitialized`] from the loop's actual first Init turn.
     ///
     /// # Errors
     ///
@@ -3129,6 +3226,8 @@ impl WebView2Engine {
         mut self,
         commands: Receiver<AppWindowCommand>,
         events: Sender<AppWindowEvent>,
+        ready_trigger: AppReadyTrigger,
+        on_loop_entry: impl FnOnce(),
     ) -> Result<(), WvError> {
         let Some(mut event_loop) = self.event_loop.take() else {
             return Err(WvError::EventLoop(String::from(
@@ -3147,6 +3246,8 @@ impl WebView2Engine {
         )?;
         let fatal = Arc::new(AtomicBool::new(false));
         let fatal_in_loop = Arc::clone(&fatal);
+        let refused_registry_command = Arc::new(AtomicBool::new(false));
+        let refused_in_loop = Arc::clone(&refused_registry_command);
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
@@ -3174,6 +3275,20 @@ impl WebView2Engine {
         let release_in_loop = Rc::clone(&release);
         let mut exit_requested = false;
         let mut first_loop_turn = true;
+        let mut host_init_emitted = false;
+        // Arm the host's external Init watch only after loop setup has succeeded.
+        // The watch is independent of Tao's pre-Init proxy availability.
+        on_loop_entry();
+        #[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+        if ready_trigger == AppReadyTrigger::HostInitialized
+            && std::env::var_os(TEST_STALL_BEFORE_INIT_ENV).is_some()
+        {
+            // Private child-only failure control. The coordinator must terminate
+            // this process: the UI thread cannot service a proxy or unwind.
+            loop {
+                std::thread::park();
+            }
+        }
         let code = event_loop.run_return(move |event, _, control_flow| {
             if first_loop_turn {
                 first_loop_turn = false;
@@ -3181,6 +3296,16 @@ impl WebView2Engine {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .first_loop_turn();
+            }
+            if ready_trigger == AppReadyTrigger::HostInitialized
+                && first_host_init_turn(&event, &mut host_init_emitted)
+                && !report_host_initialized(&events)
+            {
+                fatal_in_loop.store(true, Ordering::Release);
+                commit_profile_stop(stop_in_loop.as_ref());
+                views.clear();
+                exit_requested = true;
+                release_in_loop.arm();
             }
             release_in_loop.poll();
             if release_in_loop.fault().is_some() {
@@ -3241,6 +3366,20 @@ impl WebView2Engine {
                     exit_requested = true;
                     release_in_loop.arm();
                 }
+                Event::UserEvent(WindowsLoopEvent::App(
+                    AppWindowCommand::CreateWindow { .. }
+                    | AppWindowCommand::SetMaximized { .. }
+                    | AppWindowCommand::SetFullScreen { .. }
+                    | AppWindowCommand::DestroyWindow { .. },
+                )) => {
+                    // Core refuses these before enqueue under GH-531. Preserve
+                    // the real browser/profile release tail on invariant fault.
+                    refused_in_loop.store(true, Ordering::Release);
+                    commit_profile_stop(stop_in_loop.as_ref());
+                    views.clear();
+                    exit_requested = true;
+                    release_in_loop.arm();
+                }
                 Event::WindowEvent {
                     window_id,
                     event: WindowEvent::Resized(size),
@@ -3285,7 +3424,13 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
-        let app_result = finish_app_run_flags(&self, &navigation_timed_out, &fatal, code);
+        let app_result = if refused_registry_command.load(Ordering::Acquire) {
+            Err(WvError::EventLoop(String::from(
+                "Core queued an unsupported registry-window command on Windows; refuse it before the UI queue",
+            )))
+        } else {
+            finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
+        };
         self.finish_profile_release(release.observed.get())?;
         scavenge_after_release(scavenge_root)?;
         app_result
@@ -3296,6 +3441,18 @@ impl WebView2Engine {
             .get(&id.0)
             .ok_or(WvError::UnknownWebview { id: id.0 })
     }
+}
+
+/// Sends the first-Init milestone, sampled on the native UI owner before enqueueing:
+/// the Core receiver may be descheduled past the absolute first-Init deadline even
+/// when this genuine event happened on time. `false` means Core's receiver is gone,
+/// so nothing can ever observe Ready; the caller ends the session fatally.
+fn report_host_initialized(events: &Sender<AppWindowEvent>) -> bool {
+    events
+        .send(AppWindowEvent::HostInitialized {
+            observed_at: Instant::now(),
+        })
+        .is_ok()
 }
 
 const fn app_window_slot_available(created: bool, pending: bool, has_views: bool) -> bool {
@@ -4458,6 +4615,55 @@ mod tests {
     }
 
     #[test]
+    fn pre_dispatch_completed_callback_never_sends_application_ready() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{self, TryRecvError};
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        diagnostic.lock().unwrap().dispatch_attempted();
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(super::AppWindowEvent::NavigationReady)
+        ));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn com_callback_error_wakes_ui_loop_and_finishes_with_typed_navigation_failure() {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4468,6 +4674,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Err(windows::core::Error::from(
                 windows::Win32::Foundation::E_POINTER,
@@ -4522,6 +4729,25 @@ mod tests {
     }
 
     #[test]
+    fn host_initialized_report_is_sampled_once_and_detects_a_gone_coordinator() {
+        let (events, receiver) = std::sync::mpsc::channel();
+        let before = std::time::Instant::now();
+        assert!(super::report_host_initialized(&events));
+        match receiver.try_recv() {
+            Ok(super::AppWindowEvent::HostInitialized { observed_at }) => {
+                assert!(observed_at >= before, "the UI turn samples the instant");
+            }
+            other => panic!("expected the Init milestone, got {other:?}"),
+        }
+        assert!(receiver.try_recv().is_err(), "one report is one milestone");
+        drop(receiver);
+        assert!(
+            !super::report_host_initialized(&events),
+            "a dropped coordinator can never publish Ready"
+        );
+    }
+
+    #[test]
     fn real_tao_navigation_failure_adapter_posts_a_wake() {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4543,6 +4769,9 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        // Simulate shipping's initial navigate_initial() attempt before
+        // injecting the native COM error into the real Tao proxy.
+        diagnostic.lock().unwrap().dispatch_attempted();
 
         super::dispatch_app_navigation_completion_with_proxy(
             Err(windows::core::Error::from(
@@ -4615,6 +4844,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Ok(true),
             None,

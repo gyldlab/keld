@@ -72,7 +72,7 @@ describe("ready and whenReady (pass cells)", () => {
     expect(observe("app_surface_ready_once.ts")).toEqual({
       code: 0,
       stderr: "",
-      lines: ["GH445_READY_ONCE before=0 after=1 repeat=1"],
+      lines: ["GH445_READY_ONCE before=0 after=1 repeat=1 late=0"],
     });
   });
 
@@ -89,12 +89,12 @@ describe("ready and whenReady (pass cells)", () => {
   });
 });
 
-describe("late Ready replay (red until GH-446)", () => {
-  test("app.ready.api-first-late-listener today: facade replays ready to a listener added after the underlying API observed Host Ready", () => {
+describe("late Ready replay (pass cells)", () => {
+  test("app.ready.api-first-late-listener: no ready replay to a listener registered after the API observed Host Ready", () => {
     expect(observe("app_surface_api_ready_first.ts")).toEqual({
       code: 0,
       stderr: "",
-      lines: ["GH445_API_FIRST_READY hostReady=true lateListener=1"],
+      lines: ["GH445_API_FIRST_READY hostReady=true lateListener=0"],
     });
   });
 });

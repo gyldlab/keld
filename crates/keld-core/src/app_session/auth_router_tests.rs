@@ -130,8 +130,10 @@ impl Fixture {
             next_host_corr: Arc::new(AtomicU32::new(1)),
             window_ready: Arc::new(AtomicBool::new(false)),
             last_window_closed: Arc::new(AtomicBool::new(false)),
+            windows: None,
             recovery_armed: Arc::new(AtomicBool::new(false)),
             last_revoked_attempt: Arc::new(AtomicU32::new(0)),
+            pre_ready_link_failed: Arc::new(AtomicBool::new(false)),
             shutdown: SessionShutdownState::new(),
             fs: snapshot.as_ref().map(super::super::GuardSnapshot::fs_weak),
             fs_worker_commands: None,
@@ -150,6 +152,7 @@ impl Fixture {
                 .map(super::super::GuardSnapshot::take_initial_broker)
                 .transpose()?,
             1,
+            None,
             None,
             Some((verified.clone(), configuration, None)),
         )?;

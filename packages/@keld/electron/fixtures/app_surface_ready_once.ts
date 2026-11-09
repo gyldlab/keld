@@ -44,6 +44,12 @@ if (!handlers) {
 }
 const before = calls;
 handlers.onReady();
+// No callback belongs to a listener added after the API saw Host Ready,
+// even when the facade's queued promise reaction has not yet run.
+let lateCalls = 0;
+app.on("ready", () => {
+  lateCalls += 1;
+});
 await settled();
 const after = calls;
 handlers.onReady();
@@ -51,6 +57,6 @@ await settled();
 
 writeSync(
   1,
-  `GH445_READY_ONCE before=${before} after=${after} repeat=${calls}\n`,
+  `GH445_READY_ONCE before=${before} after=${after} repeat=${calls} late=${lateCalls}\n`,
 );
 process.exit(0);

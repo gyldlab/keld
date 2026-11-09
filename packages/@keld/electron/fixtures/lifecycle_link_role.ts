@@ -2,7 +2,8 @@
  * Role half of the `LifecycleLink` contract tests in `src/link.test.ts`.
  *
  * A role opens one `WorkerLink` per realm (GH-527 §4.2), so each case runs
- * in its own process: the test binds a Unix host, spawns
+ * in its own process: the test binds a Unix-socket or Windows named-pipe
+ * host, spawns
  * `bun lifecycle_link_role.ts <scenario>` with `KELD_APP_LINK`, drives the
  * host half and asserts the `KELD_LL key=value` lines this file prints. Every
  * wait is on an observable (a frame, a handler, a settled promise); none is a

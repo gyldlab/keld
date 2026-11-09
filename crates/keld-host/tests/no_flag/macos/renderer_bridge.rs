@@ -277,29 +277,34 @@ pub(crate) fn bundle_public_api_entry(
     fs::remove_file(build).expect("remove bundle-only script");
 }
 
+/// Copies the ordinary package layout without bundling or transport aliases.
+/// Every source file keeps its bytes; the late import therefore owns a distinct
+/// stamped transport namespace from the optional Host-preloaded sidecar.
+pub(crate) fn copy_public_package_sources(repo: &Path, destination: &Path) {
+    fn copy_directory(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("package source destination");
+        for entry in fs::read_dir(source).expect("canonical package source directory") {
+            let entry = entry.expect("canonical source entry");
+            let target = destination.join(entry.file_name());
+            if entry.file_type().expect("canonical source type").is_dir() {
+                copy_directory(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("byte-identical package source");
+            }
+        }
+    }
+    for package in ["api", "electron", "kipc"] {
+        copy_directory(
+            &repo.join(format!("packages/@keld/{package}/src")),
+            &destination.join(format!("@keld/{package}/src")),
+        );
+    }
+}
+
 /// Bundles an `@keld/api` entry with the kipc transport left external as
 /// `./kipc-transport.ts` (GH-527 §4.2: the Worker's entry is that file).
-const KIPC_SIDECAR_BUILD: &str = r#"const [entry, out] = process.argv.slice(2);
-const result = await Bun.build({
-  entrypoints: [entry],
-  target: "bun",
-  format: "esm",
-  plugins: [{
-    name: "kipc-transport-sidecar",
-    setup(build) {
-      build.onResolve({ filter: /[\\/]kipc[\\/]src[\\/]transport\.ts$/ }, () => ({
-        path: "./kipc-transport.ts",
-        external: true,
-      }));
-    },
-  }],
-});
-if (!result.success) {
-  console.error(result.logs);
-  process.exit(1);
-}
-await Bun.write(out, result.outputs[0]);
-"#;
+const KIPC_SIDECAR_BUILD: &str =
+    include_str!("../../../../../packages/@keld/api/fixtures/staged-api-bundle.ts");
 
 /// The page's beacon server and the handles the test keeps for it.
 struct RenderBeacon {
