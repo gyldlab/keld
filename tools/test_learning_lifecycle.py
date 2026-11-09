@@ -84,6 +84,9 @@ class LearningLifecycleTests(unittest.TestCase):
                ({"status_evidence": PROOF.replace("src/lib.rs", "src/../lib.rs")}, "unsafe source path"),
                ({"verification_evidence": PROOF.replace("#L1", "#L0")}, "immutable"),
                ({"verification_evidence": "https://example.com/proof"}, "immutable"),
+               ({"source": PROOF.replace("lib.rs", "lib file.rs")}, "immutable"),
+               ({"status_evidence": PROOF.replace("lib.rs", "lib\nfile.rs")}, "immutable"),
+               ({"verification_evidence": PROOF.replace("lib.rs", "lib\x00file.rs")}, "immutable"),
                ({"status_evidences": PROOF}, "unknown fields")]
         for updates, expected in bad:
             with self.subTest(updates=updates):
@@ -164,7 +167,7 @@ class LearningLifecycleTests(unittest.TestCase):
         self.rejects("must be acyclic")
 
     def test_describe_retirement_without_peer_or_body_reads(self):
-        old, new = self.pair();file = self.root / old;raw = file.read_bytes();boundary = raw.index(b"\n---\n") + 5
+        old, new = self.pair();file = self.root / old;raw = file.read_bytes();boundary = fixtures.frontmatter_boundary(raw)
         (self.root / new).write_text("BROKEN PEER HEADER MUST NOT BE READ", encoding="utf-8")
         calls = [];real_open = lr.open_record
         class Guarded:

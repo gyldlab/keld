@@ -24,8 +24,8 @@ SOURCE_PATH = "docs/agents/learnings.md"
 SOURCE_SHA256 = "aa1c76e9079a06e4125d5fa74d5e395c19949266f35c9c68c830e463be5d05fc"
 SOURCE_COUNT = 168
 DEFAULT_CAP = 2048
-FRONTMATTER_CAP = 2048
-AREAS = frozenset("bench bridge build ci cli compat core docs git guard host ipc native pack process runtime shell test tooling ts update wv".split())
+FRONTMATTER_CAP = DEFAULT_CAP
+AREAS = frozenset("bench bridge build ci cli compat core deps docs git guard host ipc native pack process runtime shell test tooling ts update wv".split())
 REQUIRED = frozenset("name description area tags platform recorded status verified source related".split())
 OPTIONAL = frozenset("detail supersedes size_exception".split()) | lifecycle.FIELDS
 SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
@@ -59,14 +59,14 @@ def is_link(path: Path) -> bool:
     return path.is_symlink() or getattr(path, "is_junction", lambda: False)()
 
 
-def frontmatter(stream: BinaryIO) -> dict[str, object]:
+def frontmatter(stream: BinaryIO, limit: int = FRONTMATTER_CAP) -> dict[str, object]:
     metadata: dict[str, object] = {}
     consumed = 0
     first = True
     while True:
-        line = stream.readline(FRONTMATTER_CAP - consumed + 1)
+        line = stream.readline(limit - consumed + 1)
         consumed += len(line)
-        require(consumed <= FRONTMATTER_CAP, "frontmatter exceeds 2048 bytes")
+        require(consumed <= limit, f"frontmatter exceeds {limit} bytes")
         require(bool(line), "frontmatter has no closing ---")
         if line.rstrip(b"\r\n") == b"---":
             if first:
@@ -84,7 +84,7 @@ def frontmatter(stream: BinaryIO) -> dict[str, object]:
         metadata[key] = json_value(raw.strip())
 
 
-def repository_path(root: Path, value: object, *, markdown: bool = True) -> Path:
+def repository_path(root: Path, value: object, *, markdown: bool = True, allow_directory: bool = False) -> Path:
     require(isinstance(value, str) and bool(value), "link must be a nonempty repository-relative path")
     path = PurePosixPath(value)
     require(not path.is_absolute() and "\\" not in value and str(path) == value
@@ -95,7 +95,7 @@ def repository_path(root: Path, value: object, *, markdown: bool = True) -> Path
     for part in path.parts:
         current /= part
         require(not is_link(current), f"symlink refused: {value}")
-    require(current.is_file(), f"missing link/file: {value}")
+    require(current.is_file() or (allow_directory and current.is_dir()), f"missing link/file: {value}")
     require(current.resolve().is_relative_to((root / LEARNING_ROOT).resolve()), f"link escapes learning root: {value}")
     return current
 
@@ -108,10 +108,13 @@ def record_path(root: Path, value: str) -> Path:
     return path
 
 
-def metadata(root: Path, relative: str) -> dict[str, object]:
+def metadata(root: Path, relative: str, caps: dict[str, int] | None = None) -> dict[str, object]:
     path = record_path(root, relative)
+    if caps is None:
+        caps = inventory_caps(root)
+    cap = caps.get(relative, DEFAULT_CAP)
     with open_record(path) as stream:
-        data = frontmatter(stream)
+        data = frontmatter(stream, cap)
     require(REQUIRED <= data.keys(), f"{relative}: missing fields: {', '.join(sorted(REQUIRED - data.keys()))}")
     require(data.keys() <= REQUIRED | OPTIONAL, f"{relative}: unknown fields: {', '.join(sorted(data.keys() - REQUIRED - OPTIONAL))}")
     require(data["name"] == path.stem, f"{relative}: name must equal filename stem")
@@ -143,6 +146,7 @@ def metadata(root: Path, relative: str) -> dict[str, object]:
         require(isinstance(exception, dict) and set(exception) == {"tracker", "reason"}
                 and all(isinstance(value, str) and value.strip() and value.splitlines() == [value]
                         for value in exception.values()), f"{relative}: size_exception requires tracker and reason")
+    require((cap > DEFAULT_CAP) == ("size_exception" in data), f"{relative}: larger cap requires exact inventory allowance and size_exception")
     lifecycle.validate_metadata(data, relative, HISTORICAL_PREFIX)
     return data
 
@@ -174,7 +178,7 @@ def inventory_caps(root: Path) -> dict[str, int]:
         if not line or line.startswith("#"):
             continue
         fields = line.split("\t")
-        if fields[0].startswith(LEARNING_ROOT + "/"):
+        if fields[0].startswith(LEARNING_ROOT + "/") or fields[0] == SOURCE_PATH:
             require(len(fields) == 5, f"invalid inventory row: {fields[0]}")
             require(fields[0] not in caps, f"duplicate inventory row: {fields[0]}")
             try:
@@ -184,6 +188,31 @@ def inventory_caps(root: Path) -> dict[str, int]:
             require(cap > 0, f"invalid inventory cap: {fields[0]}")
             caps[fields[0]] = cap
     return caps
+
+
+def validate_index(root: Path, caps: dict[str, int]) -> None:
+    path = root / SOURCE_PATH
+    require(path.is_file() and not is_link(path), "missing or symlinked learning index")
+    require(path.stat().st_size <= caps.get(SOURCE_PATH, DEFAULT_CAP), "learning index exceeds its registered cap")
+    heading = False
+    links = 0
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        if re.fullmatch(r"#{1,6} [^\r\n]+", line):
+            heading = True
+            continue
+        match = re.fullmatch(r"[-*+] \[[^\]\r\n]+\]\(([^)\r\n]+)\)", line)
+        require(heading and bool(match), f"learning index line {number} must be a heading or link-list item")
+        target = match[1]
+        require(not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in target)
+                and not any(char in target for char in "%?#"), f"unsafe learning index target: {target!r}")
+        reference = target[:-1] if target.endswith("/") else target
+        relative = f"{PurePosixPath(SOURCE_PATH).parent}/{reference}"
+        resolved = repository_path(root, relative, markdown=False, allow_directory=True)
+        require(not target.endswith("/") or resolved.is_dir(), f"learning index directory target is not a directory: {target}")
+        links += 1
+    require(heading and links > 0, "learning index requires a heading and local links")
 
 
 def historical_line(body: str, relative: str) -> str:
@@ -236,13 +265,13 @@ def migration(root: Path, records: dict[str, dict[str, object]]) -> None:
 
 
 def check(root: Path) -> int:
-    records = {relative: metadata(root, relative) for relative in record_files(root)}
+    caps = inventory_caps(root)
+    records = {relative: metadata(root, relative, caps) for relative in record_files(root)}
+    validate_index(root, caps)
     names = [record["name"] for record in records.values()]
     require(len(names) == len(set(names)), "record names must be unique across areas")
-    caps = inventory_caps(root)
     for relative, record in records.items():
         cap = caps.get(relative, DEFAULT_CAP)
-        require((cap > DEFAULT_CAP) == ("size_exception" in record), f"{relative}: larger cap requires exact inventory allowance and size_exception")
         require((root / relative).stat().st_size <= cap, f"{relative}: record exceeds {cap} bytes")
     lifecycle.validate_graph(records, HISTORICAL_PREFIX)
     migration(root, records)
@@ -251,9 +280,10 @@ def check(root: Path) -> int:
 
 def describe(root: Path, paths: list[str]) -> list[dict[str, object]]:
     require(bool(paths), "describe requires explicit record paths")
-    return [{"filename": path, **{key: data[key] for key in ["name", "description", "tags"]},
+    caps = inventory_caps(root)
+    return [{"filename": path, **{key: data[key] for key in ["name", "description", "tags", "platform", "source"]},
              **lifecycle.describe_fields(data)}
-            for path in sorted(set(paths)) for data in [metadata(root, path)]]
+            for path in sorted(set(paths)) for data in [metadata(root, path, caps)]]
 
 
 def main(argv: list[str] | None = None) -> int:

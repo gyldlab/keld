@@ -9,6 +9,7 @@ import datetime as dt
 import heapq
 from pathlib import PurePosixPath
 import re
+import unicodedata
 
 FIELDS = frozenset("status_changed status_reason status_evidence superseded_by verification_evidence".split())
 RETIREMENT_FIELDS = frozenset("status_changed status_reason status_evidence superseded_by".split())
@@ -42,6 +43,8 @@ def concise_line(value: object, field: str) -> None:
 
 def source_url(value: object, field: str) -> None:
     """The one URL/path validator for source and all evidence fields."""
+    require(isinstance(value, str) and not any(char.isspace() or unicodedata.category(char) in {"Cc", "Cf", "Cs"}
+                                              for char in value), f"{field} must be an immutable Keld URL without whitespace/control characters")
     match = SOURCE_URL.fullmatch(value) if isinstance(value, str) else None
     require(bool(match), f"{field} must be an immutable Keld GitHub blob URL with #L<n>")
     path = PurePosixPath(match[2])
