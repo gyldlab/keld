@@ -42,6 +42,7 @@ public static class Gh1081R2 {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 }
 "@
 [Gh1081R2]::SetProcessDPIAware() | Out-Null
@@ -74,11 +75,20 @@ if ($Mode -eq "pixels") {
   $result.center = "#{0:x2}{1:x2}{2:x2}" -f $c.R, $c.G, $c.B
   $g.Dispose(); $bmp.Dispose()
 } else {
+  # The foreground lock admits SetForegroundWindow after this process injects
+  # input; an Alt tap (VK_MENU down/up) is the documented-by-behaviour unlock.
+  [Gh1081R2]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+  [Gh1081R2]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
   $result.set_foreground = [Gh1081R2]::SetForegroundWindow($h)
+  # Bounded wait on the observable foreground window before any pointer input.
+  for ($i = 0; $i -lt 150 -and [Gh1081R2]::GetForegroundWindow() -ne $h; $i++) { Start-Sleep -Milliseconds 20 }
+  $result.foreground_before_click = ([Gh1081R2]::GetForegroundWindow() -eq $h)
   [Gh1081R2]::SetCursorPos($origin.X + [int]($w / 2), $origin.Y + [int]($hh / 2)) | Out-Null
   [Gh1081R2]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
   [Gh1081R2]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  for ($i = 0; $i -lt 150 -and [Gh1081R2]::GetForegroundWindow() -ne $h; $i++) { Start-Sleep -Milliseconds 20 }
   $result.foreground_after_click = ([Gh1081R2]::GetForegroundWindow() -eq $h)
+  $result.foreground_hwnd = [string][Gh1081R2]::GetForegroundWindow()
   if ($Keys -ne "") { [System.Windows.Forms.SendKeys]::SendWait($Keys) }
   $result.keys = $Keys
   $result.foreground_after_keys = ([Gh1081R2]::GetForegroundWindow() -eq $h)
