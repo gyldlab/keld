@@ -41,6 +41,7 @@ impl Fixture {
         let secondary = root.join("secondary worktree");
         fs::create_dir(&repo).unwrap();
         Self::git(&repo, &["init", "-q"]);
+        Self::git(&repo, &["config", "maintenance.auto", "false"]);
         Self::git(&repo, &["config", "user.name", "KELD test"]);
         Self::git(&repo, &["config", "user.email", "example@test.invalid"]);
         fs::write(repo.join("README.md"), "PRESERVE SOURCE").unwrap();
@@ -228,6 +229,7 @@ fn refuses_casefolded_nested_git_marker_and_preserves_unregistered_source() {
     let nested = f.target().join("debug").join("unregistered repo");
     fs::create_dir_all(&nested).unwrap();
     Fixture::git(&nested, &["init", "-q"]);
+    Fixture::git(&nested, &["config", "maintenance.auto", "false"]);
     fs::write(nested.join("source"), "PRESERVE").unwrap();
     fs::rename(nested.join(".git"), nested.join(".GiT")).unwrap();
     let mut args = f.args();

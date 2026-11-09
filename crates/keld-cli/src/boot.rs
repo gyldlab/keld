@@ -377,8 +377,21 @@ where
         .unwrap_or_else(|| keld_core::DEFAULT_HELLO_TITLE.to_owned());
     let entry = keld_core::entry_from_config_ts(&config)
         .unwrap_or_else(|| keld_core::DEFAULT_ENTRY.to_owned());
-    let renderer = keld_core::renderer_from_config_ts(&config)
-        .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned());
+    let facade = keld_core::initial_window_from_config_ts(&config)
+        .map_err(|source| BootCompileError::new("project config", source.to_string()))?;
+    // macOS owns the initial facade implementation; Linux and Windows must
+    // refuse an unsupported declaration before staging a bootable descriptor.
+    #[cfg(not(target_os = "macos"))]
+    if facade {
+        return Err(BootCompileError::new(
+            "project config",
+            "initialWindow: \"none\" requires macOS facade boot support; remove initialWindow for renderer boots",
+        ));
+    }
+    let renderer = (!facade).then(|| {
+        keld_core::renderer_from_config_ts(&config)
+            .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())
+    });
     // The reviewed Core extractor reads the same already-open project config.
     // It returns the shared Native type without filtering profiles or requiring clientId.
     let auth_configuration =
@@ -386,12 +399,19 @@ where
             BootCompileError::new("project auth configuration", source.to_string())
         })?;
     validate_relative("entry", &entry)?;
-    validate_relative("renderer", &renderer)?;
+    if let Some(renderer) = &renderer {
+        validate_relative("renderer", renderer)?;
+    }
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
-    let renderer_source = contained_source(&project_root, &renderer, "renderer")?;
+    let renderer_source = renderer
+        .as_deref()
+        .map(|relative| contained_source(&project_root, relative, "renderer"))
+        .transpose()?;
     owner_check(&entry_source)?;
-    owner_check(&renderer_source)?;
+    if let Some(source) = &renderer_source {
+        owner_check(source)?;
+    }
     let (developer_host_path, mut host_source, host_source_metadata) =
         open_developer_executable(developer_host, "developer host")?;
     #[cfg(not(target_os = "linux"))]
@@ -453,7 +473,9 @@ where
     )?;
 
     stage_project_file(&root, &entry, &entry_source, "entry")?;
-    stage_project_file(&root, &renderer, &renderer_source, "renderer")?;
+    if let (Some(renderer), Some(source)) = (&renderer, &renderer_source) {
+        stage_project_file(&root, renderer, source, "renderer")?;
+    }
     // Probe with two Path components. `join("src/kipc-transport.ts")` then
     // `.is_file()` can miss a real sidecar on Windows (`/` is not the OS
     // separator); `contained_source` still uses the same relative string as
@@ -504,6 +526,13 @@ where
             "content_sha256": format!("sha256:{digest:x}"),
         }
     });
+    if facade {
+        let object = descriptor.as_object_mut().ok_or_else(|| {
+            BootCompileError::new("boot descriptor", "generated root is not an object")
+        })?;
+        object.insert(String::from("schema"), serde_json::Value::from(2));
+        object.remove("renderer");
+    }
     // Preserve the byte shape of legacy stages when no auth profile is configured.
     // A configured-but-incomplete profile is nonempty and must be carried unchanged;
     // Native owns the post-Allow missing-client decision.
@@ -1095,7 +1124,12 @@ mod tests {
             assert_ne!(staged_metadata.permissions().mode() & 0o100, 0);
             assert_eq!(staged_metadata.permissions().mode() & 0o222, 0);
         }
+    }
 
+    #[test]
+    fn renderer_declared_stage_preserves_schema_one_descriptor_bytes() {
+        let (_temp, project, source_host) = fixture();
+        let staged = stage_dev_boot(&project, &source_host).expect("stage renderer boot");
         let descriptor: serde_json::Value = serde_json::from_slice(
             &fs::read(staged.root().join("keld.boot.json")).expect("boot descriptor"),
         )
@@ -1113,6 +1147,24 @@ mod tests {
         assert_eq!(
             descriptor["permissions"]["content_sha256"],
             format!("sha256:{digest:x}")
+        );
+        // Contract regression: the shipping renderer-declared descriptor is
+        // byte-identical, including the existing JSON map key order.
+        let expected = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "name": "Stage Fixture",
+            "entry": "src/main.ts",
+            "renderer": "index.html",
+            "permissions": {
+                "file": "keld.permissions.jsonc",
+                "content_sha256": format!("sha256:{digest:x}"),
+            }
+        }))
+        .expect("expected schema-one bytes");
+        assert_eq!(
+            fs::read(staged.root().join("keld.boot.json")).expect("schema-one bytes"),
+            expected,
+            "a facade-only change must preserve the existing schema-one bytes"
         );
     }
 
@@ -1141,6 +1193,123 @@ mod tests {
         .expect("independent auth JSON literal");
         assert_eq!(descriptor["schema"], 1);
         assert_eq!(descriptor.get("auth"), Some(&expected_auth));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn facade_stage_has_closed_schema_two_and_no_renderer_file() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default {\n  name: \"Stage Fixture\",\n  entry: \"src/main.ts\",\n  initialWindow: \"none\",\n} as const;\n",
+        )
+        .expect("facade config");
+        fs::remove_file(project.join("index.html")).expect("no renderer source");
+        let stage = stage_dev_boot(&project, &source_host).expect("stage facade descriptor");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(stage.root().join("keld.boot.json")).expect("descriptor bytes"),
+        )
+        .expect("descriptor JSON");
+        assert_eq!(descriptor["schema"], 2);
+        assert_eq!(descriptor["name"], "Stage Fixture");
+        assert_eq!(descriptor["entry"], "src/main.ts");
+        assert_eq!(descriptor["permissions"]["file"], "keld.permissions.jsonc");
+        assert_eq!(descriptor.as_object().expect("closed object").len(), 4);
+        assert!(descriptor.get("renderer").is_none());
+        assert!(descriptor.get("auth").is_none());
+        assert!(!stage.root().join("index.html").exists());
+        assert_eq!(
+            fs::read(stage.root().join("src/main.ts")).expect("real staged entry"),
+            b"console.log('fixture');\n"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parenthesized_facade_stage_still_emits_schema_two_without_renderer() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default ({ name: 'Stage Fixture', entry: 'src/main.ts', initialWindow: 'none' }) as const;",
+        )
+        .expect("parenthesized facade config");
+        fs::remove_file(project.join("index.html")).expect("no renderer source");
+        let stage = stage_dev_boot(&project, &source_host).expect("facade stage");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(stage.root().join("keld.boot.json")).expect("boot descriptor"),
+        )
+        .expect("JSON descriptor");
+        assert_eq!(descriptor["schema"], 2);
+        assert!(descriptor.get("renderer").is_none());
+        assert_eq!(descriptor.as_object().expect("object").len(), 4);
+        assert!(!stage.root().join("index.html").exists());
+    }
+
+    #[test]
+    fn facade_stage_refuses_conflicting_renderer_before_creating_stage() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default { initialWindow: \"none\", renderer: \"index.html\" } as const;",
+        )
+        .expect("conflicting config");
+        let error = stage_dev_boot(&project, &source_host)
+            .expect_err("schema two with a renderer declaration must refuse");
+        assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+        assert!(error.to_string().contains("initialWindow"), "{error}");
+        assert!(error.to_string().contains("renderer"), "{error}");
+        assert!(!project.join(".keld/dev").exists());
+    }
+
+    #[test]
+    fn ambiguous_facade_root_refuses_before_staging_on_every_platform() {
+        let (_temp, project, source_host) = fixture();
+        for source in [
+            "export default { ['initial' + 'Window']: 'none' } as const;",
+            "export default { ...{ initialWindow: 'none' } } as const;",
+            "export default { initialWindow: 'none', ...{ renderer: 'index.html' } } as const;",
+            "export default { initialWindow: 'none', [dynamicKey]: 'renderer' } as const;",
+        ] {
+            fs::write(project.join("keld.config.ts"), source).expect("ambiguous config");
+            let error = stage_dev_boot(&project, &source_host)
+                .expect_err("ambiguous root must refuse before staging");
+            assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+            assert!(error.to_string().contains("initialWindow"), "{error}");
+            assert!(!project.join(".keld/dev").exists(), "{source}");
+        }
+    }
+
+    #[test]
+    fn hidden_reserved_root_keys_fail_before_stage_allocation() {
+        let (_temp, project, source_host) = fixture();
+        for source in [
+            "export default { initialWindow: 'none', async renderer() {} } as const;",
+            "export default { initialWindow: 'none', *auth() {} } as const;",
+            r"export default { initialWindow: 'none', 'ren\x64erer': 'index.html' } as const;",
+            r"export default { initia\u006cWindow: 'none' } as const;",
+        ] {
+            fs::write(project.join("keld.config.ts"), source).expect("config");
+            let error = stage_dev_boot(&project, &source_host)
+                .expect_err("ambiguous root requires refusal before staging");
+            assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+            assert!(!project.join(".keld/dev").exists(), "{source}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unsupported_facade_target_refuses_before_stage_allocation() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default { initialWindow: 'none' } as const;",
+        )
+        .expect("facade config");
+        let error = stage_dev_boot(&project, &source_host)
+            .expect_err("Linux facade runtime is not implemented");
+        assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+        assert!(error.to_string().contains("macOS"), "{error}");
+        assert!(!project.join(".keld/dev").exists());
     }
 
     #[test]

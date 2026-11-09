@@ -150,6 +150,28 @@ where
     }
 }
 
+#[cfg(test)]
+type TestObserver = fn(u32) -> io::Result<()>;
+#[cfg(test)]
+type TestRevoke = fn() -> io::Result<()>;
+
+#[cfg(test)]
+impl SupervisedGuardianLease<TestObserver, TestRevoke> {
+    /// A lease after a successful pre-exec registration: the original kernel
+    /// child birth is enrolled, admission is finished and no host link exists.
+    pub(super) fn locally_enrolled_for_test(pid: u32, group_witness: LocalGroupWitness) -> Self {
+        let (pid_tx, _) = std::sync::mpsc::sync_channel(1);
+        Self {
+            admission: None,
+            child_spawned: None,
+            revoke_registered_resources: Some(|| Ok(())),
+            pid_tx,
+            group_pid: Some(pid),
+            group_witness,
+        }
+    }
+}
+
 impl<S, F> SupervisedGuardianLease<S, F>
 where
     F: FnOnce() -> io::Result<()>,

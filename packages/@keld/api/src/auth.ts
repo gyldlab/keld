@@ -1,5 +1,9 @@
 /** Host-owned auth over the application's one canonical link (macOS T3). */
-import { kipcError, linkError, requireDeadline } from "../../kipc/src/transport.ts";
+import {
+  kipcError,
+  linkError,
+  requireDeadline,
+} from "../../kipc/src/transport.ts";
 import { invokeAuth } from "./app.ts";
 import {
   AUTH_BEGIN_CALL_DEADLINE_MS,
@@ -52,9 +56,18 @@ function requireRequest(value: unknown): void {
   }
 }
 
-function callerDeadline(options: AuthCallOptions | undefined, fallback: number): number {
-  if (options !== undefined && (options === null || typeof options !== "object" || Array.isArray(options))) {
-    throw linkError("KELD-IPC-005", "auth call options must be an object. Pass an object with a finite deadlineMs, or omit options.");
+function callerDeadline(
+  options: AuthCallOptions | undefined,
+  fallback: number,
+): number {
+  if (
+    options !== undefined &&
+    (options === null || typeof options !== "object" || Array.isArray(options))
+  ) {
+    throw linkError(
+      "KELD-IPC-005",
+      "auth call options must be an object. Pass an object with a finite deadlineMs, or omit options.",
+    );
   }
   // Read the caller-owned property once. Only missing/undefined selects a default.
   const supplied = options?.deadlineMs;
@@ -72,8 +85,14 @@ function callerDeadline(options: AuthCallOptions | undefined, fallback: number):
  * independently of app.whenReady and the host's admitted flow deadline.
  */
 export const auth: {
-  begin(request: AuthBeginRequest, options?: AuthCallOptions): Promise<AuthBeginResult>;
-  token(request: AuthTokenRequest, options?: AuthCallOptions): Promise<AuthTokenResult>;
+  begin(
+    request: AuthBeginRequest,
+    options?: AuthCallOptions,
+  ): Promise<AuthBeginResult>;
+  token(
+    request: AuthTokenRequest,
+    options?: AuthCallOptions,
+  ): Promise<AuthTokenResult>;
 } = {
   async begin(request, options): Promise<AuthBeginResult> {
     const deadlineMs = callerDeadline(options, AUTH_BEGIN_CALL_DEADLINE_MS);
@@ -86,8 +105,12 @@ export const auth: {
       login_hint: request.loginHint ?? null,
     });
     const response = decodeAuthResponse(await invokeAuth(payload, deadlineMs));
-    if (response.variant !== "Begin") throw kipcError("KELD-IPC-003", "auth.begin received a Token response");
-    return { accountId: response.account_id, grantedScopes: response.granted_scopes };
+    if (response.variant !== "Begin")
+      throw kipcError("KELD-IPC-003", "auth.begin received a Token response");
+    return {
+      accountId: response.account_id,
+      grantedScopes: response.granted_scopes,
+    };
   },
 
   async token(request, options): Promise<AuthTokenResult> {
@@ -99,7 +122,8 @@ export const auth: {
       scopes: request.scopes ?? null,
     });
     const response = decodeAuthResponse(await invokeAuth(payload, deadlineMs));
-    if (response.variant !== "Token") throw kipcError("KELD-IPC-003", "auth.token received a Begin response");
+    if (response.variant !== "Token")
+      throw kipcError("KELD-IPC-003", "auth.token received a Begin response");
     return {
       accessToken: response.access_token,
       expiresAt: response.expires_at,

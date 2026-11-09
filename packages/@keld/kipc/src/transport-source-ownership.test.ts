@@ -1,5 +1,14 @@
 /** Test-only ownership of canonical KIPC source, worker and corpus. */
-import { mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -9,7 +18,8 @@ const CORPUS_PATH = join(
   import.meta.dir,
   "../../../../crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
 );
-const CORPUS_SHA256 = "0cebb6e00c15a03028c6a29c725eb0e607ff66ee1cae04e227d18b9e49d0213e";
+const CORPUS_SHA256 =
+  "94f6dd8a39aab2baf8b6e2ac4eb6c7c8e91e780c20d419ef927bd4dd5faff4af";
 const SKIP_DIR_NAMES = new Set([".git", "node_modules", "target"]);
 const SKIP_REPO_DIRS = new Set([
   join(REPO_ROOT, ".keld-work"),
@@ -44,7 +54,11 @@ describe("one source / no second copy", () => {
       mkdirSync(source);
       mkdirSync(target);
       writeFileSync(join(target, "linked.ts"), "export {};\n");
-      symlinkSync(target, join(source, "linked"), process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(
+        target,
+        join(source, "linked"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
       for (const skipped of ["node_modules", "target"]) {
         mkdirSync(join(source, skipped));
         writeFileSync(join(source, skipped, `${skipped}.ts`), "export {};\n");
@@ -52,15 +66,26 @@ describe("one source / no second copy", () => {
       writeFileSync(join(source, "owned.ts"), "export {};\n");
       const files: string[] = [];
       walkFiles(source, ".ts", files);
-      expect(files.map((file) => relative(source, file).replaceAll("\\", "/"))).toEqual([
-        "owned.ts",
-      ]);
-      expect(skipDirectory(join(REPO_ROOT, "competitors"), "competitors")).toBe(true);
-      expect(skipDirectory(join(REPO_ROOT, ".keld-work"), ".keld-work")).toBe(true);
-      expect(skipDirectory(join(REPO_ROOT, "packages", ".keld-work"), ".keld-work")).toBe(false);
-      expect(skipDirectory(join(REPO_ROOT, "docs", "research"), "research")).toBe(true);
       expect(
-        skipDirectory(join(REPO_ROOT, "packages", "@keld", "example", "research"), "research"),
+        files.map((file) => relative(source, file).replaceAll("\\", "/")),
+      ).toEqual(["owned.ts"]);
+      expect(skipDirectory(join(REPO_ROOT, "competitors"), "competitors")).toBe(
+        true,
+      );
+      expect(skipDirectory(join(REPO_ROOT, ".keld-work"), ".keld-work")).toBe(
+        true,
+      );
+      expect(
+        skipDirectory(join(REPO_ROOT, "packages", ".keld-work"), ".keld-work"),
+      ).toBe(false);
+      expect(
+        skipDirectory(join(REPO_ROOT, "docs", "research"), "research"),
+      ).toBe(true);
+      expect(
+        skipDirectory(
+          join(REPO_ROOT, "packages", "@keld", "example", "research"),
+          "research",
+        ),
       ).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -101,14 +126,24 @@ describe("one source / no second copy", () => {
       const path = relative(REPO_ROOT, file).replaceAll("\\", "/");
       if (text.includes("DirectedReader")) directed.push(path);
       if (file.endsWith(".test.ts")) continue;
-      for (const match of text.matchAll(/(?<!function )\bconnectKipcSocket\(/g)) {
+      for (const match of text.matchAll(
+        /(?<!function )\bconnectKipcSocket\(/g,
+      )) {
         const owner = text.lastIndexOf("\nclass ", match.index);
-        const ownerName = owner < 0 ? "" : /class (\w+)/.exec(text.slice(owner))?.[1] ?? "";
+        const ownerName =
+          owner < 0 ? "" : (/class (\w+)/.exec(text.slice(owner))?.[1] ?? "");
         callers.push(`${path}:${ownerName}`);
       }
     }
-    expect(callers).toEqual(["packages/@keld/kipc/src/transport.ts:TransportWorker"]);
-    expect(directed.filter((path) => path !== "packages/@keld/kipc/src/transport-source-ownership.test.ts")).toEqual([]);
+    expect(callers).toEqual([
+      "packages/@keld/kipc/src/transport.ts:TransportWorker",
+    ]);
+    expect(
+      directed.filter(
+        (path) =>
+          path !== "packages/@keld/kipc/src/transport-source-ownership.test.ts",
+      ),
+    ).toEqual([]);
   });
 
   test("hello scaffold shim is a re-export, not a second implementation", () => {
@@ -116,7 +151,9 @@ describe("one source / no second copy", () => {
       join(REPO_ROOT, "crates/keld-cli/templates/hello/src/kipc-transport.ts"),
       "utf8",
     );
-    expect(shim).toContain('export * from "../../../../../packages/@keld/kipc/src/transport.ts"');
+    expect(shim).toContain(
+      'export * from "../../../../../packages/@keld/kipc/src/transport.ts"',
+    );
     expect(shim).not.toContain("export class FrameReader");
     expect(shim).not.toContain("const MAGIC_BYTES");
   });
@@ -127,7 +164,9 @@ describe("one source / no second copy", () => {
     const corpus = tsvFiles
       .map((file) => relative(REPO_ROOT, file).replaceAll("\\", "/"))
       .filter((file) => file.endsWith("receiver-semantics-v0.tsv"));
-    expect(corpus).toEqual(["crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv"]);
+    expect(corpus).toEqual([
+      "crates/keld-ipc/tests/fixtures/receiver-semantics-v0.tsv",
+    ]);
     const bytes = readFileSync(CORPUS_PATH);
     const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
     expect(digest).toBe(CORPUS_SHA256);

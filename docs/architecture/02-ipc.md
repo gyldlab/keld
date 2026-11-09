@@ -313,7 +313,12 @@ payload:= postcard-encoded schema type (structured) | raw bytes (flags.RAW)
   AC3 / KEL-39 remain parked).
 - **v0 host lifecycle (KEL-72):** `LIFECYCLE_CHANNEL` is `ChannelId(3)`. The host
   sends `Event` frames (`Ready`, `LastWindowClosed`); the app process sends a
-  `Call` `Quit` and the host replies, then the serve loop returns. Handshake
+  `Call` `Quit` and the host replies, then the serve loop returns. The GH-531
+  lifecycle payload also declares `Subscribe { channel }`, with `Subscribed`
+  or a closed `SubscribeRefused` reason. The standalone lifecycle server
+  refuses subscriptions; the private managed-window service owns Window
+  subscription and ordered replay. Current renderer boot constructors do not
+  install that service. Handshake
   still uses `APP_LINK_IO_DEADLINE` (5s `SO_RCVTIMEO`/`SO_SNDTIMEO`). After
   `HELLO`, cleanup is reader-only: `set_app_link_read_deadline` replaces the
   handshake recv timeout with a short poll — not `set_app_link_deadlines(None)`,
@@ -405,10 +410,13 @@ schema language, ship `@keld/schema` or live `keld gen`, or replace runtime vali
 static, append-only table owned by `keld-ipc` (name, `u16` id, receive-policy class,
 guard reference); id `0` stays reserved for `HELLO`, and ids are never renumbered or
 reused. TypeScript constants are generated from it by the KEL-98 generator. It is live
-since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3
-and the KEL-89 auth allocation = 4,
+since X05-T4 (#597): `keld_ipc::channel_table` holds echo = 1, fs = 2, lifecycle = 3,
+the KEL-89 auth allocation = 4, and the GH-531 window allocation = 5;
 every production id derives from it, the TypeScript ids are a generated, drift-checked
-region of `transport.ts`, and the wire is unchanged. Handshake-time name resolution and
+region of `transport.ts`. Window uses the existing structured Call/Reply/Event
+frame shape; its allocation and payload declarations do not change the frame or
+ordinary `HELLO` version. The managed registry remains a held implementation
+until validated facade boot and native acceptance are complete. Handshake-time name resolution and
 full `keld gen` emission remain destination work that needs a `HELLO` change, a protocol
 bump and wire review.
 

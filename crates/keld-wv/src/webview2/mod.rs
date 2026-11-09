@@ -48,7 +48,7 @@
 pub(crate) mod media_acceptance;
 mod navigation_diagnostics;
 
-use navigation_diagnostics::FirstNavigationDiagnostic;
+use navigation_diagnostics::{FirstNavigationDiagnostic, record_navigation_start_registration};
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -80,7 +80,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Profile4;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
     COREWEBVIEW2_WEB_ERROR_STATUS, CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2,
-    ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
+    ICoreWebView2_2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Environment5,
     ICoreWebView2EnvironmentOptions,
 };
 #[cfg(test)]
@@ -92,7 +92,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use webview2_com::{
     BrowserProcessExitedEventHandler, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
-    ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    DOMContentLoadedEventHandler, ExecuteScriptCompletedHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler,
 };
 #[cfg(all(feature = "media-acceptance", test))]
 use webview2_com::{PermissionRequestedEventHandler, wait_with_pump};
@@ -196,6 +197,10 @@ pub fn runtime_version() -> Result<String, WvError> {
 
 /// Kill-switch bound on launching `WebView2`: environment resolution plus the
 /// browser-process launch inside controller creation.
+///
+/// The host's startup arms it twice, with a fresh deadline for environment
+/// creation and another for controller creation; the exclusive-UDF probe arms
+/// it once across both. [`WEBVIEW2_STARTUP_BOUND`] composes those arms.
 ///
 /// Measured on Windows 11 10.0.26300 with runtime 154.x (KEL-132 diagnosis):
 /// environment creation 2–10 ms, controller creation 260–506 ms; hosted CI
@@ -306,11 +311,58 @@ const BROWSER_SHUTDOWN_HANG_GUARD: Duration = Duration::from_mins(4);
 /// their sum.
 ///
 /// This constant is the one owner of that rule. A caller that must outlast a UI
-/// end reads it rather than restating the barrier's parts. Examples are a test
-/// harness's kill switch and the S6c coordinator before it launches a candidate.
+/// end reads it rather than restating the barrier's parts. Examples are
+/// [`WEBVIEW2_TEARDOWN_BOUND`] and the S6c coordinator before it launches a
+/// candidate.
 /// If the barrier ever gains another wait, this sum changes with it.
 pub const WEBVIEW2_UI_END_BOUND: Duration =
     BROWSER_SHUTDOWN_HANG_GUARD.saturating_add(BROWSER_EXIT_GRACE);
+
+/// The longest one healthy hidden exclusive-UDF probe takes: one profile launch
+/// deadline shared by the probe's environment and controller, then the probe
+/// browser's release barrier ([`WEBVIEW2_UI_END_BOUND`]). Startup recovery and
+/// the post-release scavenge each run this probe, so both bounds read it.
+const EXCLUSIVE_UDF_PROBE_BOUND: Duration =
+    PROFILE_LAUNCH_DEADLINE.saturating_add(WEBVIEW2_UI_END_BOUND);
+
+/// The longest a healthy `WebView2` teardown takes after a terminal command, from
+/// the command to the run's return: the session's own UI end
+/// ([`WEBVIEW2_UI_END_BOUND`]) and then, on a dev-ephemeral profile, the
+/// post-release scavenge of at most `MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH`
+/// predecessor leaves, each one exclusive-UDF probe. A persistent profile runs
+/// no scavenge and ends sooner, so the bound covers both.
+///
+/// This constant is the one owner of that rule. A caller that must outlast a
+/// host's exit after `Quit` reads it rather than [`WEBVIEW2_UI_END_BOUND`]: a
+/// stale leaf left by an earlier dev host (one that was killed, for example)
+/// makes a healthy exit run a second probe after its own release. If teardown
+/// ever gains another bounded phase, this sum changes with it.
+pub const WEBVIEW2_TEARDOWN_BOUND: Duration = WEBVIEW2_UI_END_BOUND
+    .saturating_add(EXCLUSIVE_UDF_PROBE_BOUND.saturating_mul(MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH));
+
+/// The longest a healthy `WebView2` startup takes, from the engine's
+/// construction to the initial navigation that makes the session `Ready`.
+/// Startup runs these bounded phases one after another, so its bound is their
+/// sum:
+/// - recovery of a profile quarantined by a crash: one exclusive-UDF probe
+///   (`EXCLUSIVE_UDF_PROBE_BOUND`: its launch and then the probe browser's
+///   release barrier, [`WEBVIEW2_UI_END_BOUND`]);
+/// - environment creation (the profile launch deadline, armed afresh);
+/// - controller creation, which launches the browser process (the profile launch
+///   deadline, armed afresh);
+/// - the initial navigation (the initial-navigation deadline, KELD-WV-005).
+///
+/// This constant is the one owner of that rule, the startup counterpart of
+/// [`WEBVIEW2_UI_END_BOUND`]. A caller that must outlast a startup reads it
+/// rather than restating the phases; an example is a test harness's kill
+/// switch on `Ready`. If startup ever gains another bounded phase, this sum
+/// changes with it. Work that carries no deadline of its own is outside it: the
+/// runtime version query, profile selection, window creation, and on persistent
+/// profiles the saved media-permission reconciliation during webview creation.
+pub const WEBVIEW2_STARTUP_BOUND: Duration = EXCLUSIVE_UDF_PROBE_BOUND
+    .saturating_add(PROFILE_LAUNCH_DEADLINE)
+    .saturating_add(PROFILE_LAUNCH_DEADLINE)
+    .saturating_add(crate::INITIAL_NAVIGATION_DEADLINE);
 
 const LAUNCH_DEADLINE_EXPIRED: &str =
     "the WebView2 launch deadline expired before the environment or controller completed";
@@ -327,7 +379,9 @@ const PROFILE_LIFECYCLE_PENDING: &str = "profile.lifecycle.pending";
 const PROFILE_PURGE: &str = "profile.purge.v1";
 const PROFILE_PURGE_PENDING: &str = "profile.purge.pending";
 const MAX_PROFILE_CONTROL_RECORD_BYTES: u64 = 4 * 1024;
-const MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH: usize = 1;
+/// Predecessor dev-ephemeral leaves one teardown may probe; `u32` because
+/// [`WEBVIEW2_TEARDOWN_BOUND`] multiplies a `Duration` by it.
+const MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH: u32 = 1;
 
 /// Directory `WebView2` keeps its profile in.
 ///
@@ -2068,7 +2122,7 @@ fn scavenge_ephemeral_profiles(
     let mut removed = 0;
     for entry in fs::read_dir(&root)
         .map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?
-        .take(MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH)
+        .take(MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH as usize)
     {
         let entry = entry.map_err(|_| profile_failure(ProfileErrorKind::MarkerMismatch))?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -2164,8 +2218,12 @@ fn install_app_navigation_handler(
     diagnostic: Arc<Mutex<FirstNavigationDiagnostic>>,
     wake: EventLoopProxy<WindowsLoopEvent>,
 ) -> Result<(), WvError> {
+    let starting_diagnostic = Arc::clone(&diagnostic);
+    let diagnostic_for_observer = Arc::clone(&diagnostic);
+    let dom_diagnostic = Arc::clone(&diagnostic);
+    let dom_registration_diagnostic = Arc::clone(&diagnostic);
     let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-        let (completion, web_error) = if let Some(args) = args {
+        let (completion, web_error, navigation_id) = if let Some(args) = args {
             // SAFETY: WebView2 invokes the handler on the creating STA with live
             // COM event args and writes IsSuccess into a local BOOL out-parameter.
             let mut succeeded = BOOL::default();
@@ -2182,10 +2240,22 @@ fn install_app_navigation_handler(
             } else {
                 None
             };
-            (result, status)
+            // SAFETY: WebView2 owns the navigation args during this STA
+            // callback. Only the opaque ID is read, never a URI or content.
+            let mut id = 0_u64;
+            let navigation_id = unsafe { args.NavigationId(&raw mut id) }.map(|()| id);
+            (result, status, navigation_id)
         } else {
-            (Err(windows::core::Error::from(E_POINTER)), None)
+            (
+                Err(windows::core::Error::from(E_POINTER)),
+                None,
+                Err(windows::core::Error::from(E_POINTER)),
+            )
         };
+        diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_completed_id(navigation_id);
         dispatch_app_navigation_completion_with_proxy(
             completion,
             web_error,
@@ -2201,7 +2271,66 @@ fn install_app_navigation_handler(
     // SAFETY: `webview` and the callback are created and registered on the
     // engine STA. WebView2 retains the handler for the webview lifetime.
     unsafe { webview.add_NavigationCompleted(&handler, &raw mut token) }
-        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))
+        .map_err(|error| WvError::Webview(format!("navigation handler: {error}")))?;
+
+    // Observe the first real NavigationStarting callback before any content
+    // is dispatched. Do not read or emit its URL, origin, or frame content.
+    let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        // SAFETY: NavigationStarting supplies live event-local COM args on
+        // this same STA. Read the identity only; no URL or frame data.
+        let navigation_id = if let Some(args) = args {
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        starting_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .navigation_starting(navigation_id);
+        Ok(())
+    }));
+    let mut starting_token = 0_i64;
+    // SAFETY: callback, COM webview and token remain on their creating STA;
+    // WebView2 retains the registered handler for the webview lifetime.
+    let registered =
+        unsafe { webview.add_NavigationStarting(&starting_handler, &raw mut starting_token) };
+    // The observer is diagnostic only (unlike the NavigationCompleted handler
+    // above, which gates Ready), so a failed registration is recorded in the
+    // first-navigation snapshot instead of failing webview creation.
+    record_navigation_start_registration(registered, &diagnostic_for_observer);
+
+    // This observer is diagnostic only. It distinguishes an HTML document
+    // parsed on the browser process from subsequent image/resource completion.
+    // It must never add a new startup failure, permission, or COM authority.
+    let dom_handler = DOMContentLoadedEventHandler::create(Box::new(move |_, args| {
+        let navigation_id = if let Some(args) = args {
+            // SAFETY: WebView2 supplies event-local COM args on the owning
+            // STA; the opaque ID is copied into a temporary stack value.
+            let mut id = 0_u64;
+            unsafe { args.NavigationId(&raw mut id) }.map(|()| id)
+        } else {
+            Err(windows::core::Error::from(E_POINTER))
+        };
+        dom_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_content_loaded(navigation_id);
+        Ok(())
+    }));
+    let mut dom_token = 0_i64;
+    // SAFETY: the COM interface, handler, and registration token are live on
+    // the creating STA. WebView2 retains the handler after this call.
+    let registered_dom = webview
+        .cast::<ICoreWebView2_2>()
+        .and_then(|v2| unsafe { v2.add_DOMContentLoaded(&dom_handler, &raw mut dom_token) });
+    if let Err(error) = registered_dom {
+        dom_registration_diagnostic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dom_registration_failed(&error);
+    }
+    Ok(())
 }
 
 /// One live webview and the host window it fills (v0: one per window).
@@ -2966,6 +3095,8 @@ impl WebView2Engine {
                 release_in_loop.schedule(control_flow);
             }
         });
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("event-loop-exited");
         if let Some(fault) = release.fault() {
             return Err(profile_failure_with(
                 ProfileErrorKind::LifecycleUnproven,
@@ -2973,8 +3104,14 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("stop-synchronized");
         self.finish_profile_release(release.observed.get())?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-release-complete");
         scavenge_after_release(scavenge_root)?;
+        #[cfg(all(feature = "media-acceptance", test))]
+        media_acceptance::observe_com_phase("profile-scavenge-complete");
         if code == 0 {
             Ok(())
         } else {
@@ -3094,6 +3231,8 @@ impl WebView2Engine {
         )?;
         let fatal = Arc::new(AtomicBool::new(false));
         let fatal_in_loop = Arc::clone(&fatal);
+        let refused_registry_command = Arc::new(AtomicBool::new(false));
+        let refused_in_loop = Arc::clone(&refused_registry_command);
         let navigation_timed_out = Arc::new(AtomicBool::new(false));
         let navigation_timed_out_in_loop = Arc::clone(&navigation_timed_out);
         let navigation_ready = Arc::clone(&self.navigation_ready);
@@ -3188,6 +3327,20 @@ impl WebView2Engine {
                     exit_requested = true;
                     release_in_loop.arm();
                 }
+                Event::UserEvent(WindowsLoopEvent::App(
+                    AppWindowCommand::CreateWindow { .. }
+                    | AppWindowCommand::SetMaximized { .. }
+                    | AppWindowCommand::SetFullScreen { .. }
+                    | AppWindowCommand::DestroyWindow { .. },
+                )) => {
+                    // Core refuses these before enqueue under GH-531. Preserve
+                    // the real browser/profile release tail on invariant fault.
+                    refused_in_loop.store(true, Ordering::Release);
+                    commit_profile_stop(stop_in_loop.as_ref());
+                    views.clear();
+                    exit_requested = true;
+                    release_in_loop.arm();
+                }
                 Event::WindowEvent {
                     window_id,
                     event: WindowEvent::Resized(size),
@@ -3232,7 +3385,13 @@ impl WebView2Engine {
             ));
         }
         synchronize_profile_stop(stop_transition.as_ref(), self.profile.as_mut())?;
-        let app_result = finish_app_run_flags(&self, &navigation_timed_out, &fatal, code);
+        let app_result = if refused_registry_command.load(Ordering::Acquire) {
+            Err(WvError::EventLoop(String::from(
+                "Core queued an unsupported registry-window command on Windows; refuse it before the UI queue",
+            )))
+        } else {
+            finish_app_run_flags(&self, &navigation_timed_out, &fatal, code)
+        };
         self.finish_profile_release(release.observed.get())?;
         scavenge_after_release(scavenge_root)?;
         app_result
@@ -3593,6 +3752,28 @@ mod tests {
 
     mod exit_wait_pump;
     mod profile_lifecycle;
+
+    /// The teardown bound charges the post-release scavenge one full probe (launch
+    /// plus release barrier) per leaf it may try, on top of the session's own UI
+    /// end, and startup recovery charges the same probe once.
+    #[test]
+    fn teardown_and_startup_bounds_charge_each_exclusive_udf_probe() {
+        use super::{
+            BROWSER_EXIT_GRACE, BROWSER_SHUTDOWN_HANG_GUARD, MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH,
+            WEBVIEW2_STARTUP_BOUND, WEBVIEW2_TEARDOWN_BOUND, WEBVIEW2_UI_END_BOUND,
+        };
+        let ui_end = BROWSER_SHUTDOWN_HANG_GUARD + BROWSER_EXIT_GRACE;
+        let probe = PROFILE_LAUNCH_DEADLINE + ui_end;
+        assert_eq!(WEBVIEW2_UI_END_BOUND, ui_end);
+        assert_eq!(
+            WEBVIEW2_TEARDOWN_BOUND,
+            ui_end + probe * MAX_EPHEMERAL_SCAVENGE_PER_LAUNCH
+        );
+        assert_eq!(
+            WEBVIEW2_STARTUP_BOUND,
+            probe + PROFILE_LAUNCH_DEADLINE * 2 + crate::INITIAL_NAVIGATION_DEADLINE
+        );
+    }
 
     #[cfg(feature = "profile-test-root")]
     #[test]
@@ -4383,6 +4564,55 @@ mod tests {
     }
 
     #[test]
+    fn pre_dispatch_completed_callback_never_sends_application_ready() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{self, TryRecvError};
+
+        let (events_tx, events_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let ready = AtomicBool::new(false);
+        let failed = AtomicBool::new(false);
+        let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(!ready.load(Ordering::Acquire));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        diagnostic.lock().unwrap().dispatch_attempted();
+        super::dispatch_app_navigation_completion(
+            Ok(true),
+            None,
+            &events_tx,
+            &ready,
+            &failed,
+            &diagnostic,
+            |event| {
+                let _ = wake_tx.send(event);
+            },
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(matches!(
+            events_rx.try_recv(),
+            Ok(super::AppWindowEvent::NavigationReady)
+        ));
+        assert!(matches!(events_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
     fn com_callback_error_wakes_ui_loop_and_finishes_with_typed_navigation_failure() {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -4393,6 +4623,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Err(windows::core::Error::from(
                 windows::Win32::Foundation::E_POINTER,
@@ -4468,6 +4699,9 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        // Simulate shipping's initial navigate_initial() attempt before
+        // injecting the native COM error into the real Tao proxy.
+        diagnostic.lock().unwrap().dispatch_attempted();
 
         super::dispatch_app_navigation_completion_with_proxy(
             Err(windows::core::Error::from(
@@ -4540,6 +4774,7 @@ mod tests {
         let ready = AtomicBool::new(false);
         let failed = AtomicBool::new(false);
         let diagnostic = Mutex::new(super::FirstNavigationDiagnostic::new());
+        diagnostic.lock().unwrap().dispatch_attempted();
         super::dispatch_app_navigation_completion(
             Ok(true),
             None,

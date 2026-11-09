@@ -33,11 +33,21 @@ mod view_drop_order;
 /// <https://github.com/gyldlab/keld/pull/370>). Hosted `windows-latest` runners exceeded
 /// the previous 5 s bound in runs 37237832288, 37256252923 and 37265644118, mostly when
 /// relaunching right after a previous instance. 15 s keeps at least 3x margin over every
-/// observed healthy start while every test harness that waits for `Ready` allows longer,
-/// so a slow but healthy start is never cut short by either side.
+/// observed healthy start.
+///
+/// This deadline starts only after the backend's launch phases, so it is not the whole
+/// startup. A caller that waits for `Ready` (for example a test harness's kill switch)
+/// must outlast the backend's whole startup bound, or it cuts a slow but healthy start
+/// short. On Windows that bound is `webview2::WEBVIEW2_STARTUP_BOUND`, which composes
+/// this deadline with the launch and recovery bounds; the Windows no-flag harness reads
+/// it.
+/// Shared 15-second first-milestone bound: navigation on renderer boots, Init
+/// on zero-window macOS facade boots. The host coordinates the latter itself.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(crate) const INITIAL_NAVIGATION_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(15);
+pub const INITIAL_MILESTONE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) const INITIAL_NAVIGATION_DEADLINE: std::time::Duration = INITIAL_MILESTONE_DEADLINE;
 
 /// A user closing the last view leaves no renderer whose startup can time out.
 /// Terminal app intent also wins over the initial navigation hang guard.
@@ -99,8 +109,9 @@ pub mod wkwebview;
 pub mod wv_link;
 
 pub use engine::{
-    AppWindowCommand, AppWindowEvent, DevtoolsAction, LogicalSize, NavTarget, Rect, WebEngine,
-    WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WkWebViewEngineExt,
+    AppWindowCommand, AppWindowEvent, BuildStage, DevtoolsAction, LogicalSize, NavTarget, Rect,
+    WebEngine, WebKitGtkEngineExt, WebView2EngineExt, WebviewSpec, WindowSnapshot,
+    WkWebViewEngineExt,
 };
 pub use error::WvError;
 pub use hello::{DEFAULT_HTML as HELLO_HTML, run as run_hello_window};

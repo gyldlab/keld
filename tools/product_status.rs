@@ -1993,6 +1993,8 @@ mod tests {
         let temp = fixture();
         generate(temp.path()).expect("generate fixture before snapshot");
         temp.git(&["init", "--quiet"]);
+        // No detached `git maintenance` child may race fixture cleanup (#670).
+        temp.git(&["config", "maintenance.auto", "false"]);
         temp.git(&["config", "user.email", "fixture@example.invalid"]);
         temp.git(&["config", "user.name", "Keld fixture"]);
         temp.git(&["add", "-A"]);

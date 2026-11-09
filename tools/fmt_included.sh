@@ -51,8 +51,11 @@ included_files() {
 # block enclosing an indented line is the last less-indented line above it that
 # is still open; only a macro invocation (`name! {`) is accepted there.
 path_files() {
-    local -a declaring
-    mapfile -t declaring < <(git grep -lE \
+    local -a declaring=()
+    local entry
+    while IFS= read -r entry; do
+        declaring[${#declaring[@]}]="$entry"
+    done < <(git grep -lE \
         '^[[:space:]]*#[[:space:]]*\[[[:space:]]*(path[[:space:]]*[]=]|cfg_attr[[:space:]]*\(.*[(,[:space:]]path[[:space:]]*=)' \
         -- '*.rs' || true)
     ((${#declaring[@]})) || return 0
@@ -128,6 +131,7 @@ if [[ "${1:-}" == test ]]; then
     cp rustfmt.toml "$temp/" 2>/dev/null || cp "$(dirname "$self")/../rustfmt.toml" "$temp/"
     cd "$temp"
     git init -q .
+    git config maintenance.auto false
     git config core.autocrlf false
     mkdir -p crates/demo/src/tests crates/demo/src/native tools
     cp "$self" tools/fmt_included.sh

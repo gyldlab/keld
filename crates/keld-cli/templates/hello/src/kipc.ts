@@ -55,11 +55,17 @@ export type LifecycleEventName = "ready" | "last-window-closed";
 /** Postcard decoding of `LifecycleEvent`: one unit-enum byte. */
 export function decodeLifecycleEvent(payload: Uint8Array): LifecycleEventName {
   if (payload.length !== 1) {
-    throw kipcError("KELD-IPC-003", "lifecycle event must be one postcard enum byte");
+    throw kipcError(
+      "KELD-IPC-003",
+      "lifecycle event must be one postcard enum byte",
+    );
   }
   if (payload[0] === 0) return "ready";
   if (payload[0] === 1) return "last-window-closed";
-  throw kipcError("KELD-IPC-003", `unknown LifecycleEvent discriminant ${payload[0]}`);
+  throw kipcError(
+    "KELD-IPC-003",
+    `unknown LifecycleEvent discriminant ${payload[0]}`,
+  );
 }
 
 /**
@@ -145,7 +151,10 @@ export class AppLinkSession {
  * @throws on I/O failure, protocol mismatch, auth failure, or codec error —
  * error messages carry the matching `KELD-IPC-*` code from `keld-ipc`.
  */
-export async function echoRoundtrip(link: string, request: EchoRequest): Promise<EchoResponse> {
+export async function echoRoundtrip(
+  link: string,
+  request: EchoRequest,
+): Promise<EchoResponse> {
   const session = await AppLinkSession.connect(link);
   try {
     return await session.echo(request);

@@ -5,7 +5,8 @@ const key = `keld135.${config.nonce}`;
 const databaseName = `${key}.idb`;
 const cacheName = `${key}.cache`;
 const cacheUrl = new URL(`/cache-entry/${config.nonce}`, location.origin).href;
-const workerScope = new URL(`/worker-scope/${config.nonce}/`, location.origin).href;
+const workerScope = new URL(`/worker-scope/${config.nonce}/`, location.origin)
+  .href;
 let phase = "capabilities";
 
 async function markPhase(name) {
@@ -13,11 +14,15 @@ async function markPhase(name) {
   await report({ progress: name });
 }
 
-
 function cookieValue() {
   const prefix = `${key}=`;
-  return document.cookie.split(";").map((part) => part.trim())
-    .find((part) => part.startsWith(prefix))?.slice(prefix.length) ?? "";
+  return (
+    document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(prefix))
+      ?.slice(prefix.length) ?? ""
+  );
 }
 
 function openDatabase() {
@@ -35,19 +40,28 @@ async function databaseValue(writeValue) {
   try {
     return await new Promise((resolve, reject) => {
       const transaction = database.transaction(
-        "state", writeValue === undefined ? "readonly" : "readwrite",
+        "state",
+        writeValue === undefined ? "readonly" : "readwrite",
       );
       let value = "";
-      transaction.onabort = () => reject(transaction.error ?? new Error("transaction-aborted"));
-      transaction.onerror = () => reject(transaction.error ?? new Error("transaction-error"));
+      transaction.onabort = () =>
+        reject(transaction.error ?? new Error("transaction-aborted"));
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error("transaction-error"));
       // A request's success can precede transaction failure. Only this event
       // permits the native controller to close/restart the app.
       transaction.oncomplete = () => resolve(value);
       const store = transaction.objectStore("state");
-      const request = writeValue === undefined ? store.get("nonce") : store.put(writeValue, "nonce");
+      const request =
+        writeValue === undefined
+          ? store.get("nonce")
+          : store.put(writeValue, "nonce");
       request.onsuccess = () => {
         if (writeValue === undefined) {
-          if (request.result !== undefined && typeof request.result !== "string") {
+          if (
+            request.result !== undefined &&
+            typeof request.result !== "string"
+          ) {
             transaction.abort();
           } else {
             value = request.result ?? "";
@@ -76,7 +90,8 @@ async function cacheValue() {
 }
 
 function activatedWorker(registration) {
-  const worker = registration.active ?? registration.waiting ?? registration.installing;
+  const worker =
+    registration.active ?? registration.waiting ?? registration.installing;
   if (worker === null) return Promise.reject(new Error("worker-missing"));
   return new Promise((resolve, reject) => {
     const changed = () => {
@@ -92,7 +107,8 @@ function activatedWorker(registration) {
 }
 
 async function workerValue() {
-  const registration = await navigator.serviceWorker.getRegistration(workerScope);
+  const registration =
+    await navigator.serviceWorker.getRegistration(workerScope);
   if (registration === undefined) return "";
   const worker = await activatedWorker(registration);
   return await new Promise((resolve, reject) => {
@@ -105,7 +121,8 @@ async function workerValue() {
     channel.port1.onmessage = (event) => {
       clearTimeout(timer);
       channel.port1.close();
-      if (typeof event.data !== "string") reject(new Error("worker-value-type"));
+      if (typeof event.data !== "string")
+        reject(new Error("worker-value-type"));
       else resolve(event.data);
     };
     worker.postMessage("read-nonce", [channel.port2]);
@@ -128,7 +145,8 @@ async function readStores() {
 
 async function seedStores(before) {
   await markPhase("cookie-write");
-  if (before.cookie === "") document.cookie = `${key}=${config.value}; Max-Age=3600; Path=/; SameSite=Lax`;
+  if (before.cookie === "")
+    document.cookie = `${key}=${config.value}; Max-Age=3600; Path=/; SameSite=Lax`;
   await markPhase("localStorage-write");
   if (before.local === "") localStorage.setItem(key, config.value);
   await markPhase("indexedDB-write");
@@ -140,10 +158,17 @@ async function seedStores(before) {
   }
   await markPhase("serviceWorker-write");
   if (before.worker === "") {
-    const query = new URLSearchParams({ nonce: config.nonce, value: config.value });
-    const registration = await navigator.serviceWorker.register(`/profile-worker.js?${query}`, {
-      scope: workerScope, updateViaCache: "none",
+    const query = new URLSearchParams({
+      nonce: config.nonce,
+      value: config.value,
     });
+    const registration = await navigator.serviceWorker.register(
+      `/profile-worker.js?${query}`,
+      {
+        scope: workerScope,
+        updateViaCache: "none",
+      },
+    );
     await activatedWorker(registration);
   }
 }
@@ -158,21 +183,31 @@ async function clearStores() {
   await markPhase("CacheStorage-clear");
   await caches.delete(cacheName);
   await markPhase("serviceWorker-clear");
-  const registration = await navigator.serviceWorker.getRegistration(workerScope);
-  if (registration !== undefined && !await registration.unregister()) {
+  const registration =
+    await navigator.serviceWorker.getRegistration(workerScope);
+  if (registration !== undefined && !(await registration.unregister())) {
     throw new Error("worker-unregister-failed");
   }
 }
 
 async function report(fields) {
-  const query = new URLSearchParams({ case: config.caseName, nonce: config.nonce, ...fields });
+  const query = new URLSearchParams({
+    case: config.caseName,
+    nonce: config.nonce,
+    ...fields,
+  });
   const response = await fetch(`/state?${query}`, { cache: "no-store" });
   if (!response.ok) throw new Error("state-report-rejected");
 }
 
 async function main() {
   await markPhase("capabilities");
-  if (!isSecureContext || !globalThis.indexedDB || !globalThis.caches || !navigator.serviceWorker) {
+  if (
+    !isSecureContext ||
+    !globalThis.indexedDB ||
+    !globalThis.caches ||
+    !navigator.serviceWorker
+  ) {
     throw new Error("required-storage-api-unavailable");
   }
   const before = await readStores();
@@ -184,11 +219,16 @@ async function main() {
   if (config.value === "") await clearStores();
   await markPhase("report");
   await report({
-    before: before.local, after: after.local,
-    cookie_before: before.cookie, cookie_after: after.cookie,
-    indexed_db_before: before.indexed, indexed_db_after: after.indexed,
-    cache_before: before.cache, cache_after: after.cache,
-    worker_before: before.worker, worker_after: after.worker,
+    before: before.local,
+    after: after.local,
+    cookie_before: before.cookie,
+    cookie_after: after.cookie,
+    indexed_db_before: before.indexed,
+    indexed_db_after: after.indexed,
+    cache_before: before.cache,
+    cache_after: after.cache,
+    worker_before: before.worker,
+    worker_after: after.worker,
   });
 }
 
