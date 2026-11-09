@@ -61,7 +61,7 @@ A production correction belongs to a separate scoped owner only if native
 reproduction and a real shipping caller warrant it.
 
 `crates/keld-guard/src/windows_machine/initiating_token.rs`, exact blob
-`4d121eff33e67eaed21fde9f65f7f29bba3b336b`, lines 51–63 and
+`4d121eff33e67eaed21fde9f65f7f29bba3b313b`, lines 51–63 and
 89–249, has no proven unsafe rights-expansion in its isolated token owner:
 it rejects elevated/non-Medium token facts, opens from an exact host-process
 HANDLE, duplicates narrowly scoped token handles, and aborts if reverting
@@ -138,3 +138,10 @@ two conditional-risk paths: 338 remain not closed. This census correction adds
 no semantic review or native acceptance. Historical prior revisions remain in
 Git ancestry; the corrected ledger manifest SHA-256 is
 `3ad34777f9709cdda4e3203e6c5dd2a1251e82d89a7aae0523afdf3346b18d91`.
+
+### Erratum — exact prose object identity
+
+The census prose edit accidentally altered numeric characters inside an object
+identifier. The initiating-token blob is `4d121eff33e67eaed21fde9f65f7f29bba3b313b`,
+matching the unchanged review CSV and Git object. This restores the original
+identifier; it does not change the source evidence or review disposition.
