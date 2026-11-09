@@ -1197,6 +1197,40 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn explicit_facade_profile_stage_selects_schema_four_without_renderer() {
+        for profile in ["legacy", "strict"] {
+            let (_temp, project, source_host) = fixture();
+            fs::write(
+                project.join("keld.config.ts"),
+                "export default { name: 'Stage Fixture', entry: 'src/main.ts', initialWindow: 'none' } as const;",
+            )
+            .expect("facade config");
+            fs::remove_file(project.join("index.html")).expect("no renderer source");
+            let permissions = format!("{{\"profile\":\"{profile}\"}}\n");
+            fs::write(project.join(PERMISSIONS_FILE), &permissions).expect("explicit profile");
+            let stage = stage_dev_boot(&project, &source_host).expect("stage explicit facade");
+            let descriptor: serde_json::Value = serde_json::from_slice(
+                &fs::read(stage.root().join("keld.boot.json")).expect("descriptor bytes"),
+            )
+            .expect("descriptor JSON");
+            assert_eq!(descriptor["schema"], 4, "profile must not silently downgrade");
+            assert_eq!(descriptor.as_object().expect("closed object").len(), 4);
+            assert!(descriptor.get("renderer").is_none());
+            assert!(descriptor.get("auth").is_none());
+            assert!(!stage.root().join("index.html").exists());
+            assert_eq!(
+                fs::read(stage.root().join(PERMISSIONS_FILE)).expect("same staged bytes"),
+                permissions.as_bytes()
+            );
+            assert_eq!(
+                descriptor["permissions"]["content_sha256"],
+                format!("sha256:{:x}", Sha256::digest(permissions.as_bytes()))
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn facade_stage_has_closed_schema_two_and_no_renderer_file() {
         let (_temp, project, source_host) = fixture();
         fs::write(
