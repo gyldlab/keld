@@ -658,6 +658,13 @@ mod wry_lab {
         args: &Args,
         shared: &'a mut Shared,
         second: bool,
+        #[cfg_attr(
+            target_os = "linux",
+            allow(
+                unused_variables,
+                reason = "the WKWebView terminate handler names the view"
+            )
+        )]
         view: &'static str,
     ) -> Result<(WebViewBuilder<'a>, bool), String> {
         let separate = second && args.second_store == SecondStore::Separate;
