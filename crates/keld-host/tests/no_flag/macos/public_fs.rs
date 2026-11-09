@@ -1593,13 +1593,20 @@ fn staged_fixture_identity(path: &Path) -> Value {
 }
 
 fn spawn_shipping_host(stage: &keld_cli::boot::DevBootStage) -> ShippingLaunchCleanup {
+    spawn_shipping_host_with_stderr(stage, Stdio::piped())
+}
+
+fn spawn_shipping_host_with_stderr(
+    stage: &keld_cli::boot::DevBootStage,
+    stderr: Stdio,
+) -> ShippingLaunchCleanup {
     let child = Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_DEV_LEASE", "stdin-v1")
         .env("KELD_KEL142_ACCEPTANCE_REPORT", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(stderr)
         .spawn()
         .expect("launch staged shipping no-flag host");
     ShippingLaunchCleanup::new(child)

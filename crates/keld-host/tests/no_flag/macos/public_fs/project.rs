@@ -34,6 +34,7 @@ pub(super) struct PublicFsProject {
     natural_case: NaturalCase,
     descendant_quit: Value,
     declared_profile: Option<&'static str>,
+    causal_profile_disclosure: bool,
     pub(super) policy: Policy,
     pub(super) outside: PathBuf,
     pub(super) scope: String,
@@ -138,6 +139,7 @@ impl PublicFsProject {
             },
             descendant_quit: Value::Null,
             declared_profile: None,
+            causal_profile_disclosure: false,
             policy,
             outside,
             scope,
@@ -165,19 +167,29 @@ impl PublicFsProject {
     /// Change only the test-owned root manifest before stock CLI compilation.
     /// Keep the existing narrow FS grants and independent outside sentinel.
     pub(super) fn with_declared_profile(mut self, profile: &'static str) -> Self {
+        self.set_declared_profile(Some(profile));
+        self
+    }
+
+    /// Modify only the ordinary project policy between completely retired hosts.
+    pub(super) fn set_declared_profile(&mut self, profile: Option<&'static str>) {
         assert!(matches!(self.policy, Policy::Narrow));
-        assert!(matches!(profile, "legacy" | "strict"));
+        assert!(matches!(profile, None | Some("legacy" | "strict")));
         let mut document: Value =
             serde_json::from_slice(&self.policy_bytes).expect("narrow fixture manifest JSON");
-        document["profile"] = json!(profile);
+        let object = document.as_object_mut().expect("fixture policy object");
+        if let Some(profile) = profile {
+            object.insert("profile".to_owned(), json!(profile));
+        } else {
+            object.remove("profile");
+        }
         self.policy_bytes = serde_json::to_vec(&document).expect("declared fixture manifest");
         fs::write(
             self.project.join("keld.permissions.jsonc"),
             &self.policy_bytes,
         )
         .expect("explicit test-owned project profile");
-        self.declared_profile = Some(profile);
-        self
+        self.declared_profile = profile;
     }
 
     pub(super) fn has_declared_profile(&self) -> bool {
@@ -186,6 +198,22 @@ impl PublicFsProject {
 
     pub(super) fn profile_entry_marker(&self) -> PathBuf {
         self.owned_root().join("kel78-app-entry.marker")
+    }
+
+    pub(super) fn with_causal_profile_disclosure(mut self) -> Self {
+        assert_eq!(self.declared_profile, Some("legacy"));
+        self.causal_profile_disclosure = true;
+        self
+    }
+
+    pub(super) fn profile_stderr_file(&self) -> Option<PathBuf> {
+        self.causal_profile_disclosure
+            .then(|| self.owned_root().join("kel78-host-stderr.log"))
+    }
+
+    pub(super) fn profile_disclosure_witness(&self) -> PathBuf {
+        self.owned_root()
+            .join("kel78-first-statement-disclosure.marker")
     }
 
     pub(super) fn owned_root(&self) -> &Path {
@@ -466,8 +494,21 @@ impl PublicFsProject {
         let profile_entry = if self.has_declared_profile() {
             let marker = serde_json::to_string(&self.profile_entry_marker().to_string_lossy())
                 .expect("JSON-quote the test-owned entry marker");
+            let causal = self.profile_stderr_file().map_or_else(String::new, |path| {
+                let log = serde_json::to_string(&path).expect("owned stderr path");
+                let witness = serde_json::to_string(&self.profile_disclosure_witness())
+                    .expect("owned first-statement witness path");
+                // Synchronous test-owned OS reads, before the entry's first
+                // await. The literal expectation is independent of the host
+                // formatter; later forwarding cannot change this observation.
+                format!(
+                    "import {{ readFileSync as readProfileLogSync, writeFileSync as writeProfileWitnessSync }} from 'node:fs';\n\
+                     const firstProfileLog = readProfileLogSync({log}, 'utf8');\n\
+                     writeProfileWitnessSync({witness}, firstProfileLog.includes('legacy — zero-authority claim forfeited') ? 'visible\\n' : 'missing\\n');\n"
+                )
+            });
             format!(
-                "await Bun.write({marker}, 'entered\\n');\n\
+                "{causal}await Bun.write({marker}, 'entered\\n');\n\
                  console.error({PROFILE_APP_ENTRY_LINE:?});\n"
             )
         } else {

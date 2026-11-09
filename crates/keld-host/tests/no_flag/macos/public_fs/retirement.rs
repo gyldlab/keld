@@ -97,7 +97,17 @@ pub(super) fn run_launch_without_window_census(
         _ => panic!("only actual native public-main retirement scenarios"),
     };
     let stage = &prepared.stage;
-    let mut cleanup = super::spawn_shipping_host(stage);
+    let stderr_file = fixture.profile_stderr_file();
+    let mut cleanup = if let Some(path) = &stderr_file {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .expect("empty exclusive test-owned host stderr file");
+        super::spawn_shipping_host_with_stderr(stage, file.into())
+    } else {
+        super::spawn_shipping_host(stage)
+    };
     let host = cleanup.cli.as_mut().expect("native host custody");
     let host_pid = host.id();
     let _lease = host.stdin.take().expect("retain host-only dev lease");
@@ -148,13 +158,18 @@ pub(super) fn run_launch_without_window_census(
             .expect("release real Bun app-result acknowledgement");
     }
     observer.quit.send(()).expect("release real public Quit");
-    let output = wait_child_output(
+    let mut output = wait_child_output(
         cleanup.cli.take().expect("retained real shipping host"),
         EVENT_DEADLINE,
     );
     // Hold the independently accepted silent peer until the shipping host
     // actually exits, then release it before fixture observer Drop/join.
     drop(idle);
+    if let Some(path) = stderr_file {
+        // Product exit has already occurred. Preserve all existing ordered
+        // Quit/cleanup assertions when the causal fixture uses a regular sink.
+        output.stderr = fs::read(path).expect("observed host stderr after product exit");
+    }
     super::assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
     evidence.capture_profile_diagnostics(fixture, &output);
     if exercise == Exercise::PublicAppRetirement {

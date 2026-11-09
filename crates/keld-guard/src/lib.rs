@@ -624,6 +624,12 @@ impl std::error::Error for ManifestError {}
 /// The optional root `profile` declares strict or legacy; it grants no capability.
 /// Unrelated unknown keys stay ignored. v0 evaluate reads
 /// `app.<group>.<action>` string arrays as path/host scopes.
+///
+/// Direct Serde deserialization constructs data only; it is not the validated
+/// authoring boundary. Use [`parse_manifest`] or [`load_manifest`] for bounded,
+/// unique-key JSONC and reserved-location checks. Runtime admission consumes
+/// [`verified_manifest::VerifiedManifest`] from the retained, digest-checked
+/// loader, never an arbitrary deserialized value.
 #[derive(Clone, Default, Deserialize)]
 pub struct PermissionsManifest {
     #[serde(default)]
@@ -646,9 +652,11 @@ impl fmt::Debug for PermissionsManifest {
 }
 
 impl PermissionsManifest {
-    /// Returns the explicit root request, or `None` when no profile was declared.
+    /// Returns the requested profile data, or `None` when it is absent.
     ///
-    /// This accessor does not perform admission or prove OS containment.
+    /// For a validated manifest this came from the unique root declaration.
+    /// This accessor does not validate raw Serde data, perform admission, or
+    /// prove OS containment.
     #[must_use]
     pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
         self.profile

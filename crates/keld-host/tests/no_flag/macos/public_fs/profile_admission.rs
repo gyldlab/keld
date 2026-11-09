@@ -11,14 +11,13 @@ use std::fs;
 impl super::LaunchEvidence {
     pub(super) fn capture_profile_diagnostics(
         &mut self,
-        fixture: &PublicFsProject,
+        _fixture: &PublicFsProject,
         output: &std::process::Output,
     ) {
-        if fixture.has_declared_profile() {
-            self.profile_diagnostics = Some(
-                String::from_utf8(output.stderr.clone()).expect("profile Host diagnostics UTF-8"),
-            );
-        }
+        // Keep the no-declaration control too: otherwise a stale Legacy
+        // disclosure after removing the key would be unobservable here.
+        self.profile_diagnostics =
+            Some(String::from_utf8(output.stderr.clone()).expect("profile Host diagnostics UTF-8"));
     }
 }
 
@@ -48,6 +47,32 @@ fn declared_legacy_broker_and_quit_are_proven_without_graphics_capture() {
         false,
     );
     assert_legacy_entry_and_disclosure(&fixture, &evidence);
+}
+
+#[test]
+fn legacy_forfeit_is_visible_to_the_first_application_statement() {
+    let fixture = PublicFsProject::new(Policy::Narrow)
+        .with_declared_profile("legacy")
+        .with_causal_profile_disclosure();
+    let witness = fixture.profile_disclosure_witness();
+    assert!(
+        !witness.exists(),
+        "disclosure witness predated this attempt"
+    );
+    let evidence = super::retirement::run_launch_without_window_census(
+        &fixture,
+        0,
+        Exercise::PublicAppComponent,
+        false,
+    );
+    assert_eq!(
+        fs::read(witness).expect("first synchronous application-body observation"),
+        b"visible\n",
+        "the canonical forfeit was not visible when the app body began"
+    );
+    assert_legacy_entry_and_disclosure(&fixture, &evidence);
+    // This proves visibility at the fixture's first body statement, not that
+    // static dependency evaluation was absent or that a product receipt exists.
 }
 
 fn assert_legacy_entry_and_disclosure(fixture: &PublicFsProject, evidence: &super::LaunchEvidence) {
@@ -91,10 +116,52 @@ fn assert_legacy_entry_and_disclosure(fixture: &PublicFsProject, evidence: &supe
 #[test]
 fn known_uncontained_strict_refuses_before_app_entry_or_native_resources() {
     let fixture = PublicFsProject::new(Policy::Narrow).with_declared_profile("strict");
+    assert_strict_refused(&fixture, 0);
+}
+
+#[test]
+fn fresh_hosts_apply_profile_removal_and_strict_without_cached_legacy() {
+    let mut fixture = PublicFsProject::new(Policy::Narrow).with_declared_profile("legacy");
+    let first = super::retirement::run_launch_without_window_census(
+        &fixture,
+        0,
+        Exercise::PublicAppComponent,
+        false,
+    );
+    assert_legacy_entry_and_disclosure(&fixture, &first);
+
+    // Product Quit/reap/stage cleanup above precedes the policy change. Only
+    // this fixture-owned marker is removed; no process cleanup is substituted.
+    fs::remove_file(fixture.profile_entry_marker()).expect("retired generation marker");
+    fixture.set_declared_profile(None);
+    let second = super::retirement::run_launch_without_window_census(
+        &fixture,
+        1,
+        Exercise::PublicAppComponent,
+        false,
+    );
+    assert_ne!(
+        first.family.expect("retired Legacy family").bun,
+        second.family.expect("fresh default family").bun,
+        "a fresh host must not retain the retired Bun process"
+    );
+    let diagnostics = second
+        .profile_diagnostics
+        .expect("default host diagnostics");
+    assert!(diagnostics.contains("/profile): unverified"));
+    assert!(!diagnostics.contains("/profile): legacy"));
+    assert!(!diagnostics.contains("zero-authority claim forfeited"));
+    assert!(!fixture.profile_entry_marker().exists());
+
+    fixture.set_declared_profile(Some("strict"));
+    assert_strict_refused(&fixture, 2);
+}
+
+fn assert_strict_refused(fixture: &PublicFsProject, launch: usize) {
     let marker = fixture.profile_entry_marker();
     // No HTTP observer is needed because the candidate must not execute.
     // Port zero cannot become a shortcut for application admission.
-    let prepared = fixture.prepare_component(0, 0);
+    let prepared = fixture.prepare_component(launch, 0);
     assert!(
         !marker.exists(),
         "staging ran the test-owned application body"
