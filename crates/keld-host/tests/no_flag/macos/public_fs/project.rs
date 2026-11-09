@@ -222,6 +222,10 @@ impl PublicFsProject {
             .expect("canonical owned project parent")
     }
 
+    pub(super) fn project_root(&self) -> &Path {
+        &self.project
+    }
+
     /// Ordinary fixture data only; no host flag, grant, principal or policy change.
     pub(super) fn set_descendant_quit(&mut self, configuration: Value) {
         assert!(configuration.is_null() || configuration.is_object());
