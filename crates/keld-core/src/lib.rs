@@ -20,9 +20,9 @@ pub use echo_link::{EchoServer, echo_roundtrip};
 pub use hello::{
     AuthConfigError, DEFAULT_ENTRY, DEFAULT_HELLO_TITLE, DEFAULT_RENDERER,
     auth_configuration_from_config_ts, entry_from_config_ts, hello_title_from_args,
-    host_hello_unknown_arg, prepare_webview_process, read_config_entry, read_config_renderer,
-    read_config_title, renderer_from_config_ts, resolve_hello_title, run_hello_window,
-    run_hello_window_html, run_hello_window_titled, title_from_config_ts,
+    host_hello_requested, host_hello_unknown_arg, prepare_webview_process, read_config_entry,
+    read_config_renderer, read_config_title, renderer_from_config_ts, resolve_hello_title,
+    run_hello_window, run_hello_window_html, run_hello_window_titled, title_from_config_ts,
 };
 pub use hello_session::{HelloSessionError, HostOwnedHelloSession};
 pub use lifecycle::LifecycleSession;
