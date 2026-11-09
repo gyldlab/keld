@@ -353,25 +353,31 @@ fn root_profile_is_refused_at_literal_and_method_heads() {
 }
 
 #[test]
-fn root_initial_window_is_refused_until_facade_integration() {
+fn root_initial_window_uses_the_existing_facade_owner_after_profile_composition() {
     for source in [
         "export default { initialWindow: 'none' };",
-        "export default { initialWindow: makeWindow() };",
         r#"export default { "initialWindow": "none" };"#,
-        r"export default { initialW\u0069ndow: 'none' };",
+    ] {
+        assert!(
+            super::initial_window_from_config_ts(source).expect("approved literal facade mode")
+        );
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("no auth field")
+                .is_empty()
+        );
+    }
+    for source in [
+        "export default { initialWindow: makeWindow() };",
         r"export default { ['initial\u0057indow']: 'none' };",
         "export default { get initialWindow() { return 'none' } };",
         "export default { async *initialWindow() {} };",
         "export default { auth: {}, initialWindow: 'none' };",
     ] {
-        let error = auth_configuration_from_config_ts(source)
-            .expect_err("unsupported facade selector must fail before staging");
-        let rendered = error.to_string();
         assert!(
-            rendered.starts_with("KELD-CORE-035:"),
-            "{source}: {rendered}"
+            super::initial_window_from_config_ts(source).is_err(),
+            "{source}"
         );
-        assert!(rendered.contains("GH #446"), "{source}: {rendered}");
     }
 }
 
@@ -447,7 +453,6 @@ fn generic_type_commas_are_not_root_keys_but_relational_commas_are() {
     for source in [
         "export default { other: a < b, profile: 'legacy' };",
         "export default { other: id<A, profile>(7), profile: 'legacy' };",
-        "export default { other: id<A, auth>(7), initialWindow: 'none' };",
     ] {
         let error = auth_configuration_from_config_ts(source)
             .expect_err("genuine root key after expression must be rejected");

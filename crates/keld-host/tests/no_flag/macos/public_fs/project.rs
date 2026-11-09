@@ -222,6 +222,10 @@ impl PublicFsProject {
             .expect("canonical owned project parent")
     }
 
+    pub(super) fn allowed_root(&self) -> &Path {
+        &self.allowed
+    }
+
     pub(super) fn project_root(&self) -> &Path {
         &self.project
     }
@@ -283,21 +287,39 @@ impl PublicFsProject {
     /// The shipping Host must use its original verified snapshot for G2, not
     /// reread either the project source or the staged 0400 policy name.
     pub(super) fn replace_recovery_project_and_staged_policy(&self, prepared: &PreparedLaunch) {
+        assert_eq!(prepared.exercise, Exercise::RendererRecovery);
+        self.replace_recovery_policy_paths(&prepared.stage, &prepared.digest, 3);
+    }
+
+    pub(super) fn replace_facade_profile_policy(
+        &self,
+        stage: &keld_cli::boot::DevBootStage,
+        digest: &str,
+    ) {
+        self.replace_recovery_policy_paths(stage, digest, 4);
+    }
+
+    fn replace_recovery_policy_paths(
+        &self,
+        stage: &keld_cli::boot::DevBootStage,
+        digest: &str,
+        expected_schema: u8,
+    ) {
         use std::io::Write as _;
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-        assert_eq!(prepared.exercise, Exercise::RendererRecovery);
+        assert!(matches!(expected_schema, 3 | 4));
         assert_eq!(self.declared_profile, Some("legacy"));
-        let policy = prepared.stage.root().join("keld.permissions.jsonc");
+        let policy = stage.root().join("keld.permissions.jsonc");
         let source = self.project.join("keld.permissions.jsonc");
-        let boot = prepared.stage.root().join("keld.boot.json");
+        let boot = stage.root().join("keld.boot.json");
         let original_boot = fs::read(&boot).expect("original compiled boot binding");
         let descriptor: Value =
             serde_json::from_slice(&original_boot).expect("original boot descriptor JSON");
-        assert_eq!(descriptor["schema"], 3);
+        assert_eq!(descriptor["schema"], expected_schema);
         assert_eq!(
             descriptor["permissions"]["content_sha256"],
-            format!("sha256:{}", prepared.digest)
+            format!("sha256:{digest}")
         );
         assert_eq!(
             fs::read(&policy).expect("retained staged bytes"),
@@ -307,8 +329,8 @@ impl PublicFsProject {
             fs::read(&source).expect("original source policy"),
             self.policy_bytes
         );
-        assert_eq!(file_digest(&policy), prepared.digest);
-        assert_eq!(file_digest(&source), prepared.digest);
+        assert_eq!(file_digest(&policy), digest);
+        assert_eq!(file_digest(&source), digest);
         let original = fs::symlink_metadata(&policy).expect("owned staged policy object");
         assert!(original.is_file() && !original.file_type().is_symlink());
         let mode = original.permissions().mode() & 0o7777;
@@ -344,7 +366,7 @@ impl PublicFsProject {
         let mut replacement = tempfile::Builder::new()
             .prefix("kel78-g2-policy-")
             .permissions(original.permissions())
-            .tempfile_in(prepared.stage.root())
+            .tempfile_in(stage.root())
             .expect("owned stage permits separate test policy inode");
         replacement
             .write_all(&hostile)
@@ -373,8 +395,8 @@ impl PublicFsProject {
         );
         assert_eq!(fs::read(&policy).expect("changed staged pathname"), hostile);
         assert_eq!(file_digest(&source), file_digest(&policy));
-        assert_ne!(file_digest(&source), prepared.digest);
-        assert_ne!(file_digest(&policy), prepared.digest);
+        assert_ne!(file_digest(&source), digest);
+        assert_ne!(file_digest(&policy), digest);
         assert_eq!(
             fs::read(&boot).expect("descriptor identity after hostile change"),
             original_boot,
