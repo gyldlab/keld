@@ -6430,6 +6430,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: The application tried to assign app.name, which this bounded session-facts surface does not support
 - fix: Declare the application name in keld.config.ts and rebuild. The Host owns the admitted name; setName remains separate work.
 
+## KELD-COMPAT-050
+
+- crate: @keld/electron-updater
+- message: Update checks require a Keld Host updater path that is not yet available for the migrated application; no update feed has been contacted
+- fix: Keep updates disabled in the declared role environment (draw.io: DRAWIO_DISABLE_UPDATE=true) until the Host updater channel exists (F09-T5, KEL-53). Do not interpret a refused check as an available update.
+
 ## KELD-COMPAT-051
 
 - crate: @keld/electron
