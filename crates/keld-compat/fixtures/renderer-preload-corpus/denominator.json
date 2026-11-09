@@ -1,0 +1,21 @@
+{
+  "schema": "keld.compat.denominator/v1",
+  "panel": "showcase",
+  "corpus_id": "electron-renderer-preload-v1",
+  "corpus_sha256": "sha256:940fe0d7574f2997c1df0b5be2c292b1f6baac9bdd3bd29ad0c70733a25400bf",
+  "kind": "primary_workflow",
+  "cells": [
+    {
+      "operation_id": "renderer.preload.before-first-inline",
+      "oracle_id": "electron-v44.4.5.web-preferences.preload-before-page-scripts"
+    },
+    {
+      "operation_id": "renderer.preload.absolute-file-path",
+      "oracle_id": "electron-v44.4.5.web-preferences.preload-absolute-path"
+    },
+    {
+      "operation_id": "renderer.additional-arguments.argv",
+      "oracle_id": "electron-v44.4.5.web-preferences.additional-arguments"
+    }
+  ]
+}
