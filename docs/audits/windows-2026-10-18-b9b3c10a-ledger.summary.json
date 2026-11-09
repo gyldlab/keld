@@ -1,21 +1,21 @@
 {
   "base_class_counts": {
-    "ci-tooling": 24,
-    "production-or-fixture": 111,
-    "support": 33,
-    "test": 154
+    "ci-tooling": 26,
+    "production-or-fixture": 117,
+    "support": 36,
+    "test": 166
   },
-  "candidates": 322,
+  "candidates": 345,
   "evidence_sha256": "044f96d2d4a346676d11bb70952986c1883f6b0d86c57bc41c8f01275184776b",
-  "historical_307_queue_sha256": "e72afe22b9abbf4a8745a1add0d3a92eb1464a05c56a24994b813d383285b978",
-  "manifest_sha256": "965885509c691fe9e3741bb8d2d7215c20cc2eeaa5ca81d34c06afd99f6dc5b6",
-  "not_closed": 314,
-  "pending_independent_review": 311,
+  "manifest_sha256": "7467edc4919368cd35b63310d933a9f586790522e66747d5c73a67511c2b73bd",
+  "not_closed": 337,
+  "pending_independent_review": 334,
   "pinned_ref": "b9b3c10ac9054e4c4baba1b28c6026c65b38944c",
   "review_provenance": "exact per-file Git blob and public independent-review citation",
   "review_scope": "Windows-related tracked candidate paths only, not whole #824",
   "reviewed_conditional_risk": 3,
   "reviewed_no_change": 8,
   "reviewed_total": 11,
-  "schema": "keld.windows-architecture-closeout/v1"
+  "schema": "keld.windows-architecture-closeout/v2",
+  "triage_queue_sha256": "63cc445c53cf3d069b44aac6081bb27439444adc1de19a46b2556e469eb569a5"
 }
