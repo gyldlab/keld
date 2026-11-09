@@ -440,6 +440,29 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
     }
 
+    // Bun must deduplicate the preload's relative app.js import and the
+    // installed package's public + internal export paths on every OS.
+    // Otherwise Ready is published on one app singleton but awaited on another.
+    const identity = join(stage, "module-identity.mjs");
+    writeFileSync(
+      identity,
+      `import { app as publicApp } from "@keld/api";
+import { app as internalApp } from "@keld/api/internal/app";
+import { app as relativeApp } from "./node_modules/@keld/api/app.js";
+console.log(JSON.stringify([
+  publicApp === internalApp,
+  publicApp === relativeApp,
+  internalApp === relativeApp,
+]));`,
+    );
+    const checkedIdentity = Bun.spawnSync(
+      [process.execPath, "--no-env-file", "--no-install", identity],
+      { cwd: stage, stdout: "pipe", stderr: "pipe", timeout: 9_000 },
+    );
+    expect(checkedIdentity.exitCode, checkedIdentity.stderr.toString()).toBe(0);
+    expect(checkedIdentity.stdout.toString()).toBe("[true,true,true]\n");
+    expect(checkedIdentity.stderr.toString()).toBe("");
+
     await provePackedRawEvent(stage);
     await provePackedRawEvent(stage, true);
     await provePackedRawEvent(stage, true, true);
