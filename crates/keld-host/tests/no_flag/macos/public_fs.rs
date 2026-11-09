@@ -37,6 +37,8 @@ mod preclick;
 mod process_image;
 #[path = "public_fs/project.rs"]
 mod project;
+#[path = "public_fs/quit_diagnostics.rs"]
+mod quit_diagnostics;
 #[path = "public_fs/retirement.rs"]
 mod retirement;
 use application_link::assert_single_application_link;
@@ -235,10 +237,8 @@ fn run_launch_with_descendant_quit(
             descendant.observe_cooperative_exit_and_guardian_reap();
         }
     }));
-    let output = wait_child_output(
-        cleanup.cli.take().expect("capture host before unwind"),
-        EVENT_DEADLINE,
-    );
+    let child = cleanup.cli.take().expect("capture host before unwind");
+    let output = quit_diagnostics::wait(child, &observer, launch, observation_result.is_ok());
     eprintln!(
         "KELD_KEL140_PUBLIC_DIAGNOSTICS policy={:?} launch={launch} click={:?} reports={:?} host_output={output:?}",
         fixture.policy, evidence.click, evidence.reports,
