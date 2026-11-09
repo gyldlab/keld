@@ -206,6 +206,7 @@ async function provePackedHandshake(
   wrapper: string,
   entry: string,
   inheritCwd = false,
+  preloadByAlias = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -260,7 +261,7 @@ async function provePackedHandshake(
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
       "--preload",
-      wrapper,
+      preloadByAlias ? "@keld/api/runtime-preload" : wrapper,
       entry,
     ],
     {
@@ -409,7 +410,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link preload=${preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -560,6 +561,10 @@ process.on("message", message => {
 await app.whenReady();`,
         ),
     );
+    // The exact same checked-in release wrapper is available through the
+    // installed exports map. Compare package-canonical versus absolute
+    // preload naming without changing its bytes or emitting synthetic Ready.
+    await provePackedHandshake(stage, wrapper, entry, false, true);
     await provePackedHandshake(stage, wrapper, entry);
     // Match the original packed runtime test's inherited working directory.
     // It is a separate end-to-end acceptance case, not an assertion bypass.
