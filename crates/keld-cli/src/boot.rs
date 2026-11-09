@@ -441,7 +441,7 @@ where
     };
     #[cfg(not(target_os = "macos"))]
     let permissions_bytes = PERMISSIONS_BYTES;
-    let schema = keld_core::app_session::renderer_boot_schema(declared_profile);
+    let schema = keld_core::app_session::boot_schema(facade, declared_profile);
 
     let entry_source = contained_source(&project_root, &entry, "entry")?;
     let renderer_source = renderer
@@ -564,7 +564,7 @@ where
         let object = descriptor.as_object_mut().ok_or_else(|| {
             BootCompileError::new("boot descriptor", "generated root is not an object")
         })?;
-        object.insert(String::from("schema"), serde_json::Value::from(2));
+        object.insert(String::from("schema"), serde_json::Value::from(schema));
         object.remove("renderer");
     }
     // Preserve the byte shape of legacy stages when no auth profile is configured.
@@ -1280,7 +1280,10 @@ mod tests {
                 &fs::read(stage.root().join("keld.boot.json")).expect("descriptor bytes"),
             )
             .expect("descriptor JSON");
-            assert_eq!(descriptor["schema"], 4, "profile must not silently downgrade");
+            assert_eq!(
+                descriptor["schema"], 4,
+                "profile must not silently downgrade"
+            );
             assert_eq!(descriptor.as_object().expect("closed object").len(), 4);
             assert!(descriptor.get("renderer").is_none());
             assert!(descriptor.get("auth").is_none());

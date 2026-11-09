@@ -23,13 +23,23 @@ pub(crate) fn reject_diagnostic_profile(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
-pub(super) fn validate_renderer_profile(
+pub(super) fn validate_profile(
     schema: u8,
     verified: &keld_guard::verified_manifest::VerifiedManifest,
     diagnostic: bool,
 ) -> Result<ProfileState, HostAppError> {
     let manifest = verified.manifest();
-    if schema != super::renderer_boot_schema(manifest.declared_profile()) {
+    let facade = match schema {
+        1 | 3 => false,
+        2 | 4 => true,
+        _ => {
+            return Err(super::boot_error(
+                "unsupported compiled boot schema in profile preflight",
+                "Recompile with a supporting exact compiler and host pair.",
+            ));
+        }
+    };
+    if schema != super::boot_schema(facade, manifest.declared_profile()) {
         return Err(super::boot_error(
             "boot schema and verified /profile presence disagree",
             "Recompile the same policy and window mode with a matching host; never strip the declaration or downgrade the schema.",
@@ -37,13 +47,19 @@ pub(super) fn validate_renderer_profile(
     }
     if diagnostic {
         reject_diagnostic_profile(manifest)?;
+        if facade {
+            return Err(super::boot_error(
+                "the renderer-only diagnostic entry cannot execute a facade boot",
+                "Use the supported guarded no-flag primary host; do not change window ownership to bypass admission.",
+            ));
+        }
         return Ok(ProfileState::Unverified);
     }
     // Called only by the validated no-flag primary host, never by an addon or
     // secondary-role launcher. State values are not launch capabilities.
     #[cfg(not(target_os = "macos"))]
     {
-        if manifest.declared_profile().is_some() {
+        if facade || manifest.declared_profile().is_some() {
             return Err(HostAppError::new(
                 "KELD-CORE-034",
                 "explicit profile availability",
