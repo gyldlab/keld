@@ -1,6 +1,9 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "ci_hygiene_learning_tests.rs"]
+mod learning_admission;
+
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir {
@@ -263,8 +266,10 @@ fn valid_workflow() -> String {
             "          mkdir -p target/agent-context",
             "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test",
             "          target/agent-context/agent-context-test",
+            "          python3 -B -m unittest discover -s tools -p 'test_learning*.py'",
             "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context",
             "          target/agent-context/agent-context check .",
+            "          python3 -B tools/learning_records.py check",
             "          python3 -B tools/test_session_closeout.py",
             "          python3 -B tools/test_session_closeout_hook.py",
             "          python3 -B tools/workspace.py check",
@@ -1037,8 +1042,10 @@ fn agent_context_step_is_mandatory_and_failure_preserving() {
         "          mkdir -p target/agent-context\n",
         "          rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test\n",
         "          target/agent-context/agent-context-test\n",
+        "          python3 -B -m unittest discover -s tools -p 'test_learning*.py'\n",
         "          rustc --edition=2024 -D warnings tools/agent_context.rs -o target/agent-context/agent-context\n",
         "          target/agent-context/agent-context check .\n",
+        "          python3 -B tools/learning_records.py check\n",
         "          python3 -B tools/test_session_closeout.py\n",
         "          python3 -B tools/test_session_closeout_hook.py\n",
         "          python3 -B tools/workspace.py check\n",

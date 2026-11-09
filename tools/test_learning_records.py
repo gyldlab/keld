@@ -15,6 +15,13 @@ import learning_records as lr
 REPO = Path(__file__).resolve().parents[1]
 
 
+def frontmatter_boundary(raw: bytes) -> int:
+    match = re.search(br"\r?\n---(?:\r?\n|$)", raw)
+    if match is None:
+        raise AssertionError("fixture has no closing frontmatter delimiter")
+    return match.end()
+
+
 def write_record(root: Path, relative: str, data: dict, body: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,6 +33,7 @@ def make_fixture(root: Path, original: str) -> list[str]:
     directory = root / lr.LEARNING_ROOT
     directory.mkdir(parents=True)
     (directory / "AGENTS.md").write_text("# Fixture format owner\n", encoding="utf-8")
+    (root / lr.SOURCE_PATH).write_text("# Learning links\n\n- [Rules](learnings/AGENTS.md)\n", encoding="utf-8")
     segments = []
     paths = []
     inventory = []
@@ -63,29 +71,32 @@ def make_fixture(root: Path, original: str) -> list[str]:
     return paths
 
 
+def original_source() -> str:
+    # The literal digest remains independent of the checker and candidate data.
+    expected = "aa1c76e9079a06e4125d5fa74d5e395c19949266f35c9c68c830e463be5d05fc"
+    original = (REPO / lr.SOURCE_PATH).read_bytes()
+    if hashlib.sha256(original).hexdigest() != expected:
+        ledger = json.loads((REPO / lr.LEARNING_ROOT / "migration.json").read_text(encoding="utf-8"))
+        parts = []
+        for segment in ledger["segments"]:
+            if "literal" in segment:
+                parts.append(segment["literal"])
+            else:
+                text = (REPO / segment["record"]).read_text(encoding="utf-8")
+                quoted = re.findall(r"(?m)^> (- \d{4}-\d{2}-\d{2} \[[^]\n]+\] [^\n]+)$", text)
+                if len(quoted) != 1:
+                    raise AssertionError("fixture must retain one exact old line")
+                parts.append(quoted[0])
+        original = "".join(parts).encode("utf-8")
+    if hashlib.sha256(original).hexdigest() != expected:
+        raise AssertionError("immutable independent source oracle differs")
+    return original.decode("utf-8")
+
+
 class LearningRecordsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # The literal digest is an independent oracle. No network or historic
-        # Git object is required in a shallow CI checkout of the migration.
-        expected = "aa1c76e9079a06e4125d5fa74d5e395c19949266f35c9c68c830e463be5d05fc"
-        original = (REPO / lr.SOURCE_PATH).read_bytes()
-        if hashlib.sha256(original).hexdigest() != expected:
-            ledger = json.loads((REPO / lr.LEARNING_ROOT / "migration.json").read_text(encoding="utf-8"))
-            parts = []
-            for segment in ledger["segments"]:
-                if "literal" in segment:
-                    parts.append(segment["literal"])
-                else:
-                    text = (REPO / segment["record"]).read_text(encoding="utf-8")
-                    quoted = re.findall(r"(?m)^> (- \d{4}-\d{2}-\d{2} \[[^]\n]+\] [^\n]+)$", text)
-                    if len(quoted) != 1:
-                        raise AssertionError("fixture must retain one exact old line")
-                    parts.append(quoted[0])
-            original = "".join(parts).encode("utf-8")
-        cls.original = original.decode("utf-8")
-        if hashlib.sha256(original).hexdigest() != expected:
-            raise AssertionError("immutable independent source oracle differs")
+        cls.original = original_source()
         cls.base = tempfile.TemporaryDirectory(prefix="learning-record-base-")
         cls.paths = make_fixture(Path(cls.base.name), cls.original)
 
@@ -130,6 +141,15 @@ class LearningRecordsTests(unittest.TestCase):
         self.add_new()
         self.assertEqual(lr.check(self.root), 169)
 
+    def test_originally_allowed_deps_area_remains_available(self):
+        self.assertIn("`deps`", original_source().split("## Log", 1)[0])
+        original = self.add_new()
+        relative = original.replace("/ipc/", "/deps/")
+        target = self.root / relative;target.parent.mkdir()
+        (self.root / original).rename(target)
+        self.change(relative, area="deps", tags=["deps"])
+        self.assertEqual(lr.check(self.root), 169)
+
     def test_missing_or_changed_old_fact_rejects(self):
         path = self.root / self.paths[0]
         original = path.read_text(encoding="utf-8")
@@ -153,7 +173,8 @@ class LearningRecordsTests(unittest.TestCase):
                 self.rejects(expected)
         path.write_text(json.dumps(original), encoding="utf-8")
         extra = self.add_new()
-        self.change(extra, source=lr.HISTORICAL_PREFIX + "999")
+        self.change(extra, source=lr.HISTORICAL_PREFIX + "999",
+                    verification_evidence=f"https://github.com/gyldlab/keld/blob/{lr.SOURCE_COMMIT}/crates/keld-ipc/src/lib.rs#L1")
         self.rejects("missing/extra historical")
 
     def test_body_mutation_and_literal_entry_cannot_hide_loss(self):
@@ -227,7 +248,7 @@ class LearningRecordsTests(unittest.TestCase):
 
     def test_describe_reads_only_requested_frontmatter(self):
         selected = self.add_new();unselected = self.add_new("2026-10-31-unselected-fact")
-        path = self.root / selected;raw = path.read_bytes();boundary = raw.index(b"\n---\n") + 5
+        path = self.root / selected;raw = path.read_bytes();boundary = frontmatter_boundary(raw)
         path.write_bytes(raw + b"BODY_MUST_NOT_BE_READ" * 1000)
         (self.root / unselected).write_text("not metadata", encoding="utf-8")
         calls = []
@@ -246,8 +267,22 @@ class LearningRecordsTests(unittest.TestCase):
         with patch.object(lr, "open_record", guarded):
             result = lr.describe(self.root, [selected])
         self.assertEqual(calls, [path]);self.assertEqual(len(result), 1)
-        self.assertEqual(set(result[0]), {"filename", "name", "description", "tags"})
+        self.assertEqual(set(result[0]), {"filename", "name", "description", "tags", "platform", "source", "status", "verified", "retired"})
         self.assertEqual(result[0]["filename"], selected)
+
+    def test_describe_exposes_platform_and_source_changes(self):
+        selected = self.add_new()
+        first = lr.describe(self.root, [selected])[0]
+        self.assertEqual(first["platform"], "all")
+        self.change(selected, platform="windows")
+        second = lr.describe(self.root, [selected])[0]
+        self.assertEqual(second["platform"], "windows")
+        changed = second["source"].replace("#L1", "#L2")
+        self.change(selected, source=changed)
+        third = lr.describe(self.root, [selected])[0]
+        self.assertEqual(third["source"], changed)
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(second, third)
 
     def test_frontmatter_limit_and_old_layout_reject(self):
         relative = self.add_new();path = self.root / relative
