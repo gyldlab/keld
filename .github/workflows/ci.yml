@@ -340,6 +340,10 @@ jobs:
       - name: Worktree cache tool provenance test
         shell: bash
         run: bash tools/cache_tool_provenance_test.sh
+      # GH-1081 [DO NOT MERGE]: round-2 XTEST input for the Linux reload/typing rows.
+      - name: GH-1081 install xdotool (research only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool
       # GH-1081 [DO NOT MERGE]: research-only narrowing on a never-merge draft PR.
       # Runs only the keld-host recovery and crash_recovery_r1 experiment tests,
       # GH1081_ITERATIONS times with --no-fail-fast, and skips every other
@@ -361,23 +365,29 @@ jobs:
             packages="$KELD_CI_UBUNTU_PACKAGES"
           fi
           case "${{ matrix.os }}" in
-            macos-latest) filter='binary(no_flag_macos) & test(/crash_recovery_r1::gh1081_e4/)' ;;
-            windows-latest) filter='binary(no_flag_windows) & test(/crash_recovery_r1/)' ;;
-            ubuntu-latest) filter='binary(no_flag_linux) & test(/crash_recovery_r1/)' ;;
+            macos-latest) filter='binary(no_flag_macos) & test(/crash_recovery_r2/)' ;;
+            windows-latest) filter='binary(no_flag_windows) & test(/crash_recovery_r2/)' ;;
+            ubuntu-latest) filter='binary(no_flag_linux) & test(/crash_recovery_r2/)' ;;
           esac
+          # Round 2: macOS builds the existing debug page-load trace hook
+          # (KELD_PROFILE_ACCEPTANCE_REPORT); GUI rows run one at a time.
+          features=""
+          if [ "${{ matrix.os }}" = macos-latest ]; then
+            features="--features profile-test-hooks"
+          fi
           for package in $packages; do
             if [ "$package" != keld-host ]; then
               echo "gh1081: $package tests skipped on this never-merge research PR"
               continue
             fi
-            cargo nextest list -p keld-host --profile ci -E "$filter"
+            cargo nextest list -p keld-host $features --profile ci -E "$filter"
             failed=0
             for iteration in $(seq 1 "$GH1081_ITERATIONS"); do
               echo "GH1081_ITERATION_BEGIN $iteration/$GH1081_ITERATIONS os=${{ matrix.os }} sha=$GITHUB_SHA"
               if [ "${{ matrix.os }}" = ubuntu-latest ]; then
-                xvfb-run -a cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
+                xvfb-run -a --server-args='-screen 0 1280x800x24' cargo nextest run -p keld-host --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
               else
-                cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
+                cargo nextest run -p keld-host $features --profile ci --test-threads 1 --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
               fi
               echo "GH1081_ITERATION_END $iteration/$GH1081_ITERATIONS failed_iterations=$failed"
             done

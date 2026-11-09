@@ -15,6 +15,10 @@ mod recovery;
 mod crash_recovery_r1;
 #[path = "no_flag/crash_recovery_r1_heartbeat.rs"]
 mod crash_recovery_r1_heartbeat;
+#[path = "no_flag/linux/crash_recovery_r2.rs"]
+mod crash_recovery_r2;
+#[path = "no_flag/crash_recovery_r2_probe.rs"]
+mod crash_recovery_r2_probe;
 #[path = "no_flag/linux/staging.rs"]
 mod staging;
 #[path = "no_flag/linux/support/mod.rs"]

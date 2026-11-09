@@ -6,6 +6,11 @@
 
 #[path = "no_flag/macos/boot_admission.rs"]
 mod boot_admission;
+// GH-1081 round-2 research experiments only (never merged).
+#[path = "no_flag/macos/crash_recovery_r2.rs"]
+mod crash_recovery_r2;
+#[path = "no_flag/crash_recovery_r2_probe.rs"]
+mod crash_recovery_r2_probe;
 #[path = "no_flag/macos/descriptor_attribution.rs"]
 mod descriptor_attribution;
 #[path = "no_flag/macos/descriptor_liveness.rs"]
@@ -36,6 +41,8 @@ mod startup_rollback;
 mod support;
 #[path = "no_flag/macos/wait_capture.rs"]
 mod wait_capture;
+#[path = "../../keld-wv/tests/fixtures/windows_renderer_http.rs"]
+mod windows_renderer_http;
 
 use std::io::Read;
 use std::os::unix::net::{UnixDatagram, UnixListener};

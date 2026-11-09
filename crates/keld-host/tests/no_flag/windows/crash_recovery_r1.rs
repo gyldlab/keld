@@ -23,23 +23,23 @@ use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, wait_child, wait_for_host_window,
 };
 
-fn deadline() -> Instant {
+pub(crate) fn deadline() -> Instant {
     Instant::now() + PRODUCT_DEADLINE
 }
 
 /// One staged host launch and its current generation's control stream.
-struct Launch {
+pub(crate) struct Launch {
     _stage: keld_cli::boot::DevBootStage,
     child: Child,
-    host: u32,
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
-    bun: u32,
-    link: String,
+    pub(crate) host: u32,
+    pub(crate) reader: BufReader<TcpStream>,
+    pub(crate) writer: TcpStream,
+    pub(crate) bun: u32,
+    pub(crate) link: String,
 }
 
 impl Launch {
-    fn start(fixture: &ProductFixture, control: &TcpListener) -> Self {
+    pub(crate) fn start(fixture: &ProductFixture, control: &TcpListener) -> Self {
         let stage = keld_cli::boot::stage_dev_boot(
             &fixture.project,
             Path::new(env!("CARGO_BIN_EXE_keld-host")),
@@ -65,7 +65,10 @@ impl Launch {
         }
     }
 
-    fn crash_and_accept_successor(&mut self, control: &TcpListener) -> std::time::Duration {
+    pub(crate) fn crash_and_accept_successor(
+        &mut self,
+        control: &TcpListener,
+    ) -> std::time::Duration {
         writeln!(self.writer, "CRASH").expect("crash g1");
         self.writer.flush().expect("flush g1 crash");
         let started = Instant::now();
@@ -80,7 +83,7 @@ impl Launch {
         to_ready
     }
 
-    fn quit(mut self) {
+    pub(crate) fn quit(mut self) {
         self.writer.write_all(b"QUIT\n").expect("request Quit");
         self.writer.flush().expect("flush Quit");
         assert_eq!(read_control_line(&mut self.reader), "QUIT_REPLY");

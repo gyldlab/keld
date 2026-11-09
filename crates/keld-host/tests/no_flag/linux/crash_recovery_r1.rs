@@ -20,11 +20,11 @@ use std::{
     time::Instant,
 };
 
-fn deadline() -> Instant {
+pub(crate) fn deadline() -> Instant {
     Instant::now() + PRODUCT_DEADLINE
 }
 
-fn repo() -> PathBuf {
+pub(crate) fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -34,7 +34,7 @@ fn repo() -> PathBuf {
 
 /// X11 top-level windows whose title is this run's unique title, bound to the
 /// host PID when the toolkit publishes `_NET_WM_PID`.
-fn host_windows(script: &Path, host: u32, title: &str) -> (Vec<u64>, Value) {
+pub(crate) fn host_windows(script: &Path, host: u32, title: &str) -> (Vec<u64>, Value) {
     let output = Command::new("python3")
         .arg("-I")
         .arg(script)
@@ -61,7 +61,7 @@ fn host_windows(script: &Path, host: u32, title: &str) -> (Vec<u64>, Value) {
 }
 
 /// The retired token on the successor endpoint: EOF with no reply bytes.
-fn probe_retired_token(old_link: &str, fresh_link: &str) -> Output {
+pub(crate) fn probe_retired_token(old_link: &str, fresh_link: &str) -> Output {
     let probe = Command::new("bun")
         .args(["-e", include_str!("../../fixtures/retired_token_probe.mjs")])
         .env(
@@ -77,11 +77,11 @@ fn probe_retired_token(old_link: &str, fresh_link: &str) -> Output {
     wait_child_output(probe, deadline())
 }
 
-fn endpoint(link: &str) -> &str {
+pub(crate) fn endpoint(link: &str) -> &str {
     link.rsplit_once('#').expect("endpoint#token app link").0
 }
 
-fn launch(stage: &keld_cli::boot::DevBootStage, control: &Path) -> Child {
+pub(crate) fn launch(stage: &keld_cli::boot::DevBootStage, control: &Path) -> Child {
     Command::new(stage.host())
         .current_dir(stage.root())
         .env("KELD_T1B_CONTROL", control)
@@ -93,7 +93,7 @@ fn launch(stage: &keld_cli::boot::DevBootStage, control: &Path) -> Child {
 
 /// `READY ECHO1 ECHO2`, or the host's own stderr when the generation never
 /// reaches them (the host's diagnostic is the evidence, not the read timeout).
-fn ready_or_host_failure(reader: &mut BufReader<UnixStream>, host: &mut Child) {
+pub(crate) fn ready_or_host_failure(reader: &mut BufReader<UnixStream>, host: &mut Child) {
     let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         expect_ready_and_echoes(reader);
     }));
@@ -111,8 +111,12 @@ fn ready_or_host_failure(reader: &mut BufReader<UnixStream>, host: &mut Child) {
 
 /// A product fixture whose window title is unique to this run, so the X11
 /// census cannot match a concurrent test's host window.
-fn unique_title_fixture() -> (ProductFixture, String, PathBuf) {
-    let fixture = ProductFixture::new();
+pub(crate) fn unique_title_fixture() -> (ProductFixture, String, PathBuf) {
+    titled(ProductFixture::new())
+}
+
+/// GH-1081 round 2: give an already-built product fixture the unique title.
+pub(crate) fn titled(fixture: ProductFixture) -> (ProductFixture, String, PathBuf) {
     let leaf = fixture
         .root
         .path()
@@ -137,12 +141,12 @@ fn unique_title_fixture() -> (ProductFixture, String, PathBuf) {
     (fixture, title, census)
 }
 
-fn stage(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
+pub(crate) fn stage(fixture: &ProductFixture) -> keld_cli::boot::DevBootStage {
     keld_cli::boot::stage_dev_boot(&fixture.project, Path::new(env!("CARGO_BIN_EXE_keld-host")))
         .expect("stage gh1081 Linux host")
 }
 
-fn quit_generation(
+pub(crate) fn quit_generation(
     mut reader: BufReader<UnixStream>,
     mut writer: UnixStream,
     host: &mut Child,
