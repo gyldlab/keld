@@ -126,7 +126,11 @@ async function run(script) {
     if (!command.ok) throw new Error("gh1081 page command refused");
     await command.text();
     if (step.do === "reload") {
-      // Renderer-side negative control: a real same-window reload.
+      // Renderer-side negative control: a real same-window reload. The
+      // pagehide beacon independently witnesses that this document unloaded.
+      window.addEventListener("pagehide", () => {
+        navigator.sendBeacon(base + "/observe", JSON.stringify({ phase: "page-unload", documentNonce }));
+      }, { once: true });
       location.reload();
       return;
     }

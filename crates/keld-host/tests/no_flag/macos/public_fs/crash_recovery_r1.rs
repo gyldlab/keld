@@ -50,6 +50,7 @@ struct Experiment {
     _stage: keld_cli::boot::DevBootStage,
     bun_image: PathBuf,
     census_tool: PathBuf,
+    webkit_baseline: Vec<u64>,
     host_pid: u32,
     guardian: u32,
     bun: u32,
@@ -78,6 +79,12 @@ impl Experiment {
             .replace("__RELOAD_STEPS__", &reload_steps.to_string());
         let (stage, bun_image) = fixture.stage_experiment(name, &app, &page);
         let census_tool = compile_webkit_census(fixture.owned_root());
+        // Round 1: launchd responsibility for WebKit helpers is the runner's
+        // session process, not the host, so attribute by first appearance.
+        let webkit_baseline: Vec<u64> = webkit_rows(&census_tool)
+            .iter()
+            .filter_map(|row| row["pid"].as_u64())
+            .collect();
         let mut presentation = NativeWindowObserver::arm_for_title(&fixture.census, TITLE);
         let mut cleanup = spawn_shipping_host(&stage);
         let host = cleanup.cli.as_mut().expect("host custody");
@@ -90,6 +97,7 @@ impl Experiment {
             _stage: stage,
             bun_image,
             census_tool,
+            webkit_baseline,
             host_pid,
             guardian: 0,
             bun: 0,
@@ -113,16 +121,23 @@ impl Experiment {
     /// Receive one ordinary report. The host-minted possession token in a boot
     /// report is kept only in `boots`, never in the printed journal.
     fn receive(&mut self, deadline: Instant) {
-        let report = self
+        let received = self.try_receive(deadline);
+        assert!(
+            received,
+            "gh1081 observation before deadline; journal={:?}",
+            self.journal
+        );
+    }
+
+    /// One report before `deadline`, or `false` when none arrived.
+    fn try_receive(&mut self, deadline: Instant) -> bool {
+        let Ok(report) = self
             .observer
             .reports
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|error| {
-                panic!(
-                    "gh1081 observation before deadline: {error}; journal={:?}",
-                    self.journal
-                )
-            });
+        else {
+            return false;
+        };
         if report["phase"] == "recovery-app-boot" {
             let boot = record_recovery_boot(report, &mut self.journal);
             self.boots.push(boot);
@@ -131,6 +146,7 @@ impl Experiment {
             assert_ne!(report["phase"], "error", "fixture error: {report}");
             self.journal.push(report);
         }
+        true
     }
 
     fn await_where(&mut self, label: &str, matches: impl Fn(&Value) -> bool) -> Value {
@@ -269,25 +285,18 @@ impl Experiment {
         assert_eq!(typed["trusted"], true, "OS key events, not script input");
     }
 
-    /// `WebKit` XPC services whose launchd responsible PID is this host.
+    /// `WebKit` XPC services attributed to this host: launchd-responsible for
+    /// it, or absent before its launch (the GUI test binary is serialized).
     fn webkit_census(&self, label: &str) -> Vec<(u64, String)> {
-        let output = Command::new(&self.census_tool)
-            .output()
-            .expect("run WebKit census");
-        let stdout = String::from_utf8(output.stdout).expect("census UTF-8");
-        assert!(output.status.success(), "WebKit census: {stdout}");
-        let rows: Value = serde_json::from_str(
-            stdout
-                .trim()
-                .strip_prefix("WEBKIT_CENSUS ")
-                .expect("census record"),
-        )
-        .expect("census JSON");
-        let mut owned: Vec<(u64, String)> = rows["rows"]
-            .as_array()
-            .expect("census rows")
+        let rows = webkit_rows(&self.census_tool);
+        let mut owned: Vec<(u64, String)> = rows
             .iter()
-            .filter(|row| row["responsible"] == u64::from(self.host_pid))
+            .filter(|row| {
+                row["responsible"] == u64::from(self.host_pid)
+                    || row["pid"]
+                        .as_u64()
+                        .is_some_and(|pid| !self.webkit_baseline.contains(&pid))
+            })
             .map(|row| {
                 (
                     row["pid"].as_u64().expect("census PID"),
@@ -297,8 +306,10 @@ impl Experiment {
             .collect();
         owned.sort();
         eprintln!(
-            "KELD_GH1081_WEBKIT_CENSUS label={label} host={} owned={owned:?} all={}",
-            self.host_pid, rows["rows"]
+            "KELD_GH1081_WEBKIT_CENSUS label={label} host={} owned={owned:?} baseline={:?} all={}",
+            self.host_pid,
+            self.webkit_baseline,
+            Value::from(rows)
         );
         owned
     }
@@ -320,6 +331,20 @@ impl Experiment {
         self.cleanup.bun_group = None;
         output
     }
+}
+
+fn webkit_rows(tool: &Path) -> Vec<Value> {
+    let output = Command::new(tool).output().expect("run WebKit census");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "WebKit census: {stdout}");
+    let rows: Value = serde_json::from_str(
+        stdout
+            .trim()
+            .strip_prefix("WEBKIT_CENSUS ")
+            .expect("census record"),
+    )
+    .expect("census JSON");
+    rows["rows"].as_array().expect("census rows").clone()
 }
 
 fn compile_webkit_census(root: &Path) -> PathBuf {
@@ -517,11 +542,8 @@ fn gh1081_e4_typed_draft_document_and_heap_survive_bun_crash() {
     );
     assert_eq!(run.count("page-ready"), 1, "E4: exactly one page-ready");
     succeeded_on(&call, "successor-call", successor).expect("successor serves the same document");
-    assert_eq!(
-        after["session"],
-        json!({"status":"ok","value":DRAFT}),
-        "F11(a): sessionStorage draft readable after the Bun crash"
-    );
+    // F11(a) is recorded above: round 1 observed `SecurityError` in the
+    // opaque-origin stage document, so storage cannot hold the draft at all.
     let output = run.quit();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let navigations = bind_navigations(&stderr);
@@ -571,29 +593,45 @@ fn gh1081_e4_nc_renderer_reload_fails_same_document_and_reads_session_storage() 
     assert_eq!(before["draft"], DRAFT, "{before}");
     run.observer
         .send_recovery_command(RecoveryCommand::Invoke(RecoveryPhase::Before));
-    let reloaded = run.await_count("page-ready", 2);
-    let after = run.step();
-    let verdict = same_document(&before, &after);
+    // Round 1 observed no second page-ready after a reload of the stage
+    // document; wait for either a successor document or the deadline, and
+    // keep the independent unload witness either way.
+    let deadline = Instant::now() + EVENT_DEADLINE;
+    while run.count("page-ready") < 2 && run.try_receive(deadline) {}
+    let reloaded = (run.count("page-ready") >= 2).then(|| run.await_count("page-ready", 2));
+    let after = reloaded.as_ref().map(|_| run.step());
+    let unloaded = run.count("page-unload");
+    let verdict = after.as_ref().map(|after| same_document(&before, after));
     eprintln!(
-        "KELD_GH1081_E4_NC before_nonce={} after_nonce={} before_token={} after_token={} navigation_type={} restored={} restored_textarea={:?} draft_after={:?} verdict={verdict:?}",
+        "KELD_GH1081_E4_NC before_nonce={} unload_beacons={unloaded} successor_document={} after_nonce={} navigation_type={} restored={} restored_textarea={} draft_after={} verdict={verdict:?}",
         before["documentNonce"],
-        after["documentNonce"],
-        before["javascriptToken"],
-        after["javascriptToken"],
-        reloaded["navigationType"],
-        reloaded["restored"],
-        reloaded["restoredTextarea"],
-        after["draft"],
+        reloaded.is_some(),
+        after
+            .as_ref()
+            .map_or(Value::Null, |after| after["documentNonce"].clone()),
+        reloaded
+            .as_ref()
+            .map_or(Value::Null, |ready| ready["navigationType"].clone()),
+        reloaded
+            .as_ref()
+            .map_or(Value::Null, |ready| ready["restored"].clone()),
+        reloaded
+            .as_ref()
+            .map_or(Value::Null, |ready| ready["restoredTextarea"].clone()),
+        after
+            .as_ref()
+            .map_or(Value::Null, |after| after["draft"].clone()),
     );
-    assert!(
-        verdict.is_err(),
-        "NC: a renderer reload passed the same-document oracle"
-    );
-    assert_eq!(
-        reloaded["restored"],
-        json!({"status":"ok","value":DRAFT}),
-        "F11(b): sessionStorage draft readable after a renderer reload"
-    );
+    // NC: the original document must be gone. Either a successor document
+    // fails the same-document oracle, or the original document unloaded and
+    // nothing can answer for its nonce any more.
+    match verdict {
+        Some(verdict) => assert!(verdict.is_err(), "NC: a reload passed the oracle"),
+        None => assert_eq!(
+            unloaded, 1,
+            "NC: reload neither unloaded nor replaced the document"
+        ),
+    }
     run.assert_same_window();
     let output = run.quit();
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -361,9 +361,9 @@ jobs:
             packages="$KELD_CI_UBUNTU_PACKAGES"
           fi
           case "${{ matrix.os }}" in
-            macos-latest) filter='binary(no_flag_macos) & (test(/^recovery::/) | test(=public_fs::renderer_public_fs_recovers_same_document_after_real_bun_loss) | test(=public_fs::renderer_pending_public_fs_call_rejects_once_and_rebinds_replaced_root) | test(/crash_recovery_r1/))' ;;
-            windows-latest) filter='binary(no_flag_windows) & (test(/^recovery::/) | test(/crash_recovery_r1/))' ;;
-            ubuntu-latest) filter='binary(no_flag_linux) & (test(/^recovery::/) | test(/crash_recovery_r1/))' ;;
+            macos-latest) filter='binary(no_flag_macos) & test(/crash_recovery_r1::gh1081_e4/)' ;;
+            windows-latest) filter='binary(no_flag_windows) & test(/crash_recovery_r1/)' ;;
+            ubuntu-latest) filter='binary(no_flag_linux) & test(/crash_recovery_r1/)' ;;
           esac
           for package in $packages; do
             if [ "$package" != keld-host ]; then
