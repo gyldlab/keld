@@ -497,7 +497,7 @@ mod tests {
         // live guards before first navigation can consume the witness.
         let engine = include_str!("webview2/mod.rs");
         let saved = engine
-            .find("reconcile_saved_media_permissions(&view.webview)?")
+            .find("reconcile_saved_media_permissions(&view.webview, deadline)?")
             .expect("saved media permission reconciliation exists");
         let guard = engine
             .find("let guard = install_guarded_media_permissions(")

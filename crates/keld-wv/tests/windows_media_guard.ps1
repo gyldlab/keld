@@ -139,6 +139,11 @@ function Invoke-ProfileRegressionCases {
         'windows_busy_ephemeral_scavenge_subprocess',
         'windows_persistent_recovery_subprocess',
         'windows_saved_media_reconciliation_subprocess',
+        'saved_permission_deadline::windows_saved_permission_reconciliation_refuses_a_spent_budget',
+        'saved_permission_deadline::windows_saved_permission_read_callback_is_bounded',
+        'saved_permission_deadline::windows_saved_permission_write_callback_is_bounded',
+        'saved_permission_deadline::windows_saved_permission_create_keeps_one_budget_and_retries',
+        'saved_permission_deadline::windows_empty_saved_permission_collection_still_checks_budget',
         'windows_swallowed_browser_exit_fails_bounded_subprocess',
         'windows_unproven_probe_retains_predecessor_subprocess',
         'windows_unproven_probe_window_retains_predecessor_subprocess'
@@ -154,8 +159,11 @@ function Invoke-ProfileRegressionCases {
         'windows_unproven_probe_retains_predecessor_subprocess' = 300000
     }
     foreach ($case in $cases) {
-        $stdoutPath = Join-Path $EvidenceRoot "profile-$case.log"
-        $stderrPath = Join-Path $EvidenceRoot "profile-$case.stderr.log"
+        # Keep the exact nested libtest selector; Windows evidence filenames
+        # cannot contain the Rust module separator.
+        $fileStem = $case.Replace('::', '--')
+        $stdoutPath = Join-Path $EvidenceRoot "profile-$fileStem.log"
+        $stderrPath = Join-Path $EvidenceRoot "profile-$fileStem.stderr.log"
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $Binary
         $start.Arguments = "webview2::media_acceptance::tests::$case --ignored --exact --nocapture --test-threads=1"
@@ -192,8 +200,8 @@ if ($binaryHash -ne $sourceBinaryHash) {
 $watchdogProbe = Invoke-MediaWatchdogProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $outerDeadlineProbe = Invoke-MediaOuterDeadlineProbe -Binary $binary -EvidenceRoot $evidenceRoot
 $profileRegressionCount = Invoke-ProfileRegressionCases -Binary $binary -EvidenceRoot $evidenceRoot
-if ($profileRegressionCount -ne 8) {
-    throw "Expected eight Windows profile regressions, observed $profileRegressionCount"
+if ($profileRegressionCount -ne 13) {
+    throw "Expected thirteen Windows profile regressions, observed $profileRegressionCount"
 }
 $results = @()
 $seenNonces = @{}
