@@ -103,10 +103,61 @@ fn invalid_profile_keeps_guard_error_and_existing_doctor_json_array() {
 #[test]
 fn canonical_windows_profile_diagnostics_match_ordinary_cli_paths() {
     let root = tempfile::tempdir().expect("owned project");
-    let ordinary = root.path();
-    let canonical = ordinary.canonicalize().expect("canonical project");
-    for bytes in [r#"{"profile":null}"#, r#"{"profile":"legacy"}"#, "{}"] {
-        std::fs::write(ordinary.join("keld.permissions.jsonc"), bytes).expect("policy");
-        assert_eq!(profile(ordinary), profile(&canonical));
+    let canonical = root.path().canonicalize().expect("canonical project");
+    let canonical_text = canonical.to_str().expect("owned fixture path is Unicode");
+    // TempDir may use an 8.3 alias such as RUNNER~1. Derive the namespace-only
+    // comparison from one expanded spelling, not two different lexical aliases.
+    // The OS identity check below is independent of doctor's display formatter.
+    let ordinary = std::path::PathBuf::from(canonical_text.strip_prefix(r"\\?\UNC\").map_or_else(
+        || {
+            canonical_text
+                .strip_prefix(r"\\?\")
+                .expect("canonical Windows fixture has a verbatim prefix")
+                .to_owned()
+        },
+        |unc| format!(r"\\{unc}"),
+    ));
+    assert!(ordinary.is_absolute());
+    assert_ne!(ordinary, canonical);
+    assert_eq!(
+        ordinary.canonicalize().expect("same OS directory"),
+        canonical
+    );
+    for bytes in [
+        None,
+        Some("{}"),
+        Some(r#"{"profile":null}"#),
+        Some(r#"{"profile":"strict"}"#),
+        Some(r#"{"profile":"legacy"}"#),
+    ] {
+        if let Some(bytes) = bytes {
+            std::fs::write(root.path().join("keld.permissions.jsonc"), bytes).expect("policy");
+        }
+        let expected = profile(&canonical);
+        assert_eq!(
+            profile(&ordinary),
+            expected,
+            "namespace-only finding parity"
+        );
+
+        // Preserve the original TempDir/8.3 input as a separate semantic
+        // control. Diagnostics may name the alias supplied by the caller;
+        // that does not change validity, the error code or corrective action.
+        let alias = profile(root.path());
+        assert_eq!(alias.label, expected.label);
+        assert_eq!(alias.ok, expected.ok);
+        assert_eq!(
+            alias
+                .error
+                .as_ref()
+                .map(|error| (&error.code, &error.fix, &error.docs, &error.cause)),
+            expected.error.as_ref().map(|error| (
+                &error.code,
+                &error.fix,
+                &error.docs,
+                &error.cause
+            )),
+            "an alternate path spelling must not change the typed outcome"
+        );
     }
 }
