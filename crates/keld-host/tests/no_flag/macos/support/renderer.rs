@@ -4,6 +4,8 @@ use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
 use std::thread;
@@ -12,26 +14,67 @@ use std::thread::JoinHandle;
 pub(crate) struct NavigationBlocker {
     pub(crate) port: u16,
     pub(crate) connected: Receiver<()>,
-    pub(crate) release: mpsc::Sender<()>,
-    pub(crate) handle: JoinHandle<()>,
+    release: mpsc::Sender<()>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl NavigationBlocker {
     pub(crate) fn bind() -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind navigation blocker");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking navigation fixture accept");
         let port = listener.local_addr().expect("blocker address").port();
         let (connected_tx, connected) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
         let handle = thread::spawn(move || {
-            let (_stream, _) = listener.accept().expect("accept blocked navigation");
-            connected_tx.send(()).expect("report blocked navigation");
-            release_rx.recv().expect("release blocked navigation");
+            let _stream = loop {
+                // Cancellation belongs to NavigationBlocker::Drop; the test's
+                // existing receive deadline bounds its observation. Do not
+                // add a second clock starting before Host spawn.
+                if stopped.load(Ordering::Acquire) {
+                    return;
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::park_timeout(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("navigation fixture accept failed: {:?}", error.kind()),
+                }
+            };
+            if connected_tx.send(()).is_ok() {
+                // The test controls release, even if the Host has already
+                // exited. Drop sends release before joining this worker.
+                let _ = release_rx.recv();
+            }
         });
         Self {
             port,
             connected,
+            stop,
             release,
-            handle,
+            handle: Some(handle),
+        }
+    }
+
+    /// Joins the only accepting worker on the success path as well as unwind.
+    /// Callers preserve their original failure before inspecting this result.
+    pub(crate) fn stop_and_join(&mut self) -> thread::Result<()> {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.release.send(());
+        self.handle.take().map_or(Ok(()), JoinHandle::join)
+    }
+}
+
+impl Drop for NavigationBlocker {
+    fn drop(&mut self) {
+        let result = self.stop_and_join();
+        if !thread::panicking() {
+            result.expect("navigation blocker joins on drop");
         }
     }
 }
