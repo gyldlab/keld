@@ -388,6 +388,8 @@ where
             "initialWindow: \"none\" requires macOS facade boot support; remove initialWindow for renderer boots",
         ));
     }
+    let version = keld_core::version_from_config_ts(&config)
+        .map_err(|source| BootCompileError::new("project version", source.to_string()))?;
     let renderer = (!facade).then(|| {
         keld_core::renderer_from_config_ts(&config)
             .unwrap_or_else(|| keld_core::DEFAULT_RENDERER.to_owned())
@@ -532,6 +534,12 @@ where
         })?;
         object.insert(String::from("schema"), serde_json::Value::from(2));
         object.remove("renderer");
+    }
+    if let Some(version) = version {
+        let object = descriptor.as_object_mut().ok_or_else(|| {
+            BootCompileError::new("boot descriptor", "generated root is not an object")
+        })?;
+        object.insert(String::from("version"), serde_json::Value::String(version));
     }
     // Preserve the byte shape of legacy stages when no auth profile is configured.
     // A configured-but-incomplete profile is nonempty and must be carried unchanged;
@@ -1193,6 +1201,25 @@ mod tests {
         .expect("independent auth JSON literal");
         assert_eq!(descriptor["schema"], 1);
         assert_eq!(descriptor.get("auth"), Some(&expected_auth));
+    }
+
+    #[test]
+    fn stage_dev_boot_carries_only_explicit_literal_version_metadata() {
+        let (_temp, project, source_host) = fixture();
+        fs::write(
+            project.join("keld.config.ts"),
+            "export default {\n  name: \"Version Fixture\",\n  version: \"29.1.7-test+build.4\",\n  entry: \"src/main.ts\",\n  renderer: \"index.html\",\n} as const;\n",
+        )
+        .expect("version config");
+        fs::write(project.join("package.json"), r#"{"version":"DECOY"}"#)
+            .expect("package version must not override the explicit config");
+        let staged = stage_dev_boot(&project, &source_host).expect("versioned stage");
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &fs::read(staged.root().join("keld.boot.json")).expect("descriptor"),
+        )
+        .expect("descriptor JSON");
+        assert_eq!(descriptor["version"], "29.1.7-test+build.4");
+        assert_eq!(descriptor["schema"], 1);
     }
 
     #[cfg(target_os = "macos")]
