@@ -5465,6 +5465,8 @@ impl DirectPrimaryOwner {
         shutdown: SessionShutdownState,
     ) -> Result<Self, HostAppError> {
         let (command_tx, command_rx) = mpsc::channel();
+        #[cfg(test)]
+        let mut shutdown_fault = tests::direct_primary_output::take_shutdown_fault();
         let handle = thread::Builder::new()
             .name("keld-core-direct-primary-owner".to_owned())
             .spawn(move || {
@@ -5610,33 +5612,45 @@ impl DirectPrimaryOwner {
                         Ok(DirectPrimaryOwnerCommand::Shutdown(reply)) => {
                             let _ = recovery.deny();
                             supervisor.shutdown();
-                            let result = match supervisor.wait_for_outcome() {
+                            let outcome = supervisor.wait_for_outcome();
+                            #[cfg(test)]
+                            let outcome = tests::direct_primary_output::apply_shutdown_fault(
+                                &mut shutdown_fault, "requested shutdown", outcome,
+                            );
+                            let result = match outcome {
                                 keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                                 keld_runtime::SupervisorOutcome::CrashLoop(error)
                                 | keld_runtime::SupervisorOutcome::Failed(error) => {
-                                    Err(error.to_string())
+                                    Err(app_runtime("primary shutdown", &error))
                                 }
                             };
-                            let result = result.and_then(|()| {
-                                forward_direct_primary_output(&supervisor)
-                                    .map_err(|error| error.to_string())
-                            });
-                            let _ = reply.send(result.clone());
-                            return result
-                                .map_err(|detail| app_detail("primary shutdown", detail));
+                            let result = collapse_app_results([
+                                result,
+                                forward_direct_primary_output(&supervisor),
+                            ]);
+                            let _ = reply.send(result.as_ref().copied().map_err(ToString::to_string));
+                            return result;
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => {
                             let _ = recovery.deny();
                             supervisor.shutdown();
-                            let result = match supervisor.wait_for_outcome() {
+                            let outcome = supervisor.wait_for_outcome();
+                            #[cfg(test)]
+                            let outcome = tests::direct_primary_output::apply_shutdown_fault(
+                                &mut shutdown_fault, "owner disconnect", outcome,
+                            );
+                            let result = match outcome {
                                 keld_runtime::SupervisorOutcome::Stopped => Ok(()),
                                 keld_runtime::SupervisorOutcome::CrashLoop(error)
                                 | keld_runtime::SupervisorOutcome::Failed(error) => {
                                     Err(app_runtime("direct primary owner", &error))
                                 }
                             };
-                            return result.and_then(|()| forward_direct_primary_output(&supervisor));
+                            return collapse_app_results([
+                                result,
+                                forward_direct_primary_output(&supervisor),
+                            ]);
                         }
                     }
                 }
