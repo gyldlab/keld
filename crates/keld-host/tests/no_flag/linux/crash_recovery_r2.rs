@@ -1,6 +1,6 @@
 //! GH-1081 round-2 research only (never merged), Linux under Xvfb.
 //! (1) Reload of the stock scaffold page in the staged no-flag host: page-JS
-//! `location.reload()`, F5, Ctrl+R and the WebKitGTK context-menu Reload, with a
+//! `location.reload()`, F5, Ctrl+R and the `WebKitGTK` context-menu Reload, with a
 //! real-URL reload as the negative control. (2) The retired generation's token
 //! presented to the live, pre-HELLO successor listener. (3) An OS-typed draft
 //! across a real Bun crash. No production hook: input is XTEST via xdotool,
@@ -261,9 +261,9 @@ fn accept_held(listener: &UnixListener, host: &mut Child) -> Held {
         .expect("held control deadline");
     let writer = control.try_clone().expect("held control writer");
     let mut reader = BufReader::new(control);
-    let line = read_control_line(&mut reader);
-    let mut fields = line.split_whitespace();
-    assert_eq!(fields.next(), Some("PRE_HELLO"), "{line}");
+    let record = read_control_line(&mut reader);
+    let mut fields = record.split_whitespace();
+    assert_eq!(fields.next(), Some("PRE_HELLO"), "{record}");
     let _pid = fields.next().expect("held pid");
     let link = fields.next().expect("held link").to_owned();
     Held {
