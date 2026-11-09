@@ -1,9 +1,11 @@
 use crate::support::PROCESS_DEADLINE;
 use crate::support::control::wait_child_output;
 use crate::support::dev_cycle::ShippingLaunchCleanup;
+use std::collections::HashSet;
 use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::PathBuf;
@@ -154,12 +156,18 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
     // "launch", so it is not this host's resource.
     let pid = std::process::id();
     let stale = PlantedSessionDir::create(pid, "stale-before-launch");
+    let census = SessionDirCensus::before_launch();
     assert_eq!(
-        session_dirs_for(pid),
+        census.dirs_for(pid),
         [] as [PathBuf; 0],
         "a directory that predates the launch was attributed to the host: {}",
         stale.0.display()
     );
+    // Negative control: a directory with the host's prefix that appears after
+    // the census is still attributed, so a host that leaves its own session
+    // behind still fails the cleanup assertions.
+    let owned = PlantedSessionDir::create(pid, "left-by-this-host");
+    assert_eq!(census.dirs_for(pid), std::slice::from_ref(&owned.0));
 }
 
 pub(crate) fn await_process_state(pid: u32, wanted: char) {
@@ -286,8 +294,40 @@ pub(crate) fn process_state(pid: u32) -> String {
     }
 }
 
-pub(crate) fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
-    let prefix = format!("kb-{pid:x}-");
+/// The `kb-*` bootstrap session directories that existed before a host launch.
+///
+/// The bootstrap names each session directory `kb-<pid hex>-<nonce>` in one of
+/// three temp roots. macOS reuses PIDs, and an earlier process that was killed
+/// before cleanup leaves its directory behind, so a PID prefix alone does not
+/// identify the current host's directories. A directory that already existed
+/// before the launch cannot be the launched host's resource; every directory
+/// with the host's prefix that appears after the census still is, including
+/// one that this host leaves behind.
+pub(crate) struct SessionDirCensus {
+    existing: HashSet<(PathBuf, u64, u64)>,
+}
+
+impl SessionDirCensus {
+    /// Records the existing session directories. Call before spawning the
+    /// process that launches the host.
+    pub(crate) fn before_launch() -> Self {
+        Self {
+            existing: session_dir_entries(|_| true).collect(),
+        }
+    }
+
+    /// Session directories for `pid` that did not exist at the census.
+    pub(crate) fn dirs_for(&self, pid: u32) -> Vec<PathBuf> {
+        let prefix = format!("kb-{pid:x}-");
+        session_dir_entries(|name| name.starts_with(&prefix))
+            .filter(|entry| !self.existing.contains(entry))
+            .map(|(path, _, _)| path)
+            .collect()
+    }
+}
+
+/// `(path, device, inode)` for each `kb-*` entry whose name passes `keep`.
+fn session_dir_entries(keep: impl Fn(&str) -> bool) -> impl Iterator<Item = (PathBuf, u64, u64)> {
     [
         std::env::temp_dir(),
         PathBuf::from("/tmp"),
@@ -300,9 +340,15 @@ pub(crate) fn session_dirs_for(pid: u32) -> Vec<PathBuf> {
             .flatten()
             .filter_map(Result::ok)
     })
-    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-    .map(|entry| entry.path())
-    .collect()
+    .filter(move |entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.starts_with("kb-") && keep(&name)
+    })
+    .filter_map(|entry| {
+        let metadata = fs::symlink_metadata(entry.path()).ok()?;
+        Some((entry.path(), metadata.dev(), metadata.ino()))
+    })
 }
 
 // SDK sys/event.h ABI and constants, local to this independent macOS test census.
