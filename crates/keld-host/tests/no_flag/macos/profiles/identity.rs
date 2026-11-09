@@ -81,9 +81,28 @@ fn kel135_macos_package_identity_uses_only_validated_running_signature_facts() {
     );
     assert_ne!(identity_a["store_uuid"], identity_other["store_uuid"]);
 
+    reject_ad_hoc_identity(stage.root(), &app_root);
+    reject_tampered_identity(&app_root, &app_a);
+    eprintln!(
+        "KELD_KEL135_MACOS_PACKAGE_IDENTITY macos={} team={} app_a_identifier={} app_b_identifier={} other_publisher_team={} other_publisher_identifier={} app_a_profile={} app_b_profile={} other_publisher_profile={} invalid_signature_rejected=true ad_hoc_rejected=true",
+        sw_vers_value("-productVersion"),
+        identity_a["team_id"],
+        identity_a["signing_identifier"],
+        identity_b["signing_identifier"],
+        identity_other["team_id"],
+        identity_other["signing_identifier"],
+        identity_a["profile_identity"],
+        identity_b["profile_identity"],
+        identity_other["profile_identity"],
+    );
+}
+
+// These controls are independently reported negative branches; the scenario
+// retains the original signed-stage owner and final identity comparisons.
+fn reject_ad_hoc_identity(stage_root: &std::path::Path, app_root: &std::path::Path) {
     let ad_hoc_app = build_signed_profile_app(
-        stage.root(),
-        &app_root,
+        stage_root,
+        app_root,
         "ProfileAppAdHoc",
         &format!("dev.keld.fixture.profile.adhoc.{}", std::process::id()),
         "-",
@@ -111,12 +130,14 @@ fn kel135_macos_package_identity_uses_only_validated_running_signature_facts() {
         !ad_hoc_text.contains("KELD_KEL135_SIGNED_IDENTITY"),
         "non-Apple ad-hoc signature disclosed package identity: {ad_hoc_text}"
     );
+}
 
+fn reject_tampered_identity(app_root: &std::path::Path, app_a: &std::path::Path) {
     let invalid_app = app_root.join("ProfileAppInvalid");
     fs::create_dir(&invalid_app).expect("create invalid-signature fixture directory");
     fs::set_permissions(&invalid_app, fs::Permissions::from_mode(0o700))
         .expect("protect invalid-signature fixture directory");
-    copy_profile_fixture_tree(&app_a, &invalid_app);
+    copy_profile_fixture_tree(app_a, &invalid_app);
     let invalid_executable = signed_host_executable(&invalid_app);
     fs::set_permissions(&invalid_executable, fs::Permissions::from_mode(0o700))
         .expect("enable signed Mach-O mutation control");
@@ -146,17 +167,5 @@ fn kel135_macos_package_identity_uses_only_validated_running_signature_facts() {
     assert!(
         !invalid_text.contains("KELD_KEL135_SIGNED_IDENTITY"),
         "invalid signature disclosed an app identity: {invalid_text}"
-    );
-    eprintln!(
-        "KELD_KEL135_MACOS_PACKAGE_IDENTITY macos={} team={} app_a_identifier={} app_b_identifier={} other_publisher_team={} other_publisher_identifier={} app_a_profile={} app_b_profile={} other_publisher_profile={} invalid_signature_rejected=true ad_hoc_rejected=true",
-        sw_vers_value("-productVersion"),
-        identity_a["team_id"],
-        identity_a["signing_identifier"],
-        identity_b["signing_identifier"],
-        identity_other["team_id"],
-        identity_other["signing_identifier"],
-        identity_a["profile_identity"],
-        identity_b["profile_identity"],
-        identity_other["profile_identity"],
     );
 }
