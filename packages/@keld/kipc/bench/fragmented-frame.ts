@@ -19,12 +19,19 @@ async function measure(payloadBytes: number): Promise<Sample> {
   const started = performance.now();
   for (let offset = 0; offset < payloadBytes; offset += CHUNK_BYTES) {
     const remaining = payloadBytes - offset;
-    reader.push(remaining >= CHUNK_BYTES ? fullChunk : fullChunk.subarray(0, remaining));
+    reader.push(
+      remaining >= CHUNK_BYTES ? fullChunk : fullChunk.subarray(0, remaining),
+    );
   }
   const frame = await pending;
   const elapsedMs = performance.now() - started;
-  if (frame.payload.byteLength !== payloadBytes || reader.bufferedBytes() !== 0) {
-    throw new Error("KELD-IPC-005: fragmented benchmark did not consume exactly one frame");
+  if (
+    frame.payload.byteLength !== payloadBytes ||
+    reader.bufferedBytes() !== 0
+  ) {
+    throw new Error(
+      "KELD-IPC-005: fragmented benchmark did not consume exactly one frame",
+    );
   }
   return {
     payloadBytes,
@@ -34,7 +41,9 @@ async function measure(payloadBytes: number): Promise<Sample> {
 }
 
 function median(samples: readonly Sample[]): number {
-  const ordered = samples.map((sample) => sample.elapsedMs).sort((a, b) => a - b);
+  const ordered = samples
+    .map((sample) => sample.elapsedMs)
+    .sort((a, b) => a - b);
   return ordered[Math.floor(ordered.length / 2)]!;
 }
 

@@ -340,6 +340,32 @@ Implementation registers, at minimum:
 Existing `KELD-IPC-001..007` keep their KEL-133 meanings. Do not allocate a
 new KIPC error code for a webview-local validation failure.
 
+**Current-behaviour correction (GH-1095, 2026-10-22).** The `KELD-WV-011`
+bullet above is not true of the code at `516644b0`. Two emitters return
+`KELD-WV-011` when the call may already have run:
+
+- the host, after the CALL frame write was attempted: a failed write ("application
+  call is unavailable or already pending") or a link end after dispatch
+  ("application link ended before the renderer reply");
+- the page facade, on `pagehide` while a call is pending ("renderer document
+  navigated before reply").
+
+The same `KELD-API-001` bytes also cover both "no handler registered" (no app
+code ran) and "handler failed" (it may have run).
+
+Until GH-1095 is approved and implemented:
+
+- callers MUST treat every `KELD-WV-011` and every `KELD-API-001` as outcome
+  unknown, without branching on the detail string;
+- callers MUST NOT resend those calls automatically.
+
+The draft contract revision
+[`gh1095-request-error-codes.md`](gh1095-request-error-codes.md) narrows
+`KELD-WV-011` back to pre-write refusals and adds `KELD-WV-012` (definitely not
+dispatched), `KELD-WV-013` (outcome unknown) and `KELD-API-002` (no handler
+registered), and it keeps `KELD-WV-011` as "never resend automatically". It
+supersedes this section only once approved.
+
 ## 8. Fuzzing and deterministic hostile tests
 
 KEL-142 introduces a new untrusted decoder: `keld.wv-link/v1`. Therefore

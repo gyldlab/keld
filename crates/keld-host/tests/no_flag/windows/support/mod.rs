@@ -2,6 +2,8 @@
 
 pub(crate) mod control;
 pub(crate) mod cross_user;
+#[cfg(all(feature = "profile-test-hooks", debug_assertions))]
+pub(crate) mod facade_fixture;
 pub(crate) mod handles;
 pub(crate) mod installed;
 pub(crate) mod process;

@@ -57,6 +57,8 @@ class AuditVerifyTests(unittest.TestCase):
         manifest_path.write_bytes(original_manifest)
 
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        # No detached `git maintenance` repack may outlive the commit and race cleanup (#670).
+        subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=self.repo, check=True)
         subprocess.run(["git", "config", "user.name", "audit-test"], cwd=self.repo, check=True)
         subprocess.run(
             ["git", "config", "user.email", "audit-test@example.invalid"],

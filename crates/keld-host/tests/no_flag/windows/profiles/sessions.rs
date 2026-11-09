@@ -13,7 +13,6 @@
 //! before the quit) and after the host exited. The host replaces the record by a rename
 //! under its lease, which an open reader's handle makes fail, so the cell never polls it.
 
-use crate::PRODUCT_DEADLINE;
 use crate::support::control::{accept_ready_generation, read_control_line};
 use crate::support::installed::{INSTALLER_ENV, InstalledApp, SIGNED_HOST_A_P1, fixture_env};
 use crate::support::process::{
@@ -24,6 +23,7 @@ use crate::support::process::{
 use crate::support::product::ProductFixture;
 use crate::support::profile_run::{ProfileTestRoot, assert_profile_test_root_feature};
 use crate::support::window::wait_for_host_window;
+use crate::{PRODUCT_DEADLINE, ui_end_kill_switch};
 use serde_json::Value;
 use std::fs;
 use std::io::{BufReader, Read as _, Write as _};
@@ -167,9 +167,10 @@ impl SeamedHost {
         );
     }
 
-    /// Waits for the orderly exit and returns its status with the drained output.
+    /// Waits for the orderly exit, which includes the UI end, and returns its status
+    /// with the drained output.
     pub(super) fn finish(self) -> (std::process::ExitStatus, String, String) {
-        self.finish_by(Instant::now() + PRODUCT_DEADLINE)
+        self.finish_by(Instant::now() + ui_end_kill_switch())
     }
 
     /// [`Self::finish`] under a caller-chosen kill switch.

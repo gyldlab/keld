@@ -37,11 +37,13 @@
 # hosted OSes (~13.6k PASS lines): slowest test 75.1s (macOS
 # boot_admission::every_invalid_boot_class_fails_before_transient_window_listener_or_bun),
 # then 57.2s (Windows keld-update transaction cut test) and 23.9s (Linux). 10 min
-# is >= 8x the slowest, so no per-test override is needed. Re-measure before
-# adding a slower test; never raise this to absorb a hang. The pinned
-# taiki-e/install-action step installs `cargo-nextest@latest` (0.9.145 on the hosted
-# runs that introduced this bound). That version is not pinned: re-check this bound's
-# behaviour whenever the installed nextest version changes.
+# is >= 8x the slowest, so measured durations need no per-test override; the one
+# override (binary `no_flag_windows`, below) exists because a kill switch of its
+# own is longer, not because a test ran slower. Re-measure before adding a slower
+# test; never raise this to absorb a hang. The pinned
+# taiki-e/install-action is SHA-pinned, and both native CI jobs explicitly
+# select `nextest@0.9.149` with an executable-version assertion. Re-measure
+# this bound whenever the reviewed Nextest binary pin changes.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # Real macOS no-flag rows own native AppKit/WKWebView sessions. KEL-142 adds
@@ -61,12 +63,27 @@ test-group = "macos-no-flag-gui"
 # sessions concurrently on the two-core GitHub runner can starve a renderer
 # beacon while every process and port remains test-private. Serialize only this
 # binary so the existing event-driven assertions and deadlines remain exact.
+#
+# This binary's per-test terminate is 12 min, not the 10 min above, because one
+# of its own kill switches is longer than 10 min, so the default would cut a
+# healthy test first. A host exit after `Quit` is bounded by keld-wv's
+# `WEBVIEW2_TEARDOWN_BOUND`: the 325 s UI end, plus a post-release scavenge probe
+# of a stale dev-ephemeral leaf (15 s launch + 325 s release). The harness adds
+# its 20 s product deadline, and a handover cell adds the 10 s quit deadline D:
+# 695 s in all. 12 min (720 s) is the smallest whole-minute bound above that, so
+# no single kill switch is longer than the test's terminate. This bound does NOT
+# cover a whole test whose sequential waits all run to their bounds (a startup
+# then an exit, or two exits back to back): there a late switch can still end as
+# nextest's anonymous TIMEOUT instead of its typed failure.
+# `profiles::handover::kill_switches_stay_below_the_nextest_terminate`
+# reads this block and fails if a kill switch reaches it.
 [test-groups.windows-no-flag-gui]
 max-threads = 1
 
 [[profile.ci.overrides]]
 filter = "binary(no_flag_windows)"
 test-group = "windows-no-flag-gui"
+slow-timeout = { period = "60s", terminate-after = 12 }
 
 # Linux strict cases each construct user/mount/PID/network namespaces and use
 # the same built launcher artifact. Parallel nextest processes can make
