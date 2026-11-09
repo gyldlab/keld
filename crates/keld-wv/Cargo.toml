@@ -91,7 +91,8 @@ webview2-com = "0.38"
 # directory creation (Win32_Security/FileSystem), and CoInitializeEx/
 # CoTaskMemFree (Win32_System_Com). Same crate+version webview2-com pins — an explicit path
 # to a crate already in the graph rather than a second copy.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Input_KeyboardAndMouse binds the UI-thread GetActiveWindow focus guard explicitly.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os="linux")'.dependencies]
 tao = "0.35.3"
