@@ -21,7 +21,7 @@ if (first.done || first.value.byteLength !== 1 || first.value[0] !== 81) process
 process.stdout.write("KQA");
 while (!(await input.read()).done) {}
 "#;
-    let mut child = Command::new("bun")
+    let mut child = Command::new(super::test_support::verified_real_bun())
         .args(["-e", script])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -41,6 +41,7 @@ while (!(await input.read()).done) {}
         worker: None,
         shutdown_attributed: false,
         shutdown_failed: false,
+        orderly_acknowledged: false,
         shutdown_sent: None,
         #[cfg(test)]
         shutdown_denial_fence: None,

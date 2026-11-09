@@ -50,8 +50,10 @@ each absolute filesystem scope anchor, and resolves bounded per-call traversal
 relative to the guard-selected retained grant. It rejects unserviceable scopes,
 snapshot mismatches, final exact-scope aliases, escapes, mount/volume crossings,
 non-regular objects, and fixed path/content/component/link limits before exposing
-bytes. The shipping no-flag host still does not register `FS_CHANNEL`; KEL-102/T3
-owns that later route and in-flight lifecycle integration.
+bytes. The guarded app-link filesystem route is implemented (KEL-102/T3), with macOS
+project-policy verification and absent-policy broker-deny fallback; incomplete non-macOS
+policy producers, renderer forwarding, and full hostile/deadline/quiescence qualification
+remain bounded and open.
 Host-lifecycle `Quit` / `Ready` / `LastWindowClosed` (KEL-72,
 `LIFECYCLE_CHANNEL`) are session control on an already-minted app-link, not
 OS-authority handlers, and stay ungated like echo.

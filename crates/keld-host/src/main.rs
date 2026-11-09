@@ -28,13 +28,18 @@ use std::process::{Command, Stdio};
 const WINDOWS_DEV_STAGE_CLEANUP_ARG: &str = "--keld-windows-dev-stage-cleanup-v1";
 
 fn main() {
+    let native_args: Vec<std::ffi::OsString> = env::args_os().collect();
+    // Private Windows roles consume the untouched native argv first.
     #[cfg(windows)]
-    let windows_args: Vec<std::ffi::OsString> = env::args_os().collect();
-    #[cfg(windows)]
-    if handle_windows_private_role(&windows_args) {
+    if handle_windows_private_role(&native_args) {
         return;
     }
-    let args: Vec<String> = env::args().collect();
+    // Native argv may be non-Unicode on every OS. Refuse it before boot
+    // selection or any WebView/OS authority instead of panicking in args().
+    let args = keld_core::unicode_args(native_args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        process::exit(2);
+    });
     #[cfg(all(target_os = "macos", feature = "profile-test-hooks", debug_assertions))]
     if run_macos_profile_fixture_role(&args) {
         return;
@@ -88,9 +93,7 @@ fn main() {
         process::exit(1);
     }
 
-    // The capability is kept until the host exits; nothing closes its handle
-    // (KEL-53 §4 "Candidate release after commit"). S6c adds the one
-    // `release_for_exit` call on the committed `PerUserDirect` exit path.
+    // Keep the Job until exit (KEL-53 §4); S6c owns the committed release_for_exit call.
     #[cfg(windows)]
     let _host_death_job = match keld_runtime::windows_job::install_host_death_job() {
         Ok(host_death_job) => host_death_job,
@@ -422,6 +425,9 @@ fn guardian_bun_command(
     // release-grade resistance to a same-user replacement in that
     // residual window; the signed-container successor must close it.
     drop(reopened);
+    // No `pre_exec` hook here: the Guardian's SpawnAdmission gate must be
+    // the only one, so a child refused before its exec permit is its whole
+    // process group (keld-runtime `GuardedPrimaryPreparer::prepare`).
     let mut command = Command::new("bun");
     command
         .arg("run")

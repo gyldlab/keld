@@ -4,8 +4,10 @@
 //! At bootstrap the session must exist with a positive logon time, which the journal
 //! records beside the session's LUID. At retirement the recorded session counts as
 //! ended only when `LsaGetLogonSessionData` reports `STATUS_NO_SUCH_LOGON_SESSION`, or
-//! when the session now holding that LUID has a different logon time, because a LUID is
-//! unique only until restart. A live session, access denial and every other status halt.
+//! when the session now holding that LUID has a different positive logon time, because a
+//! LUID is unique only until restart. A present session whose logon time is zero or
+//! negative is malformed data that cannot prove a different logon generation, so it halts
+//! like a live session, access denial and every other status.
 
 // SAFETY policy: the LSA query and the release of its buffer are confined to this
 // module; callers receive copied values only.
@@ -104,7 +106,8 @@ pub enum WindowsLogonSessionError {
         status: NTSTATUS,
     },
     /// The query succeeded but its data was missing, out of bounds, named another
-    /// session, or could not be released (`KELD-GUARD022`).
+    /// session, could not be released, or reported a zero or negative logon time for a
+    /// present session at retirement (`KELD-GUARD022`).
     Malformed {
         /// The queried session.
         session: WindowsLogonSessionId,
@@ -183,13 +186,14 @@ pub fn windows_initiating_logon_time(
 }
 
 /// Requires the recorded initiating session to have ended: no such logon session exists,
-/// or the session now holding that LUID began at another time.
+/// or the session now holding that LUID began at a different positive logon time. A present
+/// session whose logon time is zero or negative is malformed and halts.
 ///
 /// # Errors
 /// [`WindowsLogonSessionError::SessionLive`] when the session still exists with
 /// `recorded` as its logon time, and [`WindowsLogonSessionError::QueryStatus`] or
 /// [`WindowsLogonSessionError::Malformed`] for every other query result, including
-/// access denial.
+/// access denial and a present session with a zero or negative logon time.
 pub fn require_windows_logon_session_ended(
     session: WindowsLogonSessionId,
     recorded: WindowsLogonTime,
@@ -201,26 +205,10 @@ pub fn require_windows_logon_session_ended(
     )
 }
 
-/// What one `LsaGetLogonSessionData` call returned, copied out of the LSA buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LsaReply {
-    status: NTSTATUS,
-    session: Option<CopiedSession>,
-    released: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CopiedSession {
-    logon_id: WindowsLogonSessionId,
-    logon_time: i64,
-}
-
-/// The one accepted reading of a query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionState {
-    Present { logon_time: i64 },
-    Absent,
-}
+mod observation;
+#[cfg(test)]
+use observation::SessionState;
+use observation::{CopiedSession, LsaReply, initiating_logon_time, observe, session_ended};
 
 fn query_logon_session(session: WindowsLogonSessionId) -> Result<LsaReply, &'static str> {
     let luid = session.to_luid();
@@ -283,56 +271,6 @@ unsafe fn copy_session(
         logon_id: WindowsLogonSessionId::from_luid(logon_id),
         logon_time,
     })
-}
-
-fn observe(
-    session: WindowsLogonSessionId,
-    reply: Result<LsaReply, &'static str>,
-) -> Result<SessionState, WindowsLogonSessionError> {
-    let malformed = |detail| WindowsLogonSessionError::Malformed { session, detail };
-    let reply = reply.map_err(malformed)?;
-    if !reply.released {
-        return Err(malformed("its LSA buffer could not be released"));
-    }
-    match (reply.status, reply.session) {
-        (STATUS_SUCCESS, Some(copied)) if copied.logon_id == session => Ok(SessionState::Present {
-            logon_time: copied.logon_time,
-        }),
-        (STATUS_SUCCESS, Some(_)) => Err(malformed("the returned data names another session")),
-        (STATUS_SUCCESS, None) => Err(malformed("success returned no session data")),
-        (STATUS_NO_SUCH_LOGON_SESSION, _) => Ok(SessionState::Absent),
-        (status, _) => Err(WindowsLogonSessionError::QueryStatus { session, status }),
-    }
-}
-
-fn initiating_logon_time(
-    session: WindowsLogonSessionId,
-    state: SessionState,
-) -> Result<WindowsLogonTime, WindowsLogonSessionError> {
-    match state {
-        SessionState::Present { logon_time } => {
-            WindowsLogonTime::new(logon_time).ok_or(WindowsLogonSessionError::Unrecordable {
-                session,
-                detail: "its logon time is zero or negative",
-            })
-        }
-        SessionState::Absent => Err(WindowsLogonSessionError::Unrecordable {
-            session,
-            detail: "no such logon session exists",
-        }),
-    }
-}
-
-fn session_ended(
-    session: WindowsLogonSessionId,
-    recorded: WindowsLogonTime,
-    state: SessionState,
-) -> Result<(), WindowsLogonSessionError> {
-    match state {
-        SessionState::Absent => Ok(()),
-        SessionState::Present { logon_time } if logon_time != recorded.get() => Ok(()),
-        SessionState::Present { .. } => Err(WindowsLogonSessionError::SessionLive { session }),
-    }
 }
 
 #[cfg(test)]
@@ -607,7 +545,36 @@ mod tests {
                     detail: "its logon time is zero or negative",
                 })
             );
-            assert_eq!(session_ended(SESSION, recorded(), state), Ok(()));
+            assert_eq!(
+                session_ended(SESSION, recorded(), state),
+                Err(WindowsLogonSessionError::Malformed {
+                    session: SESSION,
+                    detail: "a present logon session returned a nonpositive logon time",
+                }),
+                "a nonpositive success timestamp must not authorize owner retirement",
+            );
+        }
+    }
+
+    #[test]
+    fn same_luid_nonpositive_live_logon_time_cannot_authorize_retirement() {
+        // This is a successful LsaGetLogonSessionData reply with an actual
+        // copied same-LUID payload, not the unreachable failure+Some seam.
+        // Positive recorded logon time is already guaranteed at bootstrap.
+        for logon_time in [0, -1, i64::MIN] {
+            let state = observe(
+                SESSION,
+                Ok(reply(STATUS_SUCCESS, Some((SESSION, logon_time)))),
+            )
+            .expect("successful same-LUID LSA reply is copied");
+            assert_eq!(
+                session_ended(SESSION, recorded(), state),
+                Err(WindowsLogonSessionError::Malformed {
+                    session: SESSION,
+                    detail: "a present logon session returned a nonpositive logon time",
+                }),
+                "nonpositive {logon_time} cannot establish an unrelated logon generation",
+            );
         }
     }
 

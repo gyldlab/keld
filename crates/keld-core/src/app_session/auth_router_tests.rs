@@ -369,7 +369,7 @@ fn auth_capacity_refuses_one_call_without_fatal_or_stream_desynchronization() ->
         (ping.kind, ping.corr),
         (FrameKind::Ping, CorrelationId(101))
     );
-    assert!(payload.is_empty());
+    assert_eq!(payload.len(), 0);
     assert!(matches!(
         fixture.window.try_recv(),
         Err(mpsc::TryRecvError::Empty)

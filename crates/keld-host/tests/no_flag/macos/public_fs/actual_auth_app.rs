@@ -146,7 +146,7 @@ fn loopback_socket_census_requires_one_complete_listening_record() {
         "f4\ntIPv4\nn127.0.0.1:0\nTST=LISTEN\n",
         "f4\ntIPv4\nn127.0.0.1:43123\nf5\nTST=LISTEN\n",
     ] {
-        assert!(loopback_listener_ports(snapshot).is_empty());
+        assert_eq!(loopback_listener_ports(snapshot).len(), 0);
     }
 }
 

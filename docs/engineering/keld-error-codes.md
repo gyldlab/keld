@@ -218,7 +218,7 @@ match the crate that already emits the code. Do not invent a third spelling.
 
 - crate: keld-wv
 - message: Webview creation failed
-- fix: On macOS ensure WKWebView is available (10.13+); on Windows ensure the WebView2 runtime is installed.
+- fix: On macOS ensure WKWebView is available (10.13+); on Windows inspect the WebView2 HRESULT, profile permissions and controller state.
 
 ## KELD-WV-004
 
@@ -393,6 +393,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - crate: keld-cli
 - message: Owner-private staged host could not be launched
 - fix: Verify `keld` and `keld-host` came from the same installation and the named staged path is executable. If cleanup also failed, remove only the named launch directory after confirming no staged process remains.
+
+## KELD-CLI-051
+
+- crate: keld-core
+- message: A process argument is not valid Unicode
+- fix: Pass every argument, including the program path, as valid Unicode text; rename or re-quote the offending path or name.
 
 ## KELD-MCP001
 

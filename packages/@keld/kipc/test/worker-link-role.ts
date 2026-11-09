@@ -253,7 +253,10 @@ function overflow(bound: "bytes" | "records"): () => Promise<void> {
 }
 
 // Criterion 11: a second open in the realm, and a second connect to the locator.
-async function secondLink(): Promise<void> {
+// `connectAgain` false is the Windows "second-open" case (#528 T5): the host
+// itself proves the OS refuses a second client of the busy pipe, because
+// Bun's connect to a busy pipe waits libuv's fixed 30 s before it refuses.
+async function secondLink(connectAgain: boolean): Promise<void> {
   const { link } = await open();
   try {
     await WorkerLink.open({ link: requireLink(), receive: LIFECYCLE_EVENTS });
@@ -261,14 +264,16 @@ async function secondLink(): Promise<void> {
   } catch (err) {
     report("second-open", codeOf(err));
   }
-  const { endpoint } = parseAppLink(requireLink());
-  try {
-    const socket = await Bun.connect({ unix: endpoint, socket: { data() {} } });
-    socket.end();
-    report("second-connect", "connected");
-  } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    report("second-connect", `refused:${typeof code === "string" ? code : "error"}`);
+  if (connectAgain) {
+    const { endpoint } = parseAppLink(requireLink());
+    try {
+      const socket = await Bun.connect({ unix: endpoint, socket: { data() {} } });
+      socket.end();
+      report("second-connect", "connected");
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      report("second-connect", `refused:${typeof code === "string" ? code : "error"}`);
+    }
   }
   report("first-link", decoder.decode(link.callBlocking(ECHO_CHANNEL, text("still-up"), 30_000)));
 }
@@ -957,7 +962,8 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   "worker-wedge": workerFault("wedge"),
   "overflow-bytes": overflow("bytes"),
   "overflow-records": overflow("records"),
-  "second-link": secondLink,
+  "second-link": () => secondLink(true),
+  "second-open": () => secondLink(false),
   correlation,
   "inner-blocking-call": innerBlockingCall,
   deadlines,

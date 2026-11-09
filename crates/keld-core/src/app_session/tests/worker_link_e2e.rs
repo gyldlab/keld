@@ -2,23 +2,29 @@
 //! host half of 8; the T3 Quit-then-close rule): a Bun role running the
 //! GH-527 `WorkerLink` fixture
 //! (`packages/@keld/kipc/test/worker-link-role.ts`) against the guarded
-//! primary router on a real authenticated app link. macOS only, like the T1
-//! harness; T5 qualifies Linux and Windows.
+//! primary router on a real authenticated app link. Every OS with a router
+//! runs them (#528 T5). Windows has no post-Quit drain (`await_windows_quit_peer_close`
+//! is its Quit tail), so the drain-end case is a Unix expectation and Windows
+//! states its own (gh527 §10, T5 finding).
 //! The colocated host lifecycle receipt case uses the parent
 //! framed socket-pair fixture without a Bun WorkerLink role or HELLO. It qualifies
 //! core reservation/acceptance only; OS acknowledgment remains separate.
 //!
 //! KEL-140 owns the added public-index retirement and reply-wins consumers.
+//! They, the public FS ring cases and the native observer cases stay macOS
+//! only, as they were before #528 T5 widened this module.
 //! Keep them with this existing authenticated router/process owner; review the module's layout
 //! trigger at KEL-140 acceptance rather than duplicate that owner in another harness.
 
 use super::*;
 
+#[cfg(target_os = "macos")]
 #[path = "public_fs_ring_e2e.rs"]
 mod public_fs_ring_e2e;
 
 #[cfg(feature = "fs-acceptance-observer")]
 keld_native::keld_native_fs_observer_items! {
+    #[cfg(target_os = "macos")]
     #[path = "native_observer_e2e.rs"]
     pub(in crate::app_session) mod native_observer_e2e;
 }
@@ -61,15 +67,18 @@ impl WorkerLinkRole {
         Self::spawn_authenticated(&listener, command)
     }
 
+    #[cfg(target_os = "macos")]
     /// Uses the same custody and authenticated router for a public-index caller.
     fn start_public_fs() -> (Self, GuardedTestRouter) {
         Self::start_public_fs_scenario("retirement")
     }
 
+    #[cfg(target_os = "macos")]
     fn start_public_fs_scenario(scenario: &str) -> (Self, GuardedTestRouter) {
         Self::start_public_fs_with_test_setup(scenario, None)
     }
 
+    #[cfg(target_os = "macos")]
     fn start_public_fs_with_test_setup(
         scenario: &str,
         setup: Option<GuardedFsTestSetup>,
@@ -77,6 +86,7 @@ impl WorkerLinkRole {
         Self::start_public_fs_with_test_setup_and_report(scenario, setup, None)
     }
 
+    #[cfg(target_os = "macos")]
     fn start_public_fs_with_report(
         scenario: &str,
         key: &'static str,
@@ -85,6 +95,7 @@ impl WorkerLinkRole {
         Self::start_public_fs_with_test_setup_and_report(scenario, None, Some((key, observed)))
     }
 
+    #[cfg(target_os = "macos")]
     fn start_public_fs_with_test_setup_and_report(
         scenario: &str,
         setup: Option<GuardedFsTestSetup>,
@@ -105,11 +116,13 @@ impl WorkerLinkRole {
         Self::spawn_authenticated_with_test_setup_and_report(&listener, command, setup, report)
     }
 
+    #[cfg(target_os = "macos")]
     /// Supplies the existing private EOF-terminated control to the owned caller.
     fn supply_public_fs_targets(&mut self, target: &Path, late_target: &Path) {
         drop(self.supply_public_fs_targets_retained(target, late_target));
     }
 
+    #[cfg(target_os = "macos")]
     fn supply_public_fs_targets_retained(
         &mut self,
         target: &Path,
@@ -140,6 +153,7 @@ impl WorkerLinkRole {
         Self::spawn_authenticated_with_test_setup(listener, command, None)
     }
 
+    #[cfg(target_os = "macos")]
     /// Captures an owned helper process with the same bounded finish/Drop custody.
     fn spawn_captured(command: std::process::Command) -> Self {
         Self::spawn_captured_with_report(command, None)
@@ -326,6 +340,15 @@ fn report_value<'a>(
 /// Criterion 6 end to end: a Bun role parked in `callBlocking` on the FS
 /// channel, with the host's FS worker holding that call, throws
 /// `KELD-IPC-023` when the host retires the generation; the link is gone.
+///
+/// Windows asserts today's W2 behaviour (#528 T5, gh527 §10, #1073). The host
+/// writes the 023 and then calls `DisconnectNamedPipe`, which discards unread
+/// pipe data, so the 023 reaches the role only if its transport Worker already
+/// has a read pending. Otherwise the call sees only the close and throws
+/// `KELD-IPC-022`. Which one happens is scheduling: native Windows 11 runs
+/// gave 100 of 100 023s idle, and 022 in 5 of 60 with every CPU busy
+/// (2026-10-21). Windows therefore accepts either code and is not evidence
+/// for criterion 6; the W2 fix makes it 023 only, as on Unix.
 #[test]
 fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
     let (_temp_target, target) = {
@@ -343,11 +366,15 @@ fn bun_role_parked_on_fs_throws_023_when_the_host_retires() {
         .expect("the role's FS call reached the held worker");
     t.router.handle().retire_generation(1).expect("retire g1");
     let report = role.finish();
-    assert_eq!(
-        report_value(&report, "call-code"),
-        Some("KELD-IPC-023"),
-        "{report:?}"
-    );
+    let call_code = report_value(&report, "call-code");
+    if cfg!(windows) {
+        assert!(
+            matches!(call_code, Some("KELD-IPC-023" | "KELD-IPC-022")),
+            "W2: the role reads the 023 or only the close: {report:?}"
+        );
+    } else {
+        assert_eq!(call_code, Some("KELD-IPC-023"), "{report:?}");
+    }
     assert_eq!(report_value(&report, "call-returned"), Some("false"));
     assert_eq!(report_value(&report, "after-code"), Some("KELD-IPC-022"));
     t.release.send(()).expect("release FS worker");
@@ -399,7 +426,9 @@ fn bun_role_blocking_quit_returns_the_real_reply_then_the_link_closes() {
             .expect("UI Quit"),
         AppWindowCommand::Quit
     );
-    t.router.shutdown().expect("router shutdown after Quit");
+    // The later echo CALL is a byte after the Quit REPLY: on Windows that is
+    // finding W1 (gh527 §10), which the helper asserts.
+    assert_router_shutdown_after_quit_with_trailing_call(t.router);
 }
 
 /// Criterion 8, host half: the role's transport Worker dies while main is
@@ -449,8 +478,14 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
         panic!("failed FS terminal write skipped retired-generation recovery");
     };
     assert_eq!(retired, 1);
+    // The macOS guardian's receipt carries the retirement instant; the Linux
+    // and Windows direct owner's receipt carries none.
+    #[cfg(target_os = "macos")]
+    let acknowledged = Ok(Instant::now());
+    #[cfg(not(target_os = "macos"))]
+    let acknowledged = Ok(());
     receipt
-        .send(Ok(Instant::now()))
+        .send(acknowledged)
         .expect("acknowledge the retired FS generation");
     t.router.shutdown().expect("router shutdown");
 }
@@ -463,6 +498,7 @@ fn bun_worker_death_is_link_loss_that_fails_the_generation() {
 /// reports the close as `KELD-IPC-022`. *Negative control:* a Quit that does
 /// not close the link ends the drain at `IdleBackstop`.
 #[test]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     let (role, t) =
         WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
@@ -510,6 +546,54 @@ fn bun_role_closes_on_the_quit_reply_and_the_drain_ends_at_eof() {
     t.router.shutdown().expect("router shutdown after Quit");
 }
 
+/// The Windows half of the case above (#528 T5). Windows has no post-Quit
+/// drain: after the real `LifecycleResponse::Quit` REPLY, its Quit tail waits
+/// for the role to close the link and treats any byte as a fault
+/// (`await_windows_quit_peer_close_until`). A role that closes on the REPLY
+/// therefore ends that wait at its close, the tail asks the owner to shut
+/// down, and the UI quits. The role's `onEnd` reports `KELD-IPC-022`.
+/// *Negative control:* a peer that never closes holds the wait to its
+/// deadline instead (`quit_peer_close_wait_is_bounded_for_a_non_closing_client`).
+/// A CALL written after the REPLY would fail this tail, not get `KELD-IPC-024`:
+/// that is the gh527 criterion 7 finding for Windows (gh527 §10).
+#[test]
+#[cfg(windows)]
+fn bun_role_closes_on_the_quit_reply_and_windows_awaits_its_close() {
+    let (role, t) =
+        WorkerLinkRole::start("t3-quit-close", &keld_ipc::channel_table::LIFECYCLE, &[]);
+    let TestPrimaryOwnerCommand::PrepareAcceptedShutdown(prepare) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("Quit attribution")
+    else {
+        panic!("Quit skipped shutdown attribution");
+    };
+    prepare.send(Ok(())).expect("acknowledge attribution");
+    let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
+        .guardian
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the Quit tail reaches the owner after the role's close")
+    else {
+        panic!("unexpected owner command after the Quit REPLY");
+    };
+    shutdown.send(Ok(())).expect("acknowledge owner shutdown");
+    assert_eq!(
+        t.window
+            .recv_timeout(Duration::from_secs(5))
+            .expect("UI Quit"),
+        AppWindowCommand::Quit
+    );
+    let report = role.finish();
+    assert_eq!(
+        report_value(&report, "quit"),
+        Some("returned"),
+        "{report:?}"
+    );
+    assert_eq!(report_value(&report, "end-code"), Some("KELD-IPC-022"));
+    t.router.shutdown().expect("router shutdown after Quit");
+}
+
+#[cfg(target_os = "macos")]
 /// These fields describe one public Promise handler, not wire/native cardinality.
 fn assert_public_retirement_report(report: &std::collections::BTreeMap<String, String>) {
     assert_eq!(
@@ -533,6 +617,7 @@ fn assert_public_retirement_report(report: &std::collections::BTreeMap<String, S
 /// The admitted pre-native lease and sentinel are observed separately from rejection.
 /// `settlements` counts this public Promise handler, not wire ERRs or native syscalls.
 #[test]
+#[cfg(target_os = "macos")]
 fn public_fs_write_preserves_retirement_error_until_owner_lease_drains() {
     use std::io::Write as _;
 
@@ -632,6 +717,7 @@ fn public_fs_write_preserves_retirement_error_until_owner_lease_drains() {
     );
 }
 
+#[cfg(target_os = "macos")]
 /// A successful public Promise is an adapter result, not a wire-answer census.
 fn assert_public_success_report(report: &std::collections::BTreeMap<String, String>) {
     assert_eq!(
@@ -650,12 +736,14 @@ fn assert_public_success_report(report: &std::collections::BTreeMap<String, Stri
 /// A fresh authenticated public caller then completes a real write/read after drain.
 /// `retire_after_a_real_reply_sends_no_023` separately owns the raw wire census.
 #[test]
+#[cfg(target_os = "macos")]
 fn public_fs_reply_wins_retirement_then_a_fresh_session_reads_its_write() {
     completed_public_write_preserves_reply_after_retirement();
     // The old helper has drained and dropped its complete owned scope.
     fresh_public_fs_session_reads_its_write();
 }
 
+#[cfg(target_os = "macos")]
 fn completed_public_write_preserves_reply_after_retirement() {
     let (mut role, t) = WorkerLinkRole::start_public_fs_scenario("reply-wins");
     let target = t.allowed.join("public-reply-wins.txt");
@@ -736,6 +824,7 @@ fn completed_public_write_preserves_reply_after_retirement() {
     );
 }
 
+#[cfg(target_os = "macos")]
 // A fresh realm/router has one canonical link; this is not supervisor recovery.
 fn fresh_public_fs_session_reads_its_write() {
     let (mut role, t) = WorkerLinkRole::start_public_fs_scenario("healthy");

@@ -372,13 +372,13 @@ pub(super) fn workflow_job_level_property(block: &str, key: &str) -> Option<Stri
         let Some((indent, content)) = yaml_content(line) else {
             continue;
         };
-        if content == "steps:" {
-            return None;
+        // Job mappings are unordered: a direct key may follow `steps:`, so
+        // scan every direct (indent 4) job key instead of stopping there.
+        if indent != 4 {
+            continue;
         }
-        if indent == 4 {
-            if let Some(value) = content.strip_prefix(&expected_key) {
-                return Some(value.trim().to_owned());
-            }
+        if let Some(value) = content.strip_prefix(&expected_key) {
+            return Some(value.trim().to_owned());
         }
     }
     None
@@ -444,16 +444,5 @@ pub(super) fn workflow_named_step_direct_value(
 }
 
 pub(super) fn workflow_job_level_if(block: &str) -> Option<String> {
-    for line in block.lines() {
-        let Some((_indent, content)) = yaml_content(line) else {
-            continue;
-        };
-        if content == "steps:" {
-            return None;
-        }
-        if let Some(value) = content.strip_prefix("if:") {
-            return Some(value.trim().to_owned());
-        }
-    }
-    None
+    workflow_job_level_property(block, "if")
 }

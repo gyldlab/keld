@@ -252,9 +252,14 @@ report any cancellation, deadline, or I/O failure after create/truncate as
 `KELD-NATIVE-007` with acknowledged content-byte counts. The five-second clock is a
 cooperative progress budget, not a promise to preempt a wedged kernel call. `FsBroker`
 alone owns the roots; calls and `serve_fs_session` borrow it, and dropping a wrapper is
-not broker destruction while another owner remains. The channel is library-tested but
-remains unreachable from the shipping no-flag host until KEL-102/T3 supplies admission,
-in-flight cancellation/drain, and ordered broker destruction.
+not broker destruction while another owner remains. The retained filesystem broker and
+guarded production host route are implemented (KEL-102/T3), exposing a public Bun
+`fs.read`/`write` slice on the canonical app link with macOS explicit project-policy
+capture and absent-policy all-denied fallback. This manifest guard applies strictly
+to brokered app-link calls; direct Bun `node:fs` calls do not pass through this broker
+and are not denied by it, as OS sandbox containment remains a separate, not-yet-fully-qualified
+guarantee. Renderer-action forwarding, non-macOS project-policy producers, and full
+hostile/deadline/quiescence qualification remain open.
 
 v0 is still a skeleton: its `MODULES` registry does not yet include the destination
 `process`, `pty`, or `auth` rows below, and none of them has implementation. KEL-76 must

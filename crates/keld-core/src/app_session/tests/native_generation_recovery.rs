@@ -2,8 +2,8 @@
 //! Test-only composition of existing owners; no window/document product claim.
 use super::super::super::{
     AppWindowCommand, FsRecoveryAttempt, FsWorkerCommand, GuardSnapshot, GuardianOwnerCommand,
-    GuardianOwnerHandle, PERMISSIONS_FILE, PrimaryRouter, PrimaryRouterHandle, RecoveryArm,
-    PrimaryCallerContext, SessionShutdownState, apply_guardian_recovery_arm,
+    GuardianOwnerHandle, PERMISSIONS_FILE, PrimaryCallerContext, PrimaryRouter,
+    PrimaryRouterHandle, RecoveryArm, SessionShutdownState, apply_guardian_recovery_arm,
 };
 use super::{OBSERVATION_BOUND, sensor, support};
 use crate::app_session::native_generation_fixture::{
@@ -713,7 +713,10 @@ fn cli_acceptance_publication_preserves_acknowledged_shutdown() {
         let current = handle.current.lock().expect("retained current generation");
         let generation = current.as_ref().expect("real G1");
         (
-            generation.writer.try_clone().expect("actual authenticated reader clone"),
+            generation
+                .writer
+                .try_clone()
+                .expect("actual authenticated reader clone"),
             PrimaryCallerContext {
                 attempt: generation.attempt,
                 identity: generation.identity,

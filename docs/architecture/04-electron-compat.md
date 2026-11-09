@@ -87,9 +87,10 @@ export default defineConfig({
 `keld_core::LifecycleSession` over `LIFECYCLE_CHANNEL` — not
 `Promise.resolve()` stubs. `process.versions.electron` is `"0.0.1"` (Keld's
 crate version, not an Electron release) and `process.type` is `"browser"`
-in this main-process package. `@keld/api` does not exist yet; the shim
-speaks kipc directly. Bundler-side alias (`keld build`) is deferred because
-`keld build` is not live.
+in this main-process package. The Electron `app` facade delegates to
+`@keld/api`'s singleton lifecycle link, which uses `@keld/kipc`'s
+Worker-owned transport; the shim does not open a second link. Bundler-side
+alias (`keld build`) is deferred because `keld build` is not live.
 
 Match (scoreboard ✔): with no `window-all-closed` listener, a host
 `LastWindowClosed` event quits the app — Electron's documented default

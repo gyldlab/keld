@@ -338,7 +338,8 @@ pub(super) fn observe_pre_generation_shutdown(
 }
 
 /// Startup can fail after the last liveness probe and before the first
-/// authorized process was spawned. An authenticated host may have sent S
+/// authorized process was spawned, or a host may refuse an in-flight spawn
+/// that it already retired. An authenticated host may have sent S
 /// concurrently with its permanent recovery denial. Accept only that exact
 /// host request, never a bare EOF or a failed generation-control exchange as
 /// evidence of orderly shutdown. The caller retains its original startup
@@ -370,7 +371,7 @@ pub(super) fn await_guarded_primary_liveness(
     quit_ack: &mut impl Write,
     host_unavailable: &AtomicBool,
     preparation_cancelled: &AtomicBool,
-) -> (Result<(), RuntimeError>, bool, bool) {
+) -> (Result<(), RuntimeError>, bool, bool, bool) {
     let mut liveness_result = Ok(());
     let mut quit_accepted = false;
     let mut orderly_requested = false;
@@ -422,7 +423,7 @@ pub(super) fn await_guarded_primary_liveness(
         }
     }
 
-    (liveness_result, quit_accepted, host_dead)
+    (liveness_result, quit_accepted, orderly_requested, host_dead)
 }
 
 pub(super) fn require_close_on_exec(writer: &impl AsFd) -> Result<(), RuntimeError> {

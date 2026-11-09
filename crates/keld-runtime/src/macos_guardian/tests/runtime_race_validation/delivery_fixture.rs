@@ -96,6 +96,7 @@ impl CutFixture {
                     host_unavailable: Arc::new(AtomicBool::new(false)),
                     preparation_cancelled: Arc::clone(&cancelled),
                     initial_prepared: Arc::new(AtomicBool::new(false)),
+                    refused_registration_retired: Arc::new(AtomicBool::new(false)),
                 },
                 gate: lease_gate,
             },
@@ -171,6 +172,8 @@ impl CutFixture {
 
 pub(super) struct CutObservation {
     pub(super) terminal: crate::SupervisorEvent,
+    /// Receipt time of the terminal event, after every lease revocation.
+    pub(super) terminal_at: Instant,
     pub(super) started_two: bool,
     pub(super) outcome: crate::SupervisorOutcome,
     pub(super) current_pid: Option<u32>,
@@ -186,7 +189,7 @@ pub(super) struct CutObservation {
     pub(super) initial_pid: u32,
 }
 
-fn collect_terminal_event(supervisor: &Supervisor) -> (crate::SupervisorEvent, bool) {
+fn collect_terminal_event(supervisor: &Supervisor) -> (crate::SupervisorEvent, Instant, bool) {
     let deadline = Instant::now() + COLLECTION;
     let mut started_two = false;
     let terminal = loop {
@@ -202,7 +205,7 @@ fn collect_terminal_event(supervisor: &Supervisor) -> (crate::SupervisorEvent, b
             None => panic!("actual Supervisor terminal event absent"),
         }
     };
-    (terminal, started_two)
+    (terminal, Instant::now(), started_two)
 }
 
 impl CutFixture {
@@ -210,7 +213,7 @@ impl CutFixture {
         // All releases/joins precede assertions. The fixture Drop also
         // releases every fence on failed collection or an unwind.
         let supervisor = self.supervisor.as_ref().expect("Supervisor owner");
-        let (terminal, started_two) = collect_terminal_event(supervisor);
+        let (terminal, terminal_at, started_two) = collect_terminal_event(supervisor);
         let outcome = supervisor.wait_for_outcome();
         let current_pid = supervisor.current_pid();
         let ledger = supervisor.crash_ledger();
@@ -243,6 +246,7 @@ impl CutFixture {
             lock_generation(&self.plane.current).map(|generation| generation.group_pid);
         CutObservation {
             terminal,
+            terminal_at,
             started_two,
             outcome,
             current_pid,

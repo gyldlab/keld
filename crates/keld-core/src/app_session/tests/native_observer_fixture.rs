@@ -7,8 +7,8 @@ pub(super) use crate::app_session::native_observer_setup::{NativeSignals, native
 use keld_native::fs::acceptance_observer::Snapshot;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, mpsc};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
 /// Owns release controls before router/caller teardown, including failed assertions.

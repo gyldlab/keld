@@ -336,6 +336,7 @@ where
     let host_unavailable = Arc::new(AtomicBool::new(false));
     let preparation_cancelled = Arc::new(AtomicBool::new(false));
     let initial_prepared = Arc::new(AtomicBool::new(false));
+    let refused_registration_retired = Arc::new(AtomicBool::new(false));
     let supervisor = match Supervisor::start_prepared(
         RestartPolicy::default(),
         GuardedPrimaryPreparer {
@@ -347,6 +348,7 @@ where
             host_unavailable: Arc::clone(&host_unavailable),
             preparation_cancelled: Arc::clone(&preparation_cancelled),
             initial_prepared: Arc::clone(&initial_prepared),
+            refused_registration_retired: Arc::clone(&refused_registration_retired),
         },
     ) {
         Ok(supervisor) => supervisor,
@@ -383,45 +385,110 @@ where
     };
 
     set_liveness_nonblocking(&liveness, true)?;
-    let (liveness_result, quit_accepted, host_dead) = await_guarded_primary_liveness(
-        &mut liveness,
-        &supervisor,
-        &mut quit_ack,
-        &host_unavailable,
-        &preparation_cancelled,
-    );
+    let (liveness_result, quit_accepted, orderly_requested, host_dead) =
+        await_guarded_primary_liveness(
+            &mut liveness,
+            &supervisor,
+            &mut quit_ack,
+            &host_unavailable,
+            &preparation_cancelled,
+        );
 
     let outcome = supervisor.wait_for_outcome();
     let crash_ledger = supervisor.crash_ledger();
     let output = supervisor.output();
     let mut failures = Vec::new();
+    let retired_refusal =
+        liveness_result.is_ok() && refused_registration_retired.load(Ordering::Acquire);
     if let Err(error) = liveness_result {
         failures.push(error);
     }
-    match outcome {
-        SupervisorOutcome::CrashLoop(error) | SupervisorOutcome::Failed(error) => {
-            failures.push(error);
-        }
-        SupervisorOutcome::Stopped if !quit_accepted && !host_dead => {
-            if let Some(termination) = crash_ledger.last_self_termination {
-                failures.push(RuntimeError::ChildCrashed {
-                    pid: termination.pid,
-                    exit_code: termination.exit_code,
-                    stderr_tail: output.stderr_tail(2_000),
-                });
-            } else {
-                failures.push(lifecycle_error(
-                    "macOS guardian generation supervisor stop",
-                    io::Error::other("supervisor stopped without owned shutdown attribution"),
-                ));
-            }
-        }
-        SupervisorOutcome::Stopped => {}
-    }
+    failures.extend(supervisor_outcome_failures(
+        outcome,
+        &crash_ledger,
+        &output,
+        HostAttribution {
+            quit_accepted,
+            orderly_requested,
+            host_dead,
+        },
+        retired_refusal,
+        &mut liveness,
+        &mut quit_ack,
+    ));
     if failures.is_empty() {
         Ok(output)
     } else {
         Err(collapse_failures(failures))
+    }
+}
+
+/// Authenticated host shutdown attribution observed by the liveness loop.
+#[derive(Clone, Copy)]
+struct HostAttribution {
+    quit_accepted: bool,
+    orderly_requested: bool,
+    host_dead: bool,
+}
+
+fn supervisor_outcome_failures(
+    outcome: SupervisorOutcome,
+    crash_ledger: &CrashLedger,
+    output: &CapturedOutput,
+    host: HostAttribution,
+    retired_refusal: bool,
+    liveness: &mut (impl Read + AsFd),
+    quit_ack: &mut impl Write,
+) -> Vec<RuntimeError> {
+    match outcome {
+        // The host refused this generation's in-flight SPAWNED because its
+        // authenticated S had already denied recovery, then closed control.
+        // `retired_refusal` is set only after the lease retired its
+        // unexecuted direct Child (no exec permit was written; killed and
+        // reaped), and Supervisor then stops with exactly that Failed result.
+        // The host flushed S before closing control, so Failed can beat the
+        // liveness loop to it: read it now, exactly like a failed first
+        // PREPARE. Accept only an orderly S with its KSA; Q, bare EOF or any
+        // other failure stays fatal.
+        SupervisorOutcome::Failed(error)
+            if retired_refusal
+                && !host.quit_accepted
+                && (host.orderly_requested || !host.host_dead) =>
+        {
+            let orderly = if host.orderly_requested {
+                // The loop already consumed S and sent KSA. Skip the bounded
+                // host-EOF wait the read-after-failure path performs: the
+                // refused child never executed, was killed and reaped, and
+                // left no process, so containment does not depend on it.
+                // The host still owns the next step (it drops its writer
+                // after KSA and reaps this Guardian).
+                Ok(true)
+            } else {
+                observe_failed_initial_preparation_shutdown(liveness, quit_ack)
+            };
+            match orderly {
+                Ok(true) => Vec::new(),
+                Ok(false) => vec![error],
+                // Keep the original KGC1 provenance first.
+                Err(control_error) => vec![error, control_error],
+            }
+        }
+        SupervisorOutcome::CrashLoop(error) | SupervisorOutcome::Failed(error) => vec![error],
+        SupervisorOutcome::Stopped if !host.quit_accepted && !host.host_dead => {
+            if let Some(termination) = crash_ledger.last_self_termination {
+                vec![RuntimeError::ChildCrashed {
+                    pid: termination.pid,
+                    exit_code: termination.exit_code,
+                    stderr_tail: output.stderr_tail(2_000),
+                }]
+            } else {
+                vec![lifecycle_error(
+                    "macOS guardian generation supervisor stop",
+                    io::Error::other("supervisor stopped without owned shutdown attribution"),
+                )]
+            }
+        }
+        SupervisorOutcome::Stopped => Vec::new(),
     }
 }
 

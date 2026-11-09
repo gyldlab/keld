@@ -133,6 +133,54 @@ fn validate_descriptor(descriptor: &SecurityDescriptor, kind: ObjectKind) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{self, OpenOptions};
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_permissions::wrappers::SetNamedSecurityInfo;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    struct OwnedDirectory {
+        path: std::path::PathBuf,
+        retained: Option<File>,
+    }
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            // No unpinned name-based ACL changes or deletion if the native
+            // directory HANDLE was never successfully retained.
+            if self.retained.is_none() {
+                return;
+            }
+            // FILE_SHARE_DELETE was deliberately denied at original open.
+            // The retained kernel object prevents a rename/reparse swap
+            // while the test-owned DACL and exact marker are restored.
+            if let Ok(canonical) = windows_owner_private_directory_security() {
+                let _ = SetNamedSecurityInfo(
+                    &self.path,
+                    SeObjectType::SE_FILE_OBJECT,
+                    SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+                    None,
+                    None,
+                    canonical.dacl(),
+                    None,
+                );
+            }
+            let marker = self.path.join("marker");
+            // Preserve an independently substituted marker even while
+            // the parent directory remains bound to our original HANDLE.
+            if fs::read(&marker).is_ok_and(|bytes| bytes == b"retained object stays live") {
+                let _ = fs::remove_file(&marker);
+            }
+            drop(self.retained.take());
+            // The final removal is nonrecursive and refuses reparse paths:
+            // a substituted directory with foreign contents stays intact.
+            if fs::symlink_metadata(&self.path).is_ok_and(|meta| {
+                meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+            }) {
+                let _ = fs::remove_dir(&self.path);
+            }
+        }
+    }
 
     fn sid_strings() -> (String, &'static str) {
         let current = current_process_sid().expect("TokenUser");
@@ -245,5 +293,100 @@ mod tests {
         let executable = std::env::current_exe().expect("current test executable");
         let file = File::open(executable).expect("open test executable");
         assert!(validate_windows_owner_private_directory(&file).is_err());
+    }
+
+    #[test]
+    fn retained_directory_observes_actual_post_open_dacl_mutation() {
+        let scratch = std::env::temp_dir().join(format!(
+            "keld-guard-retained-acl-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir(&scratch).expect("unique native ACL fixture");
+        let mut fixture = OwnedDirectory {
+            path: scratch,
+            retained: None,
+        };
+        let canonical = windows_owner_private_directory_security().expect("canonical DACL");
+        SetNamedSecurityInfo(
+            &fixture.path,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+            None,
+            None,
+            canonical.dacl(),
+            None,
+        )
+        .expect("publish canonical real Windows DACL");
+        fs::write(fixture.path.join("marker"), b"retained object stays live")
+            .expect("native test marker");
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&fixture.path)
+            .expect("retain the same real directory object");
+        fixture.retained = Some(
+            held.try_clone()
+                .expect("fixture owns original kernel HANDLE"),
+        );
+        validate_windows_owner_private_directory(&held)
+            .expect("canonical protected native directory admits by held HANDLE");
+        let swapped = fixture.path.with_extension("renamed");
+        if fs::rename(&fixture.path, &swapped).is_ok() {
+            fs::rename(&swapped, &fixture.path).expect("rescue test-owned original path");
+            panic!("non-DELETE-shared original directory HANDLE must refuse rename");
+        }
+
+        // Independently mutate the exact live DACL after opening and retaining
+        // the directory HANDLE. No pathname reopen is used by the validator.
+        let current = current_process_sid().expect("TokenUser");
+        let sid = ConvertSidToStringSid(&current).expect("SID text");
+        let sid = sid.to_string_lossy();
+        let injected: LocalBox<SecurityDescriptor> =
+            format!("O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FR;;;WD)")
+                .parse()
+                .expect("independent two-rule Windows descriptor");
+        SetNamedSecurityInfo(
+            &fixture.path,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Dacl | SecurityInformation::ProtectedDacl,
+            None,
+            None,
+            injected.dacl(),
+            None,
+        )
+        .expect("apply extra Everyone read ACE through independent path");
+        let observed = GetSecurityInfo(
+            &held,
+            SeObjectType::SE_FILE_OBJECT,
+            SecurityInformation::Owner | SecurityInformation::Dacl,
+        )
+        .expect("observe actual mutated DACL through retained HANDLE");
+        assert_eq!(
+            observed.dacl().expect("native DACL").len(),
+            2,
+            "the kernel, not a string fixture, contains the extra ACE"
+        );
+        let error = validate_windows_owner_private_directory(&held)
+            .expect_err("extra Everyone read ACE must invalidate the retained directory");
+        assert!(
+            error.to_string().contains("expected one access rule"),
+            "refusal must be live ACL admission, not a missing or reopened object: {error}"
+        );
+        assert_eq!(
+            fs::read(fixture.path.join("marker")).expect("marker after refusal"),
+            b"retained object stays live"
+        );
+        drop(held);
+        let owned_path = fixture.path.clone();
+        drop(fixture);
+        assert!(
+            !owned_path.exists(),
+            "the pinned test fixture must leave no orphan after restoring its own DACL"
+        );
     }
 }

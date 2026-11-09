@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
 
@@ -286,6 +286,105 @@ fn unproven_denied_signal_keeps_the_eperm_and_the_absence_reason() {
         Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE,
     )
     .expect("the contexted denial is still the exact signal-phase EPERM");
+}
+
+/// #1077: the denial is the call's only signal. If the group becomes
+/// signallable again before the next probe (here: a fresh test-owned process
+/// joins the still-existing zombie-only group), the call must fail closed and
+/// leave that process untouched: it is not proven to be ours. `first` is the
+/// group's last live process; it exits just before the one signal. With the
+/// stack's polling absence owner the call fails only at its own D/4 budget,
+/// with the typed denial and the spent budget as context.
+fn assert_denial_is_the_calls_only_signal(
+    original: GroupIdentity,
+    raw: i32,
+    mut first: TestOwnedGroupChild,
+) {
+    let joiner: Arc<Mutex<Option<TestOwnedGroupChild>>> = Arc::default();
+    let joiner_slot = Arc::clone(&joiner);
+    let signals: Arc<Mutex<u32>> = Arc::default();
+    let signal_count = Arc::clone(&signals);
+    let mut exit_member = make_group_zombie_only(raw, pid_of(&first));
+    let _hook = install_test_group_signal_hook(
+        original.pid,
+        Box::new(move |point| match point {
+            TestGroupSignalPoint::BeforeSignal => {
+                let mut count = signal_count.lock().expect("signal count");
+                *count += 1;
+                // Only the first, authorized signal gets the exit window. A
+                // second one would hit the fresh joiner; let it, so the
+                // oracle below sees the actual effect.
+                if *count == 1 {
+                    exit_member(point);
+                }
+            }
+            TestGroupSignalPoint::AfterDeniedSignal => {
+                let fresh = sleeper(raw);
+                assert_eq!(
+                    nix::unistd::getpgid(Some(pid_of(&fresh))),
+                    Ok(Pid::from_raw(raw)),
+                    "fresh process joined the zombie-only group"
+                );
+                *joiner_slot.lock().expect("joiner slot") = Some(fresh);
+            }
+        }),
+    );
+
+    let result = terminate_attested_group(original);
+    let mut joiner = joiner
+        .lock()
+        .expect("joiner slot")
+        .take()
+        .expect("denied signal reached the after-denial fault point");
+    // Sample the product outcome before the test's own cleanup.
+    let joiner_alive = joiner.0.try_wait().expect("inspect joiner").is_none();
+    joiner.0.kill().expect("kill exact test-owned joiner");
+    assert_eq!(joiner.0.wait().expect("reap joiner").signal(), Some(9));
+    assert_eq!(first.0.wait().expect("reap first victim").signal(), Some(9));
+
+    assert_eq!(
+        *signals.lock().expect("signal count"),
+        1,
+        "the owner prepared a second group signal in the same call"
+    );
+    assert!(joiner_alive, "the owner signalled the group a second time");
+    let error = result.expect_err("a group that turned live after a denial is not ours to clear");
+    assert_denied_signal(&error, BUDGET_SPENT);
+}
+
+/// Reaped-leader arm: the probe saw the group live, then its last member
+/// exited before the one signal.
+#[test]
+fn denied_group_signal_is_never_followed_by_a_second_signal_in_the_same_call() {
+    let (original, raw, member) = reaped_leader_with_live_member();
+    assert_denial_is_the_calls_only_signal(original, raw, member);
+}
+
+/// Birth-matched arm: the live, birth-matched leader is the group's only
+/// member and exits between the identity read and the one signal.
+#[test]
+fn denied_birth_matched_signal_is_never_followed_by_a_second_signal_in_the_same_call() {
+    let (original, raw, leader) = attested_live_leader();
+    assert_denial_is_the_calls_only_signal(original, raw, leader);
+}
+
+/// #1077: the identity-matched arm has the same window: the birth-matched
+/// live leader (the group's last member) exits between the identity read and
+/// the one signal, so `killpg` sees a zombie-only group.
+#[test]
+fn leader_exit_between_birth_check_and_group_signal_retires_after_reap_without_host_fault() {
+    let (original, raw, leader) = attested_live_leader();
+    let _hook =
+        install_test_group_signal_hook(original.pid, make_group_zombie_only(raw, pid_of(&leader)));
+    let (_receipt, reaper) = reap_after_owner_observes(original.pid, leader);
+
+    let result = terminate_attested_group(original);
+    let (observed, status) = reaper.join().expect("leader reaper joins");
+
+    result.expect("a leader that became a zombie before the one signal is retired once reaped");
+    assert!(observed, "owner awaited the reap instead of guessing");
+    assert_eq!(status.signal(), Some(9));
+    assert_eq!(kill(Pid::from_raw(-raw), None), Err(Errno::ESRCH));
 }
 
 // The fault point's owner clears its thread-local slot when dropped, also on

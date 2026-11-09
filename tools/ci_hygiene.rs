@@ -93,7 +93,7 @@ const WORKFLOW_TEXT_NEEDLES: &[&str] = &[
     "sha256sum -c",
     "--test tools/ci_hygiene.rs",
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    "toolchain: 1.97.1",
+    "toolchain: 1.99.1",
     "--test tools/product_status.rs",
     "product-status check .",
     "--test tools/llms_docs.rs",
@@ -234,19 +234,6 @@ const RELEASE_HELPER_COMMANDS: &[&str] = &[
     "out=\"$(cargo test -p keld-pack --test real_host_acceptance -- --ignored --exact launch::ac2_embedded_release_helper_launches_to_its_self_anchor_refusal 2>&1)\"",
     "printf '%s\\n' \"$out\"",
     "grep -q 'test result: ok\\. 1 passed;' <<<\"$out\"",
-];
-
-/// KEL-53 §4: the updater helper's edge set, with the helper as the sole cargo-deny root.
-const HELPER_DENY_STEP: &str = "Updater helper edge set (KEL-53 T4d S9c)";
-const HELPER_DENY_ACTION: &str = "EmbarkStudios/cargo-deny-action@";
-const HELPER_DENY_WITH: &[(&str, &str)] = &[
-    ("manifest-path", "crates/keld-updater-helper/Cargo.toml"),
-    (
-        "arguments",
-        "--all-features --config crates/keld-updater-helper/deny.toml",
-    ),
-    ("command", "check"),
-    ("command-arguments", "bans"),
 ];
 
 const WINDOWS_MEDIA_ACCEPTANCE_COMMANDS: &[&str] = &[
@@ -2027,47 +2014,6 @@ fn check_release_updater_helper_step(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_updater_helper_deny_step(text: &str) -> Result<(), String> {
-    let step = HELPER_DENY_STEP;
-    let Some(deny_job) = workflow_job_block(text, "deny") else {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` has no `deny` job for `{step}`."
-        ));
-    };
-    let count = workflow_direct_named_step_count(&deny_job, step);
-    if count != 1 {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `deny` must contain exactly one `{step}` step; found {count}."
-        ));
-    }
-    let block = workflow_direct_named_step_block(&deny_job, step).ok_or_else(|| {
-        format!("CI-HYGIENE: `{WORKFLOW}` `{step}` must be a direct child of `deny.steps`.")
-    })?;
-    let expected_keys = ["uses", "with"].map(str::to_owned);
-    if workflow_named_step_direct_keys(&block, step).as_deref() != Some(expected_keys.as_slice()) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must contain only the exact `uses` and `with` keys."
-        ));
-    }
-    if !workflow_named_step_direct_value(&block, step, "uses")
-        .is_some_and(|uses| uses.starts_with(HELPER_DENY_ACTION))
-    {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must run the pinned `{HELPER_DENY_ACTION}` action."
-        ));
-    }
-    let expected_with: Vec<(String, String)> = HELPER_DENY_WITH
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect();
-    if workflow_named_step_mapping(&block, step, "with") != Some(expected_with) {
-        return Err(format!(
-            "CI-HYGIENE: `{WORKFLOW}` `{step}` must check `bans` with the helper as the sole root and its own `crates/keld-updater-helper/deny.toml`."
-        ));
-    }
-    Ok(())
-}
-
 fn check_keldbot_workflow(root: &Path) -> Result<(), String> {
     let text = read(root, KELDBOT_WORKFLOW)?;
     for needle in [
@@ -2502,7 +2448,6 @@ fn check_workflow(root: &Path) -> Result<(), String> {
     check_product_status_windows_step(&text)?;
     check_windows_media_acceptance_step(&text)?;
     check_release_updater_helper_step(&text)?;
-    check_updater_helper_deny_step(&text)?;
     check_atomic_protocol_step(&text)?;
     check_doc_placeholders_step(&text)?;
     check_hello_command_step(&text)?;

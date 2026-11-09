@@ -85,7 +85,7 @@ fn run_terminal_liveness_probe(
         terminal_reads: 0,
         reported: false,
     };
-    let (result, accepted, dead) = await_guarded_primary_liveness(
+    let (result, accepted, _orderly, dead) = await_guarded_primary_liveness(
         &mut probe,
         &supervisor,
         &mut acknowledgment,

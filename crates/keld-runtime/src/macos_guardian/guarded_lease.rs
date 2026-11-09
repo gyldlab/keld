@@ -1,7 +1,5 @@
 //! Fresh-generation child preparation and the exact revocation lease.
-use super::process_group::{
-    LocalGroupWitness, reconcile_denied_signal_after_reap, terminate_attested_group,
-};
+use super::process_group::{LocalGroupWitness, retire_own_child_group, terminate_attested_group};
 #[cfg(test)]
 use super::validate_group_leader;
 use super::{
@@ -21,6 +19,11 @@ pub(super) struct GuardedPrimaryPreparer<C> {
     /// First genuine KGC1 PREPARED was validated. A later local factory or
     /// admission fault must not be mistaken for host-rejected first PREPARE.
     pub(super) initial_prepared: Arc<AtomicBool>,
+    /// Set only by a lease whose in-flight SPAWNED the host answered by
+    /// closing control, after that lease retired its unexecuted direct Child
+    /// (killed and reaped). Supervisor's cloned terminal error loses private
+    /// error types, so the Guardian runner reads this exact fact instead.
+    pub(super) refused_registration_retired: Arc<AtomicBool>,
 }
 
 impl<C> ChildPreparer for GuardedPrimaryPreparer<C>
@@ -65,6 +68,12 @@ where
                 ));
             }
         };
+        // The factory MUST NOT install its own `pre_exec` hook. std runs such
+        // hooks in registration order, so one added here would run BEFORE
+        // the SpawnAdmission gate below, could fork, and would void the
+        // "a refused child is its whole process group" fact that lets a
+        // refused spawn be retired by its exact Child alone. std offers no
+        // way to count installed hooks, so this is a review-enforced rule.
         let mut command = match (self.command_factory)(&app_link) {
             Ok(command) => command,
             Err(primary) => {
@@ -91,6 +100,7 @@ where
                 attempt,
             )
             .map(|_| ())
+            .map_err(classify_registration_reply)
         })?;
         Ok(PreparedChild {
             command: command.into(),
@@ -101,9 +111,60 @@ where
                 group_pid: None,
                 group_witness,
                 admission: Some(admission),
+                exec_withheld: false,
+                host_closed_registration: false,
+                refused_registration_retired: Arc::clone(&self.refused_registration_retired),
             },
         })
     }
+}
+
+/// The host closed KGC1 generation control in place of `CONTROL_REGISTERED`
+/// for this exact `SPAWNED`. The host's own refusal of a spawn that arrived
+/// after its S has this shape; so does any host fault after reading the
+/// record. It is never an exec permit, and the control stream is gone.
+#[derive(Debug)]
+struct HostClosedRegistration(io::Error);
+
+impl std::fmt::Display for HostClosedRegistration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "host closed generation control instead of CONTROL_REGISTERED: {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for HostClosedRegistration {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+// Only the reporter's own SPAWNED exchange is classified. Its EOF is the
+// generation-control reader's, never a local factory, PID-pipe or codec
+// error, so the private marker cannot be forged by another failure.
+fn classify_registration_reply(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::Lifecycle { phase, source }
+            if source.kind() == io::ErrorKind::UnexpectedEof =>
+        {
+            lifecycle_error(
+                phase,
+                io::Error::new(io::ErrorKind::UnexpectedEof, HostClosedRegistration(source)),
+            )
+        }
+        other => other,
+    }
+}
+
+/// Recognizes only the reporter's typed host-closed registration result.
+fn is_host_closed_registration(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Lifecycle { source, .. }
+        if source.get_ref()
+            .and_then(|source| source.downcast_ref::<HostClosedRegistration>())
+            .is_some())
 }
 
 fn collapse_guarded_preparation_failure(
@@ -139,6 +200,14 @@ pub(super) struct GuardedPrimaryLease {
     group_pid: Option<u32>,
     group_witness: LocalGroupWitness,
     admission: Option<SpawnAdmission>,
+    /// The pre-exec reporter returned an error, so it never wrote the one
+    /// exec permit: the direct child cannot have run Bun or created any
+    /// process, and its process group is that child alone.
+    exec_withheld: bool,
+    /// The host closed generation control instead of answering SPAWNED. No
+    /// REVOKE/CLEAR exchange can reach it; local retirement still runs.
+    host_closed_registration: bool,
+    refused_registration_retired: Arc<AtomicBool>,
 }
 
 // A successful SIGKILL can leave the Guardian's *direct* Bun leader as a
@@ -147,7 +216,7 @@ pub(super) struct GuardedPrimaryLease {
 // turn into an unverified host CLEAR. Reap this exact Child before asking the
 // host to independently prove the group gone. Do not wait before revoking
 // role/IPC authority or issuing the original birth-attested group signal.
-fn reap_guarded_child_before_clear(
+pub(super) fn reap_guarded_child_before_clear(
     child: &mut Child,
     deadline: Instant,
 ) -> Result<(), RuntimeError> {
@@ -191,7 +260,10 @@ impl GenerationLease for GuardedPrimaryLease {
             // revocation even if the host's acknowledgment was malformed.
             let (group_pid, registration) = admission.finish();
             self.group_pid = group_pid;
-            let registered_pid = registration?;
+            let registered_pid = registration.inspect_err(|error| {
+                self.exec_withheld = true;
+                self.host_closed_registration = is_host_closed_registration(error);
+            })?;
             if registered_pid != pid {
                 return Err(lifecycle_error(
                     "macOS guardian generation registration",
@@ -224,7 +296,7 @@ impl GenerationLease for GuardedPrimaryLease {
     fn revoke(self, cause: RevocationCause) -> Result<(), RuntimeError> {
         // A synthetic wire-only fixture may not own a direct Child. Shipping
         // supervisor callers use revoke_with_child below for its OS custody.
-        self.revoke_with_post_signal(cause, false, |_| Ok(()), terminate_attested_group)
+        self.revoke_with_post_signal(cause, None)
     }
 
     fn revoke_with_child(
@@ -232,15 +304,7 @@ impl GenerationLease for GuardedPrimaryLease {
         cause: RevocationCause,
         child: &mut Child,
     ) -> Result<(), RuntimeError> {
-        // The Child's original five-second budget begins after the group
-        // signal, not before an independently bounded host REVOKED exchange.
-        // Post-reap absence proof consumes only the remainder of that budget.
-        self.revoke_with_post_signal(
-            cause,
-            true,
-            |deadline| reap_guarded_child_before_clear(child, deadline),
-            terminate_attested_group,
-        )
+        self.revoke_with_post_signal(cause, Some(child))
     }
 }
 
@@ -248,11 +312,7 @@ impl GuardedPrimaryLease {
     fn revoke_with_post_signal(
         mut self,
         cause: RevocationCause,
-        retained_direct_child: bool,
-        reap_after_group_signal: impl FnOnce(Instant) -> Result<(), RuntimeError>,
-        signal_original_group: impl FnOnce(
-            super::process_group::GroupIdentity,
-        ) -> Result<(), RuntimeError>,
+        mut child: Option<&mut Child>,
     ) -> Result<(), RuntimeError> {
         if let Some(admission) = self.admission.take() {
             let (group_pid, result) = admission.finish();
@@ -262,7 +322,9 @@ impl GuardedPrimaryLease {
             let _ = result;
         }
         let group_pid = self.group_pid.take();
-        let host_available = !self.host_unavailable.load(Ordering::Acquire);
+        let retained_child = child.is_some();
+        let host_available =
+            !self.host_unavailable.load(Ordering::Acquire) && !self.host_closed_registration;
         let mut failures = Vec::new();
         if host_available
             && let Err(error) = control_exchange(
@@ -278,8 +340,37 @@ impl GuardedPrimaryLease {
         // birth before host registration. Never grant raw-PGID kill authority
         // to a stale lease after its leader has been recycled.
         let verified_group = self.group_witness.take();
-        let signal_failure =
-            verified_group.and_then(|identity| signal_original_group(identity).err());
+        if self.exec_withheld
+            && let Some(unexecuted) = child.as_deref_mut()
+        {
+            // No exec permit was ever written, so this retained direct Child
+            // is the whole group: it ran only the pre-exec gate and cannot
+            // have forked. Retire it through its exact unreaped handle. A
+            // group-wide probe of its zombie is ambiguous on Darwin (EPERM)
+            // until this parent reaps it, and adds no authority here.
+            if let Err(source) = unexecuted.kill()
+                && source.kind() != io::ErrorKind::InvalidInput
+            {
+                failures.push(lifecycle_error(
+                    "macOS Guardian unexecuted child retirement",
+                    source,
+                ));
+            }
+        } else if let Some(identity) = verified_group {
+            match child.take() {
+                // The Guardian is this leader's OS parent: its unreaped zombie
+                // keeps the group zombie-only until this exact reap, so a
+                // denied or ambiguous group is decided only after it.
+                Some(own) => {
+                    let (retired, reaped) = retire_own_child_group(identity, |deadline| {
+                        reap_guarded_child_before_clear(own, deadline)
+                    });
+                    failures.extend(retired.err());
+                    failures.extend(reaped.err());
+                }
+                None => failures.extend(terminate_attested_group(identity).err()),
+            }
+        }
         #[cfg(not(test))]
         if verified_group.is_none() && group_pid.is_some() {
             failures.push(lifecycle_error(
@@ -304,26 +395,10 @@ impl GuardedPrimaryLease {
                 failures.push(error);
             }
         }
-        // Preserve the previous native direct-Child reap budget exactly:
-        // CONTROL_REVOKED and the birth-attested signal have already finished.
-        // Never extend it with a new timeout after the exact Child wait.
-        let reap_deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
-        let reap_result = reap_after_group_signal(reap_deadline);
-        if let Some(error) = signal_failure {
-            // Only a real retained direct Child that finished reaping can
-            // reconcile the exact signal-phase EPERM. An ACK-only fixture or
-            // failed reap never gains this authorization.
-            let result = match (verified_group, retained_direct_child) {
-                (Some(identity), true) if reap_result.is_ok() => {
-                    reconcile_denied_signal_after_reap(identity, error, reap_deadline)
-                }
-                _ => Err(error),
-            };
-            if let Err(error) = result {
-                failures.push(error);
-            }
-        }
-        if let Err(error) = reap_result {
+        if let Some(child) = child
+            && let Err(error) =
+                reap_guarded_child_before_clear(child, Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE)
+        {
             // The retained supervisor Child has not proved retirement. Do
             // not send CLEAR and let the host forget a potentially live group.
             failures.push(error);
@@ -341,6 +416,10 @@ impl GuardedPrimaryLease {
             failures.push(error);
         }
         if failures.is_empty() {
+            if self.host_closed_registration && self.exec_withheld && retained_child {
+                self.refused_registration_retired
+                    .store(true, Ordering::Release);
+            }
             Ok(())
         } else {
             Err(collapse_failures(failures))

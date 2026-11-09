@@ -43,7 +43,8 @@ records the current foundation priorities.
    ```
 
    The [development guide](docs/onboarding/05-development-guide.md) lists prerequisites
-   and explains the gates. Include the actual results and any unavailable platform;
+   and explains the gates; see [Discovering and running `just` commands](docs/onboarding/05-development-guide.md#33-discovering-and-running-just-commands)
+   for a task-oriented recipe guide. Include the actual results and any unavailable platform;
    do not claim a desktop behavior from a compile-only result.
 5. Open a pull request linked to the public issue. Use the provided template to explain
    the change, contract, tests, platforms, review gates, and performance impact. A draft

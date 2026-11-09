@@ -28,6 +28,8 @@ const BOUND: Duration = Duration::from_secs(5);
 
 #[path = "tests/native_activity.rs"]
 mod native_activity;
+#[path = "tests/own_child_reap.rs"]
+mod own_child_reap;
 
 #[test]
 fn native_role() {
@@ -205,10 +207,15 @@ impl NativeGroup {
                                 | io::ErrorKind::ConnectionReset
                                 | io::ErrorKind::UnexpectedEof
                                 | io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::NotConnected
                         ) || error.raw_os_error() == Some(nix::libc::EINVAL) =>
                     {
                         // A Darwin peer disappearing during a connect/read
-                        // can return EINVAL (not solely ConnectionRefused).
+                        // can return EINVAL, not solely ConnectionRefused.
+                        // ENOTCONN (NotConnected) comes only from the nonce
+                        // WRITE after the listener dies mid-send: XNU
+                        // uipc_send checks SS_ISCONNECTED before
+                        // SS_CANTSENDMORE. A read after peer death is EOF.
                         // Accept it ONLY after the independent kernel group
                         // census proves that no original-group member runs.
                         if !self
@@ -306,6 +313,9 @@ fn failed_exchange_keeps_cleanup(reply: Reply) {
         group_pid: None,
         group_witness: LocalGroupWitness::default(),
         admission: None,
+        exec_withheld: false,
+        host_closed_registration: false,
+        refused_registration_retired: Arc::new(AtomicBool::new(false)),
     };
     let admission = lease.child_spawned(pid, 1);
     peer.join().expect("fault peer joins");
@@ -357,6 +367,9 @@ fn locally_enrolled_lease(pid: u32, witness: LocalGroupWitness) -> GuardedPrimar
         group_pid: Some(pid),
         group_witness: witness,
         admission: None,
+        exec_withheld: false,
+        host_closed_registration: false,
+        refused_registration_retired: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -395,99 +408,5 @@ fn local_guardian_revocation_cannot_kill_foreign_group_after_birth_change() {
     assert!(
         leader_alive && descendant_alive,
         "refused Guardian revocation signaled an unrelated live process group"
-    );
-}
-
-// Unlike the group-only helper test, this exercises the exact Guardian lease
-// owner: enrolled original kernel birth -> actual SIGKILL -> exact retained
-// direct Child reap -> synthetic signal-phase EPERM -> independent kernel
-// absence. A mutation that omits the lease's reconciliation must turn RED.
-struct TestOwnedSingleLeader(Child);
-
-impl Drop for TestOwnedSingleLeader {
-    fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-        }
-        let _ = self.0.wait();
-    }
-}
-
-#[test]
-fn real_guardian_lease_reconciles_eperm_only_after_original_child_reap() {
-    let root = tempfile::tempdir().expect("private fixture root");
-    let socket = root.path().join("descendant.sock");
-    // This fixture role does not spawn descendants; only the direct Child's
-    // exact OS identity is needed and its Drop never signals a recycled PGID.
-    let mut leader = TestOwnedSingleLeader(
-        role_command("descendant", root.path())
-            .process_group(0)
-            .spawn()
-            .expect("one isolated native leader"),
-    );
-    let pid = leader.0.id();
-    let ready_deadline = Instant::now() + BOUND;
-    loop {
-        if let Ok(observed_pid) = fresh_response(&socket) {
-            assert_eq!(
-                observed_pid, pid,
-                "the fixture must be the exact direct Child"
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < ready_deadline,
-            "single native leader never answered the active challenge"
-        );
-        thread::yield_now();
-    }
-    let witness = LocalGroupWitness::default();
-    witness
-        .register_child(pid)
-        .expect("kernel validates exact original leader and direct parent");
-    let lease = locally_enrolled_lease(pid, witness);
-    // Independent monotonic ordering witness: if the Child-reap deadline
-    // starts before the signal callback (including the bounded REVOKED
-    // exchange), this expected lower bound necessarily exceeds it. No sleep
-    // or host scheduling assumption is needed for the deadline falsifier.
-    let signal_entered_deadline = std::cell::Cell::new(None::<Instant>);
-    let outcome = lease.revoke_with_post_signal(
-        RevocationCause::Shutdown,
-        true,
-        |deadline| {
-            assert!(
-                deadline >= signal_entered_deadline.get().expect("original signal ran"),
-                "native Child-reap budget began before the original group signal"
-            );
-            super::reap_guarded_child_before_clear(&mut leader.0, deadline)
-        },
-        |identity| {
-            signal_entered_deadline.set(Some(
-                Instant::now() + super::super::GUARDIAN_SHUTDOWN_DEADLINE,
-            ));
-            // Inject ONLY the old signal-result error AFTER the real native
-            // signal succeeds. No mock group, fake PID, or unsafe test kill.
-            super::super::process_group::terminate_attested_group(identity)?;
-            Err(super::super::lifecycle_error(
-                "macOS guardian process-group signal",
-                io::Error::from_raw_os_error(nix::libc::EPERM),
-            ))
-        },
-    );
-    outcome.expect("post-reap native ESRCH must reconcile only the injected EPERM");
-    assert!(
-        fresh_response(&socket).is_err(),
-        "previous Bun-equivalent leader cannot answer after Guardian revoke"
-    );
-    let raw = i32::try_from(pid).expect("isolated leader PGID");
-    assert_eq!(
-        nix::unistd::getpgid(Some(Pid::from_raw(raw))),
-        Err(nix::errno::Errno::ESRCH),
-        "original direct Child must have been reaped"
-    );
-    assert_eq!(
-        nix::sys::signal::kill(Pid::from_raw(-raw), None),
-        Err(nix::errno::Errno::ESRCH),
-        "whole native group must be absent before accepting signal-phase EPERM"
     );
 }

@@ -5,6 +5,7 @@
 //! spec: `docs/architecture/01-overview.md`.
 
 pub mod app_session;
+mod argv;
 mod echo_link;
 mod hello;
 mod hello_session;
@@ -12,6 +13,7 @@ mod lifecycle;
 #[cfg(target_os = "macos")]
 mod macos_profile_identity;
 
+pub use argv::{NonUnicodeArgument, unicode_args};
 #[cfg(windows)]
 pub use echo_link::EchoEndpoint;
 pub use echo_link::{EchoServer, echo_roundtrip};
