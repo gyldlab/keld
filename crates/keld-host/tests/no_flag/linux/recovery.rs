@@ -1,5 +1,7 @@
 //! Recover Bun authority while retaining the same host and renderer window.
 
+#[cfg(debug_assertions)]
+use crate::support::renderer::HeldRendererRequest;
 use crate::support::{
     PRODUCT_DEADLINE,
     control::{
@@ -10,7 +12,12 @@ use crate::support::{
         StrictGeneration, wait_child, wait_for_strict_generation, wait_process_identity_gone,
     },
     project::{DARK_BG, PRODUCT_TITLE, ProductFixture},
-    renderer::serve_renderer_beacon,
+    renderer::{expect_renderer_beacon, spawn_renderer_beacon},
+};
+#[cfg(debug_assertions)]
+use keld_runtime::{
+    RestartPolicy,
+    primary::{PrimaryRoleConfig, PrimaryRoleSupervisor},
 };
 use std::{
     fs,
@@ -19,10 +26,10 @@ use std::{
     os::unix::net::UnixListener,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc,
-    thread,
     time::Instant,
 };
+#[cfg(debug_assertions)]
+use std::{io::Read as _, time::Duration};
 
 #[test]
 fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
@@ -38,8 +45,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
         .local_addr()
         .expect("recovery beacon")
         .port();
-    let (beacon_tx, beacon_rx) = mpsc::channel();
-    let beacon = thread::spawn(move || serve_renderer_beacon(&beacon_listener, &beacon_tx));
+    let beacon = spawn_renderer_beacon(beacon_listener);
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -61,9 +67,7 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
         .expect("launch recovery host");
     let host_pid = host.id();
     let (mut g1_reader, mut g1_writer, g1, g1_link) = accept_generation(&listener, &mut host);
-    beacon_rx
-        .recv_timeout(PRODUCT_DEADLINE)
-        .expect("initial renderer beacon");
+    expect_renderer_beacon(beacon, "initial renderer beacon");
     expect_ready_and_echoes(&mut g1_reader);
     g1_writer
         .write_all(b"CRASH\n")
@@ -100,7 +104,6 @@ fn linux_no_flag_host_recovers_bun_in_the_same_renderer_window() {
     assert!(status.success(), "recovery host exited with {status}");
     wait_process_identity_gone(&g2.bun, Instant::now() + PRODUCT_DEADLINE);
     wait_process_identity_gone(&g2.descendant, Instant::now() + PRODUCT_DEADLINE);
-    beacon.join().expect("recovery beacon thread");
 }
 
 fn accept_generation(
@@ -133,4 +136,319 @@ fn accept_generation(
     assert_nonzero_descendant(&read_control_line(&mut reader));
     let generation = wait_for_strict_generation(host_pid, Instant::now() + PRODUCT_DEADLINE);
     (reader, writer, generation, link)
+}
+
+// Shared with the early-open negative control: the production host test
+// rejects an actual second supervisor preparation, even without a Bun HELLO.
+// The host refuses a witness that is group/other-writable, so create it
+// owner-only rather than under whatever umask the test runs with.
+#[cfg(debug_assertions)]
+fn create_private_witness(path: &Path, context: &str) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .expect(context);
+}
+
+#[cfg(debug_assertions)]
+fn assert_only_initial_supervisor_attempt(path: &Path) {
+    let attempts = fs::read_to_string(path).expect("read supervisor attempts");
+    assert_eq!(
+        attempts, "1\n",
+        "an unexpected successor was prepared (even if it never reached control)"
+    );
+}
+
+/// The exact no-successor oracle above must reject a real prematurely armed
+/// recovery gate. This controls the test, not the production gate: no GUI,
+/// control socket, HELLO, or Bun process is needed to observe a second prepare.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "an unexpected successor was prepared")]
+fn linux_pre_ready_recovery_gate_negative_control_detects_early_successor() {
+    let fixture = ProductFixture::new();
+    let attempt_path = fixture.root.path().join("early-gate-attempts.log");
+    create_private_witness(&attempt_path, "create negative-control attempt witness");
+    let config = PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c", "exit 19"])
+        .restart_policy(RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        })
+        .with_debug_primary_attempt_witness(&attempt_path)
+        .expect("pin private attempt witness");
+    let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+        .expect("start real primary supervisor");
+    assert!(
+        gate.arm(),
+        "deliberately open the gate before initial Ready"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let trace = fs::read_to_string(&attempt_path).expect("observe supervisor attempts");
+        // A concurrent reader may observe a partially written second line.
+        // Wait for the full trace so the only expected panic comes from the
+        // shared no-successor oracle, not from this polling loop.
+        if trace.starts_with("1\n2\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "early-open gate never produced the expected second prepare: {trace:?}"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        supervisor.try_recv_bound_generation().is_none(),
+        "the negative control must not admit an authenticated generation"
+    );
+    let _ = gate.deny();
+    supervisor.shutdown();
+    let _ = supervisor.wait_for_outcome();
+    // Must panic: same oracle as the real native host test.
+    assert_only_initial_supervisor_attempt(&attempt_path);
+}
+
+/// The matching real-supervisor positive control: deny recovery after the
+/// original child revokes, then prove no second prepare occurred even when
+/// the failed child could not send HELLO or reach a control service.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
+#[test]
+fn linux_pre_ready_recovery_gate_denial_keeps_only_initial_attempt() {
+    let fixture = ProductFixture::new();
+    let attempt_path = fixture.root.path().join("closed-gate-attempts.log");
+    create_private_witness(&attempt_path, "create closed-gate attempt witness");
+    let config = PrimaryRoleConfig::primary("/bin/sh")
+        .args(["-c", "exit 19"])
+        .restart_policy(RestartPolicy {
+            max_crashes: 3,
+            window_secs: 30,
+        })
+        .with_debug_primary_attempt_witness(&attempt_path)
+        .expect("pin private attempt witness");
+    let (supervisor, gate) = PrimaryRoleSupervisor::start_with_bound_generations_gated(config)
+        .expect("start real initially unready supervisor");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(
+            supervisor.try_recv_event(),
+            Some(keld_runtime::primary::PrimaryRoleEvent::Revoked { attempt: 1, .. })
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "original generation never revoked before Ready"
+        );
+        std::thread::yield_now();
+    }
+    let _ = gate.deny();
+    supervisor.shutdown();
+    let _ = supervisor.wait_for_outcome();
+    assert_only_initial_supervisor_attempt(&attempt_path);
+}
+
+/// GH-1182 R1 on Linux: Bun exits after its authenticated HELLO while the initial
+/// window is live and its first navigation is held open ([`HeldRendererRequest`]),
+/// so the window cannot be `Ready` first. The pre-Ready recovery gate is still
+/// closed, so the host fails startup instead of provisioning a successor
+/// (architecture 06 §1).
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
+#[test]
+fn linux_post_hello_pre_ready_exit_fails_startup_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_path = fixture.root.path().join("post-hello-control.sock");
+    let listener = UnixListener::bind(&control_path).expect("bind post-HELLO control");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking post-HELLO control");
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage post-HELLO host");
+    // The debug Host creates this exact file inside the protected stage.
+    // No inherited path names an append destination.
+    let attempt_path = stage.root().join(".keld-debug-primary-attempts");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", &control_path)
+        .env("KELD_T3_EXIT_AFTER_HELLO", "1")
+        .env("KELD_T3_SUPERVISOR_ATTEMPTS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch post-HELLO host");
+    let (_reader, mut writer, generation, _link) = accept_generation(&listener, &mut host);
+    held.await_connection(&mut host);
+
+    // The initial navigation deadline (`keld_wv::INITIAL_MILESTONE_DEADLINE`)
+    // keeps running while the load is held. If it fires first, the host fails
+    // with that deadline instead, and the message assertion below rejects it.
+    writer
+        .write_all(b"EXIT_PRE_READY\n")
+        .expect("request post-HELLO exit");
+    writer.flush().expect("flush post-HELLO exit");
+    let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    assert!(
+        !status.success(),
+        "post-HELLO pre-Ready exit became success"
+    );
+    // Prove the sandbox is gone before reading to the end of the host's stderr.
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
+    let mut stderr = String::new();
+    host.stderr
+        .take()
+        .expect("captured post-HELLO stderr")
+        .read_to_string(&mut stderr)
+        .expect("read post-HELLO stderr");
+    assert!(
+        stderr.contains("Bun terminated before the initial window became ready"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service"
+    );
+    // The parent-owned witness records preparations before spawn or HELLO;
+    // the socket check above remains an independent, weaker observable.
+    assert_only_initial_supervisor_attempt(&attempt_path);
+    held.release();
+}
+
+/// PR #1300 review (P1) on Linux: after its authenticated HELLO, with the first
+/// navigation held, a live Bun shuts down only the write half of its app link
+/// (a `node:net` half-open socket; `Bun.connect` would close both halves) and
+/// acknowledges on its separate control link. Only then is the navigation
+/// released, so `NavigationReady` races the owner's handling of the EOF the
+/// host has already read. The EOF must win: no `Ready` reaches the surviving
+/// read half, startup fails typed, and no successor is even prepared.
+///
+/// Residual order (PR #1300 review, P2-4): the acknowledgment proves Bun shut
+/// its write half, not that the host's reader has latched the EOF. Should
+/// `NavigationReady` reach `signal_ready` first, `Ready` wins by design and the
+/// after-Ready recovery prepares a successor: a false red, never a false green.
+/// The reader wakes on the EOF before the ack is even sent, while navigation
+/// can finish only after this test reads the ack and releases the request.
+// The supervisor-attempt witness exists only in debug Linux builds.
+#[cfg(debug_assertions)]
+#[test]
+fn linux_pre_ready_write_shutdown_beats_a_released_ready_without_successor() {
+    let fixture = ProductFixture::new();
+    let control_path = fixture.root.path().join("write-shutdown-control.sock");
+    let listener = UnixListener::bind(&control_path).expect("bind write-shutdown control");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking write-shutdown control");
+    let held = HeldRendererRequest::bind();
+    held.write_index(&fixture.project);
+    let stage = keld_cli::boot::stage_dev_boot(
+        &fixture.project,
+        Path::new(env!("CARGO_BIN_EXE_keld-host")),
+    )
+    .expect("stage write-shutdown host");
+    // The debug Host creates this exact file inside the protected stage.
+    let attempt_path = stage.root().join(".keld-debug-primary-attempts");
+    let mut host = Command::new(stage.host())
+        .current_dir(stage.root())
+        .env("KELD_T1B_CONTROL", &control_path)
+        // Hold after HELLO on a half-open app link (see the fixture).
+        .env("KELD_T3_EXIT_AFTER_HELLO", "half-open")
+        .env("KELD_T3_SUPERVISOR_ATTEMPTS", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("launch write-shutdown host");
+    let (mut reader, mut writer, generation, _link) = accept_generation(&listener, &mut host);
+    held.await_connection(&mut host);
+
+    writer
+        .write_all(b"CLOSE_PRE_READY_LINK\n")
+        .expect("request pre-Ready write shutdown");
+    writer.flush().expect("flush pre-Ready write shutdown");
+    assert_eq!(read_control_line(&mut reader), "PRE_READY_WRITE_SHUTDOWN");
+    // Only now may the initial navigation finish and race the owner.
+    held.release();
+
+    // A prepared successor keeps the host running, so stop at that witness
+    // rather than at the exit deadline, and fail on the pinned oracle.
+    let deadline = Instant::now() + PRODUCT_DEADLINE;
+    let status = loop {
+        if let Some(status) = host.try_wait().expect("observe write-shutdown host") {
+            break status;
+        }
+        if fs::read_to_string(&attempt_path).is_ok_and(|trace| trace.starts_with("1\n2\n")) {
+            let _ = host.kill();
+            let _ = host.wait();
+            // Positive control for the surviving read half: the failed
+            // generation was restarted, so its control link ends. Print what
+            // it reported after its write shutdown; a Ready the host still
+            // delivered shows as READY_AFTER_WRITE_SHUTDOWN.
+            let mut late_control = Vec::new();
+            let _ = reader.read_to_end(&mut late_control);
+            eprintln!(
+                "control records after the write shutdown: {:?}",
+                String::from_utf8_lossy(&late_control)
+            );
+            assert_only_initial_supervisor_attempt(&attempt_path);
+        }
+        assert!(Instant::now() < deadline, "host exit timed out");
+        std::thread::park_timeout(Duration::from_millis(10));
+    };
+    assert!(
+        !status.success(),
+        "a pre-Ready write shutdown became success"
+    );
+    wait_process_identity_gone(&generation.bun, Instant::now() + PRODUCT_DEADLINE);
+    wait_process_identity_gone(&generation.descendant, Instant::now() + PRODUCT_DEADLINE);
+    let mut stderr = String::new();
+    host.stderr
+        .take()
+        .expect("captured write-shutdown stderr")
+        .read_to_string(&mut stderr)
+        .expect("read write-shutdown stderr");
+    // The parent-owned witness records preparations before spawn or HELLO.
+    assert_only_initial_supervisor_attempt(&attempt_path);
+    // Bun is gone, so its control link ends; any record it sent is complete.
+    let mut late_control = String::new();
+    reader
+        .read_to_string(&mut late_control)
+        .expect("read the remaining control records");
+    assert!(
+        !late_control.contains("READY_AFTER_WRITE_SHUTDOWN"),
+        "Ready reached the app after its write shutdown: {late_control:?}\n{stderr}"
+    );
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "a successor reached the control service: {stderr}"
+    );
+    // The owner's typed pre-Ready cause is the host's primary error: the first
+    // diagnostic line, whatever toolkit output precedes it.
+    assert!(
+        stderr
+            .lines()
+            .find(|line| line.starts_with("KELD-"))
+            .is_some_and(|line| line.starts_with(concat!(
+                "KELD-CORE-037: no-flag host failed during primary generation before Ready ",
+                "— Bun terminated before the initial window became ready"
+            ))),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-RUNTIME-002"), "{stderr}");
 }

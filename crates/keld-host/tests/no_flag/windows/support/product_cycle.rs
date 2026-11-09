@@ -15,7 +15,7 @@ use super::product::ProductFixture;
 use super::renderer::{spawn_renderer_beacon, try_expect_renderer_beacon};
 use crate::{
     DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, dev_stage_command, process_exists,
-    startup_kill_switch, wait_child, wait_for_host_window,
+    startup_kill_switch, ui_end_kill_switch, wait_child, wait_for_host_window,
 };
 
 pub(crate) struct ProductEvidence {
@@ -99,7 +99,7 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
     writer.flush().expect("flush lifecycle Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut child, Instant::now() + PRODUCT_DEADLINE);
+    let status = wait_child(&mut child, Instant::now() + ui_end_kill_switch());
     assert!(status.success(), "host exited with {status}");
     // Quit kill-waits Bun before the UI loop exits (architecture 02, Quit), so the
     // exact Bun process is already signaled when the host exit is observed. The zero
@@ -109,6 +109,18 @@ pub(crate) fn run_product_cycle(fixture: &ProductFixture, label: &str) -> Produc
         wait_for_process_signal(&bun, 0),
         WAIT_OBJECT_0,
         "Bun {bun_pid} survived orderly host exit"
+    );
+    // The fixture's frame loop reports any frame it does not own, a channel-5 frame
+    // included, as an `ERROR` record: a renderer boot's stream ends here with none.
+    let mut trailing = String::new();
+    match reader.read_to_string(&mut trailing) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => panic!("control stream after Bun exit: {error}"),
+    }
+    assert!(
+        trailing.is_empty(),
+        "a renderer boot wrote a frame after Quit: {trailing}"
     );
 
     ProductEvidence {

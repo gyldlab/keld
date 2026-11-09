@@ -64,7 +64,7 @@ def load(root: Path) -> dict:
     data = json.loads((root / "tools/ci-inputs.json").read_text(encoding="utf-8"))
     if isinstance(data, dict) and data.get("schema") == "keld.ci-inputs/v1":
         raise ValueError(
-            "KELD-CI-INPUTS-001: schema v1 recorded reader digests, which v2 retired (GH-1275). Fix: set "
+            "CI-INPUTS-V1-RETIRED: schema v1 recorded reader digests, which v2 retired (GH-1275). Fix: set "
             f"\"schema\" to \"{SCHEMA}\" and delete every {', '.join(RETIRED_DIGEST_KEYS)} entry")
     if (not isinstance(data, dict) or data.get("schema") != SCHEMA or not isinstance(data.get("consumers"), list)
             or not isinstance(data.get("reader_sets"), dict)):
@@ -76,7 +76,7 @@ def load(root: Path) -> dict:
         patterns_list(reader_set.get("patterns"), f"reader set {name} patterns", allow_empty=False)
         retired = [key for key in RETIRED_DIGEST_KEYS if key in reader_set]
         if retired:
-            raise ValueError(f"reader set {name} still records {', '.join(retired)}; KELD-CI-INPUTS-001: "
+            raise ValueError(f"reader set {name} still records {', '.join(retired)}; CI-INPUTS-V1-RETIRED: "
                              "v2 stores no digests, delete the entry (GH-1275)")
     census = data.get("rust_source_census")
     if census is not None:
@@ -85,7 +85,7 @@ def load(root: Path) -> dict:
         patterns_list(census.get("patterns"), "rust_source_census patterns", allow_empty=False)
         retired = [key for key in RETIRED_DIGEST_KEYS if key in census]
         if retired:
-            raise ValueError(f"rust_source_census still records {', '.join(retired)}; KELD-CI-INPUTS-001: "
+            raise ValueError(f"rust_source_census still records {', '.join(retired)}; CI-INPUTS-V1-RETIRED: "
                              "membership is compared against the base tree, delete the entry (GH-1275)")
     return data
 

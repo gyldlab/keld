@@ -80,9 +80,17 @@ fn file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
     std::os::unix::fs::symlink(target, link).expect("create file symlink");
 }
 
+/// Windows symlink creation needs Developer Mode or `SeCreateSymbolicLinkPrivilege`
+/// (hosted windows-latest has it). The link tests fail with that named, never skip.
+/// `expect` appends the `io::Error`, and its caller location names the file or
+/// directory helper.
+#[cfg(windows)]
+const WINDOWS_SYMLINK_PREREQUISITE: &str = "create Windows symlink: needs Developer Mode or \
+     SeCreateSymbolicLinkPrivilege (hosted windows-latest has it)";
+
 #[cfg(windows)]
 fn file_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
-    std::os::windows::fs::symlink_file(target, link).expect("create file symlink");
+    std::os::windows::fs::symlink_file(target, link).expect(WINDOWS_SYMLINK_PREREQUISITE);
 }
 
 #[test]
@@ -1423,7 +1431,7 @@ fn dir_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
 
 #[cfg(windows)]
 fn dir_symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) {
-    std::os::windows::fs::symlink_dir(target, link).expect("create directory symlink");
+    std::os::windows::fs::symlink_dir(target, link).expect(WINDOWS_SYMLINK_PREREQUISITE);
 }
 
 /// #673 review: relative links inside the scope that climb out are never

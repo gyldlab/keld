@@ -21,6 +21,7 @@ class CloseoutTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.git("init", "--quiet")
+        self.git("config", "maintenance.auto", "false")  # no detached repack racing cleanup (#670)
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                  "commit", "--allow-empty", "-m", "baseline", "--quiet")
         self.log = self.root / "proof.txt"

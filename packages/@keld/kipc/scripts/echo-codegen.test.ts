@@ -1,12 +1,164 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 
-import { assertEchoArtifactFresh, assertFsArtifactFresh, renderAuthBinding, renderEchoDeclarations, renderFsBinding } from "./echo-codegen.ts";
-import { decodeFsResponse, encodeFsRequest, type FsRequest } from "../../api/src/fs.generated.ts";
+import {
+  assertEchoArtifactFresh,
+  assertFsArtifactFresh,
+  renderAuthBinding,
+  renderEchoDeclarations,
+  renderFsBinding,
+} from "./echo-codegen.ts";
+import {
+  decodeFsResponse,
+  encodeFsRequest,
+  type FsRequest,
+} from "../../api/src/fs.generated.ts";
 import { MAX_FRAME_LEN } from "../src/transport.ts";
 import { pathToFileURL } from "node:url";
+
+// KEL-177: CLI computation/formatting contracts belong beside the generator's
+// existing semantic cases. Revisit this module's size when those owners split.
+const generationOutputs = [
+  "crates/keld-cli/templates/hello/src/echo.generated.ts",
+  "packages/@keld/api/src/echo.generated.ts",
+  "packages/@keld/api/src/fs.generated.ts",
+  "packages/@keld/api/src/auth.generated.ts",
+  "packages/@keld/kipc/src/transport.ts",
+];
+
+function withGeneratorCheckout(run: (root: string) => void): void {
+  const root = mkdtempSync(resolve(tmpdir(), "keld-generation-contract-"));
+  try {
+    for (const path of [
+      ...generationOutputs,
+      "packages/@keld/kipc/scripts/echo-codegen.ts",
+      "crates/keld-ipc/src/echo.rs",
+      "crates/keld-ipc/src/channel_table.rs",
+      "crates/keld-native/src/fs.rs",
+      "crates/keld-native/src/auth/mod.rs",
+    ]) {
+      mkdirSync(dirname(resolve(root, path)), { recursive: true });
+      cpSync(
+        resolve(import.meta.dir, "../../../..", path),
+        resolve(root, path),
+      );
+    }
+    writeFileSync(resolve(root, "bunfig.toml"), "[fmt]\nignorePatterns = []\n");
+    run(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function runGenerator(root: string, command: "generate" | "check") {
+  return Bun.spawnSync(
+    [
+      process.execPath,
+      resolve(root, "packages/@keld/kipc/scripts/echo-codegen.ts"),
+      command,
+    ],
+    { cwd: root },
+  );
+}
+
+test("late transport computation failure leaves every destination unchanged", () => {
+  withGeneratorCheckout((root) => {
+    const echo = resolve(root, "crates/keld-ipc/src/echo.rs");
+    writeFileSync(
+      echo,
+      readFileSync(echo, "utf8").replaceAll(
+        "pub count: u32,",
+        "pub attempts: u32,",
+      ),
+    );
+    const transport = resolve(root, generationOutputs[4]);
+    writeFileSync(
+      transport,
+      readFileSync(transport, "utf8").replace(
+        "// @generated-end channel-table",
+        "// missing-end channel-table",
+      ),
+    );
+    const before = generationOutputs.map((path) =>
+      readFileSync(resolve(root, path)),
+    );
+    const result = runGenerator(root, "generate");
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(
+      "exactly one channel-table region",
+    );
+    generationOutputs.forEach((path, index) => {
+      expect(readFileSync(resolve(root, path)), path).toEqual(before[index]);
+    });
+  });
+});
+
+test("generation preserves valid unformatted manual transport bytes", () => {
+  withGeneratorCheckout((root) => {
+    const path = resolve(root, generationOutputs[4]);
+    const manual = "\nexport const manualFormattingControl={answer:42};\n";
+    writeFileSync(path, readFileSync(path, "utf8") + manual);
+    const result = runGenerator(root, "generate");
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(path, "utf8").endsWith(manual)).toBe(true);
+    expect(runGenerator(root, "check").exitCode).toBe(0);
+  });
+});
+
+test("generation and freshness honor real destination-specific Bun overrides", () => {
+  withGeneratorCheckout((root) => {
+    writeFileSync(
+      resolve(root, "bunfig.toml"),
+      `[fmt]
+ignorePatterns = []
+[[fmt.overrides]]
+files = ["packages/@keld/api/src/*.generated.ts", "packages/@keld/kipc/src/transport.ts"]
+options = { semi = false, printWidth = 120 }
+`,
+    );
+    const result = runGenerator(root, "generate");
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(resolve(root, generationOutputs[0]), "utf8")).toContain(
+      "message: string;",
+    );
+    expect(readFileSync(resolve(root, generationOutputs[1]), "utf8")).toContain(
+      "message: string\n",
+    );
+    for (const path of generationOutputs.slice(0, 4)) {
+      const check = Bun.spawnSync(
+        [process.execPath, "fmt", "--no-script", "--check", path],
+        { cwd: root },
+      );
+      expect(
+        check.exitCode,
+        check.stderr.toString() + check.stdout.toString(),
+      ).toBe(0);
+    }
+    expect(readFileSync(resolve(root, generationOutputs[4]), "utf8")).toContain(
+      "export const HANDSHAKE_CHANNEL = 0\n",
+    );
+    expect(runGenerator(root, "check").exitCode).toBe(0);
+    const before = generationOutputs.map((path) =>
+      readFileSync(resolve(root, path)),
+    );
+    expect(runGenerator(root, "generate").exitCode).toBe(0);
+    generationOutputs.forEach((path, index) =>
+      expect(readFileSync(resolve(root, path))).toEqual(before[index]),
+    );
+  });
+});
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const echoSource = readFileSync(
@@ -21,9 +173,18 @@ const apiGeneratedPath = resolve(
   repositoryRoot,
   "packages/@keld/api/src/echo.generated.ts",
 );
-const adapterPath = resolve(repositoryRoot, "crates/keld-cli/templates/hello/src/kipc.ts");
-const bodyPath = resolve(repositoryRoot, "crates/keld-cli/templates/hello/src/main-body.ts");
-const transportPath = resolve(repositoryRoot, "packages/@keld/kipc/src/transport.ts");
+const adapterPath = resolve(
+  repositoryRoot,
+  "crates/keld-cli/templates/hello/src/kipc.ts",
+);
+const bodyPath = resolve(
+  repositoryRoot,
+  "crates/keld-cli/templates/hello/src/main-body.ts",
+);
+const transportPath = resolve(
+  repositoryRoot,
+  "packages/@keld/kipc/src/transport.ts",
+);
 const packageRoot = resolve(import.meta.dir, "..");
 
 const expectedCurrentDeclarations = `// @generated by packages/@keld/kipc/scripts/echo-codegen.ts.
@@ -49,15 +210,23 @@ function withTemporaryComposition(run: (directory: string) => void): void {
       resolve(directory, "main.ts"),
       `${readFileSync(adapterPath, "utf8")}\n${readFileSync(bodyPath, "utf8")}`,
     );
-    writeFileSync(resolve(directory, "kipc-transport.ts"), readFileSync(transportPath));
+    writeFileSync(
+      resolve(directory, "kipc-transport.ts"),
+      readFileSync(transportPath),
+    );
     run(directory);
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
 }
 
-function typecheckComposition(directory: string): ReturnType<typeof Bun.spawnSync> {
-  const typeRoots = resolve(packageRoot, "node_modules/@types").replaceAll("\\", "/");
+function typecheckComposition(
+  directory: string,
+): ReturnType<typeof Bun.spawnSync> {
+  const typeRoots = resolve(packageRoot, "node_modules/@types").replaceAll(
+    "\\",
+    "/",
+  );
   writeFileSync(
     resolve(directory, "tsconfig.json"),
     JSON.stringify({
@@ -78,7 +247,13 @@ function typecheckComposition(directory: string): ReturnType<typeof Bun.spawnSyn
     }),
   );
   return Bun.spawnSync(
-    [process.execPath, "run", "tsc", "--project", resolve(directory, "tsconfig.json")],
+    [
+      process.execPath,
+      "run",
+      "tsc",
+      "--project",
+      resolve(directory, "tsconfig.json"),
+    ],
     { cwd: packageRoot, env: process.env },
   );
 }
@@ -103,7 +278,10 @@ function productionTypeScriptSources(root: string): TypeScriptSource[] {
         path !== generatedPath &&
         path !== apiGeneratedPath
       ) {
-        sources.push({ path: relative(repositoryRoot, path), source: readFileSync(path, "utf8") });
+        sources.push({
+          path: relative(repositoryRoot, path),
+          source: readFileSync(path, "utf8"),
+        });
       }
     }
   };
@@ -111,7 +289,9 @@ function productionTypeScriptSources(root: string): TypeScriptSource[] {
   return sources;
 }
 
-function assertNoHandWrittenEchoPayload(sources: readonly TypeScriptSource[]): void {
+function assertNoHandWrittenEchoPayload(
+  sources: readonly TypeScriptSource[],
+): void {
   for (const candidate of sources) {
     expect(candidate.source, candidate.path).not.toMatch(
       /\b(?:export\s+)?(?:interface|type)\s+Echo(?:Request|Response)\b/,
@@ -128,33 +308,53 @@ describe("echo declaration generator", () => {
   });
 
   test("supported Rust field changes deterministically change the output", () => {
-    const renamed = echoSource.replaceAll("pub count: u32,", "pub attempts: u32,");
+    const renamed = echoSource.replaceAll(
+      "pub count: u32,",
+      "pub attempts: u32,",
+    );
     const added = echoSource.replace(
       "pub message: String,\n    /// Repeat count metadata",
       "pub message: String,\n    pub label: String,\n    /// Repeat count metadata",
     );
-    const typeChanged = echoSource.replaceAll("pub count: u32,", "pub count: String,");
+    const typeChanged = echoSource.replaceAll(
+      "pub count: u32,",
+      "pub count: String,",
+    );
 
     expect(renderEchoDeclarations(renamed)).toContain("attempts: number;");
     expect(renderEchoDeclarations(renamed)).not.toContain("count: number;");
     expect(renderEchoDeclarations(added)).toContain("label: string;");
     expect(renderEchoDeclarations(typeChanged)).toContain("count: string;");
-    expect(renderEchoDeclarations(typeChanged)).not.toContain("Rust u32 domain");
-    expect(renderEchoDeclarations(renamed)).not.toBe(expectedCurrentDeclarations);
+    expect(renderEchoDeclarations(typeChanged)).not.toContain(
+      "Rust u32 domain",
+    );
+    expect(renderEchoDeclarations(renamed)).not.toBe(
+      expectedCurrentDeclarations,
+    );
     expect(renderEchoDeclarations(added)).not.toBe(expectedCurrentDeclarations);
-    expect(renderEchoDeclarations(typeChanged)).not.toBe(expectedCurrentDeclarations);
+    expect(renderEchoDeclarations(typeChanged)).not.toBe(
+      expectedCurrentDeclarations,
+    );
   });
 
   test("committed bytes are fresh and stale or hand-edited bytes fail", () => {
     const committed = readFileSync(generatedPath);
     const apiCommitted = readFileSync(apiGeneratedPath);
     expect(() => assertEchoArtifactFresh(echoSource, committed)).not.toThrow();
-    expect(() => assertEchoArtifactFresh(echoSource, apiCommitted)).not.toThrow();
+    expect(() =>
+      assertEchoArtifactFresh(echoSource, apiCommitted, apiGeneratedPath),
+    ).not.toThrow();
     expect(apiCommitted).toEqual(committed);
-    expect(() => assertEchoArtifactFresh(echoSource, Buffer.concat([committed, Buffer.from("// edit\n")]))).toThrow(
-      "stale",
+    expect(() =>
+      assertEchoArtifactFresh(
+        echoSource,
+        Buffer.concat([committed, Buffer.from("// edit\n")]),
+      ),
+    ).toThrow("stale");
+    const renamed = echoSource.replaceAll(
+      "pub count: u32,",
+      "pub attempts: u32,",
     );
-    const renamed = echoSource.replaceAll("pub count: u32,", "pub attempts: u32,");
     expect(() => assertEchoArtifactFresh(renamed, committed)).toThrow("stale");
   });
 
@@ -162,13 +362,22 @@ describe("echo declaration generator", () => {
     expect(() => renderEchoDeclarations(echoSource)).not.toThrow();
 
     const unsupported = [
-      ["unsupported type", echoSource.replace("pub count: u32,", "pub count: u64,")],
+      [
+        "unsupported type",
+        echoSource.replace("pub count: u32,", "pub count: u64,"),
+      ],
       [
         "field attribute",
-        echoSource.replace("    pub count: u32,", "    #[serde(default)]\n    pub count: u32,"),
+        echoSource.replace(
+          "    pub count: u32,",
+          "    #[serde(default)]\n    pub count: u32,",
+        ),
       ],
       ["private field", echoSource.replace("pub count: u32,", "count: u32,")],
-      ["malformed field", echoSource.replace("pub count: u32,", "pub count: u32")],
+      [
+        "malformed field",
+        echoSource.replace("pub count: u32,", "pub count: u32"),
+      ],
       [
         "tuple struct",
         echoSource.replace(
@@ -176,23 +385,38 @@ describe("echo declaration generator", () => {
           "pub struct EchoRequest(pub String, pub u32);",
         ),
       ],
-      ["generic struct", echoSource.replace("pub struct EchoRequest {", "pub struct EchoRequest<T> {")],
+      [
+        "generic struct",
+        echoSource.replace(
+          "pub struct EchoRequest {",
+          "pub struct EchoRequest<T> {",
+        ),
+      ],
       [
         "arbitrary body line",
-        echoSource.replace("    pub count: u32,", "    const BAD: u32 = 1;\n    pub count: u32,"),
+        echoSource.replace(
+          "    pub count: u32,",
+          "    const BAD: u32 = 1;\n    pub count: u32,",
+        ),
       ],
     ] as const;
 
     for (const [label, source] of unsupported) {
-      expect(() => renderEchoDeclarations(source), label).toThrow(/echo codegen:/);
+      expect(() => renderEchoDeclarations(source), label).toThrow(
+        /echo codegen:/,
+      );
     }
   });
 
   test("requires exactly one named request and response struct", () => {
-    expect(() => renderEchoDeclarations(echoSource.replace("EchoRequest", "MissingRequest"))).toThrow(
-      "EchoRequest",
-    );
-    expect(() => renderEchoDeclarations(`${echoSource}\n${echoSource}`)).toThrow("duplicate");
+    expect(() =>
+      renderEchoDeclarations(
+        echoSource.replace("EchoRequest", "MissingRequest"),
+      ),
+    ).toThrow("EchoRequest");
+    expect(() =>
+      renderEchoDeclarations(`${echoSource}\n${echoSource}`),
+    ).toThrow("duplicate");
   });
 
   test("generated declarations are the sole payload owner and stay type-only", () => {
@@ -207,7 +431,9 @@ describe("echo declaration generator", () => {
       expect(candidate).toContain(
         'export type { EchoRequest, EchoResponse } from "./echo.generated.ts";',
       );
-      expect(candidate).not.toMatch(/(?:interface|type)\s+Echo(?:Request|Response)\b/);
+      expect(candidate).not.toMatch(
+        /(?:interface|type)\s+Echo(?:Request|Response)\b/,
+      );
       expect(candidate).toContain(
         "async echo(request: EchoRequest): Promise<EchoResponse>",
       );
@@ -229,27 +455,41 @@ describe("echo declaration generator", () => {
     const localDeclaration = `${adapter}\ninterface EchoRequest { message: string; count: number }\n`;
     expect(() => assertOwnership(localDeclaration)).toThrow();
     const transportDeclaration = productionSources.map((candidate) =>
-      candidate.path.replaceAll("\\", "/") === "packages/@keld/kipc/src/transport.ts"
+      candidate.path.replaceAll("\\", "/") ===
+      "packages/@keld/kipc/src/transport.ts"
         ? {
             ...candidate,
             source: `${candidate.source}\nexport interface EchoRequest { message: string; count: number }\n`,
           }
         : candidate,
     );
-    expect(() => assertNoHandWrittenEchoPayload(transportDeclaration)).toThrow();
+    expect(() =>
+      assertNoHandWrittenEchoPayload(transportDeclaration),
+    ).toThrow();
   });
 
   test("exact shipping composition typechecks and a generated rename exposes stale production use", () => {
     withTemporaryComposition((directory) => {
-      writeFileSync(resolve(directory, "echo.generated.ts"), renderEchoDeclarations(echoSource));
+      writeFileSync(
+        resolve(directory, "echo.generated.ts"),
+        renderEchoDeclarations(echoSource),
+      );
       const baseline = typecheckComposition(directory);
       expect(new TextDecoder().decode(baseline.stderr)).toBe("");
       expect(baseline.exitCode).toBe(0);
 
-      const renamed = echoSource.replaceAll("pub count: u32,", "pub attempts: u32,");
-      writeFileSync(resolve(directory, "echo.generated.ts"), renderEchoDeclarations(renamed));
+      const renamed = echoSource.replaceAll(
+        "pub count: u32,",
+        "pub attempts: u32,",
+      );
+      writeFileSync(
+        resolve(directory, "echo.generated.ts"),
+        renderEchoDeclarations(renamed),
+      );
       const drift = typecheckComposition(directory);
-      const diagnostic = new TextDecoder().decode(drift.stdout) + new TextDecoder().decode(drift.stderr);
+      const diagnostic =
+        new TextDecoder().decode(drift.stdout) +
+        new TextDecoder().decode(drift.stderr);
       expect(drift.exitCode).not.toBe(0);
       expect(diagnostic).toContain("count");
       expect(diagnostic).toContain("EchoRequest");
@@ -260,29 +500,33 @@ describe("echo declaration generator", () => {
     withTemporaryComposition((directory) => {
       const environment = { ...process.env };
       delete environment.KELD_APP_LINK;
-      const baseline = Bun.spawnSync([process.execPath, "run", resolve(directory, "main.ts")], {
-        cwd: directory,
-        env: environment,
-      });
+      const baseline = Bun.spawnSync(
+        [process.execPath, "run", resolve(directory, "main.ts")],
+        {
+          cwd: directory,
+          env: environment,
+        },
+      );
       const baselineOutput =
-        new TextDecoder().decode(baseline.stdout) + new TextDecoder().decode(baseline.stderr);
+        new TextDecoder().decode(baseline.stdout) +
+        new TextDecoder().decode(baseline.stderr);
       expect(baseline.exitCode).toBe(1);
       expect(baselineOutput).toContain("KELD-CLI-010");
       expect(baselineOutput).not.toContain("echo.generated.ts");
 
       const mainPath = resolve(directory, "main.ts");
-      const valueUse = readFileSync(mainPath, "utf8")
-        .replace(
-          'import type { EchoRequest, EchoResponse } from "./echo.generated.ts";',
-          'import { EchoRequest, type EchoResponse } from "./echo.generated.ts";\nvoid EchoRequest;',
-        );
+      const valueUse = readFileSync(mainPath, "utf8").replace(
+        'import type { EchoRequest, EchoResponse } from "./echo.generated.ts";',
+        'import { EchoRequest, type EchoResponse } from "./echo.generated.ts";\nvoid EchoRequest;',
+      );
       writeFileSync(mainPath, valueUse);
       const mutation = Bun.spawnSync([process.execPath, "run", mainPath], {
         cwd: directory,
         env: environment,
       });
       const mutationOutput =
-        new TextDecoder().decode(mutation.stdout) + new TextDecoder().decode(mutation.stderr);
+        new TextDecoder().decode(mutation.stdout) +
+        new TextDecoder().decode(mutation.stderr);
       expect(mutation.exitCode).not.toBe(0);
       expect(mutationOutput).toContain("echo.generated.ts");
       expect(mutationOutput).not.toContain("KELD-CLI-010");
@@ -290,9 +534,14 @@ describe("echo declaration generator", () => {
   });
 });
 
-
-const fsSource = readFileSync(resolve(repositoryRoot, "crates/keld-native/src/fs.rs"), "utf8");
-const fsGeneratedPath = resolve(repositoryRoot, "packages/@keld/api/src/fs.generated.ts");
+const fsSource = readFileSync(
+  resolve(repositoryRoot, "crates/keld-native/src/fs.rs"),
+  "utf8",
+);
+const fsGeneratedPath = resolve(
+  repositoryRoot,
+  "packages/@keld/api/src/fs.generated.ts",
+);
 interface FsFixtureVector {
   name: string;
   direction: "request" | "response";
@@ -302,26 +551,54 @@ interface FsFixtureVector {
   wire: Uint8Array;
 }
 
-const fsVectors = readFileSync(resolve(repositoryRoot, "crates/keld-native/tests/fixtures/fs-payload-v0.tsv"), "utf8")
-  .split("\n").filter((line) => line.length !== 0 && !line.startsWith("#"))
+const fsVectors = readFileSync(
+  resolve(
+    repositoryRoot,
+    "crates/keld-native/tests/fixtures/fs-payload-v0.tsv",
+  ),
+  "utf8",
+)
+  .split("\n")
+  .filter((line) => line.length !== 0 && !line.startsWith("#"))
   .map((line): FsFixtureVector => {
     const fields = line.split("\t");
     if (fields.length !== 6) throw new Error(`invalid FS fixture row: ${line}`);
     const [name, direction, variant, path, content, wire] = fields;
-    if (direction !== "request" && direction !== "response") throw new Error(`invalid FS fixture direction: ${direction}`);
-    if (variant !== "Read" && variant !== "Write") throw new Error(`invalid FS fixture variant: ${variant}`);
-    const fromHex = (value: string): Uint8Array => value === "-" ? new Uint8Array() : new Uint8Array(Buffer.from(value, "hex"));
-    return { name, direction, variant, path, content: fromHex(content), wire: fromHex(wire) };
+    if (direction !== "request" && direction !== "response")
+      throw new Error(`invalid FS fixture direction: ${direction}`);
+    if (variant !== "Read" && variant !== "Write")
+      throw new Error(`invalid FS fixture variant: ${variant}`);
+    const fromHex = (value: string): Uint8Array =>
+      value === "-"
+        ? new Uint8Array()
+        : new Uint8Array(Buffer.from(value, "hex"));
+    return {
+      name,
+      direction,
+      variant,
+      path,
+      content: fromHex(content),
+      wire: fromHex(wire),
+    };
   });
 
-async function withFsBinding(source: string, run: (binding: typeof import("../../api/src/fs.generated.ts")) => void): Promise<void> {
+async function withFsBinding(
+  source: string,
+  run: (binding: typeof import("../../api/src/fs.generated.ts")) => void,
+): Promise<void> {
   const directory = mkdtempSync(resolve(tmpdir(), "keld-fs-codegen-"));
   try {
     const path = resolve(directory, "fs.generated.ts");
-    writeFileSync(path, renderFsBinding(source).replace(
-      'from "../../kipc/src/transport.ts"', `from "${pathToFileURL(transportPath).href}"`,
-    ));
-    const binding = await import(pathToFileURL(path).href) as typeof import("../../api/src/fs.generated.ts");
+    writeFileSync(
+      path,
+      renderFsBinding(source).replace(
+        'from "../../kipc/src/transport.ts"',
+        `from "${pathToFileURL(transportPath).href}"`,
+      ),
+    );
+    const binding = (await import(
+      pathToFileURL(path).href
+    )) as typeof import("../../api/src/fs.generated.ts");
     run(binding);
   } finally {
     rmSync(directory, { force: true, recursive: true });
@@ -330,7 +607,8 @@ async function withFsBinding(source: string, run: (binding: typeof import("../..
 
 function semanticRequest(vector: (typeof fsVectors)[number]): FsRequest {
   if (vector.variant === "Read") return { variant: "Read", path: vector.path };
-  if (vector.variant === "Write") return { variant: "Write", path: vector.path, bytes: vector.content };
+  if (vector.variant === "Write")
+    return { variant: "Write", path: vector.path, bytes: vector.content };
   throw new Error(`unknown request vector ${vector.name}`);
 }
 
@@ -339,8 +617,16 @@ describe("bounded native filesystem binding", () => {
     const artifact = readFileSync(fsGeneratedPath);
     expect(renderFsBinding(fsSource)).toBe(renderFsBinding(fsSource));
     expect(() => assertFsArtifactFresh(fsSource, artifact)).not.toThrow();
-    expect(() => assertFsArtifactFresh(fsSource, Buffer.concat([artifact, Buffer.from("// edit\n")]))).toThrow("stale");
-    const changed = fsSource.replace("pub enum FsRequest {", "pub enum MissingFsRequest {");
+    expect(() =>
+      assertFsArtifactFresh(
+        fsSource,
+        Buffer.concat([artifact, Buffer.from("// edit\n")]),
+      ),
+    ).toThrow("stale");
+    const changed = fsSource.replace(
+      "pub enum FsRequest {",
+      "pub enum MissingFsRequest {",
+    );
     expect(() => assertFsArtifactFresh(changed, artifact)).toThrow("FsRequest");
     const reordered = fsSource.replace(
       "        path: String,\n        /// Bounded content bytes.\n        bytes: Vec<u8>,",
@@ -354,50 +640,104 @@ describe("bounded native filesystem binding", () => {
       fsSource.replace("pub enum FsRequest {", "enum FsRequest {"),
       fsSource.replace("pub enum FsRequest {", "pub(crate) enum FsRequest {"),
       fsSource.replace("pub enum FsRequest {", "pub enum FsRequest<T> {"),
-      fsSource.replace("pub enum FsRequest {", '#[serde(tag = "kind")]\npub enum FsRequest {'),
-      fsSource.replace("pub enum FsRequest {", '#[serde(\n    tag = "kind"\n)]\npub enum FsRequest {'),
-      fsSource.replace("pub enum FsRequest {", '#[cfg(unix)]\npub enum FsRequest {'),
-      fsSource.replace("pub enum FsRequest {", '#[repr(u8)]\npub enum FsRequest {'),
-      fsSource.replace("    Write,", '    #[serde(rename = "write")]\n    Write,'),
+      fsSource.replace(
+        "pub enum FsRequest {",
+        '#[serde(tag = "kind")]\npub enum FsRequest {',
+      ),
+      fsSource.replace(
+        "pub enum FsRequest {",
+        '#[serde(\n    tag = "kind"\n)]\npub enum FsRequest {',
+      ),
+      fsSource.replace(
+        "pub enum FsRequest {",
+        "#[cfg(unix)]\npub enum FsRequest {",
+      ),
+      fsSource.replace(
+        "pub enum FsRequest {",
+        "#[repr(u8)]\npub enum FsRequest {",
+      ),
+      fsSource.replace(
+        "    Write,",
+        '    #[serde(rename = "write")]\n    Write,',
+      ),
       fsSource.replace("    Write,", "    Write = 3,"),
       fsSource.replace("    Write,", "    Write(String),"),
       fsSource.replace("        bytes: Vec<u8>,", "        bytes: Vec<u16>,"),
-      fsSource.replace("        bytes: Vec<u8>,", "        pub bytes: Vec<u8>,"),
-      fsSource.replace("        bytes: Vec<u8>,", '        #[serde(skip)]\n        bytes: Vec<u8>,'),
+      fsSource.replace(
+        "        bytes: Vec<u8>,",
+        "        pub bytes: Vec<u8>,",
+      ),
+      fsSource.replace(
+        "        bytes: Vec<u8>,",
+        "        #[serde(skip)]\n        bytes: Vec<u8>,",
+      ),
       fsSource.replace("        path: String,", "        other: String,"),
-      fsSource.replace("        path: String,", "        path: String,\n        path: String,"),
+      fsSource.replace(
+        "        path: String,",
+        "        path: String,\n        path: String,",
+      ),
       fsSource.replace("    Write,", "    Other,"),
       `${fsSource}\n${fsSource}`,
       `#![cfg(unix)]\n${fsSource}`,
     ];
-    for (const source of mutations) expect(() => renderFsBinding(source)).toThrow(/echo codegen:/);
+    for (const source of mutations)
+      expect(() => renderFsBinding(source)).toThrow(/echo codegen:/);
   });
 
   test("shared Rust semantic fixtures pin both requests and responses, including Unicode and multibyte lengths", () => {
     expect(fsVectors.map((vector) => vector.name)).toEqual([
-      "read-path", "read-unicode", "write-empty", "write-binary", "write-unicode", "write-long",
-      "read-empty-result", "read-binary-result", "read-unicode-result", "read-long-result", "write-result",
+      "read-path",
+      "read-unicode",
+      "write-empty",
+      "write-binary",
+      "write-unicode",
+      "write-long",
+      "read-empty-result",
+      "read-binary-result",
+      "read-unicode-result",
+      "read-long-result",
+      "write-result",
     ]);
     for (const vector of fsVectors) {
       if (vector.direction === "request") {
-        expect(encodeFsRequest(semanticRequest(vector)), vector.name).toEqual(vector.wire);
+        expect(encodeFsRequest(semanticRequest(vector)), vector.name).toEqual(
+          vector.wire,
+        );
       } else {
         const result = decodeFsResponse(vector.wire);
         expect(result.variant, vector.name).toBe(vector.variant);
-        if (result.variant === "Read") expect(result.bytes, vector.name).toEqual(vector.content);
+        if (result.variant === "Read")
+          expect(result.bytes, vector.name).toEqual(vector.content);
         for (let end = 0; end < vector.wire.byteLength; end += 1) {
-          expect(() => decodeFsResponse(vector.wire.subarray(0, end)), `${vector.name} prefix ${end}`).toThrow("KELD-IPC-003");
+          expect(
+            () => decodeFsResponse(vector.wire.subarray(0, end)),
+            `${vector.name} prefix ${end}`,
+          ).toThrow("KELD-IPC-003");
         }
-        expect(() => decodeFsResponse(new Uint8Array([...vector.wire, 0])), vector.name).toThrow("KELD-IPC-003");
+        expect(
+          () => decodeFsResponse(new Uint8Array([...vector.wire, 0])),
+          vector.name,
+        ).toThrow("KELD-IPC-003");
       }
     }
   });
 
   test("invalid inputs, unknown variants, malformed lengths and trailing bytes use the local codec failure", () => {
-    for (const payload of [[], [2], [0x80], [0xff, 0xff, 0xff, 0xff, 0x10], [0, 5, 0], [1, 0]]) {
-      expect(() => decodeFsResponse(new Uint8Array(payload))).toThrow("KELD-IPC-003");
+    for (const payload of [
+      [],
+      [2],
+      [0x80],
+      [0xff, 0xff, 0xff, 0xff, 0x10],
+      [0, 5, 0],
+      [1, 0],
+    ]) {
+      expect(() => decodeFsResponse(new Uint8Array(payload))).toThrow(
+        "KELD-IPC-003",
+      );
     }
-    expect(() => decodeFsResponse(null as unknown as Uint8Array)).toThrow("KELD-IPC-003");
+    expect(() => decodeFsResponse(null as unknown as Uint8Array)).toThrow(
+      "KELD-IPC-003",
+    );
     for (const request of [
       null,
       { variant: "Other", path: "/p" },
@@ -405,15 +745,27 @@ describe("bounded native filesystem binding", () => {
       { variant: "Read", path: "\ud800" },
       { variant: "Read", path: "\udc00" },
       { variant: "Write", path: "/p", bytes: [1, 2] },
-    ]) expect(() => encodeFsRequest(request as unknown as FsRequest)).toThrow("KELD-IPC-003");
+    ])
+      expect(() => encodeFsRequest(request as unknown as FsRequest)).toThrow(
+        "KELD-IPC-003",
+      );
   });
 
   test("request bytes are snapshotted and response bytes never alias transport payload", () => {
     const backing = new Uint8Array([9, 0, 0xff, 0x41, 8]);
-    const payload = encodeFsRequest({ variant: "Write", path: "/p", bytes: backing.subarray(1, 4) });
+    const payload = encodeFsRequest({
+      variant: "Write",
+      path: "/p",
+      bytes: backing.subarray(1, 4),
+    });
     backing.fill(7);
-    expect(payload).toEqual(new Uint8Array([1, 2, 0x2f, 0x70, 3, 0, 0xff, 0x41]));
-    for (const wire of [new Uint8Array([0, 3, 0, 0xff, 0x41]), Buffer.from([0, 3, 0, 0xff, 0x41])]) {
+    expect(payload).toEqual(
+      new Uint8Array([1, 2, 0x2f, 0x70, 3, 0, 0xff, 0x41]),
+    );
+    for (const wire of [
+      new Uint8Array([0, 3, 0, 0xff, 0x41]),
+      Buffer.from([0, 3, 0, 0xff, 0x41]),
+    ]) {
       // Buffer is a valid Uint8Array subclass whose slice aliases its backing memory.
       // Mutating both directions proves ownership, independent of the decoder's copy API.
       const result = decodeFsResponse(wire);
@@ -430,8 +782,16 @@ describe("bounded native filesystem binding", () => {
   test("only the existing frame bound is enforced locally; native-sized overflow remains admissible", () => {
     // Native owns 8 MiB validation; a native ceiling+one still fits the 16 MiB frame.
     const bytes = new Uint8Array(8 * 1024 * 1024 + 1);
-    expect(encodeFsRequest({ variant: "Write", path: "/p", bytes }).byteLength).toBeGreaterThan(bytes.byteLength);
-    expect(() => encodeFsRequest({ variant: "Write", path: "/p", bytes: new Uint8Array(MAX_FRAME_LEN) })).toThrow("KELD-IPC-003");
+    expect(
+      encodeFsRequest({ variant: "Write", path: "/p", bytes }).byteLength,
+    ).toBeGreaterThan(bytes.byteLength);
+    expect(() =>
+      encodeFsRequest({
+        variant: "Write",
+        path: "/p",
+        bytes: new Uint8Array(MAX_FRAME_LEN),
+      }),
+    ).toThrow("KELD-IPC-003");
   });
 
   test("Rust variant/field order mutations cannot match the independent semantic vector oracle", async () => {
@@ -440,11 +800,21 @@ describe("bounded native filesystem binding", () => {
     const read = /    Read \{[\s\S]*?    \},/.exec(body)?.[0];
     const write = /    Write \{[\s\S]*?    \},/.exec(body)?.[0];
     if (!read || !write) throw new Error("native request variants absent");
-    const swapped = fsSource.replace(body, body.replace(read, "__READ__").replace(write, read).replace("__READ__", write));
+    const swapped = fsSource.replace(
+      body,
+      body
+        .replace(read, "__READ__")
+        .replace(write, read)
+        .replace("__READ__", write),
+    );
     await withFsBinding(swapped, (binding) => {
-      const vector = fsVectors.find((candidate) => candidate.name === "read-path");
+      const vector = fsVectors.find(
+        (candidate) => candidate.name === "read-path",
+      );
       if (!vector) throw new Error("read-path vector absent");
-      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(vector.wire);
+      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(
+        vector.wire,
+      );
     });
     const fieldOrder = fsSource.replace(
       "        path: String,\n        /// Bounded content bytes.\n        bytes: Vec<u8>,",
@@ -452,20 +822,36 @@ describe("bounded native filesystem binding", () => {
     );
     expect(fieldOrder).not.toBe(fsSource);
     await withFsBinding(fieldOrder, (binding) => {
-      const vector = fsVectors.find((candidate) => candidate.name === "write-binary");
+      const vector = fsVectors.find(
+        (candidate) => candidate.name === "write-binary",
+      );
       if (!vector) throw new Error("write-binary vector absent");
-      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(vector.wire);
+      expect(binding.encodeFsRequest(semanticRequest(vector))).not.toEqual(
+        vector.wire,
+      );
     });
-    const responseBody = /pub enum FsResponse \{([\s\S]*?)\n\}/.exec(fsSource)?.[1];
+    const responseBody = /pub enum FsResponse \{([\s\S]*?)\n\}/.exec(
+      fsSource,
+    )?.[1];
     if (!responseBody) throw new Error("native response enum absent");
     const readResponse = /    Read \{[\s\S]*?    \},/.exec(responseBody)?.[0];
     if (!readResponse) throw new Error("Read response absent");
-    const swappedResponse = responseBody.replace(readResponse, "__READ_RESPONSE__").replace("    Write,", readResponse).replace("__READ_RESPONSE__", "    Write,");
-    await withFsBinding(fsSource.replace(responseBody, swappedResponse), (binding) => {
-      const vector = fsVectors.find((candidate) => candidate.name === "read-binary-result");
-      if (!vector) throw new Error("read result vector absent");
-      expect(() => binding.decodeFsResponse(vector.wire)).toThrow("KELD-IPC-003");
-    });
+    const swappedResponse = responseBody
+      .replace(readResponse, "__READ_RESPONSE__")
+      .replace("    Write,", readResponse)
+      .replace("__READ_RESPONSE__", "    Write,");
+    await withFsBinding(
+      fsSource.replace(responseBody, swappedResponse),
+      (binding) => {
+        const vector = fsVectors.find(
+          (candidate) => candidate.name === "read-binary-result",
+        );
+        if (!vector) throw new Error("read result vector absent");
+        expect(() => binding.decodeFsResponse(vector.wire)).toThrow(
+          "KELD-IPC-003",
+        );
+      },
+    );
   });
 });
 
@@ -474,14 +860,21 @@ describe("native auth derive grammar", () => {
     resolve(repositoryRoot, "crates/keld-native/src/auth/mod.rs"),
     "utf8",
   );
-  const responseDeclaration = "#[derive(Clone, Serialize, Deserialize)]\npub enum AuthResponse {";
+  const responseDeclaration =
+    "#[derive(Clone, Serialize, Deserialize)]\npub enum AuthResponse {";
 
   test("actual Native Clone response renders the same wire binding as existing admitted derives", () => {
     expect(authSource).toContain(responseDeclaration);
     const rendered = renderAuthBinding(authSource);
     expect(rendered).toContain("expires_at: bigint");
-    for (const derive of ["Serialize, Deserialize", "Debug, Serialize, Deserialize"]) {
-      const source = authSource.replace(responseDeclaration, `#[derive(${derive})]\npub enum AuthResponse {`);
+    for (const derive of [
+      "Serialize, Deserialize",
+      "Debug, Serialize, Deserialize",
+    ]) {
+      const source = authSource.replace(
+        responseDeclaration,
+        `#[derive(${derive})]\npub enum AuthResponse {`,
+      );
       expect(renderAuthBinding(source)).toBe(rendered);
     }
   });
@@ -489,13 +882,32 @@ describe("native auth derive grammar", () => {
   test("Clone admission still rejects serde attributes and unsupported derive lists", () => {
     expect(authSource).toContain(responseDeclaration);
     const mutations = [
-      authSource.replace("pub enum AuthResponse {", '#[serde(tag = "kind")]\npub enum AuthResponse {'),
-      authSource.replace("pub enum AuthResponse {", '#[serde(\n    tag = "kind"\n)]\npub enum AuthResponse {'),
-      authSource.replace("        expires_at: u64,", '        #[serde(skip)]\n        expires_at: u64,'),
-      authSource.replace(responseDeclaration, "#[derive(Clone, Serialize, Deserialize, Default)]\npub enum AuthResponse {"),
-      authSource.replace(responseDeclaration, "#[derive(Clone, Deserialize, Serialize)]\npub enum AuthResponse {"),
-      authSource.replace(responseDeclaration, "#[derive(Clone, Serialize)]\npub enum AuthResponse {"),
+      authSource.replace(
+        "pub enum AuthResponse {",
+        '#[serde(tag = "kind")]\npub enum AuthResponse {',
+      ),
+      authSource.replace(
+        "pub enum AuthResponse {",
+        '#[serde(\n    tag = "kind"\n)]\npub enum AuthResponse {',
+      ),
+      authSource.replace(
+        "        expires_at: u64,",
+        "        #[serde(skip)]\n        expires_at: u64,",
+      ),
+      authSource.replace(
+        responseDeclaration,
+        "#[derive(Clone, Serialize, Deserialize, Default)]\npub enum AuthResponse {",
+      ),
+      authSource.replace(
+        responseDeclaration,
+        "#[derive(Clone, Deserialize, Serialize)]\npub enum AuthResponse {",
+      ),
+      authSource.replace(
+        responseDeclaration,
+        "#[derive(Clone, Serialize)]\npub enum AuthResponse {",
+      ),
     ];
-    for (const source of mutations) expect(() => renderAuthBinding(source)).toThrow(/echo codegen:/);
+    for (const source of mutations)
+      expect(() => renderAuthBinding(source)).toThrow(/echo codegen:/);
   });
 });

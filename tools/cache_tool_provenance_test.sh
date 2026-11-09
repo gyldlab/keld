@@ -27,6 +27,7 @@ cp "$repo_root/justfile" "$fixture/justfile"
 cp "$repo_root/tools/worktree_cache.rs" "$repo_root/tools/worktree_cache_delete.rs" \
     "$repo_root/tools/worktree_cache_delete_tests.rs" "$fixture/tools/"
 git -C "$fixture" init -q
+git -C "$fixture" config maintenance.auto false
 # If the isolated HOME cannot see the caller's toolchains (RUSTUP_HOME neither
 # set by the caller nor derived above, or naming the wrong home), rustup would
 # silently install the pinned toolchain (about 1.4 GB) into the throwaway HOME

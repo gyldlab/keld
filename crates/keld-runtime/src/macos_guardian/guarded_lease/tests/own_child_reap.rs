@@ -21,40 +21,54 @@ use super::super::super::process_group::{
     retire_own_child_group, validate_guardian_child_group,
 };
 use super::super::super::{GUARDIAN_SHUTDOWN_DEADLINE, RuntimeError};
-use super::{GenerationLease as _, RevocationCause, locally_enrolled_lease};
+use super::{
+    BOUND, GenerationLease as _, RevocationCause, fresh_response, locally_enrolled_lease,
+    role_command,
+};
 
 /// The test is the leader's OS parent, exactly as the Guardian is.
 struct OwnedLeader(Child);
 
 impl Drop for OwnedLeader {
     fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-        }
-        let _ = self.0.wait();
+        retire_test_child(&mut self.0);
     }
 }
 
-fn sleeper(group: i32) -> OwnedLeader {
-    OwnedLeader(
-        Command::new("/bin/sleep")
-            .arg("30")
-            .process_group(group)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("test-owned native group process"),
-    )
+/// Kill a still-running test-owned Child through its own handle (never a raw
+/// PID), then reap it, so a failing test leaks no `sleep 30`.
+pub(super) fn retire_test_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(None)) {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
-fn raw(pid: u32) -> i32 {
+fn sleeper(group: i32) -> OwnedLeader {
+    OwnedLeader(sleeper_child(group))
+}
+
+/// A bare test-owned `/bin/sleep 30` Child, for a caller that takes the
+/// Child by value. Hold it in a guard that calls [`retire_test_child`] until
+/// then; prefer [`sleeper`], which does so on drop.
+pub(super) fn sleeper_child(group: i32) -> Child {
+    Command::new("/bin/sleep")
+        .arg("30")
+        .process_group(group)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("test-owned native group process")
+}
+
+pub(super) fn raw(pid: u32) -> i32 {
     i32::try_from(pid).expect("positive native PID")
 }
 
 /// Await the kernel's zombie-only group state after a SIGKILL; the poll is
 /// the awaited condition, the existing deadline only a kill switch.
-fn await_zombie_only(group: i32) {
+pub(super) fn await_zombie_only(group: i32) {
     let deadline = Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE;
     while kill(Pid::from_raw(-group), None) != Err(Errno::EPERM) {
         assert!(Instant::now() < deadline, "group never became zombie-only");
@@ -302,4 +316,133 @@ fn guardian_denied_signal_never_signals_a_process_that_joins_during_its_reap() {
 #[test]
 fn guardian_ambiguous_group_never_signals_a_process_that_joins_during_its_reap() {
     assert_no_signal_reaches_a_process_that_joins_during_the_reap(false);
+}
+
+/// One Bun-equivalent native leader that answers the private activity
+/// challenge. The test is its OS parent, exactly as the Guardian is.
+fn answering_single_leader(root: &std::path::Path) -> (OwnedLeader, std::path::PathBuf) {
+    let socket = root.join("descendant.sock");
+    // This fixture role does not spawn descendants; only the direct Child's
+    // exact OS identity is needed and its Drop never signals a recycled PGID.
+    let leader = OwnedLeader(
+        role_command("descendant", root)
+            .process_group(0)
+            .spawn()
+            .expect("one isolated native leader"),
+    );
+    let ready_deadline = Instant::now() + BOUND;
+    loop {
+        if let Ok(observed_pid) = fresh_response(&socket) {
+            assert_eq!(
+                observed_pid,
+                leader.0.id(),
+                "the fixture must be the exact direct Child"
+            );
+            return (leader, socket);
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "single native leader never answered the active challenge"
+        );
+        thread::yield_now();
+    }
+}
+
+// Unlike the group-only helper test, this exercises the exact Guardian lease
+// owner: enrolled original kernel birth -> the lease's ONE group signal,
+// really denied (EPERM) because a fail-safe SIGKILL made the group
+// zombie-only just before it -> exact retained direct Child reap -> the
+// independent kernel absence proof. A mutation that omits the lease's
+// post-reap reconciliation of that denial must turn RED. (#933 injected a
+// synthetic EPERM through a signal closure; the D1 parent-caller order of
+// `retire_own_child_group` has no such closure, so the real kernel denial
+// is used instead.)
+#[test]
+fn real_guardian_lease_reconciles_eperm_only_after_original_child_reap() {
+    let root = tempfile::tempdir().expect("private fixture root");
+    let (mut leader, socket) = answering_single_leader(root.path());
+    let pid = leader.0.id();
+    let group = raw(pid);
+    let witness = enrolled(&leader);
+    let signals: Arc<Mutex<u32>> = Arc::default();
+    let count = Arc::clone(&signals);
+    let _hook = install_test_group_signal_hook(
+        pid,
+        Box::new(move |point| {
+            if point == TestGroupSignalPoint::BeforeSignal {
+                *count.lock().expect("signal count") += 1;
+                killpg(Pid::from_raw(group), Signal::SIGKILL).expect("fail-safe signal");
+                await_zombie_only(group);
+            }
+        }),
+    );
+
+    let outcome = locally_enrolled_lease(pid, witness)
+        .revoke_with_child(RevocationCause::Shutdown, &mut leader.0);
+
+    outcome.expect("post-reap native ESRCH must reconcile only the denied signal");
+    assert_eq!(
+        *signals.lock().expect("signal count"),
+        1,
+        "the lease made exactly one group-signal decision"
+    );
+    assert!(
+        fresh_response(&socket).is_err(),
+        "previous Bun-equivalent leader cannot answer after Guardian revoke"
+    );
+    assert_eq!(
+        nix::unistd::getpgid(Some(Pid::from_raw(group))),
+        Err(Errno::ESRCH),
+        "original direct Child must have been reaped"
+    );
+    assert_eq!(
+        kill(Pid::from_raw(-group), None),
+        Err(Errno::ESRCH),
+        "whole native group must be absent before accepting signal-phase EPERM"
+    );
+}
+
+// Independent monotonic ordering witness (#933): the own Child's reap budget
+// begins only AFTER the one group decision. If it began before the decision
+// (including the decision's own kernel work), the expected lower bound taken
+// at the signal point necessarily exceeds it. No sleep or scheduling
+// assumption is needed for the deadline falsifier.
+#[test]
+fn own_child_reap_budget_begins_after_the_group_signal_decision() {
+    let root = tempfile::tempdir().expect("private fixture root");
+    let (mut leader, socket) = answering_single_leader(root.path());
+    let pid = leader.0.id();
+    let identity = validate_guardian_child_group(pid, std::process::id())
+        .expect("kernel birth of the owned leader");
+    let signal_entered_deadline: Arc<Mutex<Option<Instant>>> = Arc::default();
+    let entered = Arc::clone(&signal_entered_deadline);
+    let _hook = install_test_group_signal_hook(
+        pid,
+        Box::new(move |point| {
+            if point == TestGroupSignalPoint::BeforeSignal {
+                *entered.lock().expect("signal deadline") =
+                    Some(Instant::now() + GUARDIAN_SHUTDOWN_DEADLINE);
+            }
+        }),
+    );
+
+    let (retired, reaped) = retire_own_child_group(identity, |deadline| {
+        let lower_bound = signal_entered_deadline
+            .lock()
+            .expect("signal deadline")
+            .expect("original signal ran");
+        assert!(
+            deadline >= lower_bound,
+            "native Child-reap budget began before the original group signal"
+        );
+        super::super::reap_guarded_child_before_clear(&mut leader.0, deadline)
+    });
+
+    retired.expect("a delivered signal retires the group after the own reap");
+    reaped.expect("the Guardian's own reap");
+    assert!(
+        fresh_response(&socket).is_err(),
+        "previous Bun-equivalent leader cannot answer after the decision"
+    );
+    assert_eq!(kill(Pid::from_raw(-raw(pid)), None), Err(Errno::ESRCH));
 }
