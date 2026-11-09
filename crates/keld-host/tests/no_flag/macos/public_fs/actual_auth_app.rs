@@ -675,6 +675,31 @@ fn write_starting_cli_status(root: &Path, case: &Case) -> SmokeResult<()> {
     Ok(())
 }
 
+/// Keep original public CLI arguments and owned file handles together.
+/// The extra fixed-name diagnostic is opt-in only, with no OS authority.
+fn spawn_auth_cli(
+    cli: &Path,
+    project: &Path,
+    stdout: fs::File,
+    stderr: fs::File,
+    emit_wv_tail: bool,
+) -> std::io::Result<std::process::Child> {
+    let mut command = Command::new(cli);
+    command
+        .arg("dev")
+        .current_dir(project)
+        .env_remove("KELD_APP_LINK")
+        .env_remove("KELD_DEV_LEASE")
+        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    if emit_wv_tail {
+        command.env("KELD_KEL89_WV_TAIL_WITNESS", "1");
+    }
+    command.spawn()
+}
+
 fn run_case_with_body_receipt(
     parent: &Path,
     repo: &Path,
@@ -701,16 +726,13 @@ fn run_case_with_body_receipt(
     let stdout = fs::File::create(project.root.join("cli.stdout"))?;
     let stderr = fs::File::create(project.root.join("cli.stderr"))?;
     write_starting_cli_status(&project.root, case)?;
-    let cli_child = Command::new(cli)
-        .arg("dev")
-        .current_dir(&project.root)
-        .env_remove("KELD_APP_LINK")
-        .env_remove("KELD_DEV_LEASE")
-        .env_remove("KELD_INTERNAL_MACOS_GUARDIAN_REGISTRATION")
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()?;
+    let cli_child = spawn_auth_cli(
+        cli,
+        &project.root,
+        stdout,
+        stderr,
+        post_reply_receipt.is_some(),
+    )?;
     let cli_pid = cli_child.id();
     let mut cleanup = ShippingLaunchCleanup::new(cli_child);
     fs::write(

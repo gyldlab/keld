@@ -1,5 +1,6 @@
 //! Source-local opt-in real Bun response-body witness for KEL89 actual auth.
 //! The original KEL89 four-case selection is unchanged.
+use super::quit_diagnostics::observed_wv_tail_text_stage;
 use super::{
     AuthReceipts, CASES, QuitBodyReceipt, SmokeResult, require, run_case_with_body_receipt,
 };
@@ -77,7 +78,7 @@ fn real_bun_receives_correlated_quit_reply_before_original_kernel_exits() -> Smo
         .tempdir_in("/tmp")?;
     let mut body_receipt = QuitBodyReceipt::arm();
     let mut reply_receipt = QuitBodyReceipt::arm();
-    let _ = run_case_with_body_receipt(
+    let report = run_case_with_body_receipt(
         owned.path(),
         repo,
         &cli,
@@ -88,6 +89,16 @@ fn real_bun_receives_correlated_quit_reply_before_original_kernel_exits() -> Smo
             body: Some(&mut body_receipt),
             post_reply: Some(&mut reply_receipt),
         },
+    )?;
+    let project = report["project"]
+        .as_str()
+        .ok_or("missing owned opt-in project path")?;
+    // Regression for the diagnostic plumbing only. This is text, not an
+    // authenticated receipt or evidence that an unobserved Host exited.
+    require(
+        observed_wv_tail_text_stage(&Path::new(project).join("cli.stderr"))
+            == "profile_shutdown_returned",
+        "successful opt-in stock Host did not emit the fixed WebView tail text phase",
     )?;
     Ok(())
 }

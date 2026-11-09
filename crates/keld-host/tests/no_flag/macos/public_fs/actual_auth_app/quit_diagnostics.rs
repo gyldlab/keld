@@ -42,6 +42,46 @@ fn cli_tail_contains_marker(path: &Path, marker: &[u8]) -> bool {
     })
 }
 
+/// Textual debug phases are supplementary. They are readable from the exact
+/// opt-in CLI redirect, but are not authenticated events or OS liveness proof.
+pub(super) fn observed_wv_tail_text_stage(path: &Path) -> &'static str {
+    for (marker, stage) in [
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=profile_shutdown_returned".as_slice(),
+            "profile_shutdown_returned",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=wake_bridges_joined".as_slice(),
+            "wake_bridges_joined",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=main_owner_unproved".as_slice(),
+            "main_owner_unproved",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=main_owner_drained".as_slice(),
+            "main_owner_drained",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=loop_returned".as_slice(),
+            "loop_returned",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=terminal_intent_seen".as_slice(),
+            "terminal_intent_seen",
+        ),
+        (
+            b"KELD_KEL89_WV_TAIL_STAGE stage=wake_bridge_quit_received".as_slice(),
+            "wake_bridge_quit_received",
+        ),
+    ] {
+        if cli_tail_contains_marker(path, marker) {
+            return stage;
+        }
+    }
+    "no_text_phase"
+}
+
 // A prearmed kernel watcher observes only the exact originally registered
 // process. Neither a missing event nor an error grants liveness or signal
 // authority; all labels are fixed and contain no PIDs or private log bytes.
@@ -162,12 +202,14 @@ pub(super) fn wait_for_auth_cli_quit(
             let cli_quit_marker_seen =
                 cli_tail_contains_marker(&project.join("cli.stderr"), marker)
                     || cli_tail_contains_marker(&project.join("cli.stdout"), marker);
+            let wv_tail_stage = observed_wv_tail_text_stage(&project.join("cli.stderr"));
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "KELD_KEL89_QUIT_BOUNDARY case={} http_quit_stage={} cli_quit_marker_seen={} post_cli_cleanup_host_pid_visible={} post_cli_cleanup_guardian_pid_visible={} post_cli_cleanup_bun_pid_visible={} post_cli_cleanup_descendant_pid_visible={}",
+                "KELD_KEL89_QUIT_BOUNDARY case={} http_quit_stage={} cli_quit_marker_seen={} wv_tail_text_stage={} post_cli_cleanup_host_pid_visible={} post_cli_cleanup_guardian_pid_visible={} post_cli_cleanup_bun_pid_visible={} post_cli_cleanup_descendant_pid_visible={}",
                 case.name,
                 observation.quit_progress.load(Ordering::Acquire),
                 cli_quit_marker_seen,
+                wv_tail_stage,
                 process_exists(family[0]),
                 process_exists(family[1]),
                 process_exists(family[2]),
