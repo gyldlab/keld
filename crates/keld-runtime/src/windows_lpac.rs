@@ -15,8 +15,10 @@
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString, c_void};
+use std::fs::OpenOptions;
 use std::io;
 use std::os::windows::ffi::OsStrExt as _;
+use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
 use std::path::Path;
 
@@ -25,9 +27,9 @@ use windows_sys::Win32::Foundation::{
     WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE,
-    SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID,
-    TRUSTEE_IS_USER, TRUSTEE_W,
+    ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
+    SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+    TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile,
@@ -38,7 +40,9 @@ use windows_sys::Win32::Security::{
     TokenIsAppContainer,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_TRAVERSE,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
@@ -250,26 +254,69 @@ impl WindowsLpacProfile {
     /// Adds the package SID to an existing filesystem DACL without replacing
     /// its other access entries.
     ///
+    /// The DACL is read, merged and written through one retained handle to the
+    /// object the path named when it was opened, so renaming or replacing the
+    /// path afterwards cannot redirect the write.
+    ///
+    /// Only the final path component (the leaf) is checked for a reparse point.
+    /// Reparse points in ancestor components (junctions, directory symbolic
+    /// links, mount points) are followed by the open like any Win32 path, so
+    /// the grant lands on whatever object the resolved path named at open
+    /// time. The caller must pass a path whose ancestors a less-trusted
+    /// principal cannot replace.
+    ///
     /// # Errors
     ///
-    /// Fails if the path does not exist or its DACL cannot be read, merged,
-    /// and written exactly.
+    /// Fails if the path does not exist, the opened leaf is a reparse point,
+    /// or that exact object's DACL cannot be read, merged, and written.
     pub fn grant_path(
         &self,
         path: &Path,
         access: WindowsLpacPathAccess,
     ) -> Result<(), WindowsLpacError> {
-        let path_wide = wide_nul(path.as_os_str(), "ACL path")?;
-        let metadata = std::fs::metadata(path)
-            .map_err(|error| WindowsLpacError::contract("ACL path metadata", error.to_string()))?;
+        self.prepare_grant(path, access)?.publish()
+    }
+
+    /// Opens the grant target, refuses a reparse-point leaf, and reads and
+    /// merges that exact object's DACL. [`PreparedGrant::publish`] writes the
+    /// merged DACL through the same retained handle.
+    fn prepare_grant(
+        &self,
+        path: &Path,
+        access: WindowsLpacPathAccess,
+    ) -> Result<PreparedGrant, WindowsLpacError> {
+        // Preserve the API's explicit embedded-NUL refusal before opening.
+        let _ = wide_nul(path.as_os_str(), "ACL path")?;
+        // This handle owns both the identity and the authority to read/write
+        // its DACL. The share mode does not stop a rename: this handle asks
+        // for no data or DELETE access, so Windows does not check sharing
+        // against it; on Windows 11 a rename succeeds while it is open.
+        // Identity rests on this retained HANDLE alone.
+        // OPEN_REPARSE_POINT permits fail-closed inspection of the final leaf.
+        let original = OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|error| WindowsLpacError::contract("ACL object open", error.to_string()))?;
+        let metadata = original.metadata().map_err(|error| {
+            WindowsLpacError::contract("ACL object metadata", error.to_string())
+        })?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(WindowsLpacError::contract(
+                "ACL object admission",
+                "refuse a reparse-point grant target",
+            ));
+        }
 
         let mut old_acl = std::ptr::null_mut();
         let mut security_descriptor = std::ptr::null_mut();
-        // SAFETY: `path_wide` is NUL terminated; the requested output slots
-        // are live. The returned descriptor owns the borrowed old ACL.
+        // SAFETY: `original` is a live READ_CONTROL handle to the admitted
+        // object. The output slots are writable, and the returned LocalAlloc
+        // descriptor owns the borrowed old ACL.
         let status = unsafe {
-            GetNamedSecurityInfoW(
-                path_wide.as_ptr(),
+            GetSecurityInfo(
+                original.as_raw_handle().cast(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION,
                 std::ptr::null_mut(),
@@ -316,24 +363,10 @@ impl WindowsLpacProfile {
             return Err(WindowsLpacError::win32("filesystem DACL merge", status));
         }
         let new_acl = LocalAllocation(new_acl.cast());
-        // SAFETY: the path is live and `new_acl` contains the merged DACL;
-        // SetNamedSecurityInfoW copies it before returning.
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_ptr().cast_mut(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                new_acl.0.cast(),
-                std::ptr::null(),
-            )
-        };
+        // The merged ACL is its own allocation; the read descriptor that owns
+        // the old ACL is no longer referenced.
         drop(descriptor);
-        if status != ERROR_SUCCESS {
-            return Err(WindowsLpacError::win32("filesystem DACL write", status));
-        }
-        Ok(())
+        Ok(PreparedGrant { original, new_acl })
     }
 
     /// Creates a suspended LPAC child with an explicit environment and exact
@@ -1036,6 +1069,39 @@ impl InheritedHandleCopies {
     }
 }
 
+/// A merged DACL ready to be written to the exact object
+/// [`WindowsLpacProfile::prepare_grant`] opened and read.
+struct PreparedGrant {
+    /// The retained `READ_CONTROL | WRITE_DAC` handle the DACL was read from.
+    original: std::fs::File,
+    /// The merged DACL, one `LocalAlloc` allocation from `SetEntriesInAclW`.
+    new_acl: LocalAllocation,
+}
+
+impl PreparedGrant {
+    /// Writes the merged DACL through the retained handle and closes it.
+    fn publish(self) -> Result<(), WindowsLpacError> {
+        // SAFETY: `original` is still the exact WRITE_DAC handle from the
+        // preceding GetSecurityInfo; renaming the path cannot redirect this
+        // write. The merged DACL is live for the synchronous SetSecurityInfo.
+        let status = unsafe {
+            SetSecurityInfo(
+                self.original.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                self.new_acl.0.cast(),
+                std::ptr::null(),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(WindowsLpacError::win32("filesystem DACL write", status));
+        }
+        Ok(())
+    }
+}
+
 struct LocalAllocation(*mut c_void);
 
 impl Drop for LocalAllocation {
@@ -1234,6 +1300,179 @@ mod tests {
         assert!(!is_inheritable(original_raw));
         assert!(is_inheritable(copies.raw_handles()[0]));
         assert_eq!(copies.copies.len(), 1);
+    }
+
+    #[test]
+    fn grant_path_reparse_alias_does_not_mutate_an_unrelated_directory() {
+        use std::ffi::OsString;
+        use std::os::windows::fs::symlink_dir;
+        use std::path::Path;
+        use std::process::Command;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let fixture = tempfile::tempdir().expect("own an isolated LPAC grant fixture");
+        let ordinary = fixture.path().join("ordinary");
+        let outsider = fixture.path().join("outsider");
+        let alias = fixture.path().join("reparse-alias");
+        std::fs::create_dir(&ordinary).expect("own ordinary grant directory");
+        std::fs::create_dir(&outsider).expect("own unrelated directory");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("monotonic positive wall-clock generation")
+            .as_nanos();
+        let profile_name =
+            OsString::from(format!("keld-grant-alias-{}-{nonce}", std::process::id()));
+        let profile = super::WindowsLpacProfile::create(&profile_name)
+            .expect("fresh profile is under the native test owner");
+        profile
+            .grant_path(&ordinary, super::WindowsLpacPathAccess::ReadExecute)
+            .expect("ordinary owner-controlled directory admits a positive grant");
+
+        // Junction fallback requires no elevated symlink privilege on Windows.
+        // Both the alias and its target are test-owned paths under one TempDir.
+        if let Err(link_error) = symlink_dir(&outsider, &alias) {
+            let result = Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&alias)
+                .arg(&outsider)
+                .status()
+                .expect("invoke built-in junction creator");
+            assert!(
+                result.success(),
+                "test-owned reparse alias unavailable: symlink {link_error}; junction {result}"
+            );
+        }
+
+        let before = observed_dacl(&outsider);
+        let granted = profile.grant_path(&alias, super::WindowsLpacPathAccess::RolePrivate);
+        let after = observed_dacl(&outsider);
+        // Remove exactly this test-owned alias, never recursively remove its target.
+        std::fs::remove_dir(&alias).expect("unlink only test-owned alias");
+        assert_eq!(
+            after, before,
+            "granting a reparse alias must never change the unrelated target's actual DACL"
+        );
+        // The exact admission refusal, not any open or metadata failure.
+        assert_eq!(
+            granted
+                .expect_err("a reparse alias must not be admitted as a grant target")
+                .to_string(),
+            "KELD-RUNTIME-015: Windows LPAC admission failed during ACL object admission: \
+             refuse a reparse-point grant target. Do not start an unconfined replacement; \
+             repair the profile, ACL, or handle list."
+        );
+        assert!(
+            Path::new(&outsider).is_dir(),
+            "unrelated target was not removed"
+        );
+    }
+
+    #[test]
+    fn grant_path_retained_directory_refuses_post_read_substitution() {
+        use std::ffi::OsString;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let fixture = tempfile::tempdir().expect("own an isolated pathname-swap fixture");
+        let claimed = fixture.path().join("claimed");
+        let outsider = fixture.path().join("outsider");
+        let moved = fixture.path().join("original-moved");
+        std::fs::create_dir(&claimed).expect("test owns the claimed original");
+        std::fs::create_dir(&outsider).expect("test owns the independent outsider");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("positive fixture generation")
+            .as_nanos();
+        let name = OsString::from(format!("keld-grant-race-{}-{nonce}", std::process::id()));
+        let profile = super::WindowsLpacProfile::create(&name).expect("fresh test-owned LPAC SID");
+        let outsider_before = observed_dacl(&outsider);
+        let original_before = observed_dacl(&claimed);
+
+        // The substitution runs between the shipping ACL read and merge and
+        // the publish, outside the code under test. The same-user rename may
+        // succeed on this Windows build: only original HANDLE identity can
+        // guarantee that the outsider never receives this ACL grant.
+        let prepared = profile
+            .prepare_grant(&claimed, super::WindowsLpacPathAccess::RolePrivate)
+            .expect("an ordinary retained directory admits its DACL read and merge");
+        let mut substituted = false;
+        if std::fs::rename(&claimed, &moved).is_ok() {
+            std::fs::rename(&outsider, &claimed)
+                .expect("place only test-owned outsider at vacated name");
+            substituted = true;
+        }
+        let grant = prepared.publish();
+        let outsider_after = observed_dacl(if substituted { &claimed } else { &outsider });
+        let original_after = observed_dacl(if substituted { &moved } else { &claimed });
+        if substituted {
+            // Restore only test-owned entries before any assertion panics. Do
+            // not follow links or remove unrelated files in this cleanup.
+            std::fs::rename(&claimed, &outsider).expect("rescue owned outsider name");
+            std::fs::rename(&moved, &claimed).expect("restore original owner path");
+        }
+        assert_eq!(
+            outsider_after, outsider_before,
+            "path substitution must not publish the original ACL grant onto the outsider"
+        );
+        assert_ne!(
+            original_after, original_before,
+            "the grant must apply to the original retained object even after rename"
+        );
+        grant.expect("an ordinary retained directory receives its intended package grant");
+    }
+
+    fn observed_dacl(path: &std::path::Path) -> String {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: live NUL-terminated path, writable descriptor output.
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut descriptor,
+            )
+        };
+        assert_eq!(status, 0, "read independently observed test-owned DACL");
+        let _descriptor = super::LocalAllocation(descriptor);
+        let mut sddl = std::ptr::null_mut();
+        // SAFETY: live security descriptor, writable string output.
+        assert_ne!(
+            unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    1,
+                    DACL_SECURITY_INFORMATION,
+                    &raw mut sddl,
+                    std::ptr::null_mut(),
+                )
+            },
+            0,
+            "convert actual kernel DACL to independent SDDL"
+        );
+        let _sddl = super::LocalAllocation(sddl.cast());
+        let mut len = 0;
+        while len < 4096 {
+            // SAFETY: conversion guarantees a terminated UTF-16 LocalAlloc string.
+            if unsafe { *sddl.add(len) } == 0 {
+                break;
+            }
+            len += 1;
+        }
+        assert!(len < 4096, "bounded SDDL conversion");
+        // SAFETY: LocalAlloc string is live and terminated at this bounded offset.
+        String::from_utf16(unsafe { std::slice::from_raw_parts(sddl, len) })
+            .expect("OS descriptor has valid UTF-16")
     }
 
     fn is_inheritable(handle: HANDLE) -> bool {

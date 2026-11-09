@@ -423,7 +423,7 @@ crash-loop budget or restart. Non-zero and signal terminations still follow
 `RestartPolicy`, so one crash or crashes spaced beyond the window do not by themselves
 mean no app is running. Every unrequested termination remains durable even when the
 breaker does not trip. Under a strict post-ready liveness policy, an unrecovered
-termination under a clean `Stopped` outcome surfaces `KELD-RUNTIME-012`; completed
+termination under a `Stopped` outcome (no restart-policy error) surfaces `KELD-RUNTIME-012`; completed
 windowless work accepts status-zero termination after its reply is captured. The host
 reads both decisions from ledger state it never has to drain.
 
@@ -444,12 +444,26 @@ breaker terminal. The windowless echo path has completed its observable work aft
 captured, so it selects `shutdown_after_completed_work` and accepts only status-zero
 self-termination; non-zero and terminal lifecycle failures still fail.
 
-Whether the breaker also trips depends on how the restarted generation fails, which
-is not something the host should have to predict. In the retained legacy diagnostic
-run, restarted children cannot re-enter the session at all — the v0 echo listener admits exactly
-one authenticated session (`crates/keld-core/src/echo_link.rs`) and their `connect`
-failed outright — so they crashed fast enough to trip the breaker. The ledger makes
-the verdict independent of that timing.
+Whether the breaker also trips must not depend on how fast restarted generations
+fail or on when the caller tears down. In the retained legacy diagnostic run,
+restarted children cannot re-enter the session at all: the v0 echo listener admits
+exactly one authenticated session (`crates/keld-core/src/echo_link.rs`), and a
+successor's `connect` fails outright. Such successors used to be provisioned anyway,
+so two of them tripped the breaker whenever teardown came late, and the nested code
+was `002` or `012` by timing alone (GH-674). The session therefore provisions no
+successor after its one admission, except in the two bounded cases that
+`docs/architecture/02-ipc.md` §2 records: the admission record trails the HELLO reply,
+and the crash-loop breaker runs before the gate. Both still fail the run. The
+supervisor's one successor gate
+(`Supervisor::start_with_stdout_markers_and_successor_gate`, at its existing
+post-revocation boundary) stops supervision at the recorded crash, and the ledger
+decides the verdict. That stop is reported as `SupervisorEvent::Stopped` and
+`SupervisorOutcome::Stopped`, the same value an exit-zero child or a requested
+shutdown produces, so `Stopped` is not a clean-exit claim: for this supervisor it covers a
+zero exit, a requested shutdown and a gate refusal after a recorded crash. A primary
+role's denied recovery is another such gate and can also follow a host-requested
+generation restart that records no crash (`SupervisorEvent::Stopped` lists every case),
+so every caller reads `Supervisor::crash_ledger` before treating it as clean.
 
 A crash the supervisor *recovered* from before the app reported ready stays a
 success (KEL-70 AC1/AC3). Separating the two cases cannot be done by counting

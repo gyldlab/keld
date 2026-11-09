@@ -22,7 +22,7 @@ use super::{
 };
 
 #[cfg(any(target_os = "macos", windows))]
-use super::{APP_LINK_IO_DEADLINE, PathBuf, WebProfileSelection, startup_resource_snapshot};
+use super::{WebProfileSelection, startup_resource_snapshot};
 
 // The every-OS `finish_tail` per-cause test also runs on macOS.
 #[cfg(target_os = "macos")]
@@ -36,15 +36,20 @@ use super::{
     restart_failed_bound_generation,
 };
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+use super::{
+    APP_LINK_IO_DEADLINE, CallError, ECHO_CHANNEL, FsRequest, FsWorkerTestGate, GuardedFsTestSetup,
+    LifecycleRequest, LifecycleResponse, PathBuf, Sender, SyncSender, decode, encode,
+};
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use super::{ECHO_CHANNEL, LifecycleRequest, LifecycleResponse, decode, encode};
+use super::{HOST_ANSWER_BUDGET, QuitDrainEnd};
 
 #[cfg(target_os = "macos")]
 use super::{
-    AuthConfiguration, BoundPrimaryGeneration, CallError, FsRequest, FsWorkItem, FsWorkerCommand,
-    HOST_ANSWER_BUDGET, IpcError, PendingFsWriteFailure, PrimaryCallerContext, RoleOwner, Sender,
-    SyncSender, ValidatedBootSelection, collapse_app_results, dispatch_primary_echo,
-    finish_link_shutdown, run_fs_worker, run_guarded,
+    AuthConfiguration, BoundPrimaryGeneration, FsWorkItem, FsWorkerCommand, IpcError,
+    PendingFsWriteFailure, PrimaryCallerContext, RoleOwner, ValidatedBootSelection,
+    collapse_app_results, dispatch_primary_echo, finish_link_shutdown, run_fs_worker, run_guarded,
 };
 
 #[cfg(target_os = "macos")]
@@ -52,10 +57,9 @@ use super::{DEV_LEASE_DRAIN_READS, FcntlArg, FdFlag, OFlag, fcntl};
 
 #[cfg(target_os = "macos")]
 use super::{
-    FsResponse, FsWorkerTestGate, GuardedFsTestSetup, GuardianOwnerCommand, GuardianOwnerHandle,
-    MacValidatedAppIdentity, PrimaryEchoCall, PrimaryEchoReply, QuitDrainEnd,
-    configure_dev_lease_fd, finish_guarded_session, join_renderer_dispatch, macos_identity_error,
-    poll_dev_lease_reader, prepare_fs_work,
+    FsResponse, GuardianOwnerCommand, GuardianOwnerHandle, MacValidatedAppIdentity,
+    PrimaryEchoCall, PrimaryEchoReply, configure_dev_lease_fd, finish_guarded_session,
+    join_renderer_dispatch, macos_identity_error, poll_dev_lease_reader, prepare_fs_work,
     read_primary_app_frame_interruptible_with_privileged_call, select_macos_profile_mode_with,
     start_renderer_dispatch,
 };

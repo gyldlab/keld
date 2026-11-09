@@ -7,8 +7,11 @@
 /// read, so the result does not depend on a timeout. *Negative control:*
 /// `shutdown(Both)` in `shutdown_app_link` is `ENOTCONN` after the
 /// half-close on macOS and sends no FIN, so the probe reads `WouldBlock`.
+/// Unix only (#528 T5), an OS fact: a Windows named pipe has no
+/// half-close, because closing a pipe handle ends both directions, so a
+/// half-closed role cannot exist there.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
     use std::io::Read as _;
 
@@ -68,8 +71,10 @@ fn quit_close_reaches_a_half_closed_role_before_the_guardian_stops_it() {
 /// the role has closed, so the answer's failure is certain. *Negative
 /// control:* a failed answer that propagates as a session error sends the
 /// UI `Fatal` instead of `Quit`.
+/// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
+/// finding).
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
     let (t, mut client) = guarded_test_router();
     let (stalled_tx, stalled) = mpsc::sync_channel(1);
@@ -137,8 +142,13 @@ fn quit_drain_ends_quietly_when_its_answer_finds_the_role_gone() {
 /// bytes queued before retirement, then the close, and no `ERR` byte.
 /// *Negative control:* leaving the writer's deadline in place fails the
 /// deadline assertion (and holds the lock for `APP_LINK_IO_DEADLINE`).
+/// Unix only (#528 T5): the oracle counts the exact bytes a nonblocking
+/// Unix send buffer accepted, and the standard library has no nonblocking
+/// named pipe to fill. The bound itself is the same
+/// `write_best_effort_answers` code on Windows; its Windows evidence is
+/// recorded as unknown (gh527 §10).
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn retire_answers_are_bounded_when_the_peer_stops_reading() {
     use std::io::{ErrorKind, Read as _, Write as _};
 
@@ -199,7 +209,7 @@ fn retire_answers_are_bounded_when_the_peer_stops_reading() {
 /// alone clears the pending call) makes this retirement send a 023 after
 /// the REPLY.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn retire_after_a_real_reply_sends_no_023() {
     let (t, mut client) = guarded_test_router();
     let target = t.allowed.join("replied.txt");

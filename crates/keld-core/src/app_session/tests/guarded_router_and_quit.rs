@@ -1,6 +1,7 @@
 /// One guarded primary router over a socket pair, with the FS worker held
-/// by a test gate after it takes its job (GH-528 T2 router tests).
-#[cfg(target_os = "macos")]
+/// by a test gate after it takes its job (GH-528 T2 router tests; T5 runs
+/// them on every OS with a router).
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 struct GuardedTestRouter {
     router: PrimaryRouter,
     snapshot: GuardSnapshot,
@@ -12,12 +13,13 @@ struct GuardedTestRouter {
     _temp: tempfile::TempDir,
 }
 
-/// A guarded router over a socket pair, and the pair's client end.
-#[cfg(target_os = "macos")]
-fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) {
+/// A guarded router over a connected link pair (a Unix socket pair, or an
+/// authenticated named-pipe pair on Windows), and the pair's client end.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn guarded_test_router() -> (GuardedTestRouter, BootstrapStream) {
     use keld_ipc::link::AppLinkDeadlines as _;
 
-    let (server, client) = std::os::unix::net::UnixStream::pair().expect("guarded pair");
+    let (server, client) = primary_test_stream_pair();
     client
         .set_app_link_deadlines(Some(Duration::from_secs(5)))
         .expect("guarded client deadlines");
@@ -26,14 +28,14 @@ fn guarded_test_router() -> (GuardedTestRouter, std::os::unix::net::UnixStream) 
 
 /// A guarded router over `server`: a pair end, or a Bun role's
 /// authenticated app link.
-#[cfg(target_os = "macos")]
-fn guarded_router(server: std::os::unix::net::UnixStream) -> GuardedTestRouter {
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn guarded_router(server: BootstrapStream) -> GuardedTestRouter {
     guarded_router_with_test_setup(server, None)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn guarded_router_with_test_setup(
-    server: std::os::unix::net::UnixStream,
+    server: BootstrapStream,
     setup: Option<GuardedFsTestSetup>,
 ) -> GuardedTestRouter {
     use sha2::{Digest as _, Sha256};
@@ -96,11 +98,11 @@ mod accepted_primary_identity;
 
 /// GH-528 T2 end-to-end cases: a Bun `WorkerLink` role against this
 /// router (`app_session/tests/worker_link_e2e.rs`).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub(in crate::app_session) mod worker_link_e2e;
 
-#[cfg(target_os = "macos")]
-fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target: &Path) {
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn write_fs_call(client: &mut BootstrapStream, corr: u32, target: &Path) {
     write_frame(
         client,
         FrameKind::Call,
@@ -116,8 +118,8 @@ fn write_fs_call(client: &mut std::os::unix::net::UnixStream, corr: u32, target:
     .expect("send FS write");
 }
 
-#[cfg(target_os = "macos")]
-fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn write_quit_call(client: &mut BootstrapStream, corr: u32) {
     write_frame(
         client,
         FrameKind::Call,
@@ -130,10 +132,8 @@ fn write_quit_call(client: &mut std::os::unix::net::UnixStream, corr: u32) {
 }
 
 /// Every frame the client reads before the link ends (EOF or reset).
-#[cfg(target_os = "macos")]
-fn read_frames_until_eof(
-    client: &mut std::os::unix::net::UnixStream,
-) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn read_frames_until_eof(client: &mut BootstrapStream) -> Vec<(keld_ipc::FrameHeader, Vec<u8>)> {
     let mut frames = Vec::new();
     while let Ok(frame) = keld_ipc::link::read_frame(client) {
         frames.push(frame);
@@ -146,8 +146,16 @@ fn read_frames_until_eof(
 /// link closes. An admitted FS call held in its handler, and a Quit waiting
 /// in its FS drain, are both pending; an echo call is answered at once and
 /// never gets an ERR.
+///
+/// Windows states today's behaviour (#528 T5, finding W2 in gh527 §10).
+/// The host's close there is `DisconnectNamedPipe`, which discards a
+/// pipe's unread data. This client has no read pending until
+/// `retire_generation` has returned, because the test thread is its only
+/// reader. So both `KELD-IPC-023` answers are written, then discarded,
+/// and the client reads only the close. The W2 fix flips this to the
+/// Unix expectation.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
     let (t, mut client) = guarded_test_router();
     assert_echo_call(&mut client, 10, "answered before retire");
@@ -171,22 +179,27 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
             (header.kind, header.channel, header.corr, error.code)
         })
         .collect();
-    assert_eq!(
-        answers,
+    let expected = if cfg!(windows) {
+        // W2: the answers were written and then discarded by the close.
+        Vec::new()
+    } else {
         vec![
             (
                 FrameKind::Err,
                 FS_CHANNEL,
                 CorrelationId(11),
-                "KELD-IPC-023".to_owned()
+                "KELD-IPC-023".to_owned(),
             ),
             (
                 FrameKind::Err,
                 LIFECYCLE_CHANNEL,
                 CorrelationId(12),
-                "KELD-IPC-023".to_owned()
+                "KELD-IPC-023".to_owned(),
             ),
-        ],
+        ]
+    };
+    assert_eq!(
+        answers, expected,
         "exactly the two pending calls are answered, then the link closes"
     );
 
@@ -207,8 +220,10 @@ fn retire_answers_pending_fs_and_quit_calls_with_023_before_close() {
 /// itself a time limit; the margin is one budget plus a poll (under 0.5 s)
 /// against the 5 s `APP_LINK_IO_DEADLINE` that an unbounded write would
 /// wait.
+/// Unix only (#528 T5): Windows has no post-Quit drain, so criterion 7
+/// does not hold there today (gh527 §10, T5 finding).
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
     let (t, client) = guarded_test_router();
     let mut writer = client.try_clone().expect("flooding writer");
@@ -270,8 +285,22 @@ fn quit_drain_answers_are_bounded_when_the_peer_stops_reading() {
 /// and its FS drain, a CALL already received on an ERR-declaring channel is
 /// answered with `KELD-IPC-024` and never executed; an echo CALL gets no
 /// frame (KEL-133 keeps echo REPLY-only). The host still closes the link.
+///
+/// The client reads nothing until the guardian's `Shutdown`, which the
+/// Quit tail sends only after it has closed the link. So what it reads
+/// depends only on what the close keeps.
+///
+/// Windows states today's behaviour (#528 T5, findings W1 and W2 in gh527
+/// §10):
+/// - W1: Windows has no post-Quit drain. Its tail reads the buffered FS
+///   CALL as a fault and closes, so no `KELD-IPC-024` is written.
+/// - W2: its close is `DisconnectNamedPipe`, which also discards the unread
+///   Quit REPLY.
+///
+/// So the client reads only the close. The FS CALL still never runs. The
+/// W1/W2 fix flips this to the Unix expectation.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     let (t, mut client) = guarded_test_router();
     let target = t.allowed.join("after-quit.txt");
@@ -301,15 +330,6 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
         panic!("Quit skipped shutdown attribution");
     };
     prepare.send(Ok(())).expect("acknowledge attribution");
-    let (quit, quit_payload) = keld_ipc::link::read_frame(&mut client).expect("Quit REPLY");
-    assert_eq!(
-        (quit.kind, quit.channel, quit.corr),
-        (FrameKind::Reply, LIFECYCLE_CHANNEL, CorrelationId(20))
-    );
-    assert_eq!(
-        decode::<LifecycleResponse>(&quit_payload).expect("Quit response"),
-        LifecycleResponse::Quit
-    );
     let TestPrimaryOwnerCommand::Shutdown(shutdown) = t
         .guardian
         .recv_timeout(Duration::from_secs(5))
@@ -320,16 +340,44 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
     shutdown
         .send(Ok(()))
         .expect("acknowledge guardian shutdown");
-    let after = read_frames_until_eof(&mut client);
-    assert_eq!(after.len(), 1, "only the FS CALL is answered: {after:?}");
-    let (header, payload) = &after[0];
+    let frames: Vec<(FrameKind, keld_ipc::ChannelId, CorrelationId, String)> =
+        read_frames_until_eof(&mut client)
+            .iter()
+            .map(|(header, payload)| {
+                let body = if header.kind == FrameKind::Reply {
+                    assert_eq!(
+                        decode::<LifecycleResponse>(payload).expect("Quit response"),
+                        LifecycleResponse::Quit
+                    );
+                    String::from("Quit")
+                } else {
+                    decode::<CallError>(payload).expect("024 CallError").code
+                };
+                (header.kind, header.channel, header.corr, body)
+            })
+            .collect();
+    let expected = if cfg!(windows) {
+        // W1 wrote no 024; W2 discarded the unread REPLY at the close.
+        Vec::new()
+    } else {
+        vec![
+            (
+                FrameKind::Reply,
+                LIFECYCLE_CHANNEL,
+                CorrelationId(20),
+                String::from("Quit"),
+            ),
+            (
+                FrameKind::Err,
+                FS_CHANNEL,
+                CorrelationId(21),
+                String::from("KELD-IPC-024"),
+            ),
+        ]
+    };
     assert_eq!(
-        (header.kind, header.channel, header.corr),
-        (FrameKind::Err, FS_CHANNEL, CorrelationId(21))
-    );
-    assert_eq!(
-        decode::<CallError>(payload).expect("024 CallError").code,
-        "KELD-IPC-024"
+        frames, expected,
+        "the Quit REPLY, then only the FS CALL is answered"
     );
     assert!(!target.exists(), "a post-Quit FS CALL must not execute");
     assert_eq!(
@@ -338,7 +386,31 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
             .expect("UI Quit"),
         AppWindowCommand::Quit
     );
-    t.router.shutdown().expect("router shutdown after Quit");
+    assert_router_shutdown_after_quit_with_trailing_call(t.router);
+}
+
+/// Joins a router whose role wrote a CALL after its accepted Quit. Unix
+/// drains that CALL and shuts down cleanly. Windows states today's behaviour
+/// (#528 T5, finding W1 in gh527 §10): its Quit tail
+/// (`await_windows_quit_peer_close_until`) treats any byte after the Quit
+/// REPLY as a fault, so the router's join reports `KELD-CORE-037`. The UI
+/// still quits. The W1 fix, tracked by #1073, flips this to the Unix
+/// expectation.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn assert_router_shutdown_after_quit_with_trailing_call(router: PrimaryRouter) {
+    let shutdown = router.shutdown();
+    if cfg!(windows) {
+        let error = shutdown.expect_err("W1: the Windows Quit tail faults on a trailing CALL");
+        assert_eq!(error.code(), "KELD-CORE-037", "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("app sent bytes after the terminal Quit reply"),
+            "{error}"
+        );
+    } else {
+        shutdown.expect("router shutdown after Quit");
+    }
 }
 
 /// GH-528 T2 (gate review of #636): the post-Quit drain ends on the peer's
@@ -350,8 +422,11 @@ fn quit_drain_answers_received_calls_with_024_and_runs_none() {
 /// order, and none runs. *Negative control:* checking the idle deadline
 /// before every read (as the earlier timer-window drain did) answers none
 /// of them.
+/// Unix only (#528 T5): Windows has no post-Quit drain (gh527 §10, T5
+/// finding), and this case also half-closes the client, which a named
+/// pipe cannot do.
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn quit_drain_answers_every_buffered_call_after_a_host_stall_then_eof() {
     let (t, mut client) = guarded_test_router();
     let (stalled_tx, stalled) = mpsc::sync_channel(1);
