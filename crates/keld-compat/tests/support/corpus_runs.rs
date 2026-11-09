@@ -111,7 +111,10 @@ impl ProfileState {
     }
 }
 
-/// The owner's minimal view of a product run receipt; X02-T5's parser builds it.
+/// The owner's minimal test-local view of product receipt cells and profile.
+/// This structure does NOT authenticate Host origin. X02-T5 must verify the
+/// actual Host/collector, effective generation, observed operation, source
+/// and runtime identities BEFORE constructing a receipt for a product run.
 #[derive(Clone, Copy, Debug)]
 pub struct ProductReceipt<'a> {
     /// The KEL-78 state the receipt records.
@@ -147,9 +150,10 @@ impl Corpus {
         self.score_run(records, as_of)
     }
 
-    /// Validates one product run against its receipt (gh532 AC8, AC12; gh566 D7). The
-    /// record cells must equal the receipt's cells exactly, checked before scoring, so
-    /// a cell the run never covered cannot score.
+    /// Validates product receipt cell shape, record coverage and profile label
+    /// (gh532 AC8, AC12; gh566 D7; GH-587 C15). This test-local method does
+    /// not verify Host provenance; committed product records remain refused
+    /// until the independent collector-origin reader is qualified.
     pub fn validate_product_run(
         &self,
         receipt: &ProductReceipt<'_>,
@@ -161,7 +165,24 @@ impl Corpus {
                 corpus_id: self.id.clone(),
             });
         }
-        self.check_run_identity(records, receipt.cells.is_empty())?;
+        // Membership loops alone accept receipt [A,A] with only one record A.
+        // Validate the receipt's own exact nonempty set before KEL-74 scoring.
+        if receipt.cells.is_empty() {
+            return Err(CorpusError::EmptyProductReceipt {
+                corpus_id: self.id.clone(),
+            });
+        }
+        let mut unique = BTreeSet::new();
+        for cell in receipt.cells {
+            if !unique.insert(cell) {
+                return Err(CorpusError::DuplicateProductReceiptCell {
+                    corpus_id: self.id.clone(),
+                    cell: format!("{}/{}", cell.operation_id, cell.oracle_id),
+                });
+            }
+        }
+        // Retain MissingProductRecord for a nonempty receipt with no records.
+        self.check_run_identity(records, false)?;
         for record in records {
             self.check_record(record)?;
             if !receipt.cells.contains(&key_of(record)) {
