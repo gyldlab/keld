@@ -31,12 +31,15 @@ import { decodeRuntimeProcessInit } from "@keld/kipc/runtime-process-facts";
 type Message = {
   kind: string;
   before?: Record<string, string>;
+  appReady?: boolean;
+  observedHostReady?: boolean;
 };
 
 async function provePackedHandshake(
   stage: string,
   wrapper: string,
   entry: string,
+  inheritCwd = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -72,6 +75,7 @@ async function provePackedHandshake(
   });
   const messages: Message[] = [];
   let pending: ((message: Message) => void) | undefined;
+  let pendingProbe: ((message: Message) => void) | undefined;
   const child = Bun.spawn(
     [
       process.execPath,
@@ -83,7 +87,7 @@ async function provePackedHandshake(
       entry,
     ],
     {
-      cwd: stage,
+      ...(inheritCwd ? {} : { cwd: stage }),
       env: {
         ...process.env,
         KELD_APP_LINK: endpoint + "#" + "72".repeat(32),
@@ -93,6 +97,12 @@ async function provePackedHandshake(
       stderr: "pipe",
       ipc(message) {
         const value = message as Message;
+        if (value.kind === "probe-ready") {
+          const resolve = pendingProbe;
+          pendingProbe = undefined;
+          resolve?.(value);
+          return;
+        }
         if (pending) {
           const resolve = pending;
           pending = undefined;
@@ -108,6 +118,19 @@ async function provePackedHandshake(
     new Promise<Message>((resolve) => {
       pending = resolve;
     });
+  async function probeReadyState(): Promise<Message> {
+    if (pendingProbe !== undefined)
+      throw new Error("only one diagnostic probe may be in flight");
+    const outcome = new Promise<Message>((resolve) => {
+      pendingProbe = resolve;
+    });
+    child.send({ kind: "probe-ready" });
+    try {
+      return await withIoDeadline(outcome, 1_500);
+    } finally {
+      pendingProbe = undefined;
+    }
+  }
   let socket: Bun.Socket<undefined> | undefined;
   let step = "accept";
   try {
@@ -169,6 +192,11 @@ async function provePackedHandshake(
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
     expect(entered.before).toEqual(captured.versions);
+    // Test-only IPC introspection must itself respond before a failure is
+    // trusted; it never mutates Host state or supplies a synthetic Ready.
+    const observation = await probeReadyState();
+    expect(typeof observation.appReady).toBe("boolean");
+    expect(typeof observation.observedHostReady).toBe("boolean");
     step = "ready";
     expect((await withIoDeadline(Promise.resolve(next()))).kind).toBe("ready");
     expect(connections).toBe(1);
@@ -176,12 +204,21 @@ async function provePackedHandshake(
     child.send({ kind: "finish" });
     expect(await withIoDeadline(child.exited)).toBe(0);
   } catch (error) {
+    let observed = "unavailable";
+    if (step === "ready" && child.exitCode === null) {
+      try {
+        const state = await probeReadyState();
+        observed = `appReady=${String(state.appReady)}, observedHostReady=${String(state.observedHostReady)}`;
+      } catch (probeError) {
+        observed = `probe-error=${String(probeError)}`;
+      }
+    }
     child.kill();
     const exitCode = await child.exited;
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link stage=${step}, child_exit=${exitCode}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -288,9 +325,27 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       readFileSync(
         join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
         "utf8",
-      ).replace('"./app.ts"', '"@keld/api"'),
+      )
+        .replace('"./app.ts"', '"@keld/api"')
+        .replace(
+          "await app.whenReady();",
+          `import { hasObservedHostReady } from "@keld/api/internal/app";
+process.on("message", message => {
+  if (message?.kind === "probe-ready") {
+    process.send?.({
+      kind: "probe-ready",
+      appReady: app.isReady(),
+      observedHostReady: hasObservedHostReady(),
+    });
+  }
+});
+await app.whenReady();`,
+        ),
     );
     await provePackedHandshake(stage, wrapper, entry);
+    // Match the original packed runtime test's inherited working directory.
+    // It is a separate end-to-end acceptance case, not an assertion bypass.
+    await provePackedHandshake(stage, wrapper, entry, true);
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
