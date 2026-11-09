@@ -4,40 +4,28 @@ use keld_guard::verified_manifest::{VerifiedManifest, load_verified_manifest};
 use sha2::{Digest as _, Sha256};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 
 pub(super) struct OwnedSnapshotFiles {
     pub(super) root: PathBuf,
-    cleaned: bool,
+    directory: TempDir,
 }
 impl OwnedSnapshotFiles {
     pub(super) fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test-only filename seed is after the Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "keld-auth-snapshot-test-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).expect("create fresh privately owned snapshot fixture dir");
+        let directory = tempfile::Builder::new()
+            .prefix("keld-auth-snapshot-test-")
+            .tempdir()
+            .expect("create fresh privately owned snapshot fixture dir");
         Self {
-            root,
-            cleaned: false,
+            root: directory.path().to_path_buf(),
+            directory,
         }
     }
 
-    pub(super) fn finish(mut self) {
-        fs::remove_dir_all(&self.root).expect("clean up verified snapshot fixtures");
-        self.cleaned = true;
-    }
-}
-impl Drop for OwnedSnapshotFiles {
-    fn drop(&mut self) {
-        if !self.cleaned
-            && let Err(error) = fs::remove_dir_all(&self.root)
-        {
-            eprintln!("emergency snapshot fixture cleanup failed: {error}");
-        }
+    pub(super) fn finish(self) {
+        self.directory
+            .close()
+            .expect("clean up verified snapshot fixtures");
     }
 }
 
