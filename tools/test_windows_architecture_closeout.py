@@ -1,12 +1,17 @@
 """Offline contract tests for the Windows SHA-pinned architecture review overlay."""
 import csv
+import hashlib
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from windows_architecture_closeout import EVIDENCE_FIELDS, FIELDS, reconcile
+from windows_architecture_closeout import (
+    AUDIT, EVIDENCE_FIELDS, FIELDS, QUEUE, QUEUE_SHA256, reconcile, snapshot)
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def csv_data(fields, rows):
@@ -90,6 +95,11 @@ class LedgerReconciliationTests(unittest.TestCase):
     def test_empty_or_invented_evidence_rejected(self):
         with self.assertRaisesRegex(ValueError, "public evidence"):
             self.apply([evidence(review_evidence="https://example.com/not-a-review")])
+        # A bare issue or PR page names no specific review comment.
+        for bare in ("https://github.com/gyldlab/keld/issues/824",
+                     "https://github.com/gyldlab/keld/pull/942"):
+            with self.assertRaisesRegex(ValueError, "public evidence"):
+                self.apply([evidence(review_evidence=bare)])
 
     def test_missing_falsifier_or_owner_rejected(self):
         with self.assertRaisesRegex(ValueError, "falsifier"):
@@ -121,6 +131,24 @@ class LedgerReconciliationTests(unittest.TestCase):
     def test_unexpected_claim_fields_rejected(self):
         with self.assertRaisesRegex(ValueError, "unexpected review evidence"):
             reconcile(self.base, csv_data(("path",), [{"path": "a.rs"}]))
+
+
+class TriageQueueBindingTests(unittest.TestCase):
+    """The closeout binds the committed #891 queue bytes, never a stale copy (#942)."""
+
+    def test_binding_matches_the_committed_queue(self):
+        live = (ROOT / QUEUE).read_bytes().replace(b"\r\n", b"\n")
+        self.assertEqual(hashlib.sha256(live).hexdigest(), QUEUE_SHA256)
+
+    def test_changed_queue_is_refused_before_rendering(self):
+        committed = (ROOT / QUEUE).read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / AUDIT).mkdir(parents=True)
+            # Negative control: one appended row must change the binding.
+            (root / QUEUE).write_bytes(committed + b"extra,row\n")
+            with self.assertRaisesRegex(ValueError, "#891 triage queue changed"):
+                snapshot(root)
 
 
 if __name__ == "__main__":
