@@ -203,7 +203,10 @@ pub(super) fn command(
         }
         AppWindowCommand::DestroyWindow { view } => release(views, bridges, events, view),
         // Session control retains its existing loop owner and service drive.
-        AppWindowCommand::Quit | AppWindowCommand::Fatal | AppWindowCommand::MacAuthWake => Ok(()),
+        AppWindowCommand::Quit
+        | AppWindowCommand::Fatal
+        | AppWindowCommand::MacAuthWake
+        | AppWindowCommand::MacDialogWake => Ok(()),
     }
 }
 

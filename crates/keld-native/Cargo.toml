@@ -31,7 +31,10 @@ windows-sys = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-authentication-services = { workspace = true, features = ["std", "ASFoundation", "ASWebAuthenticationSession", "ASWebAuthenticationSessionCallback", "block2"] }
-objc2-app-kit = { workspace = true, features = ["std", "NSWindow"] }
+# GH478 uses the already pinned typed AppKit package for a real retained
+# NSAlert sheet, never dynamic selectors/another native framework or crate.
+# The exact new feature set requires independent dependency/native review.
+objc2-app-kit = { workspace = true, features = ["std", "NSWindow", "NSAlert", "NSButton", "NSCell", "NSControl", "NSResponder", "NSView", "NSApplication", "block2"] }
 # KEL-89 token HTTP uses only existing exact workspace pins; independent edge/unsafe gates required.
 objc2 = { workspace = true, features = ["std"] }
 objc2-foundation = { workspace = true, features = ["std", "NSObject", "NSString", "NSData", "NSDate", "NSError", "NSValue", "NSURL", "NSURLRequest", "NSURLResponse", "NSURLSession", "NSOperation", "block2"] }
