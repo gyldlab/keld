@@ -10,10 +10,17 @@ mod lifecycle;
 
 #[path = "no_flag/linux/recovery.rs"]
 mod recovery;
+// GH-1081 round-1 research experiments only (never merged).
+#[path = "no_flag/linux/crash_recovery_r1.rs"]
+mod crash_recovery_r1;
+#[path = "no_flag/crash_recovery_r1_heartbeat.rs"]
+mod crash_recovery_r1_heartbeat;
 #[path = "no_flag/linux/staging.rs"]
 mod staging;
 #[path = "no_flag/linux/support/mod.rs"]
 mod support;
+#[path = "../../keld-wv/tests/fixtures/windows_renderer_http.rs"]
+mod windows_renderer_http;
 
 #[test]
 fn keld_dev_linux_helper() {

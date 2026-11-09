@@ -1,0 +1,142 @@
+<!doctype html><html><head><meta charset="utf-8"><title>KEL140 Public FS Acceptance</title>
+<style>html,body{margin:0;width:100%;height:100%;background:#111;color:#eee}#draft{position:fixed;inset:0;width:100%;height:100%;box-sizing:border-box;border:0;background:#163;color:white;font:28px system-ui;padding:24px}</style>
+</head><body><textarea id="draft" autofocus spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+<script>
+"use strict";
+// GH-1081 round-1 disposable page (research only). The observer drives every
+// step through one long-poll; the page never uses a timer for ordering.
+const base = "http://127.0.0.1:__PORT__";
+const steps = __STEPS__;
+const reloadSteps = __RELOAD_STEPS__;
+const nonce = () => Array.from(crypto.getRandomValues(new Uint32Array(4)),
+  value => value.toString(16).padStart(8, "0")).join("");
+// Two volatile renderer-created values: a reload or replacement cannot keep them.
+const documentNonce = nonce();
+const javascriptToken = nonce();
+const heap = { token: javascriptToken, inputs: 0, trustedInputs: 0 };
+const navigation = performance.getEntriesByType("navigation")[0];
+const navigationType = navigation ? navigation.type : "unknown";
+const draft = document.getElementById("draft");
+const requests = [];
+const outcomes = [];
+const terminals = [];
+const invokeNonces = new Map();
+const resultEnvelopes = new Map();
+const terminalWaiters = new Map();
+function storageRead() {
+  try { return { status: "ok", value: window.sessionStorage.getItem("gh1081-draft") }; }
+  catch (error) { return { status: "error", name: String(error && error.name), message: String(error && error.message) }; }
+}
+function storageWrite(value) {
+  try { window.sessionStorage.setItem("gh1081-draft", value); return "ok"; }
+  catch (error) { return "error:" + String(error && error.name); }
+}
+// Read before any write, so a reload reports only what survived it.
+const restored = storageRead();
+const restoredTextarea = draft.value;
+let lastStorageWrite = null;
+function captureTerminal(requestId) {
+  if (!invokeNonces.has(requestId) || !resultEnvelopes.has(requestId)) return;
+  const requestNonce = invokeNonces.get(requestId);
+  const rows = resultEnvelopes.get(requestId);
+  resultEnvelopes.delete(requestId);
+  for (const value of rows) {
+    terminals.push({ nonce: requestNonce, ok: value.ok, code: value.code ?? null, detail: value.detail ?? null });
+  }
+  const waiter = terminalWaiters.get(requestNonce);
+  if (waiter) { terminalWaiters.delete(requestNonce); waiter(); }
+}
+function awaitPassiveTerminal(requestNonce) {
+  if (terminals.some(terminal => terminal.nonce === requestNonce)) return Promise.resolve();
+  return new Promise(resolve => { terminalWaiters.set(requestNonce, resolve); });
+}
+// Passive observation of the existing bridge relay; the page never posts one.
+window.addEventListener("message", event => {
+  if (event.source !== window) return;
+  const value = event.data;
+  if (value?.__keldRelay === "invoke-v1" && value.channel === 1 && Array.isArray(value.payload)) {
+    const request = requests.find(request => {
+      const bytes = encodeRequest(JSON.stringify({ label: request.label, nonce: request.nonce }), request.count);
+      return bytes.length === value.payload.length && bytes.every((byte, index) => byte === value.payload[index]);
+    });
+    if (request) { invokeNonces.set(value.request, request.nonce); captureTerminal(value.request); }
+  } else if (value?.__keldRelay === "result-v1") {
+    const rows = resultEnvelopes.get(value.request) ?? [];
+    rows.push({ ok: value.ok, code: value.code ?? null, detail: value.detail ?? null });
+    resultEnvelopes.set(value.request, rows);
+    captureTerminal(value.request);
+  }
+});
+// Same bounded sample codec as public_fs_page.html (one-byte length and count).
+function encodeRequest(message, count) {
+  const bytes = new TextEncoder().encode(message);
+  if (bytes.length >= 128 || count >= 128) throw new Error("bounded sample request encoding");
+  return new Uint8Array([bytes.length, ...bytes, count]);
+}
+function decodeResponse(bytes, expectedCount) {
+  let offset = 1;
+  let length = bytes[0];
+  if (length >= 128) {
+    if (bytes.length < 3 || bytes[1] >= 128) throw new Error("sample response length encoding");
+    length = (length & 127) | (bytes[1] << 7);
+    offset = 2;
+  }
+  if (bytes.length > 4096 || bytes.length !== offset + length + 1 ||
+      bytes[offset + length] !== expectedCount) throw new Error("sample response bounds/count");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(offset, offset + length)));
+}
+function state() {
+  return { documentNonce, javascriptToken, heap: { ...heap }, navigationType, draft: draft.value,
+    session: storageRead(), restored, restoredTextarea, lastStorageWrite,
+    activeElement: document.activeElement ? document.activeElement.id || document.activeElement.tagName : null,
+    requests, outcomes, terminals };
+}
+async function post(value) {
+  const response = await fetch(base + "/observe", { method: "POST",
+    headers: { "Content-Type": "text/plain" }, body: JSON.stringify(value) });
+  if (!response.ok) throw new Error("gh1081 page observation refused");
+}
+async function report(phase, extra) {
+  // Fence on the actual bridge result envelopes, never on a timer.
+  await Promise.all(outcomes.map((_outcome, index) => awaitPassiveTerminal(requests[index].nonce)));
+  await post({ phase, ...state(), ...extra });
+}
+draft.addEventListener("input", event => {
+  heap.inputs += 1;
+  if (event.isTrusted) heap.trustedInputs += 1;
+  lastStorageWrite = storageWrite(draft.value);
+  post({ phase: "draft-input", documentNonce, value: draft.value, trusted: event.isTrusted,
+    inputs: heap.inputs, trustedInputs: heap.trustedInputs, storageWrite: lastStorageWrite })
+    .catch(error => { draft.dataset.error = String(error); });
+});
+async function invoke(label) {
+  const request = { label, nonce: nonce(), count: requests.length + 1 };
+  requests.push(request);
+  try {
+    const payload = encodeRequest(JSON.stringify({ label, nonce: request.nonce }), request.count);
+    const reply = decodeResponse(await window.keld.invoke(1, payload), request.count);
+    outcomes.push({ label, ok: true, reply });
+  } catch (error) {
+    outcomes.push({ label, ok: false, name: error.name, error: error.message, code: error.code ?? null });
+  }
+}
+async function run(script) {
+  for (const step of script) {
+    const command = await fetch(base + "/recovery-page");
+    if (!command.ok) throw new Error("gh1081 page command refused");
+    await command.text();
+    if (step.do === "reload") {
+      // Renderer-side negative control: a real same-window reload.
+      location.reload();
+      return;
+    }
+    if (step.do === "invoke") await invoke(step.label);
+    await report("step", { label: step.label, step: step.do });
+  }
+}
+draft.focus();
+const script = navigationType === "reload" ? reloadSteps : steps;
+report("page-ready", { bridge: typeof window.keld?.invoke === "function" })
+  .then(() => run(script))
+  .catch(error => post({ phase: "error", error: String(error) }));
+</script></body></html>
