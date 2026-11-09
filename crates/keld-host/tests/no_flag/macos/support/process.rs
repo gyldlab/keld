@@ -176,14 +176,18 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
 
 #[test]
 fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
-    // A synthetic PID outside the macOS PID range keeps this fixture from
-    // matching any census taken by a concurrent test in this process.
-    const SYNTHETIC_PID: u32 = 0xdead_beef;
-    let leftover = std::env::temp_dir().join(format!("kb-{SYNTHETIC_PID:x}-stale-before-launch"));
+    // A synthetic PID derived from this test process's own real PID, with the
+    // top bit forced on. The top bit keeps it outside the macOS PID range (so
+    // it cannot match a concurrent test's census in this process), and the
+    // real PID makes it unique per OS process, so two concurrent runs of this
+    // exact test (for example an overlapping retry) plant and clean up two
+    // different fixed-name directories instead of racing on one.
+    let synthetic_pid: u32 = 0x8000_0000 | std::process::id();
+    let leftover = std::env::temp_dir().join(format!("kb-{synthetic_pid:x}-stale-before-launch"));
     // An interrupted run left the fixed name that `PlantedSessionDir` used to
     // create with `fs::create_dir`, which then failed before the census ran.
     fs::create_dir_all(&leftover).expect("leave a stale directory");
-    let planted = PlantedSessionDir::create(SYNTHETIC_PID, "stale-before-launch");
+    let planted = PlantedSessionDir::create(synthetic_pid, "stale-before-launch");
     let planted_path = planted.path().to_path_buf();
     assert_ne!(
         planted_path, leftover,
