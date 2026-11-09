@@ -53,7 +53,10 @@ export interface BundleLayout {
   beforeCleanup?: (result: BundleRun) => Promise<void>;
 }
 
-export type LayoutOutputReader = Pick<NodeReadableStreamDefaultReader<Uint8Array>, "read" | "cancel" | "releaseLock">;
+export type LayoutOutputReader = Pick<
+  NodeReadableStreamDefaultReader<Uint8Array>,
+  "read" | "cancel" | "releaseLock"
+>;
 
 interface CleanupTask<T> {
   promise: Promise<T>;
@@ -62,7 +65,14 @@ interface CleanupTask<T> {
 
 function cleanupTask<T>(promise: Promise<T>): CleanupTask<T> {
   const task: CleanupTask<T> = { promise, state: "pending" };
-  void promise.then(() => { task.state = "fulfilled"; }, () => { task.state = "rejected"; });
+  void promise.then(
+    () => {
+      task.state = "fulfilled";
+    },
+    () => {
+      task.state = "rejected";
+    },
+  );
   return task;
 }
 
@@ -75,15 +85,25 @@ export class LayoutCleanupError extends AggregateError {
     stderr: CleanupTask<string> | undefined;
   };
 
-  constructor(errors: unknown[], original: unknown, readonly cleanup: {
-    incomplete: boolean;
-    reader: LayoutOutputReader;
-    readerReleased: boolean;
-    stopChild: CleanupTask<void>;
-    cancellation: CleanupTask<void | undefined>;
-    output: CleanupTask<string>;
-  }) {
-    super(errors, cleanup.incomplete ? "layout cleanup incomplete" : "layout cleanup failed", { cause: original });
+  constructor(
+    errors: unknown[],
+    original: unknown,
+    readonly cleanup: {
+      incomplete: boolean;
+      reader: LayoutOutputReader;
+      readerReleased: boolean;
+      stopChild: CleanupTask<void>;
+      cancellation: CleanupTask<void | undefined>;
+      output: CleanupTask<string>;
+    },
+  ) {
+    super(
+      errors,
+      cleanup.incomplete
+        ? "layout cleanup incomplete"
+        : "layout cleanup failed",
+      { cause: original },
+    );
   }
 }
 
@@ -124,20 +144,42 @@ export async function withLayoutOutput<T>(
   } finally {
     const stop = cleanupTask(Promise.resolve().then(stopChild));
     const [stopped] = await Promise.allSettled([withIoDeadline(stop.promise)]);
-    const cancellation = cleanupTask(Promise.resolve().then(() => settled ? undefined : reader.cancel()));
-    const [cancelled] = await Promise.allSettled([withIoDeadline(cancellation.promise)]);
+    const cancellation = cleanupTask(
+      Promise.resolve().then(() => (settled ? undefined : reader.cancel())),
+    );
+    const [cancelled] = await Promise.allSettled([
+      withIoDeadline(cancellation.promise),
+    ]);
     const terminalTask = cleanupTask(output);
-    const [terminal] = await Promise.allSettled([withIoDeadline(terminalTask.promise)]);
+    const [terminal] = await Promise.allSettled([
+      withIoDeadline(terminalTask.promise),
+    ]);
     const cleanupErrors: unknown[] = [];
     if (stopped.status === "rejected") cleanupErrors.push(stopped.reason);
     if (cancelled.status === "rejected") cleanupErrors.push(cancelled.reason);
-    if (terminal.status === "rejected" && (!failed || terminal.reason !== failure)) cleanupErrors.push(terminal.reason);
-    const incomplete = !settled || [stop, cancellation, terminalTask].some((task) => task.state === "pending");
+    if (
+      terminal.status === "rejected" &&
+      (!failed || terminal.reason !== failure)
+    )
+      cleanupErrors.push(terminal.reason);
+    const incomplete =
+      !settled ||
+      [stop, cancellation, terminalTask].some(
+        (task) => task.state === "pending",
+      );
     if (cleanupErrors.length !== 0 || incomplete) {
-      throw new LayoutCleanupError(failed ? [failure, ...cleanupErrors] : cleanupErrors, failure, {
-        incomplete,
-        reader, readerReleased: settled, stopChild: stop, cancellation, output: terminalTask,
-      });
+      throw new LayoutCleanupError(
+        failed ? [failure, ...cleanupErrors] : cleanupErrors,
+        failure,
+        {
+          incomplete,
+          reader,
+          readerReleased: settled,
+          stopChild: stop,
+          cancellation,
+          output: terminalTask,
+        },
+      );
     }
   }
 }
@@ -163,11 +205,19 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
       data(socket, bytes) {
         layout.socketObserver?.data?.(socket, bytes);
       },
-      ...(layout.socketObserver === undefined ? {} : {
-        drain() { layout.socketObserver?.drain?.(); },
-        close() { layout.socketObserver?.close?.(); },
-        error(_socket: Bun.Socket<undefined>, error: Error) { layout.socketObserver?.error?.(error); },
-      }),
+      ...(layout.socketObserver === undefined
+        ? {}
+        : {
+            drain() {
+              layout.socketObserver?.drain?.();
+            },
+            close() {
+              layout.socketObserver?.close?.();
+            },
+            error(_socket: Bun.Socket<undefined>, error: Error) {
+              layout.socketObserver?.error?.(error);
+            },
+          }),
     },
   });
   let proc: ReturnType<typeof Bun.spawn> | undefined;
@@ -180,7 +230,8 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
     if (childStopped) return;
     childStopped = true;
     if (proc?.exitCode === null) proc.kill();
-    if (proc !== undefined) await withIoDeadline(Promise.all([proc.exited, stderr]));
+    if (proc !== undefined)
+      await withIoDeadline(Promise.all([proc.exited, stderr]));
   };
   try {
     const runner = await layout.write(dir);
@@ -199,30 +250,52 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
     stderrTask = cleanupTask(stderr);
     const child = proc;
     const errorsText = stderr;
-    return await withLayoutOutput((proc.stdout as ReadableStream<Uint8Array>).getReader(), layout, async (output) => {
-      let stdout: string;
-      let exitCode: number | undefined;
-      let errors: string | undefined;
-      if (layout.waitForExit) {
-        [stdout, exitCode, errors] = await withIoDeadline(Promise.all([output, child.exited, errorsText]));
-      } else {
-        stdout = await output;
-      }
-      const counted = existsSync(evalsPath) ? readFileSync(evalsPath, "utf8") : "";
-      const result = {
-        stdout, connections, evals: counted.split("\n").filter((line) => line.length > 0).length,
-        exitCode, stderr: errors, root: dir,
-      };
-      await layout.beforeCleanup?.(result);
-      return result;
-    }, stopChild);
+    return await withLayoutOutput(
+      (proc.stdout as ReadableStream<Uint8Array>).getReader(),
+      layout,
+      async (output) => {
+        let stdout: string;
+        let exitCode: number | undefined;
+        let errors: string | undefined;
+        if (layout.waitForExit) {
+          [stdout, exitCode, errors] = await withIoDeadline(
+            Promise.all([output, child.exited, errorsText]),
+          );
+        } else {
+          stdout = await output;
+        }
+        const counted = existsSync(evalsPath)
+          ? readFileSync(evalsPath, "utf8")
+          : "";
+        const result = {
+          stdout,
+          connections,
+          evals: counted.split("\n").filter((line) => line.length > 0).length,
+          exitCode,
+          stderr: errors,
+          root: dir,
+        };
+        await layout.beforeCleanup?.(result);
+        return result;
+      },
+      stopChild,
+    );
   } catch (error) {
-    if (error instanceof LayoutCleanupError && (
-      error.cleanup.incomplete || childExit?.state === "pending" || stderrTask?.state === "pending"
-    )) {
+    if (
+      error instanceof LayoutCleanupError &&
+      (error.cleanup.incomplete ||
+        childExit?.state === "pending" ||
+        stderrTask?.state === "pending")
+    ) {
       retainResources = true;
       error.cleanup.incomplete = true;
-      error.retainedLayout = { root: dir, listener, child: proc, childExit, stderr: stderrTask };
+      error.retainedLayout = {
+        root: dir,
+        listener,
+        child: proc,
+        childExit,
+        stderr: stderrTask,
+      };
       error.message = `layout cleanup incomplete; retained resources at ${dir}`;
     }
     throw error;
