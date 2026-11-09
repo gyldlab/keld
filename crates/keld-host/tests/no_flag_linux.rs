@@ -24,6 +24,11 @@ mod crash_recovery_r2_probe;
 mod origin_r4;
 #[path = "no_flag/origin_r4_lab.rs"]
 mod origin_r4_lab;
+// GH-1081 round-5 KEL-79 origin experiments X4-X9 (research only, never merged).
+#[path = "no_flag/linux/origin_r5.rs"]
+mod origin_r5;
+#[path = "no_flag/origin_r5_lab.rs"]
+mod origin_r5_lab;
 #[path = "no_flag/linux/staging.rs"]
 mod staging;
 #[path = "no_flag/linux/support/mod.rs"]

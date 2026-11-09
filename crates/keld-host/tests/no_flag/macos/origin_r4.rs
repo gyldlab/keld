@@ -23,9 +23,9 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-struct MacDriver {
-    tool: PathBuf,
-    root: tempfile::TempDir,
+pub(crate) struct MacDriver {
+    pub(crate) tool: PathBuf,
+    pub(crate) root: tempfile::TempDir,
 }
 
 impl Driver for MacDriver {

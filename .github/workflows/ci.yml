@@ -346,15 +346,15 @@ jobs:
         timeout-minutes: 15
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends xdotool
       # GH-1081 [DO NOT MERGE]: research-only narrowing on a never-merge draft PR.
-      # Round 4 (KEL-79 origin experiments X0-X3) runs, GH1081_ITERATIONS times
-      # with --no-fail-fast and GUI rows one at a time: the gh1081_r4 rows (the
-      # isolated origin-lab harness, a keld-wv example built first) plus each
-      # OS's real-host crash-recovery control row (macOS round-1 E4 typed draft;
-      # Windows/Linux round-2 typed draft). macOS also re-runs the round-3
-      # request-stage rows (gh1081_r3) with their fixed synchronization (journal
-      # report and file marker instead of live app stderr). Every other
-      # package's tests are skipped. It refuses to run anywhere but that PR's
-      # branch.
+      # Round 5 (KEL-79 origin experiments X4-X9) runs, GH1081_ITERATIONS times
+      # with --no-fail-fast and GUI rows one at a time: the gh1081_r5 rows (the
+      # isolated origin-lab harness, a keld-wv example built first), the round-4
+      # X0 engine census row (provenance), and each OS's real-host
+      # crash-recovery control row (macOS round-1 E4 typed draft; Windows/Linux
+      # round-2 typed draft). The round-4 X1-X3 matrix rows and the macOS
+      # round-3 request-stage rows are recorded (run 40002434390) and leave the
+      # loop. Every other package's tests are skipped. It refuses to run
+      # anywhere but that PR's branch.
       - name: GH-1081 build origin lab (research only)
         shell: bash
         run: cargo build -p keld-wv --example gh1081_origin_lab
@@ -370,9 +370,9 @@ jobs:
           fi
           lab="$GITHUB_WORKSPACE/target/debug/examples/gh1081_origin_lab"
           case "${{ matrix.os }}" in
-            macos-latest) filter='binary(no_flag_macos) & (test(/gh1081_r4_/) | test(/gh1081_r3_/) | test(/gh1081_e4_typed_draft_document_and_heap_survive_bun_crash/))' ;;
-            windows-latest) filter='binary(no_flag_windows) & (test(/gh1081_r4_/) | test(/gh1081_r2_windows_typed_draft_survives_bun_crash/))'; lab="$lab.exe" ;;
-            ubuntu-latest) filter='binary(no_flag_linux) & (test(/gh1081_r4_/) | test(/gh1081_r2_linux_typed_draft_survives_bun_crash/))' ;;
+            macos-latest) filter='binary(no_flag_macos) & (test(/gh1081_r5_/) | test(/gh1081_r4_macos_x0_engine_census/) | test(/gh1081_e4_typed_draft_document_and_heap_survive_bun_crash/))' ;;
+            windows-latest) filter='binary(no_flag_windows) & (test(/gh1081_r5_/) | test(/gh1081_r4_windows_x0_engine_census/) | test(/gh1081_r2_windows_typed_draft_survives_bun_crash/))'; lab="$lab.exe" ;;
+            ubuntu-latest) filter='binary(no_flag_linux) & (test(/gh1081_r5_/) | test(/gh1081_r4_linux_x0_engine_census/) | test(/gh1081_r2_linux_typed_draft_survives_bun_crash/))' ;;
           esac
           export GH1081_ORIGIN_LAB="$lab"
           echo "GH1081_ORIGIN_LAB=$GH1081_ORIGIN_LAB"

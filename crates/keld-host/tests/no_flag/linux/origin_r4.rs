@@ -28,8 +28,8 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-struct LinuxDriver {
-    census: PathBuf,
+pub(crate) struct LinuxDriver {
+    pub(crate) census: PathBuf,
 }
 
 fn window_id(window: &Value) -> u64 {

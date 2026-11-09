@@ -25,11 +25,11 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-struct WinDriver {
-    tool: PathBuf,
+pub(crate) struct WinDriver {
+    pub(crate) tool: PathBuf,
     /// One fresh `WebView2` user data folder per launch (dev-mode ephemeral
     /// shape); kept until the test ends so the browser can release its files.
-    user_data: Vec<tempfile::TempDir>,
+    pub(crate) user_data: Vec<tempfile::TempDir>,
 }
 
 fn hwnd(window: &Value) -> u64 {

@@ -14,7 +14,11 @@
 //! rows (X3) run only the inline control arm; the candidate arms' X3 evidence
 //! here is the byte-source atom in the harness, recorded as such.
 //!
-//! Consumers: macOS/Windows/Linux `origin_r4.rs`.
+//! Round 5 (`origin_r5_lab.rs`) reuses `Lab` through `LaunchSpec`: the second
+//! view, store modes, handler modes, the Windows filter shape, extra
+//! environment (Linux XDG roots) and a hard kill (`Lab::kill`).
+//!
+//! Consumers: macOS/Windows/Linux `origin_r4.rs`, `origin_r5_lab.rs`.
 
 // Shared by three OS binaries that each use a subset.
 #![allow(dead_code)]
@@ -95,6 +99,15 @@ pub(crate) fn placeholder_scheme() -> String {
     format!("keld-exp-{:08x}", nonce() & 0xffff_ffff)
 }
 
+/// 32 hex digits of fresh entropy (round 5: store ids and storage sentinels).
+pub(crate) fn hex32() -> String {
+    format!(
+        "{:016x}{:016x}",
+        nonce(),
+        nonce().rotate_left(17) ^ 0x9e37_79b9_7f4a_7c15
+    )
+}
+
 fn drain<R: std::io::Read + Send + 'static>(reader: Option<R>) -> JoinHandle<String> {
     thread::spawn(move || {
         let mut text = String::new();
@@ -119,6 +132,99 @@ pub(crate) fn fields(line: &str) -> Value {
         }
     }
     Value::Object(map)
+}
+
+/// Everything one harness launch can be told (round 5). `Lab::launch` is the
+/// round-4 subset.
+#[derive(Clone, Debug)]
+pub(crate) struct LaunchSpec {
+    pub(crate) arm: Arm,
+    pub(crate) page: PathBuf,
+    pub(crate) second_page: Option<PathBuf>,
+    pub(crate) title: String,
+    pub(crate) scheme: String,
+    pub(crate) host: String,
+    pub(crate) second_host: Option<String>,
+    /// `ephemeral` | `persistent` | `inprivate` | `dir:<path>`.
+    pub(crate) store: String,
+    /// 32 hex digits (macOS identified store).
+    pub(crate) store_id: Option<String>,
+    /// `shared` | `separate`.
+    pub(crate) second_store: Option<String>,
+    /// `strict` | `naive` | `nohost`.
+    pub(crate) handler: String,
+    pub(crate) root: Option<PathBuf>,
+    /// `anchored` | `loose` (Windows filter shape).
+    pub(crate) filter: Option<String>,
+    pub(crate) ext_url: Option<String>,
+    pub(crate) user_data: Option<PathBuf>,
+    pub(crate) second_user_data: Option<PathBuf>,
+    /// Extra environment for the harness process (Linux XDG roots).
+    pub(crate) env: Vec<(String, String)>,
+}
+
+impl LaunchSpec {
+    /// The round-4 shape: one view, ephemeral store, strict handler.
+    pub(crate) fn new(arm: Arm, page: &Path, title: &str, scheme: &str) -> Self {
+        Self {
+            arm,
+            page: page.to_path_buf(),
+            second_page: None,
+            title: title.to_owned(),
+            scheme: scheme.to_owned(),
+            host: String::from(APP_HOST),
+            second_host: None,
+            store: String::from("ephemeral"),
+            store_id: None,
+            second_store: None,
+            handler: String::from("strict"),
+            root: None,
+            filter: None,
+            ext_url: None,
+            user_data: None,
+            second_user_data: None,
+            env: Vec::new(),
+        }
+    }
+
+    fn command(&self, control_port: u16) -> Command {
+        let mut command = Command::new(Lab::binary());
+        command
+            .args(["--arm", self.arm.flag(), "--title", &self.title])
+            .arg("--control")
+            .arg(format!("127.0.0.1:{control_port}"))
+            .args(["--scheme", &self.scheme, "--host", &self.host])
+            .args(["--store", &self.store, "--handler", &self.handler])
+            .arg("--page")
+            .arg(&self.page);
+        let optional_paths = [
+            ("--page-b", &self.second_page),
+            ("--root", &self.root),
+            ("--user-data", &self.user_data),
+            ("--user-data-b", &self.second_user_data),
+        ];
+        for (flag, value) in optional_paths {
+            if let Some(path) = value {
+                command.arg(flag).arg(path);
+            }
+        }
+        let optional_values = [
+            ("--host-b", &self.second_host),
+            ("--store-id", &self.store_id),
+            ("--second-store", &self.second_store),
+            ("--filter", &self.filter),
+            ("--ext-url", &self.ext_url),
+        ];
+        for (flag, value) in optional_values {
+            if let Some(text) = value {
+                command.args([flag, text.as_str()]);
+            }
+        }
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        command
+    }
 }
 
 /// Sole owner of one harness process and its control connection.
@@ -166,6 +272,13 @@ impl Lab {
         user_data: Option<&Path>,
         deadline: Instant,
     ) -> Self {
+        let mut spec = LaunchSpec::new(arm, page, title, scheme);
+        spec.user_data = user_data.map(Path::to_path_buf);
+        Self::launch_with(&spec, deadline)
+    }
+
+    /// One harness process from a full round-5 spec.
+    pub(crate) fn launch_with(spec: &LaunchSpec, deadline: Instant) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind lab control");
         listener
             .set_nonblocking(true)
@@ -177,17 +290,7 @@ impl Lab {
             "origin lab binary missing at {}; build it with `cargo build -p keld-wv --example gh1081_origin_lab` or set GH1081_ORIGIN_LAB",
             binary.display()
         );
-        let mut command = Command::new(binary);
-        command
-            .args(["--arm", arm.flag(), "--title", title])
-            .arg("--control")
-            .arg(format!("127.0.0.1:{port}"))
-            .args(["--scheme", scheme, "--host", APP_HOST])
-            .arg("--page")
-            .arg(page);
-        if let Some(directory) = user_data {
-            command.arg("--user-data").arg(directory);
-        }
+        let mut command = spec.command(port);
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -311,6 +414,26 @@ impl Lab {
             .filter(|line| line.starts_with(prefix))
             .cloned()
             .collect()
+    }
+
+    /// Hard-kills the harness (`SIGKILL` / `TerminateProcess`): the round-5 X5
+    /// "no clean quit" arm. Returns the same record shape as `quit`.
+    pub(crate) fn kill(mut self) -> Value {
+        let mut child = self.child.take().expect("lab child");
+        let killed = child.kill().map_err(|error| error.to_string());
+        let status = child.wait().ok().map(|status| status.to_string());
+        let stdout = self
+            .stdout
+            .take()
+            .map(|handle| handle.join().unwrap_or_default());
+        let stderr = self
+            .stderr
+            .take()
+            .map(|handle| handle.join().unwrap_or_default());
+        json!({
+            "quit_ack": Value::Null, "killed": killed.err(), "status": status, "stdout": stdout,
+            "stderr": stderr, "events": std::mem::take(&mut self.events),
+        })
     }
 
     /// Quits through the control plane (kill as the fallback) and returns the
