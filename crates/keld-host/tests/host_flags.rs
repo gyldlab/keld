@@ -54,3 +54,72 @@ fn unknown_argument_is_cli_044_before_boot_selection() {
     assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
     assert!(!stderr.contains("keld.boot.json"), "{stderr}");
 }
+
+/// Runs `keld-host <args>` and returns its exit code and UTF-8 stderr.
+fn run_host(args: &[&str]) -> (Option<i32>, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .args(args)
+        .output()
+        .expect("run host with test-owned arguments");
+    let stderr = String::from_utf8(output.stderr).expect("fixed host refusal is UTF-8");
+    (output.status.code(), stderr)
+}
+
+// `keld_core::host_hello_requested` owns one order-free hello position rule
+// on every OS. Each argv below ends in a token the hello parser must refuse,
+// so a selected hello command exits 2 before any webview or window exists.
+
+#[test]
+fn title_before_hello_selects_the_hello_command() {
+    let (code, stderr) = run_host(&["--title", "Acme", "--hello", "--not-a-keld-host-flag"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("KELD-CLI-044: unknown hello flag `--not-a-keld-host-flag`"),
+        "`--title X --hello` must reach the hello parser: {stderr}"
+    );
+    assert!(!stderr.contains("unknown host argument"), "{stderr}");
+}
+
+#[test]
+fn hello_after_unknown_argument_is_refused_before_any_window() {
+    let (code, stderr) = run_host(&["--not-a-keld-host-flag", "--hello"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("KELD-CLI-044: unknown hello flag `--not-a-keld-host-flag`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-WV-"), "{stderr}");
+}
+
+#[test]
+fn hello_in_title_value_position_is_refused_before_any_window() {
+    let (code, stderr) = run_host(&["--title", "--hello"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(
+        stderr.contains("KELD-CLI-044: unknown hello flag `--hello`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("KELD-WV-"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hello_as_program_path_does_not_select_the_hello_command() {
+    use std::os::unix::process::CommandExt as _;
+
+    // argv0 is the program path, never a command: with argv0 `--hello`, the
+    // trailing unknown flag must reach the ordinary host refusal, not the
+    // hello parser.
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg0("--hello")
+        .arg("--not-a-keld-host-flag")
+        .output()
+        .expect("run host with argv0 set to --hello");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("fixed host refusal is UTF-8");
+    assert!(
+        stderr.contains("KELD-CLI-044: unknown host argument"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unknown hello flag"), "{stderr}");
+}
