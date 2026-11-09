@@ -41,7 +41,9 @@ function beat() {
   image.onload = image.onerror = () => { seq += 1; beat(); };
   image.src = base + documentNonce + "/" + javascriptToken + "/" + seq + "/" + encodeURIComponent(storage);
 }
-beat();
+// Start only after `load`: a withheld subresource before it would hold the
+// initial navigation open (observed: host startup deadline, KELD-WV-005).
+window.addEventListener("load", beat, { once: true });
 </script>
 "#;
 

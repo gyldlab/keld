@@ -40,8 +40,8 @@ fn host_windows(script: &Path, host: u32, title: &str) -> (Vec<u64>, Value) {
         .arg(script)
         .output()
         .expect("run X11 census");
-    let stdout = String::from_utf8(output.stdout).expect("X11 census UTF-8");
-    assert!(output.status.success(), "X11 census: {stdout} {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "X11 census: {output:?}");
     let rows: Value = serde_json::from_str(
         stdout
             .trim()
