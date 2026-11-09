@@ -37,7 +37,10 @@ type Message = {
 };
 
 /** An independent raw WorkerLink EVENT oracle, without API Ready mediation. */
-async function provePackedRawEvent(stage: string): Promise<void> {
+async function provePackedRawEvent(
+  stage: string,
+  withPriorCalls = false,
+): Promise<void> {
   const local = mkdtempSync(join(tmpdir(), "krp-packed-raw-"));
   const endpoint =
     process.platform === "win32"
@@ -79,6 +82,14 @@ const link = await WorkerLink.open({
 link.onEvent(LIFECYCLE_CHANNEL, (bytes) => {
   process.send?.({ kind: "raw-event", payload: [...bytes] });
 });
+if (process.env.KELD_RAW_PRIOR_CALLS === "1") {
+  for (const value of [41, 42]) {
+    const reply = await link.call(LIFECYCLE_CHANNEL, Uint8Array.of(value), 5000);
+    if (reply.length !== 1 || reply[0] !== value) {
+      throw new Error("raw packed call reply was not identical");
+    }
+  }
+}
 process.on("message", message => {
   if (message?.kind === "finish") {
     link.close();
@@ -100,7 +111,11 @@ process.send?.({ kind: "listening" });
     [process.execPath, "--no-env-file", "--no-install", rawEntry],
     {
       cwd: stage,
-      env: { ...process.env, KELD_APP_LINK: endpoint + "#" + "72".repeat(32) },
+      env: {
+        ...process.env,
+        KELD_APP_LINK: endpoint + "#" + "72".repeat(32),
+        KELD_RAW_PRIOR_CALLS: withPriorCalls ? "1" : "0",
+      },
       stdout: "pipe",
       stderr: "pipe",
       ipc(message) {
@@ -124,6 +139,22 @@ process.send?.({ kind: "listening" });
       0,
       new Uint8Array(32).fill(0x72),
     );
+    if (withPriorCalls) {
+      for (const expected of [41, 42]) {
+        phase = `call-${expected}`;
+        const call = await withIoDeadline(reader.readFrame());
+        expect(call.header.kind).toBe(FrameKind.Call);
+        expect(call.header.channel).toBe(LIFECYCLE_CHANNEL);
+        expect([...call.payload]).toEqual([expected]);
+        await writer.writeFrame(
+          FrameKind.Reply,
+          0,
+          LIFECYCLE_CHANNEL,
+          call.header.corr,
+          Uint8Array.of(expected),
+        );
+      }
+    }
     phase = "listen";
     expect((await withIoDeadline(listeningReady)).kind).toBe("listening");
     phase = "raw-event";
@@ -397,6 +428,7 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
     }
 
     await provePackedRawEvent(stage);
+    await provePackedRawEvent(stage, true);
     const entry = join(stage, "entry.mjs");
     writeFileSync(
       entry,
