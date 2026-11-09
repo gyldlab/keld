@@ -33,6 +33,7 @@ pub(super) mod retained_ack;
 mod active_generation_shutdown;
 mod fatal_cleanup_custody;
 mod guarded_primary_shutdown;
+mod host_guardian_failed_custody;
 mod worker_outcome;
 
 pub(super) mod bootstrap_shutdown_race;

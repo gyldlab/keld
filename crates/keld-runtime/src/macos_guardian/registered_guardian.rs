@@ -84,6 +84,23 @@ impl HostGuardian {
         }
     }
 
+    /// Make one already-validated live enrollment stale only for native
+    /// negative-control tests. Production registration remains birth-checked.
+    #[cfg(test)]
+    pub(super) fn alter_group_birth_for_test(&mut self) -> GroupIdentity {
+        let altered = self
+            .group
+            .expect("test must retain a previously registered real group")
+            .altered_birth_for_test();
+        self.group = Some(altered);
+        altered
+    }
+
+    #[cfg(test)]
+    pub(super) const fn group_identity_for_test(&self) -> Option<GroupIdentity> {
+        self.group
+    }
+
     /// Polls for an unexpected guardian exit while the host remains live.
     ///
     /// # Errors
@@ -103,8 +120,7 @@ impl HostGuardian {
         };
         if let Some(status) = status {
             self.liveness_writer.take();
-            let group = self.take_registered_group()?;
-            return Err(unexpected_guardian_exit(group, status));
+            return Err(self.terminal_guardian_exit(status));
         }
         Ok(())
     }
@@ -128,8 +144,7 @@ impl HostGuardian {
             }
         };
         self.liveness_writer.take();
-        let group = self.take_registered_group()?;
-        Err(unexpected_guardian_exit(group, status))
+        Err(self.terminal_guardian_exit(status))
     }
 
     /// Records an accepted KEL-96 Quit before its correlated reply can let
@@ -196,9 +211,7 @@ impl HostGuardian {
                             "guardian did not exit before the shutdown deadline",
                         ),
                     )];
-                    if let Some(group) = self.group.take()
-                        && let Err(error) = terminate_attested_group(group)
-                    {
+                    if let Err(error) = self.terminate_owned_group() {
                         failures.push(error);
                     }
                     if let Err(source) = self.child.kill()
@@ -224,47 +237,62 @@ impl HostGuardian {
                 }
             }
         };
-        let group = self.take_registered_group()?;
         if status.success() {
             // Guardian status zero is not proof of group retirement.
             // Finish the host's fail-safe before reporting clean shutdown.
-            terminate_attested_group(group)?;
+            self.terminate_owned_group()?;
             Ok(status)
         } else {
-            Err(unexpected_guardian_exit(group, status))
+            Err(self.terminal_guardian_exit(status))
         }
     }
 
     fn require_active(&self) -> Result<u32, RuntimeError> {
-        self.group.map(|group| group.pid).ok_or_else(|| {
-            lifecycle_error(
-                "macOS guardian terminal owner reuse",
-                io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "guardian owner is already terminal; start a fresh session",
-                ),
-            )
-        })
+        // A terminal native error retains the kernel birth for custody, not
+        // permission to reuse an already closed Guardian session. Never
+        // reinterpret an earlier fatal outcome as a fresh clean shutdown.
+        self.group
+            .filter(|_| self.liveness_writer.is_some())
+            .map(|group| group.pid)
+            .ok_or_else(|| {
+                lifecycle_error(
+                    "macOS guardian terminal owner reuse",
+                    io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "guardian owner is already terminal; start a fresh session",
+                    ),
+                )
+            })
     }
 
-    fn take_registered_group(&mut self) -> Result<GroupIdentity, RuntimeError> {
-        self.group.take().ok_or_else(|| {
-            lifecycle_error(
-                "macOS guardian terminal owner reuse",
-                io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "guardian owner is already terminal; start a fresh session",
-                ),
-            )
-        })
+    // One birth-attested fail-safe owner for all terminal paths. Retain the
+    // exact enrolled witness if kernel validation or signaling fails. A
+    // recycled group number alone never grants permission to signal again.
+    fn terminate_owned_group(&mut self) -> Result<(), RuntimeError> {
+        if let Some(group) = self.group {
+            terminate_attested_group(group)?;
+            self.group = None;
+        }
+        Ok(())
+    }
+
+    fn terminal_guardian_exit(&mut self, status: ExitStatus) -> RuntimeError {
+        let group_pid = self.group_pid().unwrap_or(0);
+        let cleanup_error = self
+            .terminate_owned_group()
+            .err()
+            .map(|error| io::Error::other(error.to_string()));
+        RuntimeError::GuardianExited {
+            group_pid,
+            exit_code: status.code(),
+            cleanup_error,
+        }
     }
 
     fn fail_observation(&mut self, phase: &'static str, source: io::Error) -> RuntimeError {
         self.liveness_writer.take();
         let mut failures = vec![lifecycle_error(phase, source)];
-        if let Some(group) = self.group.take()
-            && let Err(error) = terminate_attested_group(group)
-        {
+        if let Err(error) = self.terminate_owned_group() {
             failures.push(error);
         }
         if let Err(source) = self.child.kill()
