@@ -49,9 +49,9 @@ pub(crate) fn wait_child_output_observing(
 ) -> Output {
     // Install custody before pipe setup or callbacks can fail. Rust's Child
     // alone does not kill/reap on Drop.
-    let mut child = ReapOnDrop(child);
-    let mut stdout = PipeCapture::new(child.0.stdout.take());
-    let mut stderr = PipeCapture::new(child.0.stderr.take());
+    let mut child = ReapOnDrop::new(child);
+    let mut stdout = PipeCapture::new(child.child_mut().stdout.take());
+    let mut stderr = PipeCapture::new(child.child_mut().stderr.take());
     let deadline = Instant::now() + timeout;
     let mut status = None;
     loop {
@@ -60,7 +60,7 @@ pub(crate) fn wait_child_output_observing(
         stdout.read_once();
         stderr.read_once();
         if status.is_none() {
-            status = child.0.try_wait().expect("inspect child exit");
+            status = child.child_mut().try_wait().expect("inspect child exit");
         }
         if let Some(status) = status
             && stdout.pipe.is_none()
@@ -134,13 +134,35 @@ fn bounded_child_timeout_stderr_diagnostics_do_not_echo_untrusted_fields() {
     );
 }
 
-struct ReapOnDrop(Child);
+/// Test-owned Child custody from immediately after spawn until an owned wait.
+/// Its owned wait transfers the Child directly into `wait_child_output`,
+/// which installs another such owner before any fallible pipe manipulation.
+pub(crate) struct ReapOnDrop(Option<Child>);
+
+impl ReapOnDrop {
+    pub(crate) fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    pub(crate) fn child_mut(&mut self) -> &mut Child {
+        self.0.as_mut().expect("test-owned Child present")
+    }
+
+    pub(crate) fn wait_output(&mut self, timeout: Duration) -> Output {
+        wait_child_output(
+            self.0.take().expect("transfer owned Child into wait"),
+            timeout,
+        )
+    }
+}
 
 impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         // Child caches an observed exit, so these do not signal a reused PID.
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 

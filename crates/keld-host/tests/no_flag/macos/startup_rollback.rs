@@ -1,16 +1,19 @@
 use crate::support::DARK_BG;
 use crate::support::EVENT_DEADLINE;
 use crate::support::TITLE;
+use crate::support::control::ReapOnDrop;
 use crate::support::control::accept_before;
 use crate::support::control::parse_pid;
 use crate::support::control::read_control_line;
 use crate::support::control::wait_child_output;
 use crate::support::native_window::{await_no_native_windows, native_windows};
-use crate::support::process::{await_process_gone, session_dirs_for};
+use crate::support::process::{await_process_gone, process_exists, session_dirs_for};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::NavigationBlocker;
+use std::cell::Cell;
 use std::fs;
 use std::io::BufReader;
+use std::net::TcpStream;
 use std::os::unix::net::UnixListener;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
@@ -20,7 +23,7 @@ use std::time::Instant;
 #[test]
 fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
     let fixture = ProductFixture::new("navigation-timeout");
-    let blocker = NavigationBlocker::bind();
+    let mut blocker = NavigationBlocker::bind();
     fs::write(
         fixture.project.join("index.html"),
         format!(
@@ -35,18 +38,20 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
     listener
         .set_nonblocking(true)
         .expect("nonblocking navigation control");
-    let mut child = Command::new(stage.host())
-        .env("KELD_DEV_LEASE", "stdin-v1")
-        .env("KELD_T1B_CONTROL", &control_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("launch navigation-timeout host");
+    let mut child = ReapOnDrop::new(
+        Command::new(stage.host())
+            .env("KELD_DEV_LEASE", "stdin-v1")
+            .env("KELD_T1B_CONTROL", &control_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch navigation-timeout host"),
+    );
     // Hold the dev lease throughout the original Host exit wait. Closing it
     // before WK's 15s navigation deadline initiates ordinary successful Quit.
-    let _dev_lease_writer = child.stdin.take();
-    let host_pid = child.id();
+    let _dev_lease_writer = child.child_mut().stdin.take();
+    let host_pid = child.child_mut().id();
     let control = accept_before(&listener, Instant::now() + EVENT_DEADLINE);
     control
         .set_read_timeout(Some(EVENT_DEADLINE))
@@ -71,13 +76,9 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
     // The Child reaper inside wait_child_output remains authoritative. Even
     // when its original deadline panics, release and join our socket owner
     // before resuming the first failure with its original diagnostics.
-    let host_exit = catch_unwind(AssertUnwindSafe(|| {
-        wait_child_output(child, EVENT_DEADLINE)
-    }));
-    let release_result = blocker.release.send(());
-    let join_result = blocker.handle.join();
+    let host_exit = catch_unwind(AssertUnwindSafe(|| child.wait_output(EVENT_DEADLINE)));
+    let join_result = blocker.stop_and_join();
     let output = host_exit.unwrap_or_else(|failure| resume_unwind(failure));
-    release_result.expect("release blocked navigation");
     join_result.expect("navigation blocker joins");
 
     assert!(!output.status.success(), "stalled navigation became Ready");
@@ -94,6 +95,54 @@ fn stalled_initial_navigation_rolls_back_window_link_and_process_group() {
         native_windows(host_pid, TITLE).is_empty(),
         "navigation rollback left native window"
     );
+}
+
+#[test]
+fn initial_navigation_pre_wait_panic_reaps_owned_child_and_joins_blocker() {
+    // Real native subprocess and socket cleanup before and after accepted
+    // navigation. Neither panic may transfer an unowned Child or worker.
+    for accepted in [false, true] {
+        let host_pid = Cell::new(None);
+        let blocked_port = Cell::new(None);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let blocker = NavigationBlocker::bind();
+            blocked_port.set(Some(blocker.port));
+            let mut child = ReapOnDrop::new(
+                Command::new("/bin/sleep")
+                    .arg("2")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("native disposable pre-wait child"),
+            );
+            host_pid.set(Some(child.child_mut().id()));
+            if accepted {
+                let _peer = TcpStream::connect(("127.0.0.1", blocker.port))
+                    .expect("native accepted navigation socket");
+                blocker
+                    .connected
+                    .recv_timeout(EVENT_DEADLINE)
+                    .expect("accepted native socket before injected unwind");
+            }
+            panic!("intentional pre-wait failure");
+        }));
+        assert_eq!(
+            result
+                .expect_err("injected pre-wait panic must propagate")
+                .downcast_ref::<&str>(),
+            Some(&"intentional pre-wait failure")
+        );
+        assert!(
+            !process_exists(host_pid.get().expect("owned child identity")),
+            "pre-wait unwind abandoned a live Child"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", blocked_port.get().expect("owned fixture port")))
+                .is_err(),
+            "pre-wait unwind left a detached navigation accept listener"
+        );
+    }
 }
 
 #[test]
