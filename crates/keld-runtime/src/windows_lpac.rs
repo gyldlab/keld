@@ -36,8 +36,8 @@ use windows_sys::Win32::Security::Isolation::{
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, FreeSid, GetTokenInformation, PSID, SECURITY_CAPABILITIES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_GROUPS, TOKEN_QUERY, TokenCapabilities,
-    TokenIsAppContainer,
+    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_GROUPS, TOKEN_QUERY,
+    TokenCapabilities, TokenIsAppContainer,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -802,12 +802,13 @@ impl WindowsSuspendedChild {
         let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
         let is_app_container = query_token_u32(&token, TokenIsAppContainer, "TokenIsAppContainer")
             .map_err(|error| error.in_launch(self.launch))?;
-        let capabilities = query_token_buffer(&token, TokenCapabilities, "TokenCapabilities")
+        let (capabilities, returned) =
+            query_token_buffer(&token, TokenCapabilities, "TokenCapabilities")
+                .map_err(|error| error.in_launch(self.launch))?;
+        // The reported byte count and declared group entries must both fit the
+        // live token buffer before any capability count can be admitted.
+        let capability_count = token_capability_count(&capabilities, returned)
             .map_err(|error| error.in_launch(self.launch))?;
-        // SAFETY: query_token_buffer returns aligned storage filled for the
-        // requested TOKEN_GROUPS class and keeps it live for this read.
-        let capability_count =
-            unsafe { (*(capabilities.as_ptr().cast::<TOKEN_GROUPS>())).GroupCount };
         Ok(WindowsLpacTokenObservation {
             is_app_container: is_app_container != 0,
             // Only the LPAC launch supplies the creation attribute.
@@ -1138,12 +1139,56 @@ fn query_token_u32(
     Ok(value)
 }
 
+/// Caps the untrusted first Win32 token-information size before allocation.
+fn token_buffer_words(requested: u32, phase: &'static str) -> Result<usize, WindowsLpacError> {
+    const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
+    let bytes = usize::try_from(requested)
+        .map_err(|_| WindowsLpacError::contract(phase, "token information length exceeds usize"))?;
+    if bytes == 0 || bytes > MAX_TOKEN_INFORMATION_BYTES {
+        return Err(WindowsLpacError::contract(
+            phase,
+            "token information size is zero or exceeds 1 MiB",
+        ));
+    }
+    Ok(bytes.div_ceil(std::mem::size_of::<usize>()))
+}
+
+/// Reads only the capability count after bounding its entire declared record
+/// against Win32's actual returned byte length (not the rounded allocation).
+fn token_capability_count(storage: &[usize], returned: usize) -> Result<u32, WindowsLpacError> {
+    const PHASE: &str = "TokenCapabilities";
+    let header = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+    if returned < header || returned > std::mem::size_of_val(storage) {
+        return Err(WindowsLpacError::contract(
+            PHASE,
+            "token capability header or returned length is invalid",
+        ));
+    }
+    let first = storage
+        .first()
+        .ok_or_else(|| WindowsLpacError::contract(PHASE, "token capability buffer is empty"))?;
+    let word = first.to_ne_bytes();
+    let count = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
+    let members = usize::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>()))
+        .and_then(|size| header.checked_add(size))
+        .ok_or_else(|| WindowsLpacError::contract(PHASE, "token capability count overflow"))?;
+    if members > returned {
+        return Err(WindowsLpacError::contract(
+            PHASE,
+            "declared token capability entries exceed returned bytes",
+        ));
+    }
+    Ok(count)
+}
+
 fn query_token_buffer(
     token: &OwnedHandle,
     class: i32,
     phase: &'static str,
-) -> Result<Vec<usize>, WindowsLpacError> {
-    let mut bytes = 0_u32;
+) -> Result<(Vec<usize>, usize), WindowsLpacError> {
+    let mut required = 0_u32;
     // SAFETY: null sizing call with writable returned length.
     let _ = unsafe {
         GetTokenInformation(
@@ -1151,29 +1196,38 @@ fn query_token_buffer(
             class,
             std::ptr::null_mut(),
             0,
-            &raw mut bytes,
+            &raw mut required,
         )
     };
-    if bytes == 0 {
+    if required == 0 {
         return Err(WindowsLpacError::last_os(phase));
     }
-    let byte_count = usize::try_from(bytes)
-        .map_err(|_| WindowsLpacError::contract(phase, "token information length exceeds usize"))?;
-    let mut storage = vec![0_usize; byte_count.div_ceil(std::mem::size_of::<usize>())];
-    // SAFETY: aligned storage has at least `bytes` writable bytes.
+    let words = token_buffer_words(required, phase)?;
+    let mut storage = vec![0_usize; words];
+    let mut returned = 0_u32;
+    // SAFETY: aligned storage holds at least `required` writable bytes; the
+    // caller validates `returned` before interpreting the token structure.
     if unsafe {
         GetTokenInformation(
             token.as_raw_handle().cast(),
             class,
             storage.as_mut_ptr().cast(),
-            bytes,
-            &raw mut bytes,
+            required,
+            &raw mut returned,
         )
     } == 0
     {
         return Err(WindowsLpacError::last_os(phase));
     }
-    Ok(storage)
+    let returned = usize::try_from(returned)
+        .map_err(|_| WindowsLpacError::contract(phase, "returned token length exceeds usize"))?;
+    if returned == 0 || returned > usize::try_from(required).unwrap_or(usize::MAX) {
+        return Err(WindowsLpacError::contract(
+            phase,
+            "returned token information length exceeds its request",
+        ));
+    }
+    Ok((storage, returned))
 }
 
 fn deduplicate_handles(handles: &mut Vec<HANDLE>) -> Result<(), WindowsLpacError> {
@@ -1213,6 +1267,68 @@ mod tests {
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
 
     use super::{InheritedHandleCopies, WindowsSuspendedChild};
+
+    #[test]
+    fn lpac_token_size_report_is_bounded_before_allocation() {
+        let phase = "test TokenCapabilities";
+        let word = std::mem::size_of::<usize>();
+        let max = 1024_u32 * 1024;
+        assert_eq!(super::token_buffer_words(1, phase).expect("one byte"), 1);
+        assert_eq!(
+            super::token_buffer_words(max, phase).expect("one MiB cap admitted"),
+            usize::try_from(max).expect("u32 fits usize") / word
+        );
+        for required in [max + 1, u32::MAX] {
+            let refusal = super::token_buffer_words(required, phase)
+                .expect_err("untrusted oversized token count must be refused before allocation");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("token information size is zero or exceeds 1 MiB"),
+                "{refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn lpac_capability_count_checks_returned_header_and_declared_group_members() {
+        use windows_sys::Win32::Security::{SID_AND_ATTRIBUTES, TOKEN_GROUPS};
+
+        let header = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+        let group_bytes = std::mem::size_of::<SID_AND_ATTRIBUTES>();
+        let mut backing = [0_usize; 8];
+        assert_eq!(
+            super::token_capability_count(&backing, header).expect("zero capabilities"),
+            0
+        );
+        backing[0] = 2;
+        assert_eq!(
+            super::token_capability_count(&backing, header + 2 * group_bytes)
+                .expect("complete two-member returned span"),
+            2
+        );
+        for returned in [header, header + group_bytes, header + 2 * group_bytes - 1] {
+            let refusal = super::token_capability_count(&backing, returned)
+                .expect_err("a declared capability outside returned bytes must refuse");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("declared token capability entries exceed returned bytes"),
+                "{refusal}"
+            );
+        }
+        backing[0] = 0;
+        for returned in [0, header - 1, std::mem::size_of_val(&backing) + 1] {
+            let refusal = super::token_capability_count(&backing, returned)
+                .expect_err("invalid returned count or incomplete TOKEN_GROUPS header");
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("token capability header or returned length is invalid"),
+                "{refusal}"
+            );
+        }
+    }
 
     #[test]
     fn resume_refuses_a_primary_thread_not_held_suspended_exactly_once() {
