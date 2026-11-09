@@ -129,6 +129,39 @@ fn process_group_cleanup_rejects_non_group_broadcast_values() {
     }
 }
 
+/// A `kb-*` directory planted in the bootstrap's first session root, removed on drop.
+struct PlantedSessionDir(PathBuf);
+
+impl PlantedSessionDir {
+    fn create(pid: u32, label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("kb-{pid:x}-{label}"));
+        fs::create_dir(&path).expect("plant session directory");
+        Self(path)
+    }
+}
+
+impl Drop for PlantedSessionDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.0);
+    }
+}
+
+#[test]
+fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
+    // macOS reuses PIDs, and a crashed or killed earlier process can leave its
+    // `kb-<pid>-*` directory behind. This test runner's own PID stands in for
+    // a host that inherited such a PID: the stale directory exists before the
+    // "launch", so it is not this host's resource.
+    let pid = std::process::id();
+    let stale = PlantedSessionDir::create(pid, "stale-before-launch");
+    assert_eq!(
+        session_dirs_for(pid),
+        [] as [PathBuf; 0],
+        "a directory that predates the launch was attributed to the host: {}",
+        stale.0.display()
+    );
+}
+
 pub(crate) fn await_process_state(pid: u32, wanted: char) {
     let deadline = Instant::now() + PROCESS_DEADLINE;
     loop {
