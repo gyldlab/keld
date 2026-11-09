@@ -206,11 +206,9 @@ impl<T> EventLoopRunner<T> {
   }
 
   pub(crate) unsafe fn send_event(&self, event: Event<'_, T>) {
-    // GH1188: Native Windows modal loops can dispatch WM_PAINT while our
-    // MainEventsCleared callback still owns event_handler. RedrawRequested
-    // must follow the same reentrancy barrier as every other event.
-    // Never move runner state or call the borrowed handler from a nested
-    // native pump; dispatch in FIFO order when the outer callback returns.
+    // Buffer nested emissions while the callback owns event_handler. Native
+    // pumps can queue ordinary events during redraw callbacks; those wait for
+    // the next main phase. Direct redraw emissions use the same borrow barrier.
     if self.should_buffer() {
       self
         .event_buffer
@@ -228,10 +226,8 @@ impl<T> EventLoopRunner<T> {
     } else {
       self.move_state_to(RunnerState::HandlingMainEvents);
       self.call_event_handler(event);
+      self.dispatch_buffered_events();
     }
-    // Also drain redraws that arrived during a nested modal pump. Otherwise
-    // an outer RedrawRequested callback could leave them queued indefinitely.
-    self.dispatch_buffered_events();
   }
 
   pub(crate) unsafe fn main_events_cleared(&self) {
@@ -240,6 +236,14 @@ impl<T> EventLoopRunner<T> {
 
   pub(crate) unsafe fn redraw_events_cleared(&self) {
     self.move_state_to(RunnerState::Idle);
+    // Nested pumps may have consumed ordinary events during the redraw phase.
+    // Finish the whole redraw cluster before starting their main phase, even
+    // under Wait where no further external wake is guaranteed. Keep Idle on
+    // ExitWithCode so the outer loop can terminate at this boundary.
+    let has_buffered_events = !self.event_buffer.borrow().is_empty();
+    if has_buffered_events && !matches!(self.control_flow(), ControlFlow::ExitWithCode(_)) {
+      self.move_state_to(RunnerState::HandlingMainEvents);
+    }
   }
 
   pub(crate) unsafe fn loop_destroyed(&self) {
@@ -456,14 +460,191 @@ impl<T> BufferedEvent<T> {
   }
 }
 
-// GH1188/Windows MVP: prove a nested redraw cannot consume a Tao handler
-// while the same handler is executing. A Win32 modal dialog pumps messages
-// on the owner thread, and a direct reentrant RedrawRequested previously
-// reached event_handler.take().expect("re-entrant").
+// These tests drive the runner directly to check event phases and borrowed-
+// handler exclusion. Native modal/message causality requires separate OS proof.
 #[cfg(all(test, target_os = "windows"))]
 mod gh1188_nested_redraw_tests {
   use super::*;
   use std::cell::RefCell;
+
+  #[test]
+  fn ordinary_event_buffered_during_main_cleared_waits_for_main_phase() {
+    for inject_at in ["main-cleared", "redraw-first", "redraw-cleared"] {
+      // Use an invalid non-null target so call_new_events cannot request a
+      // desktop-wide redraw; this runner does not own a native window.
+      let runner = Rc::new(EventLoopRunner::<u8>::new(HWND(usize::MAX as _), 0));
+      runner.runner_state.set(RunnerState::HandlingMainEvents);
+      runner.control_flow.set(ControlFlow::Wait);
+      let seen = Rc::new(RefCell::new(Vec::new()));
+      let seen_for_handler = Rc::clone(&seen);
+      let weak = Rc::downgrade(&runner);
+      let first = WindowId(crate::platform_impl::platform::WindowId(1));
+      let second = WindowId(crate::platform_impl::platform::WindowId(2));
+      // SAFETY: all runner calls and owned callback state stay on this test
+      // thread. This follows a two-window WM_PAINT flush sequence without
+      // creating a window or dispatching a native message.
+      unsafe {
+        runner.set_event_handler(move |event, _| {
+          let current = weak.upgrade().expect("runner retained");
+          let label = match event {
+            Event::MainEventsCleared => "main-cleared",
+            Event::RedrawRequested(id) if id == first => "redraw-first",
+            Event::RedrawRequested(id) if id == second => "redraw-second",
+            Event::RedrawEventsCleared => "redraw-cleared",
+            Event::NewEvents(_) => "new-events",
+            Event::UserEvent(1) => "user-first",
+            Event::UserEvent(2) => "user-second",
+            Event::UserEvent(3) => "user-third",
+            _ => return,
+          };
+          seen_for_handler
+            .borrow_mut()
+            .push((label, current.redrawing()));
+          if label == inject_at {
+            current.send_event(Event::UserEvent(1));
+            current.send_event(Event::UserEvent(2));
+          } else if label == "new-events" {
+            current.send_event(Event::UserEvent(3));
+          }
+        });
+        runner.main_events_cleared();
+        runner.send_event(Event::RedrawRequested(first));
+        runner.send_event(Event::RedrawRequested(second));
+        assert_eq!(
+          &*seen.borrow(),
+          &[
+            ("main-cleared", true),
+            ("redraw-first", true),
+            ("redraw-second", true)
+          ],
+          "an ordinary event buffered at {inject_at} must not interrupt the redraw phase",
+        );
+        runner.redraw_events_cleared();
+      }
+      assert!(runner.take_panic_error().is_ok());
+      assert_eq!(
+      &*seen.borrow(),
+      &[
+        ("main-cleared", true),
+        ("redraw-first", true),
+        ("redraw-second", true),
+        ("redraw-cleared", false),
+        ("new-events", false),
+        ("user-first", false),
+        ("user-second", false),
+        ("user-third", false),
+      ],
+      "events buffered at {inject_at} must be delivered once in FIFO order without another external wake",
+    );
+    }
+  }
+
+  #[test]
+  fn redraw_end_with_no_buffered_events_stays_idle() {
+    let runner = Rc::new(EventLoopRunner::<()>::new(HWND(usize::MAX as _), 0));
+    runner.runner_state.set(RunnerState::HandlingRedrawEvents);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_handler = Rc::clone(&seen);
+    // SAFETY: this test-thread runner owns its callback and no native window.
+    unsafe {
+      runner.set_event_handler(move |event, _| match event {
+        Event::RedrawEventsCleared => seen_for_handler.borrow_mut().push("redraw-cleared"),
+        Event::NewEvents(_) => seen_for_handler.borrow_mut().push("new-events"),
+        _ => {}
+      });
+      runner.redraw_events_cleared();
+    }
+    assert!(runner.take_panic_error().is_ok());
+    assert_eq!(&*seen.borrow(), &["redraw-cleared"]);
+    assert_eq!(runner.runner_state.get(), RunnerState::Idle);
+  }
+
+  #[test]
+  fn redraw_end_with_exit_does_not_start_another_main_phase() {
+    for exit_at in ["redraw", "redraw-cleared"] {
+      let runner = Rc::new(EventLoopRunner::<()>::new(HWND(usize::MAX as _), 0));
+      runner.runner_state.set(RunnerState::HandlingMainEvents);
+      let seen = Rc::new(RefCell::new(Vec::new()));
+      let seen_for_handler = Rc::clone(&seen);
+      let weak = Rc::downgrade(&runner);
+      // SAFETY: all runner calls and owned callback state stay on this test
+      // thread, without creating a native window or starting an event loop.
+      unsafe {
+        runner.set_event_handler(move |event, control_flow| {
+          let label = match event {
+            Event::MainEventsCleared => {
+              weak
+                .upgrade()
+                .expect("runner retained")
+                .send_event(Event::UserEvent(()));
+              "main-cleared"
+            }
+            Event::RedrawRequested(_) => "redraw",
+            Event::RedrawEventsCleared => "redraw-cleared",
+            Event::NewEvents(_) => "new-events",
+            Event::UserEvent(()) => "user-event",
+            Event::LoopDestroyed => "loop-destroyed",
+            _ => return,
+          };
+          seen_for_handler.borrow_mut().push(label);
+          if label == exit_at {
+            *control_flow = ControlFlow::ExitWithCode(42);
+          } else if label == "redraw-cleared" {
+            // ExitWithCode is sticky even if a later callback attempts to undo it.
+            *control_flow = ControlFlow::Wait;
+          }
+        });
+        runner.main_events_cleared();
+        runner.send_event(Event::RedrawRequested(WindowId(
+          crate::platform_impl::platform::WindowId(1),
+        )));
+        runner.redraw_events_cleared();
+        assert_eq!(runner.runner_state.get(), RunnerState::Idle);
+        assert_eq!(runner.control_flow(), ControlFlow::ExitWithCode(42));
+        runner.loop_destroyed();
+      }
+      assert!(runner.take_panic_error().is_ok());
+      assert_eq!(
+        &*seen.borrow(),
+        &["main-cleared", "redraw", "redraw-cleared", "loop-destroyed"]
+      );
+    }
+  }
+
+  #[test]
+  fn redraw_end_retains_callback_panic_without_more_callbacks() {
+    let runner = Rc::new(EventLoopRunner::<()>::new(HWND(usize::MAX as _), 0));
+    runner.runner_state.set(RunnerState::HandlingRedrawEvents);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let seen_for_handler = Rc::clone(&seen);
+    let weak = Rc::downgrade(&runner);
+    // SAFETY: the test owns all state on one thread. The intentional callback
+    // panic is caught by the runner; no native window or message loop is used.
+    unsafe {
+      runner.set_event_handler(move |event, _| match event {
+        Event::RedrawEventsCleared => {
+          seen_for_handler.borrow_mut().push("redraw-cleared");
+          weak
+            .upgrade()
+            .expect("runner retained")
+            .send_event(Event::UserEvent(()));
+          panic!("redraw-end-callback-panic");
+        }
+        Event::NewEvents(_) => seen_for_handler.borrow_mut().push("new-events"),
+        Event::UserEvent(()) => seen_for_handler.borrow_mut().push("user-event"),
+        _ => {}
+      });
+      runner.redraw_events_cleared();
+    }
+    let error = runner
+      .take_panic_error()
+      .expect_err("callback panic must remain observable");
+    assert_eq!(
+      error.downcast_ref::<&str>(),
+      Some(&"redraw-end-callback-panic")
+    );
+    assert_eq!(&*seen.borrow(), &["redraw-cleared"]);
+  }
 
   #[test]
   fn nested_redraw_is_fifo_buffered_while_event_handler_is_active() {
@@ -492,7 +673,10 @@ mod gh1188_nested_redraw_tests {
       runner.send_event(Event::UserEvent(()));
     }
     let panic = runner.take_panic_error();
-    assert!(panic.is_ok(), "nested redraw must not consume a borrowed handler");
+    assert!(
+      panic.is_ok(),
+      "nested redraw must not consume a borrowed handler"
+    );
     assert_eq!(
       &*seen.borrow(),
       &["before-nested", "after-nested", "redraw-received"],
