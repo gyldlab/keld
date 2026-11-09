@@ -9,7 +9,7 @@ use crate::support::process::{process_exists, wait_child};
 use crate::support::product::ProductFixture;
 use crate::support::renderer::{expect_renderer_beacon, spawn_renderer_beacon};
 use crate::support::window::wait_for_host_window;
-use crate::{DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE};
+use crate::{DARK_BG, PRODUCT_DEADLINE, PRODUCT_TITLE, ui_end_kill_switch};
 use std::io::Write;
 use std::net::TcpListener;
 use std::path::Path;
@@ -102,7 +102,7 @@ fn kel135_signed_host_persistent_profile_startup() {
     writer.flush().expect("flush signed host Quit");
     assert_eq!(read_control_line(&mut reader), "QUIT_REPLY");
     assert_eq!(read_control_line(&mut reader), "LINK_EOF");
-    let status = wait_child(&mut host, Instant::now() + PRODUCT_DEADLINE);
+    let status = wait_child(&mut host, Instant::now() + ui_end_kill_switch());
     assert!(status.success(), "signed host exited with {status}");
     assert!(
         !process_exists(bun_pid),

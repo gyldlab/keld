@@ -22,6 +22,7 @@ class TestDiffGuard(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
         self.run_git("init", "-q")
+        self.run_git("config", "maintenance.auto", "false")
         self.run_git("config", "user.name", "Test Import Guard")
         self.run_git("config", "user.email", "test-import-guard@example.invalid")
 

@@ -25,10 +25,10 @@ need the router, run only on its own router output, keep its `/language:<languag
 upload category, and set no strategy. CodeQL steps in any other job are refused, so
 a successful job cannot silently represent a missing or duplicated scan category.
 Block, flow and aliased steps are inspected as objects. Missing, malformed,
-multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.2's
+multidocument, cyclic and unknown job/step structures are refused. Bun 1.4.4's
 parser uses the last value for duplicate keys; this check does not claim to reject
 duplicate-key syntax or prove full equivalence to GitHub's YAML implementation.
-The selected parser controls run in CI against pinned Bun 1.4.2. See
+The selected parser controls run in CI against pinned Bun 1.4.4. See
 [Bun's YAML documentation](https://bun.com/docs/runtime/yaml) for its conformance limits.
 
 | Check | Input and coverage | Limits |

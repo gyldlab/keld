@@ -1378,6 +1378,10 @@ mod tests {
         let moved = fixture.path().join("original-moved");
         std::fs::create_dir(&claimed).expect("test owns the claimed original");
         std::fs::create_dir(&outsider).expect("test owns the independent outsider");
+        // An unlocked fixture must support renaming. Without this preflight,
+        // an unrelated path/ACL failure could make the later race test green.
+        std::fs::rename(&claimed, &moved).expect("unlocked original can be renamed");
+        std::fs::rename(&moved, &claimed).expect("restore original after rename preflight");
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("positive fixture generation")
@@ -1388,17 +1392,38 @@ mod tests {
         let original_before = observed_dacl(&claimed);
 
         // The substitution runs between the shipping ACL read and merge and
-        // the publish, outside the code under test. The same-user rename may
-        // succeed on this Windows build: only original HANDLE identity can
-        // guarantee that the outsider never receives this ACL grant.
+        // the publish, in this test body rather than inside the code under
+        // test. The same-user rename may succeed on this Windows build: only
+        // original HANDLE identity can guarantee that the outsider never
+        // receives this ACL grant.
         let prepared = profile
             .prepare_grant(&claimed, super::WindowsLpacPathAccess::RolePrivate)
             .expect("an ordinary retained directory admits its DACL read and merge");
         let mut substituted = false;
-        if std::fs::rename(&claimed, &moved).is_ok() {
-            std::fs::rename(&outsider, &claimed)
-                .expect("place only test-owned outsider at vacated name");
-            substituted = true;
+        match std::fs::rename(&claimed, &moved) {
+            Ok(()) => {
+                if let Err(error) = std::fs::rename(&outsider, &claimed) {
+                    std::fs::rename(&moved, &claimed)
+                        .expect("rescue original after failed outsider substitution");
+                    panic!("test-owned outsider substitution failed: {error}");
+                }
+                substituted = true;
+            }
+            Err(error) => {
+                // The grant handle asks for no data or DELETE access, so
+                // Windows 11 does not check sharing against it and the rename
+                // succeeds. A build or filesystem that does refuse it may only
+                // do so with an actual sharing/permission refusal; a missing
+                // path or another fixture error must fail.
+                assert!(
+                    matches!(error.raw_os_error(), Some(5 | 32)),
+                    "unexpected original-rename failure instead of substitution or OS refusal: {error}"
+                );
+                assert!(
+                    claimed.is_dir() && outsider.is_dir() && !moved.exists(),
+                    "a refused rename must leave both test-owned identities intact"
+                );
+            }
         }
         let grant = prepared.publish();
         let outsider_after = observed_dacl(if substituted { &claimed } else { &outsider });

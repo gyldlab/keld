@@ -69,8 +69,17 @@ fn select_native_renderer_case(args: &[String]) -> Result<bool, &'static str> {
 }
 
 fn main() -> std::process::ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match select_native_renderer_case(&args) {
+    // `std::env::args()` panics on non-Unicode argv; refuse it through the
+    // shared KELD-CLI-051 decoder with the same exit 2 as the `keld` and
+    // `keld-host` binaries.
+    let args = match keld_core::unicode_args(std::env::args_os()) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    match select_native_renderer_case(args.get(1..).unwrap_or_default()) {
         Ok(false) => return std::process::ExitCode::SUCCESS,
         Ok(true) => {}
         Err(detail) => {
