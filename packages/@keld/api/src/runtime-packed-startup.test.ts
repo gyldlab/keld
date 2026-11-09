@@ -40,6 +40,7 @@ type Message = {
 async function provePackedRawEvent(
   stage: string,
   withPriorCalls = false,
+  fullReceiveTable = false,
 ): Promise<void> {
   const local = mkdtempSync(join(tmpdir(), "krp-packed-raw-"));
   const endpoint =
@@ -74,10 +75,21 @@ async function provePackedRawEvent(
   const rawEntry = join(stage, "raw-event.mjs");
   writeFileSync(
     rawEntry,
-    `import { WorkerLink, LIFECYCLE_CHANNEL } from "@keld/kipc";
+    `import {
+  WorkerLink,
+  LIFECYCLE_CHANNEL,
+  WINDOW_CHANNEL,
+  COMPAT_CONTROL_CHANNEL,
+} from "@keld/kipc";
+const fullReceive = process.env.KELD_RAW_FULL_RECEIVE === "1";
 const link = await WorkerLink.open({
   link: process.env.KELD_APP_LINK,
-  receive: { eventChannels: [LIFECYCLE_CHANNEL], callReceivers: [] },
+  receive: {
+    eventChannels: fullReceive
+      ? [LIFECYCLE_CHANNEL, WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]
+      : [LIFECYCLE_CHANNEL],
+    callReceivers: fullReceive ? [{ policy: "echoReceiver" }] : [],
+  },
 });
 link.onEvent(LIFECYCLE_CHANNEL, (bytes) => {
   process.send?.({ kind: "raw-event", payload: [...bytes] });
@@ -115,6 +127,7 @@ process.send?.({ kind: "listening" });
         ...process.env,
         KELD_APP_LINK: endpoint + "#" + "72".repeat(32),
         KELD_RAW_PRIOR_CALLS: withPriorCalls ? "1" : "0",
+        KELD_RAW_FULL_RECEIVE: fullReceiveTable ? "1" : "0",
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -375,7 +388,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -429,6 +442,7 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
 
     await provePackedRawEvent(stage);
     await provePackedRawEvent(stage, true);
+    await provePackedRawEvent(stage, true, true);
     const entry = join(stage, "entry.mjs");
     writeFileSync(
       entry,
