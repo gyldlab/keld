@@ -188,6 +188,10 @@ async function provePackedHandshake(
       0,
       Uint8Array.of(0),
     );
+    // Windows named-pipe writes can remain queued after an otherwise
+    // successful socket.write. Test whether a real flush exposes the Ready
+    // record without a second frame, timer delay or forged readiness.
+    if (process.platform === "win32") socket.flush();
     step = "entry";
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
