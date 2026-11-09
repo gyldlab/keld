@@ -40,13 +40,16 @@ describe("Echo CALL answers", () => {
       expect(reply.kind).toBe(FrameKind.Err);
       const error = decodeCallError(reply.payload);
       expect(error.code).toBe("KELD-API-001");
-      expect(error.message).toBe("KELD-API-001: application channel call failed");
+      expect(error.message).toBe(
+        "KELD-API-001: application channel call failed",
+      );
       expect(error.message).not.toContain("secret stack detail");
     }
   });
 
   test("oversized handler reply becomes one KELD-API-001 Err", async () => {
-    const handler: EchoCallHandler = async () => new Uint8Array(MAX_FRAME_LEN + 1);
+    const handler: EchoCallHandler = async () =>
+      new Uint8Array(MAX_FRAME_LEN + 1);
     const reply = await resolveEchoCall(ECHO_CHANNEL, PAYLOAD, handler);
     expect(reply.kind).toBe(FrameKind.Err);
     expect(decodeCallError(reply.payload).code).toBe("KELD-API-001");

@@ -26,7 +26,7 @@ For the complete verification gate, also install:
 | `cargo-deny` | Supply-chain checks (`cargo install cargo-deny --locked`) |
 | Docker-compatible engine | Runs the digest-pinned Mermaid renderer when changed Mermaid inputs select it in `just ci`, or for `just ci-full` |
 
-Use the pinned Rust toolchain and **Bun 1.4.2 for the full workspace gate**, matching
+Use the pinned Rust toolchain and **Bun 1.4.4 for the full workspace gate**, matching
 CI and the exact Linux strict-fixture assertion. Record the selected version/revision;
 a demo observed with Bun 1.4.2 is separate evidence. The
 [quick-start prerequisites](README.md#prerequisites) also explain Linux trusted-checkout
@@ -147,8 +147,8 @@ Recipes are grouped by developer task and lifecycle stage:
     follow [Run the current demo](README.md#run-the-current-demo) using
     `keld create → doctor → dev`.
 - **Fast edit loop (rapid local feedback):**
-  - `just fmt-check`: verifies Rust code formatting without touching files (fast check).
-  - `just fmt`: formats Rust files in place (**modifies tracked source files**).
+  - `just fmt-check`: verifies Rust and JS/TS formatting and generated freshness without touching files (fast check).
+  - `just fmt`: normalizes Rust, then generates, formats JS/TS and restamps transport (**modifies source files**).
   - `just clippy`: runs workspace lints with warnings treated as errors (`-D warnings`).
   - Scoped tests: `cargo nextest run -p <crate> -- <filter>` runs focused tests without
     the full suite overhead.
@@ -194,8 +194,8 @@ Recipes are grouped by developer task and lifecycle stage:
 | Recipe | Primary fallback | Filesystem impact | Cost | Notes |
 |---|---|---|---|---|
 | `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` | Writes `target/` artifacts | Moderate | Diagnostic window only; not the app-session demo |
-| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
-| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` | **Modifies tracked files** | Fast | Overwrites unformatted Rust files in place |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `--check` | None (read-only) | Fast | Fails on unformatted code |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` | **Modifies source files** | Fast | Normalizes Rust before generation, native JS/TS formatting and final restamping |
 | `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Writes `target/` artifacts | Moderate | Warnings treated as errors |
 | `just test` | `cargo nextest run --workspace --profile ci` (Linux: `xvfb-run -a`; partial fallback: `cargo test --workspace`, on headless Linux `xvfb-run -a cargo test --workspace`) | Writes `target/` artifacts | Heavy | Nextest enforces zero retries; Linux host suite requires virtual display (`xvfb-run -a`); raw `cargo test` is partial fallback |
 | `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | Writes `target/doc/` | Moderate | Builds rustdoc without dependencies |
@@ -224,8 +224,8 @@ policy statement, **not** an executable raw substitute:
 | `just` target | Raw alternative or availability |
 |---|---|
 | `just hello` | `cargo run -p keld-host --bin keld-host -- --hello` |
-| `just fmt` | `cargo fmt --all` then `tools/fmt_included.sh` |
-| `just fmt-check` | `cargo fmt --all --check` then `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
+| `just fmt` | `cargo fmt --all`, `tools/fmt_included.sh`, then `just js-fmt` |
+| `just fmt-check` | `just js-fmt-check`, then `cargo fmt --all --check`, `tools/fmt_included.sh test` and `tools/fmt_included.sh --check` |
 | `just clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `just test` | `cargo nextest run --workspace --profile ci` (Linux requires virtual display: `xvfb-run -a cargo nextest run --workspace --profile ci`) |
 | `just doc` | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` |

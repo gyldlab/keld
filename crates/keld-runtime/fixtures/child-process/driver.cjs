@@ -20,7 +20,8 @@ const caseId = process.argv[2];
 
 // Encode event arguments so `null` and `undefined` stay distinguishable — that
 // difference is itself one of the measured observations.
-const enc = (v) => (v === null ? "null" : v === undefined ? "undefined" : String(v));
+const enc = (v) =>
+  v === null ? "null" : v === undefined ? "undefined" : String(v);
 
 function emit(extra) {
   clearTimeout(watchdog);
@@ -143,6 +144,8 @@ async function main() {
 }
 
 main().catch((e) => {
-  process.stderr.write(`driver failure: ${e && e.stack ? e.stack : String(e)}\n`);
+  process.stderr.write(
+    `driver failure: ${e && e.stack ? e.stack : String(e)}\n`,
+  );
   process.exit(70);
 });

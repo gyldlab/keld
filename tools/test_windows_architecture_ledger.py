@@ -154,6 +154,7 @@ class RenderedLedger(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
         self.git("init", "-q")
+        self.git("config", "maintenance.auto", "false")
         for name, data in self.FILES.items():
             target = self.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)

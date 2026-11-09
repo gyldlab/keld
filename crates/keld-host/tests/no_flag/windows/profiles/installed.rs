@@ -1,7 +1,9 @@
 //! Installed-package refusals (KEL-254 A3 AC2/AC11, T3 Part B): signature success alone
 //! never admits installed mode, and an installation never boots a host whose verified
 //! publisher or app id differs from the protected record (`KELD-UPDATE-020`, the
-//! keld-update signer rule since KEL-270 T4d S9a).
+//! keld-update signer rule since KEL-270 T4d S9a), nor one whose embedded build
+//! expectation names another app than the record (`KELD-UPDATE-003`, the provenance
+//! binding checked before the signer rule). These are separate negative controls.
 //!
 //! Each launch is lease-less, as a user starts the app, from a fresh per-run
 //! installation (`support::installed`). These rows are native controls of the installed
@@ -12,9 +14,11 @@ use crate::support::product::ProductFixture;
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// The app id in the signature of `KELD_KEL254_SIGNED_HOST_FOREIGN_APP`, whose embedded
-/// expectation names the fixture app.
-const FOREIGN_SIGNED_APP_ID: &str = "dev.keld.other";
+/// The other app id: the `keld.app-id/v1:` signature app id of both
+/// `KELD_KEL254_SIGNED_HOST_FOREIGN_APP` (whose embedded expectation names the fixture
+/// app) and `KELD_KEL254_SIGNED_HOST_OTHER_APP` (whose embedded expectation names this
+/// app id too).
+const OTHER_APP_ID: &str = "dev.keld.other";
 
 fn refused_before_resources(output: &Output) -> String {
     assert!(!output.status.success(), "the installed host booted");
@@ -70,6 +74,8 @@ fn kel254_installed_host_under_another_recorded_publisher_is_refused() {
 #[ignore = "requires KELD_KEL254_SIGNED_HOST_FOREIGN_APP (the fixture-app host signed with keld.app-id/v1:dev.keld.other) and KELD_KEL254_INSTALLER_FIXTURE"]
 fn kel254_installed_host_signed_for_another_app_is_refused() {
     let fixture = ProductFixture::new();
+    // The installer records the embedded fixture app id and this host's publisher, so
+    // the provenance expectation matches and only the verified signer's app id differs.
     let installed = InstalledApp::install(
         &fixture.project,
         &fixture_env("KELD_KEL254_SIGNED_HOST_FOREIGN_APP"),
@@ -82,7 +88,39 @@ fn kel254_installed_host_signed_for_another_app_is_refused() {
     let stderr = refused_before_resources(&output);
     assert!(stderr.contains("KELD-UPDATE-020"), "{stderr}");
     let mismatch = format!(
-        "records app id `{}`, not the verified `{FOREIGN_SIGNED_APP_ID}`",
+        "records app id `{}`, not the verified `{OTHER_APP_ID}`",
+        installed.recorded_app_id()
+    );
+    assert!(stderr.contains(&mismatch), "{stderr}");
+}
+
+#[test]
+#[ignore = "requires KELD_KEL254_SIGNED_HOST_A_P1, KELD_KEL254_SIGNED_HOST_OTHER_APP (a host embedding and signed with keld.app-id/v1:dev.keld.other) and KELD_KEL254_INSTALLER_FIXTURE"]
+fn kel254_installed_host_embedding_another_apps_expectation_is_refused() {
+    let fixture = ProductFixture::new();
+    // Install app A first: installing the other app's image directly would record the
+    // app id it embeds, and its expectation would match.
+    let installed = InstalledApp::install(
+        &fixture.project,
+        &fixture_env(SIGNED_HOST_A_P1),
+        &fixture_env(INSTALLER_ENV),
+    );
+    // A substituted, validly signed image of the other app in app A's selected host
+    // slot: its embedded expectation no longer matches the protected record.
+    std::fs::copy(
+        Path::new(&fixture_env("KELD_KEL254_SIGNED_HOST_OTHER_APP")),
+        installed.host(),
+    )
+    .expect("substitute the other app's signed image into the selected host slot");
+    let output = installed
+        .command()
+        .output()
+        .expect("launch the installed host");
+    let stderr = refused_before_resources(&output);
+    // The provenance binding refuses before the signer rule runs.
+    assert!(stderr.contains("KELD-UPDATE-003"), "{stderr}");
+    let mismatch = format!(
+        "protected provenance `app.id` mismatch: expected `{OTHER_APP_ID}`, found `{}`",
         installed.recorded_app_id()
     );
     assert!(stderr.contains(&mismatch), "{stderr}");
