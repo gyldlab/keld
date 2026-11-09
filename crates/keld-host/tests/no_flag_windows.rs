@@ -45,6 +45,11 @@ mod crash_recovery_r1_heartbeat;
 mod crash_recovery_r2;
 #[path = "no_flag/crash_recovery_r2_probe.rs"]
 mod crash_recovery_r2_probe;
+// GH-1081 round-4 KEL-79 origin experiments (research only, never merged).
+#[path = "no_flag/windows/origin_r4.rs"]
+mod origin_r4;
+#[path = "no_flag/origin_r4_lab.rs"]
+mod origin_r4_lab;
 
 #[path = "no_flag/windows/staging.rs"]
 mod staging;

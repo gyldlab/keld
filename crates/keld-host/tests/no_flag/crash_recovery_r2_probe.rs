@@ -10,7 +10,13 @@
 //! answered at once. `GET /r2/real` serves the same scaffold page from a real
 //! URL: the negative control for "a document with a URL reloads".
 //!
-//! Consumers: macOS/Windows/Linux `crash_recovery_r2.rs`.
+//! Round 4 (KEL-79 origin experiments) adds reported-only facts to every beat
+//! (`secure`, `subtle`, `ss`, `ls`, `idb`, `ua`, `wname`, `res`), two plan
+//! steps (`res` = fetch a same-origin `res/<n>` resource; `resx:<url>` = no-cors
+//! fetch of an absolute URL) and a `window.name` reload guard. Round-2 fields,
+//! ordering and the `reload`/`real` steps are unchanged.
+//!
+//! Consumers: macOS/Windows/Linux `crash_recovery_r2.rs` and `origin_r4.rs`.
 
 // Shared by three OS binaries that each use a subset (macOS has no typed-draft
 // arm), so per-binary dead-code analysis cannot see the other consumers.
@@ -44,13 +50,41 @@ const doc = rnd();
 const entry = performance.getEntriesByType("navigation")[0];
 const nav = entry ? entry.type : "none";
 const real = location.protocol === "http:";
-const steps = nav === "reload" ? [] : (real ? plan.real : plan.stage);
+// Round 4: window.name survives a reload in the same browsing context, so a
+// document that finds its own phase marker was reloaded even when the engine
+// reports no navigation entry. Round-2 rows still see nav === "reload" first.
+const phase = "gh1081:" + (real ? "real" : "stage");
+const wname = window.name;
+const reloaded = nav === "reload" || wname === phase;
+window.name = phase;
+const steps = reloaded ? [] : (real ? plan.real : plan.stage);
 const area = document.getElementById("gh1081-draft");
-let seq = 0, inputs = 0, trusted = 0;
+const storage = get => {
+  try {
+    const store = get();
+    const prev = store.getItem("gh1081");
+    if (prev === null) store.setItem("gh1081", doc);
+    return { ok: true, prev, now: store.getItem("gh1081") };
+  } catch (error) {
+    return { ok: false, error: error && error.name };
+  }
+};
+let idb = "pending";
+try {
+  const open = indexedDB.open("gh1081", 1);
+  open.onsuccess = () => { idb = "ok"; open.result.close(); };
+  open.onerror = () => { idb = "err:" + (open.error && open.error.name); };
+} catch (error) {
+  idb = "throw:" + (error && error.name);
+}
+let seq = 0, inputs = 0, trusted = 0, res = null;
 const q = () => encodeURIComponent(JSON.stringify({ doc, seq, href: location.href.slice(0, 96),
-  origin: String(location.origin), ready: document.readyState, nav, real,
+  origin: String(location.origin), ready: document.readyState, nav, real, wname,
   bridge: typeof (window.keld && window.keld.invoke), draft: area ? area.value : null,
-  inputs, trusted, active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null }));
+  inputs, trusted, active: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null,
+  secure: isSecureContext, subtle: typeof (crypto && crypto.subtle),
+  ss: storage(() => sessionStorage), ls: storage(() => localStorage), idb, res,
+  ua: navigator.userAgent.slice(0, 160) }));
 const send = kind => fetch(base + kind + "?d=" + q(), { mode: "no-cors", cache: "no-store" });
 if (area) area.addEventListener("input", event => {
   inputs += 1;
@@ -66,6 +100,14 @@ function beat() {
       location.reload();
     } else if (step === "real") {
       location.href = base + "real";
+    } else if (step === "res" || step.startsWith("resx:")) {
+      // Round 4: a same-origin resource (relative, served by the transport under
+      // test) or an absolute URL (no-cors). The next beat carries the outcome.
+      const target = step === "res" ? "res/" + seq : step.slice(5);
+      const init = step === "res" ? { cache: "no-store" } : { mode: "no-cors", cache: "no-store" };
+      fetch(target, init).then(
+        reply => { res = "ok:" + reply.status + ":" + reply.type; },
+        error => { res = "err:" + (error && error.name); }).then(beat);
     } else {
       beat();
     }

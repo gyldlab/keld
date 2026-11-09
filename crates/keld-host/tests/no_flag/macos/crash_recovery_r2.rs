@@ -30,7 +30,8 @@ fn deadline() -> Instant {
     Instant::now() + EVENT_DEADLINE
 }
 
-fn compile_tool(root: &Path) -> PathBuf {
+/// Compiles the round-2 Swift input/pixels tool (round 4 adds its `find` mode).
+pub(crate) fn compile_tool(root: &Path) -> PathBuf {
     let source = root.join("gh1081-r2-macos.swift");
     let executable = root.join("gh1081-r2-macos");
     fs::write(
@@ -49,7 +50,7 @@ fn compile_tool(root: &Path) -> PathBuf {
     executable
 }
 
-fn tool_json(tool: &Path, args: &[&str]) -> Value {
+pub(crate) fn tool_json(tool: &Path, args: &[&str]) -> Value {
     let output = Command::new(tool)
         .args(args)
         .output()
@@ -58,7 +59,7 @@ fn tool_json(tool: &Path, args: &[&str]) -> Value {
     serde_json::from_str(stdout.trim()).unwrap_or_else(|_| json!({"error": format!("{output:?}")}))
 }
 
-fn pixels(tool: &Path, window: u32, root: &Path, label: &str) -> Value {
+pub(crate) fn pixels(tool: &Path, window: u32, root: &Path, label: &str) -> Value {
     let png = root.join(format!("gh1081-r2-{label}.png"));
     tool_json(
         tool,

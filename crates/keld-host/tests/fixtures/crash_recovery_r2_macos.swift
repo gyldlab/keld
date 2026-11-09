@@ -66,6 +66,19 @@ if args.count >= 4 && args[1] == "pixels" {
         "light": Double(light) / Double(total), "center": String(format: "#%02x%02x%02x", r, g, b)])
 }
 
+// Round 4: find <pid> <title>: the on-screen layer-0 window of that process
+// with that exact title (its CGWindow id feeds the `pixels` mode). Read-only.
+if args.count >= 4 && args[1] == "find", let pid = Int32(args[2]) {
+  let title = args[3]
+  guard let row = windows().first(where: {
+    int($0, kCGWindowOwnerPID) == Int(pid) && $0[kCGWindowName as String] as? String == title
+      && int($0, kCGWindowLayer) == 0
+  }) else { emit(["ok": false, "error": "no window", "pid": Int(pid), "title": title]) }
+  let frame = bounds(row)
+  emit(["ok": true, "window": int(row, kCGWindowNumber), "pid": Int(pid), "title": title,
+        "bounds": [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]])
+}
+
 guard args.count >= 5 && args[1] == "input", let pid = Int32(args[2]) else {
   FileHandle.standardError.write(Data("usage\n".utf8))
   exit(2)

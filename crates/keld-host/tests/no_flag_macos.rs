@@ -26,6 +26,11 @@ mod lifecycle;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/media/mod.rs"]
 mod media;
+// GH-1081 round-4 KEL-79 origin experiments (research only, never merged).
+#[path = "no_flag/macos/origin_r4.rs"]
+mod origin_r4;
+#[path = "no_flag/origin_r4_lab.rs"]
+mod origin_r4_lab;
 #[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/profiles/mod.rs"]
 mod profiles;

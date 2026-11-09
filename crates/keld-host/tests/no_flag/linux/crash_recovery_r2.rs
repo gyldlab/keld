@@ -55,11 +55,11 @@ fn census_json(script: &Path, mode: &[&str], prefix: &str) -> Value {
     .expect("X11 probe JSON")
 }
 
-fn pixels(script: &Path, window: u64) -> Value {
+pub(crate) fn pixels(script: &Path, window: u64) -> Value {
     census_json(script, &["pixels", &window.to_string()], "X11_PIXELS ")
 }
 
-fn popups(script: &Path) -> Vec<u64> {
+pub(crate) fn popups(script: &Path) -> Vec<u64> {
     census_json(script, &["popups"], "X11_POPUPS ")
         .as_array()
         .expect("popup rows")
@@ -69,7 +69,7 @@ fn popups(script: &Path) -> Vec<u64> {
 }
 
 /// One `xdotool` invocation (XTEST input to the focused window under Xvfb).
-fn xdotool(args: &[&str]) -> Value {
+pub(crate) fn xdotool(args: &[&str]) -> Value {
     let output = Command::new("xdotool")
         .args(args)
         .output()
@@ -79,7 +79,7 @@ fn xdotool(args: &[&str]) -> Value {
 }
 
 /// Focus the host window and click its centre (a real XTEST pointer click).
-fn focus_and_click(window: u64, geometry: &Value, button: &str) -> Vec<Value> {
+pub(crate) fn focus_and_click(window: u64, geometry: &Value, button: &str) -> Vec<Value> {
     let id = window.to_string();
     let x = (geometry["width"].as_u64().unwrap_or(400) / 2).to_string();
     let y = (geometry["height"].as_u64().unwrap_or(300) / 2).to_string();
@@ -88,6 +88,35 @@ fn focus_and_click(window: u64, geometry: &Value, button: &str) -> Vec<Value> {
         xdotool(&["mousemove", "--window", &id, &x, &y]),
         xdotool(&["click", button]),
     ]
+}
+
+/// Opens the `WebKitGTK` context menu with a real right click, waits (bounded)
+/// for its override-redirect popup, then chooses the first sensitive item:
+/// Reload. Returns the input records and the popup id seen (or null).
+pub(crate) fn context_menu_reload(
+    census: &Path,
+    window: u64,
+    geometry: &Value,
+) -> (Vec<Value>, Value) {
+    let baseline = popups(census);
+    let mut inputs = focus_and_click(window, geometry, "3");
+    let menu_deadline = Instant::now() + Duration::from_secs(5);
+    let menu = loop {
+        let now = popups(census);
+        if let Some(id) = now.iter().find(|id| !baseline.contains(id)) {
+            break Some(*id);
+        }
+        if Instant::now() >= menu_deadline {
+            break None;
+        }
+        std::thread::park_timeout(Duration::from_millis(20));
+    };
+    // GTK menus skip insensitive items (Back/Forward/Stop on a fresh
+    // page): Down selects the first sensitive item, Reload.
+    if menu.is_some() {
+        inputs.push(xdotool(&["key", "Down", "Return"]));
+    }
+    (inputs, json!(menu))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -151,25 +180,9 @@ fn reload_arm(scaffold: &str, arm: Arm) -> Value {
             inputs.push(xdotool(&["key", key]));
         }
         Arm::ContextMenu => {
-            let baseline = popups(&census);
-            inputs = focus_and_click(window, &pixels_before, "3");
-            let menu_deadline = Instant::now() + Duration::from_secs(5);
-            let menu = loop {
-                let now = popups(&census);
-                if let Some(id) = now.iter().find(|id| !baseline.contains(id)) {
-                    break Some(*id);
-                }
-                if Instant::now() >= menu_deadline {
-                    break None;
-                }
-                std::thread::park_timeout(Duration::from_millis(20));
-            };
-            popup_seen = json!(menu);
-            // GTK menus skip insensitive items (Back/Forward/Stop on a fresh
-            // page): Down selects the first sensitive item, Reload.
-            if menu.is_some() {
-                inputs.push(xdotool(&["key", "Down", "Return"]));
-            }
+            let (menu_inputs, popup) = context_menu_reload(&census, window, &pixels_before);
+            inputs = menu_inputs;
+            popup_seen = popup;
         }
     }
     let previous = current["doc"].as_str().unwrap_or("").to_owned();

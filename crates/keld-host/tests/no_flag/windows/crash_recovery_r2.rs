@@ -74,7 +74,15 @@ if ($Mode -eq "pixels") {
   $result.light = $light / $total
   $result.center = "#{0:x2}{1:x2}{2:x2}" -f $c.R, $c.G, $c.B
   $g.Dispose(); $bmp.Dispose()
+} elseif ($Mode -eq "keys") {
+  # Round 4: keys only, no click (a click would dismiss an open context menu).
+  [System.Windows.Forms.SendKeys]::SendWait($Keys)
+  $result.keys = $Keys
+  $result.foreground_after_keys = ([Gh1081R2]::GetForegroundWindow() -eq $h)
 } else {
+  # Round 4: `context` is the same real click with the right button.
+  $down = 2; $up = 4
+  if ($Mode -eq "context") { $down = 8; $up = 16 }
   # The foreground lock admits SetForegroundWindow after this process injects
   # input; an Alt tap (VK_MENU down/up) is the documented-by-behaviour unlock.
   [Gh1081R2]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
@@ -84,8 +92,8 @@ if ($Mode -eq "pixels") {
   for ($i = 0; $i -lt 150 -and [Gh1081R2]::GetForegroundWindow() -ne $h; $i++) { Start-Sleep -Milliseconds 20 }
   $result.foreground_before_click = ([Gh1081R2]::GetForegroundWindow() -eq $h)
   [Gh1081R2]::SetCursorPos($origin.X + [int]($w / 2), $origin.Y + [int]($hh / 2)) | Out-Null
-  [Gh1081R2]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-  [Gh1081R2]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  [Gh1081R2]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+  [Gh1081R2]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
   for ($i = 0; $i -lt 150 -and [Gh1081R2]::GetForegroundWindow() -ne $h; $i++) { Start-Sleep -Milliseconds 20 }
   $result.foreground_after_click = ([Gh1081R2]::GetForegroundWindow() -eq $h)
   $result.foreground_hwnd = [string][Gh1081R2]::GetForegroundWindow()
@@ -96,13 +104,15 @@ if ($Mode -eq "pixels") {
 $result | ConvertTo-Json -Compress
 "##;
 
-fn input_tool(root: &Path) -> PathBuf {
+/// Writes the round-2 PowerShell input/pixels tool (round 4 adds `keys` and
+/// `context`).
+pub(crate) fn input_tool(root: &Path) -> PathBuf {
     let path = root.join("gh1081-r2-input.ps1");
     fs::write(&path, INPUT_SCRIPT).expect("write r2 input tool");
     path
 }
 
-fn run_tool(tool: &Path, mode: &str, hwnd: u64, keys: &str) -> Value {
+pub(crate) fn run_tool(tool: &Path, mode: &str, hwnd: u64, keys: &str) -> Value {
     let output = Command::new("powershell.exe")
         .args([
             "-NoProfile",
