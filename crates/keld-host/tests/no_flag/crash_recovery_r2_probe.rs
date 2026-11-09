@@ -106,13 +106,15 @@ try {
       const tx = db.transaction("kv", "readwrite");
       const kv = tx.objectStore("kv");
       const get = kv.get("gh1081");
+      let prev = null;
       get.onsuccess = () => {
-        const prev = get.result === undefined ? null : get.result;
+        prev = get.result === undefined ? null : get.result;
         if (prev === null) kv.put(doc, "gh1081");
-        idb = "ok:prev=" + prev;
       };
       get.onerror = () => { idb = "err:" + name(get.error); };
-      tx.oncomplete = () => db.close();
+      // Reported only once the transaction (and the put) has committed, so a
+      // second view opened afterwards (X4) reads a committed record.
+      tx.oncomplete = () => { if (idb === "pending") idb = "ok:prev=" + prev; db.close(); };
       tx.onerror = () => { idb = "err:" + name(tx.error); db.close(); };
     } catch (error) {
       idb = "throw:" + name(error);
@@ -161,12 +163,16 @@ const worker = (make, ms) => within(ms, new Promise(resolve => {
 const api = () => {
   const t = 4000;
   const acao = plan.acao || {};
+  // "self" asks the server to echo this document's own origin ("null" for an
+  // opaque origin), so the CORS check itself decides whether the Origin the
+  // engine sent matches.
+  const want = value => value === "self" ? String(location.origin) : (value || "");
   const blobSrc = "if (typeof postMessage === 'function') postMessage('blob');";
   const tasks = {
     get: probeFetch("res/9", { cache: "no-store" }),
     post: probeFetch("res/post", { method: "POST", body: "gh1081", cache: "no-store" }),
-    cors_ok: probeFetch(base + "cors?acao=" + encodeURIComponent(acao.expected || ""), { mode: "cors", cache: "no-store" }),
-    cors_wrong: probeFetch(base + "cors?acao=" + encodeURIComponent(acao.wrong || ""), { mode: "cors", cache: "no-store" }),
+    cors_ok: probeFetch(base + "cors?acao=" + encodeURIComponent(want(acao.expected)), { mode: "cors", cache: "no-store" }),
+    cors_wrong: probeFetch(base + "cors?acao=" + encodeURIComponent(want(acao.wrong)), { mode: "cors", cache: "no-store" }),
     worker: worker(() => new Worker("w.js"), t),
     module_worker: worker(() => new Worker("w.js", { type: "module" }), t),
     shared_worker: worker(() => new SharedWorker("w.js"), t),

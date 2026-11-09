@@ -526,9 +526,12 @@ fn grep_hit(record: &Value, needle: &str) -> bool {
         .is_some_and(|hits| hits.iter().any(|hit| hit["needle"] == needle))
 }
 
-/// Oracle validity for X5: the sentinels were stored, and the persistent
-/// clean-quit arm's `localStorage` sentinel is visible to the byte grep (so an
-/// empty grep elsewhere means absence, not blindness).
+/// Oracle validity for X5: both sentinels were stored and read back inside the
+/// same document before the exit. Whether the persistent store still holds
+/// them after a quit or a kill (grep hits, relaunch read-back) is the engine
+/// fact under measurement and is recorded, not asserted: a persistent-store
+/// `localStorage` hit on at least one OS proves the grep sees the store format
+/// (`grep_hit` is the reader the report uses for that).
 pub(crate) fn assert_x5_controls(record: &Value) {
     assert_eq!(
         record["stored"]["res"], "ls:ok,ss:ok",
@@ -538,16 +541,15 @@ pub(crate) fn assert_x5_controls(record: &Value) {
         record["confirmed"]["sent"]["ls"], record["ls_sentinel"],
         "X5: localStorage sentinel read back in the same document: {record}"
     );
-    if record["store"] == "persistent" && record["exit"] == "Quit" {
-        assert!(
-            grep_hit(record, "ls"),
-            "X5 NC: the persistent localStorage sentinel must be found on disk: {record}"
-        );
-        assert_eq!(
-            record["read_back"]["sent"]["ls"], record["ls_sentinel"],
-            "X5 NC: the persistent localStorage sentinel must survive a relaunch: {record}"
-        );
-    }
+    assert_eq!(
+        record["confirmed"]["sent"]["ss"], record["ss_sentinel"],
+        "X5: sessionStorage sentinel read back in the same document: {record}"
+    );
+}
+
+/// Whether the persistent-store `localStorage` sentinel was found on disk.
+pub(crate) fn persistent_hit(record: &Value) -> bool {
+    grep_hit(record, "ls")
 }
 
 // ---------------------------------------------------------------------------
