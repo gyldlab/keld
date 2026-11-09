@@ -29,6 +29,22 @@ pub(super) fn await_held_zombie_group(group: Pid) {
     }
 }
 
+/// Join a test worker, failing with the fixed `expectation` instead of
+/// hanging when it is still running at `deadline`. The loop ends on the
+/// observed `is_finished`; the deadline is only a kill switch, so a mutation
+/// that leaves the worker blocked turns the test red rather than stalling it.
+pub(super) fn join_before<T>(
+    worker: thread::JoinHandle<T>,
+    deadline: Instant,
+    expectation: &'static str,
+) -> thread::Result<T> {
+    while !worker.is_finished() {
+        assert!(Instant::now() < deadline, "{expectation}");
+        thread::yield_now();
+    }
+    worker.join()
+}
+
 /// Tests construct a real owned native group before installing a host owner.
 pub(super) fn test_group_identity(pid: u32) -> GroupIdentity {
     observe_group_identity(pid).expect("live native group leader has a kernel birth identity")

@@ -44,11 +44,12 @@ fn premature_successful_generation_worker_exit_reaps_unattributed_group() {
         .expect("persistent guardian stand-in");
     let writer = guardian.stdin.take().expect("sole host liveness writer");
     let ack = guardian.stdout.take().expect("owned acknowledgment reader");
-    let current_generation = Arc::new(Mutex::new(Some(RegisteredPrimaryGeneration {
-        attempt: 1,
-        group_pid,
-        group_identity: Some(super::test_support::test_group_identity(group_pid)),
-    })));
+    let current_generation = Arc::new(Mutex::new(Some(
+        RegisteredPrimaryGeneration::authenticated(
+            1,
+            super::test_support::test_group_identity(group_pid),
+        ),
+    )));
     let (_updates_tx, updates_rx) = mpsc::channel();
     let mut primary = GuardedPrimary {
         child: guardian,
@@ -143,11 +144,12 @@ fn zero_guardian_exit_with_successful_worker_reaps_registered_group() {
         .expect("owned zero-exit guardian");
     let writer = guardian.stdin.take().expect("liveness writer");
     let ack = guardian.stdout.take().expect("ack reader");
-    let current_generation = Arc::new(Mutex::new(Some(RegisteredPrimaryGeneration {
-        attempt: 1,
-        group_pid,
-        group_identity: Some(super::test_support::test_group_identity(group_pid)),
-    })));
+    let current_generation = Arc::new(Mutex::new(Some(
+        RegisteredPrimaryGeneration::authenticated(
+            1,
+            super::test_support::test_group_identity(group_pid),
+        ),
+    )));
     let recovery = Arc::new(Mutex::new(RecoveryState::new()));
     lock_recovery(&recovery).shutdown_acknowledged = true;
     let (_updates_tx, updates_rx) = mpsc::channel();
@@ -230,11 +232,12 @@ fn poll_fatal_inspection_error_reaps_registered_group() {
         .expect("reap guardian externally")
         .expect("wait produced exited guardian");
 
-    let current_generation = Arc::new(Mutex::new(Some(RegisteredPrimaryGeneration {
-        attempt: 1,
-        group_pid,
-        group_identity: Some(super::test_support::test_group_identity(group_pid)),
-    })));
+    let current_generation = Arc::new(Mutex::new(Some(
+        RegisteredPrimaryGeneration::authenticated(
+            1,
+            super::test_support::test_group_identity(group_pid),
+        ),
+    )));
     let (_tx, updates_rx) = mpsc::channel();
     let mut primary = GuardedPrimary {
         child: guardian,

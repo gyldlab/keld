@@ -349,11 +349,12 @@ fn shutdown_worker_error_reaps_registered_group_after_zero_guardian_exit() {
         .expect("owned guardian stand-in exits zero after EOF");
     let writer = guardian.stdin.take().expect("owned liveness writer");
     let ack = guardian.stdout.take().expect("owned acknowledgment reader");
-    let current_generation = Arc::new(Mutex::new(Some(RegisteredPrimaryGeneration {
-        attempt: 1,
-        group_pid,
-        group_identity: Some(super::test_support::test_group_identity(group_pid)),
-    })));
+    let current_generation = Arc::new(Mutex::new(Some(
+        RegisteredPrimaryGeneration::authenticated(
+            1,
+            super::test_support::test_group_identity(group_pid),
+        ),
+    )));
     let (_tx, updates_rx) = mpsc::channel();
     let mut primary = GuardedPrimary {
         child: guardian,

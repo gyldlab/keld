@@ -1,8 +1,6 @@
 //! One owner for host-side primary generation control and recovery transitions.
 use super::generation_wire::initial_generation_record_timeout;
-use super::process_group::{
-    require_attested_group_absence, terminate_attested_group, validate_guardian_child_group,
-};
+use super::process_group::{require_attested_group_absence, validate_guardian_child_group};
 use super::{
     BoundRoleGeneration, CONTROL_CLEAR, CONTROL_CLEARED, CONTROL_PREPARE, CONTROL_PREPARED,
     CONTROL_REGISTERED, CONTROL_REVOKE, CONTROL_REVOKED, CONTROL_SPAWNED,
@@ -57,6 +55,10 @@ pub(super) struct HostGenerationState {
     pub(super) lease: Option<RoleGenerationLease>,
     pub(super) current_attempt: Option<u32>,
     pub(super) revoked_attempt: Option<u32>,
+    /// The attempt whose one SPAWNED was already admitted. The retained slot
+    /// alone cannot dedupe SPAWNED: a host fail-safe empties it after the
+    /// generation's one delivered signal while the attempt is still current.
+    pub(super) spawned_attempt: Option<u32>,
     pub(super) pending_prepare: Option<GenerationControlRecord>,
     pub(super) initial_decision_deadline: Option<Instant>,
 }
@@ -183,7 +185,11 @@ pub(super) fn run_generation_host(
                     state.pending_prepare = Some(record);
                 }
                 CONTROL_SPAWNED => {
+                    // One SPAWNED per attempt: a duplicate must never mint a
+                    // second, armed signal authority for a generation whose
+                    // one signal a host fail-safe already spent and released.
                     if state.current_attempt != Some(record.attempt)
+                        || state.spawned_attempt == Some(record.attempt)
                         || record.pid == 0
                         || record.cause != 0
                         || !record.payload.is_empty()
@@ -195,6 +201,7 @@ pub(super) fn run_generation_host(
                             expected_attempt,
                         ));
                     }
+                    state.spawned_attempt = Some(record.attempt);
                     // A PREPARED locator is not authority to execute a
                     // not-yet-registered process. Serialize the *actual*
                     // REGISTERED ACK (the Guardian's pre-exec permit) with
@@ -229,11 +236,14 @@ pub(super) fn run_generation_host(
                         // fail-safe retains its original birth on an OS fault.
                         // Never trust the caller's raw numeric group alone.
                         let mut retained = lock_generation(current_generation);
-                        *retained = Some(RegisteredPrimaryGeneration::authenticated(
-                            record.attempt,
-                            group_identity,
-                        ));
-                        let native_cleanup = terminate_attested_group(group_identity);
+                        // A failed attempt spends the retained generation's
+                        // signal authority; later host paths only probe.
+                        let native_cleanup = retained
+                            .insert(RegisteredPrimaryGeneration::authenticated(
+                                record.attempt,
+                                group_identity,
+                            ))
+                            .terminate();
                         if native_cleanup.is_ok() {
                             retained.take();
                         }
@@ -357,11 +367,20 @@ pub(super) fn run_generation_host(
                     // make a still-running descendant invisible to the host.
                     // SIGKILL success is not sufficient: a held zombie still
                     // has a live PGID. Only dual ESRCH permits CLEARED.
-                    if let Some(generation) = registered_generation {
+                    if let Some(mut generation) = registered_generation {
                         match generation.group_identity {
                             Some(group) => {
-                                terminate_attested_group(group)?;
-                                require_attested_group_absence(group, absence_deadline)?;
+                                // One signal per generation: none after an
+                                // earlier delivered or failed attempt. Persist
+                                // the spent authority before any `?`, so a
+                                // failed absence proof cannot re-arm it.
+                                let signalled = generation.signal_if_armed();
+                                *current_generation_owner = Some(generation);
+                                signalled?;
+                                require_attested_group_absence(
+                                    group,
+                                    generation.clear_absence_deadline(absence_deadline),
+                                )?;
                             }
                             #[cfg(test)]
                             None => {} // Synthetic EOF/transition-only fixtures.
@@ -386,6 +405,7 @@ pub(super) fn run_generation_host(
                     )?;
                     state.current_attempt = None;
                     state.revoked_attempt = None;
+                    state.spawned_attempt = None;
                     // None alone is not Clear: only the completed acknowledgment
                     // advances the attempt and permits a pending release request.
                     lock_recovery(recovery_decision).cleared(record.attempt)?;
