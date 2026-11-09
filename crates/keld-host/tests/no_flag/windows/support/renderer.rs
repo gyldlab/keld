@@ -22,6 +22,10 @@ pub(crate) fn spawn_renderer_beacon(listener: TcpListener) -> RendererBeacon {
     let (observed_tx, observed) = mpsc::channel();
     let (activate_deadline, deadline_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
+        // Test-only witness: this renderer HTTP server must be alive before
+        // the host's first WebView2 navigation can request /ready.png.
+        // Never log the document URL, request bytes, PID or renderer content.
+        eprintln!("KELD-BEACON-WITNESS phase=listener-ready");
         let result = serve_renderer_beacon_loop(&listener, &deadline_rx);
         let _ = observed_tx.send(result);
     });
@@ -110,6 +114,10 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
         .map_err(|error| format!("set renderer beacon listener nonblocking: {error}"))?;
     let mut pending = Vec::<PendingRendererRequest>::new();
     let mut deadline = None;
+    // Observability only; never call the injectable `now()` extra times:
+    // deadline tests own the number and order of virtual-clock samples.
+    let witness_started = Instant::now();
+    let mut first_connection_observed = false;
 
     loop {
         if deadline.is_none() {
@@ -144,6 +152,10 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
                             String::from_utf8_lossy(&request)
                         ));
                     }
+                    eprintln!(
+                        "KELD-BEACON-WITNESS phase=ready-get-matched elapsed_ms={}",
+                        witness_started.elapsed().as_millis()
+                    );
                     matched.stream.set_nonblocking(false).map_err(|error| {
                         format!("set renderer beacon reply stream blocking: {error}")
                     })?;
@@ -163,12 +175,23 @@ pub(crate) fn serve_renderer_beacon_loop_with_clock(
                             b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                         )
                         .map_err(|error| format!("reply renderer beacon: {error}"))?;
+                    eprintln!(
+                        "KELD-BEACON-WITNESS phase=http-200-sent elapsed_ms={}",
+                        witness_started.elapsed().as_millis()
+                    );
                     return Ok(());
                 }
             }
         }
 
         if accept_renderer_connection(listener, &mut pending, "renderer beacon")? {
+            if !first_connection_observed {
+                first_connection_observed = true;
+                eprintln!(
+                    "KELD-BEACON-WITNESS phase=socket-accepted elapsed_ms={}",
+                    witness_started.elapsed().as_millis()
+                );
+            }
             continue;
         }
 
