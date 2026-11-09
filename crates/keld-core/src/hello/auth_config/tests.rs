@@ -1,6 +1,44 @@
 use super::auth_configuration_from_config_ts;
 
 #[test]
+fn application_version_uses_one_explicit_literal_root_value() {
+    use super::version_from_config_ts;
+    assert_eq!(
+        version_from_config_ts(
+            r#"export default ({ name: "n", version: "29.1.7-test+build.4", nested: {version:"decoy"} } as const);"#,
+        )
+        .expect("literal version"),
+        Some(String::from("29.1.7-test+build.4"))
+    );
+    assert_eq!(
+        version_from_config_ts(
+            r#"// version: 'comment'
+            export default { name: "version: 'string'", nested: { version: "decoy" } };"#,
+        )
+        .expect("no root version"),
+        None
+    );
+    for source in [
+        "export default { version: null };",
+        "export default { version: 7 };",
+        "export default { version: '' };",
+        "export default { version: 'a\\u0000b' };",
+        "export default { version: readVersion() };",
+        "export default { version: 'one' + 'two' };",
+        "export default { version: 'one', version: 'two' };",
+        "export default { ['version']: 'one' };",
+        "export default { get version() { return 'one'; } };",
+        "export default { async version() { return 'one'; } };",
+        "export default { ...other, version: 'one' };",
+        "export default { version: 'one' } || other;",
+    ] {
+        assert!(version_from_config_ts(source).is_err(), "{source}");
+    }
+    let oversized = format!("export default {{ version: '{}' }};", "a".repeat(4097));
+    assert!(version_from_config_ts(&oversized).is_err());
+}
+
+#[test]
 fn static_auth_literal_preserves_credentials_and_redirect() {
     let config = auth_configuration_from_config_ts(
         r#"

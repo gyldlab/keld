@@ -3,6 +3,10 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+#[cfg(target_os = "macos")]
+mod launch_facts;
+#[cfg(target_os = "macos")]
+pub use launch_facts::DevelopmentLaunchFacts;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -402,6 +406,7 @@ impl Drop for ValidatedBootSelection {
 struct AppBootSelection {
     root: PathBuf,
     name: String,
+    version: Option<String>,
     entry_path: PathBuf,
     entry_file: File,
     initial_window: ValidatedInitialWindow,
@@ -1426,6 +1431,7 @@ fn validate_from_root(root: &Path) -> Result<ValidatedBootSelection, HostAppErro
         app: AppBootSelection {
             root,
             name: parsed.name,
+            version: parsed.version,
             entry_path: parsed.entry,
             entry_file,
             initial_window,
@@ -1496,6 +1502,7 @@ fn validate_windows_boot_files(
         app: AppBootSelection {
             root,
             name: parsed.name,
+            version: parsed.version,
             entry_path: parsed.entry,
             entry_file,
             initial_window,
@@ -2396,6 +2403,7 @@ fn run_app(
     let AppBootSelection {
         root,
         name,
+        version,
         entry_path,
         entry_file,
         initial_window,
@@ -2419,6 +2427,15 @@ fn run_app(
     // starting the guardian child, listener, app-link, or WebKit engine.
     let profile_selection = macos_profile_selection(dev_lease.as_ref())?;
 
+    // These data values come from the retained validated boot selection and
+    // the admitted lease, never a role-side path or environment heuristic.
+    let launch_facts = DevelopmentLaunchFacts::from_validated_development(
+        &name,
+        &root,
+        version.as_deref(),
+        dev_lease.is_some(),
+    )?;
+
     let entry_metadata = entry_file
         .metadata()
         .map_err(|source| app_io("validated entry identity", &source))?;
@@ -2432,6 +2449,9 @@ fn run_app(
         .arg(entry_metadata.dev().to_string())
         .arg(entry_metadata.ino().to_string());
     configure_guardian_boot_mode(&mut guardian_command, ready_trigger);
+    if let Some(facts) = launch_facts {
+        guardian_command.arg(facts.private_argument()?);
+    }
     guardian_command
         // The facade Host's blocked pre-Init main stack can retain an open
         // native profile when its coordinator terminates the process. Only
@@ -3472,6 +3492,7 @@ fn run_app_direct(
     let AppBootSelection {
         root,
         name,
+        version: _version,
         entry_path,
         entry_file,
         initial_window,
