@@ -26,6 +26,7 @@
 
 mod admit;
 mod jsonc;
+mod manifest_profile;
 mod probe;
 mod unique_json;
 pub mod verified_manifest;
@@ -98,8 +99,9 @@ pub use admit::{
     AdmissionError, AdmissionRequest, ArchiveId, ArtifactDigest, CURRENT_POLICY_GENERATION,
     HostFacts, HostOs, MismatchField, OS_CONTAINMENT_PROBES, ProbeLayer, ProbeOracle, ProbeRecord,
     ProbeVerdict, ProfileDigest, ProfileState, ProofArchive, ProofIdentity, RoleInstance, admit,
-    expected_layer_for,
+    admit_uncontained, expected_layer_for,
 };
+pub use manifest_profile::{DeclaredProfile, LEGACY_PROFILE_FORFEIT};
 pub use probe::{ProbeReport, run_synthetic_probes};
 
 /// Canonical Windows installation-state protection profiles owned by `keld-guard`.
@@ -619,12 +621,38 @@ impl std::error::Error for ManifestError {}
 
 /// Parsed `keld.permissions.jsonc`.
 ///
-/// Unknown top-level keys (`$schema`, `windows`, `audit`) are ignored. v0
-/// evaluate reads `app.<group>.<action>` string arrays as path/host scopes.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The optional root `profile` declares strict or legacy; it grants no capability.
+/// Unrelated unknown keys stay ignored. v0 evaluate reads
+/// `app.<group>.<action>` string arrays as path/host scopes.
+#[derive(Clone, Default, Deserialize)]
 pub struct PermissionsManifest {
     #[serde(default)]
     app: Map<String, Value>,
+    #[serde(default, deserialize_with = "manifest_profile::deserialize_present")]
+    profile: Option<DeclaredProfile>,
+}
+
+impl fmt::Debug for PermissionsManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Preserve existing profile-free policy diagnostics, including the
+        // media boundary's empty-policy observation. Show an explicit request.
+        let mut output = formatter.debug_struct("PermissionsManifest");
+        output.field("app", &self.app);
+        if let Some(profile) = self.profile {
+            output.field("profile", &profile);
+        }
+        output.finish()
+    }
+}
+
+impl PermissionsManifest {
+    /// Returns the explicit root request, or `None` when no profile was declared.
+    ///
+    /// This accessor does not perform admission or prove OS containment.
+    #[must_use]
+    pub const fn declared_profile(&self) -> Option<DeclaredProfile> {
+        self.profile
+    }
 }
 
 /// JSON pointer under `app` for a dotted capability (`fs.read` → `/app/fs/read`).
@@ -647,7 +675,8 @@ pub fn json_pointer_for(capability: &str) -> String {
 ///
 /// Returns [`ManifestError::TooLarge`] when `text` exceeds 64 KiB, or
 /// [`ManifestError::Parse`] when the comment-stripped text is ambiguous,
-/// malformed, or not a JSON object. Returns [`ManifestError::InvalidAuthScope`]
+/// malformed, not a JSON object, or contains an invalid/misplaced explicit
+/// security-profile declaration. Returns [`ManifestError::InvalidAuthScope`]
 /// for auth issuer grants containing `**` or C0/DEL/C1 controls.
 pub fn parse_manifest(text: &str) -> Result<PermissionsManifest, ManifestError> {
     ensure_manifest_size(text.len(), None)?;
@@ -729,6 +758,10 @@ fn parse_manifest_at(
     let value = unique_json::parse(&stripped).map_err(|e| ManifestError::Parse {
         path: path.map(Path::to_path_buf),
         detail: e.to_string(),
+    })?;
+    manifest_profile::validate_root(&value).map_err(|detail| ManifestError::Parse {
+        path: path.map(Path::to_path_buf),
+        detail: detail.to_owned(),
     })?;
     let manifest: PermissionsManifest =
         serde_json::from_value(value).map_err(|e| ManifestError::Parse {

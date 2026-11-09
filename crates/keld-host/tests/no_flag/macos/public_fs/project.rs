@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(super) const TITLE: &str = "KEL140 Public FS Acceptance";
+pub(super) const PROFILE_APP_ENTRY_LINE: &str = "KEL78_NATIVE_PROFILE_TEST_APP_ENTRY";
 pub(super) const CONTENT: &[u8] = &[0, 255, 65, 226, 130, 185];
 pub(super) const SENTINEL: &[u8] = b"KEL140-outside-sentinel-unchanged";
 pub(super) const READ_SENTINEL: &[u8] = b"KEL140-read-sentinel-must-not-be-returned";
@@ -32,6 +33,7 @@ pub(super) struct PublicFsProject {
     policy_bytes: Vec<u8>,
     natural_case: NaturalCase,
     descendant_quit: Value,
+    declared_profile: Option<&'static str>,
     pub(super) policy: Policy,
     pub(super) outside: PathBuf,
     pub(super) scope: String,
@@ -135,6 +137,7 @@ impl PublicFsProject {
                 NaturalCase::DenyRead
             },
             descendant_quit: Value::Null,
+            declared_profile: None,
             policy,
             outside,
             scope,
@@ -157,6 +160,32 @@ impl PublicFsProject {
         )
         .expect("literal project policy input before stock staging");
         fixture
+    }
+
+    /// Change only the test-owned root manifest before stock CLI compilation.
+    /// Keep the existing narrow FS grants and independent outside sentinel.
+    pub(super) fn with_declared_profile(mut self, profile: &'static str) -> Self {
+        assert!(matches!(self.policy, Policy::Narrow));
+        assert!(matches!(profile, "legacy" | "strict"));
+        let mut document: Value =
+            serde_json::from_slice(&self.policy_bytes).expect("narrow fixture manifest JSON");
+        document["profile"] = json!(profile);
+        self.policy_bytes = serde_json::to_vec(&document).expect("declared fixture manifest");
+        fs::write(
+            self.project.join("keld.permissions.jsonc"),
+            &self.policy_bytes,
+        )
+        .expect("explicit test-owned project profile");
+        self.declared_profile = Some(profile);
+        self
+    }
+
+    pub(super) fn has_declared_profile(&self) -> bool {
+        self.declared_profile.is_some()
+    }
+
+    pub(super) fn profile_entry_marker(&self) -> PathBuf {
+        self.owned_root().join("kel78-app-entry.marker")
     }
 
     pub(super) fn owned_root(&self) -> &Path {
@@ -431,12 +460,25 @@ impl PublicFsProject {
                 &serde_json::to_string(CONTENT).expect("content JSON"),
             );
         assert!(!body.contains("WorkerLink") && !body.contains("invokeFs"));
+        // First application-body statement after static ESM imports. It
+        // precedes handler registration and app.whenReady(); rejected Strict
+        // candidates must not write the test-owned marker.
+        let profile_entry = if self.has_declared_profile() {
+            let marker = serde_json::to_string(&self.profile_entry_marker().to_string_lossy())
+                .expect("JSON-quote the test-owned entry marker");
+            format!(
+                "await Bun.write({marker}, 'entered\\n');\n\
+                 console.error({PROFILE_APP_ENTRY_LINE:?});\n"
+            )
+        } else {
+            String::new()
+        };
         bundle_public_api_entry(
             &self.project,
             &self.repo,
             "kel140-public-fs",
             &format!(
-                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{body}"
+                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{profile_entry}{body}"
             ),
         );
         self.prepare_renderer_page(exercise, port, recovery);
@@ -493,6 +535,12 @@ impl PublicFsProject {
             Path::new(env!("CARGO_BIN_EXE_keld-host")),
         )
         .expect("stock CLI stages explicit project inputs");
+        if self.has_declared_profile() {
+            assert!(
+                !self.profile_entry_marker().exists(),
+                "staging must not execute the test-owned application body"
+            );
+        }
         assert_eq!(
             fs::read(stage.root().join("keld.permissions.jsonc")).expect("staged bytes"),
             self.policy_bytes
@@ -502,6 +550,11 @@ impl PublicFsProject {
         )
         .expect("boot descriptor");
         eprintln!("KELD_KEL140_STAGED_BOOT {boot}");
+        assert_eq!(
+            boot["schema"],
+            json!(if self.has_declared_profile() { 3 } else { 1 }),
+            "compiled renderer/profile must use schema 3; profile-free renderer stays schema 1"
+        );
         assert_eq!(
             boot["name"], TITLE,
             "stock producer selected the configured window name"

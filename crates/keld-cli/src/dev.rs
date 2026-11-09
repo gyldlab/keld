@@ -33,7 +33,7 @@ use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
 use crate::doctor::{
-    all_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+    launch_check_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
 };
 
 pub use crate::doctor::RENDERER_LOAD_CODE;
@@ -137,6 +137,8 @@ impl From<keld_core::HelloSessionError> for DevError {
         match value {
             keld_core::HelloSessionError::WindowPhase { .. } => Self::WindowPhase(rendered),
             keld_core::HelloSessionError::Io(_)
+            | keld_core::HelloSessionError::Manifest(_)
+            | keld_core::HelloSessionError::Profile(_)
             | keld_core::HelloSessionError::Runtime(_)
             | keld_core::HelloSessionError::Timeout { .. }
             | keld_core::HelloSessionError::MarkerPossiblyElided { .. } => Self::Runtime(rendered),
@@ -247,12 +249,18 @@ fn doctor_or_err(project_root: &Path) -> Result<(), DevError> {
 
 fn report_checks(checks: impl Iterator<Item = crate::doctor::Check>) -> Result<(), DevError> {
     let checks: Vec<_> = checks.collect();
-    if all_ok(&checks) {
+    if checks.iter().all(launch_check_ok) {
         return Ok(());
     }
     let mut msg = String::from("KELD-CLI-032: environment checks failed:\n");
     for check in &checks {
-        let mark = if check.ok { "ok" } else { "FAIL" };
+        let mark = if check.ok {
+            "ok"
+        } else if launch_check_ok(check) {
+            "host admission required"
+        } else {
+            "FAIL"
+        };
         let _ = writeln!(msg, "  [{mark}] {} — {}", check.label, check.detail);
     }
     Err(DevError::Doctor(msg))
@@ -860,6 +868,52 @@ pub fn start_dev_session_with_stdout_markers(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn valid_strict_request_reaches_host_admission_despite_static_doctor_unknown() {
+        let root = tempfile::tempdir().expect("owned strict project");
+        std::fs::create_dir(root.path().join("src")).expect("owned entry directory");
+        std::fs::write(root.path().join("src/main.ts"), "export {};\n").expect("entry");
+        std::fs::write(root.path().join("keld.config.ts"), "export default {};\n").expect("config");
+        std::fs::write(root.path().join("index.html"), "<!doctype html>").expect("renderer");
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":"strict"}"#,
+        )
+        .expect("explicit strict request");
+        let static_checks = crate::doctor::run_checks(Some(root.path()));
+        let profile = static_checks
+            .iter()
+            .find(|check| check.label == "security_profile")
+            .expect("static profile finding");
+        assert!(!profile.ok, "doctor still has no runtime proof");
+        assert_eq!(
+            profile.error.as_ref().expect("missing proof").code,
+            "KELD-GUARD011"
+        );
+        super::doctor_or_err(root.path())
+            .expect("actual host, not static doctor, owns Strict admission");
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":null}"#,
+        )
+        .expect("invalid source policy");
+        assert!(
+            super::doctor_or_err(root.path()).is_err(),
+            "invalid policy must still block launch"
+        );
+        std::fs::write(
+            root.path().join("keld.permissions.jsonc"),
+            r#"{"profile":"strict"}"#,
+        )
+        .expect("restore valid request");
+        std::fs::remove_file(root.path().join("index.html"))
+            .expect("break independent renderer input");
+        assert!(
+            super::doctor_or_err(root.path()).is_err(),
+            "missing renderer must still block launch"
+        );
+    }
+
     use super::*;
     use std::fs;
     #[cfg(windows)]
