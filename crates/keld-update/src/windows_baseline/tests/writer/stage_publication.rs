@@ -4,6 +4,8 @@
 //! version. The original process crash-cut, lease and sentinel assertions stay
 //! intact; exact subprocess test entry points stay with the parent.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::{
     GOLDEN, higher_release, higher_release_version, load_windows_activation_write_snapshot,
     load_windows_baseline, run_version_publication_crash_child, seed_per_user_baseline, support,
@@ -11,7 +13,7 @@ use super::{
 
 #[test]
 fn per_user_writer_snapshot_excludes_readers_and_competing_writers() {
-    let fixture = tempfile::tempdir().expect("per-user writer fixture");
+    let fixture = native_install_tempdir().expect("per-user writer fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -93,7 +95,7 @@ fn per_user_writer_snapshot_excludes_readers_and_competing_writers() {
 
 #[test]
 fn per_user_writer_completes_a_stage_without_publishing_or_selecting_it() {
-    let fixture = tempfile::tempdir().expect("per-user immutable-version fixture");
+    let fixture = native_install_tempdir().expect("per-user immutable-version fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -169,7 +171,7 @@ fn per_user_writer_completes_a_stage_without_publishing_or_selecting_it() {
 
 #[test]
 fn per_user_version_publication_refuses_windows_case_alias_without_writing_marker() {
-    let fixture = tempfile::tempdir().expect("version-name collision fixture");
+    let fixture = native_install_tempdir().expect("version-name collision fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -227,7 +229,7 @@ fn per_user_version_publication_refuses_windows_case_alias_without_writing_marke
 #[test]
 fn a_crash_after_the_completion_marker_leaves_only_an_unselected_stage() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("stage completion crash-cut fixture");
+    let fixture = native_install_tempdir().expect("stage completion crash-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),

@@ -7,6 +7,8 @@
 //! refusal of the per-user repair for each damaged check, pinned before the validation was
 //! extracted, and the exact bytes of every protected record before and after.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::fs;
 
 use super::locate::state;
@@ -138,17 +140,17 @@ fn validate_on_disk(trust: &WindowsBaselineTrust) -> Result<(), UpdateError> {
 
 #[test]
 fn the_shared_validation_admits_a_valid_last_known_good_and_refuses_each_damage() {
-    let fixture = tempfile::tempdir().expect("baseline-only fixture");
+    let fixture = native_install_tempdir().expect("baseline-only fixture");
     let baseline_only = per_user_host_install(fixture.path());
     validate_on_disk(&baseline_only).expect("the installed baseline is a valid source");
-    let fixture = tempfile::tempdir().expect("committed fixture");
+    let fixture = native_install_tempdir().expect("committed fixture");
     let committed = committed_install(fixture.path());
     let before = state(&committed);
     validate_on_disk(&committed).expect("a committed last-known-good is a valid source");
     assert_eq!(state(&committed), before, "the validation writes nothing");
 
     for (label, damage, expected) in damaged_last_known_good() {
-        let fixture = tempfile::tempdir().expect("damaged last-known-good fixture");
+        let fixture = native_install_tempdir().expect("damaged last-known-good fixture");
         let trust = committed_install(fixture.path());
         damage(&trust);
         let before = state(&trust);
@@ -168,7 +170,7 @@ fn the_shared_validation_admits_a_valid_last_known_good_and_refuses_each_damage(
 #[test]
 fn the_per_user_repair_refuses_each_damaged_last_known_good_with_its_landed_error() {
     for (label, damage, expected) in damaged_last_known_good() {
-        let fixture = tempfile::tempdir().expect("damaged last-known-good fixture");
+        let fixture = native_install_tempdir().expect("damaged last-known-good fixture");
         let trust = committed_install(fixture.path());
         damage(&trust);
         fs::write(trust.installation.update_root.join("current"), UNDECODABLE)

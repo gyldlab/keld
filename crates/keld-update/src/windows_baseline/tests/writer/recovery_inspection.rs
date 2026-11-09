@@ -4,6 +4,8 @@
 //! floor/current/last-known-good historical binding, and read-only assertions.
 //! Exact subprocess-helper selectors remain in the parent writer test owner.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::{
     ActivationPhase, GOLDEN, OpenOptions, load_windows_activation_write_snapshot,
     load_windows_recovery_inspection, seed_pending_activation_journal, seed_per_user_baseline,
@@ -12,7 +14,7 @@ use super::{
 
 #[test]
 fn recovery_inspection_retains_writer_lease_and_preserves_pending_state() {
-    let fixture = tempfile::tempdir().expect("per-user recovery inspection fixture");
+    let fixture = native_install_tempdir().expect("per-user recovery inspection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -109,7 +111,7 @@ fn recovery_inspection_retains_writer_lease_and_preserves_pending_state() {
 
 #[test]
 fn recovery_inspection_accepts_candidate_selected_while_health_is_pending() {
-    let fixture = tempfile::tempdir().expect("awaiting-health recovery fixture");
+    let fixture = native_install_tempdir().expect("awaiting-health recovery fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -135,7 +137,7 @@ fn recovery_inspection_accepts_candidate_selected_while_health_is_pending() {
 
 #[test]
 fn recovery_inspection_accepts_health_commit_cut_with_previous_published_first() {
-    let fixture = tempfile::tempdir().expect("health commit-cut fixture");
+    let fixture = native_install_tempdir().expect("health commit-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -173,7 +175,7 @@ fn recovery_inspection_accepts_health_commit_cut_with_previous_published_first()
 
 #[test]
 fn recovery_inspection_accepts_health_commit_cut_after_lkg_publication() {
-    let fixture = tempfile::tempdir().expect("health commit-final-cut fixture");
+    let fixture = native_install_tempdir().expect("health commit-final-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -216,7 +218,7 @@ fn recovery_inspection_accepts_health_commit_cut_after_lkg_publication() {
 #[test]
 fn recovery_inspection_accepts_rollback_pending_before_and_after_current_replacement() {
     for current_candidate in [true, false] {
-        let fixture = tempfile::tempdir().expect("rollback crash-cut fixture");
+        let fixture = native_install_tempdir().expect("rollback crash-cut fixture");
         let trust = seed_per_user_baseline(fixture.path());
         let verifier = crate::UpdateVerifier::new(
             trust.installation.clone(),
@@ -256,7 +258,7 @@ fn recovery_inspection_accepts_rollback_pending_before_and_after_current_replace
 
 #[test]
 fn recovery_inspection_rejects_superseded_lkg_without_historical_previous() {
-    let fixture = tempfile::tempdir().expect("missing historical previous fixture");
+    let fixture = native_install_tempdir().expect("missing historical previous fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),

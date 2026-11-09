@@ -2,6 +2,8 @@
 
 #![allow(unsafe_code)] // Test-only adoption of the exact remote handle returned by DuplicateHandle.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::fs::OpenOptions;
 use std::io::Cursor;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -165,7 +167,7 @@ fn qf1_witness_composes_with_recovery_inspection_under_the_reacquired_lease() {
     reason = "one Windows crash cut proves coordinator/keeper loss, family exit, writer reacquisition and fail-closed byte preservation"
 )]
 fn lost_coordinator_and_keeper_leave_pending_journal_refusing_ordinary_writer() {
-    let fixture = tempfile::tempdir().expect("all-owners-lost fixture");
+    let fixture = native_install_tempdir().expect("all-owners-lost fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -308,7 +310,7 @@ enum QfBindingSubstitution {
     reason = "one native fixture proves QF1 and protected recovery-context equality across coordinator, keeper and successor"
 )]
 fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
-    let fixture = tempfile::tempdir().expect("QF1/recovery composition fixture");
+    let fixture = native_install_tempdir().expect("QF1/recovery composition fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),
@@ -624,7 +626,7 @@ fn run_qf1_recovery_composition_case(substitution: QfBindingSubstitution) {
 
 #[test]
 fn reduced_activation_lease_transfer_preserves_share_zero_after_coordinator_drop() {
-    let fixture = tempfile::tempdir().expect("per-user keeper lease fixture");
+    let fixture = native_install_tempdir().expect("per-user keeper lease fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = crate::UpdateVerifier::new(
         trust.installation.clone(),

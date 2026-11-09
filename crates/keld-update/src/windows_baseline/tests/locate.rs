@@ -6,6 +6,8 @@
 //! and the exact bytes of every protected record (including `install-provenance`)
 //! before and after each refusal: no negative case may write.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::os::windows::fs::OpenOptionsExt as _;
@@ -30,7 +32,7 @@ struct Install {
 }
 
 fn installed() -> Install {
-    let fixture = tempfile::tempdir().expect("executable-located selection fixture");
+    let fixture = native_install_tempdir().expect("executable-located selection fixture");
     let content = host_package_content();
     let trust = seed_per_user_baseline_with(fixture.path(), &content);
     Install {

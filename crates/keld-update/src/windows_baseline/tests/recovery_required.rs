@@ -15,6 +15,8 @@
 //! `recovery_required_operator`; the ordinary gate exercises the mode decision itself over
 //! real per-user state.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::fs;
 use std::path::Path;
 
@@ -128,7 +130,7 @@ pub(super) fn per_user_host_install(fixture: &Path) -> WindowsBaselineTrust {
 #[test]
 fn a_per_user_pending_journal_of_every_phase_stays_journal_bound_and_writes_nothing() {
     for (label, phase) in phases() {
-        let fixture = tempfile::tempdir().expect("per-user pending journal fixture");
+        let fixture = native_install_tempdir().expect("per-user pending journal fixture");
         let trust = per_user_host_install(fixture.path());
         seed_pending_activation_journal(&trust, phase);
         let before = state(&trust);
@@ -185,7 +187,7 @@ fn a_machine_uac_invalid_current_is_typed_recovery_required_and_writes_nothing()
         // No located host, the last-known-good host and a stale host: the ordinary
         // process never reaches the located-version gate in this mode.
         for located in [None, Some("1.0.0"), Some("0.9.0")] {
-            let fixture = tempfile::tempdir().expect("Machine-UAC invalid current fixture");
+            let fixture = native_install_tempdir().expect("Machine-UAC invalid current fixture");
             let (trust, machine) = invalid_current_install(
                 fixture.path(),
                 label == "absent",
@@ -218,7 +220,7 @@ fn a_machine_uac_invalid_current_is_typed_recovery_required_and_writes_nothing()
 #[test]
 fn a_machine_seamless_invalid_current_keeps_its_landed_baseline_refusal() {
     for (label, cause) in invalid_current_causes() {
-        let fixture = tempfile::tempdir().expect("machine-seamless invalid current fixture");
+        let fixture = native_install_tempdir().expect("machine-seamless invalid current fixture");
         let (trust, machine) = invalid_current_install(
             fixture.path(),
             label == "absent",
@@ -246,7 +248,7 @@ fn a_machine_seamless_invalid_current_keeps_its_landed_baseline_refusal() {
 #[test]
 fn a_per_user_invalid_current_is_still_repaired_from_last_known_good() {
     for absent in [true, false] {
-        let fixture = tempfile::tempdir().expect("per-user invalid current fixture");
+        let fixture = native_install_tempdir().expect("per-user invalid current fixture");
         let (trust, _) =
             invalid_current_install(fixture.path(), absent, DirectInstallMode::PerUserDirect);
         let selection = select_from(&trust, "1.0.0").expect("the per-user startup repairs");

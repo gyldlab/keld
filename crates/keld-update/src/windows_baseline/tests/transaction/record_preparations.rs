@@ -1,6 +1,8 @@
 //! Native generated pending-record preparation and slot replacement contracts.
 //! Real Windows filesystem admission, protected files and refusal effects remain observable.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use super::{seed_per_user_baseline, support, verifier};
 use std::io::Write as _;
 
@@ -56,8 +58,8 @@ fn record_replacement_requires_a_generated_sibling_and_a_file_destination() {
 fn stale_record_preparations_refuse_links_and_directories_and_remove_genuine_files() {
     let profile = keld_guard::WindowsInstallProtectionProfile::PerUserOwnerPrivate;
     for case in ["genuine", "linked", "directory"] {
-        let fixture = tempfile::tempdir().expect("stale preparation fixture");
-        let elsewhere = tempfile::tempdir().expect("same-volume link fixture");
+        let fixture = native_install_tempdir().expect("stale preparation fixture");
+        let elsewhere = native_install_tempdir().expect("same-volume link fixture");
         let trust = seed_per_user_baseline(fixture.path());
         let update = trust.installation.update_root.clone();
         let leaf = format!("pending-{}", "b".repeat(64));

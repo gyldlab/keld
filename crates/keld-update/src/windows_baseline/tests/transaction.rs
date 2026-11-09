@@ -3,6 +3,8 @@
 //! Oracles are on-disk protected records decoded by the canonical codecs, the version
 //! directory census, OS sharing behavior, and child-process exit at each persisted cut.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::collections::BTreeSet;
 use std::io::Write as _;
 
@@ -301,7 +303,7 @@ fn assert_refusal(
 
 #[test]
 fn begin_activation_journals_the_blake3_of_every_byte_of_the_owner_image() {
-    let fixture = tempfile::tempdir().expect("owner image digest fixture");
+    let fixture = native_install_tempdir().expect("owner image digest fixture");
     let trust = seed_per_user_baseline(fixture.path());
     // The fixture image is the official BLAKE3 test-vector input, so its published
     // digest is the oracle. The one-shot hash of the bytes read back checks the fixture
@@ -377,7 +379,7 @@ fn begin_activation_journals_the_blake3_of_every_byte_of_the_owner_image() {
 
 #[test]
 fn recovery_refuses_an_image_whose_bytes_hash_differently_before_any_write() {
-    let fixture = tempfile::tempdir().expect("recovery image refusal fixture");
+    let fixture = native_install_tempdir().expect("recovery image refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let journal_path = trust.installation.update_root.join("activation-journal");
     let lost = lost_first_attempt(fixture.path(), &trust, "floor-advanced");
@@ -438,7 +440,7 @@ fn recovery_refuses_an_image_whose_bytes_hash_differently_before_any_write() {
 
 #[test]
 fn a_refusal_before_the_journal_leaves_only_the_completed_stage() {
-    let fixture = tempfile::tempdir().expect("pre-journal refusal fixture");
+    let fixture = native_install_tempdir().expect("pre-journal refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let versions = trust.installation.update_root.join("versions");
@@ -555,7 +557,7 @@ pub(super) fn crash_after_publish_pending(fixture: &std::path::Path, trust: &Win
 
 #[test]
 fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
-    let fixture = tempfile::tempdir().expect("mismatched stage fixture");
+    let fixture = native_install_tempdir().expect("mismatched stage fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let (root, stage) = complete(&trust, "3.0.0");
@@ -599,7 +601,7 @@ fn a_stage_recording_a_different_candidate_refuses_before_the_journal() {
 #[test]
 fn recovery_never_publishes_a_stage_recording_another_artifact_of_that_version() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("foreign stage recovery fixture");
+    let fixture = native_install_tempdir().expect("foreign stage recovery fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let before = observe(&trust);
@@ -631,7 +633,7 @@ fn recovery_never_publishes_a_stage_recording_another_artifact_of_that_version()
 #[test]
 fn recovery_publishes_one_of_two_exact_stages_and_removes_the_other() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("duplicate stage recovery fixture");
+    let fixture = native_install_tempdir().expect("duplicate stage recovery fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let (root, earlier) = complete(&trust, "3.0.0");
@@ -653,7 +655,7 @@ fn recovery_publishes_one_of_two_exact_stages_and_removes_the_other() {
 
 #[test]
 fn a_resolution_never_touches_a_live_extraction_by_a_root_without_the_lease() {
-    let fixture = tempfile::tempdir().expect("live unleased extraction fixture");
+    let fixture = native_install_tempdir().expect("live unleased extraction fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let verifier = verifier(&trust);
@@ -698,7 +700,7 @@ const TAMPER_HELPER: &str = "windows_baseline::tests::transaction::windows_versi
 #[test]
 fn a_changed_versions_descriptor_refuses_the_candidate_rename_and_keeps_the_journal() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("versions descriptor fixture");
+    let fixture = native_install_tempdir().expect("versions descriptor fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let stdout = support::child(TAMPER_HELPER, fixture.path(), "descriptor", "none", 0);
@@ -775,7 +777,7 @@ fn windows_versions_tamper_helper() {
 #[test]
 fn an_unrelated_census_fault_keeps_the_journal_and_the_published_candidate() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("census fault fixture");
+    let fixture = native_install_tempdir().expect("census fault fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let stdout = support::child(TAMPER_HELPER, fixture.path(), "foreign-entry", "none", 0);
@@ -799,7 +801,7 @@ fn an_unrelated_census_fault_keeps_the_journal_and_the_published_candidate() {
 #[test]
 fn recovery_halts_when_a_stage_cannot_be_read_instead_of_abandoning() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("unreadable stage fixture");
+    let fixture = native_install_tempdir().expect("unreadable stage fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     crash_after_publish_pending(fixture.path(), &trust);
@@ -825,7 +827,7 @@ fn recovery_halts_when_a_stage_cannot_be_read_instead_of_abandoning() {
 #[test]
 fn recovery_replaces_a_damaged_copy_with_the_next_exact_stage() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("damaged duplicate fixture");
+    let fixture = native_install_tempdir().expect("damaged duplicate fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let (root, earlier) = complete(&trust, "3.0.0");
@@ -852,7 +854,7 @@ fn recovery_replaces_a_damaged_copy_with_the_next_exact_stage() {
 #[test]
 fn recovery_halts_on_a_non_directory_stage_name_and_keeps_the_journal() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("non-directory stage fixture");
+    let fixture = native_install_tempdir().expect("non-directory stage fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     crash_after_publish_pending(fixture.path(), &trust);
@@ -879,7 +881,7 @@ fn recovery_halts_on_a_non_directory_stage_name_and_keeps_the_journal() {
 
 #[test]
 fn a_legacy_orphan_halts_until_the_explicit_repair() {
-    let fixture = tempfile::tempdir().expect("legacy orphan fixture");
+    let fixture = native_install_tempdir().expect("legacy orphan fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let verifier = verifier(&trust);
     drop(legacy_orphan(&trust, "2.0.0"));
@@ -927,7 +929,7 @@ fn a_legacy_orphan_halts_until_the_explicit_repair() {
 
 #[test]
 fn a_published_candidate_that_fails_verification_is_retired_and_abandoned() {
-    let fixture = tempfile::tempdir().expect("unverifiable candidate fixture");
+    let fixture = native_install_tempdir().expect("unverifiable candidate fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let (root, stage) = complete(&trust, "2.0.0");
     let archive = trust
@@ -971,7 +973,7 @@ fn a_published_candidate_that_fails_verification_is_retired_and_abandoned() {
 
 #[test]
 fn the_unjournaled_repair_refuses_a_pending_journal() {
-    let fixture = tempfile::tempdir().expect("repair refusal fixture");
+    let fixture = native_install_tempdir().expect("repair refusal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     // A publish-pending journal references a candidate that no pointer selects yet: the
     // one state in which an unguarded repair would retire a journaled version.
@@ -1024,7 +1026,7 @@ fn the_unjournaled_repair_refuses_unknown_or_damaged_entries_before_any_rename()
         "foreign-scope",
         "generated-file",
     ] {
-        let fixture = tempfile::tempdir().expect("stray entry fixture");
+        let fixture = native_install_tempdir().expect("stray entry fixture");
         let trust = seed_per_user_baseline(fixture.path());
         let versions = trust.installation.update_root.join("versions");
         // Beside a valid unjournaled orphan, an unknown entry must stop the repair before
@@ -1093,7 +1095,7 @@ fn referenced_case_alias_admission_skips_pinned_tree_and_admits_real_orphan() {
     use cap_fs_ext::DirExt as _;
 
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("retirement case guard fixture");
+    let fixture = native_install_tempdir().expect("retirement case guard fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0-rc.1");
     let orphan = legacy_orphan(&trust, "3.0.0");
@@ -1137,7 +1139,7 @@ fn referenced_case_alias_admission_skips_pinned_tree_and_admits_real_orphan() {
 
 #[test]
 fn the_unjournaled_repair_never_retires_a_case_variant_of_a_referenced_tree() {
-    let fixture = tempfile::tempdir().expect("case variant fixture");
+    let fixture = native_install_tempdir().expect("case variant fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0-rc.1");
     let versions = trust.installation.update_root.join("versions");
@@ -1182,7 +1184,7 @@ fn nested_file(tree: &std::path::Path) -> std::path::PathBuf {
 
 #[test]
 fn an_open_nested_handle_in_the_retiring_tree_preserves_the_journal() {
-    let fixture = tempfile::tempdir().expect("blocked retirement fixture");
+    let fixture = native_install_tempdir().expect("blocked retirement fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let attempt = begin(&trust, "3.0.0");
@@ -1222,7 +1224,7 @@ fn an_open_nested_handle_in_the_retiring_tree_preserves_the_journal() {
 
 #[test]
 fn a_process_running_from_a_retired_tree_defers_only_its_deletion() {
-    let fixture = tempfile::tempdir().expect("running retiree fixture");
+    let fixture = native_install_tempdir().expect("running retiree fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let attempt = begin(&trust, "3.0.0");
@@ -1455,7 +1457,7 @@ const SCENARIOS: [Scenario; 7] = [
 #[test]
 fn a_journaled_attempt_whose_stage_is_gone_is_abandoned_on_recovery() {
     support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("abandoned attempt fixture");
+    let fixture = native_install_tempdir().expect("abandoned attempt fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let before = observe(&trust);
@@ -1523,7 +1525,7 @@ fn every_persisted_activation_cut_resumes_commits_rolls_back_or_halts() {
 }
 
 fn run_crash_cut(scenario: Scenario, cut: &str, after: AfterCut) {
-    let fixture = tempfile::tempdir().expect("activation crash-cut fixture");
+    let fixture = native_install_tempdir().expect("activation crash-cut fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let (prior, candidate, prior_previous) = if scenario.prior_commit {
         commit(&trust, "2.0.0");

@@ -4,6 +4,8 @@
 //! protected record before and after selection, typed refusals, and OS sharing behavior
 //! of the retained version handles.
 
+use crate::tests::native_windows::native_install_tempdir;
+
 use std::collections::BTreeMap;
 
 use super::transaction::{begin, commit, crash_after_publish_pending, retirement};
@@ -88,14 +90,14 @@ fn assert_refuses(trust: &WindowsBaselineTrust, why: &str) -> UpdateError {
 
 #[test]
 fn the_installed_baseline_is_selected_before_any_update() {
-    let fixture = tempfile::tempdir().expect("baseline selection fixture");
+    let fixture = native_install_tempdir().expect("baseline selection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     assert_eq!(selected_version(&trust), "1.0.0");
 }
 
 #[test]
 fn a_committed_update_is_selected_and_nothing_is_written() {
-    let fixture = tempfile::tempdir().expect("committed selection fixture");
+    let fixture = native_install_tempdir().expect("committed selection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let before = record_bytes(&trust);
@@ -113,7 +115,7 @@ fn a_committed_update_is_selected_and_nothing_is_written() {
 
 #[test]
 fn current_at_previous_known_good_is_selected() {
-    let fixture = tempfile::tempdir().expect("previous-known-good selection fixture");
+    let fixture = native_install_tempdir().expect("previous-known-good selection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let previous = last_known_good(&trust);
@@ -124,7 +126,7 @@ fn current_at_previous_known_good_is_selected() {
 
 #[test]
 fn a_rolled_back_attempt_selects_its_rollback_target() {
-    let fixture = tempfile::tempdir().expect("rollback selection fixture");
+    let fixture = native_install_tempdir().expect("rollback selection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let attempt = begin(&trust, "3.0.0");
@@ -138,7 +140,7 @@ fn a_rolled_back_attempt_selects_its_rollback_target() {
 #[test]
 fn a_pending_journal_selects_nothing() {
     super::support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("pending journal selection fixture");
+    let fixture = native_install_tempdir().expect("pending journal selection fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     crash_after_publish_pending(fixture.path(), &trust);
@@ -152,7 +154,7 @@ fn a_pending_journal_selects_nothing() {
 
 #[test]
 fn current_naming_an_artifact_that_is_not_known_good_refuses() {
-    let fixture = tempfile::tempdir().expect("unknown current fixture");
+    let fixture = native_install_tempdir().expect("unknown current fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let mut foreign = last_known_good(&trust);
@@ -169,7 +171,7 @@ fn current_naming_an_artifact_that_is_not_known_good_refuses() {
 
 #[test]
 fn a_floor_below_the_selected_version_refuses() {
-    let fixture = tempfile::tempdir().expect("lowered floor fixture");
+    let fixture = native_install_tempdir().expect("lowered floor fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     std::fs::write(
@@ -186,7 +188,7 @@ fn a_floor_below_the_selected_version_refuses() {
 
 #[test]
 fn an_unreferenced_or_damaged_version_refuses() {
-    let fixture = tempfile::tempdir().expect("version census fixture");
+    let fixture = native_install_tempdir().expect("version census fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let versions = trust.installation.update_root.join("versions");
@@ -205,7 +207,7 @@ fn an_unreferenced_or_damaged_version_refuses() {
 
 #[test]
 fn a_damaged_known_good_version_refuses_even_when_current_is_sound() {
-    let fixture = tempfile::tempdir().expect("damaged known-good fixture");
+    let fixture = native_install_tempdir().expect("damaged known-good fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     // current = last-known-good = 2.0.0; previous-known-good = 1.0.0.
@@ -226,7 +228,7 @@ fn a_damaged_known_good_version_refuses_even_when_current_is_sound() {
 
 #[test]
 fn a_writer_holding_the_lease_blocks_selection() {
-    let fixture = tempfile::tempdir().expect("busy lease fixture");
+    let fixture = native_install_tempdir().expect("busy lease fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let writer =
         load_windows_activation_write_snapshot(&trust, &super::transaction::verifier(&trust))
@@ -243,7 +245,7 @@ fn a_writer_holding_the_lease_blocks_selection() {
 
 #[test]
 fn a_held_selection_pins_its_version_against_retirement() {
-    let fixture = tempfile::tempdir().expect("selection pin fixture");
+    let fixture = native_install_tempdir().expect("selection pin fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let versions = trust.installation.update_root.join("versions");
@@ -260,7 +262,7 @@ fn a_held_selection_pins_its_version_against_retirement() {
 
 #[test]
 fn a_held_selection_pins_its_protected_ancestry() {
-    let fixture = tempfile::tempdir().expect("ancestry pin fixture");
+    let fixture = native_install_tempdir().expect("ancestry pin fixture");
     let trust = seed_per_user_baseline(fixture.path());
     let update_root = &trust.installation.update_root;
     let moved = update_root.with_file_name("moved-update-root");
@@ -276,7 +278,7 @@ fn a_held_selection_pins_its_protected_ancestry() {
 
 #[test]
 fn concurrent_snapshot_readers_share_the_lease() {
-    let fixture = tempfile::tempdir().expect("shared reader fixture");
+    let fixture = native_install_tempdir().expect("shared reader fixture");
     let trust = seed_per_user_baseline(fixture.path());
     // The baseline loader keeps its shared snapshot lease for its whole lifetime.
     let reader = crate::windows_baseline::load_windows_baseline(&trust)
@@ -291,7 +293,7 @@ fn concurrent_snapshot_readers_share_the_lease() {
 
 #[test]
 fn an_absent_or_changed_package_policy_refuses() {
-    let fixture = tempfile::tempdir().expect("package policy fixture");
+    let fixture = native_install_tempdir().expect("package policy fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let policy = |version: &str| {
@@ -321,7 +323,7 @@ fn an_absent_or_changed_package_policy_refuses() {
 
 #[test]
 fn generated_leftovers_never_change_the_selection() {
-    let fixture = tempfile::tempdir().expect("generated leftovers fixture");
+    let fixture = native_install_tempdir().expect("generated leftovers fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let update = &trust.installation.update_root;
@@ -346,7 +348,7 @@ fn lkg_pointer_as_current(trust: &WindowsBaselineTrust) -> Vec<u8> {
 
 #[test]
 fn an_absent_current_is_republished_from_last_known_good() {
-    let fixture = tempfile::tempdir().expect("absent current fixture");
+    let fixture = native_install_tempdir().expect("absent current fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     std::fs::remove_file(trust.installation.update_root.join("current"))
@@ -361,7 +363,7 @@ fn an_absent_current_is_republished_from_last_known_good() {
 
 #[test]
 fn an_undecodable_current_is_republished_from_last_known_good() {
-    let fixture = tempfile::tempdir().expect("undecodable current fixture");
+    let fixture = native_install_tempdir().expect("undecodable current fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     std::fs::write(
@@ -384,7 +386,7 @@ fn an_undecodable_current_is_republished_from_last_known_good() {
 
 #[test]
 fn an_invalid_current_is_not_repaired_from_a_damaged_last_known_good() {
-    let fixture = tempfile::tempdir().expect("damaged LKG fixture");
+    let fixture = native_install_tempdir().expect("damaged LKG fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     std::fs::write(
@@ -411,7 +413,7 @@ fn an_invalid_current_is_not_repaired_from_a_damaged_last_known_good() {
 #[test]
 fn an_invalid_current_beside_a_pending_journal_stays_journal_bound() {
     super::support::assert_user_principal_token();
-    let fixture = tempfile::tempdir().expect("invalid current with journal fixture");
+    let fixture = native_install_tempdir().expect("invalid current with journal fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     crash_after_publish_pending(fixture.path(), &trust);
@@ -438,7 +440,7 @@ fn invalid_current_cause() -> UpdateError {
 
 #[test]
 fn the_repair_never_rewrites_a_current_that_became_valid() {
-    let fixture = tempfile::tempdir().expect("valid current repair fixture");
+    let fixture = native_install_tempdir().expect("valid current repair fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     let previous = last_known_good(&trust);
@@ -457,7 +459,7 @@ fn the_repair_never_rewrites_a_current_that_became_valid() {
 
 #[test]
 fn an_invalid_current_is_not_repaired_beside_a_damaged_previous_known_good() {
-    let fixture = tempfile::tempdir().expect("damaged PKG fixture");
+    let fixture = native_install_tempdir().expect("damaged PKG fixture");
     let trust = seed_per_user_baseline(fixture.path());
     commit(&trust, "2.0.0");
     std::fs::write(
