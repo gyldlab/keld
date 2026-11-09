@@ -1,6 +1,5 @@
 //! Source-owned diagnostics for an uncompleted public auth Quit on the actual shipping CLI.
-use super::{Case, Observation};
-use crate::public_fs::quit_body_receipt::QuitBodyReceipt;
+use super::{AuthReceipts, Case, Observation};
 use crate::support::EVENT_DEADLINE;
 use crate::support::control::wait_child_output_observing;
 use crate::support::process::ProcessExitObserver;
@@ -97,10 +96,15 @@ pub(super) fn wait_for_auth_cli_quit(
     case: &Case,
     family: [u32; 4],
     native_exits: &mut [ProcessExitObserver; 4],
-    mut native_receipt: Option<&mut QuitBodyReceipt>,
+    receipts: AuthReceipts<'_>,
 ) -> Output {
+    let AuthReceipts {
+        body: mut native_receipt,
+        post_reply: mut post_reply_receipt,
+    } = receipts;
     let mut last_live_http = 0_u8;
     let mut last_live_bun_body = "not_armed";
+    let mut last_live_post_reply = "not_armed";
     let native_receipt_deadline = std::time::Instant::now() + EVENT_DEADLINE;
     let mut last_live_kernel = [ExitPhase::NotSampled; 4];
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -111,6 +115,14 @@ pub(super) fn wait_for_auth_cli_quit(
             if let Some(receipt) = native_receipt.as_deref_mut() {
                 receipt.poll(native_receipt_deadline);
                 last_live_bun_body = receipt.stage();
+            }
+            if let Some(receipt) = post_reply_receipt.as_deref_mut() {
+                receipt.poll(native_receipt_deadline);
+                last_live_post_reply = match receipt.stage() {
+                    "bun_body_verified" => "native_post_quit_ack_written",
+                    "invalid_bun_receipt" => "invalid_post_quit_ack",
+                    _ => "no_post_quit_ack",
+                };
             }
             for (stage, witness) in last_live_kernel.iter_mut().zip(native_exits.iter_mut()) {
                 // Refusal is sticky: a later empty read cannot erase a
@@ -126,7 +138,7 @@ pub(super) fn wait_for_auth_cli_quit(
     // optional redacted diagnostic must not replace the first source error.
     let _ = writeln!(
         std::io::stderr().lock(),
-        "KELD_KEL89_ORIGINAL_KERNEL_QUIT_PHASE cli_outcome={} last_live_http_stage={} bun_body_stage={} host_exit={} guardian_exit={} bun_exit={} descendant_exit={}",
+        "KELD_KEL89_ORIGINAL_KERNEL_QUIT_PHASE cli_outcome={} last_live_http_stage={} bun_body_stage={} bun_post_quit_stage={} host_exit={} guardian_exit={} bun_exit={} descendant_exit={}",
         if result.is_ok() {
             "cli_exited"
         } else {
@@ -134,6 +146,7 @@ pub(super) fn wait_for_auth_cli_quit(
         },
         safe_quit_http_label(last_live_http),
         last_live_bun_body,
+        last_live_post_reply,
         last_live_kernel[0].label(),
         last_live_kernel[1].label(),
         last_live_kernel[2].label(),
