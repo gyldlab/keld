@@ -17,7 +17,7 @@ import ci_inputs
 import ci_local
 
 
-def tracked_snapshot(source: Path, destination: Path, *, bind: bool = True) -> None:
+def tracked_snapshot(source: Path, destination: Path) -> None:
     """Make a real Git fixture from tracked working bytes, without touching source.
 
     Scopes/consumers are copied unchanged and committed once, so the fixture HEAD is the
@@ -41,7 +41,6 @@ def tracked_snapshot(source: Path, destination: Path, *, bind: bool = True) -> N
                  ("config", "user.name", "snapshot"), ("config", "user.email", "snapshot@example.invalid"),
                  ("add", "-f", "."), ("commit", "-qm", "snapshot")):
         subprocess.run(["git", *args], cwd=destination, check=True, capture_output=True)
-
 
 class InputContractTests(unittest.TestCase):
     def setUp(self):
@@ -273,7 +272,7 @@ class InputContractTests(unittest.TestCase):
             self.write("tools/ci-inputs.json", json.dumps(contract))
             with self.assertRaises(ValueError) as caught:
                 self.route()
-            self.assertIn("KELD-CI-INPUTS-001", str(caught.exception))
+            self.assertIn("CI-INPUTS-V1-RETIRED", str(caught.exception))
             self.assertIn("GH-1275", str(caught.exception))
         # A v2 file with the wrong shape gets the shape message, not the v1 guidance.
         contract = json.loads(json.dumps(self.contract))
@@ -281,7 +280,7 @@ class InputContractTests(unittest.TestCase):
         self.write("tools/ci-inputs.json", json.dumps(contract))
         with self.assertRaises(ValueError) as caught:
             self.route()
-        self.assertNotIn("KELD-CI-INPUTS-001", str(caught.exception))
+        self.assertNotIn("CI-INPUTS-V1-RETIRED", str(caught.exception))
         self.assertIn("consumers[]", str(caught.exception))
         self.save_contract()
         self.assertFalse(self.route()["local_probe"], "the restored v2 contract routes again")
@@ -387,7 +386,6 @@ class InputContractTests(unittest.TestCase):
         (self.root / "tools/ci-inputs.json").unlink()
         with self.assertRaises(ValueError):
             self.route()
-
 
 
 
@@ -1495,7 +1493,7 @@ class TempRepositoryMaintenanceTests(unittest.TestCase):
                 subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
             (source / "file.txt").write_text("tracked\n", encoding="utf-8")
             subprocess.run(["git", "add", "file.txt"], cwd=source, check=True, capture_output=True)
-            tracked_snapshot(source, snapshot, bind=False)
+            tracked_snapshot(source, snapshot)
             environment = {**os.environ, "GIT_TRACE": "1"}
 
             def commit(message):

@@ -57,7 +57,7 @@ const expected = js
       "4f2a6ba84be8d16d5920f77391af8b4966ef349b55d01704f8b52ff1c0be2176",
       "b752bb8c7b875d57983a86695655653b1c103778d192c894789425c749756383",
       "24ac3fb3b3ad69dcce45fd74f20cf42daac0da4f114915c1e0c4be3bcc1f1265",
-      "504e88a8747cc504aa4d7a4ee74056f27ef3a388881d29348894d759f8a2c380",
+      "6d3d81dadf43d63897f0e8465d8d94f625a94ac2babb826222383be06b00dd33",
     ]
   : [
       "11e78e5753b659592444aeabd796766f404fbbe514bfd2c961160e9ae52ed595",
@@ -70,13 +70,8 @@ const values = [source, codecPath, mirror, transportPath].map((path) =>
   readFileSync(path, "utf8"),
 );
 const actualHashes = values.map(sha);
-// The existing package test runs the producer from the API directory. Bun's
-// source-path comment and the stamp over it differ from the root-CWD artifact;
-// the executable bytes after those first two lines are identical. Each complete
-// artifact retains its own admitted hash.
-const apiCwdTransport =
-  "773e5dd14bf2eb310df63efc06ffefa3219f4e643f1bf086df4ac7b19b66b58d";
-if (js && actualHashes[3] === apiCwdTransport) expected[3] = apiCwdTransport;
+// The packed Worker has one canonical, separately checked source/toolchain identity.
+// Caller-CWD-specific stamps must not be admitted as substitutes.
 assert.deepEqual(actualHashes, expected, "unreviewed body or helper");
 assert.equal(
   realpathSync(

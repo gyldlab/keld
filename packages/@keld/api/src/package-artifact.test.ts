@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { TEST_HOOK_NAMES } from "../../kipc/scripts/package-artifacts.ts";
 import { runLayout } from "../../kipc/test/bundle-layout.ts";
 
 const producer = resolve(
@@ -59,6 +60,7 @@ test("real packed SDK installs offline with one API app identity", async () => {
       ]),
     );
     const build = Bun.spawnSync(["bun", producer, scratch], {
+      cwd: resolve(import.meta.dir, "../../../.."),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -66,6 +68,7 @@ test("real packed SDK installs offline with one API app identity", async () => {
     const second = join(scratch, "second");
     mkdirSync(second);
     const rebuild = Bun.spawnSync(["bun", producer, second], {
+      cwd: resolve(import.meta.dir, ".."),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -125,7 +128,20 @@ test("real packed SDK installs offline with one API app identity", async () => {
         ),
       );
       expect(installed.devDependencies).toEqual(source[name].devDependencies);
+      expect(
+        ["scripts", "packageManager"].filter((key) => key in installed),
+        `packed @keld/${name} manifest ships source-only fields; the producer must allowlist manifest keys`,
+      ).toEqual([]);
     }
+    // The shipped Worker is KIPC's release build: packing keeps no test hook.
+    const packedTransport = readFileSync(
+      join(consumer, "node_modules/@keld/kipc/transport.js"),
+      "utf8",
+    );
+    expect(
+      TEST_HOOK_NAMES.filter((name) => packedTransport.includes(name)),
+      "packed @keld/kipc transport.js names WorkerLink test hooks; its release build must define KELD_KIPC_RELEASE",
+    ).toEqual([]);
     const probe = join(consumer, "probe.mjs");
     writeFileSync(
       probe,

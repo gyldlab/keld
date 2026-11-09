@@ -546,8 +546,10 @@ compat_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
 expect_flags "compat-only change skips GUI smoke but installs GTK for its selected test closure" "$compat_flags" "$compat_classification"
 expect_package_token "compat-only change includes its owner package" keld-compat "$compat_classification"
 
-compat_test_classification="$(result_for_paths crates/keld-compat/src/lib.rs)"
+compat_test_classification="$(result_for_paths crates/keld-compat/tests/support/corpus_error.rs)"
 expect_flags "Rust-only change does not select the TypeScript lane" "$compat_flags" "$compat_test_classification"
+# GH-1275: a registered Rust reader (tools/ci-inputs.json rust-readers) that changes
+# in the diff widens to every lane for that change; no digest is recorded or rebound.
 reader_test_classification="$(result_for_paths crates/keld-compat/tests/electron_lifecycle.rs)"
 expect_flags "registered Rust reader change selects every lane" "$all_true" "$reader_test_classification"
 expect_empty_output "Rust-only change selects no Bun suite" ts_packages "$compat_test_classification"
@@ -671,8 +673,8 @@ printf '{"name":"@fake/bootstrap"}\n' >"$temp_dir/packages/@fake/bootstrap/packa
 printf 'import { test } from "bun:test";\n' >"$temp_dir/packages/@fake/bootstrap/src/unit.test.ts"
 printf 'fake-bin/\ntarget/\nbound/\n' >"$temp_dir/.gitignore"
 printf 'base\n' >"$temp_dir/README.md"
-# Keep the real shared native policy in this minimal graph fixture. Bind a real,
-# immutable reader so TS selects hygiene without stale-reader or all-gate rescue.
+# Keep the real shared native policy in this minimal graph fixture with its real
+# reader pattern, so TS selects hygiene through the edge and not an all-gate rescue.
 "$python_command" -B - "$repo_root" "$temp_dir" <<'PY'
 import json, shutil, sys
 from pathlib import Path
