@@ -116,7 +116,7 @@ agent-context-test:
     mkdir -p target/agent-context
     rustc --edition=2024 -D warnings --test tools/agent_context.rs -o target/agent-context/agent-context-test
     target/agent-context/agent-context-test
-    {{python_command}} -B tools/test_learning_records.py
+    {{python_command}} -B -m unittest discover -s tools -p 'test_learning*.py'
     {{python_command}} -B tools/test_session_closeout.py
     {{python_command}} -B tools/test_session_closeout_hook.py
     {{python_command}} -B tools/test_workspace.py

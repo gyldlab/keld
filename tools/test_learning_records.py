@@ -63,29 +63,32 @@ def make_fixture(root: Path, original: str) -> list[str]:
     return paths
 
 
+def original_source() -> str:
+    # The literal digest remains independent of the checker and candidate data.
+    expected = "aa1c76e9079a06e4125d5fa74d5e395c19949266f35c9c68c830e463be5d05fc"
+    original = (REPO / lr.SOURCE_PATH).read_bytes()
+    if hashlib.sha256(original).hexdigest() != expected:
+        ledger = json.loads((REPO / lr.LEARNING_ROOT / "migration.json").read_text(encoding="utf-8"))
+        parts = []
+        for segment in ledger["segments"]:
+            if "literal" in segment:
+                parts.append(segment["literal"])
+            else:
+                text = (REPO / segment["record"]).read_text(encoding="utf-8")
+                quoted = re.findall(r"(?m)^> (- \d{4}-\d{2}-\d{2} \[[^]\n]+\] [^\n]+)$", text)
+                if len(quoted) != 1:
+                    raise AssertionError("fixture must retain one exact old line")
+                parts.append(quoted[0])
+        original = "".join(parts).encode("utf-8")
+    if hashlib.sha256(original).hexdigest() != expected:
+        raise AssertionError("immutable independent source oracle differs")
+    return original.decode("utf-8")
+
+
 class LearningRecordsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # The literal digest is an independent oracle. No network or historic
-        # Git object is required in a shallow CI checkout of the migration.
-        expected = "aa1c76e9079a06e4125d5fa74d5e395c19949266f35c9c68c830e463be5d05fc"
-        original = (REPO / lr.SOURCE_PATH).read_bytes()
-        if hashlib.sha256(original).hexdigest() != expected:
-            ledger = json.loads((REPO / lr.LEARNING_ROOT / "migration.json").read_text(encoding="utf-8"))
-            parts = []
-            for segment in ledger["segments"]:
-                if "literal" in segment:
-                    parts.append(segment["literal"])
-                else:
-                    text = (REPO / segment["record"]).read_text(encoding="utf-8")
-                    quoted = re.findall(r"(?m)^> (- \d{4}-\d{2}-\d{2} \[[^]\n]+\] [^\n]+)$", text)
-                    if len(quoted) != 1:
-                        raise AssertionError("fixture must retain one exact old line")
-                    parts.append(quoted[0])
-            original = "".join(parts).encode("utf-8")
-        cls.original = original.decode("utf-8")
-        if hashlib.sha256(original).hexdigest() != expected:
-            raise AssertionError("immutable independent source oracle differs")
+        cls.original = original_source()
         cls.base = tempfile.TemporaryDirectory(prefix="learning-record-base-")
         cls.paths = make_fixture(Path(cls.base.name), cls.original)
 
@@ -153,7 +156,8 @@ class LearningRecordsTests(unittest.TestCase):
                 self.rejects(expected)
         path.write_text(json.dumps(original), encoding="utf-8")
         extra = self.add_new()
-        self.change(extra, source=lr.HISTORICAL_PREFIX + "999")
+        self.change(extra, source=lr.HISTORICAL_PREFIX + "999",
+                    verification_evidence=f"https://github.com/gyldlab/keld/blob/{lr.SOURCE_COMMIT}/crates/keld-ipc/src/lib.rs#L1")
         self.rejects("missing/extra historical")
 
     def test_body_mutation_and_literal_entry_cannot_hide_loss(self):
@@ -246,7 +250,7 @@ class LearningRecordsTests(unittest.TestCase):
         with patch.object(lr, "open_record", guarded):
             result = lr.describe(self.root, [selected])
         self.assertEqual(calls, [path]);self.assertEqual(len(result), 1)
-        self.assertEqual(set(result[0]), {"filename", "name", "description", "tags"})
+        self.assertEqual(set(result[0]), {"filename", "name", "description", "tags", "status", "verified", "retired"})
         self.assertEqual(result[0]["filename"], selected)
 
     def test_frontmatter_limit_and_old_layout_reject(self):
