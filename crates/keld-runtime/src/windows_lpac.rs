@@ -1392,9 +1392,10 @@ mod tests {
         let original_before = observed_dacl(&claimed);
 
         // The substitution runs between the shipping ACL read and merge and
-        // the publish, outside the code under test. The same-user rename may
-        // succeed on this Windows build: only original HANDLE identity can
-        // guarantee that the outsider never receives this ACL grant.
+        // the publish, in this test body rather than inside the code under
+        // test. The same-user rename may succeed on this Windows build: only
+        // original HANDLE identity can guarantee that the outsider never
+        // receives this ACL grant.
         let prepared = profile
             .prepare_grant(&claimed, super::WindowsLpacPathAccess::RolePrivate)
             .expect("an ordinary retained directory admits its DACL read and merge");
@@ -1409,8 +1410,11 @@ mod tests {
                 substituted = true;
             }
             Err(error) => {
-                // Windows may refuse a rename while the original HANDLE is
-                // pinned. A missing path or another fixture error must fail.
+                // The grant handle asks for no data or DELETE access, so
+                // Windows 11 does not check sharing against it and the rename
+                // succeeds. A build or filesystem that does refuse it may only
+                // do so with an actual sharing/permission refusal; a missing
+                // path or another fixture error must fail.
                 assert!(
                     matches!(error.raw_os_error(), Some(5 | 32)),
                     "unexpected original-rename failure instead of substitution or OS refusal: {error}"
