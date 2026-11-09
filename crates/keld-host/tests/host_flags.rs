@@ -42,6 +42,19 @@ fn non_utf8_unix_argv_is_cli_051_not_a_panic() {
     assert_non_unicode_argv_refused_before_boot(std::ffi::OsString::from_vec(vec![0xff]));
 }
 
+#[test]
+fn unknown_argument_is_cli_044_before_boot_selection() {
+    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
+        .arg("--not-a-keld-host-flag")
+        .output()
+        .expect("run host with unknown argument");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("host error is UTF-8");
+    assert!(stderr.contains("KELD-CLI-044"), "{stderr}");
+    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
+    assert!(!stderr.contains("keld.boot.json"), "{stderr}");
+}
+
 /// Runs `keld-host <args>` and returns its exit code and UTF-8 stderr.
 fn run_host(args: &[&str]) -> (Option<i32>, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
@@ -109,17 +122,4 @@ fn hello_as_program_path_does_not_select_the_hello_command() {
         "{stderr}"
     );
     assert!(!stderr.contains("unknown hello flag"), "{stderr}");
-}
-
-#[test]
-fn unknown_argument_is_cli_044_before_boot_selection() {
-    let output = Command::new(env!("CARGO_BIN_EXE_keld-host"))
-        .arg("--not-a-keld-host-flag")
-        .output()
-        .expect("run host with unknown argument");
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).expect("host error is UTF-8");
-    assert!(stderr.contains("KELD-CLI-044"), "{stderr}");
-    assert!(!stderr.contains("KELD-CORE-034"), "{stderr}");
-    assert!(!stderr.contains("keld.boot.json"), "{stderr}");
 }
