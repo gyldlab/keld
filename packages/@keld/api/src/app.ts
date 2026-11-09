@@ -7,7 +7,12 @@
  */
 import { dispatchApplicationCall } from "./channels.ts";
 import { LifecycleLink } from "./link.ts";
-import type { DialogReplyV1, MessageOptions } from "./dialog.generated.ts";
+import type {
+  DialogReplyV1,
+  MessageOptions,
+  OpenDialogOptions,
+  SaveDialogOptions,
+} from "./dialog.generated.ts";
 import {
   linkError,
   stateMap,
@@ -385,4 +390,16 @@ export async function invokeMessageDialog(
   await app.whenReady();
   const link = await ensureLink();
   return link.callMessageDialog(parent, options);
+}
+
+/** Path-only native file chooser over the same verified lifecycle app-link.
+ * The Host, not the Electron adapter, grants/denies the actual OS panel. */
+export async function invokeFileDialog(
+  variant: "Open" | "Save",
+  parent: WindowRef | null,
+  options: OpenDialogOptions | SaveDialogOptions,
+): Promise<DialogReplyV1> {
+  await app.whenReady();
+  const link = await ensureLink();
+  return link.callFileDialog(variant, parent, options);
 }

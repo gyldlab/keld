@@ -293,8 +293,9 @@ jobs:
               try {
                 if (!verdict.merge) {
                   if (verdict.retry) {
-                    counts.errors++; // incomplete mergeability must not be silently green
-                    core.warning('VeriSentry mergeability pending on PR #'+verdict.number);
+                    counts.errors++; // incomplete evidence must not be silently green
+                    core.warning('VeriSentry check not issued on PR #'+verdict.number+': '+
+                      verdict.skip+(verdict.reason ? ' ('+verdict.reason+')' : ''));
                   } else counts.skipped++; // moved or genuinely unmergeable
                   continue;
                 }

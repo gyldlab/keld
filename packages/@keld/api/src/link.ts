@@ -38,7 +38,10 @@ import {
   decodeDialogReply,
   encodeDialogRequest,
   type DialogReplyV1,
+  type DialogRequestV1,
   type MessageOptions,
+  type OpenDialogOptions,
+  type SaveDialogOptions,
 } from "./dialog.generated.ts";
 import type { WindowRef } from "./window-codec.ts";
 import { attachMirror } from "./mirror.ts";
@@ -353,6 +356,37 @@ export class LifecycleLink {
     parent: WindowRef | null,
     options: MessageOptions,
   ): Promise<DialogReplyV1> {
+    return this.#callNativeDialog(
+      (nonce) => ({
+        variant: "Message",
+        nonce,
+        parent,
+        options,
+      }),
+      "Message",
+    );
+  }
+
+  /** Both file operations use the same role nonce high-water, Guard and
+   * WorkerLink correlations as Message; no second file-dialog channel. */
+  async callFileDialog(
+    variant: "Open" | "Save",
+    parent: WindowRef | null,
+    options: OpenDialogOptions | SaveDialogOptions,
+  ): Promise<DialogReplyV1> {
+    return this.#callNativeDialog(
+      (nonce) =>
+        variant === "Open"
+          ? { variant, nonce, parent, options: options as OpenDialogOptions }
+          : { variant, nonce, parent, options: options as SaveDialogOptions },
+      variant,
+    );
+  }
+
+  async #callNativeDialog(
+    request: (nonce: bigint) => DialogRequestV1,
+    expected: "Message" | "Open" | "Save",
+  ): Promise<DialogReplyV1> {
     if (this.#closed || this.#quitPromise !== undefined) {
       throw this.#dead ?? kipcError("KELD-IPC-001", "session is closed");
     }
@@ -363,19 +397,14 @@ export class LifecycleLink {
       );
     }
     const nonce = this.#nextDialogNonce++;
-    const payload = encodeDialogRequest({
-      variant: "Message",
-      nonce,
-      parent,
-      options,
-    });
+    const payload = encodeDialogRequest(request(nonce));
     try {
       const raw = await this.#link.call(DIALOG_CHANNEL, payload, 600_000);
       const value = decodeDialogReply(raw);
-      if (value.variant !== "Message") {
+      if (value.variant !== expected) {
         throw kipcError(
           "KELD-IPC-003",
-          "original Message correlation received Cancel disposition",
+          "native dialog original correlation received a different operation's reply",
         );
       }
       return value;

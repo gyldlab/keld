@@ -13,6 +13,9 @@ mod descriptor_liveness;
 #[path = "no_flag/macos/dev_lifecycle.rs"]
 mod dev_lifecycle;
 #[cfg(feature = "profile-test-hooks")]
+#[path = "no_flag/macos/dialog_file.rs"]
+mod dialog_file;
+#[cfg(feature = "profile-test-hooks")]
 #[path = "no_flag/macos/dialog_message.rs"]
 mod dialog_message;
 #[path = "no_flag/macos/facade_ready.rs"]

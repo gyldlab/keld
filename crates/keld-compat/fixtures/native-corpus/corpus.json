@@ -53,8 +53,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-open-dialog.canceled-paths today: no asynchronous native file-open method is exported",
-      "negative_control": "A new async showOpenDialog function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a Promise resolving with canceled:true but nonempty filePaths, or an incorrect selected path, fails."
+      "test_name": "dialog.show-open-dialog.canceled-paths: parented native works; parentless remains incomplete",
+      "negative_control": "Partial macOS GH478: a real parented Open chooser cancels with [] and positively selects a real .drawio file through verified Host/Guard/native AX, then returns the original correlation; source test checks exports, Promise and early unsafe-filter denial. Parentless native Open is not yet admitted; this broad cell remains expected-fail until its genuine OS selection/cancel, quiescence and resource grants pass. Fake Promise, invented path or a security bookmark fails."
     },
     {
       "operation_id": "dialog.show-save-dialog.canceled-path",
@@ -70,8 +70,8 @@
         "macos"
       ],
       "test_path": "packages/@keld/electron/src/dialog.test.ts",
-      "test_name": "dialog.show-save-dialog.canceled-path today: no asynchronous native file-save method is exported",
-      "negative_control": "A new async showSaveDialog function on either named/default export kills this mapped absent-API case. After GH-478 inverts it: a canceled result with a nonempty filePath, or an incorrectly created/saved file, fails."
+      "test_name": "dialog.show-save-dialog.canceled-path: parented native works; parentless remains incomplete",
+      "negative_control": "Partial macOS GH478: a real parented Save chooser cancels with empty path and returns a genuine selected destination without creating or writing any file; source test checks exports, Promise and false-only securityScopedBookmarks. Parentless native Save and installed original Draw.io persistency remain unqualified; this broad corpus cell stays expected-fail. A synthesized path, file write, or bookmark authority fails."
     },
     {
       "operation_id": "dialog.show-message-box.response-checkbox",

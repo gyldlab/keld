@@ -102,11 +102,11 @@ fn kel135_macos_same_signed_profile_rejects_concurrent_owner() {
         "seed",
         "concurrency-owner",
     );
-    let state = origin
+    let owner_report = origin
         .wait_for_report("seed", Some("keld-kel135-concurrency-state"))
         .expect("owning app rendered the shared origin");
     assert_eq!(
-        state.get("local").map(String::as_str),
+        owner_report.get("local").map(String::as_str),
         Some("keld-kel135-concurrency-state")
     );
 
@@ -200,18 +200,45 @@ fn kel135_macos_binding_recovers_after_process_crash() {
     assert_store_report_matches(&report, &identity["store_uuid"]);
     let purge = run_signed_purge_report(&app, &support_root);
     assert!(purge.contains("store_absent=true"));
+    let recovered_phases = verify_binding_followup_phases(
+        stage.root(),
+        &app_root,
+        &signer,
+        &support_root,
+        &mut origin,
+    );
+    eprintln!(
+        "KELD_KEL135_MACOS_BINDING_RECOVERY os={} webkit={} team={} identifier={} uuid={} crash_phases={} result=recovered-and-opened purge=exact-identity",
+        sw_vers_value("-productVersion"),
+        webkit_version(),
+        identity["team_id"],
+        identity["signing_identifier"],
+        identity["store_uuid"],
+        recovered_phases.join(","),
+    );
+}
+
+// The two extra crash cuts retain their own real child/status and store
+// observations. The top-level scenario keeps the first durable-reverse cut.
+fn verify_binding_followup_phases(
+    stage_root: &std::path::Path,
+    app_root: &std::path::Path,
+    signer: &str,
+    support_root: &std::path::Path,
+    origin: &mut ProfileOrigin,
+) -> Vec<&'static str> {
     let mut recovered_phases = vec!["after-reverse-record"];
     for (phase, expected_status) in [("store-created", 88), ("store-verified", 89)] {
         let phase_app = build_signed_profile_app(
-            stage.root(),
-            &app_root,
+            stage_root,
+            app_root,
             &format!("ProfileAppBindingRecovery-{phase}"),
             &format!(
                 "dev.keld.fixture.profile.binding.{}.{}",
                 std::process::id(),
                 phase
             ),
-            &signer,
+            signer,
         );
         let phase_identity = run_signed_identity_report(&phase_app);
         let phase_support = support_root.join(phase);
@@ -249,13 +276,5 @@ fn kel135_macos_binding_recovers_after_process_crash() {
         assert!(run_signed_purge_report(&phase_app, &phase_support).contains("store_absent=true"));
         recovered_phases.push(phase);
     }
-    eprintln!(
-        "KELD_KEL135_MACOS_BINDING_RECOVERY os={} webkit={} team={} identifier={} uuid={} crash_phases={} result=recovered-and-opened purge=exact-identity",
-        sw_vers_value("-productVersion"),
-        webkit_version(),
-        identity["team_id"],
-        identity["signing_identifier"],
-        identity["store_uuid"],
-        recovered_phases.join(","),
-    );
+    recovered_phases
 }
