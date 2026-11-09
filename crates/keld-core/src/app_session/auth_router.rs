@@ -27,6 +27,17 @@ pub(super) struct AuthSession {
     tail: super::AtomicBool,
     ownership_fault: super::AtomicBool,
     completion: Mutex<(bool, bool)>, // (physically drained, Quit requested)
+    #[cfg(test)]
+    after_ready_publication: Mutex<Option<ReadyPublicationHold>>,
+}
+
+// A test-owned gate, per auth session. It models a worker that has already
+// written the reply but has not yet released its last physical caller lease.
+#[cfg(test)]
+struct ReadyPublicationHold {
+    correlation: CorrelationId,
+    reached: std::sync::mpsc::SyncSender<()>,
+    release: Receiver<()>,
 }
 
 impl AuthSession {
@@ -38,7 +49,35 @@ impl AuthSession {
             tail: super::AtomicBool::new(false),
             ownership_fault: super::AtomicBool::new(false),
             completion: Mutex::new((false, false)),
+            #[cfg(test)]
+            after_ready_publication: Mutex::new(None),
         })
+    }
+
+    #[cfg(test)]
+    fn hold_after_ready_publication(&self, correlation: CorrelationId) {
+        let hold = {
+            let mut armed = self
+                .after_ready_publication
+                .lock()
+                .expect("test publication hold lock poisoned");
+            if armed
+                .as_ref()
+                .is_some_and(|hold| hold.correlation == correlation)
+            {
+                armed.take()
+            } else {
+                None
+            }
+        };
+        if let Some(hold) = hold {
+            // The reply is on the real app link already. Keep the actual
+            // worker-local CallerTicket alive until the test releases it.
+            hold.reached.send(()).expect("test publication observer");
+            hold.release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("test publication gate release");
+        }
     }
 
     pub(super) fn admission(
@@ -622,6 +661,8 @@ fn dispatch_result(
                 failure,
                 handle.publish_auth(session, &ticket, response),
             );
+            #[cfg(test)]
+            session.hold_after_ready_publication(ticket.key.1);
         }
         HandleState::Pending {
             operation,
