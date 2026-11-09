@@ -73,7 +73,18 @@ struct Experiment {
 }
 
 /// Live host stderr: every line is both kept and offered to condition waits,
-/// so a test can act on a host or app marker the moment it is written.
+/// so a test can act on a host-emitted marker the moment it is written.
+///
+/// Limitation (round 3, macOS): a marker the Bun app writes to its own stderr
+/// is never live here. The runtime pipes the app's stdout and stderr
+/// (`crates/keld-runtime/src/lib.rs:1296` at `origin/main` 3503a8aa) into a
+/// bounded transcript (`CapturedOutput`, `lib.rs:295-346`), and the guardian
+/// prints that transcript to its inherited stderr only after supervision has
+/// ended (`crates/keld-host/src/main.rs:396-405`); the live forwarder
+/// `forward_direct_primary_output` in `app_session.rs` is compiled for Linux
+/// and Windows only. App markers are therefore countable after `quit`
+/// (`marker_count`) and must not be awaited live; the negative control is
+/// `gh1081_r3_nc_app_stderr_marker_not_live`.
 struct StderrTap {
     lines: mpsc::Receiver<String>,
     seen: Vec<String>,
@@ -116,14 +127,35 @@ impl StderrTap {
 
     /// Waits until `count` lines contain `marker`; the deadline is a kill switch.
     fn await_count(&mut self, marker: &str, count: usize) -> Vec<String> {
-        let deadline = Instant::now() + EVENT_DEADLINE;
+        self.try_await_count(marker, count, EVENT_DEADLINE)
+            .unwrap_or_else(|seen| {
+                panic!("host stderr {marker} x{count} before deadline; seen {seen:?}")
+            })
+    }
+
+    /// Waits at most `grace` until `count` lines contain `marker`. `Ok` holds
+    /// the matching lines; `Err` holds the matching lines seen so far, so an
+    /// absence check (a negative control) is an outcome, not a panic.
+    fn try_await_count(
+        &mut self,
+        marker: &str,
+        count: usize,
+        grace: Duration,
+    ) -> Result<Vec<String>, Vec<String>> {
+        let deadline = Instant::now() + grace;
         while self.count(marker) < count {
-            let line = self
+            match self
                 .lines
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or_else(|_| panic!("host stderr {marker} x{count} before deadline"));
-            self.seen.push(line);
+            {
+                Ok(line) => self.seen.push(line),
+                Err(_) => return Err(self.matching(marker)),
+            }
         }
+        Ok(self.matching(marker))
+    }
+
+    fn matching(&self, marker: &str) -> Vec<String> {
         self.seen
             .iter()
             .filter(|line| line.contains(marker))

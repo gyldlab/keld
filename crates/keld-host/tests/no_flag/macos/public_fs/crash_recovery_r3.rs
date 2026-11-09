@@ -4,14 +4,29 @@
 //! or throws. Same staged no-flag host, page and observer as round 1; the app
 //! body is `crash_recovery_r3_app.ts`. No production hook: every hold is an
 //! ordinary fixture HTTP wait or a block in the app's own code, every kill is a
-//! real signal, and every wait is on a journal report, a host or app stderr
-//! marker, or a kernel process state.
+//! real signal, and every wait is on a journal report, a host stderr marker,
+//! a file the app wrote, or a kernel process state (app stderr is not live on
+//! macOS; see `StderrTap`).
 use super::*;
 use crate::support::process::{await_process_state, process_state};
 
 const LINK_DETAIL: &str = "application link ended before the renderer reply";
 const API_CODE: &str = "KELD-API-001";
 const KIPC_CALL: &str = "KELD_KEL142_KIPC_CALL ";
+const MAIN_BLOCKED: &str = "KELD_GH1081_R3_MAIN_BLOCKED ";
+const AFTER_HANDLER: &str = "KELD_GH1081_R3_AFTER_HANDLER ";
+/// Grace for the negative control's absence check: a live relay would show
+/// the app's line within this after the page already saw the reply that the
+/// app wrote the line before.
+const LIVE_GRACE: Duration = Duration::from_secs(3);
+
+/// The s4 getter's live record: a file under the fixture's own temp root. Bun
+/// is not OS-sandboxed on macOS (`keld-runtime` `macos_guardian.rs`:
+/// supervisor cleanup, not App Sandbox containment), and its stderr is not
+/// live (see `StderrTap`).
+fn after_handler_marker(fixture: &PublicFsProject) -> PathBuf {
+    fixture.owned_root().join("gh1081-r3-after-handler.json")
+}
 
 impl Experiment {
     /// Launch with the round-3 app body.
@@ -27,11 +42,14 @@ impl Experiment {
             .iter()
             .map(|label| json!({"do":"invoke","label":label}))
             .collect();
+        let marker_path = serde_json::to_string(&after_handler_marker(fixture).to_string_lossy())
+            .expect("marker path JSON");
         let app = |port: &str| {
             include_str!("../../../fixtures/crash_recovery_r3_app.ts")
                 .replace("__PORT__", port)
                 .replace("__HANDLER_MODE__", mode.literal())
                 .replace("__MAIN_BLOCK__", if main_block { "true" } else { "false" })
+                .replace("__AFTER_HANDLER_MARKER__", &marker_path)
         };
         Self::launch_with(
             fixture,
@@ -152,7 +170,12 @@ fn run_crash_stage(stage: CrashStage) {
     let first = run.bun;
     let baseline = run.step();
     let mut evidence = Vec::new();
-    let successor = crash_at(&mut run, stage, &mut evidence);
+    let successor = crash_at(
+        &mut run,
+        stage,
+        &after_handler_marker(&fixture),
+        &mut evidence,
+    );
     run.admit(successor);
     run.adopt_ready(2, successor);
     let staged = run.await_count("step", 2);
@@ -191,8 +214,12 @@ fn run_crash_stage(stage: CrashStage) {
         Some(expected_detail),
     );
     let nc_other_detail = rejected_with(&staged, label, "KELD-WV-011", Some(other_detail));
+    // App stderr markers: never live (see `StderrTap`), counted from the
+    // transcript the guardian printed at exit.
+    let main_blocked = marker_count(&stderr, MAIN_BLOCKED);
+    let after_handler = marker_count(&stderr, AFTER_HANDLER);
     println!(
-        "KELD_GH1081_R3 stage={stage:?} first_bun={first} second_bun={successor} call={} first_handled={first_handled:?} successor_handled={successor_handled:?} returning={} kipc_calls={kipc_calls} renderer_admits={} verdict={verdict:?} nc_baseline={nc_baseline:?} nc_successor={nc_successor:?} nc_other_detail={nc_other_detail:?} evidence={}",
+        "KELD_GH1081_R3 stage={stage:?} first_bun={first} second_bun={successor} call={} first_handled={first_handled:?} successor_handled={successor_handled:?} returning={} kipc_calls={kipc_calls} renderer_admits={} main_blocked={main_blocked} after_handler={after_handler} verdict={verdict:?} nc_baseline={nc_baseline:?} nc_successor={nc_successor:?} nc_other_detail={nc_other_detail:?} evidence={}",
         terminal_of(&staged, label),
         phase_count(&journal, "handler-returning", first),
         marker_count(&stderr, "KELD_KEL142_RENDERER_ADMIT "),
@@ -215,6 +242,7 @@ fn run_crash_stage(stage: CrashStage) {
         phase_count(&journal, "handler-returning", first),
         usize::from(stage == CrashStage::AfterHandlerBeforeReply)
     );
+    assert_stage_markers(stage, main_blocked, after_handler);
     // Host census: only the before-send call never crossed the dispatch point.
     let expected_kipc = if stage == CrashStage::BeforeSend {
         2
@@ -225,8 +253,26 @@ fn run_crash_stage(stage: CrashStage) {
     assert_eq!(marker_count(&stderr, "KELD_KEL142_RENDERER_ADMIT "), 3);
 }
 
+/// Oracle for the app's stage-point stderr markers (post-quit counts; never
+/// live, see `StderrTap`): the app reached its point at its own stage only.
+fn assert_stage_markers(stage: CrashStage, main_blocked: usize, after_handler: usize) {
+    assert_eq!(
+        main_blocked,
+        usize::from(stage == CrashStage::AfterSendMainBlocked)
+    );
+    assert_eq!(
+        after_handler,
+        usize::from(stage == CrashStage::AfterHandlerBeforeReply)
+    );
+}
+
 /// Places the SIGKILL of G1 at `stage` and returns the held successor.
-fn crash_at(run: &mut Experiment, stage: CrashStage, evidence: &mut Vec<Value>) -> u32 {
+fn crash_at(
+    run: &mut Experiment,
+    stage: CrashStage,
+    after_handler_marker: &Path,
+    evidence: &mut Vec<Value>,
+) -> u32 {
     let first = run.bun;
     match stage {
         CrashStage::BeforeSend => {
@@ -242,8 +288,12 @@ fn crash_at(run: &mut Experiment, stage: CrashStage, evidence: &mut Vec<Value>) 
                 evidence.push(json!({"main_block_hold": hold}));
                 run.observer
                     .send_recovery_command(RecoveryCommand::RetirePending(first));
-                let blocked = run.stderr.await_count("KELD_GH1081_R3_MAIN_BLOCKED ", 1);
-                evidence.push(json!({"main_blocked": blocked}));
+                // Round-3 fix: the app reports through the journal and then
+                // parks; its stderr marker is not live (see `StderrTap`).
+                let blocking = run.await_where("main-blocking report", |report| {
+                    report["phase"] == "main-blocking" && report["pid"] == first
+                });
+                evidence.push(json!({"main_blocking": blocking}));
             } else {
                 stop_process(first);
                 evidence.push(json!({"bun_state_before_call": process_state(first)}));
@@ -270,7 +320,9 @@ fn crash_at(run: &mut Experiment, stage: CrashStage, evidence: &mut Vec<Value>) 
             let returned = run.await_where("handler returning", |report| {
                 report["phase"] == "handler-returning" && report["pid"] == first
             });
-            let encoding = run.stderr.await_count("KELD_GH1081_R3_AFTER_HANDLER ", 1);
+            // Round-3 fix: the getter runs synchronously on the parking main
+            // thread, so its live record is the file it renamed into place.
+            let encoding = await_file(after_handler_marker);
             evidence.push(json!({"handler_returning": returned, "encoder_marker": encoding}));
             let (successor, _, _) = run.crash_and_hold_successor();
             successor
@@ -301,6 +353,65 @@ fn gh1081_r3_crash_s3_during_handler() {
 #[test]
 fn gh1081_r3_crash_s4_after_handler_before_reply() {
     run_crash_stage(CrashStage::AfterHandlerBeforeReply);
+}
+
+/// The JSON the app renamed into place at `path`; the deadline is a kill
+/// switch and the poll follows `await_process_state`.
+fn await_file(path: &Path) -> Value {
+    let deadline = Instant::now() + EVENT_DEADLINE;
+    loop {
+        if let Ok(bytes) = fs::read(path) {
+            return serde_json::from_slice(&bytes).expect("app file marker JSON");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "gh1081 app file marker {} before deadline",
+            path.display()
+        );
+        thread::yield_now();
+    }
+}
+
+/// Negative control for the round-3 synchronization points: an app-emitted
+/// stderr marker is not observable live on macOS, a host-emitted one is, and
+/// the same app marker is countable after quit. Falsifier: the app's
+/// `KELD_GH1081_HANDLER` line arriving within `LIVE_GRACE` after the page
+/// already saw the reply that the handler wrote the line before.
+#[test]
+fn gh1081_r3_nc_app_stderr_marker_not_live() {
+    let labels = ["nc-stderr-live"];
+    let fixture = PublicFsProject::new(Policy::Narrow);
+    let mut run = Experiment::launch_r3(
+        &fixture,
+        "gh1081-r3-nc",
+        HandlerMode::BeforeReady,
+        false,
+        &labels,
+        true,
+    );
+    let bun = run.bun;
+    let report = run.step();
+    let host_live = run.stderr.await_count(KIPC_CALL, 1);
+    let app_live = run
+        .stderr
+        .try_await_count("KELD_GH1081_HANDLER ", 1, LIVE_GRACE);
+    let output = run.quit();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let after_quit = marker_count(&stderr, "KELD_GH1081_HANDLER ");
+    println!(
+        "KELD_GH1081_R3 arm=nc-stderr-live host_live={} app_live={app_live:?} after_quit={after_quit}",
+        host_live.len(),
+    );
+    succeeded_on(&report, labels[0], bun).expect("healthy call");
+    assert_eq!(host_live.len(), 1, "a host marker is live");
+    assert!(
+        app_live.is_err(),
+        "an app stderr marker arrived live: {app_live:?}"
+    );
+    assert_eq!(
+        after_quit, 1,
+        "the app marker is in the transcript printed at exit"
+    );
 }
 
 /// One launch with page calls and no crash.
