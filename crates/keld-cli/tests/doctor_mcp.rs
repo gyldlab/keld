@@ -387,14 +387,11 @@ fn doctor_profile_text_exit_json_and_mcp_agree_for_actual_cli_processes() {
                 .any(|line| line == expected_line.as_str()),
             "{case}: {human_text}"
         );
-        let exit = if array
-            .iter()
-            .all(|finding| finding["ok"].as_bool() == Some(true))
-        {
-            0
-        } else {
-            1
-        };
+        let exit = i32::from(
+            !array
+                .iter()
+                .all(|finding| finding["ok"].as_bool() == Some(true)),
+        );
         assert_eq!(human.status.code(), Some(exit), "{case}: {human_text}");
         assert_eq!(json.status.code(), Some(exit), "{case}: {findings}");
 

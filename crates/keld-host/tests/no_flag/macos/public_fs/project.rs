@@ -488,10 +488,23 @@ impl PublicFsProject {
                 &serde_json::to_string(CONTENT).expect("content JSON"),
             );
         assert!(!body.contains("WorkerLink") && !body.contains("invokeFs"));
+        let profile_entry = self.profile_entry_source();
+        bundle_public_api_entry(
+            &self.project,
+            &self.repo,
+            "kel140-public-fs",
+            &format!(
+                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{profile_entry}{body}"
+            ),
+        );
+        self.prepare_renderer_page(exercise, port, recovery);
+    }
+
+    fn profile_entry_source(&self) -> String {
         // First application-body statement after static ESM imports. It
         // precedes handler registration and app.whenReady(); rejected Strict
         // candidates must not write the test-owned marker.
-        let profile_entry = if self.has_declared_profile() {
+        if self.has_declared_profile() {
             let marker = serde_json::to_string(&self.profile_entry_marker().to_string_lossy())
                 .expect("JSON-quote the test-owned entry marker");
             let causal = self.profile_stderr_file().map_or_else(String::new, |path| {
@@ -513,16 +526,7 @@ impl PublicFsProject {
             )
         } else {
             String::new()
-        };
-        bundle_public_api_entry(
-            &self.project,
-            &self.repo,
-            "kel140-public-fs",
-            &format!(
-                "import {{ app, channels, echoChannel, fs, isCallError }} from {api};\n{profile_entry}{body}"
-            ),
-        );
-        self.prepare_renderer_page(exercise, port, recovery);
+        }
     }
 
     fn prepare_renderer_page(
