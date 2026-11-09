@@ -657,7 +657,7 @@ pub(crate) fn run_x6(
     let title = title("X6");
     let mut spec = LaunchSpec::new(arm, &setup.root.join("index.html"), &title, scheme);
     spec.host = String::from("x6");
-    spec.handler = handler.to_owned();
+    handler.clone_into(&mut spec.handler);
     spec.root = Some(setup.root.clone());
     spec.filter = filter.map(ToOwned::to_owned);
     let deadline = Instant::now() + LAB_DEADLINE;
@@ -668,11 +668,12 @@ pub(crate) fn run_x6(
         let before = served_count(lab.command("served", deadline).as_deref());
         let beat = probe.poll(deadline);
         let after = lab.command("served", deadline);
-        let handled: Vec<String> = served_entries(after.as_deref())
+        let new_entries: Vec<String> = served_entries(after.as_deref())
             .into_iter()
             .skip(before)
             .collect();
-        results.push(json!({"vector": name, "url": url, "page": beat["res"], "handler": handled}));
+        results
+            .push(json!({"vector": name, "url": url, "page": beat["res"], "handler": new_entries}));
     }
     lab.drain_events(Duration::from_millis(300));
     let requests = lab.events_with("EV req");
