@@ -802,12 +802,9 @@ impl WindowsSuspendedChild {
         let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
         let is_app_container = query_token_u32(&token, TokenIsAppContainer, "TokenIsAppContainer")
             .map_err(|error| error.in_launch(self.launch))?;
-        let (capabilities, returned) =
-            query_token_buffer(&token, TokenCapabilities, "TokenCapabilities")
-                .map_err(|error| error.in_launch(self.launch))?;
         // The reported byte count and declared group entries must both fit the
         // live token buffer before any capability count can be admitted.
-        let capability_count = token_capability_count(&capabilities, returned)
+        let capability_count = token_group_count(&token, TokenCapabilities, "TokenCapabilities")
             .map_err(|error| error.in_launch(self.launch))?;
         Ok(WindowsLpacTokenObservation {
             is_app_container: is_app_container != 0,
@@ -1139,45 +1136,56 @@ fn query_token_u32(
     Ok(value)
 }
 
-/// Caps the untrusted first Win32 token-information size before allocation.
-fn token_buffer_words(requested: u32, phase: &'static str) -> Result<usize, WindowsLpacError> {
-    const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
-    let bytes = usize::try_from(requested)
-        .map_err(|_| WindowsLpacError::contract(phase, "token information length exceeds usize"))?;
-    if bytes == 0 || bytes > MAX_TOKEN_INFORMATION_BYTES {
-        return Err(WindowsLpacError::contract(
-            phase,
-            "token information size is zero or exceeds 1 MiB",
-        ));
-    }
-    Ok(bytes.div_ceil(std::mem::size_of::<usize>()))
+/// Allocates the second query's buffer through keld-guard's one Windows
+/// token-information bound, which refuses the untrusted first size report
+/// before any allocation.
+fn token_storage(
+    required: u32,
+    phase: &'static str,
+) -> Result<(Vec<usize>, u32), WindowsLpacError> {
+    keld_guard::bounded_token_information_buffer(required)
+        .map_err(|error| WindowsLpacError::contract(phase, error.to_string()))
 }
 
-/// Reads only the capability count after bounding its entire declared record
+/// Reads the `TOKEN_GROUPS` entry count of one token class (`TokenCapabilities`
+/// for [`WindowsSuspendedChild::observe_token`]) through the bounded read.
+fn token_group_count(
+    token: &OwnedHandle,
+    class: i32,
+    phase: &'static str,
+) -> Result<u32, WindowsLpacError> {
+    let (storage, returned) = query_token_buffer(token, class, phase)?;
+    token_groups_count(&storage, returned, phase)
+}
+
+/// Reads only the group count after bounding its entire declared record
 /// against Win32's actual returned byte length (not the rounded allocation).
-fn token_capability_count(storage: &[usize], returned: usize) -> Result<u32, WindowsLpacError> {
-    const PHASE: &str = "TokenCapabilities";
+fn token_groups_count(
+    storage: &[usize],
+    returned: usize,
+    phase: &'static str,
+) -> Result<u32, WindowsLpacError> {
     let header = std::mem::offset_of!(TOKEN_GROUPS, Groups);
     if returned < header || returned > std::mem::size_of_val(storage) {
         return Err(WindowsLpacError::contract(
-            PHASE,
-            "token capability header or returned length is invalid",
+            phase,
+            "token group header or returned length is invalid",
         ));
     }
     let first = storage
         .first()
-        .ok_or_else(|| WindowsLpacError::contract(PHASE, "token capability buffer is empty"))?;
+        .ok_or_else(|| WindowsLpacError::contract(phase, "token group buffer is empty"))?;
     let word = first.to_ne_bytes();
     let count = u32::from_ne_bytes([word[0], word[1], word[2], word[3]]);
     let members = usize::try_from(count)
         .ok()
         .and_then(|count| count.checked_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>()))
         .and_then(|size| header.checked_add(size))
-        .ok_or_else(|| WindowsLpacError::contract(PHASE, "token capability count overflow"))?;
+        .ok_or_else(|| WindowsLpacError::contract(phase, "token group count overflow"))?;
     if members > returned {
         return Err(WindowsLpacError::contract(
-            PHASE,
-            "declared token capability entries exceed returned bytes",
+            phase,
+            "declared token group entries exceed returned bytes",
         ));
     }
     Ok(count)
@@ -1202,17 +1210,17 @@ fn query_token_buffer(
     if required == 0 {
         return Err(WindowsLpacError::last_os(phase));
     }
-    let words = token_buffer_words(required, phase)?;
-    let mut storage = vec![0_usize; words];
+    let (mut storage, capacity) = token_storage(required, phase)?;
     let mut returned = 0_u32;
-    // SAFETY: aligned storage holds at least `required` writable bytes; the
-    // caller validates `returned` before interpreting the token structure.
+    // SAFETY: aligned storage holds `capacity` writable bytes, at least
+    // `required`; the caller validates `returned` before interpreting the
+    // token structure.
     if unsafe {
         GetTokenInformation(
             token.as_raw_handle().cast(),
             class,
             storage.as_mut_ptr().cast(),
-            required,
+            capacity,
             &raw mut returned,
         )
     } == 0
@@ -1269,23 +1277,35 @@ mod tests {
     use super::{InheritedHandleCopies, WindowsSuspendedChild};
 
     #[test]
-    fn lpac_token_size_report_is_bounded_before_allocation() {
+    fn lpac_token_size_report_is_bounded_by_the_guard_owner_before_allocation() {
         let phase = "test TokenCapabilities";
         let word = std::mem::size_of::<usize>();
-        let max = 1024_u32 * 1024;
-        assert_eq!(super::token_buffer_words(1, phase).expect("one byte"), 1);
+        let max = u32::try_from(keld_guard::MAX_TOKEN_INFORMATION_BYTES).expect("bound fits u32");
         assert_eq!(
-            super::token_buffer_words(max, phase).expect("one MiB cap admitted"),
+            max,
+            1024 * 1024,
+            "the one owner keeps the reviewed 1 MiB bound"
+        );
+        let (storage, capacity) = super::token_storage(1, phase).expect("one byte");
+        assert_eq!(
+            (storage.len(), usize::try_from(capacity).expect("fits")),
+            (1, word)
+        );
+        let (storage, capacity) = super::token_storage(max, phase).expect("one MiB cap admitted");
+        assert_eq!(
+            storage.len(),
             usize::try_from(max).expect("u32 fits usize") / word
         );
+        assert_eq!(capacity, max);
         for required in [max + 1, u32::MAX] {
-            let refusal = super::token_buffer_words(required, phase)
-                .expect_err("untrusted oversized token count must be refused before allocation");
-            assert!(
-                refusal
-                    .to_string()
-                    .contains("token information size is zero or exceeds 1 MiB"),
-                "{refusal}"
+            assert_eq!(
+                super::token_storage(required, phase)
+                    .expect_err("untrusted oversized token count must be refused before allocation")
+                    .to_string(),
+                "KELD-RUNTIME-015: Windows LPAC admission failed during test TokenCapabilities: \
+                 token information request exceeds 1 MiB. Do not start an unconfined \
+                 replacement; repair the profile, ACL, or handle list.",
+                "required {required}"
             );
         }
     }
@@ -1294,40 +1314,112 @@ mod tests {
     fn lpac_capability_count_checks_returned_header_and_declared_group_members() {
         use windows_sys::Win32::Security::{SID_AND_ATTRIBUTES, TOKEN_GROUPS};
 
+        let phase = "TokenCapabilities";
         let header = std::mem::offset_of!(TOKEN_GROUPS, Groups);
         let group_bytes = std::mem::size_of::<SID_AND_ATTRIBUTES>();
         let mut backing = [0_usize; 8];
         assert_eq!(
-            super::token_capability_count(&backing, header).expect("zero capabilities"),
+            super::token_groups_count(&backing, header, phase).expect("zero capabilities"),
             0
         );
         backing[0] = 2;
         assert_eq!(
-            super::token_capability_count(&backing, header + 2 * group_bytes)
+            super::token_groups_count(&backing, header + 2 * group_bytes, phase)
                 .expect("complete two-member returned span"),
             2
         );
         for returned in [header, header + group_bytes, header + 2 * group_bytes - 1] {
-            let refusal = super::token_capability_count(&backing, returned)
+            let refusal = super::token_groups_count(&backing, returned, phase)
                 .expect_err("a declared capability outside returned bytes must refuse");
             assert!(
-                refusal
-                    .to_string()
-                    .contains("declared token capability entries exceed returned bytes"),
+                refusal.to_string().contains(
+                    "TokenCapabilities: declared token group entries exceed returned bytes"
+                ),
                 "{refusal}"
             );
         }
         backing[0] = 0;
         for returned in [0, header - 1, std::mem::size_of_val(&backing) + 1] {
-            let refusal = super::token_capability_count(&backing, returned)
+            let refusal = super::token_groups_count(&backing, returned, phase)
                 .expect_err("invalid returned count or incomplete TOKEN_GROUPS header");
             assert!(
-                refusal
-                    .to_string()
-                    .contains("token capability header or returned length is invalid"),
+                refusal.to_string().contains(
+                    "TokenCapabilities: token group header or returned length is invalid"
+                ),
                 "{refusal}"
             );
         }
+    }
+
+    /// The native bounded read that `observe_token` uses, against real kernel
+    /// `TOKEN_GROUPS` answers: this process's `TokenGroups` (many entries) and
+    /// `TokenCapabilities` (none, outside an `AppContainer`) match an
+    /// independent fixed-buffer read, and a returned span cut inside the real
+    /// declared entries is refused.
+    #[test]
+    fn native_token_group_read_matches_an_independent_kernel_read() {
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_QUERY, TokenCapabilities,
+            TokenGroups,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let mut raw_token = std::ptr::null_mut();
+        // SAFETY: the current-process pseudo-handle needs no close; the output
+        // receives one owned token handle on success.
+        let opened =
+            unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut raw_token) };
+        assert!(opened != 0 && !raw_token.is_null(), "open own token");
+        // SAFETY: fresh non-null owning token handle converted once.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token.cast()) };
+        let oracle = |class: i32| -> u32 {
+            let mut storage = vec![0_usize; 64 * 1024 / std::mem::size_of::<usize>()];
+            let capacity = u32::try_from(std::mem::size_of_val(storage.as_slice())).expect("fits");
+            let mut returned = 0_u32;
+            // SAFETY: live token; aligned writable storage of `capacity` bytes.
+            let ok = unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle().cast(),
+                    class,
+                    storage.as_mut_ptr().cast(),
+                    capacity,
+                    &raw mut returned,
+                )
+            };
+            assert_ne!(ok, 0, "independent fixed-buffer token read");
+            // SAFETY: the kernel filled an aligned TOKEN_GROUPS header.
+            unsafe { (*storage.as_ptr().cast::<TOKEN_GROUPS>()).GroupCount }
+        };
+
+        let groups = super::token_group_count(&token, TokenGroups, "TokenGroups")
+            .expect("bounded native TokenGroups read");
+        assert!(groups > 0, "a process token belongs to groups");
+        assert_eq!(groups, oracle(TokenGroups));
+        assert_eq!(
+            super::token_group_count(&token, TokenCapabilities, "TokenCapabilities")
+                .expect("bounded native TokenCapabilities read"),
+            oracle(TokenCapabilities)
+        );
+
+        let (storage, returned) = super::query_token_buffer(&token, TokenGroups, "TokenGroups")
+            .expect("bounded native TokenGroups buffer");
+        let declared = std::mem::offset_of!(TOKEN_GROUPS, Groups)
+            + usize::try_from(groups).expect("fits") * std::mem::size_of::<SID_AND_ATTRIBUTES>();
+        assert!(
+            declared <= returned,
+            "the kernel's declared entries fit its returned span"
+        );
+        assert_eq!(
+            super::token_groups_count(&storage, declared, "TokenGroups").expect("exact span"),
+            groups
+        );
+        assert!(
+            super::token_groups_count(&storage, declared - 1, "TokenGroups")
+                .expect_err("a span cut inside the real entries must refuse")
+                .to_string()
+                .contains("TokenGroups: declared token group entries exceed returned bytes")
+        );
     }
 
     #[test]

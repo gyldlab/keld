@@ -32,7 +32,14 @@ use windows_sys::Win32::System::Threading::{
 
 const ADMINISTRATORS_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 5];
 const ADMINISTRATORS_SUB_AUTHORITIES: [u32; 2] = [32, 544];
-const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
+/// The largest variable-length `GetTokenInformation` buffer any Keld Windows token reader
+/// allocates: 1 MiB.
+///
+/// The first query's required length is an untrusted size report. Every variable-length
+/// class read sizes its buffer through [`bounded_token_information_buffer`], so every Keld
+/// Windows token reader that uses it admits the same tokens.
+/// Fixed-size classes are read into their own structure and never use this bound.
+pub const MAX_TOKEN_INFORMATION_BYTES: usize = 1024 * 1024;
 mod refusals;
 pub use refusals::WindowsTokenError;
 
@@ -343,25 +350,7 @@ fn query_token_information(
     if code != ERROR_INSUFFICIENT_BUFFER || required == 0 {
         return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }
-    let byte_len = usize::try_from(required)
-        .map_err(|_| io::Error::other("token-information buffer size overflow"))?;
-    if byte_len > MAX_TOKEN_INFORMATION_BYTES {
-        return Err(io::Error::other(
-            "token-information buffer exceeds the safety bound",
-        ));
-    }
-    let word_size = size_of::<usize>();
-    let word_count = byte_len
-        .checked_add(word_size - 1)
-        .ok_or_else(|| io::Error::other("token-information allocation size overflow"))?
-        / word_size;
-    let mut storage = vec![0usize; word_count];
-    let capacity = u32::try_from(
-        word_count
-            .checked_mul(word_size)
-            .ok_or_else(|| io::Error::other("token-information allocation size overflow"))?,
-    )
-    .map_err(|_| io::Error::other("token-information allocation exceeds Win32 limits"))?;
+    let (mut storage, capacity) = bounded_token_information_buffer(required)?;
     let mut returned = 0;
     // SAFETY: the allocation is word-aligned and at least `required` bytes long. The
     // OS fills no more than `capacity`; `returned` is writable output storage.
@@ -380,16 +369,44 @@ fn query_token_information(
             unsafe { GetLastError() }.cast_signed(),
         ));
     }
-    let returned = usize::try_from(returned)
-        .map_err(|_| io::Error::other("token-information returned size overflow"))?;
-    let capacity = usize::try_from(capacity)
-        .map_err(|_| io::Error::other("token-information capacity conversion overflow"))?;
-    if returned > byte_len || returned > capacity {
+    if returned > required || returned > capacity {
         return Err(io::Error::other(
             "token-information returned size exceeds its buffer",
         ));
     }
+    let returned = usize::try_from(returned)
+        .map_err(|_| io::Error::other("token-information returned size overflow"))?;
     Ok((storage, returned))
+}
+
+/// Allocates the zeroed, `usize`-aligned buffer for the second `GetTokenInformation`
+/// query of a variable-length class, and returns it with its byte capacity.
+///
+/// `required` is the length the first (null-buffer) query reported. It is refused
+/// before any allocation when it exceeds [`MAX_TOKEN_INFORMATION_BYTES`]; otherwise it
+/// is rounded up to whole words, so the capacity is at least `required` and at most
+/// the bound.
+///
+/// # Errors
+///
+/// Returns an error, and allocates nothing, when `required` exceeds
+/// [`MAX_TOKEN_INFORMATION_BYTES`] or its rounded size does not fit a Win32 `u32`
+/// length.
+pub fn bounded_token_information_buffer(required: u32) -> io::Result<(Vec<usize>, u32)> {
+    let bytes = usize::try_from(required)
+        .map_err(|_| io::Error::other("token-information buffer size overflow"))?;
+    if bytes > MAX_TOKEN_INFORMATION_BYTES {
+        return Err(io::Error::other("token information request exceeds 1 MiB"));
+    }
+    let word_size = size_of::<usize>();
+    let word_count = bytes.div_ceil(word_size);
+    let capacity = u32::try_from(
+        word_count
+            .checked_mul(word_size)
+            .ok_or_else(|| io::Error::other("token-information allocation size overflow"))?,
+    )
+    .map_err(|_| io::Error::other("token-information allocation exceeds Win32 limits"))?;
+    Ok((vec![0usize; word_count], capacity))
 }
 
 fn validate_administrators_group(storage: &[usize], returned: usize) -> io::Result<()> {
@@ -735,6 +752,39 @@ mod tests {
         LUID {
             LowPart: SE_IMPERSONATE_PRIVILEGE_VALUE,
             HighPart: 0,
+        }
+    }
+
+    /// The one Windows token-information bound: sizes round up to whole words, the exact
+    /// bound is admitted, and anything larger is refused before an allocation.
+    #[test]
+    fn token_information_buffer_rounds_to_words_within_the_one_mib_bound() {
+        let word = size_of::<usize>();
+        let word_u32 = u32::try_from(word).expect("word fits u32");
+        for required in [1, word_u32 - 1, word_u32, word_u32 + 1] {
+            let (storage, capacity) =
+                bounded_token_information_buffer(required).expect("small size is admitted");
+            let capacity_bytes = usize::try_from(capacity).expect("capacity fits usize");
+            assert_eq!(storage.len() * word, capacity_bytes, "required {required}");
+            assert!(
+                capacity >= required && capacity - required < word_u32,
+                "required {required} rounds up to the next word, got {capacity}"
+            );
+            assert!(storage.iter().all(|&slot| slot == 0), "zeroed storage");
+        }
+        let bound = u32::try_from(MAX_TOKEN_INFORMATION_BYTES).expect("bound fits u32");
+        assert_eq!(bound, 1024 * 1024);
+        let (_, capacity) =
+            bounded_token_information_buffer(bound).expect("the exact bound is admitted");
+        assert_eq!(capacity, bound);
+        for required in [bound + 1, u32::MAX] {
+            assert_eq!(
+                bounded_token_information_buffer(required)
+                    .expect_err("a size over the bound never reaches an allocation")
+                    .to_string(),
+                "token information request exceeds 1 MiB",
+                "required {required}"
+            );
         }
     }
 
