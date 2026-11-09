@@ -136,9 +136,9 @@ impl From<keld_core::HelloSessionError> for DevError {
         let rendered = value.to_string();
         match value {
             keld_core::HelloSessionError::WindowPhase { .. } => Self::WindowPhase(rendered),
+            keld_core::HelloSessionError::Manifest(_)
+            | keld_core::HelloSessionError::Profile(_) => Self::Doctor(rendered),
             keld_core::HelloSessionError::Io(_)
-            | keld_core::HelloSessionError::Manifest(_)
-            | keld_core::HelloSessionError::Profile(_)
             | keld_core::HelloSessionError::Runtime(_)
             | keld_core::HelloSessionError::Timeout { .. }
             | keld_core::HelloSessionError::MarkerPossiblyElided { .. } => Self::Runtime(rendered),
@@ -918,6 +918,39 @@ mod tests {
     use std::fs;
     #[cfg(windows)]
     use std::time::Instant;
+
+    #[test]
+    fn diagnostic_profile_errors_preserve_the_original_code_and_fix() {
+        let project = tempfile::tempdir().expect("owned diagnostic project");
+        for (policy, code) in [
+            (r#"{"profile":null}"#, "KELD-GUARD005"),
+            (r#"{"profile":"strict"}"#, "KELD-CORE-035"),
+            (r#"{"profile":"legacy"}"#, "KELD-CORE-035"),
+        ] {
+            fs::write(project.path().join("keld.permissions.jsonc"), policy)
+                .expect("test-owned source policy");
+            let source = HostOwnedHelloSession::start(
+                project.path(),
+                project.path().join("must-not-execute.ts"),
+                RestartPolicy::default(),
+            )
+            .expect_err("policy must refuse before opening a diagnostic child");
+            let expected = source.to_string();
+            assert!(expected.starts_with(code), "{expected}");
+            let converted = DevError::from(source);
+            assert!(
+                matches!(&converted, DevError::Doctor(_)),
+                "preflight failure must not become a window-phase failure: {converted:?}"
+            );
+            let actual = converted.to_string();
+            assert_eq!(
+                actual, expected,
+                "CLI must preserve the owning error verbatim"
+            );
+            assert!(!actual.contains("KELD-CLI-031"), "{actual}");
+            assert!(!actual.contains("Re-run `keld doctor`"), "{actual}");
+        }
+    }
 
     fn window_phase_failure() -> keld_core::HelloSessionError {
         keld_core::HelloSessionError::WindowPhase {

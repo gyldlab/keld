@@ -341,8 +341,14 @@ fn root_profile_is_refused_at_literal_and_method_heads() {
         let error = auth_configuration_from_config_ts(source)
             .expect_err("root security profile must not be silently ignored");
         let rendered = error.to_string();
-        assert!(rendered.starts_with("KELD-CORE-035:"), "{source}: {rendered}");
-        assert!(rendered.contains("keld.permissions.jsonc"), "{source}: {rendered}");
+        assert!(
+            rendered.starts_with("KELD-CORE-035:"),
+            "{source}: {rendered}"
+        );
+        assert!(
+            rendered.contains("keld.permissions.jsonc"),
+            "{source}: {rendered}"
+        );
     }
 }
 
@@ -361,7 +367,10 @@ fn root_initial_window_is_refused_until_facade_integration() {
         let error = auth_configuration_from_config_ts(source)
             .expect_err("unsupported facade selector must fail before staging");
         let rendered = error.to_string();
-        assert!(rendered.starts_with("KELD-CORE-035:"), "{source}: {rendered}");
+        assert!(
+            rendered.starts_with("KELD-CORE-035:"),
+            "{source}: {rendered}"
+        );
         assert!(rendered.contains("GH #446"), "{source}: {rendered}");
     }
 }
@@ -428,7 +437,11 @@ fn generic_type_commas_are_not_root_keys_but_relational_commas_are() {
     let parsed = auth_configuration_from_config_ts(auth_source)
         .expect("real root auth is extracted after generic arguments");
     assert_eq!(
-        parsed.get("entra-common").expect("actual root auth").client_id.as_deref(),
+        parsed
+            .get("entra-common")
+            .expect("actual root auth")
+            .client_id
+            .as_deref(),
         Some("kept")
     );
     for source in [
@@ -440,18 +453,24 @@ fn generic_type_commas_are_not_root_keys_but_relational_commas_are() {
             .expect_err("genuine root key after expression must be rejected");
         assert!(error.to_string().starts_with("KELD-CORE-035:"), "{source}");
     }
-    let relational_auth = "export default { other: a < b, auth: { 'entra-common': { clientId: 'root' } } };";
+    let relational_auth =
+        "export default { other: a < b, auth: { 'entra-common': { clientId: 'root' } } };";
     let parsed = auth_configuration_from_config_ts(relational_auth)
         .expect("relational less-than leaves real root auth visible");
     assert_eq!(
-        parsed.get("entra-common").expect("real auth").client_id.as_deref(),
+        parsed
+            .get("entra-common")
+            .expect("real auth")
+            .client_id
+            .as_deref(),
         Some("root")
     );
 }
 
 #[test]
 fn escaped_root_auth_still_uses_the_original_literal_value_parser() {
-    let source = r"export default { a\u0075th: { 'entra-common': { clientId: 'still-literal' } } };";
+    let source =
+        r"export default { a\u0075th: { 'entra-common': { clientId: 'still-literal' } } };";
     let configuration = auth_configuration_from_config_ts(source)
         .expect("escaped auth identifier denotes the original auth key");
     assert_eq!(

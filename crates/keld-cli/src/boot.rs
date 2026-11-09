@@ -1444,13 +1444,15 @@ mod tests {
     #[test]
     fn linux_project_policy_does_not_change_historical_staged_policy() {
         let (_temp, project, source_host) = fixture();
-        fs::write(project.join(PERMISSIONS_FILE), b"explicit project bytes\n")
-            .expect("unselected Linux project policy");
+        let project_policy = br#"{"app":{"fs":{"read":["/tmp/keld-policy/**"]}}}"#;
+        fs::write(project.join(PERMISSIONS_FILE), project_policy)
+            .expect("valid unselected Linux project policy");
         let stage = stage_dev_boot(&project, &source_host).expect("unchanged Linux stage");
         assert_eq!(
             fs::read(stage.root().join(PERMISSIONS_FILE)).expect("fixed Linux policy"),
             b"{}\n"
         );
+        assert_ne!(project_policy.as_slice(), b"{}\n");
     }
 
     #[test]
@@ -1538,8 +1540,7 @@ mod tests {
     #[test]
     fn failed_stage_removes_partial_launch_directory() {
         let (_temp, project, source_host) = fixture();
-        fs::write(project.join("keld.permissions.jsonc"), "entry collision\n")
-            .expect("colliding entry source");
+        fs::write(project.join("keld.permissions.jsonc"), b"{}\n").expect("colliding entry source");
         fs::write(
             project.join("keld.config.ts"),
             "export default {\n  name: \"Stage Fixture\",\n  entry: \"keld.permissions.jsonc\",\n  renderer: \"index.html\",\n} as const;\n",
@@ -1547,9 +1548,20 @@ mod tests {
         .expect("collision config");
         let error = stage_dev_boot(&project, &source_host)
             .expect_err("fixed permissions destination collision must fail");
-        assert!(error.to_string().contains("permissions"), "{error}");
+        assert!(
+            matches!(
+                error,
+                BootCompileError::Staging {
+                    phase: "permissions",
+                    ..
+                }
+            ),
+            "collision must fail at the post-root permissions write: {error}"
+        );
         let dev_root = project.join(".keld/dev");
-        let children = fs::read_dir(&dev_root).map_or(0, std::iter::Iterator::count);
+        let children = fs::read_dir(&dev_root)
+            .expect("collision must occur after the stage parent was created")
+            .count();
         assert_eq!(
             children, 0,
             "post-root failure leaked a partial launch stage"
