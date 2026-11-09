@@ -1319,6 +1319,34 @@ mod tests {
     }
 
     #[test]
+    fn facade_with_explicit_profile_refuses_without_staging_or_policy_stripping() {
+        for profile in ["strict", "legacy"] {
+            let (_temp, project, source_host) = fixture();
+            fs::write(
+                project.join("keld.config.ts"),
+                "export default { name: 'Fixture', entry: 'src/main.ts', initialWindow: 'none' };",
+            )
+            .expect("facade configuration");
+            let policy = format!(r#"{{"profile":"{profile}"}}"#);
+            fs::write(project.join(super::PERMISSIONS_FILE), policy.as_bytes())
+                .expect("explicit source request");
+            let error = stage_dev_boot(&project, &source_host)
+                .expect_err("facade/profile composition remains unsupported");
+            assert!(error.to_string().starts_with("KELD-CLI-047"), "{error}");
+            #[cfg(target_os = "macos")]
+            assert!(error.to_string().contains("schema 4"), "{error}");
+            assert!(
+                !project.join(".keld").exists(),
+                "refuse before stage allocation"
+            );
+            assert_eq!(
+                fs::read(project.join(super::PERMISSIONS_FILE)).expect("policy retained"),
+                policy.as_bytes()
+            );
+        }
+    }
+
+    #[test]
     fn facade_stage_refuses_conflicting_renderer_before_creating_stage() {
         let (_temp, project, source_host) = fixture();
         fs::write(

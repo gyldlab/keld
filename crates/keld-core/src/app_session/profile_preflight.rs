@@ -30,7 +30,8 @@ pub(super) fn validate_renderer_profile(
 ) -> Result<ProfileState, HostAppError> {
     let manifest = verified.manifest();
     if !(schema == super::renderer_boot_schema(manifest.declared_profile())
-        || (schema == 2 && manifest.declared_profile().is_none() && !diagnostic)) {
+        || (schema == 2 && manifest.declared_profile().is_none() && !diagnostic))
+    {
         return Err(super::boot_error(
             "boot schema and verified /profile presence disagree",
             "Recompile the same policy and window mode with a matching host; never strip the declaration or downgrade the schema.",

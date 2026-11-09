@@ -1,4 +1,4 @@
-use super::auth_configuration_from_config_ts;
+use super::{auth_configuration_from_config_ts, initial_window_from_config_ts};
 
 #[test]
 fn static_auth_literal_preserves_credentials_and_redirect() {
@@ -353,25 +353,33 @@ fn root_profile_is_refused_at_literal_and_method_heads() {
 }
 
 #[test]
-fn root_initial_window_is_refused_until_facade_integration() {
+fn root_initial_window_uses_existing_facade_owner_without_profile_fallback() {
     for source in [
         "export default { initialWindow: 'none' };",
-        "export default { initialWindow: makeWindow() };",
         r#"export default { "initialWindow": "none" };"#,
+    ] {
+        assert!(initial_window_from_config_ts(source).expect("supported profile-free facade"));
+        assert!(
+            auth_configuration_from_config_ts(source)
+                .expect("no auth carrier")
+                .is_empty()
+        );
+    }
+    for source in [
+        "export default { initialWindow: makeWindow() };",
         r"export default { initialW\u0069ndow: 'none' };",
         r"export default { ['initial\u0057indow']: 'none' };",
         "export default { get initialWindow() { return 'none' } };",
         "export default { async *initialWindow() {} };",
         "export default { auth: {}, initialWindow: 'none' };",
+        "export default { profile: 'legacy', initialWindow: 'none' };",
     ] {
-        let error = auth_configuration_from_config_ts(source)
-            .expect_err("unsupported facade selector must fail before staging");
-        let rendered = error.to_string();
+        let error = initial_window_from_config_ts(source)
+            .expect_err("invalid facade declaration cannot fall back to renderer");
         assert!(
-            rendered.starts_with("KELD-CORE-035:"),
-            "{source}: {rendered}"
+            error.to_string().starts_with("KELD-CORE-035:"),
+            "{source}: {error}"
         );
-        assert!(rendered.contains("GH #446"), "{source}: {rendered}");
     }
 }
 
@@ -447,12 +455,17 @@ fn generic_type_commas_are_not_root_keys_but_relational_commas_are() {
     for source in [
         "export default { other: a < b, profile: 'legacy' };",
         "export default { other: id<A, profile>(7), profile: 'legacy' };",
-        "export default { other: id<A, auth>(7), initialWindow: 'none' };",
     ] {
         let error = auth_configuration_from_config_ts(source)
             .expect_err("genuine root key after expression must be rejected");
         assert!(error.to_string().starts_with("KELD-CORE-035:"), "{source}");
     }
+    assert!(
+        initial_window_from_config_ts(
+            "export default { other: id<A, auth>(7), initialWindow: 'none' };"
+        )
+        .expect("generic arguments do not hide the genuine facade selector")
+    );
     let relational_auth =
         "export default { other: a < b, auth: { 'entra-common': { clientId: 'root' } } };";
     let parsed = auth_configuration_from_config_ts(relational_auth)

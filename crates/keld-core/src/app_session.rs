@@ -3,11 +3,11 @@
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 mod boot_contract;
 mod error;
+mod profile_preflight;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_registry;
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
 mod window_router;
-mod profile_preflight;
 #[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 pub use self::boot_contract::renderer_boot_schema;
 pub use self::error::HostAppError;

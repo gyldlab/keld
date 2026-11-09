@@ -33,7 +33,8 @@ use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_
 
 use crate::boot::{ProjectOwnershipError, ensure_current_principal_owns};
 use crate::doctor::{
-    launch_check_ok, facade_mode_for_project, renderer_load_message, renderer_path_problem, run_checks,
+    facade_mode_for_project, launch_check_ok, renderer_load_message, renderer_path_problem,
+    run_checks,
 };
 
 pub use crate::doctor::RENDERER_LOAD_CODE;

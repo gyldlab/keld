@@ -8,7 +8,9 @@ fn renderer_profile_boot_uses_schema_three_without_repurposing_facade_schema_two
         "fixture must actually exercise version3"
     );
     let parsed = parse_boot_bytes(version_three.as_bytes()).expect("renderer/profile schema3");
-    assert_eq!(parsed.renderer, Path::new("index.html"));
+    assert!(
+        matches!(parsed.initial, InitialWindow::Renderer(ref path) if path == Path::new("index.html"))
+    );
     for unsupported in [2, 4, 5, 255] {
         let input = bytes.replace("\"schema\":1", &format!("\"schema\":{unsupported}"));
         let error = must_err(
@@ -79,7 +81,9 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                 let result = super::profile_preflight::validate_renderer_profile(
                     schema, &verified, diagnostic,
                 );
-                if schema != expected_schema || (explicit && diagnostic) {
+                let supported =
+                    schema == expected_schema || (!explicit && schema == 2 && !diagnostic);
+                if !supported || (explicit && diagnostic) {
                     assert_eq!(
                         result.expect_err("preflight mismatch").code(),
                         "KELD-CORE-035",
