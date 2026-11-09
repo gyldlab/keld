@@ -375,9 +375,9 @@ jobs:
             for iteration in $(seq 1 "$GH1081_ITERATIONS"); do
               echo "GH1081_ITERATION_BEGIN $iteration/$GH1081_ITERATIONS os=${{ matrix.os }} sha=$GITHUB_SHA"
               if [ "${{ matrix.os }}" = ubuntu-latest ]; then
-                xvfb-run -a cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail -E "$filter" || failed=$((failed + 1))
+                xvfb-run -a cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
               else
-                cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail -E "$filter" || failed=$((failed + 1))
+                cargo nextest run -p keld-host --profile ci --no-fail-fast --no-tests=fail --success-output immediate -E "$filter" || failed=$((failed + 1))
               fi
               echo "GH1081_ITERATION_END $iteration/$GH1081_ITERATIONS failed_iterations=$failed"
             done

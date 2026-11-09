@@ -91,6 +91,24 @@ fn launch(stage: &keld_cli::boot::DevBootStage, control: &Path) -> Child {
         .expect("launch gh1081 Linux host")
 }
 
+/// `READY ECHO1 ECHO2`, or the host's own stderr when the generation never
+/// reaches them (the host's diagnostic is the evidence, not the read timeout).
+fn ready_or_host_failure(reader: &mut BufReader<UnixStream>, host: &mut Child) {
+    let ready = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        expect_ready_and_echoes(reader);
+    }));
+    if let Err(failure) = ready {
+        let _ = host.kill();
+        let _ = host.wait();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = host.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        eprintln!("KELD_GH1081_E6_HOST_STDERR {stderr}");
+        std::panic::resume_unwind(failure);
+    }
+}
+
 /// A product fixture whose window title is unique to this run, so the X11
 /// census cannot match a concurrent test's host window.
 fn unique_title_fixture() -> (ProductFixture, String, PathBuf) {
@@ -149,7 +167,7 @@ fn relaunch_document(
     let staged = stage(fixture);
     let mut host = launch(&staged, control);
     let (mut reader, writer, generation, _) = accept_generation(listener, &mut host);
-    expect_ready_and_echoes(&mut reader);
+    ready_or_host_failure(&mut reader, &mut host);
     let relaunched = heartbeat.next(deadline());
     quit_generation(reader, writer, &mut host, &generation.bun);
     relaunched
@@ -199,7 +217,7 @@ fn gh1081_e6_e7_f2_linux_window_document_and_stale_authority() {
     let mut host = launch(&staged, &control_path);
     let host_pid = host.id();
     let (mut g1_reader, mut g1_writer, g1, g1_link) = accept_generation(&listener, &mut host);
-    expect_ready_and_echoes(&mut g1_reader);
+    ready_or_host_failure(&mut g1_reader, &mut host);
     let initial = heartbeat.next(deadline());
     assert_eq!(initial.seq, 0);
     let before = heartbeat.poll(deadline());
@@ -212,7 +230,7 @@ fn gh1081_e6_e7_f2_linux_window_document_and_stale_authority() {
     wait_process_identity_gone(&g1.bun, deadline());
     wait_process_identity_gone(&g1.descendant, deadline());
     let (mut g2_reader, g2_writer, g2, g2_link) = accept_generation(&listener, &mut host);
-    expect_ready_and_echoes(&mut g2_reader);
+    ready_or_host_failure(&mut g2_reader, &mut host);
     let to_ready = started.elapsed();
     let after = heartbeat.poll(deadline());
     let (windows_after, rows_after) = host_windows(&census, host_pid, &title);

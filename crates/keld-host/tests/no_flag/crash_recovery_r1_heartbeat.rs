@@ -1,6 +1,6 @@
 //! GH-1081 round-1 research only (never merged): a renderer document heartbeat.
 //!
-//! The page requests `GET /gh1081/<nonce>/<token>/<seq>/<storage>` as an image.
+//! The page fetches `GET /gh1081/<nonce>/<token>/<seq>/<storage>` (no-cors).
 //! This server records each request and withholds the reply until the test asks
 //! for the next beat, so the test owns every ordering edge and no timer in the
 //! page or the test decides anything. A reload or replacement shows up as a new
@@ -34,16 +34,15 @@ try {
   storage = window.sessionStorage.getItem("gh1081") === documentNonce ? "ok" : "mismatch";
 } catch (error) { storage = "error-" + String(error && error.name); }
 let seq = 0;
-let current = null;
+// fetch never holds document load open (a pending <img> does: observed host
+// startup deadline KELD-WV-005). The reply is only an ordering edge, so an
+// opaque no-cors response is enough; a failed request ends this document's beats.
 function beat() {
-  const image = new Image();
-  current = image;
-  image.onload = image.onerror = () => { seq += 1; beat(); };
-  image.src = base + documentNonce + "/" + javascriptToken + "/" + seq + "/" + encodeURIComponent(storage);
+  fetch(base + documentNonce + "/" + javascriptToken + "/" + seq + "/" + encodeURIComponent(storage),
+    { mode: "no-cors", cache: "no-store" })
+    .then(() => { seq += 1; beat(); }, () => {});
 }
-// Start only after `load`: a withheld subresource before it would hold the
-// initial navigation open (observed: host startup deadline, KELD-WV-005).
-window.addEventListener("load", beat, { once: true });
+beat();
 </script>
 "#;
 
