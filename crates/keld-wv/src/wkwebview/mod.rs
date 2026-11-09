@@ -392,10 +392,15 @@ impl WkWebViewEngine {
         let mut terminal_requested = false;
         let mut closing = Vec::new();
         let mut main_owner_failure = None;
+        let mut kel89_terminal_seen = false;
         let code = event_loop.run_return(|event, _, control_flow| {
             // The existing bridge accepts terminal intent before its proxy event.
             // One terminal state closes renderer dispatch and Native main admission.
             if terminal_intent_in_loop.load(Ordering::Acquire) {
+                if !kel89_terminal_seen {
+                    kel89_tail_phase("terminal_intent_seen");
+                    kel89_terminal_seen = true;
+                }
                 terminal_requested = true;
                 destroy_renderer_bridges(&mut renderer_bridges);
             }
@@ -515,6 +520,7 @@ impl WkWebViewEngine {
             };
             *control_flow = wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         });
+        kel89_tail_phase("loop_returned");
         // Tao drops its stored callback on every return, including external
         // NSApp.run termination. The callback only borrowed these real owners.
         let mut tail_failure = main_owner_failure;
@@ -554,9 +560,11 @@ impl WkWebViewEngine {
             }
         }
         if drained {
+            kel89_tail_phase("main_owner_drained");
             destroy_renderer_bridges(&mut renderer_bridges);
             views.clear();
         } else {
+            kel89_tail_phase("main_owner_unproved");
             *retains_main_custody = true;
             self.views = views;
             self.renderer_bridges = renderer_bridges;
@@ -566,6 +574,7 @@ impl WkWebViewEngine {
         if let Some(renderer_bridge) = renderer_bridge {
             let _ = renderer_bridge.join();
         }
+        kel89_tail_phase("wake_bridges_joined");
         if !drained {
             // Returning this failure is not a drain receipt. Core still owns
             // the borrowed service and this engine's retained actual views.
@@ -580,6 +589,7 @@ impl WkWebViewEngine {
             probe.finish();
         }
         let profile_result = self.profile.clean_shutdown();
+        kel89_tail_phase("profile_shutdown_returned");
         let loop_result = tail_failure.map_or_else(
             || {
                 app_loop_result(
@@ -754,6 +764,21 @@ fn navigation_finished(startup: &Mutex<StartupTrace>) -> bool {
     }
 }
 
+/// Fixed opt-in debug text only; not authenticated lifecycle or kernel evidence.
+fn kel89_tail_phase(stage: &'static str) {
+    use std::io::Write as _;
+    if !cfg!(debug_assertions)
+        || std::env::var_os("KELD_KEL89_WV_TAIL_WITNESS").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "KELD_KEL89_WV_TAIL_STAGE stage={stage}"
+    );
+}
+
 fn spawn_app_wake_bridge(
     commands: Receiver<AppWindowCommand>,
     proxy: EventLoopProxy<WkUserEvent>,
@@ -791,6 +816,9 @@ fn run_app_wake_bridge(
         }
         match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(command) => {
+                if command == AppWindowCommand::Quit {
+                    kel89_tail_phase("wake_bridge_quit_received");
+                }
                 terminal_forwarded |= mark_terminal_intent(terminal_intent, command);
                 if command == AppWindowCommand::Fatal {
                     fatal_outcome.store(true, Ordering::Release);
