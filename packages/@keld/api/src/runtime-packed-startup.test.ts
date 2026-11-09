@@ -213,7 +213,11 @@ async function provePackedHandshake(
       ? freshWin32AppLinkPipe()
       : join(socketDir, "live.sock");
   const reader = new FrameReader();
+  const secondaryReader = new FrameReader();
   const drain = new DrainSignal();
+  const timeline: string[] = [];
+  let primarySocket: Bun.Socket<undefined> | undefined;
+  let secondarySocket: Bun.Socket<undefined> | undefined;
   let connections = 0;
   let accept!: (socket: Bun.Socket<undefined>) => void;
   const accepted = new Promise<Bun.Socket<undefined>>((resolve) => {
@@ -225,10 +229,17 @@ async function provePackedHandshake(
       binaryType: "uint8array",
       open(socket) {
         connections++;
-        accept(socket);
+        timeline.push(`socket-open-${connections}`);
+        if (connections === 1) {
+          primarySocket = socket;
+          accept(socket);
+        } else {
+          secondarySocket = socket;
+        }
       },
-      data(_socket, bytes) {
-        reader.push(bytes);
+      data(socket, bytes) {
+        if (socket === primarySocket) reader.push(bytes);
+        else secondaryReader.push(bytes);
       },
       drain() {
         drain.fire();
@@ -263,6 +274,7 @@ async function provePackedHandshake(
       stderr: "pipe",
       ipc(message) {
         const value = message as Message;
+        timeline.push(`child-${value.kind}`);
         if (value.kind === "probe-ready") {
           const resolve = pendingProbe;
           pendingProbe = undefined;
@@ -383,18 +395,28 @@ async function provePackedHandshake(
         observed = `probe-error=${String(probeError)}`;
       }
     }
+    let second = "none";
+    if (secondarySocket !== undefined) {
+      try {
+        const frame = await withIoDeadline(secondaryReader.readFrame(), 750);
+        second = `kind=${frame.header.kind},channel=${frame.header.channel},corr=${frame.header.corr},len=${frame.header.len}`;
+      } catch (readError) {
+        second = `error=${String(readError)}`;
+      }
+    }
     child.kill();
     const exitCode = await child.exited;
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
     child.kill();
     await child.exited;
     socket?.end();
+    secondarySocket?.end();
     server.stop(true);
     rmSync(socketDir, { recursive: true, force: true });
   }
