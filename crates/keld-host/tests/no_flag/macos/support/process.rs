@@ -8,6 +8,7 @@ use std::io::BufReader;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
@@ -131,20 +132,23 @@ fn process_group_cleanup_rejects_non_group_broadcast_values() {
     }
 }
 
-/// A `kb-*` directory planted in the bootstrap's first session root, removed on drop.
-struct PlantedSessionDir(PathBuf);
+/// A `kb-<pid hex>-<label>-<random>` directory planted in the bootstrap's first
+/// session root. `tempfile` creates it exclusively under a random suffix, so a
+/// directory left by an interrupted run cannot make the plant fail, and it is
+/// removed on drop.
+struct PlantedSessionDir(tempfile::TempDir);
 
 impl PlantedSessionDir {
     fn create(pid: u32, label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("kb-{pid:x}-{label}"));
-        fs::create_dir(&path).expect("plant session directory");
-        Self(path)
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("kb-{pid:x}-{label}-"))
+            .tempdir_in(std::env::temp_dir())
+            .expect("plant session directory");
+        Self(dir)
     }
-}
 
-impl Drop for PlantedSessionDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir(&self.0);
+    fn path(&self) -> &Path {
+        self.0.path()
     }
 }
 
@@ -161,13 +165,55 @@ fn session_census_ignores_a_stale_directory_from_a_reused_host_pid() {
         census.dirs_for(pid),
         [] as [PathBuf; 0],
         "a directory that predates the launch was attributed to the host: {}",
-        stale.0.display()
+        stale.path().display()
     );
     // Negative control: a directory with the host's prefix that appears after
     // the census is still attributed, so a host that leaves its own session
     // behind still fails the cleanup assertions.
     let owned = PlantedSessionDir::create(pid, "left-by-this-host");
-    assert_eq!(census.dirs_for(pid), std::slice::from_ref(&owned.0));
+    assert_eq!(census.dirs_for(pid), [owned.path().to_path_buf()]);
+}
+
+#[test]
+fn planting_a_session_directory_survives_a_leftover_from_an_interrupted_run() {
+    // A synthetic PID outside the macOS PID range keeps this fixture from
+    // matching any census taken by a concurrent test in this process.
+    const SYNTHETIC_PID: u32 = 0xdead_beef;
+    let leftover = std::env::temp_dir().join(format!("kb-{SYNTHETIC_PID:x}-stale-before-launch"));
+    // An interrupted run left the fixed name that `PlantedSessionDir` used to
+    // create with `fs::create_dir`, which then failed before the census ran.
+    fs::create_dir_all(&leftover).expect("leave a stale directory");
+    let planted = PlantedSessionDir::create(SYNTHETIC_PID, "stale-before-launch");
+    let planted_path = planted.path().to_path_buf();
+    assert_ne!(
+        planted_path, leftover,
+        "plant reused a stale directory name"
+    );
+    assert!(planted_path.is_dir(), "plant did not create its directory");
+    drop(planted);
+    assert!(!planted_path.exists(), "plant leaked its directory on drop");
+    fs::remove_dir(&leftover).expect("remove the stale directory");
+}
+
+#[test]
+fn session_census_reports_a_directory_once_when_scan_roots_overlap() {
+    // `TMPDIR=/tmp` makes `temp_dir()` and the fixed `/tmp` root the same
+    // directory, and on macOS `/tmp` is a symlink to `/private/tmp`.
+    const SYNTHETIC_PID: u32 = 0xdead_bef0;
+    let root = tempfile::tempdir().expect("scan root");
+    let alias_parent = tempfile::tempdir().expect("alias parent");
+    let alias = alias_parent.path().join("alias-of-root");
+    std::os::unix::fs::symlink(root.path(), &alias).expect("alias the scan root");
+    let census = SessionDirCensus::before_launch_in(vec![
+        root.path().to_path_buf(),
+        root.path().to_path_buf(),
+        alias,
+    ]);
+    let owned = root
+        .path()
+        .join(format!("kb-{SYNTHETIC_PID:x}-left-by-this-host"));
+    fs::create_dir(&owned).expect("create the owned directory");
+    assert_eq!(census.dirs_for(SYNTHETIC_PID), [owned]);
 }
 
 pub(crate) fn await_process_state(pid: u32, wanted: char) {
@@ -304,6 +350,7 @@ pub(crate) fn process_state(pid: u32) -> String {
 /// with the host's prefix that appears after the census still is, including
 /// one that this host leaves behind.
 pub(crate) struct SessionDirCensus {
+    roots: Vec<PathBuf>,
     existing: HashSet<(PathBuf, u64, u64)>,
 }
 
@@ -311,44 +358,57 @@ impl SessionDirCensus {
     /// Records the existing session directories. Call before spawning the
     /// process that launches the host.
     pub(crate) fn before_launch() -> Self {
-        Self {
-            existing: session_dir_entries(|_| true).collect(),
-        }
+        Self::before_launch_in(vec![
+            std::env::temp_dir(),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/var/tmp"),
+        ])
     }
 
-    /// Session directories for `pid` that did not exist at the census.
+    /// Records the session directories under `roots`.
+    fn before_launch_in(roots: Vec<PathBuf>) -> Self {
+        let existing = session_dir_entries(&roots, |_| true).collect();
+        Self { roots, existing }
+    }
+
+    /// Session directories for `pid` that did not exist at the census, each
+    /// reported once even when the scan roots overlap.
     pub(crate) fn dirs_for(&self, pid: u32) -> Vec<PathBuf> {
         let prefix = format!("kb-{pid:x}-");
-        session_dir_entries(|name| name.starts_with(&prefix))
+        session_dir_entries(&self.roots, |name| name.starts_with(&prefix))
             .filter(|entry| !self.existing.contains(entry))
             .map(|(path, _, _)| path)
             .collect()
     }
 }
 
-/// `(path, device, inode)` for each `kb-*` entry whose name passes `keep`.
-fn session_dir_entries(keep: impl Fn(&str) -> bool) -> impl Iterator<Item = (PathBuf, u64, u64)> {
-    [
-        std::env::temp_dir(),
-        PathBuf::from("/tmp"),
-        PathBuf::from("/var/tmp"),
-    ]
-    .into_iter()
-    .flat_map(|base| {
-        fs::read_dir(base)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-    })
-    .filter(move |entry| {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        name.starts_with("kb-") && keep(&name)
-    })
-    .filter_map(|entry| {
-        let metadata = fs::symlink_metadata(entry.path()).ok()?;
-        Some((entry.path(), metadata.dev(), metadata.ino()))
-    })
+/// `(path, device, inode)` for each `kb-*` entry under `roots` whose name
+/// passes `keep`. `TMPDIR=/tmp` or a symlinked root (macOS `/tmp` is
+/// `/private/tmp`) makes roots overlap, so each `(device, inode)` is yielded
+/// once, under the first path that reached it.
+fn session_dir_entries<'a>(
+    roots: &'a [PathBuf],
+    keep: impl Fn(&str) -> bool + 'a,
+) -> impl Iterator<Item = (PathBuf, u64, u64)> + 'a {
+    let mut seen = HashSet::new();
+    roots
+        .iter()
+        .flat_map(|base| {
+            fs::read_dir(base)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+        })
+        .filter(move |entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("kb-") && keep(&name)
+        })
+        .filter_map(|entry| {
+            let metadata = fs::symlink_metadata(entry.path()).ok()?;
+            Some((entry.path(), metadata.dev(), metadata.ino()))
+        })
+        .filter(move |&(_, device, inode)| seen.insert((device, inode)))
 }
 
 // SDK sys/event.h ABI and constants, local to this independent macOS test census.
