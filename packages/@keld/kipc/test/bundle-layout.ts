@@ -51,6 +51,8 @@ export interface BundleLayout {
   waitForExit?: boolean;
   /** Consumer-owned terminal oracles, observed before listener/path cleanup. */
   beforeCleanup?: (result: BundleRun) => Promise<void>;
+  /** Bound each wait; timing out does not relinquish a pending resource owner. */
+  deadlineMs?: number;
 }
 
 export type LayoutOutputReader = Pick<
@@ -76,14 +78,36 @@ function cleanupTask<T>(promise: Promise<T>): CleanupTask<T> {
   return task;
 }
 
+export interface RetainedLayout {
+  root: string;
+  listener: { stop(closeActiveConnections?: boolean): void } | undefined;
+  child: ReturnType<typeof Bun.spawn> | undefined;
+  childExit: CleanupTask<number> | undefined;
+  stderr: CleanupTask<string> | undefined;
+  write: CleanupTask<string> | undefined;
+  callback: CleanupTask<void> | undefined;
+  disposed: boolean;
+  /** Retry disposal after pending owners settle; each attempt remains bounded. */
+  dispose(): Promise<void>;
+}
+
+/** Preserves the primary failure and the owner of unfinished outer teardown. */
+export class LayoutDisposalError extends AggregateError {
+  constructor(
+    errors: unknown[],
+    original: unknown,
+    readonly retainedLayout: RetainedLayout,
+  ) {
+    super(
+      errors,
+      `layout disposal incomplete; retained resources at ${retainedLayout.root}`,
+      { cause: original },
+    );
+  }
+}
+
 export class LayoutCleanupError extends AggregateError {
-  retainedLayout?: {
-    root: string;
-    listener: { stop(closeActiveConnections?: boolean): void };
-    child: ReturnType<typeof Bun.spawn> | undefined;
-    childExit: CleanupTask<number> | undefined;
-    stderr: CleanupTask<string> | undefined;
-  };
+  retainedLayout?: RetainedLayout;
 
   constructor(
     errors: unknown[],
@@ -110,25 +134,40 @@ export class LayoutCleanupError extends AggregateError {
 /** Owns stdout through terminal task settlement, including an aggregate failure. */
 export async function withLayoutOutput<T>(
   reader: LayoutOutputReader,
-  layout: Pick<BundleLayout, "ready" | "waitForExit">,
+  layout: Pick<BundleLayout, "ready" | "waitForExit" | "deadlineMs">,
   use: (output: Promise<string>) => Promise<T>,
   stopChild: () => Promise<void>,
 ): Promise<T> {
   let settled = false;
+  let eof = false;
+  let cancellationStarted = false;
+  let readerReleased = false;
+  const release = () => {
+    if (!readerReleased) {
+      reader.releaseLock();
+      readerReleased = true;
+    }
+  };
   const output = (async () => {
     let stdout = "";
     const decoder = new TextDecoder();
     try {
       for (;;) {
         const chunk = await reader.read();
-        if (chunk.done) break;
+        if (chunk.done) {
+          eof = true;
+          break;
+        }
         stdout += decoder.decode(chunk.value, { stream: true });
-        if (!layout.waitForExit && layout.ready(stdout)) break;
+        if (!layout.waitForExit && layout.ready(stdout)) {
+          break;
+        }
       }
       return stdout + decoder.decode();
     } finally {
-      reader.releaseLock();
       settled = true;
+      // Early readiness still owns the source. Keep its lock until cancellation.
+      if (eof || cancellationStarted) release();
     }
   })();
   // The terminal outcome is inspected below, even if use rejects first.
@@ -143,18 +182,31 @@ export async function withLayoutOutput<T>(
     throw error;
   } finally {
     const stop = cleanupTask(Promise.resolve().then(stopChild));
-    const [stopped] = await Promise.allSettled([withIoDeadline(stop.promise)]);
+    const [stopped] = await Promise.allSettled([
+      withIoDeadline(stop.promise, layout.deadlineMs),
+    ]);
     const cancellation = cleanupTask(
-      Promise.resolve().then(() => (settled ? undefined : reader.cancel())),
+      Promise.resolve().then(() => {
+        if (eof || readerReleased) return;
+        cancellationStarted = true;
+        return reader.cancel();
+      }),
     );
     const [cancelled] = await Promise.allSettled([
-      withIoDeadline(cancellation.promise),
+      withIoDeadline(cancellation.promise, layout.deadlineMs),
     ]);
     const terminalTask = cleanupTask(output);
     const [terminal] = await Promise.allSettled([
-      withIoDeadline(terminalTask.promise),
+      withIoDeadline(terminalTask.promise, layout.deadlineMs),
     ]);
     const cleanupErrors: unknown[] = [];
+    if (settled) {
+      try {
+        release();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
     if (stopped.status === "rejected") cleanupErrors.push(stopped.reason);
     if (cancelled.status === "rejected") cleanupErrors.push(cancelled.reason);
     if (
@@ -163,7 +215,7 @@ export async function withLayoutOutput<T>(
     )
       cleanupErrors.push(terminal.reason);
     const incomplete =
-      !settled ||
+      !readerReleased ||
       [stop, cancellation, terminalTask].some(
         (task) => task.state === "pending",
       );
@@ -174,7 +226,9 @@ export async function withLayoutOutput<T>(
         {
           incomplete,
           reader,
-          readerReleased: settled,
+          get readerReleased() {
+            return readerReleased;
+          },
           stopChild: stop,
           cancellation,
           output: terminalTask,
@@ -184,57 +238,154 @@ export async function withLayoutOutput<T>(
   }
 }
 
-// Runs one app layout in a fresh directory with a live listener and an
-// evaluation counter, and returns its stdout, the listener's connection count
-// and the counter. Each run is its own process: a realm opens one link.
-export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
+/** Narrow acquisition/disposal fault seams for this test runner's own regressions. */
+export interface LayoutOperations {
+  listen?: (
+    options: Parameters<typeof Bun.listen<undefined>>[0],
+    root: string,
+  ) => ReturnType<typeof Bun.listen<undefined>>;
+  removeRoot?: (root: string) => void;
+}
+
+/**
+ * Owns an app layout from root creation through bounded use and disposal.
+ * A timed-out writer/callback still owns the layout; the error transfers an
+ * explicit dispose operation to the caller instead of deleting beneath it.
+ */
+export async function runLayout(
+  layout: BundleLayout,
+  operations: LayoutOperations = {},
+): Promise<BundleRun> {
   const dir = mkdtempSync(join(tmpdir(), "keld-wl-"));
-  const path =
-    process.platform === "win32"
-      ? freshWin32AppLinkPipe()
-      : join(dir, "s.sock");
-  const evalsPath = join(dir, "evals.txt");
-  let connections = 0;
-  const listener = Bun.listen<undefined>({
-    unix: path,
-    socket: {
-      open(socket) {
-        connections += 1;
-        if (layout.closeOnOpen) socket.end();
-      },
-      data(socket, bytes) {
-        layout.socketObserver?.data?.(socket, bytes);
-      },
-      ...(layout.socketObserver === undefined
-        ? {}
-        : {
-            drain() {
-              layout.socketObserver?.drain?.();
-            },
-            close() {
-              layout.socketObserver?.close?.();
-            },
-            error(_socket: Bun.Socket<undefined>, error: Error) {
-              layout.socketObserver?.error?.(error);
-            },
-          }),
-    },
-  });
+  let listener: ReturnType<typeof Bun.listen<undefined>> | undefined;
   let proc: ReturnType<typeof Bun.spawn> | undefined;
-  let stderr: Promise<string> | undefined;
   let childExit: CleanupTask<number> | undefined;
   let stderrTask: CleanupTask<string> | undefined;
-  let childStopped = false;
-  let retainResources = false;
+  let writeTask: CleanupTask<string> | undefined;
+  let callbackTask: CleanupTask<void> | undefined;
+  let outputCleanup: LayoutCleanupError["cleanup"] | undefined;
+  let listenerStopped = false;
+  let rootRemoved = false;
+  let disposal: Promise<void> | undefined;
+  const bound = <T>(promise: Promise<T>) =>
+    withIoDeadline(promise, layout.deadlineMs);
   const stopChild = async () => {
-    if (childStopped) return;
-    childStopped = true;
-    if (proc?.exitCode === null) proc.kill();
+    if (proc !== undefined && childExit?.state === "pending") proc.kill();
     if (proc !== undefined)
-      await withIoDeadline(Promise.all([proc.exited, stderr]));
+      await bound(Promise.all([proc.exited, stderrTask?.promise]));
   };
+  const owner: RetainedLayout = {
+    root: dir,
+    listener,
+    child: proc,
+    childExit,
+    stderr: stderrTask,
+    write: writeTask,
+    callback: callbackTask,
+    disposed: false,
+    dispose() {
+      if (disposal !== undefined) return disposal;
+      disposal = dispose().finally(() => {
+        disposal = undefined;
+      });
+      return disposal;
+    },
+  };
+  const dispose = async () => {
+    if (owner.disposed) return;
+    const errors: unknown[] = [];
+    const stop = await Promise.allSettled([
+      bound(Promise.resolve().then(stopChild)),
+    ]);
+    if (stop[0]!.status === "rejected") errors.push(stop[0]!.reason);
+    // Pending producers must finish before we remove their directory/listener.
+    // Rejections were already observed by the use path; only pending work is joined.
+    const pending = [
+      writeTask,
+      callbackTask,
+      childExit,
+      stderrTask,
+      outputCleanup?.stopChild,
+      outputCleanup?.cancellation,
+      outputCleanup?.output,
+    ].filter((task) => task?.state === "pending");
+    const joined = await Promise.allSettled(
+      pending.map((task) => bound<unknown>(task!.promise)),
+    );
+    for (const result of joined)
+      if (result.status === "rejected") errors.push(result.reason);
+    const stillPending = pending.some((task) => task!.state === "pending");
+    if (!stillPending) {
+      // Independent steps: a listener-stop exception must not skip root removal.
+      const terminal = await Promise.allSettled([
+        Promise.resolve().then(() => {
+          if (!listenerStopped) {
+            listener?.stop(true);
+            listenerStopped = true;
+          }
+        }),
+        Promise.resolve().then(() => {
+          if (!rootRemoved) {
+            if (operations.removeRoot) operations.removeRoot(dir);
+            else rmSync(dir, { recursive: true, force: true });
+            rootRemoved = true;
+          }
+        }),
+      ]);
+      for (const result of terminal)
+        if (result.status === "rejected") errors.push(result.reason);
+    }
+    owner.disposed =
+      !stillPending &&
+      listenerStopped &&
+      rootRemoved &&
+      (proc === undefined || childExit?.state === "fulfilled");
+    if (errors.length)
+      throw new AggregateError(errors, "layout disposal failed");
+    if (!owner.disposed) throw new Error("layout disposal remains incomplete");
+  };
+  let failed = false;
+  let failure: unknown;
+  let result: BundleRun | undefined;
   try {
-    const runner = await layout.write(dir);
+    const path =
+      process.platform === "win32"
+        ? freshWin32AppLinkPipe()
+        : join(dir, "s.sock");
+    const evalsPath = join(dir, "evals.txt");
+    let connections = 0;
+    listener = (operations.listen ?? Bun.listen<undefined>)(
+      {
+        unix: path,
+        socket: {
+          open(socket) {
+            connections += 1;
+            if (layout.closeOnOpen) socket.end();
+          },
+          data(socket, bytes) {
+            layout.socketObserver?.data?.(socket, bytes);
+          },
+          ...(layout.socketObserver === undefined
+            ? {}
+            : {
+                drain() {
+                  layout.socketObserver?.drain?.();
+                },
+                close() {
+                  layout.socketObserver?.close?.();
+                },
+                error(_socket: Bun.Socket<undefined>, error: Error) {
+                  layout.socketObserver?.error?.(error);
+                },
+              }),
+        },
+      },
+      dir,
+    );
+    owner.listener = listener;
+    writeTask = cleanupTask(Promise.resolve().then(() => layout.write(dir)));
+    owner.write = writeTask;
+    const runner = await bound(writeTask.promise);
     proc = Bun.spawn(["bun", join(dir, runner)], {
       env: {
         ...process.env,
@@ -245,29 +396,31 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
       stdout: "pipe",
       stderr: "pipe",
     });
+    owner.child = proc;
     childExit = cleanupTask(proc.exited);
-    stderr = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
-    stderrTask = cleanupTask(stderr);
+    stderrTask = cleanupTask(
+      new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+    );
+    owner.childExit = childExit;
+    owner.stderr = stderrTask;
     const child = proc;
-    const errorsText = stderr;
-    return await withLayoutOutput(
+    const errorsText = stderrTask.promise;
+    result = await withLayoutOutput(
       (proc.stdout as ReadableStream<Uint8Array>).getReader(),
       layout,
       async (output) => {
         let stdout: string;
         let exitCode: number | undefined;
         let errors: string | undefined;
-        if (layout.waitForExit) {
-          [stdout, exitCode, errors] = await withIoDeadline(
+        if (layout.waitForExit)
+          [stdout, exitCode, errors] = await bound(
             Promise.all([output, child.exited, errorsText]),
           );
-        } else {
-          stdout = await output;
-        }
+        else stdout = await bound(output);
         const counted = existsSync(evalsPath)
           ? readFileSync(evalsPath, "utf8")
           : "";
-        const result = {
+        const observed = {
           stdout,
           connections,
           evals: counted.split("\n").filter((line) => line.length > 0).length,
@@ -275,37 +428,40 @@ export async function runLayout(layout: BundleLayout): Promise<BundleRun> {
           stderr: errors,
           root: dir,
         };
-        await layout.beforeCleanup?.(result);
-        return result;
+        if (layout.beforeCleanup) {
+          callbackTask = cleanupTask(
+            Promise.resolve().then(() => layout.beforeCleanup!(observed)),
+          );
+          owner.callback = callbackTask;
+          await bound(callbackTask.promise);
+        }
+        return observed;
       },
       stopChild,
     );
   } catch (error) {
-    if (
-      error instanceof LayoutCleanupError &&
-      (error.cleanup.incomplete ||
-        childExit?.state === "pending" ||
-        stderrTask?.state === "pending")
-    ) {
-      retainResources = true;
-      error.cleanup.incomplete = true;
-      error.retainedLayout = {
-        root: dir,
-        listener,
-        child: proc,
-        childExit,
-        stderr: stderrTask,
-      };
-      error.message = `layout cleanup incomplete; retained resources at ${dir}`;
-    }
-    throw error;
-  } finally {
-    if (!retainResources) {
-      await stopChild();
-      listener.stop(true);
-      rmSync(dir, { recursive: true, force: true });
-    }
+    failed = true;
+    failure = error;
+    if (error instanceof LayoutCleanupError) outputCleanup = error.cleanup;
   }
+  try {
+    await owner.dispose();
+  } catch (error) {
+    const faults = error instanceof AggregateError ? error.errors : [error];
+    if (failure instanceof LayoutCleanupError) {
+      failure.errors.push(...faults);
+      failure.retainedLayout = owner;
+      failure.cleanup.incomplete = !owner.disposed;
+      throw failure;
+    }
+    throw new LayoutDisposalError(
+      failed ? [failure, ...faults] : faults,
+      failure,
+      owner,
+    );
+  }
+  if (failed) throw failure;
+  return result!;
 }
 
 // Builds `entrySource` (TypeScript) into one bundle named `name`, beside a

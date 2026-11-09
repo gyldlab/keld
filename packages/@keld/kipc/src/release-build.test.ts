@@ -61,6 +61,7 @@ async function build(release: boolean): Promise<string> {
   return built.outputs[0]!.text();
 }
 
+/** Stage a release transport and observe its exact HELLO, refusal, and natural exit. */
 async function runRelease(stamped: boolean, validReceive = true) {
   const expected = Buffer.from(HELLO_HEADER_HEX + TOKEN_HEX, "hex");
   const observed = new Uint8Array(expected.length);
