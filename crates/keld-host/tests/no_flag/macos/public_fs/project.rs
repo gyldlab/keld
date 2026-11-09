@@ -279,6 +279,112 @@ impl PublicFsProject {
         retired
     }
 
+    /// Hostile test-owned pathname edit after authenticated G1 filesystem work.
+    /// The shipping Host must use its original verified snapshot for G2, not
+    /// reread either the project source or the staged 0400 policy name.
+    pub(super) fn replace_recovery_project_and_staged_policy(&self, prepared: &PreparedLaunch) {
+        use std::io::Write as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        assert_eq!(prepared.exercise, Exercise::RendererRecovery);
+        assert_eq!(self.declared_profile, Some("legacy"));
+        let policy = prepared.stage.root().join("keld.permissions.jsonc");
+        let source = self.project.join("keld.permissions.jsonc");
+        let boot = prepared.stage.root().join("keld.boot.json");
+        let original_boot = fs::read(&boot).expect("original compiled boot binding");
+        let descriptor: Value =
+            serde_json::from_slice(&original_boot).expect("original boot descriptor JSON");
+        assert_eq!(descriptor["schema"], 3);
+        assert_eq!(
+            descriptor["permissions"]["content_sha256"],
+            format!("sha256:{}", prepared.digest)
+        );
+        assert_eq!(
+            fs::read(&policy).expect("retained staged bytes"),
+            self.policy_bytes
+        );
+        assert_eq!(
+            fs::read(&source).expect("original source policy"),
+            self.policy_bytes
+        );
+        assert_eq!(file_digest(&policy), prepared.digest);
+        assert_eq!(file_digest(&source), prepared.digest);
+        let original = fs::symlink_metadata(&policy).expect("owned staged policy object");
+        assert!(original.is_file() && !original.file_type().is_symlink());
+        let mode = original.permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o222, 0, "original stage policy must be read-only");
+
+        let hostile = serde_json::to_vec(&json!({
+            "profile":"strict",
+            "app":{"fs":{"read":[],"write":[]}}
+        }))
+        .expect("fixture-owned hostile policy");
+        let hostile_data: Value = serde_json::from_slice(&hostile).expect("valid hostile JSON");
+        assert_eq!(hostile_data["profile"], "strict");
+        assert_eq!(hostile_data["app"]["fs"]["read"], json!([]));
+        assert_eq!(hostile_data["app"]["fs"]["write"], json!([]));
+        // Edit the original producer's source bytes in place; only the staged
+        // read-only policy pathname below requires an atomic inode replacement.
+        let original_source = fs::symlink_metadata(&source).expect("original source identity");
+        fs::write(&source, &hostile).expect("test-owned project policy source edit");
+        assert_eq!(
+            fs::read(&source).expect("published new project policy"),
+            hostile
+        );
+        let edited_source = fs::symlink_metadata(&source).expect("edited project identity");
+        assert_eq!(
+            (original_source.dev(), original_source.ino()),
+            (edited_source.dev(), edited_source.ino()),
+            "the project edit is in place, separate from the staged inode replacement"
+        );
+
+        // A pathname cannot be overwritten in place when mode 0400. Reuse the
+        // KEL-143 test's atomic same-parent replacement shape, preserving mode
+        // while changing the selected inode and digest after G1 observation.
+        let mut replacement = tempfile::Builder::new()
+            .prefix("kel78-g2-policy-")
+            .permissions(original.permissions())
+            .tempfile_in(prepared.stage.root())
+            .expect("owned stage permits separate test policy inode");
+        replacement
+            .write_all(&hostile)
+            .expect("write complete hostile replacement");
+        replacement
+            .as_file()
+            .sync_all()
+            .expect("publish only fully written bytes");
+        let published = replacement
+            .persist(&policy)
+            .expect("atomic owned staged-policy leaf replacement");
+        let new_metadata = published.metadata().expect("new staged policy identity");
+        assert_ne!(
+            (original.dev(), original.ino()),
+            (new_metadata.dev(), new_metadata.ino()),
+            "test mutation must replace the retained policy inode"
+        );
+        assert_eq!(new_metadata.permissions().mode() & 0o7777, mode);
+        drop(published);
+        let selected = fs::symlink_metadata(&policy).expect("staged pathname now selected");
+        assert!(selected.is_file() && !selected.file_type().is_symlink());
+        assert_eq!(
+            (selected.dev(), selected.ino()),
+            (new_metadata.dev(), new_metadata.ino()),
+            "published staged policy must be the object selected by the pathname"
+        );
+        assert_eq!(fs::read(&policy).expect("changed staged pathname"), hostile);
+        assert_eq!(file_digest(&source), file_digest(&policy));
+        assert_ne!(file_digest(&source), prepared.digest);
+        assert_ne!(file_digest(&policy), prepared.digest);
+        assert_eq!(
+            fs::read(&boot).expect("descriptor identity after hostile change"),
+            original_boot,
+            "the immutable original boot digest must not follow the hostile policy"
+        );
+        eprintln!(
+            "KELD_KEL78_G1_POLICY_CHANGED original_digest_retained=true project_source_edited=true staged_inode_replaced=true both_disk_digests_hostile=true descriptor_unchanged=true"
+        );
+    }
+
     fn natural_inputs(&self, launch: usize) -> NaturalInputs {
         let read_sentinel = self.allowed.join(format!("read-sentinel-{launch}.bin"));
         fs::write(&read_sentinel, READ_SENTINEL).expect("independent read-only sentinel");

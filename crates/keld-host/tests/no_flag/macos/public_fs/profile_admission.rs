@@ -49,6 +49,63 @@ fn declared_legacy_broker_and_quit_are_proven_without_graphics_capture() {
     assert_legacy_entry_and_disclosure(&fixture, &evidence);
 }
 
+/// Test the shipping Host's actual retained policy across one Guardian-owned
+/// recovery. No CoreGraphics/window assertion or GH-587 effective-state receipt
+/// is inferred from the same-G2 broker behavior.
+#[test]
+fn legacy_recovery_keeps_original_grants_after_source_and_stage_policy_replacement() {
+    let fixture = PublicFsProject::new(Policy::Narrow).with_declared_profile("legacy");
+    let source = fixture.project_root().join("keld.permissions.jsonc");
+    let original_source = fs::read(&source).expect("original explicit-Legacy source policy");
+    let evidence = super::run_legacy_recovery_after_policy_replacement(&fixture);
+    let changed_source = fs::read(&source).expect("post-recovery project policy bytes");
+    assert_ne!(
+        changed_source, original_source,
+        "the hostile after-G1 policy replacement hook did not execute"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&changed_source)
+            .expect("published hostile source must remain valid JSON"),
+        serde_json::json!({
+            "profile":"strict",
+            "app":{"fs":{"read":[],"write":[]}}
+        }),
+        "G2 must succeed despite the actual changed project-source policy"
+    );
+    assert!(
+        evidence.window.is_empty(),
+        "capture-free experiment did not run the native-window observer"
+    );
+    let first = evidence.retired_family.expect("independently retired G1");
+    let successor = evidence.family.expect("independently observed G2");
+    assert_ne!(first.bun, successor.bun, "successor must be a new Bun");
+    assert_eq!(first.guardian, successor.guardian, "same enrolled Guardian");
+    assert_eq!(
+        evidence
+            .reports
+            .iter()
+            .filter(|report| report["phase"] == "app-ready")
+            .count(),
+        2,
+        "both native Bun generations must report a real Ready"
+    );
+    assert_eq!(
+        fs::read(&fixture.outside).expect("outside sentinel after successor Quit"),
+        SENTINEL
+    );
+    let stderr = evidence
+        .profile_diagnostics
+        .as_deref()
+        .expect("shipping Host stderr, not a product receipt");
+    assert!(
+        stderr.contains("legacy — zero-authority claim forfeited"),
+        "the original explicit Legacy launch must disclose its loss of containment"
+    );
+    // The real G2 read/write success, G2 denied scope and unchanged independent
+    // sentinel, fresh token/endpoint, same Host/Guardian, and ordered Quit are
+    // asserted by the existing shared recovery and retirement oracles.
+}
+
 #[test]
 fn legacy_forfeit_is_visible_to_the_first_application_statement() {
     let fixture = PublicFsProject::new(Policy::Narrow)

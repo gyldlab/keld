@@ -68,6 +68,7 @@ struct LaunchEvidence {
     window: Vec<u32>,
     retired_family: Option<ProcessFamily>,
     recovery_boot: Option<RecoveryBoot>,
+    recovery_policy_edit: RecoveryPolicyEdit,
     // Test-owned Host stderr; never a GH-587 admission receipt.
     profile_diagnostics: Option<String>,
 }
@@ -75,6 +76,19 @@ struct LaunchEvidence {
 struct RecoveryBoot {
     pid: u32,
     app_link: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowEvidence {
+    Native,
+    CaptureFree,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RecoveryPolicyEdit {
+    #[default]
+    None,
+    ReplaceProjectAndStageAfterG1,
 }
 
 #[test]
@@ -159,8 +173,38 @@ fn run_launch_with_descendant_quit(
     fixture: &PublicFsProject,
     launch: usize,
     exercise: Exercise,
-    mut descendant: Option<&mut descendant_quit::DescendantQuit>,
+    descendant: Option<&mut descendant_quit::DescendantQuit>,
 ) -> LaunchEvidence {
+    run_launch_with_controls(
+        fixture,
+        launch,
+        exercise,
+        descendant,
+        RecoveryPolicyEdit::None,
+        WindowEvidence::Native,
+    )
+}
+
+fn run_legacy_recovery_after_policy_replacement(fixture: &PublicFsProject) -> LaunchEvidence {
+    run_launch_with_controls(
+        fixture,
+        0,
+        Exercise::RendererRecovery,
+        None,
+        RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1,
+        WindowEvidence::CaptureFree,
+    )
+}
+
+fn run_launch_with_controls(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    mut descendant: Option<&mut descendant_quit::DescendantQuit>,
+    recovery_policy_edit: RecoveryPolicyEdit,
+    window_evidence: WindowEvidence,
+) -> LaunchEvidence {
+    assert_recovery_test_scope(exercise, recovery_policy_edit, window_evidence);
     let observer = if matches!(
         exercise,
         Exercise::RendererRecovery | Exercise::RendererPendingRecovery
@@ -169,35 +213,23 @@ fn run_launch_with_descendant_quit(
     } else {
         Observation::bind()
     };
-    let prepared = match exercise {
-        Exercise::RendererPointer => fixture.prepare(launch, observer.port),
-        Exercise::RendererRecovery => fixture.prepare_recovery(launch, observer.port),
-        Exercise::RendererPendingRecovery => {
-            fixture.prepare_pending_recovery(launch, observer.port)
-        }
-        Exercise::PublicAppComponent => fixture.prepare_component(launch, observer.port),
-        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, observer.port),
-        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, observer.port),
-        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, observer.port),
-    };
+    let prepared = prepare_public_fs_launch(fixture, launch, exercise, observer.port);
     let stage = &prepared.stage;
-    if exercise != Exercise::RendererPointer {
-        assert!(
-            matches!(fs::symlink_metadata(&prepared.target), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
-            "component target must be absent before host spawn"
-        );
-    }
-    let mut presentation = NativeWindowObserver::arm_for_title(&fixture.census, TITLE);
+    let mut presentation = (window_evidence == WindowEvidence::Native)
+        .then(|| NativeWindowObserver::arm_for_title(&fixture.census, TITLE));
     let mut cleanup = spawn_shipping_host(stage);
     let host = cleanup.cli.as_mut().expect("host custody");
     let host_pid = host.id();
     let _lease = host.stdin.take().expect("retain dev lease until host exit");
-    let mut evidence = LaunchEvidence::default();
+    let mut evidence = LaunchEvidence {
+        recovery_policy_edit,
+        ..LaunchEvidence::default()
+    };
     let observation_result = catch_unwind(AssertUnwindSafe(|| {
         observe_launch(
             &observer,
             &mut cleanup,
-            &mut presentation,
+            presentation.as_mut(),
             &mut evidence,
             fixture,
             &prepared,
@@ -253,23 +285,113 @@ fn run_launch_with_descendant_quit(
     if let Err(failure) = descendant_result {
         resume_unwind(failure);
     }
-    assert_product_quit(&output, &evidence, stage.root(), host_pid, exercise);
+    assert_product_quit_with_window_evidence(
+        &output,
+        &evidence,
+        stage.root(),
+        host_pid,
+        exercise,
+        window_evidence,
+    );
     evidence.capture_profile_diagnostics(fixture, &output);
     if exercise == Exercise::PublicAppRetirement {
         retirement::assert_after_quit(&output, &evidence, &prepared.target);
     }
     cleanup.bun_group = None;
+    let window_gone = match window_evidence {
+        WindowEvidence::Native => "true",
+        WindowEvidence::CaptureFree => "unobserved",
+    };
     eprintln!(
-        "KELD_KEL140_PUBLIC_CLEANUP launch={launch} exact_stage={} family_gone=true window_gone=true fixture_drop_pending=true",
+        "KELD_KEL140_PUBLIC_CLEANUP launch={launch} exact_stage={} family_gone=true window_gone={window_gone} fixture_drop_pending=true",
         stage.root().display(),
     );
     evidence
 }
 
+fn assert_recovery_test_scope(
+    exercise: Exercise,
+    edit: RecoveryPolicyEdit,
+    window_evidence: WindowEvidence,
+) {
+    assert!(
+        (window_evidence == WindowEvidence::Native && edit == RecoveryPolicyEdit::None)
+            || (window_evidence == WindowEvidence::CaptureFree
+                && exercise == Exercise::RendererRecovery
+                && edit == RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1),
+        "capture-free observation is allowed only for the named hostile-policy recovery case"
+    );
+}
+
+#[test]
+fn capture_free_window_evidence_is_exclusive_to_hostile_recovery() {
+    for (exercise, edit, window) in [
+        (
+            Exercise::RendererPointer,
+            RecoveryPolicyEdit::None,
+            WindowEvidence::CaptureFree,
+        ),
+        (
+            Exercise::RendererRecovery,
+            RecoveryPolicyEdit::None,
+            WindowEvidence::CaptureFree,
+        ),
+        (
+            Exercise::RendererRecovery,
+            RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1,
+            WindowEvidence::Native,
+        ),
+        (
+            Exercise::PublicAppComponent,
+            RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1,
+            WindowEvidence::CaptureFree,
+        ),
+    ] {
+        assert!(
+            catch_unwind(|| assert_recovery_test_scope(exercise, edit, window)).is_err(),
+            "unapproved capture-free or policy-swap launch mode was accepted"
+        );
+    }
+    assert_recovery_test_scope(
+        Exercise::RendererRecovery,
+        RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1,
+        WindowEvidence::CaptureFree,
+    );
+    assert_recovery_test_scope(
+        Exercise::PublicAppComponent,
+        RecoveryPolicyEdit::None,
+        WindowEvidence::Native,
+    );
+}
+
+fn prepare_public_fs_launch(
+    fixture: &PublicFsProject,
+    launch: usize,
+    exercise: Exercise,
+    port: u16,
+) -> PreparedLaunch {
+    let prepared = match exercise {
+        Exercise::RendererPointer => fixture.prepare(launch, port),
+        Exercise::RendererRecovery => fixture.prepare_recovery(launch, port),
+        Exercise::RendererPendingRecovery => fixture.prepare_pending_recovery(launch, port),
+        Exercise::PublicAppComponent => fixture.prepare_component(launch, port),
+        Exercise::PublicAppNaturalCases => fixture.prepare_natural(launch, port),
+        Exercise::PublicAppRetirement => fixture.prepare_retirement(launch, port),
+        Exercise::RendererNativeJoint => fixture.prepare_native_joint(launch, port),
+    };
+    if exercise != Exercise::RendererPointer {
+        assert!(
+            matches!(fs::symlink_metadata(&prepared.target), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+            "component target must be absent before host spawn"
+        );
+    }
+    prepared
+}
+
 fn observe_launch(
     observer: &Observation,
     cleanup: &mut ShippingLaunchCleanup,
-    presentation: &mut NativeWindowObserver,
+    presentation: Option<&mut NativeWindowObserver>,
     evidence: &mut LaunchEvidence,
     fixture: &PublicFsProject,
     prepared: &PreparedLaunch,
@@ -293,8 +415,18 @@ fn observe_launch(
         ready["initial"],
         json!({"bridge":true,"frozen":true,"nativeHidden":true})
     );
-    evidence.window = presentation.expect_initial(host_pid, "kel140-public-fs");
-    assert_eq!(evidence.window.len(), 1);
+    if let Some(presentation) = presentation {
+        evidence.window = presentation.expect_initial(host_pid, "kel140-public-fs");
+        assert_eq!(evidence.window.len(), 1);
+    } else {
+        assert_eq!(prepared.exercise, Exercise::RendererRecovery);
+        assert_eq!(
+            evidence.recovery_policy_edit,
+            RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1
+        );
+        // This path makes no native-window presentation claim. Every existing
+        // full-GUI entry retains the prearmed CoreGraphics observer above.
+    }
     match prepared.exercise {
         Exercise::RendererPointer => {
             observe_pointer_actions(observer, evidence, fixture, prepared, host_pid);
@@ -463,19 +595,8 @@ fn observe_recovery_actions(
     prepared: &PreparedLaunch,
     host_pid: u32,
 ) {
-    let first_boot = evidence.recovery_boot.take().expect("G1 fixture boot");
-    let first = evidence.family.expect("OS-attributed G1 family");
-    assert_eq!(first_boot.pid, first.bun);
-    let initial_document = evidence
-        .reports
-        .iter()
-        .find(|report| report["phase"] == "page-ready")
-        .expect("actual original document")
-        .clone();
+    let (first_boot, first, initial_document) = observed_original_recovery(evidence, prepared);
     let recovery = prepared.recovery.as_ref().expect("owned recovery targets");
-    assert!(matches!(fs::symlink_metadata(&recovery.after), Err(error)
-        if error.kind() == std::io::ErrorKind::NotFound));
-    assert_eq!(fs::read(&recovery.witness).expect("empty witness"), b"");
 
     let retired_root = observe_recovery_before_loss(
         observer,
@@ -485,6 +606,9 @@ fn observe_recovery_actions(
         first.bun,
         &initial_document,
     );
+    if evidence.recovery_policy_edit == RecoveryPolicyEdit::ReplaceProjectAndStageAfterG1 {
+        fixture.replace_recovery_project_and_staged_policy(prepared);
+    }
     assert!(evidence.click.is_none(), "recovery has no input action");
     let expected_bun_image = fs::canonicalize(process_image_path(first.bun))
         .expect("independently attributed G1 Bun image");
@@ -535,11 +659,13 @@ fn observe_recovery_actions(
     await_process_gone(first.bun);
     await_process_gone(first.descendant);
     assert!(process_exists(host_pid) && process_exists(first.guardian));
-    assert_eq!(
-        await_same_native_windows(host_pid, TITLE, &evidence.window),
-        evidence.window,
-        "actual Bun loss replaced the original native window"
-    );
+    if !evidence.window.is_empty() {
+        assert_eq!(
+            await_same_native_windows(host_pid, TITLE, &evidence.window),
+            evidence.window,
+            "actual Bun loss replaced the original native window"
+        );
+    }
 
     assert_collected_recovery_terminals(evidence, &initial_document, &settled_reports, boot_count);
 
@@ -553,10 +679,12 @@ fn observe_recovery_actions(
         prepared,
     );
     assert_recovery_replacement_files(prepared, retired_root.as_deref());
-    assert_eq!(
-        await_same_native_windows(host_pid, TITLE, &evidence.window),
-        evidence.window
-    );
+    if !evidence.window.is_empty() {
+        assert_eq!(
+            await_same_native_windows(host_pid, TITLE, &evidence.window),
+            evidence.window
+        );
+    }
     assert_eq!(
         evidence
             .reports
@@ -571,6 +699,26 @@ fn observe_recovery_actions(
         "KELD_KEL140_RECOVERY_CONSUMER host={host_pid} window={:?} first_bun={} second_bun={} input_actions=0 completed_witness=[1,2] interrupted_effect_acceptance=false blocked_syscall_acceptance=false full_kel143_acceptance=false",
         evidence.window, first.bun, successor.bun,
     );
+}
+
+fn observed_original_recovery(
+    evidence: &mut LaunchEvidence,
+    prepared: &PreparedLaunch,
+) -> (RecoveryBoot, ProcessFamily, Value) {
+    let first_boot = evidence.recovery_boot.take().expect("G1 fixture boot");
+    let first = evidence.family.expect("OS-attributed G1 family");
+    assert_eq!(first_boot.pid, first.bun);
+    let initial_document = evidence
+        .reports
+        .iter()
+        .find(|report| report["phase"] == "page-ready")
+        .expect("actual original document")
+        .clone();
+    let recovery = prepared.recovery.as_ref().expect("owned recovery targets");
+    assert!(matches!(fs::symlink_metadata(&recovery.after), Err(error)
+        if error.kind() == std::io::ErrorKind::NotFound));
+    assert_eq!(fs::read(&recovery.witness).expect("empty witness"), b"");
+    (first_boot, first, initial_document)
 }
 
 /// Independent old/new-root effects remain separate from reported G2 success.
@@ -1065,6 +1213,24 @@ fn assert_product_quit(
     host_pid: u32,
     exercise: Exercise,
 ) {
+    assert_product_quit_with_window_evidence(
+        output,
+        evidence,
+        stage_root,
+        host_pid,
+        exercise,
+        WindowEvidence::Native,
+    );
+}
+
+fn assert_product_quit_with_window_evidence(
+    output: &Output,
+    evidence: &LaunchEvidence,
+    stage_root: &Path,
+    host_pid: u32,
+    exercise: Exercise,
+    window_evidence: WindowEvidence,
+) {
     assert!(output.status.success(), "{output:?}");
     let stderr = std::str::from_utf8(&output.stderr).expect("host diagnostic UTF-8");
     let expected_calls = match exercise {
@@ -1127,7 +1293,14 @@ fn assert_product_quit(
     for process in [host_pid, bun, descendant, guardian] {
         await_process_gone(process);
     }
-    assert_eq!(native_windows(host_pid, TITLE).len(), 0);
+    if window_evidence == WindowEvidence::Native {
+        assert_eq!(native_windows(host_pid, TITLE).len(), 0);
+    } else {
+        assert!(
+            evidence.window.is_empty(),
+            "capture-free acceptance cannot claim window absence"
+        );
+    }
     assert!(
         matches!(fs::symlink_metadata(stage_root), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
         "product Quit retained exact stage before fixture destruction: {}",
