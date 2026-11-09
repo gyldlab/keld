@@ -36,6 +36,7 @@ docs/agents/learnings/wv/2026-08-08-wv-wry-release-builds-devtools-feature.md	ev
 docs/agents/learnings/wv/2026-08-12-wv-appkit-event-loop-construction-hangs.md	evidence	2048	learning-2026-08-12-wv-appkit-event-loop-construction-hangs	query:wv
 docs/agents/learnings/wv/2026-08-12-wv-tao-selects-regular-macos-activation.md	evidence	2048	learning-2026-08-12-wv-tao-selects-regular-macos-activation	query:wv
 docs/agents/learnings/ipc/2026-08-13-ipc-postcard-ignores-trailing-bytes-assert.md	evidence	2048	learning-2026-08-13-ipc-postcard-ignores-trailing-bytes-assert	query:ipc
+docs/agents/learnings/ci/2026-10-31-ci-stateless-diff-base-routing.md	evidence	2048	learning-2026-10-31-ci-stateless-diff-base-routing	query:ci
 docs/agents/learnings/cli/2026-08-13-cli-tao-eventloop-run-never-returns.md	evidence	2048	learning-2026-08-13-cli-tao-eventloop-run-never-returns	query:cli
 docs/agents/learnings/cli/2026-08-13-cli-mcp-server-discover-initialize-namespaced.md	evidence	2048	learning-2026-08-13-cli-mcp-server-discover-initialize-namespaced	query:cli
 docs/agents/learnings/cli/2026-08-13-cli-reject-extra-keld-hello-arguments.md	evidence	2048	learning-2026-08-13-cli-reject-extra-keld-hello-arguments	query:cli
