@@ -55,7 +55,7 @@ fn is_agent_file(path: &str) -> bool {
 fn expected_class(path: &str) -> LoadClass {
     if path == CLAUDE || is_agent_file(path) {
         LoadClass::Always
-    } else if path == EVIDENCE_LOG {
+    } else if path == EVIDENCE_LOG || path.starts_with("docs/agents/learnings/") {
         LoadClass::Evidence
     } else {
         LoadClass::Routed
@@ -879,6 +879,22 @@ docs/agents/learnings.md\tevidence\t4096\tlearnings\tquery:area\n"
     fn complete_inventory_passes() {
         let temp = fixture();
         check(&temp.path).expect("complete fixture");
+    }
+
+    #[test]
+    fn learning_records_use_registered_evidence_class() {
+        let temp = fixture();
+        let path = "docs/agents/learnings/ipc/2026-10-31-workerlink-identity.md";
+        temp.write(
+            path,
+            "# WorkerLink identity\n\nHistorical evidence is queried only for this task.\n",
+        );
+        let mut inventory = manifest(1024, 1024);
+        inventory.push_str(&format!(
+            "{path}\tevidence\t2048\tworkerlink-evidence\tquery:ipc\n"
+        ));
+        temp.write(MANIFEST, &inventory);
+        check(&temp.path).expect("registered learning records remain bounded evidence");
     }
 
     #[test]
