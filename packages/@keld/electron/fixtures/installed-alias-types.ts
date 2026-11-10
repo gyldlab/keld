@@ -5,6 +5,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -89,6 +90,50 @@ export function prepareTypeConsumer(consumer: string): void {
   assert(!existsSync(join(consumer, "node_modules/bun-types")));
 }
 
+/**
+ * Admit only physical descendants of the installed consumer or the pinned
+ * TypeScript compiler library. On Windows an 8.3 root and its long spelling
+ * can refer to the same directory, so comparing pathname prefixes is unsound.
+ */
+export function assertInstalledTypeFilesWithinRoots(
+  files: readonly string[],
+  consumer: string,
+  compilerLib: string,
+): void {
+  const roots = [consumer, compilerLib].map((root) => {
+    const directory = statSync(realpathSync(root), { bigint: true });
+    assert(directory.isDirectory(), "Trusted installed type root must be a directory");
+    return { dev: directory.dev, ino: directory.ino };
+  });
+  for (const file of files) {
+    // Resolve junctions/symlinks before walking the actual physical ancestors.
+    const physical = realpathSync(file);
+    let parent = dirname(physical);
+    let contained = false;
+    while (true) {
+      const directory = statSync(parent, { bigint: true });
+      if (
+        roots.some(
+          (root) => root.dev === directory.dev && root.ino === directory.ino,
+        )
+      ) {
+        contained = true;
+        break;
+      }
+      const next = dirname(parent);
+      if (next === parent) break;
+      parent = next;
+    }
+    assert(contained, "Compiler escaped the installed graph: " + physical);
+    const slashPath = physical.split(sep).join("/");
+    assert(
+      !slashPath.includes("/bun-types/") &&
+        !slashPath.includes("/@types/bun/"),
+      "Compiler loaded Bun declarations: " + physical,
+    );
+  }
+}
+
 export function checkInstalledDeclarations(
   source: string,
   consumer: string,
@@ -134,14 +179,7 @@ export function checkInstalledDeclarations(
     files.some((file) => file.includes("/node_modules/@types/node/")),
     "Consumer must use its installed Node declarations",
   );
-  for (const file of files) {
-    const path = realpathSync(file);
-    assert(
-      path.startsWith(consumer + sep) || path.startsWith(compilerLib + sep),
-      "Compiler escaped the installed graph: " + path,
-    );
-    assert(!path.includes("/bun-types/") && !path.includes("/@types/bun/"));
-  }
+  assertInstalledTypeFilesWithinRoots(files, consumer, compilerLib);
   const installed = join(consumer, "node_modules/@types/node");
   const removed = join(scratch, "removed-node-types");
   renameSync(installed, removed);
