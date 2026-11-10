@@ -29,7 +29,8 @@ use crate::macos_profile_identity::{
 use super::boot_contract::{ParsedBoot, parse_installed_boot_bytes};
 use super::graph_contract::{AdmittedStageGraph, read_bound_graph_leaf_from_retained_root};
 use super::launch_facts::{
-    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, macos_local_launch_bootstrap_sources,
+    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+    macos_local_launch_bootstrap_sources, macos_local_original_entry_bootstrap_source,
 };
 use super::{
     AppBootSelection, BOOT_FILE, HostAppError, InitialWindow, MAX_BOOT_BYTES, PERMISSIONS_FILE,
@@ -157,11 +158,30 @@ impl FileIdentity {
     }
 }
 
-fn open_launch_bootstrap(app: &File) -> Result<Vec<(File, FileIdentity)>, HostAppError> {
-    // Every generated module is qualified against this Host's compiled
-    // owner bytes. The sealed application cannot select another bootstrap.
+fn open_launch_bootstrap(
+    app: &File,
+    original_graph_entry: Option<&Path>,
+) -> Result<Vec<(File, FileIdentity)>, HostAppError> {
+    // Every generated module is qualified against independently compiled
+    // Host owner bytes. Only an admitted original graph renders the fourth
+    // owner from the *separately parsed sealed boot-selected entry*; plain
+    // installed roles retain the inert exact-byte template instead.
+    let original_entry_source = original_graph_entry
+        .map(|entry| {
+            macos_local_original_entry_bootstrap_source(entry.to_str().ok_or_else(|| {
+                admission_error("original graph entry", "boot-selected entry is not UTF-8")
+            })?)
+        })
+        .transpose()?;
     let mut launch_bootstrap = Vec::new();
-    for (path, expected) in macos_local_launch_bootstrap_sources() {
+    for (path, compiled_expected) in macos_local_launch_bootstrap_sources() {
+        let expected = if path == MACOS_LOCAL_RUNTIME_ENTRY_PATH {
+            original_entry_source
+                .as_deref()
+                .unwrap_or(compiled_expected)
+        } else {
+            compiled_expected
+        };
         let file = open_file(app, Path::new(path), "installed launch bootstrap")?;
         let identity = FileIdentity::of(&file, "installed launch bootstrap")?;
         let actual = read_bounded_at(&file, expected.len(), "installed launch bootstrap")?;
@@ -314,7 +334,11 @@ impl ValidatedMacLocalBundle {
             read_sealed_local_metadata(&contents, &resources, &bun, &signing.signing_identifier)?;
         let (boot, boot_bytes, parsed, policy, entry) =
             read_installed_local_boot_files(&app, &metadata)?;
-        let launch_bootstrap = open_launch_bootstrap(&app)?;
+        let original_graph_entry = parsed
+            .installed_graph
+            .as_ref()
+            .map(|_| parsed.entry.as_path());
+        let launch_bootstrap = open_launch_bootstrap(&app, original_graph_entry)?;
         let app_path = signing.bundle_path.join(MACOS_APP_RELATIVE_PATH);
         let graph = parsed
             .installed_graph
@@ -806,6 +830,24 @@ impl MacLocalGuardianFacts {
             (false, None) => Ok(None),
             _ => Err(admission_error(
                 "installed runtime preload",
+                "original launch mode and retained installed graph disagree",
+            )),
+        }
+    }
+
+    /// Fixed, Core-compiled app-root entry bootstrap. Admission compares its
+    /// bytes against retained no-follow signed files; generation revalidation
+    /// checks the same complete set before Guardian starts each Bun child.
+    /// The original entry remains independently sealed by boot and graph.
+    ///
+    /// # Errors
+    /// Refuses any disagreement between original launch mode and signed graph.
+    pub fn runtime_entry_bootstrap_path(&self) -> Result<Option<PathBuf>, HostAppError> {
+        match (self.original_graph, self.origin.graph()) {
+            (true, Some(_)) => Ok(Some(self.app_root().join(MACOS_LOCAL_RUNTIME_ENTRY_PATH))),
+            (false, None) => Ok(None),
+            _ => Err(admission_error(
+                "installed runtime entry",
                 "original launch mode and retained installed graph disagree",
             )),
         }

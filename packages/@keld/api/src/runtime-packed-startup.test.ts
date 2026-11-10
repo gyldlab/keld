@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,8 +34,51 @@ type Message = {
   before?: Record<string, string>;
   appReady?: boolean;
   observedHostReady?: boolean;
+  entryIdentity?: {
+    importMetaMain: boolean;
+    bunMainMatchesArgv1: boolean;
+    originalMatchesArgv2: boolean;
+    argc: number;
+  };
   payload?: number[];
 };
+
+function withEntryMainIdentityProbe(source: string): string {
+  const anchor =
+    'process.send?.({ kind: "entry", before, after: { ...process.versions } });';
+  expect(source.includes(anchor)).toBe(true);
+  return (
+    'import { statSync } from "node:fs";\n' +
+    'import { fileURLToPath } from "node:url";\n' +
+    `function sameUsablePhysicalFile(a, b) {
+  const first = statSync(a, { bigint: true });
+  const second = statSync(b, { bigint: true });
+  // An unavailable device/inode is not authority to call two paths equal.
+  // This matches the package artifact's strict portable file-ID contract.
+  return first.dev !== 0n && first.ino !== 0n &&
+    second.dev !== 0n && second.ino !== 0n &&
+    first.dev === second.dev && first.ino === second.ino;
+}
+` +
+    source.replace(
+      anchor,
+      `process.send?.({
+  kind: "entry",
+  before,
+  after: { ...process.versions },
+  entryIdentity: {
+    importMetaMain: import.meta.main,
+    bunMainMatchesArgv1:
+      sameUsablePhysicalFile(Bun.main, process.argv[1]),
+    originalMatchesArgv2:
+      process.argv[2] !== undefined &&
+      sameUsablePhysicalFile(process.argv[2], fileURLToPath(import.meta.url)),
+    argc: process.argv.length,
+  },
+});`,
+    )
+  );
+}
 
 /** An independent raw WorkerLink EVENT oracle, without API Ready mediation. */
 async function provePackedRawEvent(
@@ -210,6 +254,7 @@ async function provePackedHandshake(
   preloadRelative = false,
   singleGraphBootstrap = false,
   rejectInitAck = false,
+  verifiedOriginalEntry?: string,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -322,7 +367,9 @@ async function provePackedHandshake(
                 ? "@keld/api/runtime-preload"
                 : wrapper,
           ]),
+      ...(verifiedOriginalEntry === undefined ? [] : ["run"]),
       entry,
+      ...(verifiedOriginalEntry === undefined ? [] : [verifiedOriginalEntry]),
     ],
     {
       ...(inheritCwd ? {} : { cwd: stage }),
@@ -447,6 +494,33 @@ async function provePackedHandshake(
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
     expect(entered.before).toEqual(captured.versions);
+    // The source change deliberately alters *observable* original-entry
+    // semantics. Prove both contracts, do not secretly emulate Bun.main or
+    // argv with a global. Native original-app review must explicitly accept
+    // the imported-entry contract before signed release.
+    expect(entered.entryIdentity?.bunMainMatchesArgv1).toBe(true);
+    if (verifiedOriginalEntry) {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: false,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: true,
+        argc: 3,
+      });
+    } else if (singleGraphBootstrap) {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: false,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: false,
+        argc: 2,
+      });
+    } else {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: true,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: false,
+        argc: 2,
+      });
+    }
     // Test-only IPC introspection must itself respond before a failure is
     // trusted; it never mutates Host state or supplies a synthetic Ready.
     const observation = await probeReadyState();
@@ -475,7 +549,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link mode=${singleGraphBootstrap ? "bootstrap" : "preload"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link mode=${verifiedOriginalEntry === undefined ? (singleGraphBootstrap ? "bootstrap" : "preload") : "root-signed-bootstrap"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -591,11 +665,20 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       "PACKED_CROSS_PHASE_APP_IDENTITY",
       JSON.stringify(cacheIdentity),
     );
+    // Bun 1.4.4 on Windows intentionally does NOT support a shared
+    // application singleton across CLI --preload and main module phases.
+    // The supported signed Host route instead runs the immutable app-root
+    // bootstrap as Bun main and imports the original in ONE ESM graph; the
+    // strict positive below independently proves authentic Init/ACK/Ready,
+    // exactly one link and clean exit. Preserve this *negative* cross-phase
+    // oracle so a later runtime change cannot silently reenable that route
+    // without reevaluating the dedicated Host entry/argv contracts.
+    const expectedCrossPhase = process.platform === "win32" ? false : true;
     expect(cacheIdentity).toEqual({
-      "esm-esm": true,
-      "commonjs-esm": true,
-      "esm-commonjs": true,
-      "commonjs-commonjs": true,
+      "esm-esm": expectedCrossPhase,
+      "commonjs-esm": expectedCrossPhase,
+      "esm-commonjs": expectedCrossPhase,
+      "commonjs-commonjs": expectedCrossPhase,
     });
 
     // Bun must deduplicate the preload's relative app.js import and the
@@ -696,18 +779,60 @@ process.on("message", message => {
 await app.whenReady();`,
         ),
     );
-    // The exact same checked-in release wrapper is available through the
-    // installed exports map. Compare package-canonical versus absolute
-    // preload naming without changing its bytes or emitting synthetic Ready.
-    // The Host fixes the staged working directory. A root-relative preload
-    // must resolve the same installed bytes as the package entry without
-    // Windows drive-letter or URL-escaping cache-key differences.
-    await provePackedHandshake(stage, wrapper, entry, false, false, true);
-    await provePackedHandshake(stage, wrapper, entry, false, true);
-    await provePackedHandshake(stage, wrapper, entry);
-    // Match the original packed runtime test's inherited working directory.
-    // It is a separate end-to-end acceptance case, not an assertion bypass.
-    await provePackedHandshake(stage, wrapper, entry, true);
+    writeFileSync(
+      entry,
+      withEntryMainIdentityProbe(readFileSync(entry, "utf8")),
+    );
+    if (process.platform === "win32") {
+      // Bun 1.4.4 Windows has a known CLI --preload/main module-cache split.
+      // Do NOT treat its dual-phase path as a valid Ready oracle. Instead
+      // execute the exact approved app-root source template as one Bun main,
+      // with the static sealed original, and enforce the unchanged real
+      // HELLO/Init ACK/both subscriptions/Ready/one-link/clean-exit contract
+      // under both stage-owned and inherited working-directory conditions.
+      // The independent packed test below additionally tests bad Init ACK,
+      // unauthorized selector and all malformed original-entry controls.
+      const supported = join(stage, "keld-installed-runtime-entry.mjs");
+      const template = readFileSync(
+        join(import.meta.dir, "installed-runtime-entry.mjs"),
+        "utf8",
+      );
+      expect(template.split("__KELD_SELECTED_ENTRY__")).toHaveLength(3);
+      writeFileSync(
+        supported,
+        template.replaceAll("__KELD_SELECTED_ENTRY__", "entry.mjs"),
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        supported,
+        false,
+        false,
+        false,
+        true,
+        false,
+        entry,
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        supported,
+        true,
+        false,
+        false,
+        true,
+        false,
+        entry,
+      );
+    } else {
+      // Legacy CLI preload remains a supported positive path where the
+      // runtime shares its preload and entry cache. Preserve every existing
+      // spelling and inherited-cwd acceptance without weakening assertions.
+      await provePackedHandshake(stage, wrapper, entry, false, false, true);
+      await provePackedHandshake(stage, wrapper, entry, false, true);
+      await provePackedHandshake(stage, wrapper, entry);
+      await provePackedHandshake(stage, wrapper, entry, true);
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
@@ -775,6 +900,26 @@ process.on("message", message => {
 await app.whenReady();`,
         ),
     );
+    writeFileSync(
+      entry,
+      withEntryMainIdentityProbe(readFileSync(entry, "utf8")),
+    );
+    // Two different files with byte-identical sources must not pass a
+    // physical identity oracle merely because they share a volume, content,
+    // basename shape or a Windows normalization rule. The signed bootstrap
+    // additionally binds the exact original through its compiled literal.
+    const distinctDecoy = join(stage, "byte-identical-unselected.mjs");
+    writeFileSync(distinctDecoy, readFileSync(entry));
+    const selectedIdentity = statSync(entry, { bigint: true });
+    const decoyIdentity = statSync(distinctDecoy, { bigint: true });
+    expect(selectedIdentity.dev !== 0n && selectedIdentity.ino !== 0n).toBe(
+      true,
+    );
+    expect(decoyIdentity.dev !== 0n && decoyIdentity.ino !== 0n).toBe(true);
+    expect(
+      selectedIdentity.dev === decoyIdentity.dev &&
+        selectedIdentity.ino === decoyIdentity.ino,
+    ).toBe(false);
     const bootstrap = join(stage, "host-selected-bootstrap.mjs");
     writeFileSync(
       bootstrap,
@@ -896,6 +1041,138 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       true,
       true,
     );
+    // Render the same two compile-time template markers as Core's deterministic
+    // source producer, from this fixture's boot-selected relative main. The
+    // Core unit contract independently checks these exact generated bytes,
+    // marker count, and rejects unsafe import names before Pack signs them.
+    // Unlike an SDK package-local entry, this source stays at the app root.
+    const installedBootstrap = join(stage, "keld-installed-runtime-entry.mjs");
+    const ownerTemplate = readFileSync(
+      join(import.meta.dir, "installed-runtime-entry.mjs"),
+      "utf8",
+    );
+    const marker = "__KELD_SELECTED_ENTRY__";
+    expect(ownerTemplate.split(marker)).toHaveLength(3);
+    const selectedOriginal = "real-user-entry.mjs";
+    writeFileSync(
+      installedBootstrap,
+      ownerTemplate.replaceAll(marker, selectedOriginal),
+    );
+    expect(readFileSync(installedBootstrap, "utf8")).toContain(
+      'await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));',
+    );
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      false,
+      entry,
+    );
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      true,
+      entry,
+    );
+
+    // No runtime-selected alternative may override the pre-signed literal,
+    // even when a different original file physically exists inside the app.
+    const specialEntry = join(stage, "original#percent%.mjs");
+    writeFileSync(specialEntry, readFileSync(entry));
+
+    // %2e%2e is a literal admissible directory name, not an encoded parent
+    // traversal. It must load the exact graph-selected in-root file or fail;
+    // it may never escape the app root to a different module.
+    const encodedParentLiteral = join(stage, "%2e%2e");
+    mkdirSync(encodedParentLiteral, { recursive: true });
+    const encodedEntry = join(encodedParentLiteral, "literal-original.mjs");
+    writeFileSync(encodedEntry, readFileSync(entry));
+
+    // Bun 1.4.4 cannot import a physical '?' filename on Unix (and Windows
+    // forbids the name). Refuse it with a typed error before touching Host IPC,
+    // rather than silently resolving a URL query to a different original.
+    const unsupportedEntry = join(stage, "original?query.mjs");
+    if (process.platform !== "win32") {
+      writeFileSync(unsupportedEntry, readFileSync(entry));
+    }
+    const refusedQuestion = Bun.spawnSync(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--no-install",
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        "run",
+        installedBootstrap,
+        unsupportedEntry,
+      ],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(refusedQuestion.exitCode).toBe(1);
+    expect(refusedQuestion.stdout.toString()).toBe("");
+    expect(refusedQuestion.stderr.toString()).toContain("KELD-IPC-005");
+
+    // An unselected or malformed invocation of the exact generated module
+    // must not load arbitrary original code or start an app-link handshake.
+    const outsideRoot = join(tmpdir(), "not-host-admitted.mjs");
+    for (const [name, hasHostSelector, selected, extra] of [
+      ["without-host-selector", false, entry, []],
+      ["relative-original", true, "./real-user-entry.mjs", []],
+      ["outside-app-root", true, outsideRoot, []],
+      ["different-in-root", true, specialEntry, []],
+      ["encoded-parent-directory", true, encodedEntry, []],
+      ["extra-argument", true, entry, ["another-app.mjs"]],
+    ] as const) {
+      const denied = Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          ...(hasHostSelector
+            ? ["--define=__KELD_RUNTIME_PROCESS_FACTS__:true"]
+            : []),
+          "run",
+          installedBootstrap,
+          selected,
+          ...extra,
+        ],
+        {
+          cwd: stage,
+          env: {
+            ...process.env,
+            KELD_APP_LINK: "not-a-qualified-host-link",
+            KELD_NATIVE_WINDOW_FACADE: "1",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 9_000,
+        },
+      );
+      expect(
+        denied.exitCode,
+        `${name}: ${denied.stdout.toString()} ${denied.stderr.toString()}`,
+      ).toBe(1);
+      expect(denied.stdout.toString()).toBe("");
+      expect(denied.stderr.toString()).toContain("KELD-IPC-005");
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
