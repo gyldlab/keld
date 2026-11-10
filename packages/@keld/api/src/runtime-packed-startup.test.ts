@@ -510,6 +510,76 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
     }
 
+    // Isolate Bun's process-phase module cache without any Host socket or
+    // patched release module. A preloaded app object and entry-owned app
+    // object must be identical, regardless of ESM/CommonJS loading form.
+    // Collect all four outcomes before asserting, so one Windows failure
+    // cannot hide whether a different loader form shares the same owner.
+    const esmPreload = join(stage, "cache-preload.mjs");
+    const cjsPreload = join(stage, "cache-preload.cjs");
+    const esmEntry = join(stage, "cache-entry.mjs");
+    const cjsEntry = join(stage, "cache-entry.cjs");
+    writeFileSync(
+      esmPreload,
+      'import { app } from "@keld/api/internal/app"; globalThis.__keld_cache_probe_app = app;\n',
+    );
+    writeFileSync(
+      cjsPreload,
+      'globalThis.__keld_cache_probe_app = require("@keld/api/internal/app").app;\n',
+    );
+    writeFileSync(
+      esmEntry,
+      'import { app } from "@keld/api"; console.log(JSON.stringify({ same: app === globalThis.__keld_cache_probe_app }));\n',
+    );
+    writeFileSync(
+      cjsEntry,
+      'const { app } = require("@keld/api"); console.log(JSON.stringify({ same: app === globalThis.__keld_cache_probe_app }));\n',
+    );
+    const cacheIdentity: Record<string, unknown> = {};
+    for (const [label, preload, script] of [
+      ["esm-esm", esmPreload, esmEntry],
+      ["commonjs-esm", cjsPreload, esmEntry],
+      ["esm-commonjs", esmPreload, cjsEntry],
+      ["commonjs-commonjs", cjsPreload, cjsEntry],
+    ] as const) {
+      const checked = Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          "--preload",
+          preload,
+          script,
+        ],
+        { cwd: stage, stdout: "pipe", stderr: "pipe", timeout: 9_000 },
+      );
+      if (checked.exitCode !== 0) {
+        cacheIdentity[label] = {
+          exit: checked.exitCode,
+          stderr: checked.stderr.toString().slice(-400),
+        };
+      } else {
+        try {
+          cacheIdentity[label] = JSON.parse(
+            checked.stdout.toString().trim(),
+          ).same;
+        } catch {
+          cacheIdentity[label] = "invalid-cached-identity-output";
+        }
+      }
+    }
+    // Only test-owned booleans and typed module-load failures are logged.
+    console.info(
+      "PACKED_CROSS_PHASE_APP_IDENTITY",
+      JSON.stringify(cacheIdentity),
+    );
+    expect(cacheIdentity).toEqual({
+      "esm-esm": true,
+      "commonjs-esm": true,
+      "esm-commonjs": true,
+      "commonjs-commonjs": true,
+    });
+
     // Bun must deduplicate the preload's relative app.js import and the
     // installed package's public + internal export paths on every OS.
     // Otherwise Ready is published on one app singleton but awaited on another.
