@@ -86,6 +86,11 @@ export async function bootHostSelectedEntry(
       "KELD-IPC-005",
       "Host-selected runtime entry must execute in the role main thread.",
     );
+  if (typeof loadVerifiedEntry !== "function")
+    throw linkError(
+      "KELD-IPC-005",
+      "Host-selected runtime entry requires a verified loader function.",
+    );
   await preloadRuntimeProcessFacts(process.versions);
   await loadVerifiedEntry();
 }

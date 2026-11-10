@@ -795,6 +795,40 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
     expect(unselected.stdout.toString()).toBe("");
     expect(unselected.stderr.toString()).toContain("KELD-IPC-005");
 
+    // Invalid loader arguments must be rejected locally *before* the trusted
+    // bootstrap can contact its endpoint or evaluate a user module.
+    const invalidBootstrap = join(stage, "invalid-bootstrap.mjs");
+    writeFileSync(
+      invalidBootstrap,
+      'import { bootHostSelectedEntry } from "@keld/api/internal/app";\nawait bootHostSelectedEntry(null);\n',
+    );
+    const invalidLoader = Bun.spawnSync(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--no-install",
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        invalidBootstrap,
+      ],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(
+      invalidLoader.exitCode,
+      invalidLoader.stdout.toString() + invalidLoader.stderr.toString(),
+    ).toBe(1);
+    expect(invalidLoader.stdout.toString()).toBe("");
+    expect(invalidLoader.stderr.toString()).toContain("KELD-IPC-005");
+
     // This fail-closed bootstrap must NOT evaluate the user entry when its
     // Host-minted endpoint is absent. No locally fabricated Ready or session.
     const missingEndpoint =
