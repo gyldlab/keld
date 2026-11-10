@@ -51,22 +51,35 @@ if (-not [string]::Equals($actualWorkspace, $expectedWorkspace, [StringCompariso
     -not [string]::Equals($actualTarget, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Cargo workspace/target is not this exact task-owned worktree; shared target refused'
 }
-# A lexical path match is insufficient if a target or checkout directory is a
-# junction/symlink into a shared Cargo cache. Native acceptance needs isolation.
-$ownedPath = $actualTarget
-while ($true) {
-    $pathInfo = Get-Item -LiteralPath $ownedPath -Force -ErrorAction Stop
-    if (($pathInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Task worktree/target ancestor is a reparse-point alias; shared target refused: $ownedPath"
+# Lexical workspace/target equality does NOT rule out child-directory
+# junctions into foreign Cargo caches or evidence directories. Walk every
+# existing component, from the exact path through the volume root, before
+# reading or writing a task-owned path. Absent future children are allowed;
+# unreadable paths fail closed rather than silently becoming "absent".
+function Assert-NoReparsePath([string]$path) {
+    $cursor = [IO.Path]::GetFullPath($path)
+    while ($true) {
+        $entry = $null
+        try {
+            $entry = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+            # A new output directory or file may not exist yet.
+        }
+        if ($null -ne $entry -and
+            ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Reparse-point path refused (not task-owned): $cursor"
+        }
+        $parentPath = [IO.Directory]::GetParent($cursor)
+        if ($null -eq $parentPath) { break }
+        $cursor = $parentPath.FullName
     }
-    $parentPath = [IO.Directory]::GetParent($ownedPath)
-    if ($null -eq $parentPath) { break }
-    $ownedPath = $parentPath.FullName
 }
+Assert-NoReparsePath $actualTarget
 $binDir = Join-Path $actualTarget 'x86_64-pc-windows-msvc\debug\examples'
 $fixture = Join-Path $binDir 'gh1189_taskdialog_fixture.exe'
 $observer = Join-Path $binDir 'gh1189_winevent_observer.exe'
 foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
+    Assert-NoReparsePath $item.Path
     if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) { throw "Missing reviewed EXE: $($item.Path)" }
     if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) {
         throw "Unreviewed native EXE: $($item.Path)"
@@ -76,10 +89,14 @@ foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=
 # attempt directory and an immutable start manifest in this worktree's target.
 $attemptId = [guid]::NewGuid().ToString('N')
 $evidenceRoot = Join-Path $actualTarget 'gh1189\negative-controls'
+Assert-NoReparsePath $evidenceRoot
 New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+Assert-NoReparsePath $evidenceRoot
 $evidence = Join-Path $evidenceRoot $attemptId
+Assert-NoReparsePath $evidence
 if (Test-Path -LiteralPath $evidence) { throw 'Attempt identifier collision; refused' }
 New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+Assert-NoReparsePath $evidence
 
 function Write-DurableJsonOnce([string]$destination, $value) {
     # Stage with exclusive access, fsync, then atomically rename on this volume.
@@ -87,6 +104,8 @@ function Write-DurableJsonOnce([string]$destination, $value) {
     $staged = $destination + '.partial-' + [guid]::NewGuid().ToString('N')
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $value -Depth 8))
     try {
+        Assert-NoReparsePath $destination
+        Assert-NoReparsePath $staged
         $stream = [IO.File]::Open($staged, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try {
             $stream.Write($bytes, 0, $bytes.Length)
@@ -94,12 +113,27 @@ function Write-DurableJsonOnce([string]$destination, $value) {
         } finally {
             $stream.Dispose()
         }
+        Assert-NoReparsePath $staged
+        Assert-NoReparsePath $destination
         [IO.File]::Move($staged, $destination)
     } catch {
         # Delete only this call's task-owned staging file; never touch the
         # previously published final record or a foreign attempt.
         try { if ([IO.File]::Exists($staged)) { [IO.File]::Delete($staged) } } catch { }
         throw
+    }
+}
+function Write-CaseTextOnce([string]$destination, [string]$value) {
+    # A fresh attempt must never overwrite an existing file or follow a link
+    # planted at the log pathname.
+    Assert-NoReparsePath $destination
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($value)
+    $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        $stream.Dispose()
     }
 }
 $provenance = [ordered]@{
@@ -197,6 +231,14 @@ function Hold-ExactObserverOnFailure($process, [string]$label, $psi, [string]$re
 }
 
 function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) {
+    # Revalidate the exact executable paths and digests just before launch,
+    # not only at suite start. Never follow a nested target junction.
+    foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
+        Assert-NoReparsePath $item.Path
+        if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) {
+            throw "Executable changed before case: $label"
+        }
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $observer
     $psi.Arguments = '"' + $fixture + '"'
@@ -262,8 +304,8 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
     # WaitForExit returned true and both redirected output streams have been
     # consumed. Any failure to dispose is still a non-acceptance error.
     try { $process.Dispose() } catch { throw "BLOCKED: exact observer handle disposal failed: $($_.Exception.Message)" }
-    [IO.File]::WriteAllText((Join-Path $evidence ($label + '.stdout.txt')), $record.Stdout)
-    [IO.File]::WriteAllText((Join-Path $evidence ($label + '.stderr.txt')), $record.Stderr)
+    Write-CaseTextOnce (Join-Path $evidence ($label + '.stdout.txt')) $record.Stdout
+    Write-CaseTextOnce (Join-Path $evidence ($label + '.stderr.txt')) $record.Stderr
     $identity = [regex]::Match($record.Stderr, 'GH1189 fixture pid=(\d+) creation=(\d+)')
     if (-not $identity.Success) { throw "Missing child identity receipt: $label" }
     $key = $identity.Groups[1].Value + '/' + $identity.Groups[2].Value
@@ -290,6 +332,7 @@ foreach ($case in $cases) {
     Invoke-ObservedCase ('healthy-after-' + $case.Name) '' ''
 }
 foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
+    Assert-NoReparsePath $item.Path
     if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) { throw 'Binary changed during controls' }
 }
 # Commit the suite result ONLY after every expected semantic RED, every fresh
