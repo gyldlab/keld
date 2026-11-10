@@ -207,6 +207,7 @@ async function provePackedHandshake(
   entry: string,
   inheritCwd = false,
   preloadByAlias = false,
+  preloadRelative = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -216,9 +217,55 @@ async function provePackedHandshake(
   const reader = new FrameReader();
   const secondaryReader = new FrameReader();
   const drain = new DrainSignal();
+  const secondaryDrain = new DrainSignal();
   const timeline: string[] = [];
   let primarySocket: Bun.Socket<undefined> | undefined;
   let secondarySocket: Bun.Socket<undefined> | undefined;
+  let secondaryClassification: Promise<string> | undefined;
+  const classifySecondary = async (socket: Bun.Socket<undefined>) => {
+    try {
+      // Observe the extra link while its own HELLO deadline is still live.
+      // Never advance its application lifecycle or send a synthetic Ready.
+      const hello = await withIoDeadline(secondaryReader.readFrame());
+      expect(hello.header).toMatchObject({
+        kind: FrameKind.Hello,
+        channel: 0,
+        corr: 0,
+        flags: 0,
+      });
+      expect(hello.payload).toEqual(new Uint8Array(32).fill(0x72));
+      const writer = new WriteQueue(socket, secondaryDrain);
+      await writer.writeFrame(
+        FrameKind.Hello,
+        0,
+        0,
+        0,
+        new Uint8Array(32).fill(0x72),
+      );
+      const first = await withIoDeadline(secondaryReader.readFrame());
+      expect(first.header).toMatchObject({
+        kind: FrameKind.Call,
+        channel: LIFECYCLE_CHANNEL,
+        corr: 1,
+        flags: 0,
+      });
+      if (
+        first.payload.length === 2 &&
+        first.payload[0] === 1 &&
+        first.payload[1] === WINDOW_CHANNEL
+      ) {
+        return "second-link-subscribe-without-runtime-init";
+      }
+      try {
+        decodeRuntimeProcessInit(first.payload);
+        return "second-link-runtime-process-init";
+      } catch {
+        return `unrecognized-lifecycle-call-len=${first.payload.length}`;
+      }
+    } catch (error) {
+      return `secondary-probe-error=${String(error)}`;
+    }
+  };
   let connections = 0;
   let accept!: (socket: Bun.Socket<undefined>) => void;
   const accepted = new Promise<Bun.Socket<undefined>>((resolve) => {
@@ -236,6 +283,8 @@ async function provePackedHandshake(
           accept(socket);
         } else {
           secondarySocket = socket;
+          if (connections === 2)
+            secondaryClassification = classifySecondary(socket);
         }
       },
       data(socket, bytes) {
@@ -244,6 +293,7 @@ async function provePackedHandshake(
       },
       drain() {
         drain.fire();
+        secondaryDrain.fire();
       },
       close() {
         reader.end(new Error("packed test peer closed"));
@@ -261,7 +311,11 @@ async function provePackedHandshake(
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
       "--preload",
-      preloadByAlias ? "@keld/api/runtime-preload" : wrapper,
+      preloadRelative
+        ? "./node_modules/@keld/api/runtime-preload.js"
+        : preloadByAlias
+          ? "@keld/api/runtime-preload"
+          : wrapper,
       entry,
     ],
     {
@@ -397,20 +451,13 @@ async function provePackedHandshake(
       }
     }
     let second = "none";
-    if (secondarySocket !== undefined) {
-      try {
-        const frame = await withIoDeadline(secondaryReader.readFrame(), 750);
-        second = `kind=${frame.header.kind},channel=${frame.header.channel},corr=${frame.header.corr},len=${frame.header.len}`;
-      } catch (readError) {
-        second = `error=${String(readError)}`;
-      }
-    }
+    if (secondaryClassification) second = await secondaryClassification;
     child.kill();
     const exitCode = await child.exited;
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link preload=${preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -462,6 +509,76 @@ test("packed SDK resolves, fails closed unbound and authenticates over its stamp
       );
       expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
     }
+
+    // Isolate Bun's process-phase module cache without any Host socket or
+    // patched release module. A preloaded app object and entry-owned app
+    // object must be identical, regardless of ESM/CommonJS loading form.
+    // Collect all four outcomes before asserting, so one Windows failure
+    // cannot hide whether a different loader form shares the same owner.
+    const esmPreload = join(stage, "cache-preload.mjs");
+    const cjsPreload = join(stage, "cache-preload.cjs");
+    const esmEntry = join(stage, "cache-entry.mjs");
+    const cjsEntry = join(stage, "cache-entry.cjs");
+    writeFileSync(
+      esmPreload,
+      'import { app } from "@keld/api/internal/app"; globalThis.__keld_cache_probe_app = app;\n',
+    );
+    writeFileSync(
+      cjsPreload,
+      'globalThis.__keld_cache_probe_app = require("@keld/api/internal/app").app;\n',
+    );
+    writeFileSync(
+      esmEntry,
+      'import { app } from "@keld/api"; console.log(JSON.stringify({ same: app === globalThis.__keld_cache_probe_app }));\n',
+    );
+    writeFileSync(
+      cjsEntry,
+      'const { app } = require("@keld/api"); console.log(JSON.stringify({ same: app === globalThis.__keld_cache_probe_app }));\n',
+    );
+    const cacheIdentity: Record<string, unknown> = {};
+    for (const [label, preload, script] of [
+      ["esm-esm", esmPreload, esmEntry],
+      ["commonjs-esm", cjsPreload, esmEntry],
+      ["esm-commonjs", esmPreload, cjsEntry],
+      ["commonjs-commonjs", cjsPreload, cjsEntry],
+    ] as const) {
+      const checked = Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          "--preload",
+          preload,
+          script,
+        ],
+        { cwd: stage, stdout: "pipe", stderr: "pipe", timeout: 9_000 },
+      );
+      if (checked.exitCode !== 0) {
+        cacheIdentity[label] = {
+          exit: checked.exitCode,
+          stderr: checked.stderr.toString().slice(-400),
+        };
+      } else {
+        try {
+          cacheIdentity[label] = JSON.parse(
+            checked.stdout.toString().trim(),
+          ).same;
+        } catch {
+          cacheIdentity[label] = "invalid-cached-identity-output";
+        }
+      }
+    }
+    // Only test-owned booleans and typed module-load failures are logged.
+    console.info(
+      "PACKED_CROSS_PHASE_APP_IDENTITY",
+      JSON.stringify(cacheIdentity),
+    );
+    expect(cacheIdentity).toEqual({
+      "esm-esm": true,
+      "commonjs-esm": true,
+      "esm-commonjs": true,
+      "commonjs-commonjs": true,
+    });
 
     // Bun must deduplicate the preload's relative app.js import and the
     // installed package's public + internal export paths on every OS.
@@ -564,6 +681,10 @@ await app.whenReady();`,
     // The exact same checked-in release wrapper is available through the
     // installed exports map. Compare package-canonical versus absolute
     // preload naming without changing its bytes or emitting synthetic Ready.
+    // The Host fixes the staged working directory. A root-relative preload
+    // must resolve the same installed bytes as the package entry without
+    // Windows drive-letter or URL-escaping cache-key differences.
+    await provePackedHandshake(stage, wrapper, entry, false, false, true);
     await provePackedHandshake(stage, wrapper, entry, false, true);
     await provePackedHandshake(stage, wrapper, entry);
     // Match the original packed runtime test's inherited working directory.
