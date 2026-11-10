@@ -804,6 +804,22 @@ export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
   return inCodecScope(() => {
     if (!isArray(args))
       return reject("MalformedValue", "IPC arguments must be an array");
+    // Reject stable oversize inputs before inspecting their element descriptors
+    // or invoking their Proxy traps. This early refusal is only an optimization;
+    // the serialized count below remains the final authority against mutation.
+    const lengthDescriptor = checkedDescriptor(args, "length");
+    if (
+      !lengthDescriptor ||
+      !hasOwn(lengthDescriptor, "value") ||
+      !isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0
+    )
+      return reject("MalformedValue", "IPC arguments need a bounded own length");
+    if (lengthDescriptor.value > 16)
+      return reject(
+        "CodecLimit",
+        "IPC argument vector exceeds sixteen arguments",
+      );
     // The output count is bound to the same serialized array snapshot.
     const bytes = encodeValueSnapshot(args);
     if (bytes[0] !== 6 || bytes[1] + bytes[2] * 256 > 16)
