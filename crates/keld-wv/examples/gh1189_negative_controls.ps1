@@ -77,21 +77,22 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
         # A timeout is never a negative-control PASS. The exact Process object
         # stays alive here while its observer retains custody of its Child handle.
         # Write a durable operator receipt BEFORE the indefinite exact-handle wait.
-        $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
-        $receipt = [ordered]@{
-            status = 'BLOCKED_TIMEOUT'
-            case = $label
-            observer_pid = $process.Id
-            observer_started_utc = $process.StartTime.ToUniversalTime().ToString('o')
-            observer_exe = $observer
-            fixture_exe = $fixture
-            command_arguments = $psi.Arguments
-            deadline_ms = 30000
-            reviewed_commit = $ReviewedCommit
-            operator_handoff = 'Investigate this exact observer/process creation identity and its owned fixture; do not kill by name or bare PID.'
-        }
+        $handoff = '(receipt unavailable)'
         $receiptError = $null
         try {
+            $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
+            $receipt = [ordered]@{
+                status = 'BLOCKED_TIMEOUT'
+                case = $label
+                observer_pid = $process.Id
+                observer_started_utc = $process.StartTime.ToUniversalTime().ToString('o')
+                observer_exe = $observer
+                fixture_exe = $fixture
+                command_arguments = $psi.Arguments
+                deadline_ms = 30000
+                reviewed_commit = $ReviewedCommit
+                operator_handoff = 'Investigate this exact observer/process creation identity and its owned fixture; do not kill by name or bare PID.'
+            }
             $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 4))
             $stream = [IO.File]::Open($handoff, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try {
@@ -100,17 +101,19 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
             } finally {
                 $stream.Dispose()
             }
+            [Console]::Error.WriteLine("GH1189 BLOCKED observer PID=$($process.Id) case=$label handoff=$handoff")
         } catch {
             $receiptError = $_.Exception.Message
+            [Console]::Error.WriteLine("GH1189 BLOCKED custody receipt error=$receiptError; retaining exact observer handle")
+        } finally {
+            # Even if receipt creation/logging fails, retain the exact handle
+            # until OS-signaled termination. The observer itself owns its Child.
+            # No blanket kill by name or bare PID is ever attempted.
+            $process.WaitForExit()
         }
-        [Console]::Error.WriteLine("GH1189 BLOCKED observer PID=$($process.Id) case=$label handoff=$handoff receipt_error=$receiptError")
-        # Do not dispose the exact observer handle, kill it, or lose the
-        # observer-owned Child on the timeout branch. If it never exits, this
-        # call deliberately remains BLOCKED for operator intervention.
-        $process.WaitForExit()
         $reapedExit = $process.ExitCode
         $process.Dispose()
-        throw "BLOCKED: observer timed out after 30000 ms; exact observer later exited/reaped with $reapedExit; handoff=$handoff (never acceptance)"
+        throw "BLOCKED: observer timed out after 30000 ms; exact observer later exited/reaped with $reapedExit; handoff=$handoff receipt_error=$receiptError (never acceptance)"
     }
     $start.Stop()
     $record = [pscustomobject]@{
