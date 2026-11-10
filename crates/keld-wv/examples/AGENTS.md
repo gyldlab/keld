@@ -1,6 +1,6 @@
 # GH-1189 Windows dialog examples
 
-This file adds rules to `../AGENTS.md`. These rules apply only to `gh1189_taskdialog_fixture.rs`, `gh1189_winevent_observer.rs`, and `gh1189_build.ps1`. They do not grant production FFI access.
+This file adds rules to `../AGENTS.md`. These rules apply only to `gh1189_taskdialog_fixture.rs`, `gh1189_winevent_observer.rs`, `gh1189_build.ps1`, and `gh1189_negative_controls.ps1`. They do not grant production FFI access.
 
 Follow the root `AGENTS.md` requirement-word rules. Use uppercase BCP 14 words as defined by RFC 2119 and RFC 8174.
 
@@ -12,4 +12,5 @@ Follow the root `AGENTS.md` requirement-word rules. Use uppercase BCP 14 words a
 - The observer MAY read the local `Census` pointer only during the synchronous `EnumWindows` callback. It MUST NOT retain that pointer.
 - The observer MUST check the owned parent, child PID, UI thread, dialog identity, visibility, destruction, modal return, and child exit. The observer MUST reject decoy windows and extra records.
 - The observer MAY use `Child::kill` to rescue its own failed fixture. Rescue MUST count as failure, never as native acceptance. A fixture MUST NOT act on a foreign process or window.
+- Each control MUST change exactly one fixture behavior; the runner MUST verify a specific semantic rejection and a new healthy child. Timeout or rescue MUST NOT earn success credit. Reviewed commit and executable digests are mandatory.
 - The operator MUST obtain a fresh GH-1189 issue claim and exclusive Windows device slot before native execution. A test-only PASS MUST NOT count as WebView2 or draw.io product acceptance.

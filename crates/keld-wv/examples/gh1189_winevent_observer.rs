@@ -1,4 +1,5 @@
-// GH-1189 TEST-ONLY REVIEW DRAFT. Do not build/run before independent exact-target/FFI approval.
+//! GH-1189 independent WinEvent observer for the isolated TaskDialog fixture.
+//! Native execution requires independent exact-target review and a fresh RAMANI slot.
 #![deny(unsafe_op_in_unsafe_fn)]
 #[cfg(target_os = "windows")]
 mod native {
@@ -352,6 +353,13 @@ mod native {
                     return Err("cleanup observation timeout");
                 }
             }
+            if let Some(returned) = return_at {
+                if !parent_fence && returned.elapsed() > cleanup_bound {
+                    // Independently bound the HWND retirement after the modal
+                    // return; a successful cancel/return cannot mask a live owner.
+                    return Err("parent destruction fence timeout");
+                }
+            }
             if parent_fence && phases == EXPECTED.len() && !ack_sent {
                 if destroy_at.is_none() || return_at.is_none() { return Err("missing terminal observation"); }
                 input.write_all(b"A").map_err(|_| "fence acknowledgement write failed")?;
@@ -444,10 +452,18 @@ mod native {
     }
 
     fn run() -> Result<(), &'static str> {
-        let path = std::env::args_os()
-            .nth(1)
-            .ok_or("fixture executable path missing")?;
+        let mut args = std::env::args_os().skip(1);
+        let path = args.next().ok_or("fixture executable path missing")?;
+        let forwarded: Vec<_> = args.collect();
+        // The fixture is the sole owner of valid fault names. The observer
+        // forwards at most one explicitly selected test-only fault.
+        if !forwarded.is_empty()
+            && (forwarded.len() != 2 || forwarded[0].to_str() != Some("--gh1189-fault"))
+        {
+            return Err("invalid fault control arguments");
+        }
         let mut child = Command::new(path)
+            .args(&forwarded)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
