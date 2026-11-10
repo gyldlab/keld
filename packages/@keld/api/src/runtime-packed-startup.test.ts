@@ -708,18 +708,56 @@ process.on("message", message => {
 await app.whenReady();`,
         ),
     );
-    // The exact same checked-in release wrapper is available through the
-    // installed exports map. Compare package-canonical versus absolute
-    // preload naming without changing its bytes or emitting synthetic Ready.
-    // The Host fixes the staged working directory. A root-relative preload
-    // must resolve the same installed bytes as the package entry without
-    // Windows drive-letter or URL-escaping cache-key differences.
-    await provePackedHandshake(stage, wrapper, entry, false, false, true);
-    await provePackedHandshake(stage, wrapper, entry, false, true);
-    await provePackedHandshake(stage, wrapper, entry);
-    // Match the original packed runtime test's inherited working directory.
-    // It is a separate end-to-end acceptance case, not an assertion bypass.
-    await provePackedHandshake(stage, wrapper, entry, true);
+    if (process.platform === "win32") {
+      // Bun 1.4.4 Windows has a known CLI --preload/main module-cache split.
+      // Do NOT treat its dual-phase path as a valid Ready oracle. Instead
+      // execute the exact approved app-root source template as one Bun main,
+      // with the static sealed original, and enforce the unchanged real
+      // HELLO/Init ACK/both subscriptions/Ready/one-link/clean-exit contract
+      // under both stage-owned and inherited working-directory conditions.
+      // The independent packed test below additionally tests bad Init ACK,
+      // unauthorized selector and all malformed original-entry controls.
+      const supported = join(stage, "keld-installed-runtime-entry.mjs");
+      const template = readFileSync(
+        join(import.meta.dir, "installed-runtime-entry.mjs"),
+        "utf8",
+      );
+      expect(template.split("__KELD_SELECTED_ENTRY__")).toHaveLength(3);
+      writeFileSync(
+        supported,
+        template.replaceAll("__KELD_SELECTED_ENTRY__", "entry.mjs"),
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        supported,
+        false,
+        false,
+        false,
+        true,
+        false,
+        entry,
+      );
+      await provePackedHandshake(
+        stage,
+        wrapper,
+        supported,
+        true,
+        false,
+        false,
+        true,
+        false,
+        entry,
+      );
+    } else {
+      // Legacy CLI preload remains a supported positive path where the
+      // runtime shares its preload and entry cache. Preserve every existing
+      // spelling and inherited-cwd acceptance without weakening assertions.
+      await provePackedHandshake(stage, wrapper, entry, false, false, true);
+      await provePackedHandshake(stage, wrapper, entry, false, true);
+      await provePackedHandshake(stage, wrapper, entry);
+      await provePackedHandshake(stage, wrapper, entry, true);
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
