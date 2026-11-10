@@ -426,33 +426,57 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
     Write-Output ("GH1189 CONTROL {0} expected={1} exit={2} identity={3}" -f $label, $(if($expected){'RED'}else{'PASS'}), $record.Exit, $key)
 }
 
-Invoke-ObservedCase 'healthy-initial' '' ''
-foreach ($case in $cases) {
-    Invoke-ObservedCase ('fault-' + $case.Name) $case.Name $case.Reason
-    Invoke-ObservedCase ('healthy-after-' + $case.Name) '' ''
+$currentCase = 'healthy-initial'
+try {
+    Invoke-ObservedCase $currentCase '' ''
+    foreach ($case in $cases) {
+        $currentCase = 'fault-' + $case.Name
+        Invoke-ObservedCase $currentCase $case.Name $case.Reason
+        $currentCase = 'healthy-after-' + $case.Name
+        Invoke-ObservedCase $currentCase '' ''
+    }
+    $currentCase = 'final-binary-hashes'
+    foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
+        Assert-NoReparsePath $item.Path
+        if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) { throw 'Binary changed during controls' }
+    }
+    $currentCase = 'suite-completion'
+    # Commit the suite result ONLY after every expected semantic RED, every fresh
+    # healthy child and both final binary hashes have passed this exact invocation.
+    if ($results.Count -ne 9) { throw "Incomplete control suite: $($results.Count)/9; no PASS result written" }
+    $completion = [ordered]@{
+        status = 'NATIVE_TEST_ONLY_CONTROLS_PASS'
+        attempt_id = $attemptId
+        completed_utc = [DateTime]::UtcNow.ToString('o')
+        reviewed_commit = $ReviewedCommit
+        fixture_sha256 = $FixtureSha256.ToUpperInvariant()
+        observer_sha256 = $ObserverSha256.ToUpperInvariant()
+        issue_claim_url = $IssueClaimUrl
+        native_slot_url = $NativeSlotUrl
+        build_receipt_path = $receiptPath
+        build_receipt_sha256 = $buildReceiptSha256
+        controls_expected = 4
+        fresh_healthy_children_expected = 5
+        results = @($results.ToArray())
+        production_drawio_acceptance = $false
+    }
+    Write-DurableJsonOnce (Join-Path $evidence 'results.json') $completion
+} catch {
+    $suiteError = $_
+    # Existing observer custody must finish before its error can reach this
+    # boundary. Add a terminal record without changing the immutable start record.
+    $failedAttempt = [ordered]@{}
+    foreach ($key in $provenance.Keys) { $failedAttempt[$key] = $provenance[$key] }
+    $failedAttempt['status'] = 'FAILED'
+    $failedAttempt['completed_utc'] = [DateTime]::UtcNow.ToString('o')
+    $failedAttempt['failed_case'] = $currentCase
+    $failedAttempt['error'] = $suiteError.Exception.Message
+    $failedAttempt['results'] = @($results.ToArray())
+    try {
+        Write-DurableJsonOnce (Join-Path $evidence 'failure.json') $failedAttempt
+    } catch {
+        throw "Terminal FAILED receipt could not be published: $($_.Exception.Message); original failure: $($suiteError.Exception.Message)"
+    }
+    throw $suiteError
 }
-foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
-    Assert-NoReparsePath $item.Path
-    if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) { throw 'Binary changed during controls' }
-}
-# Commit the suite result ONLY after every expected semantic RED, every fresh
-# healthy child and both final binary hashes have passed this exact invocation.
-if ($results.Count -ne 9) { throw "Incomplete control suite: $($results.Count)/9; no PASS result written" }
-$completion = [ordered]@{
-    status = 'NATIVE_TEST_ONLY_CONTROLS_PASS'
-    attempt_id = $attemptId
-    completed_utc = [DateTime]::UtcNow.ToString('o')
-    reviewed_commit = $ReviewedCommit
-    fixture_sha256 = $FixtureSha256.ToUpperInvariant()
-    observer_sha256 = $ObserverSha256.ToUpperInvariant()
-    issue_claim_url = $IssueClaimUrl
-    native_slot_url = $NativeSlotUrl
-    build_receipt_path = $receiptPath
-    build_receipt_sha256 = $buildReceiptSha256
-    controls_expected = 4
-    fresh_healthy_children_expected = 5
-    results = @($results.ToArray())
-    production_drawio_acceptance = $false
-}
-Write-DurableJsonOnce (Join-Path $evidence 'results.json') $completion
 Write-Output "GH1189 CONTROL SUITE PASS: 4 independent semantic RED cases and 5 healthy children; attempt=$attemptId; native product acceptance remains separate."
