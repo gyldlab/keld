@@ -355,5 +355,6 @@ fn main() {
 }
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    eprintln!("GH-1189 native fixture requires Windows");
+    eprintln!("GH-1189 native fixture requires Windows; no acceptance ran");
+    std::process::exit(2);
 }
