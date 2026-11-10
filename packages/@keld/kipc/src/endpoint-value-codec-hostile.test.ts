@@ -199,7 +199,7 @@ test("forged tags are not invoked and symbol-tagged values are refused", () => {
 });
 
 test("genuine codec refusals retain identity while forged and nested throws normalize", () => {
-  const unsupported = caught(() => encodeEndpointValue(new (class Box {})()));
+  const unsupported = caught(() => encodeEndpointValue(Symbol("unsupported")));
   expect(unsupported.kind).toBe("UnsupportedValue");
   expect(unsupported.code).toBe("KELD-COMPAT-100");
 
