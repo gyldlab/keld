@@ -1,10 +1,25 @@
 # Source-only regression: actual artifact writers, no observer/fixture executable.
 [CmdletBinding()]
-param([string]$EvidenceDirectory = (Join-Path $env:TEMP 'gh1189-terminal-status-test'))
+param(
+    [string]$EvidenceDirectory = (Join-Path $env:TEMP ('gh1189-terminal-status-' + [guid]::NewGuid().ToString('N'))),
+    [ValidateSet('none', 'product-acceptance', 'failed-claim')]
+    [string]$MutationControl = 'none'
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'gh1189_negative_controls.ps1'
 $source = [IO.File]::ReadAllText($runner)
+# Mutate only this in-memory copy: the filesystem assertions must reject both
+# an accidental product-acceptance claim and corrupted failure provenance.
+if ($MutationControl -eq 'product-acceptance') {
+    $needle = 'production_drawio_acceptance = $false'
+    if (-not $source.Contains($needle)) { throw 'Product-acceptance mutation target missing' }
+    $source = $source.Replace($needle, 'production_drawio_acceptance = $true')
+} elseif ($MutationControl -eq 'failed-claim') {
+    $needle = '$failedAttempt[''status''] = ''FAILED'''
+    if (-not $source.Contains($needle)) { throw 'Failure-provenance mutation target missing' }
+    $source = $source.Replace($needle, $needle + [Environment]::NewLine + '$failedAttempt[''issue_claim_url''] = ''MUTATED_CLAIM''')
+}
 $tokens = $null
 $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
@@ -84,6 +99,15 @@ if ($success.status -ne 'NATIVE_TEST_ONLY_CONTROLS_PASS' -or $success.results.Co
     $success.build_receipt_path -ne $receiptPath -or $success.build_receipt_sha256 -ne $buildReceiptSha256) {
     throw 'Positive publication control or build provenance failed'
 }
+$firstStart = Get-Content -LiteralPath (Join-Path $first[0].FullName 'attempt.json') -Raw | ConvertFrom-Json
+if ($success.production_drawio_acceptance -isnot [bool] -or $success.production_drawio_acceptance) { throw 'Product acceptance must remain false' }
+if ($success.attempt_id -ne $firstStart.attempt_id -or $firstStart.attempt_id -ne $first[0].Name -or
+    $success.reviewed_commit -ne $ReviewedCommit -or $success.fixture_sha256 -ne $FixtureSha256 -or
+    $success.observer_sha256 -ne $ObserverSha256 -or $success.issue_claim_url -ne $IssueClaimUrl -or
+    $success.native_slot_url -ne $NativeSlotUrl -or $firstStart.fixture_exe -ne $fixture -or
+    $firstStart.observer_exe -ne $observer -or $firstStart.evidence_directory -ne $first[0].FullName) {
+    throw 'Successful attempt identity, claim, slot or path provenance is wrong'
+}
 if (Test-Path -LiteralPath (Join-Path $first[0].FullName 'failure.json')) { throw 'Healthy attempt published failure' }
 
 $script:marker = 'B'
@@ -105,6 +129,9 @@ if ($failure.status -ne 'FAILED' -or $failure.attempt_id -ne $start.attempt_id -
     $failure.observer_sha256 -ne $ObserverSha256 -or
     $failure.build_receipt_path -ne $receiptPath -or $failure.build_receipt_sha256 -ne $buildReceiptSha256 -or
     $failure.error -ne $failureMessage -or
+    $failure.issue_claim_url -ne $IssueClaimUrl -or $failure.native_slot_url -ne $NativeSlotUrl -or
+    $failure.fixture_exe -ne $fixture -or $failure.observer_exe -ne $observer -or
+    $failure.evidence_directory -ne $second[0].FullName -or $failure.attempt_id -ne $second[0].Name -or
     $failure.failed_case -ne 'fault-trailing-byte' -or -not $failure.completed_utc) {
     throw 'Terminal failure identity, provenance, reason, case or completion time is wrong'
 }
@@ -121,6 +148,7 @@ if ($all.Count -ne 3) { throw 'Healthy follow-up did not create a fresh attempt'
 $third = @($all | Where-Object { $_.FullName -ne $first[0].FullName -and $_.FullName -ne $second[0].FullName })
 $followup = Get-Content -LiteralPath (Join-Path $third[0].FullName 'results.json') -Raw | ConvertFrom-Json
 if ($followup.status -ne 'NATIVE_TEST_ONLY_CONTROLS_PASS' -or $followup.results.Count -ne 9) { throw 'Healthy follow-up failed' }
+if ($followup.production_drawio_acceptance -isnot [bool] -or $followup.production_drawio_acceptance) { throw 'Healthy follow-up claimed product acceptance' }
 $script:marker = 'D'
 $script:failOnCase = 'fault-trailing-byte'
 $publicationError = $null
