@@ -401,6 +401,48 @@ async function provePackedHandshake(
       try {
         const frame = await withIoDeadline(secondaryReader.readFrame(), 750);
         second = `kind=${frame.header.kind},channel=${frame.header.channel},corr=${frame.header.corr},len=${frame.header.len}`;
+        if (
+          frame.header.kind === FrameKind.Hello &&
+          frame.payload.length === 32
+        ) {
+          // Diagnostic only after the *first* link already failed Ready. The
+          // second authenticated HELLO is forbidden by the one-link contract;
+          // completing it solely classifies which lifecycle opened the extra
+          // socket, without changing the original failing assertion.
+          const secondaryWriter = new WriteQueue(secondarySocket, drain);
+          await secondaryWriter.writeFrame(
+            FrameKind.Hello,
+            0,
+            0,
+            0,
+            new Uint8Array(32).fill(0x72),
+          );
+          try {
+            const follow = await withIoDeadline(
+              secondaryReader.readFrame(),
+              1_500,
+            );
+            let meaning = "other";
+            if (
+              follow.header.kind === FrameKind.Call &&
+              follow.header.channel === LIFECYCLE_CHANNEL
+            ) {
+              if (follow.payload.length === 2 && follow.payload[0] === 1) {
+                meaning = "subscribe";
+              } else {
+                try {
+                  decodeRuntimeProcessInit(follow.payload);
+                  meaning = "runtime-init";
+                } catch {
+                  meaning = "unrecognized-lifecycle-call";
+                }
+              }
+            }
+            second += `, next_kind=${follow.header.kind},next_channel=${follow.header.channel},next_corr=${follow.header.corr},next_payload_class=${meaning}`;
+          } catch (followError) {
+            second += `, next_error=${String(followError)}`;
+          }
+        }
       } catch (readError) {
         second = `error=${String(readError)}`;
       }
