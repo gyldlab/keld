@@ -209,6 +209,7 @@ async function provePackedHandshake(
   preloadByAlias = false,
   preloadRelative = false,
   singleGraphBootstrap = false,
+  rejectInitAck = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -403,8 +404,20 @@ async function provePackedHandshake(
       0,
       LIFECYCLE_CHANNEL,
       1,
-      Uint8Array.of(3),
+      Uint8Array.of(rejectInitAck ? 1 : 3),
     );
+    if (rejectInitAck) {
+      // A host refusal must retire the one link before any user entry. No
+      // subscriptions, Ready, second socket or successfully-loaded user code.
+      step = "rejected-init";
+      expect(await withIoDeadline(child.exited)).not.toBe(0);
+      expect(await new Response(child.stderr).text()).toContain(
+        "Runtime facts require",
+      );
+      expect(messages.some((value) => value.kind === "entry")).toBe(false);
+      expect(connections).toBe(1);
+      return;
+    }
     for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
       step = `subscribe-${channel}`;
       const call = await withIoDeadline(reader.readFrame());
@@ -869,6 +882,18 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       false,
       false,
       false,
+      true,
+    );
+    // The same supported entry path must never start user code when Host Init
+    // is rejected; do not turn an ACK-denial into a local Ready or retry.
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      bootstrap,
+      false,
+      false,
+      false,
+      true,
       true,
     );
   } finally {
