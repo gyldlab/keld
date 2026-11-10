@@ -72,6 +72,20 @@ test("argument count is bounded from its emitted snapshot and rejects proxy grow
   expect(roundTrip).toEqual(sixteen);
   expect(() => encodeEndpointArguments(seventeen)).toThrow("KELD-COMPAT-102");
 
+  // Oversize arguments must refuse before reading unsupported extra elements
+  // or calling their ownKeys trap; the final wire count still protects TOCTOU.
+  let ownKeysCalls = 0;
+  const unreadExcess = new Proxy([...sixteen, Symbol("unread")], {
+    ownKeys() {
+      ownKeysCalls += 1;
+      throw new Error("oversized arguments were inspected");
+    },
+  });
+  expect(() => encodeEndpointArguments(unreadExcess)).toThrow(
+    "KELD-COMPAT-102",
+  );
+  expect(ownKeysCalls).toBe(0);
+
   const growing = new Proxy(sixteen.slice(), {
     ownKeys(target) {
       target.push(16);
@@ -89,7 +103,7 @@ test("argument count is bounded from its emitted snapshot and rejects proxy grow
     },
   });
   expect(() => encodeEndpointArguments(changingLength)).toThrow(
-    "KELD-COMPAT-101",
+    "KELD-COMPAT-102",
   );
 });
 
