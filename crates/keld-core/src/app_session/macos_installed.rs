@@ -29,7 +29,8 @@ use crate::macos_profile_identity::{
 use super::boot_contract::{ParsedBoot, parse_installed_boot_bytes};
 use super::graph_contract::{AdmittedStageGraph, read_bound_graph_leaf_from_retained_root};
 use super::launch_facts::{
-    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, macos_local_launch_bootstrap_sources,
+    LaunchFacts, MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+    macos_local_launch_bootstrap_sources,
 };
 use super::{
     AppBootSelection, BOOT_FILE, HostAppError, InitialWindow, MAX_BOOT_BYTES, PERMISSIONS_FILE,
@@ -806,6 +807,24 @@ impl MacLocalGuardianFacts {
             (false, None) => Ok(None),
             _ => Err(admission_error(
                 "installed runtime preload",
+                "original launch mode and retained installed graph disagree",
+            )),
+        }
+    }
+
+    /// Fixed, Core-compiled app-root entry bootstrap. Admission compares its
+    /// bytes against retained no-follow signed files; generation revalidation
+    /// checks the same complete set before Guardian starts each Bun child.
+    /// The original entry remains independently sealed by boot and graph.
+    ///
+    /// # Errors
+    /// Refuses any disagreement between original launch mode and signed graph.
+    pub fn runtime_entry_bootstrap_path(&self) -> Result<Option<PathBuf>, HostAppError> {
+        match (self.original_graph, self.origin.graph()) {
+            (true, Some(_)) => Ok(Some(self.app_root().join(MACOS_LOCAL_RUNTIME_ENTRY_PATH))),
+            (false, None) => Ok(None),
+            _ => Err(admission_error(
+                "installed runtime entry",
                 "original launch mode and retained installed graph disagree",
             )),
         }

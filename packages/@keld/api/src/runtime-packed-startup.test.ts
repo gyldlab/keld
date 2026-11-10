@@ -210,6 +210,7 @@ async function provePackedHandshake(
   preloadRelative = false,
   singleGraphBootstrap = false,
   rejectInitAck = false,
+  verifiedOriginalEntry?: string,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -322,7 +323,9 @@ async function provePackedHandshake(
                 ? "@keld/api/runtime-preload"
                 : wrapper,
           ]),
+      ...(verifiedOriginalEntry === undefined ? [] : ["run"]),
       entry,
+      ...(verifiedOriginalEntry === undefined ? [] : [verifiedOriginalEntry]),
     ],
     {
       ...(inheritCwd ? {} : { cwd: stage }),
@@ -475,7 +478,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link mode=${singleGraphBootstrap ? "bootstrap" : "preload"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link mode=${verifiedOriginalEntry === undefined ? (singleGraphBootstrap ? "bootstrap" : "preload") : "root-signed-bootstrap"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -896,6 +899,78 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       true,
       true,
     );
+    // Use the EXACT source bytes compiled into Core for installed Pack output.
+    // Unlike a generated SDK package-local entry, this module is at the app
+    // root beside the original app, and is separately admitted by Guardian.
+    const installedBootstrap = join(stage, "keld-installed-runtime-entry.mjs");
+    writeFileSync(
+      installedBootstrap,
+      readFileSync(join(import.meta.dir, "installed-runtime-entry.mjs")),
+    );
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      false,
+      entry,
+    );
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      true,
+      entry,
+    );
+
+    // An unselected or malformed invocation of the exact generated module
+    // must not load arbitrary original code or start an app-link handshake.
+    const outsideRoot = join(tmpdir(), "not-host-admitted.mjs");
+    for (const [name, hasHostSelector, selected, extra] of [
+      ["without-host-selector", false, entry, []],
+      ["relative-original", true, "./real-user-entry.mjs", []],
+      ["outside-app-root", true, outsideRoot, []],
+      ["extra-argument", true, entry, ["another-app.mjs"]],
+    ] as const) {
+      const denied = Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          ...(hasHostSelector
+            ? ["--define=__KELD_RUNTIME_PROCESS_FACTS__:true"]
+            : []),
+          "run",
+          installedBootstrap,
+          selected,
+          ...extra,
+        ],
+        {
+          cwd: stage,
+          env: {
+            ...process.env,
+            KELD_APP_LINK: "not-a-qualified-host-link",
+            KELD_NATIVE_WINDOW_FACADE: "1",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 9_000,
+        },
+      );
+      expect(
+        denied.exitCode,
+        `${name}: ${denied.stdout.toString()} ${denied.stderr.toString()}`,
+      ).toBe(1);
+      expect(denied.stdout.toString()).toBe("");
+      expect(denied.stderr.toString()).toContain("KELD-IPC-005");
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }

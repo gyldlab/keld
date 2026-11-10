@@ -24,12 +24,17 @@ const ORIGINAL_RESOURCE_POLICY_CONTRACT: &str = "gh473-original-editor-offline/v
 pub const MACOS_LOCAL_LAUNCH_PRELOAD_PATH: &str =
     "keld-launch-facts/electron/src/installed-launch-preload.ts";
 
+/// Fixed app-root ESM bootstrap with Core-compiled, exact-checked bytes.
+/// Its position beside the original entry keeps the installed API and user
+/// entry in one Bun module graph even where CLI preload caches are isolated.
+pub const MACOS_LOCAL_RUNTIME_ENTRY_PATH: &str = "keld-installed-runtime-entry.mjs";
+
 /// Exact source inputs shared by the local producer and installed admission.
 ///
 /// These are compiled owner bytes, not files or fingerprints supplied by the
 /// application. The relative layout preserves the source modules' imports.
 #[must_use]
-pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static [u8]); 3] {
+pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static [u8]); 4] {
     [
         (
             "keld-launch-facts/kipc/src/launch-facts.ts",
@@ -42,6 +47,10 @@ pub const fn macos_local_launch_bootstrap_sources() -> [(&'static str, &'static 
         (
             MACOS_LOCAL_LAUNCH_PRELOAD_PATH,
             include_bytes!("../../../../packages/@keld/electron/src/installed-launch-preload.ts"),
+        ),
+        (
+            MACOS_LOCAL_RUNTIME_ENTRY_PATH,
+            include_bytes!("../../../../packages/@keld/api/src/installed-runtime-entry.mjs"),
         ),
     ]
 }
