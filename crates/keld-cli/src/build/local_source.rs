@@ -845,6 +845,7 @@ fn prepare(request: Request) -> Result<LocalSourceBuildObservation, BuildError> 
     let template = request.session.join("empty-git-template");
     create_private(&template)?;
     let mut init = os_args(&["-c", "core.hooksPath=NUL", "init", "--bare", "--quiet"]);
+    let maintenance = os_args(&["config", "maintenance.auto", "false"]);
     init.push(format!("--template={}", template.display()).into());
     init.push(gitdir.as_os_str().to_owned());
     run_owned(
@@ -862,6 +863,13 @@ fn prepare(request: Request) -> Result<LocalSourceBuildObservation, BuildError> 
             request.source.join(".git/objects").into_os_string(),
         ),
     ]);
+    run_owned(
+        &git,
+        &maintenance,
+        &environment,
+        &request.session,
+        Duration::from_secs(120),
+    )?;
     let empty = request.session.join("empty-tree");
     File::create_new(&empty).map_err(|error| failure("local source empty tree", error))?;
     let null_input = File::open("NUL").map_err(|error| failure("source null input", error))?;
