@@ -57,7 +57,7 @@ function Assert-NoBuildOverrides {
     # Refuse every ambient Cargo environment key rather than maintaining a
     # list that silently misses a future flag. Apply before and after build.
     $blocked = @(Get-ChildItem Env: | Where-Object {
-        $_.Name -match '^(CARGO($|_)|RUSTC($|_)|RUSTFLAGS$|RUSTDOC($|_)|RUSTUP_TOOLCHAIN$|CC($|_)|CXX($|_)|AR($|_)|CFLAGS$|CXXFLAGS$)'
+        $_.Name -match '^(CARGO($|_)|RUSTC($|_)|RUSTFLAGS$|RUSTDOC($|_)|RUSTUP_TOOLCHAIN$|CC($|_)|CXX($|_)|AR($|_)|CFLAGS$|CXXFLAGS$|CL$|_CL_$|LINK$|_LINK_$)'
     })
     if ($blocked.Count -ne 0) {
         $names = (($blocked | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ',')
@@ -99,6 +99,58 @@ function Assert-NoReparsePath([string]$path) {
         $cursor = $parent.FullName
     }
 }
+# Pin BOTH rustup PATH proxies and the compiler/cargo executables selected
+# behind the proxy. Version text alone is forgeable by an unreviewed wrapper.
+# These identities are reviewed for this RAMANI x64 MSVC test-only toolchain.
+function Assert-ReviewedRustTools {
+    $shimRoot = Join-Path $HOME '.cargo\bin'
+    $toolRoot = Join-Path $HOME '.rustup\toolchains\1.99.1-x86_64-pc-windows-msvc\bin'
+    $shimHash = '00F139DA614DCED87D3C3D4121C43EEBDAC3C1BF8A5EE86B9D80DFD71C8D70FD'
+    $cargoHash = 'AA5B8980BE3681899FDE765BA47E2ED361463AE9DD8EE7CD1963C18D23743A0F'
+    $rustcHash = 'BA03E3BA03A73D9FEF19AB3659140F94B43615EC1D587FE9BEFC9AED3BD5AA72'
+    foreach ($name in @('cargo.exe','rustc.exe','rustup.exe')) {
+        $expected = [IO.Path]::GetFullPath((Join-Path $shimRoot $name))
+        $selected = [IO.Path]::GetFullPath((Get-Command $name -ErrorAction Stop).Source)
+        if (-not [string]::Equals($selected,$expected,[StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unreviewed Rust PATH shim selected: $selected"
+        }
+        Assert-NoReparsePath $selected
+        if ((Get-FileHash -LiteralPath $selected -Algorithm SHA256).Hash -ne $shimHash) {
+            throw "Unreviewed Rust PATH shim bytes: $selected"
+        }
+    }
+    $rustup = Join-Path $shimRoot 'rustup.exe'
+    foreach ($name in @('cargo','rustc')) {
+        $expected = [IO.Path]::GetFullPath((Join-Path $toolRoot ($name+'.exe')))
+        $selected = [IO.Path]::GetFullPath(((& $rustup which $name) -join ''))
+        if ($LASTEXITCODE -ne 0 -or
+            -not [string]::Equals($selected,$expected,[StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unreviewed rustup-selected compiler tool: $name"
+        }
+        Assert-NoReparsePath $selected
+        $pin = $(if ($name -eq 'cargo') { $cargoHash } else { $rustcHash })
+        if ((Get-FileHash -LiteralPath $selected -Algorithm SHA256).Hash -ne $pin) {
+            throw "Unreviewed effective Rust tool bytes: $selected"
+        }
+    }
+    $active = ((& $rustup show active-toolchain) -join [Environment]::NewLine)
+    if ($LASTEXITCODE -ne 0 -or
+        -not $active.StartsWith('1.99.1-x86_64-pc-windows-msvc', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Unreviewed active Rust toolchain'
+    }
+    return [ordered]@{
+        cargo_shim_path = (Join-Path $shimRoot 'cargo.exe')
+        rustc_shim_path = (Join-Path $shimRoot 'rustc.exe')
+        rustup_shim_path = $rustup
+        shim_sha256 = $shimHash
+        effective_cargo_path = (Join-Path $toolRoot 'cargo.exe')
+        effective_rustc_path = (Join-Path $toolRoot 'rustc.exe')
+        effective_cargo_sha256 = $cargoHash
+        effective_rustc_sha256 = $rustcHash
+        active_toolchain = $active
+    }
+}
+$rustToolPins = Assert-ReviewedRustTools
 $rootInputs = [ordered]@{
     cargo_toml_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.toml') -Algorithm SHA256).Hash
     cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.lock') -Algorithm SHA256).Hash
@@ -213,6 +265,10 @@ function Assert-ReviewedSnapshot {
     }
     Assert-NoBuildOverrides
     Assert-NoExternalCargoConfig
+    $currentTools = Assert-ReviewedRustTools
+    if (($currentTools | ConvertTo-Json -Compress) -ne ($rustToolPins | ConvertTo-Json -Compress)) {
+        throw 'Effective Rust compiler/Cargo identity changed during build'
+    }
     $currentRoot = [ordered]@{
         cargo_toml_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.toml') -Algorithm SHA256).Hash
         cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.lock') -Algorithm SHA256).Hash
@@ -272,6 +328,7 @@ try {
         })
         cargo_version = $cargoVersion
         rustc_version = $rustcVersion
+        rust_tools = $rustToolPins
         vcvars64_path = $vcvars
         vcvars64_sha256 = (Get-FileHash -LiteralPath $vcvars -Algorithm SHA256).Hash
         linker_exe_sha256 = (Get-FileHash -LiteralPath $link -Algorithm SHA256).Hash
