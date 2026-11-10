@@ -1,13 +1,15 @@
 /** Local API behavior only; this model is never Host/policy/native qualification. */
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 function observe(phase: string, schema = 5) {
   const run = Bun.spawnSync({
     cmd: [
       process.execPath,
       "--no-install",
       "--no-env-file",
-      new URL("../fixtures/session_recording_model.ts", import.meta.url)
-        .pathname,
+      fileURLToPath(
+        new URL("../fixtures/session_recording_model.ts", import.meta.url),
+      ),
       phase,
       String(schema),
     ],
