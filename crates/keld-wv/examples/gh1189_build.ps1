@@ -114,7 +114,25 @@ function Assert-ReviewedRustTools {
         if (-not [string]::Equals($selected,$expected,[StringComparison]::OrdinalIgnoreCase)) {
             throw "Unreviewed Rust PATH shim selected: $selected"
         }
-        Assert-NoReparsePath $selected
+        if ($name -eq 'rustup.exe') {
+            Assert-NoReparsePath $selected
+        } else {
+            # Windows rustup installs cargo.exe and rustc.exe as *reviewed*
+            # symlinks to the same rustup.exe. Never allow an arbitrary alias.
+            Assert-NoReparsePath (Split-Path -Parent $selected)
+            $shim = Get-Item -LiteralPath $selected -Force -ErrorAction Stop
+            $targets = @($shim.Target)
+            if ($shim.LinkType -ne 'SymbolicLink' -or $targets.Count -ne 1 -or
+                $targets[0] -ne 'rustup.exe') {
+                throw "Unexpected Rust shim link identity: $selected"
+            }
+            $resolved = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $selected) $targets[0]))
+            $rustupPath = [IO.Path]::GetFullPath((Join-Path $shimRoot 'rustup.exe'))
+            if (-not [string]::Equals($resolved, $rustupPath, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Rust shim points outside reviewed rustup: $selected"
+            }
+            Assert-NoReparsePath $resolved
+        }
         if ((Get-FileHash -LiteralPath $selected -Algorithm SHA256).Hash -ne $shimHash) {
             throw "Unreviewed Rust PATH shim bytes: $selected"
         }
