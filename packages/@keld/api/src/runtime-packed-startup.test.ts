@@ -216,9 +216,55 @@ async function provePackedHandshake(
   const reader = new FrameReader();
   const secondaryReader = new FrameReader();
   const drain = new DrainSignal();
+  const secondaryDrain = new DrainSignal();
   const timeline: string[] = [];
   let primarySocket: Bun.Socket<undefined> | undefined;
   let secondarySocket: Bun.Socket<undefined> | undefined;
+  let secondaryClassification: Promise<string> | undefined;
+  const classifySecondary = async (socket: Bun.Socket<undefined>) => {
+    try {
+      // Observe the extra link while its own HELLO deadline is still live.
+      // Never advance its application lifecycle or send a synthetic Ready.
+      const hello = await withIoDeadline(secondaryReader.readFrame());
+      expect(hello.header).toMatchObject({
+        kind: FrameKind.Hello,
+        channel: 0,
+        corr: 0,
+        flags: 0,
+      });
+      expect(hello.payload).toEqual(new Uint8Array(32).fill(0x72));
+      const writer = new WriteQueue(socket, secondaryDrain);
+      await writer.writeFrame(
+        FrameKind.Hello,
+        0,
+        0,
+        0,
+        new Uint8Array(32).fill(0x72),
+      );
+      const first = await withIoDeadline(secondaryReader.readFrame());
+      expect(first.header).toMatchObject({
+        kind: FrameKind.Call,
+        channel: LIFECYCLE_CHANNEL,
+        corr: 1,
+        flags: 0,
+      });
+      if (
+        first.payload.length === 2 &&
+        first.payload[0] === 1 &&
+        first.payload[1] === WINDOW_CHANNEL
+      ) {
+        return "second-link-subscribe-without-runtime-init";
+      }
+      try {
+        decodeRuntimeProcessInit(first.payload);
+        return "second-link-runtime-process-init";
+      } catch {
+        return `unrecognized-lifecycle-call-len=${first.payload.length}`;
+      }
+    } catch (error) {
+      return `secondary-probe-error=${String(error)}`;
+    }
+  };
   let connections = 0;
   let accept!: (socket: Bun.Socket<undefined>) => void;
   const accepted = new Promise<Bun.Socket<undefined>>((resolve) => {
@@ -236,6 +282,8 @@ async function provePackedHandshake(
           accept(socket);
         } else {
           secondarySocket = socket;
+          if (connections === 2)
+            secondaryClassification = classifySecondary(socket);
         }
       },
       data(socket, bytes) {
@@ -244,6 +292,7 @@ async function provePackedHandshake(
       },
       drain() {
         drain.fire();
+        secondaryDrain.fire();
       },
       close() {
         reader.end(new Error("packed test peer closed"));
@@ -397,56 +446,7 @@ async function provePackedHandshake(
       }
     }
     let second = "none";
-    if (secondarySocket !== undefined) {
-      try {
-        const frame = await withIoDeadline(secondaryReader.readFrame(), 750);
-        second = `kind=${frame.header.kind},channel=${frame.header.channel},corr=${frame.header.corr},len=${frame.header.len}`;
-        if (
-          frame.header.kind === FrameKind.Hello &&
-          frame.payload.length === 32
-        ) {
-          // Diagnostic only after the *first* link already failed Ready. The
-          // second authenticated HELLO is forbidden by the one-link contract;
-          // completing it solely classifies which lifecycle opened the extra
-          // socket, without changing the original failing assertion.
-          const secondaryWriter = new WriteQueue(secondarySocket, drain);
-          await secondaryWriter.writeFrame(
-            FrameKind.Hello,
-            0,
-            0,
-            0,
-            new Uint8Array(32).fill(0x72),
-          );
-          try {
-            const follow = await withIoDeadline(
-              secondaryReader.readFrame(),
-              1_500,
-            );
-            let meaning = "other";
-            if (
-              follow.header.kind === FrameKind.Call &&
-              follow.header.channel === LIFECYCLE_CHANNEL
-            ) {
-              if (follow.payload.length === 2 && follow.payload[0] === 1) {
-                meaning = "subscribe";
-              } else {
-                try {
-                  decodeRuntimeProcessInit(follow.payload);
-                  meaning = "runtime-init";
-                } catch {
-                  meaning = "unrecognized-lifecycle-call";
-                }
-              }
-            }
-            second += `, next_kind=${follow.header.kind},next_channel=${follow.header.channel},next_corr=${follow.header.corr},next_payload_class=${meaning}`;
-          } catch (followError) {
-            second += `, next_error=${String(followError)}`;
-          }
-        }
-      } catch (readError) {
-        second = `error=${String(readError)}`;
-      }
-    }
+    if (secondaryClassification) second = await secondaryClassification;
     child.kill();
     const exitCode = await child.exited;
     const stderr = await new Response(child.stderr).text();
