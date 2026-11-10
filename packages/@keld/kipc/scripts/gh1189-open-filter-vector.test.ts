@@ -24,7 +24,7 @@ test("W5 pinned Open options match the complete Rust-owned filter vector", () =>
       properties: ["OpenFile"] as const,
     },
   };
-  const expected: unknown = JSON.parse(
+  const fixture: unknown = JSON.parse(
     readFileSync(
       new URL(
         "../../../../crates/keld-native/tests/fixtures/dialog_open_filters.json",
@@ -33,6 +33,20 @@ test("W5 pinned Open options match the complete Rust-owned filter vector", () =>
       "utf8",
     ),
   );
+  if (!Array.isArray(fixture)) {
+    throw new Error("W5 fixture must be a JSON byte array");
+  }
+  const expected = fixture.map((byte: unknown) => {
+    if (
+      typeof byte !== "number" ||
+      !Number.isInteger(byte) ||
+      byte < 0 ||
+      byte > 255
+    ) {
+      throw new Error("W5 fixture contains an invalid byte");
+    }
+    return byte;
+  });
   expect([...encodeDialogRequest(request)]).toEqual(expected);
   const reordered = {
     ...request,
