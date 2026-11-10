@@ -105,6 +105,12 @@ test("native slots survive prototype changes and Dates keep timestamps", () => {
       "KELD-COMPAT-100",
     );
   }
+  for (const value of [new RegExp("secret"), new WeakMap(), new WeakSet()]) {
+    Object.setPrototypeOf(value, null);
+    expect(caught(() => encodeEndpointValue(value)).code).toBe(
+      "KELD-COMPAT-100",
+    );
+  }
 
   const date = new Date("2024-02-03T04:05:06.789Z");
   Object.setPrototypeOf(date, null);
