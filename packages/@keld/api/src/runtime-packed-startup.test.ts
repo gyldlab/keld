@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,8 +48,18 @@ function withEntryMainIdentityProbe(source: string): string {
     'process.send?.({ kind: "entry", before, after: { ...process.versions } });';
   expect(source.includes(anchor)).toBe(true);
   return (
-    'import { realpathSync, statSync } from "node:fs";\n' +
+    'import { statSync } from "node:fs";\n' +
     'import { fileURLToPath } from "node:url";\n' +
+    `function sameUsablePhysicalFile(a, b) {
+  const first = statSync(a, { bigint: true });
+  const second = statSync(b, { bigint: true });
+  // An unavailable device/inode is not authority to call two paths equal.
+  // This matches the package artifact's strict portable file-ID contract.
+  return first.dev !== 0n && first.ino !== 0n &&
+    second.dev !== 0n && second.ino !== 0n &&
+    first.dev === second.dev && first.ino === second.ino;
+}
+` +
     source.replace(
       anchor,
       `process.send?.({
@@ -58,17 +69,10 @@ function withEntryMainIdentityProbe(source: string): string {
   entryIdentity: {
     importMetaMain: import.meta.main,
     bunMainMatchesArgv1:
-      realpathSync(Bun.main) === realpathSync(process.argv[1]),
+      sameUsablePhysicalFile(Bun.main, process.argv[1]),
     originalMatchesArgv2:
       process.argv[2] !== undefined &&
-      (() => {
-        // Windows 8.3 and long-path aliases can differ as strings after
-        // realpathSync. The sealed Host original entry contract is physical
-        // file identity, not a particular case or short-name spelling.
-        const arg = statSync(process.argv[2], { bigint: true });
-        const module = statSync(fileURLToPath(import.meta.url), { bigint: true });
-        return arg.ino !== 0n && arg.dev === module.dev && arg.ino === module.ino;
-      })(),
+      sameUsablePhysicalFile(process.argv[2], fileURLToPath(import.meta.url)),
     argc: process.argv.length,
   },
 });`,
@@ -900,6 +904,22 @@ await app.whenReady();`,
       entry,
       withEntryMainIdentityProbe(readFileSync(entry, "utf8")),
     );
+    // Two different files with byte-identical sources must not pass a
+    // physical identity oracle merely because they share a volume, content,
+    // basename shape or a Windows normalization rule. The signed bootstrap
+    // additionally binds the exact original through its compiled literal.
+    const distinctDecoy = join(stage, "byte-identical-unselected.mjs");
+    writeFileSync(distinctDecoy, readFileSync(entry));
+    const selectedIdentity = statSync(entry, { bigint: true });
+    const decoyIdentity = statSync(distinctDecoy, { bigint: true });
+    expect(selectedIdentity.dev !== 0n && selectedIdentity.ino !== 0n).toBe(
+      true,
+    );
+    expect(decoyIdentity.dev !== 0n && decoyIdentity.ino !== 0n).toBe(true);
+    expect(
+      selectedIdentity.dev === decoyIdentity.dev &&
+        selectedIdentity.ino === decoyIdentity.ino,
+    ).toBe(false);
     const bootstrap = join(stage, "host-selected-bootstrap.mjs");
     writeFileSync(
       bootstrap,
