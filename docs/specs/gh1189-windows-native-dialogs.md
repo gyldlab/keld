@@ -3,7 +3,7 @@
 - Status: draft
 - Tracker: GH-1189
 - Owner: Monish Khandelwal (@0monish; approval pending)
-- Updated: 2026-11-05
+- Updated: 2026-11-10
 - Pin: 0eb3ce203187f35c5276a4237189c906a5220d5a
 
 ## 1. Goal & non-goals
@@ -94,15 +94,26 @@ An app patch must appear in that artifact record.
   - **At-risk precondition:** the combined-flags fixture attempts its expected directory selection.
   - **Expected RED:** the selection or returned kind differs from the oracle.
 
-### AC-5: Message returns the selected synchronous index
+### AC-5: Message returns the selected synchronous index and actual checkbox state
 
 - **Given:** the unchanged Windows dirty-close request has a live parent and authenticated connected singleton.
-- **When:** Save, Discard Changes, and Cancel are each selected in separate runs.
-- **Then:** the caller receives primitive integers 0, 1, and 2 respectively before its next statement.
-- **Negative control:**
+  Separately, admitted Message options have a nonempty `checkbox_label` and an initial `checkbox_checked` state.
+- **When:** Save, Discard Changes, and Cancel are each selected in separate runs; in additional native runs the
+  verification checkbox starts unchecked and is checked, or starts checked and is unchecked before dismissal.
+- **Then:** the synchronous Electron caller receives primitive integers 0, 1, and 2 respectively before its next
+  statement. The shared `DialogReplyV1::Message { response, checkbox_checked }` retains both the clicked button
+  index and the checkbox's **actual final native state**. A Message without a checkbox reports `false` in that
+  shared field. The unchanged dirty-close consumer still receives only its primitive button index.
+- **Negative controls:**
   - **Single fault:** use the macOS Cancel/Discard index mapping.
-  - **At-risk precondition:** the operator selects Windows Discard Changes.
-  - **Expected RED:** the observed index or resulting application continuation is wrong.
+    **At-risk precondition:** the operator selects Windows Discard Changes.
+    **Expected RED:** the observed index or resulting application continuation is wrong.
+  - **Single fault:** always set the shared `checkbox_checked` reply to `false`.
+    **At-risk precondition:** the native labeled checkbox starts unchecked and the user checks it.
+    **Expected RED:** the shared reply disagrees with the independently observed checked state.
+  - **Single fault:** ignore `checkbox_checked` without a valid `checkbox_label`.
+    **At-risk precondition:** the shared validator receives that invalid option combination.
+    **Expected RED:** a native panel appears instead of a typed pre-presentation refusal.
 
 ### AC-6: synchronous park preserves event semantics
 
@@ -254,6 +265,19 @@ Message uses the caller's ordered button array. Map native button identifiers ba
 `noLink:true`. For the pinned Windows caller: Save is 0, Discard Changes is 1, and Cancel is 2. Test Enter, Escape, the close button, and actual button clicks. Do not confuse
 native failure with button index zero.
 
+Preserve the existing shared `MessageOptions.checkbox_label` / `checkbox_checked` inputs and
+`DialogReplyV1::Message { response, checkbox_checked }` reply, rather than reducing the wire result to an index.
+For an admitted nonempty checkbox label, set `TASKDIALOGCONFIG.pszVerificationText`, initialize its native state using
+`TDF_VERIFICATION_FLAG_CHECKED` only when initially checked, and pass an output for
+`TaskDialogIndirect.pfVerificationFlagChecked`; return the **final native value**, not the initial value or a constant.
+When no checkbox is requested, no verification UI is shown and the shared checked field is `false`. A supplied
+initial checked state without a valid label is a shared-validation error **before** any native presentation.
+If a checkbox combination cannot be supported, fail with the existing typed pre-presentation refusal instead of
+showing a checkbox-less panel or inventing a result. Keep the Electron synchronous facade's primitive index
+semantics unchanged. Sources: [TASKDIALOGCONFIG](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/ns-commctrl-taskdialogconfig)
+and [TaskDialogIndirect](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-taskdialogindirect),
+verified 2026-11-10.
+
 FACT: the pinned API states: "Returns `Integer` - the index of the clicked button." Source: [pinned Message
 API](https://github.com/electron/electron/blob/694f45852a0f1726cd23bfd379854de489cccb65/docs/api/dialog.md#L324-L327), retrieved 2026-11-05. The synchronous facade consumes
 the already-connected WorkerLink. Before readiness, it throws the shared typed not-ready outcome synchronously. No Promise or synthetic Cancel may replace that result.
@@ -324,7 +348,8 @@ native/FFI amendment precedes production calls.
 
 - **Blocked by:** T-2, B-6
 - Integrate the existing WorkerLink path and native button mapping.
-- Run AC-5 through AC-10 and the retained denial/parent cases.
+- Run AC-5 through AC-10, including both checkbox transition directions, no-checkbox and invalid-label controls,
+  and the retained denial/parent cases.
 - Keep the bounded event stream and original-correlation checks.
 
 ### T-4: qualify the actual Windows dirty-close workflow
@@ -341,7 +366,7 @@ native/FFI amendment precedes production calls.
 | AC-1 | Guarded requests plus native window census for every dialog kind |
 | AC-2 | Registry generation fixture and observed HWND reuse |
 | AC-3/AC-4 | Windows UI automation over isolated file/directory/filter sentinels |
-| AC-5 | Real buttons, Enter/Escape/access keys, primitive return and sequence |
+| AC-5 | Real buttons, Enter/Escape/access keys, primitive return, native checkbox unchecked-to-checked and checked-to-unchecked, no-checkbox, invalid-label refusal; constant-false mutant must fail |
 | AC-6 | Existing WorkerLink stream over 8 KiB, mirror and listener-order witnesses |
 | AC-7 | Final presentation barrier released after observed tombstone |
 | AC-8 | Visible panel, independently timestamped retirement, physical disappearance |
@@ -374,7 +399,7 @@ a different live window.
 ## 8. Review gates triggered
 
 - Unsafe: exact Windows COM, callback, and native dialog operations.
-- Public API: path values, button indexes, option admission, and synchronous return.
+- Public API: path values, button indexes, actual Message checkbox input/output, option admission, and synchronous return.
 - Permission model: one guard check and no selection-derived authority.
 - Dependency: any additional Windows API features require the existing dependency owner.
 - Wire protocol: preserve existing variants and prove unchanged framing and correlation.
