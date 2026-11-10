@@ -86,6 +86,40 @@ test("pinned draw.io 31.7.0 chooseFileEntry Open keeps its exact properties and 
   }
 });
 
+test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and filename", () => {
+  // Webapp 24b76c2c: ElectronApp.js:2215-2219,2321-2341; Editor.js:4260-4264
+  // plus ElectronApp.js:126-129 adds PDF. English labels are from dia.txt at
+  // that same pin, not universal labels. With a cached .lastSaveDir and the
+  // normalized title diagram.png, the caller promotes PNG and joins with '/'.
+  const options = normalizeSaveDialogOptions({
+    defaultPath: "C:\\Users\\fixture\\Documents/diagram.png",
+    filters: [
+      { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
+      { name: "XML File (.drawio)", extensions: ["drawio"] },
+      { name: "Editable Vector Image (.svg)", extensions: ["svg"] },
+      { name: "HTML File (.html)", extensions: ["html"] },
+      { name: "PDF (.pdf)", extensions: ["pdf"] },
+    ],
+  });
+  expect(options).toEqual({
+    default_path: "C:\\Users\\fixture\\Documents/diagram.png",
+    filters: [
+      { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
+      { name: "XML File (.drawio)", extensions: ["drawio"] },
+      { name: "Editable Vector Image (.svg)", extensions: ["svg"] },
+      { name: "HTML File (.html)", extensions: ["html"] },
+      { name: "PDF (.pdf)", extensions: ["pdf"] },
+    ],
+    security_scoped_bookmarks: false,
+  });
+  expect(Object.isFrozen(options)).toBe(true);
+  expect(Object.isFrozen(options.filters)).toBe(true);
+  for (const group of options.filters) {
+    expect(Object.isFrozen(group)).toBe(true);
+    expect(Object.isFrozen(group.extensions)).toBe(true);
+  }
+});
+
 test("Save never grants security scope and preserves filename hint without writing it", () => {
   const save = normalizeSaveDialogOptions({
     defaultPath: "diagram.drawio",
