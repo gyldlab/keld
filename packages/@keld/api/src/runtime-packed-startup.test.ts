@@ -15,7 +15,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { freshWin32AppLinkPipe } from "../../kipc/test/app-link-host.ts";
 import {
   DrainSignal,
@@ -208,7 +207,7 @@ async function provePackedHandshake(
   entry: string,
   inheritCwd = false,
   preloadByAlias = false,
-  preloadByFileUrl = false,
+  preloadRelative = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -312,8 +311,8 @@ async function provePackedHandshake(
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
       "--preload",
-      preloadByFileUrl
-        ? pathToFileURL(wrapper).href
+      preloadRelative
+        ? "./node_modules/@keld/api/runtime-preload.js"
         : preloadByAlias
           ? "@keld/api/runtime-preload"
           : wrapper,
@@ -458,7 +457,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link preload=${preloadByFileUrl ? "file-url" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -612,9 +611,9 @@ await app.whenReady();`,
     // The exact same checked-in release wrapper is available through the
     // installed exports map. Compare package-canonical versus absolute
     // preload naming without changing its bytes or emitting synthetic Ready.
-    // On Windows a file: URL may canonicalize the preload and entry module
-    // cache identities where a drive-letter path did not. Check it against
-    // the identical full authenticated Init/Ready oracle, with no bypass.
+    // The Host fixes the staged working directory. A root-relative preload
+    // must resolve the same installed bytes as the package entry without
+    // Windows drive-letter or URL-escaping cache-key differences.
     await provePackedHandshake(stage, wrapper, entry, false, false, true);
     await provePackedHandshake(stage, wrapper, entry, false, true);
     await provePackedHandshake(stage, wrapper, entry);
