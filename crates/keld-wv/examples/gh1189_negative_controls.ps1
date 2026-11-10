@@ -43,7 +43,15 @@ if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Native controls require
 $workspaceManifest = Join-Path $repo 'Cargo.toml'
 $metadata = & cargo metadata --manifest-path $workspaceManifest --locked --no-deps --format-version 1 | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve isolated Cargo target' }
-$binDir = Join-Path $metadata.target_directory 'x86_64-pc-windows-msvc\debug\examples'
+$expectedWorkspace = [IO.Path]::GetFullPath($repo).TrimEnd('\')
+$actualWorkspace = [IO.Path]::GetFullPath([string]$metadata.workspace_root).TrimEnd('\')
+$expectedTarget = [IO.Path]::GetFullPath((Join-Path $repo 'target')).TrimEnd('\')
+$actualTarget = [IO.Path]::GetFullPath([string]$metadata.target_directory).TrimEnd('\')
+if (-not [string]::Equals($actualWorkspace, $expectedWorkspace, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals($actualTarget, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Cargo workspace/target is not this exact task-owned worktree; shared target refused'
+}
+$binDir = Join-Path $actualTarget 'x86_64-pc-windows-msvc\debug\examples'
 $fixture = Join-Path $binDir 'gh1189_taskdialog_fixture.exe'
 $observer = Join-Path $binDir 'gh1189_winevent_observer.exe'
 foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
@@ -52,8 +60,50 @@ foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=
         throw "Unreviewed native EXE: $($item.Path)"
     }
 }
-$evidence = Join-Path $metadata.target_directory 'gh1189\negative-controls'
-New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+# Never reuse a prior PASS receipt. Every invocation gets a new exclusive
+# attempt directory and an immutable start manifest in this worktree's target.
+$attemptId = [guid]::NewGuid().ToString('N')
+$evidenceRoot = Join-Path $actualTarget 'gh1189\negative-controls'
+New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+$evidence = Join-Path $evidenceRoot $attemptId
+if (Test-Path -LiteralPath $evidence) { throw 'Attempt identifier collision; refused' }
+New-Item -ItemType Directory -Path $evidence -ErrorAction Stop | Out-Null
+
+function Write-DurableJsonOnce([string]$destination, $value) {
+    # Stage with exclusive access, fsync, then atomically rename on this volume.
+    # The final path is never exposed as a partially flushed JSON document.
+    $staged = $destination + '.partial-' + [guid]::NewGuid().ToString('N')
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json -InputObject $value -Depth 8))
+    try {
+        $stream = [IO.File]::Open($staged, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        [IO.File]::Move($staged, $destination)
+    } catch {
+        # Delete only this call's task-owned staging file; never touch the
+        # previously published final record or a foreign attempt.
+        try { if ([IO.File]::Exists($staged)) { [IO.File]::Delete($staged) } } catch { }
+        throw
+    }
+}
+$provenance = [ordered]@{
+    attempt_id = $attemptId
+    status = 'STARTED_NOT_ACCEPTED'
+    created_utc = [DateTime]::UtcNow.ToString('o')
+    reviewed_commit = $ReviewedCommit
+    fixture_sha256 = $FixtureSha256.ToUpperInvariant()
+    observer_sha256 = $ObserverSha256.ToUpperInvariant()
+    fixture_exe = $fixture
+    observer_exe = $observer
+    issue_claim_url = $IssueClaimUrl
+    native_slot_url = $NativeSlotUrl
+    evidence_directory = $evidence
+}
+Write-DurableJsonOnce (Join-Path $evidence 'attempt.json') $provenance
 $results = New-Object System.Collections.ArrayList
 $seen = New-Object 'System.Collections.Generic.HashSet[string]'
 
@@ -75,13 +125,14 @@ function Hold-ExactObserverOnFailure($process, [string]$label, $psi, [string]$re
         $observerStartError = "$observerStartError; HANDLE: $($_.Exception.Message)"
     }
     try {
-        $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
+        $receiptDestination = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
         $receipt = [ordered]@{
             status = 'BLOCKED_OBSERVER_CUSTODY'
+            attempt_id = $attemptId
             reason = $reason
             case = $label
             observer_pid = $observerPid
-            observer_started_utc = $startedUtc
+            observer_started_utc = $(if ($startedUtc) { $startedUtc } else { 'UNKNOWN' })
             observer_start_verified = (-not [string]::IsNullOrWhiteSpace($startedUtc))
             observer_identity_error = $observerStartError
             spawn_acknowledged_utc = $spawnAcknowledgedUtc
@@ -94,16 +145,13 @@ function Hold-ExactObserverOnFailure($process, [string]$label, $psi, [string]$re
             command_arguments = $psi.Arguments
             wait_deadline_ms = 30000
             reviewed_commit = $ReviewedCommit
-            operator_handoff = 'Retain this runner; inspect exact Process handle and owned Child. Never kill by bare PID/name.'
+            issue_claim_url = $IssueClaimUrl
+            native_slot_url = $NativeSlotUrl
+            operator_handoff = 'This suite is BLOCKED, not PASS. Keep the exact observer process owned by this runner; investigate its Child. Never kill by bare PID/name.'
         }
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 5))
-        $stream = [IO.File]::Open($handoff, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-        try {
-            $stream.Write($bytes, 0, $bytes.Length)
-            $stream.Flush($true)
-        } finally {
-            $stream.Dispose()
-        }
+        Write-DurableJsonOnce $receiptDestination $receipt
+        # Report a final receipt path ONLY after a completed, flushed, atomic rename.
+        $handoff = $receiptDestination
     } catch { $receiptError = $_.Exception.Message }
     try {
         [Console]::Error.WriteLine("GH1189 BLOCKED case=$label pid=$observerPid reason=$reason handoff=$handoff receipt_error=$receiptError")
@@ -148,47 +196,44 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     $start = [Diagnostics.Stopwatch]::StartNew()
-    [void]$process.Start()
-    $spawnAcknowledgedUtc = [DateTime]::UtcNow.ToString('o')
+    $spawnAcknowledgedUtc = $null
     $observerStartedUtc = $null
     try {
-        # Freeze creation identity on the exact live Process before waiting.
-        # An unavailable start time is itself BLOCKED, never a normal PASS.
-        $observerStartedUtc = $process.StartTime.ToUniversalTime().ToString('o')
+        if (-not $process.Start()) { throw 'Process.Start returned false' }
+        $spawnAcknowledgedUtc = [DateTime]::UtcNow.ToString('o')
     } catch {
-        Hold-ExactObserverOnFailure $process $label $psi "StartTime unavailable: $($_.Exception.Message)" $null $spawnAcknowledgedUtc
+        $startError = $_.Exception.Message
+        # A partially launched Process may still have an owned OS handle.
+        $possiblyStarted = $false
+        try { $possiblyStarted = ($process.Id -gt 0) } catch { }
+        if ($possiblyStarted) {
+            Hold-ExactObserverOnFailure $process $label $psi "observer start error: $startError" $null $spawnAcknowledgedUtc
+        }
+        try { $process.Dispose() } catch { }
+        throw "BLOCKED: observer could not establish a launched Process: $startError"
     }
     try {
+        # All operations after a successful Start belong to ONE lifetime
+        # fence. Any thrown exception is BLOCKED and reaps the exact object.
+        $observerStartedUtc = $process.StartTime.ToUniversalTime().ToString('o')
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-    } catch {
-        Hold-ExactObserverOnFailure $process $label $psi "observer output stream failure: $($_.Exception.Message)" $observerStartedUtc $spawnAcknowledgedUtc
-    }
-    # A bounded-wait exception is a blocked observer, never a healthy exit.
-    # Keep the exact Process object in custody even when WaitForExit throws.
-    $deadlineWaitError = $null
-    $finishedOnTime = $false
-    try {
-        $finishedOnTime = $process.WaitForExit(30000)
-    } catch {
-        $deadlineWaitError = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message
-    }
-    if (-not $finishedOnTime) {
+        if (-not $process.WaitForExit(30000)) { throw 'observer exceeded 30000 ms' }
         $start.Stop()
-        $cause = if ($deadlineWaitError) { "bounded WaitForExit error: $deadlineWaitError" }
-                 else { 'observer exceeded 30000 ms' }
-        # Never turn a timeout or wait exception into a passed control.
-        Hold-ExactObserverOnFailure $process $label $psi $cause $observerStartedUtc $spawnAcknowledgedUtc
+        $record = [pscustomobject]@{
+            Case = $label
+            Exit = $process.ExitCode
+            ElapsedMs = $start.ElapsedMilliseconds
+            Stdout = $stdoutTask.GetAwaiter().GetResult()
+            Stderr = $stderrTask.GetAwaiter().GetResult()
+        }
+    } catch {
+        $start.Stop()
+        Hold-ExactObserverOnFailure $process $label $psi ("observer lifetime failure: " + $_.Exception.Message) $observerStartedUtc $spawnAcknowledgedUtc
     }
-    $start.Stop()
-    $record = [pscustomobject]@{
-        Case = $label
-        Exit = $process.ExitCode
-        ElapsedMs = $start.ElapsedMilliseconds
-        Stdout = $stdoutTask.GetAwaiter().GetResult()
-        Stderr = $stderrTask.GetAwaiter().GetResult()
-    }
-    $process.Dispose()
+    # WaitForExit returned true and both redirected output streams have been
+    # consumed. Any failure to dispose is still a non-acceptance error.
+    try { $process.Dispose() } catch { throw "BLOCKED: exact observer handle disposal failed: $($_.Exception.Message)" }
     [IO.File]::WriteAllText((Join-Path $evidence ($label + '.stdout.txt')), $record.Stdout)
     [IO.File]::WriteAllText((Join-Path $evidence ($label + '.stderr.txt')), $record.Stderr)
     $identity = [regex]::Match($record.Stderr, 'GH1189 fixture pid=(\d+) creation=(\d+)')
@@ -219,5 +264,22 @@ foreach ($case in $cases) {
 foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=$ObserverSha256})) {
     if ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -ne $item.Hash) { throw 'Binary changed during controls' }
 }
-$results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'results.json') -Encoding UTF8
-Write-Output 'GH1189 CONTROL SUITE PASS: 4 independent semantic RED cases and 5 healthy children; native product acceptance remains separate.'
+# Commit the suite result ONLY after every expected semantic RED, every fresh
+# healthy child and both final binary hashes have passed this exact invocation.
+if ($results.Count -ne 9) { throw "Incomplete control suite: $($results.Count)/9; no PASS result written" }
+$completion = [ordered]@{
+    status = 'NATIVE_TEST_ONLY_CONTROLS_PASS'
+    attempt_id = $attemptId
+    completed_utc = [DateTime]::UtcNow.ToString('o')
+    reviewed_commit = $ReviewedCommit
+    fixture_sha256 = $FixtureSha256.ToUpperInvariant()
+    observer_sha256 = $ObserverSha256.ToUpperInvariant()
+    issue_claim_url = $IssueClaimUrl
+    native_slot_url = $NativeSlotUrl
+    controls_expected = 4
+    fresh_healthy_children_expected = 5
+    results = @($results.ToArray())
+    production_drawio_acceptance = $false
+}
+Write-DurableJsonOnce (Join-Path $evidence 'results.json') $completion
+Write-Output "GH1189 CONTROL SUITE PASS: 4 independent semantic RED cases and 5 healthy children; attempt=$attemptId; native product acceptance remains separate."
