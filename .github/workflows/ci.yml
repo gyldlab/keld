@@ -294,6 +294,16 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # Frozen links are required by keld-compat's Bun-backed Rust test oracles.
+      # Rust CI must resolve the checked-in SDK, including nested Bun children;
+      # no postinstall scripts or network-generated manifest mutations are needed.
+      - name: Install SDK links for Rust test oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in packages/@keld/kipc packages/@keld/api packages/@keld/electron; do
+            (cd "$package" && bun install --frozen-lockfile --ignore-scripts)
+          done
       - name: clippy (warnings deny)
         shell: bash
         env:
@@ -679,6 +689,13 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # GH-502 installed-package oracle requires Node 26, not ambient Node 24.
+      # Pin the action and tool version; do not enable PR package-manager caching.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.10.0"
+          check-latest: false
+          package-manager-cache: false
       - name: frozen install, typecheck, and bun test
         shell: bash
         env:

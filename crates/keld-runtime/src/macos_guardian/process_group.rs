@@ -69,6 +69,7 @@ impl LocalGroupWitness {
 #[cfg(test)]
 thread_local! {
     static AMBIGUOUS_GROUP_PROBE_RECEIPT: RefCell<Option<(u32, mpsc::Sender<()>)>> = const { RefCell::new(None) };
+    static POST_SIGNAL_LIVE_GROUP_PROBE_RECEIPT: RefCell<Option<(u32, mpsc::Sender<()>)>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -78,6 +79,7 @@ pub(super) struct TestAmbiguousProbeReceipt;
 impl Drop for TestAmbiguousProbeReceipt {
     fn drop(&mut self) {
         AMBIGUOUS_GROUP_PROBE_RECEIPT.with(|slot| *slot.borrow_mut() = None);
+        POST_SIGNAL_LIVE_GROUP_PROBE_RECEIPT.with(|slot| *slot.borrow_mut() = None);
     }
 }
 
@@ -97,8 +99,37 @@ pub(super) fn install_test_ambiguous_probe_receipt(
 }
 
 #[cfg(test)]
+pub(super) fn install_test_post_signal_live_group_probe_receipt(
+    group: u32,
+    sender: mpsc::Sender<()>,
+) -> TestAmbiguousProbeReceipt {
+    POST_SIGNAL_LIVE_GROUP_PROBE_RECEIPT.with(|slot| {
+        assert!(
+            slot.borrow().is_none(),
+            "only one post-signal live-group probe receipt owner"
+        );
+        *slot.borrow_mut() = Some((group, sender));
+    });
+    TestAmbiguousProbeReceipt
+}
+
+#[cfg(test)]
 fn report_test_ambiguous_probe(group: u32) {
     AMBIGUOUS_GROUP_PROBE_RECEIPT.with(|slot| {
+        let mut receipt = slot.borrow_mut();
+        if receipt
+            .as_ref()
+            .is_some_and(|(expected, _)| *expected == group)
+            && let Some((_, sender)) = receipt.take()
+        {
+            let _ = sender.send(());
+        }
+    });
+}
+
+#[cfg(test)]
+fn report_test_post_signal_live_group_probe(group: u32) {
+    POST_SIGNAL_LIVE_GROUP_PROBE_RECEIPT.with(|slot| {
         let mut receipt = slot.borrow_mut();
         if receipt
             .as_ref()
@@ -122,6 +153,9 @@ pub(super) enum TestGroupSignalPoint {
     /// group signal the Guardian product sends passes here, whichever call
     /// site (attested arm, own-child decision or a direct call) reached it.
     BeforeSignal,
+    /// After the real group SIGKILL succeeds, before any absence observation.
+    /// A test parent can reap its retained Child at this exact boundary.
+    AfterDelivery,
     /// After that one signal was denied (zombie-only EPERM), before the next
     /// read-only probe.
     AfterDeniedSignal,
@@ -467,6 +501,42 @@ pub(super) fn require_attested_group_absence(
     }
 }
 
+/// Read-only post-signal retirement proof. The Guardian has already delivered
+/// the one authorized group signal and reaped its direct Bun child before
+/// sending CLEAR. A same-group descendant may still be executing its SIGKILL
+/// exit path for a short interval, so `leader == ESRCH && group == Ok(())` is
+/// pending here, not a new signal opportunity and not absence. Poll only the
+/// existing kernel state until the caller's already-bounded deadline.
+pub(super) fn require_attested_group_absence_after_signal(
+    group: GroupIdentity,
+    deadline: Instant,
+) -> Result<(), RuntimeError> {
+    let raw = validate_group_pid(group.pid)?;
+    loop {
+        let leader = getpgid(Some(Pid::from_raw(raw)));
+        let whole_group = kill(Pid::from_raw(-raw), None);
+        #[cfg(test)]
+        if matches!((&leader, &whole_group), (Err(Errno::ESRCH), Ok(()))) {
+            report_test_post_signal_live_group_probe(group.pid);
+        }
+        match (leader, whole_group) {
+            (Err(Errno::ESRCH), Err(Errno::ESRCH)) if Instant::now() < deadline => return Ok(()),
+            (Err(Errno::ESRCH), Ok(()) | Err(Errno::EPERM)) if Instant::now() < deadline => {
+                std::thread::sleep(GENERATION_CONTROL_POLL);
+            }
+            observed => {
+                return Err(lifecycle_error(
+                    "macOS guardian post-signal group absence",
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("post-signal group absence is unproven: {observed:?}"),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
 /// Group retirement for a caller that is the attested leader's own OS parent
 /// and still holds its unreaped `Child` (the Guardian's supervisor paths).
 ///
@@ -556,6 +626,10 @@ pub(super) fn terminate_registered_group(group: u32) -> Result<(), RuntimeError>
     #[cfg(test)]
     run_test_group_signal_hook(group, TestGroupSignalPoint::BeforeSignal);
     let result = killpg(Pid::from_raw(raw), Signal::SIGKILL);
+    #[cfg(test)]
+    if result.is_ok() {
+        run_test_group_signal_hook(group, TestGroupSignalPoint::AfterDelivery);
+    }
     finish_group_termination(result, || kill(Pid::from_raw(-raw), None))
 }
 

@@ -16,6 +16,10 @@ use std::io::{self, Read, Write};
 
 mod expected_identity;
 mod host_identity;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod macos_metadata;
 #[cfg(windows)]
 mod producer;
 #[cfg(test)]
@@ -25,6 +29,17 @@ pub use expected_identity::{EXPECTED_APP_IDENTITY_KEY_BYTES, ExpectedAppIdentity
 #[cfg(windows)]
 pub use host_identity::read_host_identity;
 pub use host_identity::{embed_host_identity, read_host_identity_bytes};
+#[cfg(target_os = "macos")]
+pub use macos::{
+    MacosCopiedMember, MacosCopiedMemberKind, MacosExecutableInput, MacosGeneratedFile,
+    MacosGraphCompiled, MacosPackError, MacosPackageInput, ProducedMacosLocal, produce_macos_local,
+    produce_macos_local_with_graph, validate_macos_executable_metadata,
+};
+#[cfg(target_os = "macos")]
+pub use macos_metadata::{
+    MACOS_APP_RELATIVE_PATH, MACOS_BUN_RELATIVE_PATH, MACOS_HOST_EXECUTABLE, MACOS_LOCAL_TARGET,
+    MAX_MACOS_METADATA_BYTES, MacosBundleMetadata, MacosMetadataError,
+};
 
 /// Exact relative path of the content-authenticated Slice-A update policy.
 pub const UPDATE_POLICY_PATH: &str = ".keld/update-policy.v1";
