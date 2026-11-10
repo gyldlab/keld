@@ -8,6 +8,9 @@
  * Depth is16 with root1; node/property visits are independently bounded.
  * Engine allocation inside Reflect.ownKeys still needs the GH544 high-water
  * qualification; post-return codec limits do not prove an engine memory bound.
+ * JavaScript cannot atomically snapshot a Proxy: the codec bounds and validates
+ * the descriptors it observes, but a trap can conceal target state or mutate it
+ * immediately after the final observation.
  */
 
 export const ENDPOINT_VALUE_LIMIT = 4_096;
@@ -25,21 +28,42 @@ const CODE: Record<CompatCodecErrorKind, string> = {
 
 /** Local, synchronous refusal. It is not a Host-dispatch certainty report. */
 export class CompatCodecError extends Error {
-  readonly code: string;
-  readonly kind: CompatCodecErrorKind;
+  readonly code!: string;
+  readonly kind!: CompatCodecErrorKind;
 
   constructor(kind: CompatCodecErrorKind, reason: string) {
     super(
       `${CODE[kind]}: ${kind}: ${reason}. Fix the endpoint value before sending it.`,
     );
-    this.name = "CompatCodecError";
-    this.kind = kind;
-    this.code = CODE[kind];
+    // An untrusted Proxy trap may have installed inherited setters before a
+    // refusal is created. Define own properties without invoking those setters.
+    defineProperty(this, "name", {
+      value: "CompatCodecError",
+      configurable: true,
+      writable: true,
+    });
+    defineProperty(this, "kind", {
+      value: kind,
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
+    defineProperty(this, "code", {
+      value: CODE[kind],
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
   }
 }
 
 function reject(kind: CompatCodecErrorKind, reason: string): never {
-  throw new CompatCodecError(kind, reason);
+  // This exported constructor is caller-visible. A user-controlled trap may
+  // throw its own instance, so only refusals minted by this private path are
+  // eligible to pass through the codec catch boundary unchanged.
+  const error = new CompatCodecError(kind, reason);
+  apply(weakSetAdd, genuineCodecErrors, [error]);
+  throw error;
 }
 
 // A Proxy descriptor/ownKeys trap can mutate globals during this very call.
@@ -50,6 +74,7 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
+const getPrototypeOf = Object.getPrototypeOf;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
 const NativeDataView = DataView;
@@ -57,6 +82,9 @@ const NativeUint8Array = Uint8Array;
 const NativeWeakSet = WeakSet;
 const NativeDate = Date;
 const NativeError = Error;
+const NativeObjectPrototype = Object.prototype;
+const NativeSharedArrayBuffer =
+  typeof SharedArrayBuffer === "undefined" ? undefined : SharedArrayBuffer;
 const toNumber = Number;
 const toString = String;
 const toBigInt = BigInt;
@@ -65,13 +93,22 @@ const isView = ArrayBuffer.isView;
 const isFiniteNumber = Number.isFinite;
 const isInteger = Number.isInteger;
 const isSafeInteger = Number.isSafeInteger;
-const arrayPush = Array.prototype.push;
 const arraySort = Array.prototype.sort;
 const weakSetHas = WeakSet.prototype.has;
 const weakSetAdd = WeakSet.prototype.add;
 const charCodeAt = String.prototype.charCodeAt;
 const regexpExec = RegExp.prototype.exec;
 const dateTime = Date.prototype.getTime;
+const mapSize = ownDescriptor(Map.prototype, "size")!.get!;
+const setSize = ownDescriptor(Set.prototype, "size")!.get!;
+const arrayBufferByteLength = ownDescriptor(
+  ArrayBuffer.prototype,
+  "byteLength",
+)!.get!;
+const dataViewByteLength = ownDescriptor(
+  DataView.prototype,
+  "byteLength",
+)!.get!;
 const getUint16 = DataView.prototype.getUint16;
 const getFloat64 = DataView.prototype.getFloat64;
 const getBigInt64 = DataView.prototype.getBigInt64;
@@ -79,6 +116,7 @@ const setFloat64 = DataView.prototype.setFloat64;
 const setBigInt64 = DataView.prototype.setBigInt64;
 const byteSet = Uint8Array.prototype.set;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayLength = ownDescriptor(typedArrayPrototype, "length")!.get!;
 const byteLength = ownDescriptor(typedArrayPrototype, "byteLength")!.get!;
 const byteOffset = ownDescriptor(typedArrayPrototype, "byteOffset")!.get!;
 const byteBuffer = ownDescriptor(typedArrayPrototype, "buffer")!.get!;
@@ -88,18 +126,16 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const arrayIndex = /^(0|[1-9][0-9]*)$/;
 const exoticConstructors: Function[] = [
-  ArrayBuffer,
-  Map,
-  Set,
   WeakMap,
   WeakSet,
   RegExp,
   Promise,
-  ...(typeof SharedArrayBuffer === "undefined" ? [] : [SharedArrayBuffer]),
+  ...(NativeSharedArrayBuffer === undefined ? [] : [NativeSharedArrayBuffer]),
   ...(typeof URL === "undefined" ? [] : [URL]),
   ...(typeof URLSearchParams === "undefined" ? [] : [URLSearchParams]),
   ...(typeof Blob === "undefined" ? [] : [Blob]),
 ];
+const genuineCodecErrors = new NativeWeakSet<object>();
 
 function byteSize(value: Uint8Array): number {
   return apply(byteLength, value, []);
@@ -107,6 +143,23 @@ function byteSize(value: Uint8Array): number {
 
 function isInstance(value: unknown, constructor: Function): boolean {
   return apply(hasInstance, constructor, [value]);
+}
+
+function isGenuineCodecError(value: unknown): value is CompatCodecError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    apply(weakSetHas, genuineCodecErrors, [value])
+  );
+}
+
+function appendOwn<T>(array: T[], value: T): void {
+  defineProperty(array, toString(array.length), {
+    value,
+    configurable: true,
+    enumerable: true,
+    writable: true,
+  });
 }
 
 function forbiddenKey(key: string): boolean {
@@ -143,9 +196,60 @@ function checkedDescriptor(
  */
 function knownExotic(value: object): boolean {
   if (isView(value)) return true;
+  // Intrinsic accessors prove internal slots even when instance prototypes
+  // have changed. Proxies lose the slot brand and are rejected as non-plain.
+  try {
+    apply(mapSize, value, []);
+    return true;
+  } catch {
+    /* not a Map */
+  }
+  try {
+    apply(setSize, value, []);
+    return true;
+  } catch {
+    /* not a Set */
+  }
+  try {
+    apply(arrayBufferByteLength, value, []);
+    return true;
+  } catch {
+    /* not an ArrayBuffer */
+  }
+  try {
+    apply(dataViewByteLength, value, []);
+    return true;
+  } catch {
+    /* not a DataView */
+  }
+  try {
+    apply(typedArrayLength, value, []);
+    return true;
+  } catch {
+    /* not a typed array */
+  }
+  if (NativeSharedArrayBuffer !== undefined) {
+    const getter = ownDescriptor(
+      NativeSharedArrayBuffer.prototype,
+      "byteLength",
+    )?.get;
+    if (getter !== undefined) {
+      try {
+        apply(getter, value, []);
+        return true;
+      } catch {
+        /* not a SharedArrayBuffer */
+      }
+    }
+  }
   for (let i = 0; i < exoticConstructors.length; i++)
     if (isInstance(value, exoticConstructors[i])) return true;
   return false;
+}
+
+function plainRecord(value: object): boolean {
+  const prototype = getPrototypeOf(value);
+  return prototype === null || prototype === NativeObjectPrototype;
 }
 
 /** Refuse invalid UTF-16 rather than allowing TextEncoder to repair it. */
@@ -192,14 +296,14 @@ class ValueWriter {
   private append(...bytes: number[]): void {
     if (bytes.length > ENDPOINT_VALUE_LIMIT - this.bytes.length)
       reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    apply(arrayPush, this.bytes, bytes);
+    for (let index = 0; index < bytes.length; index++)
+      appendOwn(this.bytes, bytes[index]);
   }
 
   private buffer(value: Uint8Array): void {
     if (byteSize(value) > ENDPOINT_VALUE_LIMIT - this.bytes.length)
       reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    for (let i = 0; i < byteSize(value); i++)
-      apply(arrayPush, this.bytes, [value[i]]);
+    for (let i = 0; i < byteSize(value); i++) appendOwn(this.bytes, value[i]);
   }
 
   private u16(value: number): void {
@@ -278,7 +382,6 @@ class ValueWriter {
     this.visitObject(value);
 
     if (isArray(value)) {
-      this.append(6);
       const lengthDescriptor = checkedDescriptor(value, "length");
       if (
         lengthDescriptor === undefined ||
@@ -292,14 +395,19 @@ class ValueWriter {
           "array length is not a bounded own data property",
         );
       const length: number = lengthDescriptor.value;
+      const keys = checkedOwnKeys(value);
+      if (keys.length * 2 + 1 > ENDPOINT_VALUE_NODES - this.visits)
+        reject(
+          "CodecLimit",
+          "array own-key and descriptor probes exceed aggregate visit budget",
+        );
+      this.visits += keys.length * 2 + 1;
       if (
         length > ENDPOINT_VALUE_NODES - this.nodes ||
         length > ENDPOINT_VALUE_NODES - this.visits
       )
         reject("CodecLimit", "array count exceeds remaining node budget");
-      const keys = checkedOwnKeys(value);
-      if (keys.length > ENDPOINT_VALUE_NODES + 1)
-        reject("CodecLimit", "array own keys exceed the bounded domain");
+      const items: PropertyDescriptor[] = [];
       for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
         const key = keys[keyIndex];
         if (typeof key === "symbol")
@@ -315,19 +423,47 @@ class ValueWriter {
             toNumber(key) >= length)
         )
           reject("MalformedValue", "extra enumerable array property");
+        if (
+          apply(regexpExec, arrayIndex, [key]) !== null &&
+          isSafeInteger(toNumber(key)) &&
+          toNumber(key) < length
+        ) {
+          if (!hasOwn(descriptor, "value"))
+            reject("MalformedValue", "sparse or accessor array entry");
+          defineProperty(items, key, {
+            value: descriptor,
+            configurable: true,
+            enumerable: true,
+            writable: true,
+          });
+        }
       }
-      this.u16(length);
-      for (let i = 0; i < length; i++) {
-        const item = checkedDescriptor(value, toString(i));
-        if (item === undefined || !hasOwn(item, "value"))
+      const finalLength = checkedDescriptor(value, "length");
+      if (
+        finalLength === undefined ||
+        !hasOwn(finalLength, "value") ||
+        finalLength.value !== length
+      )
+        reject("MalformedValue", "array length changed during snapshot");
+      if (items.length !== length)
+        reject("MalformedValue", "sparse or accessor array entry");
+      for (let i = 0; i < length; i++)
+        if (!hasOwn(items, toString(i)))
           reject("MalformedValue", "sparse or accessor array entry");
-        this.visit(item.value, depth + 1);
-      }
+      this.append(6);
+      this.u16(length);
+      // Own keys are in canonical integer-index order for arrays.
+      for (let i = 0; i < length; i++) this.visit(items[i].value, depth + 1);
       return;
     }
 
-    if (isInstance(value, NativeDate)) {
-      const timestamp = apply(dateTime, value, []);
+    let timestamp: number | undefined;
+    try {
+      timestamp = apply(dateTime, value, []);
+    } catch {
+      /* not a Date */
+    }
+    if (timestamp !== undefined) {
       if (!isFiniteNumber(timestamp) || !isInteger(timestamp))
         reject("MalformedValue", "invalid Date");
       this.append(8);
@@ -346,9 +482,9 @@ class ValueWriter {
       return;
     }
 
-    // Class instances with own enumerable string data fields flatten to
-    // ordinary records. Never invoke Symbol.toStringTag or toJSON as a probe.
-    if (knownExotic(value))
+    // Never flatten host state or custom class instances into plain records.
+    // Never invoke Symbol.toStringTag or toJSON as a brand probe.
+    if (knownExotic(value) || !plainRecord(value))
       reject("UnsupportedValue", "unsupported exotic object");
 
     const keys = checkedOwnKeys(value);
@@ -374,6 +510,12 @@ class ValueWriter {
       const descriptor = checkedDescriptor(value, key);
       if (descriptor === undefined)
         reject("MalformedValue", "object key vanished during snapshot");
+      // Error has no ECMAScript internal slot. Its non-enumerable native
+      // stack remains an observable signal if its prototype was replaced.
+      // If user code deletes that property too, a plain record is
+      // indistinguishable from the modified Error under JavaScript semantics.
+      if (key === "stack" && !descriptor.enumerable)
+        reject("UnsupportedValue", "prototype-modified Error is unsupported");
       if (!descriptor.enumerable) continue;
       if (!hasOwn(descriptor, "value"))
         reject("MalformedValue", "enumerable accessor is unsupported");
@@ -387,7 +529,7 @@ class ValueWriter {
       if (keyAndValueMinimum > ENDPOINT_VALUE_LIMIT - minimumBytes)
         reject("CodecLimit", "object keys exceed the remaining byte budget");
       minimumBytes += keyAndValueMinimum;
-      apply(arrayPush, entries, [{ bytes: keyBytes, value: descriptor.value }]);
+      appendOwn(entries, { bytes: keyBytes, value: descriptor.value });
     }
     apply(arraySort, entries, [
       (a: { bytes: Uint8Array }, b: { bytes: Uint8Array }) =>
@@ -413,7 +555,7 @@ export function encodeEndpointValue(value: unknown): Uint8Array {
     for (let i = 0; i < writer.bytes.length; i++) result[i] = writer.bytes[i];
     return result;
   } catch (error) {
-    if (isInstance(error, CompatCodecError)) throw error;
+    if (isGenuineCodecError(error)) throw error;
     return reject(
       "MalformedValue",
       "proxy trap or exotic brand operation failed",
@@ -510,8 +652,7 @@ class ValueReader {
             "array count exceeds remaining node/visit budget",
           );
         const array: unknown[] = [];
-        for (let i = 0; i < count; i++)
-          apply(arrayPush, array, [this.node(depth + 1)]);
+        for (let i = 0; i < count; i++) appendOwn(array, this.node(depth + 1));
         return array;
       }
       case 7: {
@@ -604,7 +745,7 @@ export function decodeEndpointValue(bytes: Uint8Array): unknown {
     apply(byteSet, owned, [bytes]);
     return new ValueReader(owned).decode();
   } catch (error) {
-    if (isInstance(error, CompatCodecError)) throw error;
+    if (isGenuineCodecError(error)) throw error;
     return reject(
       "MalformedValue",
       "endpoint payload is not a readable byte snapshot",
@@ -614,22 +755,22 @@ export function decodeEndpointValue(bytes: Uint8Array): unknown {
 
 /** Apply the IPC caller-vector count without restricting generic result arrays. */
 export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
-  if (!isArray(args))
-    return reject("MalformedValue", "IPC arguments must be an array");
-  const descriptor = checkedDescriptor(args, "length");
-  if (
-    !descriptor ||
-    !hasOwn(descriptor, "value") ||
-    !isSafeInteger(descriptor.value) ||
-    descriptor.value < 0
-  )
-    return reject("MalformedValue", "IPC arguments need a bounded own length");
-  if (descriptor.value > 16)
-    return reject(
-      "CodecLimit",
-      "IPC argument vector exceeds sixteen arguments",
-    );
-  return encodeEndpointValue(args);
+  try {
+    if (!isArray(args))
+      return reject("MalformedValue", "IPC arguments must be an array");
+    // Validate the count encoded in the one immutable output snapshot. Reading
+    // proxy length before encode would create a TOCTOU gap.
+    const bytes = encodeEndpointValue(args);
+    if (bytes[0] !== 6 || bytes[1] + bytes[2] * 256 > 16)
+      return reject(
+        "CodecLimit",
+        "IPC argument vector exceeds sixteen arguments",
+      );
+    return bytes;
+  } catch (error) {
+    if (isGenuineCodecError(error)) throw error;
+    return reject("MalformedValue", "IPC arguments are not a readable array");
+  }
 }
 /** Apply the same caller-vector count after the one owned endpoint decoder. */
 export function decodeEndpointArguments(bytes: Uint8Array): unknown[] {
