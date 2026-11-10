@@ -274,7 +274,10 @@ mod tests {
                 .current_dir(dir.path())
                 .status()
                 .expect("check outer ignore");
-            assert!(inherited_ignore.success(), "outer ignore must hide app files");
+            assert!(
+                inherited_ignore.success(),
+                "outer ignore must hide app files"
+            );
 
             // Isolate the app as its own Git root. Without this boundary,
             // format:check incorrectly succeeds on unformatted ignored files.
