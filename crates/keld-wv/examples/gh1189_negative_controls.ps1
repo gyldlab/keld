@@ -51,6 +51,18 @@ if (-not [string]::Equals($actualWorkspace, $expectedWorkspace, [StringCompariso
     -not [string]::Equals($actualTarget, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Cargo workspace/target is not this exact task-owned worktree; shared target refused'
 }
+# A lexical path match is insufficient if a target or checkout directory is a
+# junction/symlink into a shared Cargo cache. Native acceptance needs isolation.
+$ownedPath = $actualTarget
+while ($true) {
+    $pathInfo = Get-Item -LiteralPath $ownedPath -Force -ErrorAction Stop
+    if (($pathInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Task worktree/target ancestor is a reparse-point alias; shared target refused: $ownedPath"
+    }
+    $parentPath = [IO.Directory]::GetParent($ownedPath)
+    if ($null -eq $parentPath) { break }
+    $ownedPath = $parentPath.FullName
+}
 $binDir = Join-Path $actualTarget 'x86_64-pc-windows-msvc\debug\examples'
 $fixture = Join-Path $binDir 'gh1189_taskdialog_fixture.exe'
 $observer = Join-Path $binDir 'gh1189_winevent_observer.exe'
@@ -203,14 +215,25 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
         $spawnAcknowledgedUtc = [DateTime]::UtcNow.ToString('o')
     } catch {
         $startError = $_.Exception.Message
-        # A partially launched Process may still have an owned OS handle.
-        $possiblyStarted = $false
-        try { $possiblyStarted = ($process.Id -gt 0) } catch { }
-        if ($possiblyStarted) {
+        # An exception after OS process creation may leave an owned handle.
+        # Check BOTH the exact wrapper's PID and handle before disposal.
+        $handleOwned = $false
+        try { $handleOwned = ($process.Id -gt 0) } catch { }
+        if (-not $handleOwned) {
+            try {
+                $candidateHandle = $process.Handle
+                if ($null -ne $candidateHandle) {
+                    $handleOwned = ([IntPtr]$candidateHandle -ne [IntPtr]::Zero)
+                }
+            } catch { }
+        }
+        if ($handleOwned) {
             Hold-ExactObserverOnFailure $process $label $psi "observer start error: $startError" $null $spawnAcknowledgedUtc
         }
+        # Start failed without any accessible OS handle. Never infer a PASS;
+        # do not enter an endless wait on a never-started Process wrapper.
         try { $process.Dispose() } catch { }
-        throw "BLOCKED: observer could not establish a launched Process: $startError"
+        throw "BLOCKED: observer start failed without an owned process handle: $startError"
     }
     try {
         # All operations after a successful Start belong to ONE lifetime
@@ -219,6 +242,11 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(30000)) { throw 'observer exceeded 30000 ms' }
+        # Process exit does NOT guarantee inherited stdout/stderr pipe handles
+        # are closed: a descendant may keep them open indefinitely. Bound both
+        # async readers before GetResult; expiry enters exact-handle BLOCKED.
+        if (-not $stdoutTask.Wait(10000)) { throw 'observer stdout pipe remained open after exit' }
+        if (-not $stderrTask.Wait(10000)) { throw 'observer stderr pipe remained open after exit' }
         $start.Stop()
         $record = [pscustomobject]@{
             Case = $label
