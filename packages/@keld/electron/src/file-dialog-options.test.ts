@@ -13,7 +13,7 @@ const drawioFilters = [
   { name: "All Files", extensions: ["*"] },
 ];
 
-test("pinned draw.io Open keeps file+directory, multiple selection and four independent groups", () => {
+test("Open option conformance keeps file+directory, multiple selection and four independent groups", () => {
   const options = normalizeOpenDialogOptions({
     defaultPath: undefined,
     filters: drawioFilters,
@@ -43,6 +43,81 @@ test("pinned draw.io Open keeps file+directory, multiple selection and four inde
     "Mermaid",
     "All Files",
   ]);
+});
+
+test("pinned draw.io 31.7.0 chooseFileEntry Open keeps its exact properties and filters", () => {
+  // Webapp 24b76c2cbd55d88e354042e8d329a2e4708972bc, ElectronApp.js:1237-1252
+  // (blob 25f4382cf65d1b5ccbbf3a1de480a1bad1efcb0b); Desktop bridge
+  // 2edf9fb97eff9bd94bdda33abfe1ee9e7f7bb55e, electron.js:4191-4200
+  // (blob b57b5e2047710e829bfc25ab09f32b09ad2114d7). This models the
+  // facade call with a saved .lastOpenDir, without opening a native panel.
+  const options = normalizeOpenDialogOptions({
+    defaultPath: "C:\\Users\\fixture\\Documents",
+    filters: [
+      {
+        name: "draw.io Diagrams",
+        extensions: ["drawio", "xml", "png", "svg", "html", "pdf"],
+      },
+      { name: "VSDX Documents", extensions: ["vsdx"] },
+      { name: "Mermaid", extensions: ["mmd", "mermaid"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+    properties: ["openFile"],
+  });
+  expect(options).toEqual({
+    default_path: "C:\\Users\\fixture\\Documents",
+    filters: [
+      {
+        name: "draw.io Diagrams",
+        extensions: ["drawio", "xml", "png", "svg", "html", "pdf"],
+      },
+      { name: "VSDX Documents", extensions: ["vsdx"] },
+      { name: "Mermaid", extensions: ["mmd", "mermaid"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+    properties: ["OpenFile"],
+  });
+  expect(Object.isFrozen(options)).toBe(true);
+  expect(Object.isFrozen(options.properties)).toBe(true);
+  expect(Object.isFrozen(options.filters)).toBe(true);
+  for (const group of options.filters) {
+    expect(Object.isFrozen(group)).toBe(true);
+    expect(Object.isFrozen(group.extensions)).toBe(true);
+  }
+});
+
+test("pinned draw.io 31.7.0 English PNG Save As keeps preferred-filter order and filename", () => {
+  // Webapp 24b76c2c: ElectronApp.js:2215-2219,2321-2341; Editor.js:4260-4264
+  // plus ElectronApp.js:126-129 adds PDF. English labels are from dia.txt at
+  // that same pin, not universal labels. With a cached .lastSaveDir and the
+  // normalized title diagram.png, the caller promotes PNG and joins with '/'.
+  const options = normalizeSaveDialogOptions({
+    defaultPath: "C:\\Users\\fixture\\Documents/diagram.png",
+    filters: [
+      { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
+      { name: "XML File (.drawio)", extensions: ["drawio"] },
+      { name: "Editable Vector Image (.svg)", extensions: ["svg"] },
+      { name: "HTML File (.html)", extensions: ["html"] },
+      { name: "PDF (.pdf)", extensions: ["pdf"] },
+    ],
+  });
+  expect(options).toEqual({
+    default_path: "C:\\Users\\fixture\\Documents/diagram.png",
+    filters: [
+      { name: "Editable Bitmap Image (.png)", extensions: ["png"] },
+      { name: "XML File (.drawio)", extensions: ["drawio"] },
+      { name: "Editable Vector Image (.svg)", extensions: ["svg"] },
+      { name: "HTML File (.html)", extensions: ["html"] },
+      { name: "PDF (.pdf)", extensions: ["pdf"] },
+    ],
+    security_scoped_bookmarks: false,
+  });
+  expect(Object.isFrozen(options)).toBe(true);
+  expect(Object.isFrozen(options.filters)).toBe(true);
+  for (const group of options.filters) {
+    expect(Object.isFrozen(group)).toBe(true);
+    expect(Object.isFrozen(group.extensions)).toBe(true);
+  }
 });
 
 test("Save never grants security scope and preserves filename hint without writing it", () => {
