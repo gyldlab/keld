@@ -57,6 +57,85 @@ New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $results = New-Object System.Collections.ArrayList
 $seen = New-Object 'System.Collections.Generic.HashSet[string]'
 
+function Hold-ExactObserverOnFailure($process, [string]$label, $psi, [string]$reason, [string]$startedUtc, [string]$spawnAcknowledgedUtc) {
+    # The caller owns this exact Process object/handle. Never reopen by PID or
+    # terminate by name. Every catchable receipt/wait error remains BLOCKED.
+    $handoff = '(receipt unavailable)'
+    $receiptError = $null
+    $observerPid = $null
+    $observerStartError = $null
+    $observerHandle = $null
+    try { $observerPid = $process.Id } catch { $observerStartError = "PID: $($_.Exception.Message)" }
+    if (-not $startedUtc) {
+        try { $startedUtc = $process.StartTime.ToUniversalTime().ToString('o') }
+        catch { $observerStartError = "StartTime: $($_.Exception.Message)" }
+    }
+    try { $observerHandle = $process.Handle.ToInt64() }
+    catch {
+        $observerStartError = "$observerStartError; HANDLE: $($_.Exception.Message)"
+    }
+    try {
+        $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
+        $receipt = [ordered]@{
+            status = 'BLOCKED_OBSERVER_CUSTODY'
+            reason = $reason
+            case = $label
+            observer_pid = $observerPid
+            observer_started_utc = $startedUtc
+            observer_start_verified = (-not [string]::IsNullOrWhiteSpace($startedUtc))
+            observer_identity_error = $observerStartError
+            spawn_acknowledged_utc = $spawnAcknowledgedUtc
+            observer_handle_in_runner = $observerHandle
+            runner_pid = $PID
+            observer_exe = $observer
+            observer_sha256 = $ObserverSha256.ToUpperInvariant()
+            fixture_exe = $fixture
+            fixture_sha256 = $FixtureSha256.ToUpperInvariant()
+            command_arguments = $psi.Arguments
+            wait_deadline_ms = 30000
+            reviewed_commit = $ReviewedCommit
+            operator_handoff = 'Retain this runner; inspect exact Process handle and owned Child. Never kill by bare PID/name.'
+        }
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 5))
+        $stream = [IO.File]::Open($handoff, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+    } catch { $receiptError = $_.Exception.Message }
+    try {
+        [Console]::Error.WriteLine("GH1189 BLOCKED case=$label pid=$observerPid reason=$reason handoff=$handoff receipt_error=$receiptError")
+    } catch { } # Logging failure must not release the exact observer handle.
+
+    $cooldown = $null
+    try { $cooldown = [System.Threading.ManualResetEvent]::new($false) } catch { }
+    try {
+        while ($true) {
+            try {
+                # A WaitForExit error does not prove exit; a false result means
+                # retain custody. Only the OS-signaled true result ends this loop.
+                if ($process.WaitForExit(30000)) { break }
+            } catch {
+                try { [Console]::Error.WriteLine("GH1189 BLOCKED exact-observer WaitForExit error: $($_.Exception.Message)") }
+                catch { }
+                # Exception-only throttling avoids a hot retry; not an OS
+                # cleanup oracle and never releases this Process object.
+                if ($null -ne $cooldown) {
+                    try { [void]$cooldown.WaitOne(250) } catch { }
+                }
+            }
+        }
+    } finally {
+        if ($null -ne $cooldown) { try { $cooldown.Dispose() } catch { } }
+    }
+    $exitValue = '(unavailable)'
+    try { $exitValue = $process.ExitCode } catch { }
+    try { $process.Dispose() } catch { }
+    throw "BLOCKED: $reason; exact observer exited/reaped with $exitValue; handoff=$handoff receipt_error=$receiptError (never acceptance)"
+}
+
 function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $observer
@@ -70,50 +149,36 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
     $process.StartInfo = $psi
     $start = [Diagnostics.Stopwatch]::StartNew()
     [void]$process.Start()
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-    $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(30000)) {
+    $spawnAcknowledgedUtc = [DateTime]::UtcNow.ToString('o')
+    $observerStartedUtc = $null
+    try {
+        # Freeze creation identity on the exact live Process before waiting.
+        # An unavailable start time is itself BLOCKED, never a normal PASS.
+        $observerStartedUtc = $process.StartTime.ToUniversalTime().ToString('o')
+    } catch {
+        Hold-ExactObserverOnFailure $process $label $psi "StartTime unavailable: $($_.Exception.Message)" $null $spawnAcknowledgedUtc
+    }
+    try {
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+    } catch {
+        Hold-ExactObserverOnFailure $process $label $psi "observer output stream failure: $($_.Exception.Message)" $observerStartedUtc $spawnAcknowledgedUtc
+    }
+    # A bounded-wait exception is a blocked observer, never a healthy exit.
+    # Keep the exact Process object in custody even when WaitForExit throws.
+    $deadlineWaitError = $null
+    $finishedOnTime = $false
+    try {
+        $finishedOnTime = $process.WaitForExit(30000)
+    } catch {
+        $deadlineWaitError = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message
+    }
+    if (-not $finishedOnTime) {
         $start.Stop()
-        # A timeout is never a negative-control PASS. The exact Process object
-        # stays alive here while its observer retains custody of its Child handle.
-        # Write a durable operator receipt BEFORE the indefinite exact-handle wait.
-        $handoff = '(receipt unavailable)'
-        $receiptError = $null
-        try {
-            $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
-            $receipt = [ordered]@{
-                status = 'BLOCKED_TIMEOUT'
-                case = $label
-                observer_pid = $process.Id
-                observer_started_utc = $process.StartTime.ToUniversalTime().ToString('o')
-                observer_exe = $observer
-                fixture_exe = $fixture
-                command_arguments = $psi.Arguments
-                deadline_ms = 30000
-                reviewed_commit = $ReviewedCommit
-                operator_handoff = 'Investigate this exact observer/process creation identity and its owned fixture; do not kill by name or bare PID.'
-            }
-            $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 4))
-            $stream = [IO.File]::Open($handoff, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-            try {
-                $stream.Write($bytes, 0, $bytes.Length)
-                $stream.Flush($true)
-            } finally {
-                $stream.Dispose()
-            }
-            [Console]::Error.WriteLine("GH1189 BLOCKED observer PID=$($process.Id) case=$label handoff=$handoff")
-        } catch {
-            $receiptError = $_.Exception.Message
-            [Console]::Error.WriteLine("GH1189 BLOCKED custody receipt error=$receiptError; retaining exact observer handle")
-        } finally {
-            # Even if receipt creation/logging fails, retain the exact handle
-            # until OS-signaled termination. The observer itself owns its Child.
-            # No blanket kill by name or bare PID is ever attempted.
-            $process.WaitForExit()
-        }
-        $reapedExit = $process.ExitCode
-        $process.Dispose()
-        throw "BLOCKED: observer timed out after 30000 ms; exact observer later exited/reaped with $reapedExit; handoff=$handoff receipt_error=$receiptError (never acceptance)"
+        $cause = if ($deadlineWaitError) { "bounded WaitForExit error: $deadlineWaitError" }
+                 else { 'observer exceeded 30000 ms' }
+        # Never turn a timeout or wait exception into a passed control.
+        Hold-ExactObserverOnFailure $process $label $psi $cause $observerStartedUtc $spawnAcknowledgedUtc
     }
     $start.Stop()
     $record = [pscustomobject]@{
