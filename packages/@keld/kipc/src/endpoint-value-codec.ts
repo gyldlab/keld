@@ -122,9 +122,8 @@ const setFloat64 = DataView.prototype.setFloat64;
 const setBigInt64 = DataView.prototype.setBigInt64;
 const byteSet = Uint8Array.prototype.set;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
-const nativeTypedArrayConstructor: Function = Object.getPrototypeOf(
-  NativeUint8Array,
-);
+const nativeTypedArrayConstructor: Function =
+  Object.getPrototypeOf(NativeUint8Array);
 const typedArrayLength = ownDescriptor(typedArrayPrototype, "length")!.get!;
 const byteLength = ownDescriptor(typedArrayPrototype, "byteLength")!.get!;
 const byteOffset = ownDescriptor(typedArrayPrototype, "byteOffset")!.get!;
