@@ -60,6 +60,13 @@ export type LayoutOutputReader = Pick<
   "read" | "cancel" | "releaseLock"
 >;
 
+/** The source owner may supply an idempotent real-resource finalizer, not another stream cancel. */
+export interface LayoutOutputOwner {
+  reader: LayoutOutputReader;
+  /** Fulfill only after the underlying resource is finalized; a rejection permits an explicit retry. */
+  finalizeSource?: () => Promise<void>;
+}
+
 interface CleanupTask<T> {
   promise: Promise<T>;
   state: "pending" | "fulfilled" | "rejected";
@@ -86,6 +93,7 @@ export interface RetainedLayout {
   stderr: CleanupTask<string> | undefined;
   write: CleanupTask<string> | undefined;
   callback: CleanupTask<void> | undefined;
+  output?: LayoutCleanupError["cleanup"];
   disposed: boolean;
   /** Retry disposal after pending owners settle; each attempt remains bounded. */
   dispose(): Promise<void>;
@@ -113,12 +121,15 @@ export class LayoutCleanupError extends AggregateError {
     errors: unknown[],
     original: unknown,
     readonly cleanup: {
-      incomplete: boolean;
+      readonly incomplete: boolean;
+      readonly sourceFinalized: boolean;
       reader: LayoutOutputReader;
       readerReleased: boolean;
       stopChild: CleanupTask<void>;
       cancellation: CleanupTask<void | undefined>;
       output: CleanupTask<string>;
+      /** Retry the separately owned resource finalizer; never replay rejected stream cancellation. */
+      finalizeSource(): Promise<void>;
     },
   ) {
     super(
@@ -137,6 +148,7 @@ export async function withLayoutOutput<T>(
   layout: Pick<BundleLayout, "ready" | "waitForExit" | "deadlineMs">,
   use: (output: Promise<string>) => Promise<T>,
   stopChild: () => Promise<void>,
+  finalizeSource?: () => Promise<void>,
 ): Promise<T> {
   let settled = false;
   let eof = false;
@@ -155,7 +167,9 @@ export async function withLayoutOutput<T>(
       for (;;) {
         const chunk = await reader.read();
         if (chunk.done) {
-          eof = true;
+          // Cancellation closes a WHATWG stream before its source cancel hook
+          // settles. That synthetic EOF is not source-finalization evidence.
+          eof = !cancellationStarted;
           break;
         }
         stdout += decoder.decode(chunk.value, { stream: true });
@@ -214,25 +228,58 @@ export async function withLayoutOutput<T>(
       (!failed || terminal.reason !== failure)
     )
       cleanupErrors.push(terminal.reason);
-    const incomplete =
-      !readerReleased ||
-      [stop, cancellation, terminalTask].some(
-        (task) => task.state === "pending",
-      );
-    if (cleanupErrors.length !== 0 || incomplete) {
+    let finalization: CleanupTask<void> | undefined;
+    const cleanup: LayoutCleanupError["cleanup"] = {
+      get sourceFinalized() {
+        return (
+          eof ||
+          cancellation.state === "fulfilled" ||
+          finalization?.state === "fulfilled"
+        );
+      },
+      get incomplete() {
+        return (
+          !readerReleased ||
+          !this.sourceFinalized ||
+          [stop, cancellation, terminalTask, finalization].some(
+            (task) => task?.state === "pending",
+          )
+        );
+      },
+      reader,
+      get readerReleased() {
+        return readerReleased;
+      },
+      stopChild: stop,
+      cancellation,
+      output: terminalTask,
+      async finalizeSource() {
+        if (!this.sourceFinalized) {
+          if (finalizeSource === undefined) {
+            throw new Error(
+              "layout source finalization remains unproved; no resource-owner finalizer was supplied",
+            );
+          }
+          // Share an in-flight operation. A timeout does not license another
+          // invocation; only a settled rejection allows this idempotent retry.
+          if (finalization === undefined || finalization.state === "rejected") {
+            finalization = cleanupTask(Promise.resolve().then(finalizeSource));
+          }
+          await withIoDeadline(finalization.promise, layout.deadlineMs);
+        }
+        await withIoDeadline(terminalTask.promise, layout.deadlineMs).catch(
+          () => undefined,
+        );
+        if (settled) release();
+        if (this.incomplete)
+          throw new Error("layout output cleanup remains incomplete");
+      },
+    };
+    if (cleanupErrors.length !== 0 || cleanup.incomplete) {
       throw new LayoutCleanupError(
         failed ? [failure, ...cleanupErrors] : cleanupErrors,
         failure,
-        {
-          incomplete,
-          reader,
-          get readerReleased() {
-            return readerReleased;
-          },
-          stopChild: stop,
-          cancellation,
-          output: terminalTask,
-        },
+        cleanup,
       );
     }
   }
@@ -245,6 +292,8 @@ export interface LayoutOperations {
     root: string,
   ) => ReturnType<typeof Bun.listen<undefined>>;
   removeRoot?: (root: string) => void;
+  /** Optional fault seam; the returned owner must retain this exact stdout source. */
+  outputOwner?: (stream: ReadableStream<Uint8Array>) => LayoutOutputOwner;
 }
 
 /**
@@ -298,6 +347,13 @@ export async function runLayout(
       bound(Promise.resolve().then(stopChild)),
     ]);
     if (stop[0]!.status === "rejected") errors.push(stop[0]!.reason);
+    if (outputCleanup?.incomplete) {
+      try {
+        await outputCleanup.finalizeSource();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     // Pending producers must finish before we remove their directory/listener.
     // Rejections were already observed by the use path; only pending work is joined.
     const pending = [
@@ -314,7 +370,9 @@ export async function runLayout(
     );
     for (const result of joined)
       if (result.status === "rejected") errors.push(result.reason);
-    const stillPending = pending.some((task) => task!.state === "pending");
+    const stillPending =
+      pending.some((task) => task!.state === "pending") ||
+      outputCleanup?.incomplete === true;
     if (!stillPending) {
       // Independent steps: a listener-stop exception must not skip root removal.
       const terminal = await Promise.allSettled([
@@ -405,8 +463,12 @@ export async function runLayout(
     owner.stderr = stderrTask;
     const child = proc;
     const errorsText = stderrTask.promise;
+    const stdout = proc.stdout as ReadableStream<Uint8Array>;
+    const outputOwner = operations.outputOwner?.(stdout) ?? {
+      reader: stdout.getReader(),
+    };
     result = await withLayoutOutput(
-      (proc.stdout as ReadableStream<Uint8Array>).getReader(),
+      outputOwner.reader,
       layout,
       async (output) => {
         let stdout: string;
@@ -438,11 +500,15 @@ export async function runLayout(
         return observed;
       },
       stopChild,
+      outputOwner.finalizeSource?.bind(outputOwner),
     );
   } catch (error) {
     failed = true;
     failure = error;
-    if (error instanceof LayoutCleanupError) outputCleanup = error.cleanup;
+    if (error instanceof LayoutCleanupError) {
+      outputCleanup = error.cleanup;
+      owner.output = outputCleanup;
+    }
   }
   try {
     await owner.dispose();
@@ -451,7 +517,6 @@ export async function runLayout(
     if (failure instanceof LayoutCleanupError) {
       failure.errors.push(...faults);
       failure.retainedLayout = owner;
-      failure.cleanup.incomplete = !owner.disposed;
       throw failure;
     }
     throw new LayoutDisposalError(
