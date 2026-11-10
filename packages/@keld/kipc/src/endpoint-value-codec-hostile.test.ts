@@ -60,8 +60,7 @@ test("inherited numeric setters cannot alter encoded bytes or decoded array slot
     expect(decoded).toEqual(nestedValue);
     expect(trapSetterCalls).toBe(0);
   } finally {
-    if (previousZero)
-      Object.defineProperty(Array.prototype, "0", previousZero);
+    if (previousZero) Object.defineProperty(Array.prototype, "0", previousZero);
     else Reflect.deleteProperty(Array.prototype, "0");
   }
 });
