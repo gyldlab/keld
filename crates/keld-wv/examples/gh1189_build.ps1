@@ -51,14 +51,20 @@ if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Unreviewed dirty checko
 
 # The scoped native builder must not inherit unreviewed Cargo output locations,
 # compiler overrides, wrapper binaries or injected build flags.
-$overrides = @('CARGO_TARGET_DIR','CARGO_HOME','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS',
-    'RUSTC','CARGO','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER','RUSTUP_TOOLCHAIN',
-    'CARGO_BUILD_TARGET','CARGO_BUILD_RUSTFLAGS')
-foreach ($name in $overrides) {
-    if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name, 'Process'))) {
-        throw "Unreviewed build environment override refused: $name"
+function Assert-NoBuildOverrides {
+    # Cargo accepts target-specific LINKER/RUSTFLAGS, profile and registry
+    # overrides under arbitrary CARGO_* names, not only CARGO_TARGET_DIR.
+    # Refuse every ambient Cargo environment key rather than maintaining a
+    # list that silently misses a future flag. Apply before and after build.
+    $blocked = @(Get-ChildItem Env: | Where-Object {
+        $_.Name -match '^(CARGO($|_)|RUSTC($|_)|RUSTFLAGS$|RUSTDOC($|_)|RUSTUP_TOOLCHAIN$|CC($|_)|CXX($|_)|AR($|_)|CFLAGS$|CXXFLAGS$)'
+    })
+    if ($blocked.Count -ne 0) {
+        $names = (($blocked | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ',')
+        throw "Unreviewed build environment override refused: $names"
     }
 }
+Assert-NoBuildOverrides
 # Reject optional ambient Cargo config. Only committed workspace inputs
 # and the pinned toolchain are admitted for this single-purpose witness.
 $configRoots = @($repo, $HOME)
@@ -67,14 +73,17 @@ while ($null -ne $cursor) {
     $configRoots += $cursor.FullName
     $cursor = $cursor.Parent
 }
-foreach ($configRoot in ($configRoots | Select-Object -Unique)) {
-    foreach ($name in @('config','config.toml')) {
-        $config = Join-Path $configRoot ('.cargo/' + $name)
-        if (Test-Path -LiteralPath $config -PathType Leaf) {
-            throw "Unreviewed Cargo configuration file refused: $config"
+function Assert-NoExternalCargoConfig {
+    foreach ($configRoot in ($configRoots | Select-Object -Unique)) {
+        foreach ($name in @('config','config.toml')) {
+            $config = Join-Path $configRoot ('.cargo/' + $name)
+            if (Test-Path -LiteralPath $config -PathType Leaf) {
+                throw "Unreviewed Cargo configuration file refused: $config"
+            }
         }
     }
 }
+Assert-NoExternalCargoConfig
 function Assert-NoReparsePath([string]$path) {
     $cursor = [IO.Path]::GetFullPath($path)
     while ($true) {
@@ -202,11 +211,8 @@ function Assert-ReviewedSnapshot {
     if (@(& git -C $repo status --porcelain=v1 --untracked-files=all).Count -ne 0) {
         throw 'Checkout changed during build'
     }
-    foreach ($name in $overrides) {
-        if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name, 'Process'))) {
-            throw "Build environment override changed during build: $name"
-        }
-    }
+    Assert-NoBuildOverrides
+    Assert-NoExternalCargoConfig
     $currentRoot = [ordered]@{
         cargo_toml_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.toml') -Algorithm SHA256).Hash
         cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $repo 'Cargo.lock') -Algorithm SHA256).Hash
@@ -266,6 +272,7 @@ try {
         })
         cargo_version = $cargoVersion
         rustc_version = $rustcVersion
+        vcvars64_path = $vcvars
         vcvars64_sha256 = (Get-FileHash -LiteralPath $vcvars -Algorithm SHA256).Hash
         linker_exe_sha256 = (Get-FileHash -LiteralPath $link -Algorithm SHA256).Hash
         mt_exe_sha256 = (Get-FileHash -LiteralPath $mt -Algorithm SHA256).Hash

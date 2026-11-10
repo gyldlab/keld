@@ -122,22 +122,59 @@ foreach ($item in @(
         throw "Build root input changed: $($item.Name)"
     }
 }
-if (@($buildReceipt.pinned_inputs).Count -ne 6) { throw 'Build receipt lacks complete pinned source set' }
+# A receipt with six duplicates of Cargo.toml is NOT a six-source
+# attestation. Require exactly these reviewed fixture, observer, manifest,
+# instruction and crate files and their immutable approved hashes.
+$expectedSourcePins = @{
+    'crates/keld-wv/examples/gh1189_taskdialog_fixture.rs' = 'BD92FA05F3EE09070A022D27D9503D0594CE55268E43830930690686724FB496'
+    'crates/keld-wv/examples/gh1189_winevent_observer.rs' = 'F9A265AE12D6CEEF79D51E67AC3E525DD9580EBEE2383EE82BCAEB8721314246'
+    'crates/keld-wv/examples/gh1189_taskdialog_v6.manifest' = '3CBF2DF66E7AACB0A4992FF2F50C2F2A6010C20BF133CD6E6E29C1822B56D84E'
+    'crates/keld-wv/examples/AGENTS.md' = '2032F4FF2D26B50BEB6C3B626C95DFCEA2D5153B814D46519BE3C32C41F69BEB'
+    'crates/keld-wv/AGENTS.md' = '03B9209D0BE29D4F73EBB15ADF798912BD3606A503D7A2553968B7BBA1781C1E'
+    'crates/keld-wv/Cargo.toml' = '2FD5837FBDD1B03D7B85CAAEC69D59BF183DC454ABC6FCAB2A4BF3B4D752916A'
+}
+if (@($buildReceipt.pinned_inputs).Count -ne $expectedSourcePins.Count) {
+    throw 'Build receipt lacks complete pinned source set'
+}
+$seenPins = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($item in @($buildReceipt.pinned_inputs)) {
-    if ([string]::IsNullOrWhiteSpace([string]$item.path) -or
-        [IO.Path]::IsPathRooted([string]$item.path) -or [string]$item.path -match '(^|/)\.\.(/|$)') {
-        throw 'Invalid build receipt source path'
+    $relative = [string]$item.path
+    if ([string]::IsNullOrWhiteSpace($relative) -or
+        [IO.Path]::IsPathRooted($relative) -or $relative -match '\\|(^|/)\.\.?(/|$)' -or
+        -not $expectedSourcePins.ContainsKey($relative) -or
+        $expectedSourcePins[$relative] -ne $item.sha256 -or
+        -not $seenPins.Add($relative)) {
+        throw "Build receipt has an unexpected, duplicate or unreviewed source pin: $relative"
     }
-    $source = Join-Path $repo ([string]$item.path).Replace('/', '\')
+    $source = [IO.Path]::GetFullPath((Join-Path $repo $relative.Replace('/', '\')))
+    $ownedSourcePrefix = [IO.Path]::GetFullPath($repo).TrimEnd('\') + '\'
+    if (-not $source.StartsWith($ownedSourcePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Build receipt source path escapes reviewed worktree: $relative"
+    }
     Assert-NoReparsePath $source
     if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $item.sha256) {
-        throw "Build receipt source digest changed: $($item.path)"
+        throw "Build receipt source digest changed: $relative"
     }
 }
+if ($seenPins.Count -ne $expectedSourcePins.Count) { throw 'Incomplete reviewed source set' }
 if ($buildReceipt.build_script_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $here 'gh1189_build.ps1') -Algorithm SHA256).Hash -or
     $buildReceipt.cargo_version -ne ((& cargo --version) -join [Environment]::NewLine) -or
     $buildReceipt.rustc_version -ne ((& rustc -vV) -join [Environment]::NewLine)) {
     throw 'Build provenance script/toolchain mismatch'
+}
+foreach ($tool in @(
+    @{Path=$buildReceipt.vcvars64_path;Hash=$buildReceipt.vcvars64_sha256},
+    @{Path=$buildReceipt.linker_exe;Hash=$buildReceipt.linker_exe_sha256},
+    @{Path=$buildReceipt.mt_exe;Hash=$buildReceipt.mt_exe_sha256}
+)) {
+    if ([string]::IsNullOrWhiteSpace([string]$tool.Path) -or
+        -not [IO.Path]::IsPathRooted([string]$tool.Path)) {
+        throw 'Build receipt omits an exact toolchain executable path'
+    }
+    Assert-NoReparsePath ([string]$tool.Path)
+    if ((Get-FileHash -LiteralPath ([string]$tool.Path) -Algorithm SHA256).Hash -ne $tool.Hash) {
+        throw "Toolchain input changed after build: $($tool.Path)"
+    }
 }
 $manifestProbe = Join-Path (Split-Path -Parent $receiptPath) 'fixture-manifest-resource1.xml'
 Assert-NoReparsePath $manifestProbe
