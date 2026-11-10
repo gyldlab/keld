@@ -37,7 +37,7 @@ foreach ($hash in @($FixtureSha256, $ObserverSha256)) {
 if ($ReviewedCommit -notmatch '^[a-f0-9]{40}$') { throw 'Exact reviewed commit is required' }
 $here = Split-Path -Parent $PSCommandPath
 $repo = (Resolve-Path (Join-Path $here '..\..\..')).Path
-$head = (& git -C $repo rev-parse HEAD | Select-Object -First 1).Trim()
+$head = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -ne $ReviewedCommit) { throw 'Reviewed commit mismatch' }
 $dirty = @(& git -C $repo status --porcelain=v1)
 if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Native controls require a clean reviewed worktree' }
@@ -100,7 +100,7 @@ if (-not $receiptPath.StartsWith($ownedBuildPrefix, [StringComparison]::OrdinalI
 Assert-NoReparsePath $receiptPath
 if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'Build receipt missing' }
 $buildReceipt = Get-Content -LiteralPath $receiptPath -Raw -ErrorAction Stop | ConvertFrom-Json
-$gitTree = (& git -C $repo rev-parse 'HEAD^{tree}' | Select-Object -First 1).Trim()
+$gitTree = (& git -C $repo rev-parse 'HEAD^{tree}').Trim()
 if ($LASTEXITCODE -ne 0 -or $buildReceipt.status -ne 'BUILT_NOT_RUN_PROVENANCE' -or
     $buildReceipt.reviewed_commit -ne $ReviewedCommit -or
     $buildReceipt.reviewed_tree -ne $gitTree -or

@@ -42,9 +42,9 @@ if (-not $Build -and -not $Preflight) {
 }
 if ($Build -and $Preflight) { throw 'Choose either -Build or -Preflight, never both' }
 if ($ReviewedCommit -notmatch '^[a-f0-9]{40}$') { throw 'Exact reviewed commit is required before any build preflight' }
-$head = (& git -C $repo rev-parse HEAD | Select-Object -First 1).Trim()
+$head = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -ne $ReviewedCommit) { throw 'Reviewed HEAD mismatch before build' }
-$tree = (& git -C $repo rev-parse 'HEAD^{tree}' | Select-Object -First 1).Trim()
+$tree = (& git -C $repo rev-parse 'HEAD^{tree}').Trim()
 if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[a-f0-9]{40}$') { throw 'Cannot attest committed source tree' }
 $dirty = @(& git -C $repo status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Unreviewed dirty checkout; build refused' }
@@ -196,7 +196,7 @@ Assert-NoReparsePath $buildDir
 $expectedRootSha = ($rootInputs | ConvertTo-Json -Compress)
 function Assert-ReviewedSnapshot {
     Assert-ReviewedInputs
-    if ((& git -C $repo rev-parse HEAD | Select-Object -First 1).Trim() -ne $ReviewedCommit) {
+    if ((& git -C $repo rev-parse HEAD).Trim() -ne $ReviewedCommit) {
         throw 'Reviewed HEAD changed during build'
     }
     if (@(& git -C $repo status --porcelain=v1 --untracked-files=all).Count -ne 0) {
