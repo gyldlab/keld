@@ -40,7 +40,8 @@ $head = (& git -C $repo rev-parse HEAD | Select-Object -First 1).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -ne $ReviewedCommit) { throw 'Reviewed commit mismatch' }
 $dirty = @(& git -C $repo status --porcelain=v1)
 if ($LASTEXITCODE -ne 0 -or $dirty.Count -ne 0) { throw 'Native controls require a clean reviewed worktree' }
-$metadata = & cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+$workspaceManifest = Join-Path $repo 'Cargo.toml'
+$metadata = & cargo metadata --manifest-path $workspaceManifest --locked --no-deps --format-version 1 | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve isolated Cargo target' }
 $binDir = Join-Path $metadata.target_directory 'x86_64-pc-windows-msvc\debug\examples'
 $fixture = Join-Path $binDir 'gh1189_taskdialog_fixture.exe'
@@ -72,7 +73,44 @@ function Invoke-ObservedCase([string]$label, [string]$fault, [string]$expected) 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(30000)) {
-        throw "BLOCKED: owned observer PID $($process.Id) exceeded 30 s; retain custody and investigate, no success credit"
+        $start.Stop()
+        # A timeout is never a negative-control PASS. The exact Process object
+        # stays alive here while its observer retains custody of its Child handle.
+        # Write a durable operator receipt BEFORE the indefinite exact-handle wait.
+        $handoff = Join-Path $evidence ("BLOCKED-" + $label + "-" + [guid]::NewGuid().ToString('N') + ".json")
+        $receipt = [ordered]@{
+            status = 'BLOCKED_TIMEOUT'
+            case = $label
+            observer_pid = $process.Id
+            observer_started_utc = $process.StartTime.ToUniversalTime().ToString('o')
+            observer_exe = $observer
+            fixture_exe = $fixture
+            command_arguments = $psi.Arguments
+            deadline_ms = 30000
+            reviewed_commit = $ReviewedCommit
+            operator_handoff = 'Investigate this exact observer/process creation identity and its owned fixture; do not kill by name or bare PID.'
+        }
+        $receiptError = $null
+        try {
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 4))
+            $stream = [IO.File]::Open($handoff, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+            } finally {
+                $stream.Dispose()
+            }
+        } catch {
+            $receiptError = $_.Exception.Message
+        }
+        [Console]::Error.WriteLine("GH1189 BLOCKED observer PID=$($process.Id) case=$label handoff=$handoff receipt_error=$receiptError")
+        # Do not dispose the exact observer handle, kill it, or lose the
+        # observer-owned Child on the timeout branch. If it never exits, this
+        # call deliberately remains BLOCKED for operator intervention.
+        $process.WaitForExit()
+        $reapedExit = $process.ExitCode
+        $process.Dispose()
+        throw "BLOCKED: observer timed out after 30000 ms; exact observer later exited/reaped with $reapedExit; handoff=$handoff (never acceptance)"
     }
     $start.Stop()
     $record = [pscustomobject]@{
