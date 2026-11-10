@@ -223,7 +223,7 @@ test("array probe budget rejects huge own-key sets before descriptor inspection"
   expect(descriptorCalls).toBe(1);
 });
 
-test("many individually small array snapshots share one descriptor-work budget", () => {
+test("small arrays share the aggregate descriptor-probe budget", () => {
   let descriptorCalls = 0;
   const children = Array.from({ length: 30 }, () => {
     const item = [null];
