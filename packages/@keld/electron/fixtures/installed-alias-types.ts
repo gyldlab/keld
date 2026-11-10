@@ -102,7 +102,11 @@ export function assertInstalledTypeFilesWithinRoots(
 ): void {
   const roots = [consumer, compilerLib].map((root) => {
     const directory = statSync(realpathSync(root), { bigint: true });
-    assert(directory.isDirectory(), "Trusted installed type root must be a directory");
+    assert(
+      directory.isDirectory(),
+      "Trusted installed type root must be a directory",
+    );
+    assert(directory.ino !== 0n, "Trusted root inode unavailable");
     return { dev: directory.dev, ino: directory.ino };
   });
   for (const file of files) {
@@ -127,8 +131,7 @@ export function assertInstalledTypeFilesWithinRoots(
     assert(contained, "Compiler escaped the installed graph: " + physical);
     const slashPath = physical.split(sep).join("/");
     assert(
-      !slashPath.includes("/bun-types/") &&
-        !slashPath.includes("/@types/bun/"),
+      !slashPath.includes("/bun-types/") && !slashPath.includes("/@types/bun/"),
       "Compiler loaded Bun declarations: " + physical,
     );
   }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  linkSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -18,12 +19,30 @@ test("installed type graph admits aliased roots but rejects sibling and junction
     const compilerLib = join(scratch, "compiler", "lib");
     const outside = join(scratch, "outside");
     const sibling = join(scratch, "consumer-sibling");
-    const nodeType = join(consumer, "node_modules", "@types", "node", "index.d.ts");
+    const nodeType = join(
+      consumer,
+      "node_modules",
+      "@types",
+      "node",
+      "index.d.ts",
+    );
     const compilerType = join(compilerLib, "lib.es2024.d.ts");
     const escapedType = join(outside, "escape.d.ts");
     const siblingType = join(sibling, "sibling.d.ts");
-    const bunType = join(consumer, "node_modules", "@types", "bun", "index.d.ts");
-    for (const file of [nodeType, compilerType, escapedType, siblingType, bunType]) {
+    const bunType = join(
+      consumer,
+      "node_modules",
+      "@types",
+      "bun",
+      "index.d.ts",
+    );
+    for (const file of [
+      nodeType,
+      compilerType,
+      escapedType,
+      siblingType,
+      bunType,
+    ]) {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, "export {};\n");
     }
@@ -34,10 +53,14 @@ test("installed type graph admits aliased roots but rejects sibling and junction
     symlinkSync(consumer, alias, linkType);
     symlinkSync(outside, join(consumer, "outside-link"), linkType);
     symlinkSync(outside, join(compilerLib, "outside-link"), linkType);
+    linkSync(nodeType, join(sibling, "same-file-hardlink.d.ts"));
 
     expect(() =>
       assertInstalledTypeFilesWithinRoots(
-        [join(alias, "node_modules", "@types", "node", "index.d.ts"), compilerType],
+        [
+          join(alias, "node_modules", "@types", "node", "index.d.ts"),
+          compilerType,
+        ],
         alias,
         compilerLib,
       ),
@@ -50,6 +73,7 @@ test("installed type graph admits aliased roots but rejects sibling and junction
     // than a missing-file error or a string-prefix comparison.
     for (const forbidden of [
       siblingType,
+      join(sibling, "same-file-hardlink.d.ts"),
       join(alias, "..", "outside", "escape.d.ts"),
       join(alias, "outside-link", "escape.d.ts"),
       join(compilerLib, "outside-link", "escape.d.ts"),
