@@ -99,7 +99,11 @@ test("installed type graph admits aliased roots but rejects sibling and junction
       ),
     ).not.toThrow();
     expect(() =>
-      assertInstalledTypeFilesWithinRoots([nodeType, vendorType], consumer, compilerLib),
+      assertInstalledTypeFilesWithinRoots(
+        [nodeType, vendorType],
+        consumer,
+        compilerLib,
+      ),
     ).not.toThrow();
 
     // Each path below exists; denial proves physical confinement rather
