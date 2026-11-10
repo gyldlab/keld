@@ -6591,6 +6591,12 @@ match the crate that already emits the code. Do not invent a third spelling.
 - message: Reading the identity container of the verified executable (`keld-host.exe` or `keld-updater-helper.exe`) failed
 - fix: Make sure its volume is readable and relaunch, and reinstall the signed package if the failure persists.
 
+## KELD-PACK-013
+
+- crate: keld-pack
+- message: The local macOS bundle metadata is malformed or outside the closed schema
+- fix: Rebuild with the supported macOS packager using valid literal application metadata and the exact qualified Bun digest. Remove duplicate, unknown or wrongly typed authoring fields; do not manually alter the sealed Info.plist.
+
 ## KELD-HELPER-001
 
 - crate: keld-updater-helper
