@@ -86,6 +86,14 @@ impl EofWitness {
 // This uses the same persistent connection as the peer's later release byte;
 // reading beyond the frame would consume unrelated protocol data.
 fn read_eof_record_before(stream: &mut UnixStream, deadline: Instant) -> std::io::Result<()> {
+    read_eof_record_before_with_would_block(stream, deadline, || {})
+}
+
+fn read_eof_record_before_with_would_block(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    mut on_would_block: impl FnMut(),
+) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
     stream.set_nonblocking(true)?;
     let result = (|| {
@@ -132,6 +140,9 @@ fn read_eof_record_before(stream: &mut UnixStream, deadline: Instant) -> std::io
                 Err(error)
                     if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
                 {
+                    if error.kind() == ErrorKind::WouldBlock {
+                        on_would_block();
+                    }
                     thread::yield_now();
                 }
                 Err(error) => return Err(error),
@@ -154,6 +165,77 @@ impl Drop for EofWitness {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn nonblocking_eof_witness_waits_for_observed_eof_and_preserves_release() {
+        let fixture = super::super::support::Fixture::new();
+        let mut witness = EofWitness::bind(&fixture.control);
+        let mut peer = UnixStream::connect(witness.path()).expect("connect real witness peer");
+        let (app_link_owner, mut app_link_peer) =
+            UnixStream::pair().expect("independent EOF source");
+        peer.set_read_timeout(Some(EVENT_DEADLINE))
+            .expect("bound release wait");
+        app_link_peer
+            .set_read_timeout(Some(EVENT_DEADLINE))
+            .expect("bound independent EOF wait");
+        witness.accept_before(Instant::now() + EVENT_DEADLINE);
+        let stream = witness.stream.as_mut().expect("accepted witness stream");
+        stream
+            .set_nonblocking(true)
+            .expect("force initial nonblocking mode");
+        let peer_thread = thread::spawn(move || -> std::io::Result<[u8; 1]> {
+            let mut byte = [0_u8; 1];
+            assert_eq!(app_link_peer.read(&mut byte)?, 0, "genuine independent EOF");
+            peer.write_all(b"EOF_OBSERVED\n")?;
+            peer.read_exact(&mut byte)?;
+            Ok(byte)
+        });
+        let mut app_link_owner = Some(app_link_owner);
+        let mut observed_would_block = false;
+        let deadline = Instant::now() + EVENT_DEADLINE;
+        let result = read_eof_record_before_with_would_block(stream, deadline, || {
+            // The peer cannot observe EOF or send its record before this actual
+            // empty read. No scheduling delay or prebuffered record proves retry.
+            observed_would_block = true;
+            drop(app_link_owner.take());
+        });
+        let completed_before_deadline = Instant::now() < deadline;
+        drop(app_link_owner);
+        if result.is_ok() {
+            witness.release_link_eof_report();
+        } else {
+            // Bound and join the peer even when a negative control rejects early.
+            witness.stream.take();
+        }
+        let peer_result = peer_thread.join().expect("join owned witness peer");
+        result.expect("nonblocking witness must wait for the genuine record");
+        assert!(
+            observed_would_block,
+            "reader must encounter the empty stream"
+        );
+        assert!(
+            completed_before_deadline,
+            "record must use the original deadline"
+        );
+        assert_eq!(peer_result.expect("peer receives release"), *b"R");
+    }
+
+    #[test]
+    fn oversized_unterminated_eof_witness_is_rejected_before_peer_closes() {
+        let (mut reader, mut writer) = UnixStream::pair().expect("owned native witness pair");
+        writer
+            .write_all(&vec![b'X'; EOF_WITNESS_RECORD.len() + 1])
+            .expect("write maximum plus one without newline");
+        let result =
+            read_eof_record_before(&mut reader, Instant::now() + Duration::from_millis(100));
+        // Keep the peer alive through the read so EOF and final-string mismatch
+        // cannot substitute for the length guard's InvalidData rejection.
+        drop(writer);
+        assert_eq!(
+            result.expect_err("oversized unterminated record").kind(),
+            std::io::ErrorKind::InvalidData,
+        );
+    }
 
     #[test]
     fn fragmented_eof_witness_cannot_renew_original_deadline() {
