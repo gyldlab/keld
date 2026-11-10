@@ -94,7 +94,7 @@ test("argument count is bounded from its emitted snapshot and rejects proxy grow
   );
 });
 
-test("host-state values stay unsupported after prototype changes while Date keeps its timestamp", () => {
+test("native slots survive prototype changes and Dates keep timestamps", () => {
   for (const value of [
     new Map([["k", 1]]),
     new Set([1]),
