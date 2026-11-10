@@ -75,7 +75,6 @@ const ownKeys = Reflect.ownKeys;
 const ownDescriptor = Object.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const defineProperty = Object.defineProperty;
-const getPrototypeOf = Object.getPrototypeOf;
 const hasInstance = Function.prototype[Symbol.hasInstance];
 const NativeArrayBuffer = ArrayBuffer;
 const NativeDataView = DataView;
@@ -123,6 +122,7 @@ const setFloat64 = DataView.prototype.setFloat64;
 const setBigInt64 = DataView.prototype.setBigInt64;
 const byteSet = Uint8Array.prototype.set;
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const nativeTypedArrayConstructor: Function = Object.getPrototypeOf(NativeUint8Array);
 const typedArrayLength = ownDescriptor(typedArrayPrototype, "length")!.get!;
 const byteLength = ownDescriptor(typedArrayPrototype, "byteLength")!.get!;
 const byteOffset = ownDescriptor(typedArrayPrototype, "byteOffset")!.get!;
@@ -133,6 +133,12 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const arrayIndex = /^(0|[1-9][0-9]*)$/;
 const exoticConstructors: Function[] = [
+  NativeArrayBuffer,
+  NativeDataView,
+  NativeDate,
+  Map,
+  Set,
+  nativeTypedArrayConstructor,
   WeakMap,
   WeakSet,
   RegExp,
@@ -291,11 +297,6 @@ function knownExotic(value: object): boolean {
   for (let i = 0; i < exoticConstructors.length; i++)
     if (isInstance(value, exoticConstructors[i])) return true;
   return false;
-}
-
-function plainRecord(value: object): boolean {
-  const prototype = getPrototypeOf(value);
-  return prototype === null || prototype === NativeObjectPrototype;
 }
 
 /** Refuse invalid UTF-16 rather than allowing TextEncoder to repair it. */
@@ -528,9 +529,12 @@ class ValueWriter {
       return;
     }
 
-    // Never flatten host state or custom class instances into plain records.
+    // GH-544 requires class instances to flatten their own enumerable fields.
+    // Intrinsic slot probes and captured prototype checks refuse recognizable
+    // native objects and their ordinary Proxy wrappers before flattening.
+    // Fully spoofing Proxies cannot be reliably distinguished in JavaScript.
     // Never invoke Symbol.toStringTag or toJSON as a brand probe.
-    if (knownExotic(value) || !plainRecord(value))
+    if (knownExotic(value))
       reject("UnsupportedValue", "unsupported exotic object");
 
     const keys = checkedOwnKeys(value);
