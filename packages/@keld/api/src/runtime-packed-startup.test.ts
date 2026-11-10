@@ -47,7 +47,7 @@ function withEntryMainIdentityProbe(source: string): string {
     'process.send?.({ kind: "entry", before, after: { ...process.versions } });';
   expect(source.includes(anchor)).toBe(true);
   return (
-    'import { realpathSync } from "node:fs";\n' +
+    'import { realpathSync, statSync } from "node:fs";\n' +
     'import { fileURLToPath } from "node:url";\n' +
     source.replace(
       anchor,
@@ -61,7 +61,14 @@ function withEntryMainIdentityProbe(source: string): string {
       realpathSync(Bun.main) === realpathSync(process.argv[1]),
     originalMatchesArgv2:
       process.argv[2] !== undefined &&
-      realpathSync(process.argv[2]) === realpathSync(fileURLToPath(import.meta.url)),
+      (() => {
+        // Windows 8.3 and long-path aliases can differ as strings after
+        // realpathSync. The sealed Host original entry contract is physical
+        // file identity, not a particular case or short-name spelling.
+        const arg = statSync(process.argv[2], { bigint: true });
+        const module = statSync(fileURLToPath(import.meta.url), { bigint: true });
+        return arg.ino !== 0n && arg.dev === module.dev && arg.ino === module.ino;
+      })(),
     argc: process.argv.length,
   },
 });`,
