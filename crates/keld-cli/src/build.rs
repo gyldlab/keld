@@ -254,6 +254,34 @@ fn compile_local_boot_bytes(
 }
 
 #[cfg(target_os = "macos")]
+fn installed_generated_sources(
+    original_relative: &str,
+    original_graph: bool,
+) -> Result<Vec<MacosGeneratedFile>, BuildError> {
+    keld_core::app_session::macos_local_launch_bootstrap_sources()
+        .into_iter()
+        .map(|(path, bytes)| {
+            let bytes = if original_graph
+                && path == keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH
+            {
+                // The same original entry is compiled into boot, generated
+                // here before Pack's census, and checked by installed Core.
+                keld_core::app_session::macos_local_original_entry_bootstrap_source(
+                    original_relative,
+                )
+                .map_err(|error| BuildError::input("installed original entry", error))?
+            } else {
+                bytes.to_vec()
+            };
+            Ok(MacosGeneratedFile {
+                path: path.to_owned(),
+                bytes,
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 fn run_macos_native() -> Result<(), BuildError> {
     let root = env::current_dir()
         .and_then(|path| path.canonicalize())
@@ -289,6 +317,7 @@ fn run_macos_native() -> Result<(), BuildError> {
     metadata
         .validate()
         .map_err(|error| BuildError::input("Apple bundle metadata", error))?;
+    let generated = installed_generated_sources(&app.entry, graph_capture.is_some())?;
     let package = MacosPackageInput {
         project_root: root,
         metadata,
@@ -308,13 +337,7 @@ fn run_macos_native() -> Result<(), BuildError> {
         icon: build.icon,
         boot,
         permissions,
-        generated: keld_core::app_session::macos_local_launch_bootstrap_sources()
-            .into_iter()
-            .map(|(path, bytes)| MacosGeneratedFile {
-                path: path.to_owned(),
-                bytes: bytes.to_vec(),
-            })
-            .collect(),
+        generated,
         out_dir: build.out_dir,
     };
     let result = if let Some((selected, expected)) = graph_capture {

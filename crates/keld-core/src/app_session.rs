@@ -47,7 +47,7 @@ pub use self::graph_contract::{
 #[cfg(target_os = "macos")]
 pub use self::launch_facts::{
     MACOS_LOCAL_LAUNCH_PRELOAD_PATH, MACOS_LOCAL_RUNTIME_ENTRY_PATH,
-    macos_local_launch_bootstrap_sources,
+    macos_local_launch_bootstrap_sources, macos_local_original_entry_bootstrap_source,
 };
 #[cfg(target_os = "macos")]
 mod macos_installed;
