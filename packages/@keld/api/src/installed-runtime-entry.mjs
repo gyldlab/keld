@@ -74,6 +74,7 @@ try {
   throw linkError("KELD-IPC-005", "Host-admitted entry cannot be resolved.");
 }
 let withinRoot = false;
+const entryComponents = [basename(canonicalEntry)];
 try {
   const rootIdentity = statSync(canonicalRoot, { bigint: true });
   const targetIdentity = statSync(canonicalEntry, { bigint: true });
@@ -100,6 +101,7 @@ try {
     }
     const next = dirname(ancestor);
     if (next === ancestor) break;
+    entryComponents.unshift(basename(ancestor));
     ancestor = next;
   }
 } catch {
@@ -116,5 +118,17 @@ if (!withinRoot) {
 // Import from this *app-root module graph*, not from CLI --preload's isolated
 // module cache. Never evaluate user code before a genuine authenticated Init
 // ACK plus subscriptions. Ready still comes exclusively from the Host.
-const originalUrl = pathToFileURL(canonicalEntry).href;
-await bootHostSelectedEntry(() => import(originalUrl));
+// Bun 1.4.4 Windows maps an absolute file: URL import into a different SDK
+// module cache from the pre-entry app-root bootstrap. Use the same simple
+// root-relative ESM spelling as the Windows-green hosted bootstrap for names
+// with no URL-sensitive characters. All components came from the verified
+// physical parent chain above; never interpolate an unvalidated argv suffix.
+// For legal names containing #/%/spaces, encode a physical file URL so the
+// URL parser cannot reinterpret an original path as a fragment or traversal.
+const plainRelative = entryComponents.every(
+  (part) => /^[A-Za-z0-9._-]+$/.test(part) && part !== "." && part !== "..",
+);
+const originalSpecifier = plainRelative
+  ? `./${entryComponents.join("/")}`
+  : pathToFileURL(canonicalEntry).href;
+await bootHostSelectedEntry(() => import(originalSpecifier));

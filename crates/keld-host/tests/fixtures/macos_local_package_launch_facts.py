@@ -19,7 +19,7 @@ Otherwise the driver compiles that existing Swift fixture. --source-root default
 to this repository and supplies only the three current production SDK packages.
 No package manager, dependency symlink, fake facade or hand-made transport stamp
 is used. Success requires install, causal Ready, native window, targeted native
-Quit, exact family retirement, relocation/repeat, and six re-signed generated
+Quit, exact family retirement, relocation/repeat, and eight re-signed generated
 bootstrap removal/tamper refusals before the first dependency can run.
 """
 
@@ -48,6 +48,7 @@ BOOTSTRAP = (
     "keld-launch-facts/kipc/src/launch-facts.ts",
     "keld-launch-facts/electron/src/process-facts.ts",
     "keld-launch-facts/electron/src/installed-launch-preload.ts",
+    "keld-installed-runtime-entry.mjs",
 )
 FIRST = "GH1404_NATIVE_FACTS_FIRST_DEPENDENCY "
 BEFORE_READY = "GH1404_NATIVE_FACTS_BEFORE_READY "
@@ -413,7 +414,7 @@ def main() -> int:
         summary.update(state="PASS" if native_accepted else "PARTIAL", stage="complete", app=str(app), dmg=str(dmg), installed_app=str(relocated),
                        receipt=str(output / "artifact-receipt.json"),
                        installed_lifecycle_verified=True, native_quit_accepted=native_accepted,
-                       scope="actual installed launch facts, early preload order, broker allowed/denied effects, application Quit, relocation and six re-signed bootstrap refusals",
+                       scope="actual installed launch facts, early preload order, broker allowed/denied effects, application Quit, relocation and eight re-signed bootstrap refusals",
                        limitations=[] if native_accepted else ["AppleEvent Quit is canceled although application-controlled Quit completed (GH-451)"],
                        unrun="original draw.io graph/workflow, publisher identity and public distribution")
         evidence.write_result(summary)
