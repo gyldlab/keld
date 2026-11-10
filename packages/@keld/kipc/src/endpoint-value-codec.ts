@@ -100,6 +100,8 @@ const weakSetAdd = WeakSet.prototype.add;
 const charCodeAt = String.prototype.charCodeAt;
 const regexpExec = RegExp.prototype.exec;
 const dateTime = Date.prototype.getTime;
+const regexpSource = ownDescriptor(RegExp.prototype, "source")!.get!;
+const weakMapHas = WeakMap.prototype.has;
 const mapSize = ownDescriptor(Map.prototype, "size")!.get!;
 const setSize = ownDescriptor(Set.prototype, "size")!.get!;
 const arrayBufferByteLength = ownDescriptor(
@@ -110,6 +112,10 @@ const dataViewByteLength = ownDescriptor(
   DataView.prototype,
   "byteLength",
 )!.get!;
+const sharedArrayBufferByteLength =
+  NativeSharedArrayBuffer === undefined
+    ? undefined
+    : ownDescriptor(NativeSharedArrayBuffer.prototype, "byteLength")?.get;
 const getUint16 = DataView.prototype.getUint16;
 const getFloat64 = DataView.prototype.getFloat64;
 const getBigInt64 = DataView.prototype.getBigInt64;
@@ -256,18 +262,30 @@ function knownExotic(value: object): boolean {
   } catch {
     /* not a typed array */
   }
-  if (NativeSharedArrayBuffer !== undefined) {
-    const getter = ownDescriptor(
-      NativeSharedArrayBuffer.prototype,
-      "byteLength",
-    )?.get;
-    if (getter !== undefined) {
-      try {
-        apply(getter, value, []);
-        return true;
-      } catch {
-        /* not a SharedArrayBuffer */
-      }
+  try {
+    apply(regexpSource, value, []);
+    return true;
+  } catch {
+    /* not a RegExp */
+  }
+  try {
+    apply(weakMapHas, value, [NativeObjectPrototype]);
+    return true;
+  } catch {
+    /* not a WeakMap */
+  }
+  try {
+    apply(weakSetHas, value, [NativeObjectPrototype]);
+    return true;
+  } catch {
+    /* not a WeakSet */
+  }
+  if (sharedArrayBufferByteLength !== undefined) {
+    try {
+      apply(sharedArrayBufferByteLength, value, []);
+      return true;
+    } catch {
+      /* not a SharedArrayBuffer */
     }
   }
   for (let i = 0; i < exoticConstructors.length; i++)
