@@ -541,14 +541,23 @@ fn local_guardian_bun_command(
     let runtime_preload = facts
         .runtime_preload_path()
         .map_err(|error| guardian_entry_error(error.to_string()))?;
-    configure_installed_runtime_preload(
+    let verified_runtime_entry = configure_installed_runtime_entry(
         &mut command,
         facts.app_root(),
         facts.native_facade(),
         runtime_preload.as_deref(),
     )?;
+    command.arg("run");
+    if let Some(verified_runtime_entry) = verified_runtime_entry {
+        // In the original graph, the installed SDK's already-verified
+        // runtime wrapper *is* the Bun entry. It awaits Host Init before
+        // importing the separately boot-selected original entry in one
+        // module graph; Bun Windows never shares CLI preload/entry caches.
+        // The actual original entry remains the one retained by signed boot,
+        // never selected from an app env value or untrusted module.
+        command.arg(verified_runtime_entry);
+    }
     command
-        .arg("run")
         .arg(facts.app_root().join(facts.entry_relative()))
         .current_dir(facts.app_root())
         .env("KELD_APP_LINK", app_link)
@@ -557,15 +566,22 @@ fn local_guardian_bun_command(
 }
 
 /// Adds only selectors obtained from the admitted local origin. The immutable
-/// facts preload is already first; the graph-owned API wrapper then captures and
-/// acknowledges runtime Init before evaluating any application dependency.
+/// facts preload remains first. For an admitted original graph the fixed,
+/// checked SDK runtime wrapper is returned as the Bun entry, *not* loaded in
+/// Bun's independent CLI preload cache. The separately verified original entry
+/// must follow it as the only argument. For non-graph installed roles there is
+/// no wrapper entry; preserve the established sidecar/direct-entry contract.
+///
+/// This changes the original module's import.meta.main/Bun.main observations;
+/// source reviews and signed-original GUI acceptance must qualify that change
+/// before adoption. No signed bundle or launch provenance is mutated here.
 #[cfg(target_os = "macos")]
-fn configure_installed_runtime_preload(
+fn configure_installed_runtime_entry(
     command: &mut Command,
     root: &Path,
     native_facade: bool,
     admitted_runtime_preload: Option<&Path>,
-) -> Result<(), keld_runtime::RuntimeError> {
+) -> Result<Option<PathBuf>, keld_runtime::RuntimeError> {
     if let Some(preload) = admitted_runtime_preload {
         if !native_facade {
             return Err(guardian_entry_error(
@@ -574,8 +590,8 @@ fn configure_installed_runtime_preload(
         }
         command
             .arg("--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"")
-            .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true")
-            .arg(format!("--preload={}", preload.display()));
+            .arg("--define=__KELD_RUNTIME_PROCESS_FACTS__:true");
+        Ok(Some(preload.to_path_buf()))
     } else {
         // Non-graph installed callers keep their existing optional sidecar.
         command
@@ -584,8 +600,8 @@ fn configure_installed_runtime_preload(
                 root,
                 native_facade,
             )?);
+        Ok(None)
     }
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1027,14 +1043,23 @@ mod tests {
     }
 
     #[test]
-    fn installed_original_selects_verified_runtime_init_before_the_application() {
+    fn installed_original_selects_verified_runtime_entry_before_the_application() {
         let root = std::path::Path::new("/Applications/Example.app/Contents/Resources/app");
         let wrapper = root.join("node_modules/@keld/api/runtime-preload.js");
         let mut command = std::process::Command::new("/verified/bun");
         command.arg("--preload=/verified/immutable-facts.ts");
-        super::configure_installed_runtime_preload(&mut command, root, true, Some(&wrapper))
-            .expect("admitted graph wrapper");
-        command.arg("run").arg(root.join("main.js"));
+        let selected =
+            super::configure_installed_runtime_entry(&mut command, root, true, Some(&wrapper))
+                .expect("admitted graph wrapper");
+        assert_eq!(
+            selected,
+            Some(wrapper.clone()),
+            "the graph-admitted member, not an app alias"
+        );
+        command
+            .arg("run")
+            .arg(wrapper.clone())
+            .arg(root.join("main.js"));
         let observed = command
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
@@ -1045,14 +1070,14 @@ mod tests {
                 "--preload=/verified/immutable-facts.ts".to_owned(),
                 "--define=process.env.KELD_NATIVE_WINDOW_FACADE:\"1\"".to_owned(),
                 "--define=__KELD_RUNTIME_PROCESS_FACTS__:true".to_owned(),
-                format!("--preload={}", wrapper.display()),
                 "run".to_owned(),
+                wrapper.display().to_string(),
                 root.join("main.js").display().to_string(),
             ]
         );
         let mut refused = std::process::Command::new("/verified/bun");
         assert!(
-            super::configure_installed_runtime_preload(&mut refused, root, false, Some(&wrapper))
+            super::configure_installed_runtime_entry(&mut refused, root, false, Some(&wrapper))
                 .is_err()
         );
         assert_eq!(

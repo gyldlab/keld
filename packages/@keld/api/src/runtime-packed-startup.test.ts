@@ -210,6 +210,7 @@ async function provePackedHandshake(
   preloadRelative = false,
   singleGraphBootstrap = false,
   rejectInitAck = false,
+  verifiedOriginalEntry?: string,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -322,7 +323,9 @@ async function provePackedHandshake(
                 ? "@keld/api/runtime-preload"
                 : wrapper,
           ]),
+      ...(verifiedOriginalEntry === undefined ? [] : ["run"]),
       entry,
+      ...(verifiedOriginalEntry === undefined ? [] : [verifiedOriginalEntry]),
     ],
     {
       ...(inheritCwd ? {} : { cwd: stage }),
@@ -475,7 +478,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link mode=${singleGraphBootstrap ? "bootstrap" : "preload"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link mode=${verifiedOriginalEntry ? "installed-wrapper-main" : singleGraphBootstrap ? "bootstrap" : "preload"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -896,6 +899,70 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       true,
       true,
     );
+    // The already graph-verified installed runtime member can itself serve
+    // as the Host-selected entry. The original independently verified entry
+    // path is passed after it. This avoids introducing an unsigned bootstrap
+    // script while keeping the real Init/ACK, subscriptions, Ready, exactly
+    // one link and clean exit oracles identical to the explicit bootstrap.
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      wrapper,
+      false,
+      false,
+      false,
+      true,
+      false,
+      entry,
+    );
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      wrapper,
+      false,
+      false,
+      false,
+      true,
+      true,
+      entry,
+    );
+
+    // Raw CLI execution is never an authority grant. Without the qualified
+    // compile-time selector or a Host-approved absolute entry, the installed
+    // wrapper must refuse *before* sending any frame or executing user code.
+    for (const [label, selected, target] of [
+      ["no-selector", false, entry],
+      ["relative-entry", true, "./real-user-entry.mjs"],
+    ] as const) {
+      const refusal = Bun.spawnSync(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          ...(selected ? ["--define=__KELD_RUNTIME_PROCESS_FACTS__:true"] : []),
+          "run",
+          wrapper,
+          target,
+        ],
+        {
+          cwd: stage,
+          env: {
+            ...process.env,
+            KELD_APP_LINK: "not-a-qualified-host-link",
+            KELD_NATIVE_WINDOW_FACADE: "1",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: 9_000,
+        },
+      );
+      expect(
+        refusal.exitCode,
+        `${label}: ${refusal.stdout.toString()} ${refusal.stderr.toString()}`,
+      ).toBe(1);
+      expect(refusal.stdout.toString()).toBe("");
+      expect(refusal.stderr.toString()).toContain("KELD-IPC-005");
+    }
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
