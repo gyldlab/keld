@@ -57,7 +57,7 @@ function Assert-NoBuildOverrides {
     # Refuse every ambient Cargo environment key rather than maintaining a
     # list that silently misses a future flag. Apply before and after build.
     $blocked = @(Get-ChildItem Env: | Where-Object {
-        $_.Name -match '^(CARGO($|_)|RUSTC($|_)|RUSTFLAGS$|RUSTDOC($|_)|RUSTUP_TOOLCHAIN$|CC($|_)|CXX($|_)|AR($|_)|CFLAGS$|CXXFLAGS$)'
+        $_.Name -match '^(CARGO($|_)|RUSTC($|_)|RUSTFLAGS$|RUSTDOC($|_)|RUSTUP_TOOLCHAIN$|CC($|_)|CXX($|_)|AR($|_)|CFLAGS$|CXXFLAGS$|CL$|_CL_$|LINK$|_LINK_$)'
     })
     if ($blocked.Count -ne 0) {
         $names = (($blocked | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ',')
