@@ -814,7 +814,10 @@ export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
       !isSafeInteger(lengthDescriptor.value) ||
       lengthDescriptor.value < 0
     )
-      return reject("MalformedValue", "IPC arguments need a bounded own length");
+      return reject(
+        "MalformedValue",
+        "IPC arguments need a bounded own length",
+      );
     if (lengthDescriptor.value > 16)
       return reject(
         "CodecLimit",
