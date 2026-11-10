@@ -1,4 +1,5 @@
 //! Shipping public-main FS component. No renderer-action or Echo-forwarding acceptance.
+use super::private_diagnostics::assert_private_ne;
 use super::project::{Exercise, Policy, PublicFsProject};
 use super::run_launch;
 
@@ -33,9 +34,10 @@ fn public_app_fs_component_runs_without_synthetic_input_and_relaunches() {
         assert_eq!(after.len(), 32);
         assert!(before.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert!(after.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_ne!(
-            before, after,
-            "healthy launch reused old volatile document identity"
+        assert_private_ne(
+            before,
+            after,
+            "healthy launch reused old volatile document identity",
         );
     }
     eprintln!(

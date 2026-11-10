@@ -1,4 +1,5 @@
 //! Owns ordinary project inputs and stock CLI preparation, never live authority.
+use super::private_diagnostics::{Phase, observed_marker, output_summary};
 use crate::renderer_bridge::bundle_public_api_entry;
 use crate::support::native_window::compile_native_window_census;
 use serde_json::{Value, json};
@@ -211,9 +212,11 @@ impl PublicFsProject {
         let input = prepared.recovery.as_ref().expect("owned recovery inputs");
         fs::write(&input.witness, [1]).expect("seed replacement replay witness");
         eprintln!(
-            "KELD_KEL143_ANCHOR_REPLACED old={:?} new={:?}",
-            (before.dev(), before.ino()),
-            (after.dev(), after.ino())
+            "KELD_KEL143_ANCHOR_REPLACED old_dev={} old_ino={} new_dev={} new_ino={}",
+            before.dev(),
+            before.ino(),
+            after.dev(),
+            after.ino()
         );
         retired
     }
@@ -501,7 +504,7 @@ impl PublicFsProject {
             &fs::read(stage.root().join("keld.boot.json")).expect("boot bytes"),
         )
         .expect("boot descriptor");
-        eprintln!("KELD_KEL140_STAGED_BOOT {boot}");
+        eprintln!("{}", observed_marker(&boot, Phase::StagedBoot));
         assert_eq!(
             boot["name"], TITLE,
             "stock producer selected the configured window name"
@@ -536,7 +539,11 @@ fn expected_source_bun_image(stage_root: &Path) -> PathBuf {
         .args(["-e", "process.stdout.write(process.execPath)"])
         .output()
         .expect("independent source Bun executable selection");
-    assert!(output.status.success(), "source Bun selection: {output:?}");
+    assert!(
+        output.status.success(),
+        "source Bun selection: {}",
+        output_summary(&output)
+    );
     let image = PathBuf::from(String::from_utf8(output.stdout).expect("source Bun path UTF-8"));
     assert!(image.is_absolute(), "source Bun image must be absolute");
     fs::canonicalize(image).expect("canonical expected source Bun image")
@@ -548,7 +555,7 @@ pub(super) fn file_digest(path: &Path) -> String {
         .arg(path)
         .output()
         .expect("independent staged byte digest");
-    assert!(digest.status.success(), "{digest:?}");
+    assert!(digest.status.success(), "{}", output_summary(&digest));
     String::from_utf8(digest.stdout)
         .expect("hash UTF-8")
         .split_whitespace()
