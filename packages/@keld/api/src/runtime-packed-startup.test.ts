@@ -209,6 +209,7 @@ async function provePackedHandshake(
   preloadByAlias = false,
   preloadRelative = false,
   singleGraphBootstrap = false,
+  rejectInitAck = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -403,8 +404,20 @@ async function provePackedHandshake(
       0,
       LIFECYCLE_CHANNEL,
       1,
-      Uint8Array.of(3),
+      Uint8Array.of(rejectInitAck ? 1 : 3),
     );
+    if (rejectInitAck) {
+      // A host refusal must retire the one link before any user entry. No
+      // subscriptions, Ready, second socket or successfully-loaded user code.
+      step = "rejected-init";
+      expect(await withIoDeadline(child.exited)).not.toBe(0);
+      expect(await new Response(child.stderr).text()).toContain(
+        "Runtime facts require",
+      );
+      expect(messages.some((value) => value.kind === "entry")).toBe(false);
+      expect(connections).toBe(1);
+      return;
+    }
     for (const channel of [WINDOW_CHANNEL, COMPAT_CONTROL_CHANNEL]) {
       step = `subscribe-${channel}`;
       const call = await withIoDeadline(reader.readFrame());
@@ -766,12 +779,68 @@ await app.whenReady();`,
     writeFileSync(
       bootstrap,
       `// A candidate Host-owned entry: no app selected path or privileged global.
-import { preloadRuntimeProcessFacts } from "@keld/api/internal/app";
-await preloadRuntimeProcessFacts(process.versions);
-await import("./real-user-entry.mjs");
+import { bootHostSelectedEntry } from "@keld/api/internal/app";
+await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
 `,
     );
     const wrapper = join(stage, "node_modules/@keld/api/runtime-preload.js");
+
+    // An app-selected invocation without the Host's immutable launch define
+    // must be refused before executing even the first user dependency.
+    const unselected = Bun.spawnSync(
+      [process.execPath, "--no-env-file", "--no-install", bootstrap],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(
+      unselected.exitCode,
+      unselected.stdout.toString() + unselected.stderr.toString(),
+    ).toBe(1);
+    expect(unselected.stdout.toString()).toBe("");
+    expect(unselected.stderr.toString()).toContain("KELD-IPC-005");
+
+    // Invalid loader arguments must be rejected locally *before* the trusted
+    // bootstrap can contact its endpoint or evaluate a user module.
+    const invalidBootstrap = join(stage, "invalid-bootstrap.mjs");
+    writeFileSync(
+      invalidBootstrap,
+      'import { bootHostSelectedEntry } from "@keld/api/internal/app";\nawait bootHostSelectedEntry(null);\n',
+    );
+    const invalidLoader = Bun.spawnSync(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--no-install",
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        invalidBootstrap,
+      ],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(
+      invalidLoader.exitCode,
+      invalidLoader.stdout.toString() + invalidLoader.stderr.toString(),
+    ).toBe(1);
+    expect(invalidLoader.stdout.toString()).toBe("");
+    expect(invalidLoader.stderr.toString()).toContain("KELD-IPC-005");
 
     // This fail-closed bootstrap must NOT evaluate the user entry when its
     // Host-minted endpoint is absent. No locally fabricated Ready or session.
@@ -813,6 +882,18 @@ await import("./real-user-entry.mjs");
       false,
       false,
       false,
+      true,
+    );
+    // The same supported entry path must never start user code when Host Init
+    // is rejected; do not turn an ACK-denial into a local Ready or retry.
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      bootstrap,
+      false,
+      false,
+      false,
+      true,
       true,
     );
   } finally {
