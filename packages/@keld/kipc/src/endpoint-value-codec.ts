@@ -63,7 +63,6 @@ function reject(kind: CompatCodecErrorKind, reason: string): never {
   // throw its own instance, so only refusals minted by this private path are
   // eligible to pass through the codec catch boundary unchanged.
   const error = new CompatCodecError(kind, reason);
-  apply(weakSetAdd, genuineCodecErrors, [error]);
   if (activeRefusals !== null) apply(weakSetAdd, activeRefusals, [error]);
   throw error;
 }
@@ -137,7 +136,6 @@ const exoticConstructors: Function[] = [
   ...(typeof URLSearchParams === "undefined" ? [] : [URLSearchParams]),
   ...(typeof Blob === "undefined" ? [] : [Blob]),
 ];
-const genuineCodecErrors = new NativeWeakSet<object>();
 // A previously returned genuine refusal can be thrown from a later hostile
 // Proxy trap. Only refusals minted during the current encode/decode invocation
 // may escape that invocation's catch boundary unchanged. Nested reentry gets
@@ -152,14 +150,6 @@ function isInstance(value: unknown, constructor: Function): boolean {
   return apply(hasInstance, constructor, [value]);
 }
 
-function isGenuineCodecError(value: unknown): value is CompatCodecError {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    apply(weakSetHas, genuineCodecErrors, [value])
-  );
-}
-
 function isCurrentCodecError(
   value: unknown,
   owned: WeakSet<object>,
@@ -169,6 +159,26 @@ function isCurrentCodecError(
     value !== null &&
     apply(weakSetHas, owned, [value])
   );
+}
+
+/**
+ * Each public codec operation owns one refusal identity scope, including
+ * argument-vector wrappers. A trap may reenter another public method and
+ * rethrow its error, which must not be trusted by the original invocation.
+ * All operations are synchronous, so the previous scope is restored in finally.
+ */
+function inCodecScope<T>(action: () => T, reason: string): T {
+  const previous = activeRefusals;
+  const owned = new NativeWeakSet<object>();
+  activeRefusals = owned;
+  try {
+    return action();
+  } catch (error) {
+    if (isCurrentCodecError(error, owned)) throw error;
+    return reject("MalformedValue", reason);
+  } finally {
+    activeRefusals = previous;
+  }
 }
 
 function appendOwn<T>(array: T[], value: T): void {
@@ -564,26 +574,21 @@ class ValueWriter {
   }
 }
 
+/** One owned value snapshot, always called inside an invocation-local scope. */
+function encodeValueSnapshot(value: unknown): Uint8Array {
+  const writer = new ValueWriter();
+  writer.visit(value);
+  const result = new NativeUint8Array(writer.bytes.length);
+  for (let i = 0; i < writer.bytes.length; i++) result[i] = writer.bytes[i];
+  return result;
+}
+
 /** Snapshot one supported value before sending it over the authenticated route. */
 export function encodeEndpointValue(value: unknown): Uint8Array {
-  const previous = activeRefusals;
-  const owned = new NativeWeakSet<object>();
-  activeRefusals = owned;
-  try {
-    const writer = new ValueWriter();
-    writer.visit(value);
-    const result = new NativeUint8Array(writer.bytes.length);
-    for (let i = 0; i < writer.bytes.length; i++) result[i] = writer.bytes[i];
-    return result;
-  } catch (error) {
-    if (isCurrentCodecError(error, owned)) throw error;
-    return reject(
-      "MalformedValue",
-      "proxy trap or exotic brand operation failed",
-    );
-  } finally {
-    activeRefusals = previous;
-  }
+  return inCodecScope(
+    () => encodeValueSnapshot(value),
+    "proxy trap or exotic brand operation failed",
+  );
 }
 
 class ValueReader {
@@ -756,59 +761,53 @@ class ValueReader {
   }
 }
 
+/** One byte snapshot/parse, always called inside an invocation-local scope. */
+function decodeValueSnapshot(bytes: Uint8Array): unknown {
+  if (!isInstance(bytes, NativeUint8Array))
+    reject("MalformedValue", "endpoint payload must be bytes");
+  const length: number = apply(byteLength, bytes, []);
+  if (length > ENDPOINT_VALUE_LIMIT)
+    reject("CodecLimit", "encoded value exceeds 4096 bytes");
+  const owned = new NativeUint8Array(length);
+  apply(byteSet, owned, [bytes]);
+  return new ValueReader(owned).decode();
+}
+
 /** Decode one complete owned byte value; never accepts a JSON substitute. */
 export function decodeEndpointValue(bytes: Uint8Array): unknown {
-  const previous = activeRefusals;
-  const owned = new NativeWeakSet<object>();
-  activeRefusals = owned;
-  try {
-    if (!isInstance(bytes, NativeUint8Array))
-      reject("MalformedValue", "endpoint payload must be bytes");
-    const length: number = apply(byteLength, bytes, []);
-    if (length > ENDPOINT_VALUE_LIMIT)
-      reject("CodecLimit", "encoded value exceeds 4096 bytes");
-    const owned = new NativeUint8Array(length);
-    apply(byteSet, owned, [bytes]);
-    return new ValueReader(owned).decode();
-  } catch (error) {
-    if (isCurrentCodecError(error, owned)) throw error;
-    return reject(
-      "MalformedValue",
-      "endpoint payload is not a readable byte snapshot",
-    );
-  } finally {
-    activeRefusals = previous;
-  }
+  return inCodecScope(
+    () => decodeValueSnapshot(bytes),
+    "endpoint payload is not a readable byte snapshot",
+  );
 }
 
 /** Apply the IPC caller-vector count without restricting generic result arrays. */
 export function encodeEndpointArguments(args: readonly unknown[]): Uint8Array {
-  try {
+  return inCodecScope(() => {
     if (!isArray(args))
       return reject("MalformedValue", "IPC arguments must be an array");
-    // Validate the count encoded in the one immutable output snapshot. Reading
-    // proxy length before encode would create a TOCTOU gap.
-    const bytes = encodeEndpointValue(args);
+    // The output count is bound to the same serialized array snapshot.
+    const bytes = encodeValueSnapshot(args);
     if (bytes[0] !== 6 || bytes[1] + bytes[2] * 256 > 16)
       return reject(
         "CodecLimit",
         "IPC argument vector exceeds sixteen arguments",
       );
     return bytes;
-  } catch (error) {
-    if (isGenuineCodecError(error)) throw error;
-    return reject("MalformedValue", "IPC arguments are not a readable array");
-  }
+  }, "IPC arguments are not a readable array");
 }
+
 /** Apply the same caller-vector count after the one owned endpoint decoder. */
 export function decodeEndpointArguments(bytes: Uint8Array): unknown[] {
-  const value = decodeEndpointValue(bytes);
-  if (!isArray(value))
-    return reject("MalformedValue", "IPC arguments must decode to an array");
-  if (value.length > 16)
-    return reject(
-      "CodecLimit",
-      "IPC argument vector exceeds sixteen arguments",
-    );
-  return value;
+  return inCodecScope(() => {
+    const value = decodeValueSnapshot(bytes);
+    if (!isArray(value))
+      return reject("MalformedValue", "IPC arguments must decode to an array");
+    if (value.length > 16)
+      return reject(
+        "CodecLimit",
+        "IPC argument vector exceeds sixteen arguments",
+      );
+    return value;
+  }, "IPC arguments are not a readable byte snapshot");
 }
