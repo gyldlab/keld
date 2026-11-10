@@ -63,6 +63,7 @@ test("installed type graph admits aliased roots but rejects sibling and junction
     );
     const nestedAlias = join(aliasRoot, "@types", "bun");
     const typesAlias = join(aliasRoot, "bun-types");
+    const physicalAlias = join(aliasRoot, "neutral-types");
     for (const file of [
       nodeType,
       compilerType,
@@ -87,6 +88,7 @@ test("installed type graph admits aliased roots but rejects sibling and junction
     mkdirSync(dirname(nestedAlias), { recursive: true });
     symlinkSync(vendorRoot, nestedAlias, linkType);
     symlinkSync(vendorRoot, typesAlias, linkType);
+    symlinkSync(dirname(nestedCaseType), physicalAlias, linkType);
 
     expect(() =>
       assertInstalledTypeFilesWithinRoots(
@@ -127,6 +129,7 @@ test("installed type graph admits aliased roots but rejects sibling and junction
       nestedBunTypes,
       join(nestedAlias, "index.d.ts"),
       join(typesAlias, "index.d.ts"),
+      join(physicalAlias, "index.d.ts"),
     ]) {
       expect(() =>
         assertInstalledTypeFilesWithinRoots([forbidden], alias, compilerLib),
