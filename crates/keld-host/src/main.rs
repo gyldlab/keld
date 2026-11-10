@@ -586,9 +586,11 @@ fn configure_installed_runtime_bootstrap(
 ) -> Result<Option<PathBuf>, keld_runtime::RuntimeError> {
     match (admitted_runtime_preload, admitted_bootstrap) {
         (Some(_), Some(bootstrap)) => {
-            if !native_facade || bootstrap.parent() != Some(root) {
+            if !native_facade
+                || bootstrap != root.join(keld_core::app_session::MACOS_LOCAL_RUNTIME_ENTRY_PATH)
+            {
                 return Err(guardian_entry_error(
-                    "an original runtime bootstrap requires the admitted facade and app root",
+                    "an original runtime bootstrap requires the exact compiled owner member",
                 ));
             }
             command
@@ -607,11 +609,9 @@ fn configure_installed_runtime_bootstrap(
                 )?);
             Ok(None)
         }
-        _ => {
-            return Err(guardian_entry_error(
-                "original graph wrapper and fixed Host bootstrap must agree",
-            ));
-        }
+        _ => Err(guardian_entry_error(
+            "original graph wrapper and fixed Host bootstrap must agree",
+        )),
     }
 }
 
@@ -1058,6 +1058,7 @@ mod tests {
         let root = std::path::Path::new("/Applications/Example.app/Contents/Resources/app");
         let wrapper = root.join("node_modules/@keld/api/runtime-preload.js");
         let bootstrap = root.join("keld-installed-runtime-entry.mjs");
+        let wrong_same_root = root.join("unverified-same-root.mjs");
         let mut command = std::process::Command::new("/verified/bun");
         command.arg("--preload=/verified/immutable-facts.ts");
         let selected = super::configure_installed_runtime_bootstrap(
@@ -1096,6 +1097,11 @@ mod tests {
                 true,
                 Some(wrapper.as_path()),
                 Some(std::path::Path::new("/unverified/bootstrap.mjs")),
+            ),
+            (
+                true,
+                Some(wrapper.as_path()),
+                Some(wrong_same_root.as_path()),
             ),
         ] {
             let mut refused = std::process::Command::new("/verified/bun");

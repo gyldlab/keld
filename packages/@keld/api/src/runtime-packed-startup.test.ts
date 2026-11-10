@@ -930,6 +930,74 @@ await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
       entry,
     );
 
+    // Exact physical filenames containing # and % must never be interpreted
+    // as URL fragment/escape syntax. Execute that actual file after Init ACK.
+    const specialEntry = join(stage, "original#percent%.mjs");
+    writeFileSync(specialEntry, readFileSync(entry));
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      false,
+      specialEntry,
+    );
+
+    // %2e%2e is a literal admissible directory name, not an encoded parent
+    // traversal. It must load the exact graph-selected in-root file or fail;
+    // it may never escape the app root to a different module.
+    const encodedParentLiteral = join(stage, "%2e%2e");
+    mkdirSync(encodedParentLiteral, { recursive: true });
+    const encodedEntry = join(encodedParentLiteral, "literal-original.mjs");
+    writeFileSync(encodedEntry, readFileSync(entry));
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      installedBootstrap,
+      false,
+      false,
+      false,
+      true,
+      false,
+      encodedEntry,
+    );
+
+    // Bun 1.4.4 cannot import a physical '?' filename on Unix (and Windows
+    // forbids the name). Refuse it with a typed error before touching Host IPC,
+    // rather than silently resolving a URL query to a different original.
+    const unsupportedEntry = join(stage, "original?query.mjs");
+    if (process.platform !== "win32") {
+      writeFileSync(unsupportedEntry, readFileSync(entry));
+    }
+    const refusedQuestion = Bun.spawnSync(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--no-install",
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        "run",
+        installedBootstrap,
+        unsupportedEntry,
+      ],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(refusedQuestion.exitCode).toBe(1);
+    expect(refusedQuestion.stdout.toString()).toBe("");
+    expect(refusedQuestion.stderr.toString()).toContain("KELD-IPC-005");
+
     // An unselected or malformed invocation of the exact generated module
     // must not load arbitrary original code or start an app-link handshake.
     const outsideRoot = join(tmpdir(), "not-host-admitted.mjs");
