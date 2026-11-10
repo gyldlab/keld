@@ -336,10 +336,6 @@ fn accepted_quit_owner_shutdown_error_wakes_ui_only_after_the_failure() {
             .expect("failed owner shutdown must wake the live UI"),
         AppWindowCommand::Fatal
     );
-    assert!(
-        window_rx.try_recv().is_err(),
-        "exactly one terminal UI wake"
-    );
     let error = router
         .shutdown()
         .expect_err("the original failure is preserved");
@@ -348,6 +344,10 @@ fn accepted_quit_owner_shutdown_error_wakes_ui_only_after_the_failure() {
         "{error}"
     );
     owner.join().expect("test owner joins");
+    assert!(
+        window_rx.try_recv().is_err(),
+        "exactly one terminal UI wake"
+    );
 }
 
 #[test]
