@@ -169,6 +169,21 @@ test("genuine codec refusals retain identity while forged and nested throws norm
   expect(normalized.code).toBe("KELD-COMPAT-101");
   expect(normalized).not.toBe(callerConstructed);
 
+  const cached = caught(() => encodeEndpointValue(Symbol("cached refusal")));
+  expect(cached.code).toBe("KELD-COMPAT-100");
+  const replayed = new Proxy(
+    {},
+    {
+      getPrototypeOf() {
+        throw cached;
+      },
+    },
+  );
+  const replayFailure = caught(() => encodeEndpointValue(replayed));
+  expect(replayFailure.kind).toBe("MalformedValue");
+  expect(replayFailure.code).toBe("KELD-COMPAT-101");
+  expect(replayFailure).not.toBe(cached);
+
   const nested = {
     child: new Proxy(
       {},
