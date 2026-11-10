@@ -766,12 +766,34 @@ await app.whenReady();`,
     writeFileSync(
       bootstrap,
       `// A candidate Host-owned entry: no app selected path or privileged global.
-import { preloadRuntimeProcessFacts } from "@keld/api/internal/app";
-await preloadRuntimeProcessFacts(process.versions);
-await import("./real-user-entry.mjs");
+import { bootHostSelectedEntry } from "@keld/api/internal/app";
+await bootHostSelectedEntry(() => import("./real-user-entry.mjs"));
 `,
     );
     const wrapper = join(stage, "node_modules/@keld/api/runtime-preload.js");
+
+    // An app-selected invocation without the Host's immutable launch define
+    // must be refused before executing even the first user dependency.
+    const unselected = Bun.spawnSync(
+      [process.execPath, "--no-env-file", "--no-install", bootstrap],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: "not-a-qualified-host-link",
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(
+      unselected.exitCode,
+      unselected.stdout.toString() + unselected.stderr.toString(),
+    ).toBe(1);
+    expect(unselected.stdout.toString()).toBe("");
+    expect(unselected.stderr.toString()).toContain("KELD-IPC-005");
 
     // This fail-closed bootstrap must NOT evaluate the user entry when its
     // Host-minted endpoint is absent. No locally fabricated Ready or session.
