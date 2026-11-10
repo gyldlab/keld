@@ -102,10 +102,34 @@ fn silent_owned_native_state_pipe_cannot_block_past_its_monotonic_deadline() {
     let timed_out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         bounded_native_state_byte(&mut reader, deadline)
     }));
+    let returned_at = Instant::now();
     drop(silent_peer);
+    let error = timed_out.expect_err("a live byte-silent native writer must reach its deadline");
+    assert_eq!(
+        error.downcast_ref::<&str>().copied(),
+        Some("native process-state pipe exceeded original cleanup deadline")
+    );
     assert!(
-        timed_out.is_err(),
-        "a live byte-silent native writer cannot block the test observer"
+        returned_at >= deadline,
+        "a live byte-silent native writer must retry until the original deadline"
+    );
+}
+
+#[test]
+fn expired_native_state_pipe_deadline_rejects_a_prequeued_byte_before_reading() {
+    use std::os::unix::net::UnixStream;
+    let (mut reader, mut writer) = UnixStream::pair().expect("owned native Unix pipe pair");
+    writer
+        .write_all(b"Z")
+        .expect("one owned process-state byte");
+    let deadline = Instant::now();
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bounded_native_state_byte(&mut reader, deadline)
+    }))
+    .expect_err("an expired deadline must reject even a prequeued byte");
+    assert_eq!(
+        error.downcast_ref::<&str>().copied(),
+        Some("native process-state pipe exceeded original cleanup deadline")
     );
 }
 
