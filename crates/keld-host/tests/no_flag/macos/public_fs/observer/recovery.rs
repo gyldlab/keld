@@ -129,3 +129,7 @@ impl RecoveryObserver {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "recovery/route_privacy_tests.rs"]
+mod route_privacy_tests;
