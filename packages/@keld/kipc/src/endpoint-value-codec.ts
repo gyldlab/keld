@@ -40,6 +40,7 @@ export class CompatCodecError extends Error {
     defineProperty(this, "name", {
       value: "CompatCodecError",
       configurable: true,
+      enumerable: true,
       writable: true,
     });
     defineProperty(this, "kind", {
@@ -63,6 +64,7 @@ function reject(kind: CompatCodecErrorKind, reason: string): never {
   // eligible to pass through the codec catch boundary unchanged.
   const error = new CompatCodecError(kind, reason);
   apply(weakSetAdd, genuineCodecErrors, [error]);
+  if (activeRefusals !== null) apply(weakSetAdd, activeRefusals, [error]);
   throw error;
 }
 
@@ -136,6 +138,11 @@ const exoticConstructors: Function[] = [
   ...(typeof Blob === "undefined" ? [] : [Blob]),
 ];
 const genuineCodecErrors = new NativeWeakSet<object>();
+// A previously returned genuine refusal can be thrown from a later hostile
+// Proxy trap. Only refusals minted during the current encode/decode invocation
+// may escape that invocation's catch boundary unchanged. Nested reentry gets
+// its own scope and cannot launder a cached error into its caller.
+let activeRefusals: WeakSet<object> | null = null;
 
 function byteSize(value: Uint8Array): number {
   return apply(byteLength, value, []);
@@ -150,6 +157,17 @@ function isGenuineCodecError(value: unknown): value is CompatCodecError {
     typeof value === "object" &&
     value !== null &&
     apply(weakSetHas, genuineCodecErrors, [value])
+  );
+}
+
+function isCurrentCodecError(
+  value: unknown,
+  owned: WeakSet<object>,
+): value is CompatCodecError {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    apply(weakSetHas, owned, [value])
   );
 }
 
@@ -548,6 +566,9 @@ class ValueWriter {
 
 /** Snapshot one supported value before sending it over the authenticated route. */
 export function encodeEndpointValue(value: unknown): Uint8Array {
+  const previous = activeRefusals;
+  const owned = new NativeWeakSet<object>();
+  activeRefusals = owned;
   try {
     const writer = new ValueWriter();
     writer.visit(value);
@@ -555,11 +576,13 @@ export function encodeEndpointValue(value: unknown): Uint8Array {
     for (let i = 0; i < writer.bytes.length; i++) result[i] = writer.bytes[i];
     return result;
   } catch (error) {
-    if (isGenuineCodecError(error)) throw error;
+    if (isCurrentCodecError(error, owned)) throw error;
     return reject(
       "MalformedValue",
       "proxy trap or exotic brand operation failed",
     );
+  } finally {
+    activeRefusals = previous;
   }
 }
 
@@ -735,6 +758,9 @@ class ValueReader {
 
 /** Decode one complete owned byte value; never accepts a JSON substitute. */
 export function decodeEndpointValue(bytes: Uint8Array): unknown {
+  const previous = activeRefusals;
+  const owned = new NativeWeakSet<object>();
+  activeRefusals = owned;
   try {
     if (!isInstance(bytes, NativeUint8Array))
       reject("MalformedValue", "endpoint payload must be bytes");
@@ -745,11 +771,13 @@ export function decodeEndpointValue(bytes: Uint8Array): unknown {
     apply(byteSet, owned, [bytes]);
     return new ValueReader(owned).decode();
   } catch (error) {
-    if (isGenuineCodecError(error)) throw error;
+    if (isCurrentCodecError(error, owned)) throw error;
     return reject(
       "MalformedValue",
       "endpoint payload is not a readable byte snapshot",
     );
+  } finally {
+    activeRefusals = previous;
   }
 }
 
