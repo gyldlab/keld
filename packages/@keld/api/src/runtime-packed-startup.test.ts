@@ -208,6 +208,7 @@ async function provePackedHandshake(
   inheritCwd = false,
   preloadByAlias = false,
   preloadRelative = false,
+  singleGraphBootstrap = false,
 ): Promise<void> {
   const socketDir = mkdtempSync(join(tmpdir(), "krp-packed-live-"));
   const endpoint =
@@ -310,12 +311,16 @@ async function provePackedHandshake(
       "--no-env-file",
       "--no-install",
       "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
-      "--preload",
-      preloadRelative
-        ? "./node_modules/@keld/api/runtime-preload.js"
-        : preloadByAlias
-          ? "@keld/api/runtime-preload"
-          : wrapper,
+      ...(singleGraphBootstrap
+        ? []
+        : [
+            "--preload",
+            preloadRelative
+              ? "./node_modules/@keld/api/runtime-preload.js"
+              : preloadByAlias
+                ? "@keld/api/runtime-preload"
+                : wrapper,
+          ]),
       entry,
     ],
     {
@@ -457,7 +462,7 @@ async function provePackedHandshake(
     const stderr = await new Response(child.stderr).text();
     const stdout = await new Response(child.stdout).text();
     throw new Error(
-      `packed app-link preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
+      `packed app-link mode=${singleGraphBootstrap ? "bootstrap" : "preload"}, preload=${preloadRelative ? "relative" : preloadByAlias ? "export" : "absolute"}, cwd=${inheritCwd ? "inherited" : "stage"}, stage=${step}, host_connections=${connections}, order=${timeline.join(">")}, secondary_first=${second}, child_exit=${exitCode}, observed=${observed}, cause=${String(error)}; child_stdout=${stdout.slice(-1000)}; child_stderr=${stderr.slice(-2500)}`,
       { cause: error },
     );
   } finally {
@@ -690,6 +695,126 @@ await app.whenReady();`,
     // Match the original packed runtime test's inherited working directory.
     // It is a separate end-to-end acceptance case, not an assertion bypass.
     await provePackedHandshake(stage, wrapper, entry, true);
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("single-graph entry boots the installed API before user code on one Host link", async () => {
+  const stage = mkdtempSync(join(tmpdir(), "krp-single-graph-"));
+  try {
+    const producer = join(
+      import.meta.dir,
+      "../../kipc/scripts/package-artifacts.ts",
+    );
+    const packed = Bun.spawnSync([process.execPath, producer, stage], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(
+      packed.exitCode,
+      packed.stdout.toString() + packed.stderr.toString(),
+    ).toBe(0);
+    for (const name of ["api", "kipc"]) {
+      const manifest = JSON.parse(
+        readFileSync(
+          join(import.meta.dir, `../../${name}/package.json`),
+          "utf8",
+        ),
+      );
+      mkdirSync(join(stage, "node_modules", "@keld", name), {
+        recursive: true,
+      });
+      const extracted = Bun.spawnSync(
+        [
+          "tar",
+          "-xzf",
+          `keld-${name}-${manifest.version}.tgz`,
+          "--strip-components=1",
+          "-C",
+          `node_modules/@keld/${name}`,
+        ],
+        { cwd: stage, stdout: "pipe", stderr: "pipe" },
+      );
+      expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
+    }
+
+    const entry = join(stage, "real-user-entry.mjs");
+    writeFileSync(
+      entry,
+      readFileSync(
+        join(import.meta.dir, "runtime-preload-entry.fixture.mjs"),
+        "utf8",
+      )
+        .replace('"./app.ts"', '"@keld/api"')
+        .replace(
+          "await app.whenReady();",
+          `import { hasObservedHostReady } from "@keld/api/internal/app";
+process.on("message", message => {
+  if (message?.kind === "probe-ready") {
+    process.send?.({
+      kind: "probe-ready",
+      appReady: app.isReady(),
+      observedHostReady: hasObservedHostReady(),
+    });
+  }
+});
+await app.whenReady();`,
+        ),
+    );
+    const bootstrap = join(stage, "host-selected-bootstrap.mjs");
+    writeFileSync(
+      bootstrap,
+      `// A candidate Host-owned entry: no app selected path or privileged global.
+import { preloadRuntimeProcessFacts } from "@keld/api/internal/app";
+await preloadRuntimeProcessFacts(process.versions);
+await import("./real-user-entry.mjs");
+`,
+    );
+    const wrapper = join(stage, "node_modules/@keld/api/runtime-preload.js");
+
+    // This fail-closed bootstrap must NOT evaluate the user entry when its
+    // Host-minted endpoint is absent. No locally fabricated Ready or session.
+    const missingEndpoint =
+      process.platform === "win32"
+        ? freshWin32AppLinkPipe()
+        : join(stage, "unbound.sock");
+    const refused = Bun.spawnSync(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--no-install",
+        "--define=__KELD_RUNTIME_PROCESS_FACTS__:true",
+        bootstrap,
+      ],
+      {
+        cwd: stage,
+        env: {
+          ...process.env,
+          KELD_APP_LINK: missingEndpoint + "#" + "72".repeat(32),
+          KELD_NATIVE_WINDOW_FACADE: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 9_000,
+      },
+    );
+    expect(
+      refused.exitCode,
+      refused.stdout.toString() + refused.stderr.toString(),
+    ).toBe(1);
+    expect(refused.stdout.toString()).toBe("");
+    expect(refused.stderr.toString()).toContain("KELD-IPC-001");
+
+    await provePackedHandshake(
+      stage,
+      wrapper,
+      bootstrap,
+      false,
+      false,
+      false,
+      true,
+    );
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
