@@ -33,8 +33,41 @@ type Message = {
   before?: Record<string, string>;
   appReady?: boolean;
   observedHostReady?: boolean;
+  entryIdentity?: {
+    importMetaMain: boolean;
+    bunMainMatchesArgv1: boolean;
+    originalMatchesArgv2: boolean;
+    argc: number;
+  };
   payload?: number[];
 };
+
+function withEntryMainIdentityProbe(source: string): string {
+  const anchor =
+    'process.send?.({ kind: "entry", before, after: { ...process.versions } });';
+  expect(source.includes(anchor)).toBe(true);
+  return (
+    'import { realpathSync } from "node:fs";\n' +
+    'import { fileURLToPath } from "node:url";\n' +
+    source.replace(
+      anchor,
+      `process.send?.({
+  kind: "entry",
+  before,
+  after: { ...process.versions },
+  entryIdentity: {
+    importMetaMain: import.meta.main,
+    bunMainMatchesArgv1:
+      realpathSync(Bun.main) === realpathSync(process.argv[1]),
+    originalMatchesArgv2:
+      process.argv[2] !== undefined &&
+      realpathSync(process.argv[2]) === realpathSync(fileURLToPath(import.meta.url)),
+    argc: process.argv.length,
+  },
+});`,
+    )
+  );
+}
 
 /** An independent raw WorkerLink EVENT oracle, without API Ready mediation. */
 async function provePackedRawEvent(
@@ -450,6 +483,33 @@ async function provePackedHandshake(
     const entered = await withIoDeadline(Promise.resolve(next()));
     expect(entered.kind).toBe("entry");
     expect(entered.before).toEqual(captured.versions);
+    // The source change deliberately alters *observable* original-entry
+    // semantics. Prove both contracts, do not secretly emulate Bun.main or
+    // argv with a global. Native original-app review must explicitly accept
+    // the imported-entry contract before signed release.
+    expect(entered.entryIdentity?.bunMainMatchesArgv1).toBe(true);
+    if (verifiedOriginalEntry) {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: false,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: true,
+        argc: 3,
+      });
+    } else if (singleGraphBootstrap) {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: false,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: false,
+        argc: 2,
+      });
+    } else {
+      expect(entered.entryIdentity).toEqual({
+        importMetaMain: true,
+        bunMainMatchesArgv1: true,
+        originalMatchesArgv2: false,
+        argc: 2,
+      });
+    }
     // Test-only IPC introspection must itself respond before a failure is
     // trusted; it never mutates Host state or supplies a synthetic Ready.
     const observation = await probeReadyState();
@@ -708,6 +768,10 @@ process.on("message", message => {
 await app.whenReady();`,
         ),
     );
+    writeFileSync(
+      entry,
+      withEntryMainIdentityProbe(readFileSync(entry, "utf8")),
+    );
     if (process.platform === "win32") {
       // Bun 1.4.4 Windows has a known CLI --preload/main module-cache split.
       // Do NOT treat its dual-phase path as a valid Ready oracle. Instead
@@ -824,6 +888,10 @@ process.on("message", message => {
 });
 await app.whenReady();`,
         ),
+    );
+    writeFileSync(
+      entry,
+      withEntryMainIdentityProbe(readFileSync(entry, "utf8")),
     );
     const bootstrap = join(stage, "host-selected-bootstrap.mjs");
     writeFileSync(
