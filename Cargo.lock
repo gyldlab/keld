@@ -1703,7 +1703,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tao",
+ "tao 0.35.3",
+ "tao 0.35.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "webview2-com",
  "windows",
  "windows-permissions",
@@ -2796,6 +2797,46 @@ dependencies = [
 [[package]]
 name = "tao"
 version = "0.35.3"
+dependencies = [
+ "bitflags 2.13.0",
+ "block2",
+ "core-foundation",
+ "core-graphics",
+ "crossbeam-channel",
+ "dbus",
+ "dispatch2",
+ "dlopen2",
+ "dpi",
+ "gdkwayland-sys",
+ "gdkx11-sys",
+ "gtk",
+ "jni",
+ "libc",
+ "log",
+ "ndk",
+ "ndk-sys",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-ui-kit",
+ "once_cell",
+ "parking_lot",
+ "percent-encoding",
+ "raw-window-handle",
+ "tao-macros",
+ "unicode-segmentation",
+ "url",
+ "windows",
+ "windows-core",
+ "windows-version",
+ "x11-dl",
+]
+
+[[package]]
+name = "tao"
+version = "0.35.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1c93047acf68669466a34690ac58cca7010bd1b201e1ec86f1fd0a75d3dd4a9"
 dependencies = [
  "bitflags 2.13.0",
  "block2",
