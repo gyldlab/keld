@@ -148,6 +148,92 @@ impl QuitBodyReceipt {
 }
 
 #[cfg(test)]
+mod composition_tests {
+    use super::QuitBodyReceipt;
+    use crate::public_fs::{Observation, assert_public_quit_body_evidence};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::Ordering;
+
+    // These controlled states prove only the actual composition guard. Native
+    // HTTP provenance and Bun body validation remain the separate live tests.
+    fn evidence(stage: u8, body_seen: bool, invalid: bool) -> (Observation, QuitBodyReceipt) {
+        let mut observer = Observation::bind();
+        observer.stop_and_join();
+        observer.quit_progress.store(stage, Ordering::Release);
+        let mut receipt = QuitBodyReceipt::arm();
+        receipt.observed = body_seen;
+        receipt.invalid = invalid;
+        (observer, receipt)
+    }
+
+    fn assert_rejected(stage: u8, body_seen: bool, invalid: bool, message: &str) {
+        let (observer, receipt) = evidence(stage, body_seen, invalid);
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            assert_public_quit_body_evidence(&observer, Some(&receipt));
+        }))
+        .expect_err("the actual composition guard must reject incomplete evidence");
+        let actual = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("composition assertion has a text panic");
+        assert!(actual.contains(message), "wrong rejection: {actual}");
+    }
+
+    #[test]
+    fn verified_body_and_replied_http_pass_composition() {
+        let (observer, receipt) = evidence(2, true, false);
+        assert_public_quit_body_evidence(&observer, Some(&receipt));
+    }
+
+    #[test]
+    fn verified_body_without_replied_http_fails_composition() {
+        for stage in [0, 1] {
+            assert_rejected(
+                stage,
+                true,
+                false,
+                "missing independent real HTTP /quit request and response receipt",
+            );
+        }
+    }
+
+    #[test]
+    fn replied_http_without_verified_body_fails_composition() {
+        for (body_seen, invalid) in [(false, false), (false, true), (true, true)] {
+            assert_rejected(
+                2,
+                body_seen,
+                invalid,
+                "missing actual Bun post-/quit-body native receipt",
+            );
+        }
+    }
+
+    #[test]
+    fn body_failure_precedes_http_failure_in_composition() {
+        for stage in [0, 1] {
+            for (body_seen, invalid) in [(false, false), (false, true), (true, true)] {
+                assert_rejected(
+                    stage,
+                    body_seen,
+                    invalid,
+                    "missing actual Bun post-/quit-body native receipt",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unarmed_launch_bypasses_composition_at_every_http_stage() {
+        for stage in [0, 1, 2] {
+            let (observer, _receipt) = evidence(stage, false, true);
+            assert_public_quit_body_evidence(&observer, None);
+        }
+    }
+}
+
+#[cfg(test)]
 mod native_bun_reply_tests {
     use super::QuitBodyReceipt;
     use crate::support::EVENT_DEADLINE;
