@@ -131,10 +131,14 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                         "KELD-CORE-035",
                         "{name}/{schema}/{diagnostic}"
                     );
-                } else if !cfg!(target_os = "macos") && (explicit || facade) {
+                } else if !cfg!(target_os = "macos") && explicit {
+                    // The shared preflight refuses unqualified explicit profiles.
+                    // Facade availability is checked by the platform boot gate
+                    // (see windows_boot_files_refuse_a_schema_2_facade_boot),
+                    // not by this profile state decision.
                     assert_eq!(
                         result
-                            .expect_err("unsupported target/mode stays refused")
+                            .expect_err("unsupported explicit profile stays refused")
                             .code(),
                         "KELD-CORE-034"
                     );
