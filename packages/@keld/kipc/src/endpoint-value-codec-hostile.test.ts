@@ -199,6 +199,36 @@ test("genuine codec refusals retain identity while forged and nested throws norm
   expect(nestedFailure.code).toBe("KELD-COMPAT-101");
 });
 
+test("nested public codec calls cannot launder their refusals into a caller", () => {
+  const seventeen = Array.from({ length: 17 }, () => null);
+  const validSeventeenWire = encodeEndpointValue(seventeen);
+  const nestedOperations = [
+    () => encodeEndpointValue(Symbol("nested refusal")),
+    () => encodeEndpointArguments(seventeen),
+    () => decodeEndpointArguments(validSeventeenWire),
+  ];
+  for (const nestedOperation of nestedOperations) {
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          nestedOperation();
+          return Object.prototype;
+        },
+      },
+    );
+    const error = caught(() => encodeEndpointValue(hostile));
+    expect(error.kind).toBe("MalformedValue");
+    expect(error.code).toBe("KELD-COMPAT-101");
+  }
+  expect(caught(() => encodeEndpointArguments(seventeen)).code).toBe(
+    "KELD-COMPAT-102",
+  );
+  expect(caught(() => decodeEndpointArguments(validSeventeenWire)).code).toBe(
+    "KELD-COMPAT-102",
+  );
+});
+
 test("revoked proxy argument arrays produce genuine malformed-value errors", () => {
   const revocable = Proxy.revocable([], {});
   revocable.revoke();
