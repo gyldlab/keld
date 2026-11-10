@@ -3,7 +3,8 @@ import { isMainThread, parentPort } from "node:worker_threads";
 import { isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { linkError, runtimeProcessFactsSelected } from "@keld/kipc";
-import { bootHostSelectedEntry, preloadRuntimeProcessFacts } from "./app.ts";
+import { bootHostSelectedEntry } from "@keld/api/internal/app";
+import { preloadRuntimeProcessFacts } from "./app.ts";
 // Transport Workers inherit --preload. Only the real role-main realm captures
 // metadata and starts the API-owned singleton; the transport module has no TLA.
 // Bun Workers inherit --preload; a secondary transport Worker cannot create
