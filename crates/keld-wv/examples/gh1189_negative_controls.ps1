@@ -8,7 +8,8 @@ param(
     [string]$FixtureSha256,
     [string]$ObserverSha256,
     [string]$IssueClaimUrl,
-    [string]$NativeSlotUrl
+    [string]$NativeSlotUrl,
+    [string]$BuildReceiptPath
 )
 $ErrorActionPreference = 'Stop'
 $cases = @(
@@ -85,6 +86,66 @@ foreach ($item in @(@{Path=$fixture;Hash=$FixtureSha256}, @{Path=$observer;Hash=
         throw "Unreviewed native EXE: $($item.Path)"
     }
 }
+# The compiler is independently attested. A caller-provided executable hash
+# alone does not prove it came from the reviewed source/config/toolchain.
+if ([string]::IsNullOrWhiteSpace($BuildReceiptPath)) {
+    throw 'An exact reviewed build receipt is mandatory before native execution'
+}
+$receiptPath = [IO.Path]::GetFullPath($BuildReceiptPath)
+$ownedBuildPrefix = [IO.Path]::GetFullPath((Join-Path $actualTarget 'gh1189\builds')).TrimEnd('\') + '\'
+if (-not $receiptPath.StartsWith($ownedBuildPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+    [IO.Path]::GetFileName($receiptPath) -ne 'receipt.json') {
+    throw 'Build receipt must be inside the task-owned GH1189 build directory'
+}
+Assert-NoReparsePath $receiptPath
+if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'Build receipt missing' }
+$buildReceipt = Get-Content -LiteralPath $receiptPath -Raw -ErrorAction Stop | ConvertFrom-Json
+$gitTree = (& git -C $repo rev-parse 'HEAD^{tree}' | Select-Object -First 1).Trim()
+if ($LASTEXITCODE -ne 0 -or $buildReceipt.status -ne 'BUILT_NOT_RUN_PROVENANCE' -or
+    $buildReceipt.reviewed_commit -ne $ReviewedCommit -or
+    $buildReceipt.reviewed_tree -ne $gitTree -or
+    -not [string]::Equals([string]$buildReceipt.workspace_root, $expectedWorkspace, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals([string]$buildReceipt.target_directory, $actualTarget, [StringComparison]::OrdinalIgnoreCase) -or
+    $buildReceipt.fixture_sha256 -ne $FixtureSha256 -or
+    $buildReceipt.observer_sha256 -ne $ObserverSha256 -or
+    $buildReceipt.no_external_cargo_config_or_flag_override -ne $true) {
+    throw 'Build receipt does not attest this exact source, target and executables'
+}
+foreach ($item in @(
+    @{Name='Cargo.toml';Hash=$buildReceipt.root_inputs.cargo_toml_sha256},
+    @{Name='Cargo.lock';Hash=$buildReceipt.root_inputs.cargo_lock_sha256},
+    @{Name='rust-toolchain.toml';Hash=$buildReceipt.root_inputs.rust_toolchain_sha256}
+)) {
+    $path = Join-Path $repo $item.Name
+    Assert-NoReparsePath $path
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $item.Hash) {
+        throw "Build root input changed: $($item.Name)"
+    }
+}
+if (@($buildReceipt.pinned_inputs).Count -ne 6) { throw 'Build receipt lacks complete pinned source set' }
+foreach ($item in @($buildReceipt.pinned_inputs)) {
+    if ([string]::IsNullOrWhiteSpace([string]$item.path) -or
+        [IO.Path]::IsPathRooted([string]$item.path) -or [string]$item.path -match '(^|/)\.\.(/|$)') {
+        throw 'Invalid build receipt source path'
+    }
+    $source = Join-Path $repo ([string]$item.path).Replace('/', '\')
+    Assert-NoReparsePath $source
+    if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $item.sha256) {
+        throw "Build receipt source digest changed: $($item.path)"
+    }
+}
+if ($buildReceipt.build_script_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $here 'gh1189_build.ps1') -Algorithm SHA256).Hash -or
+    $buildReceipt.cargo_version -ne ((& cargo --version) -join [Environment]::NewLine) -or
+    $buildReceipt.rustc_version -ne ((& rustc -vV) -join [Environment]::NewLine)) {
+    throw 'Build provenance script/toolchain mismatch'
+}
+$manifestProbe = Join-Path (Split-Path -Parent $receiptPath) 'fixture-manifest-resource1.xml'
+Assert-NoReparsePath $manifestProbe
+if ((Get-FileHash -LiteralPath $manifestProbe -Algorithm SHA256).Hash -ne $buildReceipt.manifest_resource1_sha256) {
+    throw 'Embedded manifest extraction digest does not match the pinned build receipt'
+}
+$buildReceiptSha256 = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash
+
 # Never reuse a prior PASS receipt. Every invocation gets a new exclusive
 # attempt directory and an immutable start manifest in this worktree's target.
 $attemptId = [guid]::NewGuid().ToString('N')
@@ -147,6 +208,8 @@ $provenance = [ordered]@{
     observer_exe = $observer
     issue_claim_url = $IssueClaimUrl
     native_slot_url = $NativeSlotUrl
+    build_receipt_path = $receiptPath
+    build_receipt_sha256 = $buildReceiptSha256
     evidence_directory = $evidence
 }
 Write-DurableJsonOnce (Join-Path $evidence 'attempt.json') $provenance
@@ -347,6 +410,8 @@ $completion = [ordered]@{
     observer_sha256 = $ObserverSha256.ToUpperInvariant()
     issue_claim_url = $IssueClaimUrl
     native_slot_url = $NativeSlotUrl
+    build_receipt_path = $receiptPath
+    build_receipt_sha256 = $buildReceiptSha256
     controls_expected = 4
     fresh_healthy_children_expected = 5
     results = @($results.ToArray())
