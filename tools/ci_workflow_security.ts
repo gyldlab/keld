@@ -1138,6 +1138,10 @@ const reviewedWorkflowActionRefs = new Set([
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+  // The installed-package oracle needs Node 26 (GH-502) and the hosted runner
+  // ships Node 24. This SHA is the commit actions/setup-node v7.1.0 resolves to
+  // (verified against the tag), pinned the same way as setup-bun above.
+  "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1",
   "taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b",
   `github/codeql-action/init@${approvedCodeqlActionSha}`,
   `github/codeql-action/analyze@${approvedCodeqlActionSha}`,

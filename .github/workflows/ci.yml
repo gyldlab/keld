@@ -690,6 +690,15 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      # GH-502's real installed-package oracle requires Node 26. The hosted
+      # runner's ambient Node 24 must not silently substitute for that test.
+      # The official action and exact Node version are SHA/version pinned;
+      # PR-controlled package-manager caching is disabled.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.10.0"
+          check-latest: false
+          package-manager-cache: false
       - name: frozen install, typecheck, and bun test
         shell: bash
         env:
