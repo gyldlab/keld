@@ -131,7 +131,12 @@ fn verified_profile_preflight_checks_both_version_and_entry_before_admission() {
                         "KELD-CORE-035",
                         "{name}/{schema}/{diagnostic}"
                     );
-                } else if !cfg!(target_os = "macos") && (explicit || facade) {
+                } else if !cfg!(target_os = "macos") && explicit {
+                    // Facade boots without a declared profile stay admitted on
+                    // Windows/Linux: `profile_preflight::validate_profile`
+                    // deliberately does not veto the existing Windows facade
+                    // debug qualification route, and only a declared profile is
+                    // refused KELD-CORE-034 there.
                     assert_eq!(
                         result
                             .expect_err("unsupported target/mode stays refused")
