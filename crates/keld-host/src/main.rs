@@ -59,10 +59,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--hello") {
-        if let Err(error) = keld_core::prepare_webview_process() {
-            eprintln!("{error}");
-            process::exit(1);
-        }
+        prepare_webview_or_exit();
         if let Some(flag) = keld_core::host_hello_unknown_arg(&args) {
             eprintln!(
                 "KELD-CLI-044: unknown hello flag `{flag}`. \
@@ -95,7 +92,7 @@ fn main() {
 
     // Keep the Job until exit (KEL-53 §4); S6c owns the committed release_for_exit call.
     #[cfg(windows)]
-    let _host_death_job = match keld_runtime::windows_job::install_host_death_job() {
+    let host_death_job = match keld_runtime::windows_job::install_host_death_job() {
         Ok(host_death_job) => host_death_job,
         Err(error) => {
             eprintln!("{error}");
@@ -103,14 +100,14 @@ fn main() {
         }
     };
 
-    if let Err(error) = keld_core::prepare_webview_process() {
-        eprintln!("{error}");
-        process::exit(1);
-    }
+    prepare_webview_or_exit();
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let dev_stage_cleanup = dev_stage_cleanup_root();
-    let result = run_validated_no_flag();
+    let result = run_validated_no_flag(
+        #[cfg(windows)]
+        &host_death_job,
+    );
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let retains_main_custody = result
         .as_ref()
@@ -143,12 +140,26 @@ fn main() {
     }
 }
 
-fn run_validated_no_flag() -> Result<(), keld_core::app_session::HostRunFailure> {
+fn prepare_webview_or_exit() {
+    if let Err(error) = keld_core::prepare_webview_process() {
+        eprintln!("{error}");
+        process::exit(1);
+    }
+}
+
+fn run_validated_no_flag(
+    #[cfg(windows)] host_death_job: &keld_runtime::windows_job::WindowsHostDeathJob,
+) -> Result<(), keld_core::app_session::HostRunFailure> {
     let boot = keld_core::app_session::ValidatedBootSelection::from_current_exe_unprivileged()
         .map_err(keld_core::app_session::HostRunFailure::from)?;
     #[cfg(any(target_os = "macos", windows))]
     {
-        keld_core::app_session::run_guarded(boot, pre_init_terminal)
+        keld_core::app_session::run_guarded(
+            boot,
+            pre_init_terminal,
+            #[cfg(windows)]
+            host_death_job,
+        )
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -267,7 +278,7 @@ fn handle_profile_test_root_probe(args: &[std::ffi::OsString]) -> bool {
             process::exit(2);
         };
         println!("KELD_PROFILE_TEST_ROOT_FEATURE {}", root.to_string_lossy());
-        return true;
+        true
     }
     #[cfg(not(feature = "kel135-profile-test-root"))]
     {
